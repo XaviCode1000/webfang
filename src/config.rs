@@ -63,8 +63,10 @@ pub fn setup_brave_env() -> Result<(), ConfigError> {
     validate_brave_installation(&brave_path)?;
 
     // Configurar variables de entorno para que spider use Brave
-    env::set_var("CHROME_PATH", &brave_path);
-    env::set_var("BRAVE_ENABLED", "true");
+    unsafe {
+        env::set_var("CHROME_PATH", &brave_path);
+        env::set_var("BRAVE_ENABLED", "true");
+    }
 
     info!("✅ Entorno de Brave configurado en: {}", brave_path);
     Ok(())
