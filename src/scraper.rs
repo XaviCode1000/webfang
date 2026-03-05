@@ -113,8 +113,16 @@ pub async fn scrape_with_readability(
             warn!("⚠️  Readability failed for {}: {}", url, e);
             // Try fallback: just extract text directly
             let fallback_content = extract_fallback_text(&html);
+
+            // FIX: Propagar error en vez de fallback silencioso
+            // La URL ya fue validada, pero por seguridad checkedamos igual
+            let title = url
+                .host_str()
+                .ok_or_else(|| anyhow::anyhow!("URL missing host after validation: {}", url))?
+                .to_string();
+
             results.push(ScrapedContent {
-                title: url.host_str().unwrap_or("Unknown").to_string(),
+                title,
                 content: fallback_content,
                 url: url.to_string(),
                 excerpt: None,

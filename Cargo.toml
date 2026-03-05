@@ -27,8 +27,7 @@ scraper = "0.22"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
-# Error handling - thiserror para libs, anyhow para apps
-thiserror = "2"
+# Error handling - anyhow for applications
 anyhow = "1"
 
 # Logging estructurado
