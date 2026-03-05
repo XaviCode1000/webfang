@@ -21,8 +21,11 @@ coverage/
 # AI AGENTS (2026)
 # ═══════════════════════════════════════════════════════════
 # Qwen Code
-.qwen/
 .qwenignore
+.qwen/settings.json
+.qwen/.env
+# .qwen/skills/ se trackea para compartir skills con el equipo
+!.qwen/skills/
 
 # Claude Code
 .claude/

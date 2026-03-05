@@ -1,18 +1,55 @@
 [package]
 name = "rust_scraper"
-version = "0.1.0"
-edition = "2024"
+version = "0.2.0"
+edition = "2021"
+description = "Modern web scraper for RAG datasets with clean content extraction"
+authors = ["GazaDev"]
+license = "MIT"
 
 [dependencies]
-spider = { version = "2", features = ["chrome"] }
-supermarkdown = "0.0.5"
+# CLI - Argument parsing obligatorio
+clap = { version = "4", features = ["derive"] }
+
+# HTTP & Networking - Reqwest con retry y tls
+reqwest = { version = "0.12", features = ["rustls-tls", "gzip", "brotli"] }
+
+# Content Extraction - Readability algorithm (Firefox Reader mode)
+legible = "0.4"
+htmd = "0.5"
+
+# Serialization for JSON output
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# HTML Parsing for CSS selectors
+scraper = "0.22"
+
+# Async runtime
 tokio = { version = "1", features = ["full"] }
+
+# Error handling - thiserror para libs, anyhow para apps
+thiserror = "2"
+anyhow = "1"
+
+# Logging estructurado
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+
+# Utilities
 url = "2"
-thiserror = "1"
+futures = "0.3"
+
+[dev-dependencies]
+mockall = "0.12"
 
 [profile.release]
 opt-level = 3
-lto = true
+lto = "fat"
 codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.bench]
+inherits = "release"
+debug = true
