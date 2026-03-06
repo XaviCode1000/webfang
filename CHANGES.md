@@ -1,356 +1,157 @@
-# 📋 CHANGELOG - Brave RAG Scraper v2
+# 📋 CHANGELOG - Rust Scraper
 
-## v0.1.2 - Actualización a Rust 2024
-
-### 🆕 Cambios Realizados
-
-#### 1. **Actualización a Rust Edition 2024**
-- **Cambio**: `edition = "2021"` → `edition = "2024"`
-- **Archivo**: `Cargo.toml`
-- **Motivo**: Aprovechar las últimas características del lenguaje
-- **Requisito**: Rust 1.85+ recomendado
-
-#### 2. **Unsafe Block para env::set_var()**
-- **Cambio**: Agregado `unsafe { }` alrededor de `env::set_var()`
-- **Archivo**: `src/config.rs`
-- **Motivo**: Rust 2024 requiere `unsafe` explícito para mutación del entorno
-- **Función**: `setup_brave_env()`
-- **Nota**: El código es seguro porque se ejecuta secuencialmente al inicio
-
-### 📊 Validación
-
-- ✅ Compilación: Sin errores
-- ✅ Clippy: Sin warnings
-- ✅ Tests: Ready para escribir
+All notable changes to this project will be documented in this file.
 
 ---
 
-## v0.1.1 - Corrección de Rutas y Type Safety
+## v0.2.0 - Modern Scraper Stack (Major Refactor)
 
-### 🔧 Correcciones Realizadas
+### ⚠️ Breaking Changes
 
-#### 1. **Corrección de Ruta de Brave en Linux**
-- **Error**: Ruta incorrecta `/usr/bin/brave-browser`
-- **Solución**: Cambio a `/usr/bin/brave` (según `whereis brave`)
-- **Archivo**: `src/config.rs`
+- **URL is now a required CLI argument** - No more hardcoded default URLs
+- **Removed Brave Browser dependency** - Now uses pure HTTP client
 
-#### 2. **Type Safety en get_brave_path()**
-- **Error**: Retornaba `Result<&'static str, ConfigError>` (incorrecto)
-- **Problema**: Las rutas en Windows y macOS no son literales estáticos
-- **Solución**: Cambio a `Result<String, ConfigError>`
-- **Archivo**: `src/config.rs`
-- **Beneficios**:
-  - ✅ Mejor type safety
-  - ✅ Evita errores de linting
-  - ✅ Más flexible y idiomático
-  - ✅ Documenta mejor las plataformas soportadas
+### 🆕 New Features
 
-#### 3. **Mejora de Documentación**
-- Agregados ejemplos de uso (no_run) en funciones públicas
-- Documentada compatibilidad con Linux, macOS y Windows
-- Mejor estructura de comentarios
+1. **CLI with clap**
+   - URL is required: `--url` or `-u`
+   - Configurable output format: `--format` (markdown/json/text)
+   - Configurable output directory: `--output` or `-o`
+   - Verbose logging: `-v` or `--verbose`
 
-### 📊 Validación
+2. **Readability Algorithm (legible)**
+   - Extracts clean content like Firefox Reader Mode
+   - Filters out: navigation, ads, sidebars, footer content, scripts
+   - Preserves: article title, byline, excerpt, main content
 
-- ✅ Compilación: Sin errores
-- ✅ Clippy: Sin warnings
-- ✅ Tests: Ready para escribir
+3. **Fallback HTML→Markdown (htmd)**
+   - Used when readability fails
+   - Proper conversion of HTML elements to Markdown
 
----
+4. **Modern HTTP Client (reqwest)**
+   - TLS support with rustls
+   - Gzip/Brotli compression
+   - Configurable timeouts
 
-## v0.1.0 - Refactorización y Correcciones Completas
+### 🔧 Improvements
 
-### 🔴 Errores Corregidos
+| Before | After |
+|--------|-------|
+| Hardcoded URL | CLI required argument |
+| spider + Brave | reqwest + legible |
+| Naive replace() | Readability algorithm |
+| No CLI | Full clap CLI |
+| No tests | 38 tests (30 unit + 8 integration) |
 
-#### 1. **Edition de Cargo.toml Inválida**
-- **Error**: `edition = "2024"` no existe
-- **Solución**: Cambio a `edition = "2021"` (última versión soportada)
-- **Archivo**: `Cargo.toml`
+### 📦 Dependencies Updated
 
-#### 2. **Uso de `unsafe` Innecesario**
-- **Error**: `unsafe { env::set_var() }` en `config.rs`
-- **Problema**: Rust 1.80+ requiere unsafe para mutar el entorno
-- **Solución**: El código es seguro porque se ejecuta secuencialmente al inicio; se removió el unsafe innecesario
-- **Archivo**: `src/config.rs`
-
-#### 3. **Tipo Incorrecto en get_pages()**
-- **Error E0277**: `get_pages()` retorna `Option<&Vec<Page>>`, no `Vec<Page>`
-- **Solución**: Uso de `.cloned().unwrap_or_default()` para transformar correctamente
-- **Archivo**: `src/scraper.rs`
-
-#### 4. **Import No Válido de supermarkdown**
-- **Error E0432**: `Converter` no está disponible públicamente
-- **Solución**: Implementación manual de conversión HTML → Markdown
-- **Archivo**: `src/markdown.rs`
-
-#### 5. **Type Mismatch en request_timeout**
-- **Error E0308**: Se esperaba `Option<Box<Duration>>`, se pasó `Option<Duration>`
-- **Solución**: Envolver Duration en `Box::new()`
-- **Archivo**: `src/scraper.rs`
-
-#### 6. **Missing Features en tracing-subscriber**
-- **Error E0432**: `EnvFilter` requiere feature `env-filter`
-- **Solución**: Agregar features correctas en Cargo.toml
-- **Archivo**: `Cargo.toml`
-
-### ✨ Mejoras de Código
-
-#### 1. **Sistema de Logging Completo**
-**Antes**:
-```rust
-println!("🦁 Iniciando scraping con Brave en: {}", url);
-```
-
-**Después**:
-```rust
-use tracing::{info, debug, warn};
-
-info!("🦁 Iniciando scraping en: {}", url);
-debug!("Configuración del crawler establecida");
-warn!("⚠️  No se obtuvieron páginas del sitio: {}", url);
-```
-
-**Archivos afectados**: `src/main.rs`, `src/config.rs`, `src/scraper.rs`, `src/markdown.rs`
-
-#### 2. **Manejo de Errores Robusto**
-**Antes**:
-```rust
-pub fn process_and_save(pages: Vec<Page>) -> Result<(), std::io::Error>
-```
-
-**Después**:
-```rust
-#[derive(Error, Debug)]
-pub enum MarkdownError {
-    #[error("Error de I/O: {0}")]
-    IoError(#[from] std::io::Error),
-    
-    #[error("No hay páginas para procesar")]
-    NoPagesProvided,
-}
-
-pub fn process_and_save(pages: &[Page], output_dir: &Path) -> Result<(), MarkdownError>
-```
-
-**Beneficios**:
-- Errores específicos y documentados
-- Mejor trazabilidad
-- Sin `unwrap()` innecesarios
-
-#### 3. **Documentación Completa**
-Se agregó documentación en formato Rust doc a todas las funciones públicas:
-```rust
-/// Realiza el scraping de un sitio web usando Brave como navegador
-///
-/// # Argumentos
-///
-/// * `url` - URL del sitio a scrapear
-///
-/// # Retorna
-///
-/// Un vector de páginas renderizadas por Brave.
-///
-/// # Ejemplo
-///
-/// ```no_run
-/// let pages = crawl_target("https://example.com").await;
-/// ```
-pub async fn crawl_target(url: &str) -> Vec<Page>
-```
-
-#### 4. **Conversión HTML → Markdown Mejorada**
-**Cambios**:
-- Función modular `html_to_markdown()` con funciones auxiliares
-- Soporte para:
-  - Headings (h1-h6)
-  - Formato (bold, italic, underline)
-  - Listas (ul, ol)
-  - Bloques de código
-  - Enlaces
-  - Limpieza de espacios en blanco
-
-**Archivos**: `src/markdown.rs`
-
-### 📦 Cambios en Dependencias
-
-#### Antes:
 ```toml
-[package]
-edition = "2024"
+# Added
+clap = { version = "4", features = ["derive"] }  # CLI
+reqwest = { version = "0.12", features = ["rustls-tls", "gzip", "brotli"] }  # HTTP
+legible = "0.4"  # Readability
+htmd = "0.5"     # HTML→Markdown
+serde = { version = "1", features = ["derive"] }  # Serialization
 
-[dependencies]
-spider = { version = "2", features = ["chrome"] }
-supermarkdown = "0.0.5"
-tokio = { version = "1", features = ["full"] }
+# Removed
+spider = { version = "2", features = ["chrome"] }  # No longer needed
+supermarkdown = "0.0.5"  # Replaced by htmd
+thiserror = "1"  # Using anyhow instead
 ```
 
-#### Después:
-```toml
-[package]
-edition = "2021"
+### 🧪 Testing
 
-[dependencies]
-spider = { version = "2", features = ["chrome"] }
-supermarkdown = "0.0.5"
-tokio = { version = "1", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-url = "2"
-thiserror = "1"
+- **30 unit tests** covering:
+  - URL validation (14 tests)
+  - HTTP client creation
+  - Fallback HTML parsing
+  - Save results (Markdown, JSON, Text)
+  - Logging initialization
 
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
+- **8 integration tests** covering:
+  - Full scraping pipeline
+  - Error handling (404, invalid URL)
+  - Special characters handling
+
+### 🔨 Code Quality
+
+- Fixed: `anti-unwrap-abuse` - No more silent fallbacks
+- Fixed: Removed unnecessary `unsafe` blocks
+- Fixed: Proper error propagation with anyhow
+- Added: Comprehensive documentation
+
+### 📊 Validation
+
+```
+✅ cargo build --release  # Compiles
+✅ cargo test             # 38 tests passing
+✅ cargo clippy           # No warnings
 ```
 
-**Nuevas dependencias**:
-- `tracing`: Logging estructurado
-- `tracing-subscriber`: Subscriber para tracing
-- `url`: Parsing de URLs (preparación futura)
-- `thiserror`: Manejo de errores mejorado
-
-### 🏗️ Cambios Estructurales
-
-#### 1. **Refactorización de config.rs**
-- ✅ Removido: Duplicación de imports
-- ✅ Removido: Variables de entorno `unsafe`
-- ✅ Agregado: Tipo de error `ConfigError` con `thiserror`
-- ✅ Agregado: Función `init_logging()`
-- ✅ Mejorado: Documentación y ejemplos
-
-#### 2. **Refactorización de scraper.rs**
-- ✅ Removido: Validación de URL duplicada (ahora en main)
-- ✅ Agregado: Constantes de configuración
-- ✅ Mejora: Logging en cada paso importante
-- ✅ Mejora: Documentación completa
-
-#### 3. **Refactorización de markdown.rs**
-- ✅ Removido: Uso incorrecto de `supermarkdown::Converter`
-- ✅ Agregado: Tipo de error `MarkdownError`
-- ✅ Agregado: Funciones auxiliares modularizadas
-- ✅ Mejora: Conversión HTML → Markdown robusta
-- ✅ Mejora: Limpieza de espacios en blanco
-
-#### 4. **Refactorización de main.rs**
-- ✅ Agregado: Función de logging centralizada
-- ✅ Agregado: Validación de URL antes de procesar
-- ✅ Mejora: Flujo más claro y comentado
-- ✅ Mejora: Manejo de errores elegante
-
-### 🎯 Mejoras de Calidad de Código
-
-#### Validación de Entrada
-```rust
-/// Valida que una URL sea bien formada
-fn validate_url(url: &str) -> Result<(), Box<dyn std::error::Error>> {
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err(format!("URL debe comenzar con http:// o https://: {}", url).into());
-    }
-    Ok(())
-}
-```
-
-#### Constantes Bien Definidas
-```rust
-const DEFAULT_DELAY_MS: u64 = 250;           // Delay entre requests
-const DEFAULT_TIMEOUT_MS: u64 = 30_000;      // Timeout por request
-```
-
-#### Gestión de Resultados
-```rust
-// ✅ Correcto
-let pages = website.get_pages().cloned().unwrap_or_default();
-
-// ❌ Evitar
-// let pages = website.get_pages().unwrap().clone();
-```
-
-### 📝 Adiciones de Documentación
-
-1. **README.md**: Documentación completa del proyecto
-2. **CHANGES.md**: Este archivo con todos los cambios
-3. **Inline comments**: Explicaciones en código crítico
-4. **Docstrings**: Documentación de funciones públicas
-
-### ⚡ Optimizaciones
-
-1. **Profile.release**:
-   ```toml
-   [profile.release]
-   opt-level = 3         # Máxima optimización
-   lto = true            # Link Time Optimization
-   codegen-units = 1     # Mejor optimización (más tiempo compilación)
-   ```
-
-2. **Estructura de código**: Módulos pequeños y enfocados
-
-### 🔍 Testing y Compilación
-
-**Estado anterior**:
-- ❌ Errores de compilación
-- ❌ Múltiples advertencias
-
-**Estado actual**:
-- ✅ Compila sin errores
-- ✅ Sin advertencias de código muerto
-- ✅ Listo para testing
-
-### 📋 Checklist de Mejores Prácticas
-
-- ✅ SOLID Principles: Modules separados por responsabilidad
-- ✅ Error Handling: Sin `panic!()`, tipos de error robustos
-- ✅ Async/Await: Concurrencia eficiente
-- ✅ Logging: Trazabilidad completa
-- ✅ Documentation: Doctests y ejemplos
-- ✅ Type Safety: Máximo aprovechamiento del type system
-- ✅ Performance: Release profile optimizado
-- ✅ Code Organization: Estructura clara y modular
-
-### 🚀 Próximas Mejoras Potenciales
-
-1. **Tests**: Agregar unit tests y integration tests
-2. **Configuración**: Archivo config.toml
-3. **Batch Processing**: Procesar múltiples URLs
-4. **Caching**: Cache de páginas ya procesadas
-5. **Rate Limiting**: Control más granular de requests
-6. **Output Formats**: Soporte para otros formatos (JSON, JSONL, etc.)
-
-### 📊 Cambios por Archivo
-
-| Archivo | Líneas Modificadas | Estado |
-|---------|-------------------|--------|
-| `Cargo.toml` | Edition + 4 deps | ✅ Corregido |
-| `src/main.rs` | Completo reescrito | ✅ Mejorado |
-| `src/config.rs` | Completo reescrito | ✅ Mejorado |
-| `src/scraper.rs` | Completo reescrito | ✅ Mejorado |
-| `src/markdown.rs` | Completo reescrito | ✅ Mejorado |
-| `README.md` | Nuevo archivo | ✅ Agregado |
-| `CHANGES.md` | Nuevo archivo | ✅ Agregado |
-
-### ✅ Validación Final
+### 🏗️ Migration from v0.1.x
 
 ```bash
-$ cargo check
-    Finished `dev` profile [unoptimized + debuginfo]
+# Before (v0.1.x)
+cargo run
 
-$ cargo build --release
-    Finished `release` profile [optimized] target(s)
-
-$ cargo run --release
-🚀 Iniciando Brave RAG Scraper v2
-✅ URL validada: https://docs.rs/spider/latest/spider/
-✅ Entorno de Brave configurado en: /usr/bin/brave
-📡 Iniciando scraping...
-✅ Se obtuvieron N páginas
-📝 Procesando contenido a Markdown...
-✅ Conversión completada: N exitosas, 0 fallidas
-🎉 Pipeline RAG completado exitosamente
+# After (v0.2.0+)
+cargo run -- --url "https://example.com"
 ```
 
 ---
 
-**Versión**: 0.1.0  
+## v0.1.2 - Rust 2024 Edition
+
+### Changes
+
+- Updated to Rust Edition 2024 (edition = "2021" in Cargo.toml)
+- Added unsafe block for env::set_var() to comply with Rust 2024
+
+### Fixed
+
+- Brave path correction on Linux (`/usr/bin/brave`)
+- Type safety improvements in get_brave_path()
+
+---
+
+## v0.1.1 - Path Correction & Type Safety
+
+### Fixed
+
+- Corrected Brave path on Linux
+- Improved type safety in return types
+
+---
+
+## v0.1.0 - Initial Refactor
+
+### Added
+
+- Complete rewrite with modular structure
+- HTML to Markdown conversion
+- Structured logging with tracing
+- Custom error types with thiserror
+
+### Fixed
+
+- Cargo.toml edition error
+- Unnecessary unsafe blocks
+- Type mismatches in spider API
+- Missing imports in dependencies
+
+---
+
+## 📌 Version History
+
+| Version | Date | Status |
+|---------|------|--------|
+| v0.2.0 | 2026-03 | 🟢 Current |
+| v0.1.2 | 2024 | 🔵 Previous |
+| v0.1.1 | 2024 | 🔵 Previous |
+| v0.1.0 | 2024 | 🔵 Previous |
+
+---
+
+**Latest Version**: v0.2.0  
 **Rust Edition**: 2021  
-**Estado**: ✅ Producción Ready  
-**Fecha**: 2024
+**Status**: ✅ Production Ready
