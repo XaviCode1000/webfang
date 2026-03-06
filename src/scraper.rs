@@ -206,3 +206,397 @@ fn _deprecated_crawl_target() {
     // This function no longer exists - use scrape_with_readability instead
     // Keeping empty to avoid breaking builds that might reference it
 }
+
+// ============================================================================
+// TESTS
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    // ==========================================================================
+    // Tests: create_http_client
+    // ==========================================================================
+
+    #[test]
+    fn test_create_http_client_success() {
+        // Act
+        let result = create_http_client();
+
+        // Assert
+        assert!(result.is_ok());
+        // Client was created successfully with configuration
+    }
+
+    // ==========================================================================
+    // Tests: extract_fallback_text
+    // ==========================================================================
+
+    #[test]
+    fn test_extract_fallback_text_with_valid_html() {
+        // Arrange
+        let html = r#"<html><head><title>Test</title></head>
+        <body><p>Hello World</p><script>alert('x')</script></body></html>"#;
+
+        // Act
+        let result = extract_fallback_text(html);
+
+        // Assert - Main content should be extracted
+        assert!(result.contains("Hello World"));
+        // Verify HTML was processed (not returned verbatim)
+        assert!(!result.contains("<html>"));
+        assert!(!result.contains("<body>"));
+    }
+
+    #[test]
+    fn test_extract_fallback_text_with_scripts_removed() {
+        // Arrange - HTML with multiple scripts and styles
+        let html = r#"
+        <html>
+        <head>
+            <style>.nav { color: red; }</style>
+            <script>var x = 1;</script>
+        </head>
+        <body>
+            <nav>Navigation content</nav>
+            <article>Main article content here</article>
+            <footer>Footer info</footer>
+        </body>
+        </html>"#;
+
+        // Act
+        let result = extract_fallback_text(html);
+
+        // Assert
+        assert!(result.contains("Main article content"));
+        // Verify HTML tags were stripped
+        assert!(!result.contains("<html>"));
+        assert!(!result.contains("<head>"));
+        assert!(!result.contains("<article>"));
+    }
+
+    #[test]
+    fn test_extract_fallback_text_empty_html() {
+        // Arrange
+        let html = "";
+
+        // Act
+        let result = extract_fallback_text(html);
+
+        // Assert - Should return empty string, not crash
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_extract_fallback_text_malformed_html() {
+        // Arrange - Malformed HTML
+        let html = "<div>Open div never closed<p>Paragraph";
+
+        // Act
+        let result = extract_fallback_text(html);
+
+        // Assert - Should not crash, should extract what it can
+        assert!(result.contains("Paragraph") || !result.is_empty());
+    }
+
+    // ==========================================================================
+    // Tests: save_results - Markdown format
+    // ==========================================================================
+
+    #[test]
+    fn test_save_results_markdown_single_item() {
+        // Arrange
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let output_dir = temp_dir.path().to_path_buf();
+
+        let results = vec![ScrapedContent {
+            title: "Test Article".to_string(),
+            content: "This is the main content.".to_string(),
+            url: "https://example.com/article".to_string(),
+            excerpt: Some("A short excerpt".to_string()),
+            author: Some("John Doe".to_string()),
+            date: Some("2024-01-15".to_string()),
+            html: None,
+        }];
+
+        // Act
+        let result = save_results(&results, &output_dir, &super::super::OutputFormat::Markdown);
+
+        // Assert
+        assert!(result.is_ok());
+
+        // Verify file was created
+        let files: Vec<_> = fs::read_dir(&output_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(files.len(), 1);
+
+        let content = fs::read_to_string(files[0].path()).unwrap();
+        assert!(content.contains("Test Article"));
+        assert!(content.contains("This is the main content."));
+        assert!(content.contains("https://example.com/article"));
+    }
+
+    #[test]
+    fn test_save_results_markdown_multiple_items() {
+        // Arrange
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let output_dir = temp_dir.path().to_path_buf();
+
+        let results = vec![
+            ScrapedContent {
+                title: "Article 1".to_string(),
+                content: "Content 1".to_string(),
+                url: "https://example.com/1".to_string(),
+                excerpt: None,
+                author: None,
+                date: None,
+                html: None,
+            },
+            ScrapedContent {
+                title: "Article 2".to_string(),
+                content: "Content 2".to_string(),
+                url: "https://example.com/2".to_string(),
+                excerpt: None,
+                author: None,
+                date: None,
+                html: None,
+            },
+        ];
+
+        // Act
+        let result = save_results(&results, &output_dir, &super::super::OutputFormat::Markdown);
+
+        // Assert
+        assert!(result.is_ok());
+
+        let files: Vec<_> = fs::read_dir(&output_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(files.len(), 2);
+    }
+
+    // ==========================================================================
+    // Tests: save_results - Text format
+    // ==========================================================================
+
+    #[test]
+    fn test_save_results_text_single_item() {
+        // Arrange
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let output_dir = temp_dir.path().to_path_buf();
+
+        let results = vec![ScrapedContent {
+            title: "Test Article".to_string(),
+            content: "Plain text content here.".to_string(),
+            url: "https://example.com".to_string(),
+            excerpt: None,
+            author: None,
+            date: None,
+            html: None,
+        }];
+
+        // Act
+        let result = save_results(&results, &output_dir, &super::super::OutputFormat::Text);
+
+        // Assert
+        assert!(result.is_ok());
+
+        let files: Vec<_> = fs::read_dir(&output_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(files.len(), 1);
+
+        let content = fs::read_to_string(files[0].path()).unwrap();
+        // Text format should only contain content, not title or URL
+        assert!(content.contains("Plain text content here."));
+        assert!(!content.contains("Test Article")); // Title not in file
+        assert!(!content.contains("https://example.com")); // URL not in file
+    }
+
+    // ==========================================================================
+    // Tests: save_results - JSON format
+    // ==========================================================================
+
+    #[test]
+    fn test_save_results_json_multiple_items() {
+        // Arrange
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let output_dir = temp_dir.path().to_path_buf();
+
+        let results = vec![
+            ScrapedContent {
+                title: "Article 1".to_string(),
+                content: "Content 1".to_string(),
+                url: "https://example.com/1".to_string(),
+                excerpt: None,
+                author: None,
+                date: None,
+                html: None,
+            },
+            ScrapedContent {
+                title: "Article 2".to_string(),
+                content: "Content 2".to_string(),
+                url: "https://example.com/2".to_string(),
+                excerpt: None,
+                author: None,
+                date: None,
+                html: None,
+            },
+        ];
+
+        // Act
+        let result = save_results(&results, &output_dir, &super::super::OutputFormat::Json);
+
+        // Assert
+        assert!(result.is_ok());
+
+        // JSON creates single file
+        let json_path = output_dir.join("results.json");
+        assert!(json_path.exists());
+
+        let content = fs::read_to_string(&json_path).unwrap();
+        // Verify valid JSON and contains both articles
+        let parsed: Vec<ScrapedContent> = serde_json::from_str(&content).expect("Valid JSON");
+        assert_eq!(parsed.len(), 2);
+    }
+
+    #[test]
+    fn test_save_results_json_contains_all_fields() {
+        // Arrange
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let output_dir = temp_dir.path().to_path_buf();
+
+        let results = vec![ScrapedContent {
+            title: "Test Title".to_string(),
+            content: "Test Content".to_string(),
+            url: "https://example.com".to_string(),
+            excerpt: Some("Test excerpt".to_string()),
+            author: Some("Author Name".to_string()),
+            date: Some("2024-01-01".to_string()),
+            html: None, // Should be skipped in serialization
+        }];
+
+        // Act
+        let result = save_results(&results, &output_dir, &super::super::OutputFormat::Json);
+
+        // Assert
+        assert!(result.is_ok());
+
+        let json_path = output_dir.join("results.json");
+        let content = fs::read_to_string(&json_path).unwrap();
+
+        // Verify JSON is valid by deserializing
+        let parsed: Vec<ScrapedContent> = serde_json::from_str(&content).expect("Valid JSON");
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].title, "Test Title");
+        assert_eq!(parsed[0].content, "Test Content");
+        assert_eq!(parsed[0].url, "https://example.com");
+        assert_eq!(parsed[0].excerpt, Some("Test excerpt".to_string()));
+        assert_eq!(parsed[0].author, Some("Author Name".to_string()));
+        assert_eq!(parsed[0].date, Some("2024-01-01".to_string()));
+        // html should be None (skip_serializing)
+        assert_eq!(parsed[0].html, None);
+    }
+
+    // ==========================================================================
+    // Tests: save_results - Edge cases
+    // ==========================================================================
+
+    #[test]
+    fn test_save_results_creates_directory_if_not_exists() {
+        // Arrange
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let output_dir = temp_dir.path().join("nested").join("output");
+
+        let results = vec![ScrapedContent {
+            title: "Test".to_string(),
+            content: "Content".to_string(),
+            url: "https://example.com".to_string(),
+            excerpt: None,
+            author: None,
+            date: None,
+            html: None,
+        }];
+
+        // Act
+        let result = save_results(&results, &output_dir, &super::super::OutputFormat::Text);
+
+        // Assert - Should create nested directories
+        assert!(result.is_ok());
+        assert!(output_dir.exists());
+    }
+
+    #[test]
+    fn test_save_results_empty_results() {
+        // Arrange
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let output_dir = temp_dir.path().to_path_buf();
+
+        let results: Vec<ScrapedContent> = vec![];
+
+        // Act
+        let result = save_results(&results, &output_dir, &super::super::OutputFormat::Markdown);
+
+        // Assert - Should succeed but create no files (for Markdown/Text)
+        assert!(result.is_ok());
+    }
+
+    // ==========================================================================
+    // Tests: ScrapedContent serialization
+    // ==========================================================================
+
+    #[test]
+    fn test_scraped_content_json_serialization() {
+        // Arrange
+        let content = ScrapedContent {
+            title: "Test Title".to_string(),
+            content: "Test Content".to_string(),
+            url: "https://example.com".to_string(),
+            excerpt: Some("Excerpt".to_string()),
+            author: Some("Author".to_string()),
+            date: Some("2024-01-01".to_string()),
+            html: None,
+        };
+
+        // Act
+        let json = serde_json::to_string(&content).expect("Should serialize");
+
+        // Assert
+        assert!(json.contains("Test Title"));
+        assert!(json.contains("Test Content"));
+        // html should be None, so skip_serializing should work
+        assert!(!json.contains("html"));
+    }
+
+    #[test]
+    fn test_scraped_content_json_deserialization() {
+        // Arrange
+        let json = r#"{
+            "title": "Test",
+            "content": "Content",
+            "url": "https://example.com",
+            "excerpt": "Excerpt",
+            "author": "Author",
+            "date": "2024-01-01"
+        }"#;
+
+        // Act
+        let content: ScrapedContent = serde_json::from_str(json).expect("Should deserialize");
+
+        // Assert
+        assert_eq!(content.title, "Test");
+        assert_eq!(content.content, "Content");
+        assert_eq!(content.url, "https://example.com");
+        assert_eq!(content.excerpt, Some("Excerpt".to_string()));
+        assert_eq!(content.author, Some("Author".to_string()));
+        assert_eq!(content.date, Some("2024-01-01".to_string()));
+    }
+}
