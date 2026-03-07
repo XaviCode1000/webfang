@@ -129,3 +129,12 @@ cargo run -- --url "https://example.com"
 ## 📄 License
 
 MIT License - see [LICENSE](LICENSE) for details.
+
+## 📚 Documentation
+
+See the [doc/](doc/) folder for detailed documentation:
+
+- [doc/README.md](doc/README.md) - Quick start guide
+- [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) - Technical architecture
+- [doc/CLI.md](doc/CLI.md) - CLI reference
+- [doc/CONTRIBUTING.md](doc/CONTRIBUTING.md) - Contributing guide
