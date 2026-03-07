@@ -34,6 +34,7 @@ impl AssetType {
 }
 
 /// Known MIME types for images
+#[allow(dead_code)]
 const IMAGE_MIMES: &[&str] = &[
     "image/jpeg",
     "image/png",
@@ -46,6 +47,7 @@ const IMAGE_MIMES: &[&str] = &[
 ];
 
 /// Known MIME types for documents
+#[allow(dead_code)]
 const DOCUMENT_MIMES: &[&str] = &[
     "application/pdf",
     "application/msword",

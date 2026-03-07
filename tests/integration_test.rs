@@ -23,8 +23,7 @@ async fn test_scraper_can_fetch_simple_page() {
 
     // Assert - Either succeeds or fails gracefully (network dependent)
     // We don't assert success because it depends on network
-    if result.is_ok() {
-        let contents = result.unwrap();
+    if let Ok(contents) = result {
         if !contents.is_empty() {
             assert!(!contents[0].title.is_empty());
         }
@@ -64,6 +63,8 @@ fn test_args_has_required_fields() {
         format: OutputFormat::Text,
         delay_ms: 500,
         max_pages: 5,
+        download_images: false,
+        download_documents: false,
         verbose: 2,
     };
 
@@ -125,6 +126,7 @@ fn test_save_results_to_nested_directory() {
         author: None,
         date: None,
         html: None,
+        assets: Vec::new(),
     }];
 
     // Act
@@ -156,6 +158,7 @@ fn test_save_results_json_with_special_characters() {
         author: Some("Author Name".to_string()),
         date: Some("2024-01-01".to_string()),
         html: None,
+        assets: Vec::new(),
     }];
 
     // Act
@@ -187,6 +190,7 @@ fn test_save_results_markdown_with_markdown_syntax() {
         author: None,
         date: None,
         html: None,
+        assets: Vec::new(),
     }];
 
     // Act

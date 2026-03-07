@@ -111,6 +111,7 @@ pub fn extract_documents(html: &str, base_url: &url::Url) -> Vec<AssetUrl> {
     let mut assets = Vec::new();
 
     // Extensions to look for in links
+    #[allow(unused)]
     let doc_extensions = [
         "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv", "odt", "ods", "odp", "epub",
         "rtf",
@@ -134,29 +135,6 @@ pub fn extract_documents(html: &str, base_url: &url::Url) -> Vec<AssetUrl> {
                             asset_type,
                             alt: description,
                         });
-                    }
-                }
-            }
-        }
-    }
-
-    // Also check for links that point to known document paths (even without extension)
-    for link in document.select(&link_selector) {
-        if let Some(href) = link.value().attr("href") {
-            if !href.is_empty() && !href.starts_with('#') && !href.starts_with("javascript:") {
-                // Check if URL contains document-like patterns
-                let href_lower = href.to_lowercase();
-                if doc_extensions.iter().any(|ext| href_lower.contains(ext)) {
-                    let absolute_url = resolve_url(base_url, href);
-                    if let Some(url) = absolute_url {
-                        let asset_type = crate::detector::detect_from_url(&url);
-                        if asset_type.is_document() {
-                            assets.push(AssetUrl {
-                                url,
-                                asset_type,
-                                alt: None,
-                            });
-                        }
                     }
                 }
             }

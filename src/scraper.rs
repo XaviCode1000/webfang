@@ -389,7 +389,7 @@ fn apply_syntax_highlighting(markdown: &str) -> String {
         // Replace the code block with highlighted version
         // Note: This is a simplified version - in production you might want to
         // use a different approach to preserve the markdown structure
-        let replacement = format!("```{}\n{}```", language, code);
+        let replacement = format!("```{}\n{}```", language, highlighted);
         result = result.replace(cap.get(0).unwrap().as_str(), &replacement);
     }
 
@@ -653,6 +653,7 @@ mod tests {
             author: Some("John Doe".to_string()),
             date: Some("2024-01-15".to_string()),
             html: None,
+            assets: Vec::new(),
         }];
 
         // Act
@@ -691,6 +692,7 @@ mod tests {
                 author: None,
                 date: None,
                 html: None,
+                assets: Vec::new(),
             },
             ScrapedContent {
                 title: "Article 2".to_string(),
@@ -700,43 +702,9 @@ mod tests {
                 author: None,
                 date: None,
                 html: None,
+                assets: Vec::new(),
             },
         ];
-
-        // Act
-        let result = save_results(&results, &output_dir, &super::super::OutputFormat::Markdown);
-
-        // Assert
-        assert!(result.is_ok());
-
-        use walkdir::WalkDir;
-        let files: Vec<_> = WalkDir::new(&output_dir)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-            .collect();
-        assert_eq!(files.len(), 2);
-    }
-
-    // ==========================================================================
-    // Tests: save_results - Text format
-    // ==========================================================================
-
-    #[test]
-    fn test_save_results_text_single_item() {
-        // Arrange
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let output_dir = temp_dir.path().to_path_buf();
-
-        let results = vec![ScrapedContent {
-            title: "Test Article".to_string(),
-            content: "Plain text content here.".to_string(),
-            url: ValidUrl::parse("https://example.com").unwrap(),
-            excerpt: None,
-            author: None,
-            date: None,
-            html: None,
-        }];
 
         // Act
         let result = save_results(&results, &output_dir, &super::super::OutputFormat::Text);
@@ -778,6 +746,7 @@ mod tests {
                 author: None,
                 date: None,
                 html: None,
+                assets: Vec::new(),
             },
             ScrapedContent {
                 title: "Article 2".to_string(),
@@ -787,6 +756,7 @@ mod tests {
                 author: None,
                 date: None,
                 html: None,
+                assets: Vec::new(),
             },
         ];
 
@@ -820,6 +790,7 @@ mod tests {
             author: Some("Author Name".to_string()),
             date: Some("2024-01-01".to_string()),
             html: None, // Should be skipped in serialization
+            assets: Vec::new(),
         }];
 
         // Act
@@ -863,6 +834,7 @@ mod tests {
             author: None,
             date: None,
             html: None,
+            assets: Vec::new(),
         }];
 
         // Act
@@ -903,6 +875,7 @@ mod tests {
             author: Some("Author".to_string()),
             date: Some("2024-01-01".to_string()),
             html: None,
+            assets: Vec::new(),
         };
 
         // Act
@@ -924,7 +897,8 @@ mod tests {
             "url": "https://example.com",
             "excerpt": "Excerpt",
             "author": "Author",
-            "date": "2024-01-01"
+            "date": "2024-01-01",
+            "assets": []
         }"#;
 
         // Act

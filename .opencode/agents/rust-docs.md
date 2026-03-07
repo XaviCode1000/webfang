@@ -1,7 +1,7 @@
 ---
 description: Especialista en documentación Rust - /// comments, ejemplos compilables, secciones de errores, README, rustdoc
 mode: subagent
-model:  mistral/labs-devstral-medium-latest
+model:  cloudflare-workers-ai/@cf/zai-org/glm-4.7-flash  
 temperature: 0.2
 permission:
   skill:
