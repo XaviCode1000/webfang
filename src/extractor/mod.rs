@@ -2,7 +2,31 @@
 //!
 //! Extracts URLs of images and documents from HTML content.
 
+use once_cell::sync::Lazy;
 use scraper::{Html, Selector};
+
+// CSS selectors - compilados una sola vez con Lazy (err-no-unwrap-prod)
+/// Selector for img[src]
+static IMG_SELECTOR: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("img[src]").expect("BUG: invalid CSS selector img[src]"));
+
+/// Selector for img[srcset]
+static SRCSET_SELECTOR: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("img[srcset]").expect("BUG: invalid CSS selector img[srcset]"));
+
+/// Selector for source[srcset]
+static SOURCE_SELECTOR: Lazy<Selector> = Lazy::new(|| {
+    Selector::parse("source[srcset]").expect("BUG: invalid CSS selector source[srcset]")
+});
+
+/// Selector for figure img[src]
+static FIGURE_SELECTOR: Lazy<Selector> = Lazy::new(|| {
+    Selector::parse("figure img[src]").expect("BUG: invalid CSS selector figure img[src]")
+});
+
+/// Selector for a[href]
+static LINK_SELECTOR: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("a[href]").expect("BUG: invalid CSS selector a[href]"));
 
 /// Represents an extracted asset URL
 #[derive(Debug, Clone)]
@@ -21,8 +45,7 @@ pub fn extract_images(html: &str, base_url: &url::Url) -> Vec<AssetUrl> {
     let mut assets = Vec::new();
 
     // Extract from <img> tags
-    let img_selector = Selector::parse("img[src]").unwrap();
-    for img in document.select(&img_selector) {
+    for img in document.select(&IMG_SELECTOR) {
         if let Some(src) = img.value().attr("src") {
             if !src.is_empty() && !src.starts_with("data:") {
                 let absolute_url = resolve_url(base_url, src);
@@ -42,8 +65,7 @@ pub fn extract_images(html: &str, base_url: &url::Url) -> Vec<AssetUrl> {
     }
 
     // Extract from <img srcset="...">
-    let srcset_selector = Selector::parse("img[srcset]").unwrap();
-    for img in document.select(&srcset_selector) {
+    for img in document.select(&SRCSET_SELECTOR) {
         if let Some(srcset) = img.value().attr("srcset") {
             for src in parse_srcset(srcset) {
                 let absolute_url = resolve_url(base_url, &src);
@@ -62,8 +84,7 @@ pub fn extract_images(html: &str, base_url: &url::Url) -> Vec<AssetUrl> {
     }
 
     // Extract from <picture><source srcset="...">
-    let source_selector = Selector::parse("source[srcset]").unwrap();
-    for source in document.select(&source_selector) {
+    for source in document.select(&SOURCE_SELECTOR) {
         if let Some(srcset) = source.value().attr("srcset") {
             for src in parse_srcset(srcset) {
                 let absolute_url = resolve_url(base_url, &src);
@@ -82,8 +103,7 @@ pub fn extract_images(html: &str, base_url: &url::Url) -> Vec<AssetUrl> {
     }
 
     // Extract from <figure> with <img>
-    let figure_selector = Selector::parse("figure img[src]").unwrap();
-    for img in document.select(&figure_selector) {
+    for img in document.select(&FIGURE_SELECTOR) {
         if let Some(src) = img.value().attr("src") {
             if !src.is_empty() && !src.starts_with("data:") {
                 let absolute_url = resolve_url(base_url, src);
@@ -118,8 +138,7 @@ pub fn extract_documents(html: &str, base_url: &url::Url) -> Vec<AssetUrl> {
     ];
 
     // Extract from <a> tags
-    let link_selector = Selector::parse("a[href]").unwrap();
-    for link in document.select(&link_selector) {
+    for link in document.select(&LINK_SELECTOR) {
         if let Some(href) = link.value().attr("href") {
             if !href.is_empty() && !href.starts_with('#') && !href.starts_with("javascript:") {
                 let absolute_url = resolve_url(base_url, href);

@@ -11,10 +11,11 @@
 //! - Domain-based folder organization
 //! - URL-based file naming
 
+use crate::error::{Result, ScraperError};
 use crate::url_path::OutputPath;
-use anyhow::{Context, Result};
 use chrono::Utc;
 use html_to_markdown_rs::{convert, ConversionOptions, HeadingStyle};
+use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -23,6 +24,11 @@ use syntect::highlighting::ThemeSet;
 use syntect::html::highlighted_html_for_string;
 use syntect::parsing::SyntaxSet;
 use tracing::{debug, info, warn};
+
+// Regex para code blocks - compilado una sola vez (err-no-unwrap-prod)
+static CODE_BLOCK_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"```(\w*)\n([\s\S]*?)```").expect("BUG: invalid regex for code blocks")
+});
 
 #[allow(dead_code)]
 /// HTTP Client configuration
@@ -45,8 +51,10 @@ impl ValidUrl {
     /// Parse and create a ValidUrl from a string
     ///
     /// Returns error if the string is not a valid URL
-    pub fn parse(s: &str) -> anyhow::Result<Self> {
-        Ok(Self(url::Url::parse(s)?))
+    pub fn parse(s: &str) -> crate::Result<Self> {
+        Ok(Self(
+            url::Url::parse(s).map_err(|e| ScraperError::invalid_url(e.to_string()))?,
+        ))
     }
 
     /// Get reference to inner url::Url
@@ -116,7 +124,7 @@ pub fn create_http_client() -> Result<Client> {
         .gzip(true) // Most modern sites use gzip
         .brotli(true)
         .build()
-        .context("Failed to create HTTP client")
+        .map_err(|e| ScraperError::Config(format!("Failed to create HTTP client: {}", e)))
 }
 
 /// Scrape a URL using Readability algorithm for clean content extraction
@@ -158,19 +166,16 @@ pub async fn scrape_with_config(
         .get(url.as_str())
         .send()
         .await
-        .with_context(|| format!("Failed to fetch URL: {}", url))?;
+        .map_err(ScraperError::Network)?;
 
     // Check status
     let status = response.status();
     if !status.is_success() {
-        anyhow::bail!("HTTP error: {} - {}", status, url);
+        return Err(ScraperError::http(status, url.as_str()));
     }
 
     // Get HTML content
-    let html = response
-        .text()
-        .await
-        .context("Failed to read response body")?;
+    let html = response.text().await.map_err(ScraperError::Network)?;
 
     debug!("📄 Downloaded {} bytes from {}", html.len(), url);
 
@@ -217,7 +222,7 @@ pub async fn scrape_with_config(
 
             let title = url
                 .host_str()
-                .ok_or_else(|| anyhow::anyhow!("URL missing host after validation: {}", url))?
+                .ok_or_else(|| ScraperError::invalid_url(format!("URL missing host: {}", url)))?
                 .to_string();
 
             results.push(ScrapedContent {
@@ -368,12 +373,9 @@ fn apply_syntax_highlighting(markdown: &str) -> String {
     // Use a popular dark theme
     let theme = &theme_set.themes["base16-ocean.dark"];
 
-    // Regex to find code blocks: ```language\ncode\n```
-    let code_block_re = regex::Regex::new(r"```(\w*)\n([\s\S]*?)```").unwrap();
-
     let mut result = markdown.to_string();
 
-    for cap in code_block_re.captures_iter(markdown) {
+    for cap in CODE_BLOCK_RE.captures_iter(markdown) {
         let language = cap.get(1).map(|m| m.as_str()).unwrap_or("");
         let code = cap.get(2).map(|m| m.as_str()).unwrap_or("");
 
@@ -387,10 +389,10 @@ fn apply_syntax_highlighting(markdown: &str) -> String {
             .unwrap_or_else(|_| code.to_string());
 
         // Replace the code block with highlighted version
-        // Note: This is a simplified version - in production you might want to
-        // use a different approach to preserve the markdown structure
-        let replacement = format!("```{}\n{}```", language, highlighted);
-        result = result.replace(cap.get(0).unwrap().as_str(), &replacement);
+        if let Some(full_match) = cap.get(0) {
+            let replacement = format!("```{}\n{}```", language, highlighted);
+            result = result.replace(full_match.as_str(), &replacement);
+        }
     }
 
     result

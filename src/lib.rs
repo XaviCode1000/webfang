@@ -3,6 +3,7 @@
 //! Modern web scraper for RAG datasets with clean content extraction.
 
 pub mod config;
+pub mod error;
 pub mod scraper;
 pub mod url_path;
 
@@ -12,6 +13,7 @@ pub mod downloader;
 pub mod extractor;
 
 pub use clap::{Parser, ValueEnum};
+pub use error::{Result, ScraperError};
 pub use scraper::{
     create_http_client, save_results, scrape_with_config, scrape_with_readability, DownloadedAsset,
     ScrapedContent, ValidUrl,
@@ -122,21 +124,22 @@ pub struct Args {
 }
 
 /// Valida y parsea una URL - retorna error claro si es inválida
-pub fn validate_and_parse_url(url: &str) -> anyhow::Result<url::Url> {
-    use anyhow::Context;
-
+pub fn validate_and_parse_url(url: &str) -> Result<url::Url> {
     if url.is_empty() {
-        anyhow::bail!("URL cannot be empty");
+        return Err(ScraperError::invalid_url("URL cannot be empty"));
     }
 
     if !url.starts_with("http://") && !url.starts_with("https://") {
-        anyhow::bail!("URL must start with http:// or https://");
+        return Err(ScraperError::invalid_url(
+            "URL must start with http:// or https://",
+        ));
     }
 
-    let parsed = url::Url::parse(url).context("Failed to parse URL - check format")?;
+    let parsed = url::Url::parse(url)
+        .map_err(|e| ScraperError::invalid_url(format!("Failed to parse URL: {}", e)))?;
 
     if parsed.host_str().is_none() {
-        anyhow::bail!("URL must have a valid host");
+        return Err(ScraperError::invalid_url("URL must have a valid host"));
     }
 
     Ok(parsed)

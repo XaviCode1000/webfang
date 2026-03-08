@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use crate::error::{Result, ScraperError};
 use reqwest::Client;
 use sha2::{Digest, Sha256};
 
@@ -61,7 +61,7 @@ impl Downloader {
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
             .build()
-            .context("Failed to build HTTP client")?;
+            .map_err(|e| ScraperError::Config(format!("Failed to build HTTP client: {}", e)))?;
 
         Ok(Self { client, config })
     }
@@ -73,7 +73,7 @@ impl Downloader {
             .get(url)
             .send()
             .await
-            .with_context(|| format!("Failed to download: {}", url))?;
+            .map_err(ScraperError::Network)?;
 
         let content_length = response
             .headers()
@@ -91,17 +91,13 @@ impl Downloader {
 
         // Check file size limit
         if content_length > self.config.max_file_size {
-            anyhow::bail!(
+            return Err(ScraperError::download(format!(
                 "File too large: {} bytes (max: {} bytes)",
-                content_length,
-                self.config.max_file_size
-            );
+                content_length, self.config.max_file_size
+            )));
         }
 
-        let bytes = response
-            .bytes()
-            .await
-            .with_context(|| format!("Failed to read response body: {}", url))?;
+        let bytes = response.bytes().await.map_err(ScraperError::Network)?;
 
         let asset_type = crate::detector::detect_from_url(url);
         let subdir = if asset_type.is_image() {
@@ -120,8 +116,7 @@ impl Downloader {
         }
 
         // Write file
-        std::fs::write(&local_path, &bytes)
-            .with_context(|| format!("Failed to write file: {:?}", local_path))?;
+        std::fs::write(&local_path, &bytes).map_err(ScraperError::Io)?;
 
         tracing::info!("Downloaded: {} -> {:?}", url, local_path);
 
