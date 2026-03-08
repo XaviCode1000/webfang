@@ -96,7 +96,7 @@ impl Default for ScraperConfig {
             download_documents: false,
             output_dir: std::path::PathBuf::from("output"),
             max_file_size: Some(50 * 1024 * 1024), // 50MB default
-            scraper_concurrency: 3, // HDD-aware: nproc - 1 for 4C CPU
+            scraper_concurrency: 3,                // HDD-aware: nproc - 1 for 4C CPU
         }
     }
 }

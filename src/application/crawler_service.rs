@@ -18,7 +18,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use governor::{clock::QuantaClock, state::{InMemoryState, NotKeyed}, Quota, RateLimiter};
+use governor::{
+    clock::QuantaClock,
+    state::{InMemoryState, NotKeyed},
+    Quota, RateLimiter,
+};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 use url::Url;
@@ -123,10 +127,7 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
 
         // Process completed tasks FIRST (non-blocking)
         while let Some(result) = tasks.try_join_next() {
-            handle_crawl_result(
-                result,
-                &error_count,
-            );
+            handle_crawl_result(result, &error_count);
         }
 
         // Spawn new tasks up to concurrency limit
@@ -222,8 +223,7 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
                     }
                     Err(e) => {
                         error!("Failed to fetch {}: {}", url_str, e);
-                        error_count_task
-                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        error_count_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         return Err(e);
                     }
                 }
@@ -235,20 +235,14 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
         // If no tasks can be spawned and queue is not empty, wait for one task
         if tasks.len() >= config_clone.concurrency && !url_queue.is_empty() {
             if let Some(result) = tasks.join_next().await {
-                handle_crawl_result(
-                    result,
-                    &error_count,
-                );
+                handle_crawl_result(result, &error_count);
             }
         }
     }
 
     // Wait for remaining tasks
     while let Some(result) = tasks.join_next().await {
-        handle_crawl_result(
-            result,
-            &error_count,
-        );
+        handle_crawl_result(result, &error_count);
     }
 
     // Collect results
@@ -463,9 +457,7 @@ fn parse_sitemap(xml_content: &str) -> Result<Vec<String>, CrawlError> {
                 }
             }
             Ok(Event::Text(ref e)) if in_loc => {
-                let text = e
-                    .unescape()
-                    .map_err(|e| CrawlError::Parse(e.to_string()))?;
+                let text = e.unescape().map_err(|e| CrawlError::Parse(e.to_string()))?;
                 let url = text.trim().to_string();
                 if !url.is_empty() {
                     urls.push(url);

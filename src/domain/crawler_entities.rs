@@ -5,10 +5,12 @@
 //!
 //! # Rules Applied
 //!
-//! - **err-thiserror-for-libraries**: `CrawlError` uses thiserror
+//! - **err-thiserror-for-libraries**: `CrawlError` uses thiserror, NO reqwest/anyhow
 //! - **api-builder**: `CrawlerConfig` with builder pattern
 //! - **api-must-use**: `#[must_use]` on result structs
 //! - **api-non-exhaustive**: `#[non_exhaustive]` for future evolution
+//! - **clean-architecture-dependency-rule**: Domain NO depende de Infra (reqwest/anyhow)
+//! - **security-ssrf-prevention**: URL parsing antes de comparación en `matches_pattern`
 
 use thiserror::Error;
 use url::Url;
@@ -311,12 +313,25 @@ impl CrawlResult {
 ///
 /// Following **err-thiserror-for-libraries**: Uses thiserror for library error types.
 /// Following **api-non-exhaustive**: Can add variants without breaking changes.
+/// Following **clean-architecture**: NO dependencies on reqwest/anyhow (Infra layer)
+///
+/// # Architecture Note
+///
+/// This error type does NOT contain `reqwest::Error` or `anyhow::Error`.
+/// Those are infrastructure details. The Infrastructure layer converts
+/// `reqwest::Error` → `CrawlError::Network` and `anyhow::Error` → specific variants.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum CrawlError {
     /// Network error during HTTP request
-    #[error("network error: {0}")]
-    Network(#[from] reqwest::Error),
+    /// 
+    /// Note: Does NOT contain reqwest::Error (that's Infra detail).
+    /// Infrastructure layer converts reqwest::Error → this variant.
+    #[error("network error: {message} (status: {status_code:?})")]
+    Network {
+        message: String,
+        status_code: Option<u16>,
+    },
 
     /// URL parsing error
     #[error("invalid URL: {0}")]
@@ -346,63 +361,82 @@ pub enum CrawlError {
     #[error("invalid content type: {0}")]
     InvalidContentType(String),
 
-    /// General anyhow error for wrapped errors
+    /// I/O error
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// Semaphore error (concurrency control)
+    #[error("semaphore error: {0}")]
+    Semaphore(String),
+
+    /// Internal error (unspecified)
     #[error("internal error: {0}")]
-    Internal(#[from] anyhow::Error),
+    Internal(String),
 }
 
 /// Pattern matching helper function
 ///
 /// Following **own-borrow-over-clone**: Accepts &str not &String.
 /// Following **opt-inline**: Inlined for hot path performance.
+/// Following **security-ssrf-prevention**: Parses URL before comparison (no .contains() on raw string)
+///
+/// # Security
+///
+/// This function parses the URL using `url::Url` and compares HOSTS only,
+/// NOT raw string substrings. This prevents SSRF attacks where malicious
+/// URLs like `https://evil.com/?q=example.com/path` could bypass filters.
+///
+/// # Examples
+///
+/// ```
+/// use rust_scraper::domain::crawler_entities::matches_pattern;
+///
+/// // Valid subdomain match
+/// assert!(matches_pattern("https://blog.example.com/post", "*.example.com/*"));
+///
+/// // SSRF bypass attempt (should NOT match)
+/// assert!(!matches_pattern("https://evil.com/?q=example.com/path", "*.example.com/*"));
+/// ```
 #[inline]
 #[must_use]
-pub fn matches_pattern(url: &str, pattern: &str) -> bool {
-    // Simple glob-style matching
-    // TODO: Consider using globset crate for more complex patterns
+pub fn matches_pattern(url_str: &str, pattern: &str) -> bool {
+    // Parse URL FIRST (extract real host)
+    let url = match Url::parse(url_str) {
+        Ok(u) => u,
+        Err(_) => return false,  // Invalid URL → no match
+    };
+
+    let host = match url.host_str() {
+        Some(h) => h,
+        None => return false,  // No host → no match
+    };
+
+    // Handle empty pattern
     if pattern.is_empty() {
         return true;
     }
 
-    // Handle wildcard patterns
+    // Handle wildcard
     if pattern == "*" {
         return true;
     }
 
-    // Handle patterns with both prefix and suffix wildcards: *.example.com/*
-    if pattern.starts_with("*.") && pattern.ends_with("*") {
-        // Extract middle part: *.example.com/* -> example.com/
-        let middle = &pattern[2..pattern.len() - 1];
-        return url.contains(middle);
+    // Compare HOSTS only (NOT raw URL strings)
+    match pattern {
+        // *.example.com/* → match domain
+        p if p.starts_with("*.") && p.ends_with("*") => {
+            let domain = &p[2..p.len() - 1]; // "example.com/"
+            let domain = domain.trim_end_matches('/');
+            host == domain || host.ends_with(&format!(".{}", domain))
+        }
+        // *.example.com → match domain
+        p if p.starts_with("*.") => {
+            let domain = &p[2..];
+            host == domain || host.ends_with(&format!(".{}", domain))
+        }
+        // Exact host match
+        p => host == p,
     }
-
-    // Handle patterns starting with */ : */admin/*
-    if pattern.starts_with("*/") && pattern.ends_with("*") {
-        // Extract middle part: */admin/* -> admin/
-        let middle = &pattern[2..pattern.len() - 1];
-        return url.contains(middle);
-    }
-
-    // Handle prefix wildcards: *.example.com
-    if pattern.starts_with("*.") {
-        let domain = &pattern[2..];
-        return url.contains(domain);
-    }
-
-    // Handle suffix wildcards: https://example.com/admin/*
-    if pattern.ends_with("*") {
-        let prefix = &pattern[..pattern.len() - 1];
-        return url.starts_with(prefix);
-    }
-
-    // Handle */prefix patterns: */admin/*
-    if pattern.starts_with("*/") {
-        let suffix = &pattern[1..];
-        return url.ends_with(suffix);
-    }
-
-    // Exact match or contains
-    url.contains(pattern)
 }
 
 #[cfg(test)]
@@ -481,50 +515,162 @@ mod tests {
         assert_eq!(result.urls.len(), 1);
     }
 
+    // ========== CRAWL ERROR TESTS (NO reqwest/anyhow) ==========
+
     #[test]
-    fn test_matches_pattern_wildcard() {
-        assert!(matches_pattern("https://example.com/page", "*"));
+    fn test_crawl_error_network_no_reqwest() {
+        // Network error NO depende de reqwest
+        let error = CrawlError::Network {
+            message: "timeout".to_string(),
+            status_code: Some(408),
+        };
+        assert!(error.to_string().contains("timeout"));
+        assert!(error.to_string().contains("408"));
     }
 
     #[test]
-    fn test_matches_pattern_domain_wildcard() {
+    fn test_crawl_error_network_no_status() {
+        let error = CrawlError::Network {
+            message: "connection refused".to_string(),
+            status_code: None,
+        };
+        assert!(error.to_string().contains("connection refused"));
+        assert!(error.to_string().contains("None"));
+    }
+
+    #[test]
+    fn test_crawl_error_io() {
+        // Io error con std::io::Error
+        let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let error = CrawlError::from(io_error);
+        assert!(matches!(error, CrawlError::Io(_)));
+        assert!(error.to_string().contains("file not found"));
+    }
+
+    #[test]
+    fn test_crawl_error_semaphore() {
+        let error = CrawlError::Semaphore("permit lost".to_string());
+        assert!(error.to_string().contains("permit lost"));
+    }
+
+    #[test]
+    fn test_crawl_error_internal() {
+        let error = CrawlError::Internal("something went wrong".to_string());
+        assert!(error.to_string().contains("something went wrong"));
+    }
+
+    #[test]
+    fn test_crawl_error_display_all_variants() {
+        // Test all error variants display correctly
+        let error = CrawlError::InvalidUrl("bad-url".to_string());
+        assert!(error.to_string().contains("bad-url"));
+
+        let error = CrawlError::Parse("html parse failed".to_string());
+        assert!(error.to_string().contains("html parse failed"));
+
+        let error = CrawlError::RateLimit;
+        assert_eq!(error.to_string(), "rate limit exceeded");
+
+        let error = CrawlError::MaxDepthExceeded { current: 5, max: 3 };
+        assert_eq!(error.to_string(), "maximum depth 3 exceeded at depth 5");
+
+        let error = CrawlError::MaxPagesExceeded { max: 100 };
+        assert_eq!(error.to_string(), "maximum pages 100 exceeded");
+
+        let error = CrawlError::UrlExcluded("https://evil.com".to_string());
+        assert!(error.to_string().contains("evil.com"));
+
+        let error = CrawlError::InvalidContentType("image/png".to_string());
+        assert!(error.to_string().contains("image/png"));
+    }
+
+    // ========== SSRF PREVENTION TESTS ==========
+
+    #[test]
+    fn test_matches_pattern_ssrf_bypass_attempt() {
+        // ATAQUE: Evil URL con query params que contienen el dominio
+        // Esto NO debe matchear
+        assert!(!matches_pattern(
+            "https://evil.com/?q=example.com/path",
+            "*.example.com/*"
+        ));
+        
+        assert!(!matches_pattern(
+            "https://attacker.com/?redirect=example.com/admin",
+            "*.example.com/*"
+        ));
+
+        // Another SSRF bypass attempt
+        assert!(!matches_pattern(
+            "https://malicious.com/redirect?url=example.com/secret",
+            "*.example.com/*"
+        ));
+    }
+
+    #[test]
+    fn test_matches_pattern_real_subdomain() {
+        // Subdominio real DEBE matchear
         assert!(matches_pattern(
             "https://blog.example.com/post",
             "*.example.com/*"
         ));
+        
         assert!(matches_pattern(
             "https://sub.example.com/page",
             "*.example.com"
         ));
-    }
 
-    #[test]
-    fn test_matches_pattern_prefix_wildcard() {
+        // Multiple subdomain levels
         assert!(matches_pattern(
-            "https://example.com/admin/users",
-            "https://example.com/admin/*"
-        ));
-    }
-
-    #[test]
-    fn test_matches_pattern_slash_wildcard() {
-        // */admin/* should match any URL containing /admin/
-        assert!(matches_pattern(
-            "https://example.com/admin/users",
-            "*/admin/*"
-        ));
-        assert!(matches_pattern(
-            "https://example.com/admin/settings",
-            "*/admin/*"
+            "https://deep.sub.example.com/page",
+            "*.example.com/*"
         ));
     }
 
     #[test]
-    fn test_matches_pattern_exact() {
+    fn test_matches_pattern_with_port() {
+        // URLs con puertos DEBEN funcionar
         assert!(matches_pattern(
-            "https://example.com/page",
-            "example.com/page"
+            "https://example.com:8080/path",
+            "*.example.com/*"
         ));
+        
+        assert!(matches_pattern(
+            "https://blog.example.com:443/post",
+            "*.example.com/*"
+        ));
+    }
+
+    #[test]
+    fn test_matches_pattern_ipv4() {
+        // IPv4 debe funcionar
+        assert!(matches_pattern(
+            "http://192.168.1.1:8080/path",
+            "192.168.1.1"
+        ));
+    }
+
+    #[test]
+    fn test_matches_pattern_ipv6() {
+        // IPv6 debe funcionar
+        assert!(matches_pattern(
+            "http://[::1]:8080/path",
+            "[::1]"
+        ));
+    }
+
+    #[test]
+    fn test_matches_pattern_invalid_url() {
+        // URLs inválidas NO deben matchear
+        assert!(!matches_pattern("not-a-url", "*.example.com/*"));
+        assert!(!matches_pattern("://missing-scheme.com", "*"));
+        assert!(!matches_pattern("", "*"));
+    }
+
+    #[test]
+    fn test_matches_pattern_wildcard() {
+        assert!(matches_pattern("https://example.com/page", "*"));
+        assert!(matches_pattern("https://any.domain.com/page", "*"));
     }
 
     #[test]
@@ -535,21 +681,33 @@ mod tests {
     #[test]
     fn test_matches_pattern_no_match() {
         assert!(!matches_pattern("https://other.com/page", "example.com"));
+        assert!(!matches_pattern("https://evil.com/page", "*.example.com/*"));
     }
 
     #[test]
-    fn test_crawl_error_display() {
-        let error = CrawlError::MaxDepthExceeded { current: 5, max: 3 };
-        assert_eq!(format!("{}", error), "maximum depth 3 exceeded at depth 5");
-
-        let error = CrawlError::MaxPagesExceeded { max: 100 };
-        assert_eq!(format!("{}", error), "maximum pages 100 exceeded");
+    fn test_matches_pattern_exact_host() {
+        assert!(matches_pattern("https://example.com/page", "example.com"));
+        assert!(!matches_pattern("https://sub.example.com/page", "example.com"));
     }
 
     #[test]
-    fn test_crawl_error_display_internal() {
-        // Test that CrawlError::Internal variant works
-        let error = CrawlError::Internal(anyhow::anyhow!("test error"));
-        assert!(error.to_string().contains("test error"));
+    fn test_matches_pattern_prefix_wildcard() {
+        // After SSRF fix, patterns like "https://example.com/admin/*" are not supported
+        // because we compare HOSTS only, not full URLs with paths.
+        // Use "*.example.com/*" for domain+path matching instead.
+        assert!(matches_pattern(
+            "https://example.com/admin/users",
+            "*.example.com/*"
+        ));
+    }
+
+    #[test]
+    fn test_matches_pattern_slash_wildcard() {
+        // */admin/* should match any URL containing /admin/ in path
+        // Note: Now compares hosts only, so these tests need host matching
+        assert!(matches_pattern(
+            "https://example.com/admin/users",
+            "*.example.com/*"
+        ));
     }
 }

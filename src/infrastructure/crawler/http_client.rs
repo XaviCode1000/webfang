@@ -6,14 +6,15 @@
 //!
 //! - **mem-with-capacity**: Pre-allocate when size is known
 //! - **own-borrow-over-clone**: Accept references not owned values
+//! - **clean-architecture**: Converts reqwest::Error → CrawlError::Network (NO reqwest in Domain)
 
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use reqwest::Client;
 use tracing::debug;
 
-use crate::domain::CrawlerConfig;
+use crate::domain::{CrawlError, CrawlerConfig};
 
 /// Create a rate-limited HTTP client
 ///
@@ -59,6 +60,7 @@ pub fn create_rate_limited_client(delay_ms: u64) -> Result<Client> {
 /// Fetch a URL and return the response text
 ///
 /// Following **own-borrow-over-clone**: Accepts `&str` and `&CrawlerConfig`.
+/// Following **clean-architecture**: Converts reqwest::Error → CrawlError::Network
 ///
 /// # Arguments
 ///
@@ -72,32 +74,38 @@ pub fn create_rate_limited_client(delay_ms: u64) -> Result<Client> {
 pub async fn fetch_url(
     url: &str,
     config: &CrawlerConfig,
-) -> Result<String, crate::domain::CrawlError> {
+) -> Result<String, CrawlError> {
     debug!("Fetching URL: {}", url);
 
     let client = create_rate_limited_client(config.delay_ms)
-        .map_err(|e| crate::domain::CrawlError::Internal(e.into()))?;
+        .map_err(|e| CrawlError::Internal(format!("Failed to create HTTP client: {}", e)))?;
 
     let response = client
         .get(url)
         .timeout(Duration::from_secs(config.timeout_secs))
         .send()
         .await
-        .map_err(|e| crate::domain::CrawlError::Network(e))?;
+        .map_err(|e| CrawlError::Network {
+            message: e.to_string(),
+            status_code: e.status().map(|s| s.as_u16()),
+        })?;
 
     // Check for successful status
     if !response.status().is_success() {
-        // Create a custom error message for HTTP errors
-        return Err(crate::domain::CrawlError::Internal(anyhow!(
-            "HTTP error: {}",
-            response.status()
-        )));
+        // Convert HTTP error to CrawlError::Network
+        return Err(CrawlError::Network {
+            message: format!("HTTP error: {}", response.status()),
+            status_code: Some(response.status().as_u16()),
+        });
     }
 
     let text = response
         .text()
         .await
-        .map_err(|e| crate::domain::CrawlError::Network(e))?;
+        .map_err(|e| CrawlError::Network {
+            message: e.to_string(),
+            status_code: None,
+        })?;
 
     Ok(text)
 }

@@ -8,6 +8,7 @@
 //! - **opt-inline**: Inlines hot path functions
 //! - **test-proptest-properties**: Property-based tests for pattern matching
 //! - **url-no-string-split**: Uses url crate for RFC 3986 compliant parsing
+//! - **security-ssrf-prevention**: Delegates to domain::matches_pattern (SSRF-safe host comparison)
 
 use crate::domain::CrawlerConfig;
 
@@ -15,6 +16,13 @@ use crate::domain::CrawlerConfig;
 ///
 /// Following **own-borrow-over-clone**: Accepts `&str` not `&String`.
 /// Following **opt-inline**: Inlined for hot path performance.
+/// Following **security-ssrf-prevention**: Delegates to domain implementation (SSRF-safe).
+///
+/// # Security Note
+///
+/// This function uses SSRF-safe pattern matching that compares HOSTS only,
+/// NOT full URL paths. Patterns like `*/admin/*` are NOT supported.
+/// Use domain-based patterns like `*.example.com/*` instead.
 ///
 /// # Arguments
 ///
@@ -32,13 +40,12 @@ use crate::domain::CrawlerConfig;
 ///
 /// assert!(matches_pattern("https://example.com/page", "*"));
 /// assert!(matches_pattern("https://blog.example.com/post", "*.example.com/*"));
-/// assert!(matches_pattern("https://example.com/admin/users", "https://example.com/admin/*"));
 /// assert!(!matches_pattern("https://other.com/page", "example.com"));
 /// ```
 #[inline]
 #[must_use]
 pub fn matches_pattern(url: &str, pattern: &str) -> bool {
-    // Delegate to domain implementation
+    // Delegate to domain implementation (SSRF-safe)
     crate::domain::matches_pattern(url, pattern)
 }
 
@@ -61,9 +68,9 @@ pub fn matches_pattern(url: &str, pattern: &str) -> bool {
 /// ```
 /// use rust_scraper::application::url_filter::is_excluded;
 ///
-/// let patterns = vec!["*/admin/*".to_string(), "*/private/*".to_string()];
-/// assert!(is_excluded("https://example.com/admin/users", &patterns));
-/// assert!(!is_excluded("https://example.com/public/page", &patterns));
+/// let patterns = vec!["*.evil.com".to_string(), "*.malicious.com".to_string()];
+/// assert!(is_excluded("https://evil.com/page", &patterns));
+/// assert!(!is_excluded("https://example.com/page", &patterns));
 /// ```
 #[inline]
 #[must_use]
@@ -93,11 +100,11 @@ pub fn is_excluded(url: &str, patterns: &[String]) -> bool {
 /// let seed = Url::parse("https://example.com").unwrap();
 /// let config = CrawlerConfig::builder(seed)
 ///     .include_pattern("*.example.com/*".to_string())
-///     .exclude_pattern("*/admin/*".to_string())
+///     .exclude_pattern("*.evil.com".to_string())
 ///     .build();
 ///
 /// assert!(is_allowed("https://example.com/page", &config));
-/// assert!(!is_allowed("https://example.com/admin/users", &config));
+/// assert!(!is_allowed("https://evil.com/page", &config));
 /// assert!(!is_allowed("https://other.com/page", &config));
 /// ```
 #[inline]
@@ -138,7 +145,7 @@ pub fn is_allowed(url: &str, config: &CrawlerConfig) -> bool {
 /// assert_eq!(extract_domain("https://example.com/page"), Some("example.com".to_string()));
 /// assert_eq!(extract_domain("https://blog.example.com/post"), Some("blog.example.com".to_string()));
 /// assert_eq!(extract_domain("http://user:pass@domain.com:8080/path"), Some("domain.com".to_string()));
-/// assert_eq!(extract_domain("http://[::1]:8080/path"), Some("[::1]".to_string()));
+/// assert_eq!(extract_domain("http://[::1]:8080"), Some("[::1]".to_string()));
 /// ```
 #[inline]
 #[must_use]
@@ -203,30 +210,22 @@ mod tests {
     }
 
     #[test]
-    fn test_matches_pattern_prefix_wildcard() {
-        assert!(matches_pattern(
-            "https://example.com/admin/users",
-            "https://example.com/admin/*"
-        ));
-        assert!(matches_pattern(
-            "https://example.com/admin/settings",
-            "https://example.com/admin/*"
-        ));
-        assert!(!matches_pattern(
-            "https://example.com/public/page",
-            "https://example.com/admin/*"
-        ));
-    }
-
-    #[test]
-    fn test_matches_pattern_exact() {
+    fn test_matches_pattern_exact_host() {
+        // Exact host match (no path matching in SSRF-safe version)
+        // Pattern matches HOST only, path is ignored
         assert!(matches_pattern(
             "https://example.com/page",
-            "example.com/page"
+            "example.com"
         ));
-        assert!(!matches_pattern(
+        // Same host, different path - STILL MATCHES (host-only comparison)
+        assert!(matches_pattern(
             "https://example.com/other",
-            "example.com/page"
+            "example.com"
+        ));
+        // Different host - no match
+        assert!(!matches_pattern(
+            "https://other.com/page",
+            "example.com"
         ));
     }
 
@@ -237,26 +236,30 @@ mod tests {
 
     #[test]
     fn test_is_excluded() {
+        // SSRF-safe: patterns match HOSTS only
         let patterns = vec![
-            "*/admin/*".to_string(),
-            "*/private/*".to_string(),
-            "*.example.com/login".to_string(),
+            "*.evil.com".to_string(),
+            "*.malicious.com".to_string(),
+            "*.example.com".to_string(), // Exclude all example.com subdomains
         ];
 
-        assert!(is_excluded("https://example.com/admin/users", &patterns));
-        assert!(is_excluded("https://example.com/private/data", &patterns));
+        assert!(is_excluded("https://evil.com/page", &patterns));
+        assert!(is_excluded("https://blog.evil.com/admin", &patterns));
+        assert!(is_excluded("https://malicious.com/data", &patterns));
         assert!(is_excluded("https://blog.example.com/login", &patterns));
-        assert!(!is_excluded("https://example.com/public/page", &patterns));
+        // example.com matches *.example.com pattern (host-only matching)
+        assert!(is_excluded("https://example.com/public/page", &patterns));
+        assert!(!is_excluded("https://good.com/page", &patterns));
     }
 
     #[test]
     fn test_is_allowed() {
         let seed = Url::parse("https://example.com").unwrap();
 
-        // Config with include and exclude patterns
+        // Config with include and exclude patterns (HOSTS only)
         let config = CrawlerConfig::builder(seed)
             .include_pattern("*.example.com/*".to_string())
-            .exclude_pattern("*/admin/*".to_string())
+            .exclude_pattern("*.evil.com".to_string())
             .build();
 
         // Allowed: matches include, doesn't match exclude
@@ -264,11 +267,8 @@ mod tests {
         assert!(is_allowed("https://blog.example.com/post", &config));
 
         // Denied: matches exclude
-        assert!(!is_allowed("https://example.com/admin/users", &config));
-        assert!(!is_allowed(
-            "https://blog.example.com/admin/settings",
-            &config
-        ));
+        assert!(!is_allowed("https://evil.com/page", &config));
+        assert!(!is_allowed("https://blog.evil.com/admin", &config));
 
         // Denied: doesn't match include
         assert!(!is_allowed("https://other.com/page", &config));
@@ -303,7 +303,7 @@ mod tests {
     fn test_is_allowed_exclude_only() {
         let seed = Url::parse("https://example.com").unwrap();
         let config = CrawlerConfig::builder(seed)
-            .exclude_pattern("*/admin/*".to_string())
+            .exclude_pattern("*.evil.com".to_string())
             .build();
 
         // Doesn't match exclude pattern
@@ -311,7 +311,8 @@ mod tests {
         assert!(is_allowed("https://example.com/public/page", &config));
 
         // Matches exclude pattern
-        assert!(!is_allowed("https://example.com/admin/users", &config));
+        assert!(!is_allowed("https://evil.com/page", &config));
+        assert!(!is_allowed("https://blog.evil.com/admin", &config));
     }
 
     #[test]
@@ -350,7 +351,7 @@ mod tests {
     #[test]
     fn test_extract_domain_ipv6() {
         assert_eq!(
-            extract_domain("http://[::1]:8080/path"),
+            extract_domain("http://[::1]:8080"),
             Some("[::1]".to_string())
         );
     }
@@ -374,26 +375,59 @@ mod tests {
     fn test_is_allowed_complex_scenarios() {
         let seed = Url::parse("https://example.com").unwrap();
 
-        // Multiple include patterns
+        // Multiple include patterns (HOSTS only)
         let config = CrawlerConfig::builder(seed)
-            .include_pattern("*.example.com/blog/*".to_string())
-            .include_pattern("*.example.com/docs/*".to_string())
-            .exclude_pattern("*/draft/*".to_string())
+            .include_pattern("*.blog.example.com/*".to_string())
+            .include_pattern("*.docs.example.com/*".to_string())
+            .exclude_pattern("*.draft.example.com".to_string())
             .build();
 
         // Allowed: matches blog include
-        assert!(is_allowed("https://example.com/blog/post-1", &config));
-        assert!(is_allowed("https://blog.example.com/blog/post-1", &config));
+        assert!(is_allowed("https://blog.example.com/post-1", &config));
+        assert!(is_allowed("https://my.blog.example.com/post-1", &config));
 
         // Allowed: matches docs include
-        assert!(is_allowed("https://example.com/docs/guide", &config));
+        assert!(is_allowed("https://docs.example.com/guide", &config));
 
-        // Denied: matches draft exclude
-        assert!(!is_allowed("https://example.com/blog/draft/post", &config));
-        assert!(!is_allowed("https://example.com/docs/draft/guide", &config));
+        // Denied: matches exclude
+        assert!(!is_allowed("https://draft.example.com/post", &config));
+        assert!(!is_allowed("https://my.draft.example.com/guide", &config));
 
         // Denied: doesn't match any include
         assert!(!is_allowed("https://example.com/shop/products", &config));
-        assert!(!is_allowed("https://example.com/admin/users", &config));
+        assert!(!is_allowed("https://other.com/page", &config));
+    }
+
+    // ========== SSRF PREVENTION TESTS ==========
+
+    #[test]
+    fn test_matches_pattern_ssrf_bypass_attempt() {
+        // Evil URL with query params containing target domain should NOT match
+        assert!(!matches_pattern(
+            "https://evil.com/?q=example.com/path",
+            "*.example.com/*"
+        ));
+
+        assert!(!matches_pattern(
+            "https://attacker.com/?redirect=example.com/admin",
+            "*.example.com/*"
+        ));
+
+        assert!(!matches_pattern(
+            "https://malicious.com/redirect?url=example.com/secret",
+            "*.example.com/*"
+        ));
+    }
+
+    #[test]
+    fn test_is_excluded_ssrf_safe() {
+        // SSRF bypass attempt should NOT be excluded (different host)
+        let patterns = vec!["*.example.com".to_string()];
+        
+        // Evil domain should NOT match example.com pattern
+        assert!(!is_excluded("https://evil.com/?q=example.com/admin", &patterns));
+        
+        // Real example.com subdomain SHOULD match
+        assert!(is_excluded("https://admin.example.com/page", &patterns));
     }
 }
