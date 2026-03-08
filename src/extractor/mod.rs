@@ -34,7 +34,7 @@ pub struct AssetUrl {
     /// The full URL of the asset
     pub url: String,
     /// Asset type (image or document)
-    pub asset_type: crate::detector::AssetType,
+    pub asset_type: crate::adapters::detector::AssetType,
     /// Optional alt text (for images)
     pub alt: Option<String>,
 }
@@ -51,7 +51,7 @@ pub fn extract_images(html: &str, base_url: &url::Url) -> Vec<AssetUrl> {
                 let absolute_url = resolve_url(base_url, src);
                 if let Some(url) = absolute_url {
                     let alt = img.value().attr("alt").map(String::from);
-                    let asset_type = crate::detector::detect_from_url(&url);
+                    let asset_type = crate::adapters::detector::detect_from_url(&url);
                     if asset_type.is_image() {
                         assets.push(AssetUrl {
                             url,
@@ -70,7 +70,7 @@ pub fn extract_images(html: &str, base_url: &url::Url) -> Vec<AssetUrl> {
             for src in parse_srcset(srcset) {
                 let absolute_url = resolve_url(base_url, &src);
                 if let Some(url) = absolute_url {
-                    let asset_type = crate::detector::detect_from_url(&url);
+                    let asset_type = crate::adapters::detector::detect_from_url(&url);
                     if asset_type.is_image() {
                         assets.push(AssetUrl {
                             url,
@@ -89,7 +89,7 @@ pub fn extract_images(html: &str, base_url: &url::Url) -> Vec<AssetUrl> {
             for src in parse_srcset(srcset) {
                 let absolute_url = resolve_url(base_url, &src);
                 if let Some(url) = absolute_url {
-                    let asset_type = crate::detector::detect_from_url(&url);
+                    let asset_type = crate::adapters::detector::detect_from_url(&url);
                     if asset_type.is_image() {
                         assets.push(AssetUrl {
                             url,
@@ -109,7 +109,7 @@ pub fn extract_images(html: &str, base_url: &url::Url) -> Vec<AssetUrl> {
                 let absolute_url = resolve_url(base_url, src);
                 if let Some(url) = absolute_url {
                     let alt = img.value().attr("alt").map(String::from);
-                    let asset_type = crate::detector::detect_from_url(&url);
+                    let asset_type = crate::adapters::detector::detect_from_url(&url);
                     if asset_type.is_image() {
                         assets.push(AssetUrl {
                             url,
@@ -143,7 +143,7 @@ pub fn extract_documents(html: &str, base_url: &url::Url) -> Vec<AssetUrl> {
             if !href.is_empty() && !href.starts_with('#') && !href.starts_with("javascript:") {
                 let absolute_url = resolve_url(base_url, href);
                 if let Some(url) = absolute_url {
-                    let asset_type = crate::detector::detect_from_url(&url);
+                    let asset_type = crate::adapters::detector::detect_from_url(&url);
                     if asset_type.is_document() {
                         // Get link text as description
                         let text = link.text().collect::<String>().trim().to_owned();

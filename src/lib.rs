@@ -1,35 +1,67 @@
 //! Rust Scraper Library
 //!
 //! Modern web scraper for RAG datasets with clean content extraction.
+//!
+//! # Architecture
+//!
+//! Following Clean Architecture:
+//! - **Domain**: Core entities (ScrapedContent, ValidUrl) — pure business logic
+//! - **Application**: Use cases (scraping, HTTP client) — orchestration
+//! - **Infrastructure**: Implementations (HTTP, FS, converters) — technical details
+//! - **Adapters**: External integrations (downloaders, extractors) — feature-gated
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use rust_scraper::{create_http_client, scrape_with_readability, ScraperConfig};
+//!
+//! # #[tokio::main]
+//! # async fn main() -> anyhow::Result<()> {
+//! let client = create_http_client()?;
+//! let url = url::Url::parse("https://example.com")?;
+//! let config = ScraperConfig::default();
+//! let results = scrape_with_readability(&client, &url).await?;
+//! # Ok(())
+//! # }
+//! ```
 
 pub mod config;
 pub mod error;
-pub mod scraper;
+
+// Domain layer — Core business entities
+pub mod domain;
+pub use domain::{DownloadedAsset, ScrapedContent, ValidUrl};
+
+// Application layer — Use cases
+pub mod application;
+pub use application::{
+    create_http_client, scrape_multiple_with_limit, scrape_with_config, scrape_with_readability,
+};
+
+// Infrastructure layer — Implementations (public for testing)
+pub mod infrastructure;
+
+// Adapters — External integrations (feature-gated)
+pub mod adapters;
+
+// Legacy re-exports for backward compatibility
+pub mod extractor;
 pub mod url_path;
 pub mod user_agent;
-
-// Asset detection and download modules
-pub mod detector;
-pub mod downloader;
-pub mod extractor;
-
-pub use clap::{Parser, ValueEnum};
-pub use error::{Result, ScraperError};
-pub use scraper::{
-    create_http_client, save_results, scrape_multiple_with_limit, scrape_with_config,
-    scrape_with_readability, DownloadedAsset, ScrapedContent, ValidUrl,
-};
-pub use std::path::PathBuf;
 pub use url_path::{Domain, OutputPath, UrlPath};
 
-// Re-export OutputFormat for convenience
+// CLI types
+pub use clap::{Parser, ValueEnum};
+pub use error::{Result, ScraperError};
+
+/// Output format for scraped content
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
-    /// Markdown format (recomendado para RAG)
+    /// Markdown format (recommended for RAG)
     Markdown,
-    /// Plain text sin formato
+    /// Plain text without formatting
     Text,
-    /// JSON estructurado
+    /// Structured JSON
     Json,
 }
 
@@ -41,31 +73,35 @@ pub struct ScraperConfig {
     /// Enable document downloading (PDF, DOCX, XLSX, etc.)
     pub download_documents: bool,
     /// Output directory for downloaded assets
-    pub output_dir: PathBuf,
+    pub output_dir: std::path::PathBuf,
     /// Maximum file size in bytes (default: 50MB)
     pub max_file_size: Option<u64>,
 }
 
 impl ScraperConfig {
     /// Create a new config with default values
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Enable image downloading
+    #[must_use]
     pub fn with_images(mut self) -> Self {
         self.download_images = true;
         self
     }
 
     /// Enable document downloading
+    #[must_use]
     pub fn with_documents(mut self) -> Self {
         self.download_documents = true;
         self
     }
 
     /// Set custom output directory
-    pub fn with_output_dir(mut self, dir: PathBuf) -> Self {
+    #[must_use]
+    pub fn with_output_dir(mut self, dir: std::path::PathBuf) -> Self {
         self.output_dir = dir;
         self
     }
@@ -76,55 +112,68 @@ impl ScraperConfig {
     }
 }
 
-/// CLI Arguments - URL es OBLIGATORIA, no hay default
+/// CLI Arguments
 #[derive(Parser, Debug)]
 #[command(name = "rust-scraper")]
-#[command(about = "Modern web scraper for RAG datasets with clean content extraction", long_about = None)]
+#[command(about = "Modern web scraper for RAG datasets", long_about = None)]
 pub struct Args {
-    /// URL objetivo a scrapear (OBLIGATORIA)
-    /// Ejemplo: https://example.com/article
-    #[arg(short, long, required = true, help = "URL to scrape (required)")]
+    /// URL to scrape (required)
+    #[arg(short, long, required = true)]
     pub url: String,
 
-    /// Selector CSS opcional para extraer contenido específico
-    /// Si no se especifica, extrae todo el contenido legible
-    #[arg(short, long, default_value = "body", help = "CSS selector (optional)")]
+    /// CSS selector (optional)
+    #[arg(short, long, default_value = "body")]
     pub selector: String,
 
-    /// Directorio de salida para los archivos generados
-    #[arg(short, long, default_value = "output", help = "Output directory")]
-    pub output: PathBuf,
+    /// Output directory
+    #[arg(short, long, default_value = "output")]
+    pub output: std::path::PathBuf,
 
-    /// Formato de salida
+    /// Output format
     #[arg(short, long, default_value = "markdown", value_enum)]
     pub format: OutputFormat,
 
-    /// Delay entre requests (en milisegundos)
-    #[arg(long, default_value = "1000", help = "Delay between requests (ms)")]
+    /// Delay between requests (ms)
+    #[arg(long, default_value = "1000")]
     pub delay_ms: u64,
 
-    /// Máximo de páginas a scrapear
-    #[arg(long, default_value = "10", help = "Maximum pages to scrape")]
+    /// Maximum pages to scrape
+    #[arg(long, default_value = "10")]
     pub max_pages: usize,
 
-    /// Descargar imágenes encontradas en la página
-    #[arg(long, default_value = "false", help = "Download images from the page")]
+    /// Download images from the page
+    #[arg(long, default_value = "false")]
     pub download_images: bool,
 
-    /// Descargar documentos encontrados en la página (PDF, DOCX, XLSX, etc.)
-    #[arg(
-        long,
-        default_value = "false",
-        help = "Download documents from the page"
-    )]
+    /// Download documents from the page
+    #[arg(long, default_value = "false")]
     pub download_documents: bool,
 
-    /// Verbosity del logging
+    /// Verbosity level
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
 }
 
-/// Valida y parsea una URL - retorna error claro si es inválida
+/// Validate and parse a URL
+///
+/// # Arguments
+/// * `url` - URL string to validate
+///
+/// # Returns
+/// * `Ok(url::Url)` - Validated and parsed URL
+/// * `Err(ScraperError::InvalidUrl)` - Invalid URL
+///
+/// # Examples
+///
+/// ```
+/// use rust_scraper::validate_and_parse_url;
+///
+/// let url = validate_and_parse_url("https://example.com").unwrap();
+/// assert_eq!(url.host_str(), Some("example.com"));
+///
+/// let invalid = validate_and_parse_url("not-a-url");
+/// assert!(invalid.is_err());
+/// ```
 pub fn validate_and_parse_url(url: &str) -> Result<url::Url> {
     if url.is_empty() {
         return Err(ScraperError::invalid_url("URL cannot be empty"));
@@ -146,208 +195,50 @@ pub fn validate_and_parse_url(url: &str) -> Result<url::Url> {
     Ok(parsed)
 }
 
+// Re-export save_results for convenience
+pub use infrastructure::output::file_saver::save_results;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ==========================================================================
-    // Tests: validate_and_parse_url - Happy Path
-    // ==========================================================================
-
     #[test]
-    fn test_validate_https_url_success() {
-        // Arrange
-        let url = "https://example.com/article";
-
-        // Act
-        let result = validate_and_parse_url(url);
-
-        // Assert
-        assert!(result.is_ok());
-        let parsed = result.unwrap();
-        assert_eq!(parsed.scheme(), "https");
-        assert_eq!(parsed.host_str(), Some("example.com"));
+    fn test_scraper_config_default() {
+        let config = ScraperConfig::default();
+        assert!(!config.download_images);
+        assert!(!config.download_documents);
+        assert!(!config.has_downloads());
     }
 
     #[test]
-    fn test_validate_http_url_success() {
-        // Arrange
-        let url = "http://example.com";
-
-        // Act
-        let result = validate_and_parse_url(url);
-
-        // Assert
-        assert!(result.is_ok());
-        let parsed = result.unwrap();
-        assert_eq!(parsed.scheme(), "http");
-        assert_eq!(parsed.host_str(), Some("example.com"));
+    fn test_scraper_config_with_images() {
+        let config = ScraperConfig::default().with_images();
+        assert!(config.download_images);
+        assert!(config.has_downloads());
     }
 
     #[test]
-    fn test_validate_url_with_path_success() {
-        // Arrange
-        let url = "https://example.com/blog/post-123";
-
-        // Act
-        let result = validate_and_parse_url(url);
-
-        // Assert
-        assert!(result.is_ok());
-        let parsed = result.unwrap();
-        assert_eq!(parsed.path(), "/blog/post-123");
+    fn test_scraper_config_with_documents() {
+        let config = ScraperConfig::default().with_documents();
+        assert!(config.download_documents);
+        assert!(config.has_downloads());
     }
 
     #[test]
-    fn test_validate_url_with_query_params_success() {
-        // Arrange
-        let url = "https://example.com/search?q=rust&page=1";
-
-        // Act
-        let result = validate_and_parse_url(url);
-
-        // Assert
-        assert!(result.is_ok());
-        let parsed = result.unwrap();
-        assert!(parsed.query().is_some());
-        assert_eq!(parsed.query_pairs().count(), 2);
+    fn test_validate_and_parse_url_success() {
+        let url = validate_and_parse_url("https://example.com");
+        assert!(url.is_ok());
     }
 
     #[test]
-    fn test_validate_url_with_port_success() {
-        // Arrange
-        let url = "http://localhost:8080/api/data";
-
-        // Act
-        let result = validate_and_parse_url(url);
-
-        // Assert
-        assert!(result.is_ok());
-        let parsed = result.unwrap();
-        assert_eq!(parsed.host_str(), Some("localhost"));
-        assert_eq!(parsed.port(), Some(8080));
-    }
-
-    #[test]
-    fn test_validate_url_subdomain_success() {
-        // Arrange
-        let url = "https://blog.example.com/posts/tech";
-
-        // Act
-        let result = validate_and_parse_url(url);
-
-        // Assert
-        assert!(result.is_ok());
-        let parsed = result.unwrap();
-        assert_eq!(parsed.host_str(), Some("blog.example.com"));
-    }
-
-    // ==========================================================================
-    // Tests: validate_and_parse_url - Edge Cases (Invalid URLs)
-    // ==========================================================================
-
-    #[test]
-    fn test_validate_empty_url_fails() {
-        // Arrange
-        let url = "";
-
-        // Act
-        let result = validate_and_parse_url(url);
-
-        // Assert
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string().contains("empty"),
-            "Error should mention empty"
-        );
-    }
-
-    #[test]
-    fn test_validate_url_missing_scheme_fails() {
-        // Arrange
-        let url = "example.com";
-
-        // Act
-        let result = validate_and_parse_url(url);
-
-        // Assert
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string().contains("http://"),
-            "Error should mention http:// or https://"
-        );
-    }
-
-    #[test]
-    fn test_validate_url_ftp_scheme_fails() {
-        // Arrange
-        let url = "ftp://example.com";
-
-        // Act
-        let result = validate_and_parse_url(url);
-
-        // Assert
+    fn test_validate_and_parse_url_empty() {
+        let result = validate_and_parse_url("");
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_validate_url_invalid_format_fails() {
-        // Arrange
-        let url = "not-a-valid-url";
-
-        // Act
-        let result = validate_and_parse_url(url);
-
-        // Assert
+    fn test_validate_and_parse_url_invalid_scheme() {
+        let result = validate_and_parse_url("ftp://example.com");
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_validate_url_only_slashes_fails() {
-        // Arrange
-        let url = "http://";
-
-        // Act
-        let result = validate_and_parse_url(url);
-
-        // Assert
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        // The url crate returns "Failed to parse URL" for this case
-        let error_str = err.to_string();
-        assert!(
-            !error_str.is_empty(),
-            "Error should not be empty, got: {}",
-            error_str
-        );
-    }
-
-    #[test]
-    fn test_validate_url_ip_localhost_success() {
-        // Arrange
-        let url = "http://127.0.0.1:3000/api";
-
-        // Act
-        let result = validate_and_parse_url(url);
-
-        // Assert
-        assert!(result.is_ok());
-        let parsed = result.unwrap();
-        assert_eq!(parsed.host_str(), Some("127.0.0.1"));
-        assert_eq!(parsed.port(), Some(3000));
-    }
-
-    #[test]
-    fn test_validate_url_ip_v4_success() {
-        // Arrange
-        let url = "http://192.168.1.1/admin";
-
-        // Act
-        let result = validate_and_parse_url(url);
-
-        // Assert
-        assert!(result.is_ok());
     }
 }

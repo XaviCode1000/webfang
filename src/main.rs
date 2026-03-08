@@ -3,35 +3,38 @@
 //! Extracts clean, structured content from web pages using readability algorithm.
 
 use anyhow::Context;
-use rust_scraper::{config, scraper, validate_and_parse_url, Args, Parser, ScraperConfig};
+use rust_scraper::{
+    create_http_client, save_results, scrape_with_config, validate_and_parse_url, Args, Parser,
+    ScraperConfig,
+};
 use tracing::{info, warn};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // 1. Parsear argumentos CLI - Si no hay URL, error inmediato y claro
+    // 1. Parse CLI arguments - Fail fast if URL is missing
     let args = Args::parse();
 
-    // 2. Inicializar logging con nivel configurable
+    // 2. Initialize logging with configurable level
     let log_level = match args.verbose {
         0 => "info",
         1 => "debug",
         _ => "trace",
     };
-    config::init_logging(log_level);
+    rust_scraper::config::init_logging(log_level);
 
-    info!("🚀 Rust Scraper v0.2.0 - Modern Stack");
+    info!("🚀 Rust Scraper v0.3.0 - Clean Architecture");
     info!("📌 Target: {}", args.url);
     info!("📁 Output: {}", args.output.display());
 
-    // 3. Validar URL - parsing con la crate url
+    // 3. Validate URL - parse with url crate
     let parsed_url = validate_and_parse_url(&args.url).context("Invalid URL provided")?;
 
-    info!("✅ URL validada: {}", parsed_url);
+    info!("✅ URL validated: {}", parsed_url);
 
-    // 4. Crear cliente HTTP configurado
-    let client = scraper::create_http_client()?;
+    // 4. Create configured HTTP client (with retry + user-agent rotation)
+    let client = create_http_client()?;
 
-    // 5. Configurar scraping con opciones de descarga
+    // 5. Configure scraping with download options
     let config = ScraperConfig {
         download_images: args.download_images,
         download_documents: args.download_documents,
@@ -46,38 +49,38 @@ async fn main() -> anyhow::Result<()> {
         info!("📄 Document download: ENABLED");
     }
 
-    // 6. Ejecutar scraping
-    info!("📡 Iniciando scraping...");
+    // 6. Execute scraping
+    info!("📡 Starting scraping...");
 
-    let results = scraper::scrape_with_config(&client, &parsed_url, &config)
+    let results = scrape_with_config(&client, &parsed_url, &config)
         .await
         .context("Scraping failed")?;
 
     if results.is_empty() {
-        warn!("⚠️  No se obtuvo contenido de la página");
+        warn!("⚠️  No content extracted from page");
         return Ok(());
     }
 
     info!(
-        "✅ Scraping completado: {} elementos extraídos",
+        "✅ Scraping completed: {} elements extracted",
         results.len()
     );
 
-    // 7. Guardar resultados
-    info!("💾 Guardando resultados...");
-    scraper::save_results(&results, &args.output, &args.format)?;
+    // 7. Save results
+    info!("💾 Saving results...");
+    save_results(&results, &args.output, &args.format)?;
 
-    // Resumen de assets descargados
+    // Summary of downloaded assets
     let total_assets: usize = results.iter().map(|r| r.assets.len()).sum();
     if total_assets > 0 {
         info!(
-            "📦 Total assets descargados: {} (imágenes y documentos)",
+            "📦 Total assets downloaded: {} (images and documents)",
             total_assets
         );
     }
 
-    info!("🎉 Pipeline completado exitosamente!");
-    info!("📊 Archivos generados: {}", args.output.display());
+    info!("🎉 Pipeline completed successfully!");
+    info!("📊 Files generated: {}", args.output.display());
 
     Ok(())
 }

@@ -5,7 +5,10 @@
 //! Run with: cargo test --test integration
 //! Run with features: cargo test --test integration --features images,documents
 
-use rust_scraper::scraper::{self, ValidUrl};
+use rust_scraper::{
+    create_http_client, save_results, scrape_with_readability, DownloadedAsset, OutputFormat,
+    ScrapedContent, ScraperConfig, ValidUrl,
+};
 use tempfile::TempDir;
 use walkdir::WalkDir;
 
@@ -20,10 +23,10 @@ async fn test_scraper_can_fetch_simple_page() {
     // This test fetches a real page - skip in CI without network
     // Arrange
     let url = url::Url::parse("https://example.com").expect("Valid URL");
-    let client = scraper::create_http_client().expect("HTTP client");
+    let client = create_http_client().expect("HTTP client");
 
     // Act - Just verify we can fetch without error
-    let result = scraper::scrape_with_readability(&client, &url).await;
+    let result: Result<Vec<_>, _> = scrape_with_readability(&client, &url).await;
 
     // Assert - Either succeeds or fails gracefully (network dependent)
     // We don't assert success because it depends on network
@@ -89,10 +92,10 @@ async fn test_scrape_handles_404_gracefully() {
     // Arrange
     let url =
         url::Url::parse("https://example.com/this-does-not-exist-404-test").expect("Valid URL");
-    let client = scraper::create_http_client().expect("HTTP client");
+    let client = create_http_client().expect("HTTP client");
 
     // Act
-    let result = scraper::scrape_with_readability(&client, &url).await;
+    let result: Result<Vec<_>, _> = scrape_with_readability(&client, &url).await;
 
     // Assert - Should fail gracefully with clear error
     assert!(result.is_err());
@@ -118,7 +121,7 @@ async fn test_scrape_handles_invalid_url_gracefully() {
 
     // Test is covered by unit tests in lib.rs
     // This test can remain as a placeholder for future extension
-    let result = scraper::create_http_client();
+    let result = create_http_client();
     assert!(result.is_ok());
 }
 
@@ -132,7 +135,7 @@ fn test_save_results_to_nested_directory() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let output_dir = temp_dir.path().join("level1").join("level2").join("output");
 
-    let results = vec![rust_scraper::scraper::ScrapedContent {
+    let results = vec![ScrapedContent {
         title: "Test".to_string(),
         content: "Content".to_string(),
         url: ValidUrl::parse("https://example.com").unwrap(),
@@ -144,7 +147,7 @@ fn test_save_results_to_nested_directory() {
     }];
 
     // Act
-    let result = scraper::save_results(&results, &output_dir, &rust_scraper::OutputFormat::Text);
+    let result = save_results(&results, &output_dir, &rust_scraper::OutputFormat::Text);
 
     // Assert
     assert!(result.is_ok());
@@ -165,7 +168,7 @@ fn test_save_results_json_with_special_characters() {
     let output_dir = temp_dir.path().to_path_buf();
 
     // Use non-empty assets to ensure field is serialized
-    let results = vec![rust_scraper::scraper::ScrapedContent {
+    let results = vec![ScrapedContent {
         title: "Test with \"quotes\" and 'apostrophes'".to_string(),
         content: "Content with\nnewlines\tand\ttabs".to_string(),
         url: ValidUrl::parse("https://example.com?param=value&other=test").unwrap(),
@@ -173,7 +176,7 @@ fn test_save_results_json_with_special_characters() {
         author: Some("Author Name".to_string()),
         date: Some("2024-01-01".to_string()),
         html: None,
-        assets: vec![rust_scraper::scraper::DownloadedAsset {
+        assets: vec![DownloadedAsset {
             url: "https://example.com/img.png".to_string(),
             local_path: "images/img.png".to_string(),
             asset_type: "image".to_string(),
@@ -182,7 +185,7 @@ fn test_save_results_json_with_special_characters() {
     }];
 
     // Act
-    let result = scraper::save_results(&results, &output_dir, &rust_scraper::OutputFormat::Json);
+    let result = save_results(&results, &output_dir, &rust_scraper::OutputFormat::Json);
 
     // Assert - Should handle special chars correctly
     assert!(result.is_ok());
@@ -191,8 +194,7 @@ fn test_save_results_json_with_special_characters() {
     let content = std::fs::read_to_string(&json_path).unwrap();
 
     // Verify JSON is valid and readable
-    let parsed: Vec<rust_scraper::scraper::ScrapedContent> =
-        serde_json::from_str(&content).expect("Valid JSON");
+    let parsed: Vec<ScrapedContent> = serde_json::from_str(&content).expect("Valid JSON");
     assert_eq!(parsed.len(), 1);
 }
 
@@ -202,7 +204,7 @@ fn test_save_results_markdown_with_markdown_syntax() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let output_dir = temp_dir.path().to_path_buf();
 
-    let results = vec![rust_scraper::scraper::ScrapedContent {
+    let results = vec![ScrapedContent {
         title: "# Heading 1".to_string(),
         content: "**Bold** and *italic* and `code`".to_string(),
         url: ValidUrl::parse("https://example.com").unwrap(),
@@ -214,8 +216,7 @@ fn test_save_results_markdown_with_markdown_syntax() {
     }];
 
     // Act
-    let result =
-        scraper::save_results(&results, &output_dir, &rust_scraper::OutputFormat::Markdown);
+    let result = save_results(&results, &output_dir, &rust_scraper::OutputFormat::Markdown);
 
     // Assert
     assert!(result.is_ok());
@@ -247,7 +248,7 @@ async fn test_download_images_from_website() {
     let output_dir = temp_dir.path().to_path_buf();
 
     let url = url::Url::parse("https://webscraper.io/test-sites").expect("Valid URL");
-    let client = scraper::create_http_client().expect("HTTP client");
+    let client = create_http_client().expect("HTTP client");
 
     let config = rust_scraper::ScraperConfig {
         download_images: true,
@@ -257,7 +258,7 @@ async fn test_download_images_from_website() {
     };
 
     // Act
-    let result = scraper::scrape_with_config(&client, &url, &config).await;
+    let result: Result<Vec<_>, _> = scrape_with_config(&client, &url, &config).await;
 
     // Assert - Should succeed or fail gracefully (network dependent)
     if let Ok(contents) = result {
@@ -312,7 +313,7 @@ async fn test_download_documents_from_website() {
 
     // Use toscrape.com (free blog scraping sandbox)
     let url = url::Url::parse("https://toscrape.com").expect("Valid URL");
-    let client = scraper::create_http_client().expect("HTTP client");
+    let client = create_http_client().expect("HTTP client");
 
     let config = rust_scraper::ScraperConfig {
         download_images: false,
@@ -322,7 +323,7 @@ async fn test_download_documents_from_website() {
     };
 
     // Act
-    let result = scraper::scrape_with_config(&client, &url, &config).await;
+    let result: Result<Vec<_>, _> = scrape_with_config(&client, &url, &config).await;
 
     // Assert - Just verify it doesn't crash
     // Document extraction depends on specific site content
