@@ -27,8 +27,10 @@ use clap::Parser;
 use rust_scraper::{
     adapters::tui,
     application::{discover_urls_for_tui, scrape_urls_for_tui},
-    validate_and_parse_url, Args, ConcurrencyConfig, CrawlerConfig, ScraperConfig, UserAgentCache,
+    export_factory, validate_and_parse_url, Args, CrawlerConfig, ExportFormat, ScraperConfig,
+    UserAgentCache,
 };
+use std::path::PathBuf;
 use tracing::{info, warn};
 
 #[tokio::main]
@@ -132,7 +134,39 @@ async fn main() -> anyhow::Result<()> {
         discovered_urls
     };
 
-    // 9. Scrape selected URLs
+    // 9. Check Zvec feature availability
+    if args.export_format == ExportFormat::Zvec
+        && !rust_scraper::infrastructure::export::zvec_exporter::ZvecExporter::is_available()
+    {
+        warn!(
+            "⚠️  Zvec format requested but not available. Enable with: cargo build --features zvec"
+        );
+        return Err(anyhow::anyhow!(
+            "Zvec feature not enabled. Use: cargo build --features zvec"
+        ));
+    }
+
+    // 9b. Initialize StateStore for resume mode
+    let state_store = if args.resume {
+        info!("🎯 Resume mode enabled - tracking processed URLs");
+        let state_dir = args.state_dir.unwrap_or_else(|| {
+            // Build state directory path
+            let cache_base = std::env::var("XDG_CACHE_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| {
+                    dirs::home_dir()
+                        .unwrap_or_else(|| PathBuf::from("."))
+                        .join(".cache")
+                });
+            cache_base.join("rust-scraper").join("state")
+        });
+
+        Some(export_factory::create_state_store(state_dir, &args.url)?)
+    } else {
+        None
+    };
+
+    // 9c. Scrape selected URLs
     info!("🕷️  Scraping {} URLs...", urls_to_scrape.len());
     let all_results = scrape_urls_for_tui(&urls_to_scrape, &scraper_config)
         .await
@@ -148,9 +182,17 @@ async fn main() -> anyhow::Result<()> {
         all_results.len()
     );
 
-    // 10. Save results
-    info!("💾 Saving results...");
-    rust_scraper::save_results(&all_results, &args.output, &args.format)?;
+    // 10. Export results
+    info!("💾 Exporting results (format: {:?})...", args.export_format);
+
+    let processed_urls = export_factory::process_results(
+        &all_results,
+        args.output.clone(),
+        args.export_format,
+        "export",
+        state_store.as_ref(),
+        args.resume,
+    )?;
 
     // Summary of downloaded assets
     let total_assets: usize = all_results.iter().map(|r| r.assets.len()).sum();
@@ -164,6 +206,12 @@ async fn main() -> anyhow::Result<()> {
     info!("🎉 Pipeline completed successfully!");
     info!("📊 Files generated: {}", args.output.display());
     info!("📈 Total URLs processed: {}", urls_to_scrape.len());
+    if args.resume {
+        info!(
+            "🔄 Resume mode: processed {} new URLs",
+            processed_urls.len()
+        );
+    }
 
     Ok(())
 }

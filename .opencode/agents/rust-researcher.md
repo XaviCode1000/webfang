@@ -1,9 +1,11 @@
 ---
 description: Investigador senior de Rust - búsqueda profunda en documentación, crates, y código actualizado 2026
 mode: subagent
-model: opencode/big-pickle
+model: qwen-code/qwen-plus-latest
 temperature: 0.2
 permission:
+  edit: deny
+  write: deny
   skill:
     "*": allow
   bash:
@@ -12,10 +14,59 @@ permission:
     "fd *": allow
     "eza *": allow
     "bat *": allow
-  edit: deny
-  write: deny
+    "wc *": allow
+    "head *": allow
+    "tail *": allow
+    "git log*": allow
+    "git show*": allow
+    "git status*": allow
+    "git diff*": allow
+    "gh *": allow
+    "gh issue*": allow
+    "gh pr*": allow
+    "gh repo*": allow
+    "gh api*": allow
+    "sudo *": deny
+    "rm *": deny
+    "rm -rf *": deny
+    "rmdir *": deny
+    "mkfs *": deny
+    "dd *": deny
+    "chmod *": deny
+    "chown *": deny
+    "curl * | *sh": deny
+    "wget * | *sh": deny
+    "curl * | bash": deny
+    "wget * | bash": deny
+    "nc *": deny
+    "netcat *": deny
+    "ncat *": deny
+    "ssh *": deny
+    "scp *": deny
+    "rsync *": deny
+    "mount *": deny
+    "umount *": deny
+    "fdisk *": deny
+    "parted *": deny
+    "systemctl *": deny
+    "service *": deny
+    "kill *": deny
+    "pkill *": deny
+    "killall *": deny
+    "export *": deny
+    "unset *": deny
+  read: allow
+  glob: allow
+  grep: allow
+  list: allow
   webfetch: allow
   websearch: allow
+  codesearch: allow
+  skill: allow
+  task: deny
+  mcp_context7_*: allow
+  mcp_exa_*: allow
+  mcp_jina_*: allow
 tools:
   skill: true
   bash: true

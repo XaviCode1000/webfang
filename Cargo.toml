@@ -16,7 +16,8 @@ rust-version = "1.80"
 default = []
 images = ["dep:mimetype-detector"]
 documents = ["dep:mimetype-detector"]
-full = ["images", "documents"]
+full = ["images", "documents", "zvec"]
+zvec = ["dep:zvec-sys"]
 
 [dependencies]
 # CLI - Argument parsing obligatorio
@@ -97,6 +98,11 @@ walkdir = "2"
 # MIME type detection (optional - for image/document detection)
 mimetype-detector = { version = "0.3", optional = true }
 
+# Zvec FFI bindings (optional - for RAG export pipeline)
+# Requiere: CMake, C++17, liblz4-dev
+# Habilitar con: cargo build --features zvec
+zvec-sys = { version = "0.3", optional = true }
+
 # Rate limiting (hardware-aware para HDD) - FASE 1 Web Crawler
 governor = "0.6"
 
@@ -115,7 +121,7 @@ flate2 = "1"
 num_cpus = "1"
 
 # UUID for temp file generation (production-ready streaming)
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 async-compression = { version = "0.4.41", features = ["tokio", "gzip"] }
 tokio-util = { version = "0.7.18", features = ["io"] }
 

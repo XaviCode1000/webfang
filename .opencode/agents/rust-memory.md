@@ -1,16 +1,15 @@
 ---
 description: Especialista en memoria y ownership - borrowing, lifetimes, clones innecesarios, optimización de allocaciones
 mode: subagent
-model: mistral/devstral-medium-latest
+model: qwen-code/qwen3-coder-plus
 temperature: 0.2
 permission:
+  edit: ask
+  write: ask
   skill:
     "*": deny
     "mem-*": allow
     "own-*": allow
-  task:
-    "*": deny
-    "rust-researcher": allow
   bash:
     "*": ask
     "cargo check*": allow
@@ -19,9 +18,60 @@ permission:
     "fd *": allow
     "eza *": allow
     "bat *": allow
-  edit: allow
-  write: allow
+    "wc *": allow
+    "head *": allow
+    "tail *": allow
+    "git status*": allow
+    "git diff*": allow
+    "git log*": allow
+    "git show*": allow
+    "gh *": allow
+    "gh issue*": allow
+    "gh pr*": allow
+    "gh repo*": allow
+    "gh api*": allow
+    "sudo *": deny
+    "rm *": deny
+    "rm -rf *": deny
+    "rmdir *": deny
+    "mkfs *": deny
+    "dd *": deny
+    "chmod *": deny
+    "chown *": deny
+    "curl * | *sh": deny
+    "wget * | *sh": deny
+    "curl * | bash": deny
+    "wget * | bash": deny
+    "nc *": deny
+    "netcat *": deny
+    "ncat *": deny
+    "ssh *": deny
+    "scp *": deny
+    "rsync *": deny
+    "mount *": deny
+    "umount *": deny
+    "fdisk *": deny
+    "parted *": deny
+    "systemctl *": deny
+    "service *": deny
+    "kill *": deny
+    "pkill *": deny
+    "killall *": deny
+    "export *": deny
+    "unset *": deny
+  read: allow
+  glob: allow
+  grep: allow
+  list: allow
   lsp: allow
+  webfetch: allow
+  skill: allow
+  task:
+    "*": deny
+    "rust-researcher": allow
+  mcp_context7_*: allow
+  mcp_exa_*: allow
+  mcp_jina_*: allow
 tools:
   skill: true
   task: true
@@ -32,6 +82,7 @@ tools:
   glob: true
   grep: true
   lsp: true
+  webfetch: true
 color: accent
 ---
 

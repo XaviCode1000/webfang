@@ -1,39 +1,88 @@
 ---
 description: Revisor de código Rust - detecta anti-patterns, verifica API design y aplica las 179 reglas rust-skills
 mode: subagent
-model: mistral/devstral-medium-latest
+model: qwen-code/qwen3-coder-plus
 temperature: 0.1
 permission:
+  edit: deny
+  write: deny
   skill:
-    "*": deny
+    "*": allow
     "anti-*": allow
     "api-*": allow
     "lint-*": allow
     "name-*": allow
-  task:
-    "*": deny
-    "rust-researcher": allow
   bash:
     "*": ask
     "cargo clippy*": allow
     "cargo check*": allow
+    "cargo tree*": allow
     "rg *": allow
     "fd *": allow
     "eza *": allow
     "bat *": allow
-  edit: ask
-  write: deny
+    "wc *": allow
+    "head *": allow
+    "tail *": allow
+    "git diff*": allow
+    "git status*": allow
+    "git log*": allow
+    "git show*": allow
+    "gh *": allow
+    "gh issue*": allow
+    "gh pr*": allow
+    "gh repo*": allow
+    "gh api*": allow
+    "sudo *": deny
+    "rm *": deny
+    "rm -rf *": deny
+    "rmdir *": deny
+    "mkfs *": deny
+    "dd *": deny
+    "chmod *": deny
+    "chown *": deny
+    "curl * | *sh": deny
+    "wget * | *sh": deny
+    "curl * | bash": deny
+    "wget * | bash": deny
+    "nc *": deny
+    "netcat *": deny
+    "ncat *": deny
+    "ssh *": deny
+    "scp *": deny
+    "rsync *": deny
+    "mount *": deny
+    "umount *": deny
+    "fdisk *": deny
+    "parted *": deny
+    "systemctl *": deny
+    "service *": deny
+    "kill *": deny
+    "pkill *": deny
+    "killall *": deny
+    "export *": deny
+    "unset *": deny
+  read: allow
+  glob: allow
+  grep: allow
+  list: allow
   lsp: allow
   webfetch: allow
+  websearch: allow
+  skill: allow
+  task: deny
+  mcp_context7_*: allow
+  mcp_exa_*: allow
+  mcp_jina_*: allow
 tools:
   skill: true
-  task: true
   bash: true
   read: true
   glob: true
   grep: true
   lsp: true
   webfetch: true
+  websearch: true
 color: warning
 ---
 

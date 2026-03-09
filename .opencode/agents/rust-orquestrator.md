@@ -1,7 +1,7 @@
 ---
 description: Orquestador principal de Rust - coordina subagentes especializados para desarrollo completo
 mode: primary
-model: opencode/minimax-m2.5-free
+model: qwen-code/qwen3-max
 temperature: 0.3
 permission:
   task:
@@ -19,6 +19,12 @@ permission:
     "cargo clippy*": allow
     "cargo fmt*": allow
     "cargo doc*": allow
+    "cargo tree*": allow
+    "cargo expand*": allow
+    "cargo flamegraph*": allow
+    "cargo tarpaulin*": allow
+    "cargo llvm-cov*": allow
+    "cargo metadata*": allow
     "rustc *": allow
     "rustfmt *": allow
     "clippy *": allow
@@ -26,9 +32,69 @@ permission:
     "fd *": allow
     "eza *": allow
     "bat *": allow
+    "wc *": allow
+    "head *": allow
+    "tail *": allow
+    "git status*": allow
+    "git diff*": allow
+    "git log*": allow
+    "git show*": allow
+    "git branch*": allow
+    "git remote*": allow
+    "git add*": ask
+    "git commit*": ask
+    "git push*": ask
+    "git merge*": ask
+    "git rebase*": ask
+    "git reset*": ask
+    "gh *": allow
+    "gh issue*": allow
+    "gh pr*": allow
+    "gh repo*": allow
+    "gh api*": allow
+    "sudo *": deny
+    "rm *": deny
+    "rm -rf *": deny
+    "rmdir *": deny
+    "mkfs *": deny
+    "dd *": deny
+    "chmod *": deny
+    "chown *": deny
+    "curl * | *sh": deny
+    "wget * | *sh": deny
+    "curl * | bash": deny
+    "wget * | bash": deny
+    "nc *": deny
+    "netcat *": deny
+    "ncat *": deny
+    "ssh *": deny
+    "scp *": deny
+    "rsync *": deny
+    "mount *": deny
+    "umount *": deny
+    "fdisk *": deny
+    "parted *": deny
+    "systemctl *": deny
+    "service *": deny
+    "kill *": deny
+    "pkill *": deny
+    "killall *": deny
+    "export *": deny
+    "unset *": deny
   edit: ask
+  write: ask
+  read: allow
+  glob: allow
+  grep: allow
+  list: allow
   lsp: allow
   webfetch: allow
+  websearch: allow
+  skill: allow
+  task: allow
+  mcp_context7_*: allow
+  mcp_exa_*: allow
+  mcp_jina_*: allow
 tools:
   task: true
   skill: true
@@ -40,6 +106,7 @@ tools:
   grep: true
   lsp: true
   webfetch: true
+  websearch: true
 color: accent
 ---
 

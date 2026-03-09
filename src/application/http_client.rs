@@ -7,11 +7,12 @@
 //! - Explicit timeout
 
 use crate::error::{Result, ScraperError};
-use crate::user_agent;
+use crate::user_agent::UserAgentCache;
 use reqwest::Client;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use std::time::Duration;
+use tracing;
 
 /// Timeout for HTTP requests in seconds
 const TIMEOUT_SECS: u64 = 30;
@@ -32,8 +33,14 @@ const TIMEOUT_SECS: u64 = 30;
 /// // Use client for HTTP requests
 /// ```
 pub fn create_http_client() -> Result<ClientWithMiddleware> {
+    // Get fallback user agents (sync, no async needed)
+    let agents = UserAgentCache::fallback_agents();
+    let user_agent = get_random_user_agent_from_pool(&agents);
+
+    tracing::debug!("Using user agent: {}", user_agent);
+
     let base_client = Client::builder()
-        .user_agent(user_agent::get_random_user_agent())
+        .user_agent(user_agent)
         .timeout(Duration::from_secs(TIMEOUT_SECS))
         .gzip(true)
         .brotli(true)
@@ -46,6 +53,14 @@ pub fn create_http_client() -> Result<ClientWithMiddleware> {
         .build();
 
     Ok(client)
+}
+
+/// Get random user agent from pool
+fn get_random_user_agent_from_pool(pool: &[String]) -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let index = rng.gen_range(0..pool.len());
+    pool[index].clone()
 }
 
 #[cfg(test)]

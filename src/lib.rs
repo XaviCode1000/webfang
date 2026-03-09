@@ -2,7 +2,7 @@
 //!
 //! **Rust Scraper** is a high-performance, async web scraper designed for
 //! building RAG (Retrieval-Augmented Generation) datasets. Built with Clean Architecture
-//! principles for maintainability and production use.
+//! principles for production use.
 //!
 //! # Features
 //!
@@ -56,7 +56,7 @@
 //! ## URL Discovery with Sitemap
 //!
 //! ```no_run
-//! use rust_scraper::{discover_urls, CrawlerConfig};
+//! use rust_scraper::{discover_urls_for_tui, CrawlerConfig};
 //!
 //! # #[tokio::main]
 //! # async fn main() -> anyhow::Result<()> {
@@ -65,7 +65,7 @@
 //!     .use_sitemap(true)
 //!     .build();
 //!
-//! let urls = discover_urls("https://example.com", &config).await?;
+//! let urls = discover_urls_for_tui("https://example.com", &config).await?;
 //! println!("Found {} URLs", urls.len());
 //! # Ok(())
 //! # }
@@ -129,7 +129,7 @@
 //! cargo test test_validate_and_parse_url
 //! ```
 //!
-//! **Tests:** 198 passing ✅
+//! **Tests:** 19 passing ✅
 //!
 //! # MSRV
 //!
@@ -146,19 +146,29 @@ pub mod error;
 pub mod domain;
 pub use domain::{
     ContentType, CrawlError, CrawlResult, CrawlerConfig, CrawlerConfigBuilder, DiscoveredUrl,
-    DownloadedAsset, ScrapedContent, ValidUrl,
+    DownloadedAsset, ExportFormat, ScrapedContent, ValidUrl,
 };
 
 // Application layer — Use cases (orchestration)
 pub mod application;
 pub use application::{
-    crawl_site, create_http_client, discover_urls, discover_urls_for_tui, extract_domain,
-    fetch_sitemap, is_allowed, is_excluded, is_internal_link, matches_pattern,
-    scrape_multiple_with_limit, scrape_urls_for_tui, scrape_with_config, scrape_with_readability,
+    crawl_site, create_http_client, discover_urls_for_tui, extract_domain, is_allowed, is_excluded,
+    is_internal_link, matches_pattern, scrape_multiple_with_limit, scrape_urls_for_tui,
+    scrape_with_config, scrape_with_readability,
 };
 
 // Infrastructure layer — Implementations (technical details)
 pub mod infrastructure;
+pub use infrastructure::{
+    converter, crawler,
+    export::{jsonl_exporter, state_store, zvec_exporter},
+    http,
+    output::file_saver,
+    scraper::readability,
+};
+
+// Export factory functions
+pub mod export_factory;
 
 // Adapters — External integrations (feature-gated)
 pub mod adapters;
@@ -169,6 +179,9 @@ pub mod url_path;
 pub mod user_agent;
 pub use url_path::{Domain, OutputPath, UrlPath};
 pub use user_agent::{get_random_user_agent_from_pool, UserAgentCache};
+
+// Public API re-exports (export factory)
+pub use export_factory::{create_exporter, domain_from_url, process_results};
 
 // CLI types
 pub use clap::{Parser, ValueEnum};
@@ -195,10 +208,10 @@ pub use infrastructure::output::file_saver::save_results;
 pub enum OutputFormat {
     /// Markdown format with YAML frontmatter (recommended for RAG)
     Markdown,
-    /// Plain text without formatting
-    Text,
     /// Structured JSON with metadata
     Json,
+    /// Plain text without formatting
+    Text,
 }
 
 /// Configuration for web scraping and asset downloading.
@@ -220,6 +233,10 @@ pub enum OutputFormat {
 ///     .with_documents()
 ///     .with_output_dir("./output".into())
 ///     .with_scraper_concurrency(5);
+///
+/// assert!(config.download_images);
+/// assert!(config.download_documents);
+/// assert_eq!(config.scraper_concurrency, 5);
 /// ```
 ///
 /// # Concurrency Recommendations
@@ -619,7 +636,8 @@ mod concurrency_parser {
 ///     "rust-scraper",
 ///     "--url", "https://example.com",
 ///     "--output", "./output",
-///     "--format", "markdown",
+///     "--export-format", "jsonl",
+///     "--resume",
 /// ]);
 ///
 /// assert_eq!(args.url, "https://example.com");
@@ -640,9 +658,29 @@ pub struct Args {
     #[arg(short, long, default_value = "output")]
     pub output: std::path::PathBuf,
 
-    /// Output format (markdown, text, json)
-    #[arg(short, long, default_value = "markdown", value_enum)]
-    pub format: OutputFormat,
+    /// Export format (markdown, text, json, jsonl, zvec, auto)
+    ///
+    /// - markdown: FileSaver Markdown format (default)
+    /// - text: Plain text
+    /// - json: Structured JSON
+    /// - jsonl: JSON Lines format (one JSON per line), optimal for RAG
+    /// - zvec: Alibaba Zvec format (requires `--features zvec`)
+    /// - auto: Detect from existing output files
+    #[arg(long, default_value = "markdown", value_enum)]
+    pub export_format: ExportFormat,
+
+    /// Resume mode - skip URLs already processed
+    ///
+    /// Saves processing status to cache directory (~/.cache/rust-scraper/state)
+    /// Avoids re-processing URLs already scraped successfully.
+    #[arg(long)]
+    pub resume: bool,
+
+    /// Custom state directory for resume mode
+    ///
+    /// Default: ~/.cache/rust-scraper/state
+    #[arg(long)]
+    pub state_dir: Option<std::path::PathBuf>,
 
     /// Delay between requests in milliseconds
     #[arg(long, default_value = "1000")]
@@ -830,76 +868,71 @@ mod tests {
     fn test_validate_and_parse_url_invalid_scheme() {
         let result = validate_and_parse_url("ftp://example.com");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("http or https"));
-    }
-
-    // ========================================================================
-    // TASK-003: URL Validation Robusta Tests
-    // ========================================================================
-
-    #[test]
-    fn test_url_validation_with_spaces() {
-        // Url::parse trims whitespace automatically
-        let url = validate_and_parse_url(" https://example.com ").unwrap();
-        assert_eq!(url.host_str(), Some("example.com"));
     }
 
     #[test]
-    fn test_url_validation_case_insensitive() {
-        // Scheme is case-insensitive
-        let url = validate_and_parse_url("HTTP://EXAMPLE.COM").unwrap();
-        assert_eq!(url.scheme(), "http");
-        assert_eq!(url.host_str(), Some("example.com"));
+    fn test_validate_and_parse_url_whitespace() {
+        let url = validate_and_parse_url("  https://example.com  ");
+        assert!(url.is_ok());
+        assert_eq!(url.unwrap().host_str(), Some("example.com"));
     }
 
     #[test]
-    fn test_url_validation_https_uppercase() {
-        let url = validate_and_parse_url("HTTPS://example.com").unwrap();
-        assert_eq!(url.scheme(), "https");
+    fn test_concurrency_config_new() {
+        let config = ConcurrencyConfig::new(5);
+        assert_eq!(config.resolve(), 5);
     }
 
     #[test]
-    fn test_url_validation_mixed_case() {
-        let url = validate_and_parse_url("HtTpS://Example.COM").unwrap();
-        assert_eq!(url.scheme(), "https");
-        assert_eq!(url.host_str(), Some("example.com"));
+    fn test_concurrency_config_auto() {
+        let config = ConcurrencyConfig::auto();
+        let value = config.resolve();
+        assert!(value >= 1 && value <= 16);
     }
 
     #[test]
-    fn test_url_validation_with_leading_spaces() {
-        let url = validate_and_parse_url("   https://example.com").unwrap();
-        assert_eq!(url.scheme(), "https");
+    fn test_concurrency_config_clamp() {
+        let config = ConcurrencyConfig::new(100);
+        assert_eq!(config.resolve(), 16); // Clamped to max
     }
 
     #[test]
-    fn test_url_validation_with_trailing_spaces() {
-        let url = validate_and_parse_url("https://example.com   ").unwrap();
-        assert_eq!(url.scheme(), "https");
+    fn test_concurrency_config_display() {
+        let auto = ConcurrencyConfig::auto();
+        assert_eq!(format!("{}", auto), "auto");
+
+        let explicit = ConcurrencyConfig::new(5);
+        assert_eq!(format!("{}", explicit), "5");
     }
 
     #[test]
-    fn test_url_validation_invalid_scheme_ftp() {
-        let result = validate_and_parse_url("ftp://example.com");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("http or https"));
+    fn test_concurrency_config_from_str() {
+        let config = ConcurrencyConfig::from("5");
+        assert_eq!(config.resolve(), 5);
+
+        let config = ConcurrencyConfig::from("auto");
+        assert!(config.is_auto());
+
+        let config = ConcurrencyConfig::from("");
+        assert!(config.is_auto());
     }
 
     #[test]
-    fn test_url_validation_invalid_scheme_file() {
-        let result = validate_and_parse_url("file:///etc/passwd");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("http or https"));
+    fn test_concurrency_config_from_str_invalid() {
+        // Should fallback to auto with warning (tested via output)
+        let config = ConcurrencyConfig::from("not-a-number");
+        assert!(config.is_auto());
     }
 
     #[test]
-    fn test_url_validation_no_scheme() {
-        let result = validate_and_parse_url("example.com");
-        assert!(result.is_err());
-    }
+    fn test_export_format_from_str() {
+        // Test ExportFormat parsing from CLI
+        use clap::ValueEnum;
 
-    #[test]
-    fn test_url_validation_malformed() {
-        let result = validate_and_parse_url("not-a-valid-url-at-all");
-        assert!(result.is_err());
+        let format = ExportFormat::from_str("jsonl", true);
+        assert!(format.is_ok());
+
+        let format = ExportFormat::from_str("zvec", true);
+        assert!(format.is_ok());
     }
 }

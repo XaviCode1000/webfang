@@ -73,6 +73,14 @@ pub enum ScraperError {
     /// Conversion error (HTML to Markdown, YAML, etc.)
     #[error("Error de conversión: {0}")]
     Conversion(String),
+
+    /// Export operation failed
+    #[error("Error de exportación: {0}")]
+    Export(String),
+
+    /// Batch export failed (partial success)
+    #[error("Error de exportación en batch: {0}")]
+    ExportBatch(String),
 }
 
 /// Result type alias using ScraperError as the error type.
@@ -116,6 +124,18 @@ impl ScraperError {
     #[must_use]
     pub fn conversion(msg: impl Into<String>) -> Self {
         Self::Conversion(msg.into())
+    }
+
+    /// Create an Export error
+    #[must_use]
+    pub fn export(msg: impl Into<String>) -> Self {
+        Self::Export(msg.into())
+    }
+
+    /// Create an ExportBatch error
+    #[must_use]
+    pub fn export_batch(msg: impl Into<String>) -> Self {
+        Self::ExportBatch(msg.into())
     }
 }
 
