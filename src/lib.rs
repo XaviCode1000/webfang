@@ -57,10 +57,12 @@
 //!
 //! ```no_run
 //! use rust_scraper::{discover_urls_for_tui, CrawlerConfig};
+//! use url::Url;
 //!
 //! # #[tokio::main]
 //! # async fn main() -> anyhow::Result<()> {
-//! let config = CrawlerConfig::builder()
+//! let seed = Url::parse("https://example.com")?;
+//! let config = CrawlerConfig::builder(seed)
 //!     .concurrency(5)
 //!     .use_sitemap(true)
 //!     .build();

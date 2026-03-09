@@ -8,8 +8,13 @@
 //! ```no_run
 //! use rust_scraper::infrastructure::crawler::SitemapParser;
 //!
+//! # #[tokio::main]
+//! # async fn main() -> anyhow::Result<()> {
 //! let parser = SitemapParser::new();
 //! let urls = parser.parse_from_url("https://example.com/sitemap.xml").await?;
+//! println!("Found {} URLs", urls.len());
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! # Errors

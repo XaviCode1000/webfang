@@ -157,10 +157,13 @@ impl StateStore {
     /// use rust_scraper::infrastructure::export::StateStore;
     /// use rust_scraper::domain::ExportState;
     ///
+    /// # fn main() -> anyhow::Result<()> {
     /// let store = StateStore::new("example.com");
     /// let mut state = ExportState::new("example.com");
     /// state.mark_processed("https://example.com/page1");
     /// store.save(&state)?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn save(&self, state: &ExportState) -> crate::error::Result<()> {
         let path = self.get_state_path();
