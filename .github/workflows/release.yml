@@ -78,10 +78,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Publish to crates.io
+  # Publish to crates.io (optional - requires CARGO_REGISTRY_TOKEN secret)
   publish:
     runs-on: ubuntu-latest
     needs: release
+    if: secrets.CARGO_REGISTRY_TOKEN != ''
 
     steps:
       - uses: actions/checkout@v4
@@ -90,6 +91,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Publish to crates.io
-        run: cargo publish
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
