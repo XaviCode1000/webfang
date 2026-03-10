@@ -82,7 +82,9 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     needs: release
-    if: secrets.CARGO_REGISTRY_TOKEN != ''
+    if: ${{ env.CARGO_REGISTRY_TOKEN != '' }}
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -92,5 +94,3 @@ jobs:
 
       - name: Publish to crates.io
         run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
