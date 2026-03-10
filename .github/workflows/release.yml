@@ -82,9 +82,9 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     needs: release
-    if: ${{ env.CARGO_REGISTRY_TOKEN != '' }}
     env:
-      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || '' }}
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    if: ${{ env.CARGO_REGISTRY_TOKEN != '' }}
 
     steps:
       - uses: actions/checkout@v4
