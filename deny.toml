@@ -1,5 +1,7 @@
 [advisories]
 ignore = []
+vulnerability = "warn"
+unmaintained = "warn"
 
 [licenses]
 allow = [

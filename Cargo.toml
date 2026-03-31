@@ -10,7 +10,7 @@ homepage = "https://github.com/XaviCode1000/rust-scraper"
 documentation = "https://docs.rs/rust_scraper"
 keywords = ["scraper", "web", "crawler", "rag", "tui"]
 categories = ["command-line-utilities", "web-programming"]
-rust-version = "1.85"
+rust-version = "1.88"
 
 [features]
 default = []

@@ -6,7 +6,7 @@ You are a Senior Rust Engineer working on a **production-ready web scraper** wit
 
 - **Type:** Web scraper with TUI, sitemap parsing, and AI semantic cleaning
 - **Architecture:** Clean Architecture (4 layers)
-- **Rust MSRV:** 1.85+ (current stable: 1.93.0)
+- **Rust MSRV:** 1.88+ (current stable: 1.93.0)
 
 ## Development Stack
 
