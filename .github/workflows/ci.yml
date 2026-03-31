@@ -4,95 +4,101 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    types: [opened, synchronize, ready_for_review]
+  schedule:
+    - cron: "0 6 * * 1" # Weekly audit on Mondays
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -Dwarnings
+  RUSTDOCFLAGS: -Dwarnings
+  CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
-  build:
-    name: Build
+  # ── FASTEST FIRST: Fail early on style/lint issues ────────────────────
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build (debug)
-        run: cargo build --verbose
-
-      - name: Build (release)
-        run: cargo build --release --verbose
-
-  test:
-    name: Tests
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install nextest
-        uses: taiki-e/install-action@nextest
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Run tests (nextest)
-        run: cargo nextest run --verbose
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-  fmt:
-    name: Format
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
         with:
-          components: rustfmt
-
-      - name: Check format
+          shared-key: lint
+      - name: Check formatting
         run: cargo fmt --all -- --check
+      - name: Run clippy
+        run: cargo clippy --locked --workspace --all-features --all-targets -- -D clippy::all
 
-  checks:
-    name: All checks
+  # ── SECURITY: Dependency audit ────────────────────────────────────────
+  audit:
+    name: Audit
     runs-on: ubuntu-latest
-    needs: [build, test, clippy, fmt]
-    if: always()
+    timeout-minutes: 5
     steps:
-      - name: Check results
-        run: |
-          if [ "${{ needs.build.result }}" != "success" ] || \
-             [ "${{ needs.test.result }}" != "success" ] || \
-             [ "${{ needs.clippy.result }}" != "success" ] || \
-             [ "${{ needs.fmt.result }}" != "success" ]; then
-            echo "❌ One or more checks failed"
-            exit 1
-          fi
-          echo "✅ All CI checks passed"
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@cargo-deny
+      - name: Check advisories, licenses, and bans
+        run: cargo deny check advisories licenses bans
+        continue-on-error: true
+
+  # ── TESTS: Fast path for PRs, coverage for main ──────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@nextest
+      - uses: Swatinem/rust-cache@v2
+
+      # PRs: fast test without coverage instrumentation
+      - name: Test (PR)
+        if: github.event_name == 'pull_request'
+        run: cargo nextest run --locked --workspace --all-features
+
+      # Main branch + scheduled: full coverage
+      - name: Install llvm-tools
+        if: github.event_name != 'pull_request'
+        run: rustup component add llvm-tools
+      - uses: taiki-e/install-action@cargo-llvm-cov
+        if: github.event_name != 'pull_request'
+
+      - name: Coverage (main/scheduled)
+        if: github.event_name != 'pull_request'
+        run: >
+          cargo llvm-cov nextest --locked --workspace --all-features
+          --lcov --output-path lcov.info
+
+      - name: Upload coverage
+        if: github.event_name != 'pull_request'
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          disable_search: true
+
+  # ── DOCUMENTATION: Only on main (saves PR time) ──────────────────────
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run doctests
+        run: cargo test --locked --workspace --all-features --doc
+      - name: Build docs
+        run: >
+          cargo doc --locked --workspace --all-features
+          --document-private-items --no-deps
