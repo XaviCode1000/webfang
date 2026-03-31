@@ -1,12 +1,12 @@
 name: CI
 
-on:
+"on":
   push:
     branches: [main]
   pull_request:
     types: [opened, synchronize, ready_for_review]
   schedule:
-    - cron: "0 6 * * 1" # Weekly on Mondays
+    - cron: "0 6 * * 1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -19,7 +19,6 @@ env:
   RUSTDOCFLAGS: -Dwarnings
 
 jobs:
-  # ── FASTEST FIRST: Fail early on style/lint issues ────────────────────
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -44,7 +43,6 @@ jobs:
       - name: Run clippy
         run: cargo clippy --locked --workspace --all-features --all-targets -- -D warnings
 
-  # ── SECURITY: Dependency audit ────────────────────────────────────────
   audit:
     name: Audit
     runs-on: ubuntu-latest
@@ -63,7 +61,6 @@ jobs:
         run: cargo audit
         continue-on-error: true
 
-  # ── TESTS: Fast path for PRs, coverage for main ──────────────────────
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -83,12 +80,10 @@ jobs:
 
       - uses: taiki-e/install-action@nextest
 
-      # PRs: fast test without coverage instrumentation
       - name: Test (PR)
         if: github.event_name == 'pull_request'
         run: cargo nextest run --locked --workspace --all-features
 
-      # Main branch + scheduled: full coverage
       - name: Coverage (main/scheduled)
         if: github.event_name != 'pull_request'
         run: |
@@ -104,7 +99,6 @@ jobs:
           disable_search: true
           token: ${{ secrets.CODECOV_TOKEN }}
 
-  # ── DOCUMENTATION: Only on main (saves PR time) ──────────────────────
   doc:
     name: Documentation
     runs-on: ubuntu-latest
