@@ -932,6 +932,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)]
     async fn test_discover_urls_invalid_url() {
         let seed = Url::parse("https://example.com").unwrap();
         let config = CrawlerConfig::new(seed);

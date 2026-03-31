@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn test_exporter_error_messages() {
-        let io_error = std::io::Error::new(std::io::ErrorKind::Other, "path error");
+        let io_error = std::io::Error::other("path error");
         let err = ExporterError::DirectoryCreation(io_error);
         assert!(err.to_string().to_lowercase().contains("directorio"));
 

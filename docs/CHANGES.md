@@ -2,7 +2,7 @@
 
 **Project**: rust-scraper  
 **Repository**: https://github.com/XaviCode1000/rust_scraper  
-**Last Updated**: 2026-03-11  
+**Last Updated**: 2026-03-31  
 **Status**: Production Ready ✅
 
 ---
@@ -11,14 +11,14 @@
 
 | Metric | Value |
 |--------|-------|
-| **Current Version** | v1.0.4 (tagged) |
-| **Total Commits** | 79 |
-| **Commits Since v1.0.0** | 34 |
+| **Current Version** | v1.0.6 (tagged) |
+| **Total Commits** | 90+ |
+| **Commits Since v1.0.0** | 45+ |
 | **Total Contributors** | 2 (XaviCode1000: 76, Xavi: 3) |
-| **Issues Closed** | 8+ |
-| **PRs Merged** | 3+ |
+| **Issues Closed** | 10+ |
+| **PRs Merged** | 5+ |
 | **First Commit** | a70b17c - chore: initialize rust_scraper project structure |
-| **Latest Commit** | 39779d6 - chore: Remove test_ai.rs example (CI blocker) |
+| **Latest Commit** | HTTP Client validation complete |
 
 ---
 
@@ -43,7 +43,47 @@
 
 ## 📦 Release History
 
-### [v1.0.4] - 2026-03-10 - AI Semantic Cleaning & RAG Pipeline
+### [v1.0.6] - 2026-03-31 - HTTP Client Improvements & Real Site Validation
+
+**Tag**: v1.0.6  
+**Key Feature**: HttpClient wrapper with headers, cookies, retry, and backoff
+
+#### Changes
+- ✅ Added `HttpClient` wrapper with configurable headers (Accept-Language, Accept, Referer, Cache-Control)
+- ✅ Added cookie persistence via `.cookie_store(true)` (reqwest feature "cookies")
+- ✅ Added retry logic for 403/429/5xx status codes
+- ✅ Added exponential backoff: 1s → 2s → 4s (max 3 retries)
+- ✅ Added integration tests with real sites: books.toscrape.com, quotes.toscrape.com, webscraper.io
+- ✅ Added wiremock for unit tests (mock server for 403/429/5xx)
+- ✅ Added lints in lib.rs (#![deny(clippy::correctness)])
+- ✅ Added nextest.toml configuration (4x faster test runner)
+- ✅ Added bacon.toml configuration (background checker)
+- ✅ Fixed backoff bug: was 2s→4s→8s, now correctly 1s→2s→4s
+
+#### Validation Results
+| Site | Status | Technology |
+|------|--------|-------------|
+| books.toscrape.com | ✅ PASS | Static SSR |
+| quotes.toscrape.com | ✅ PASS | Static SSR |
+| webscraper.io | ✅ PASS | SSR + paginación URL |
+
+#### Test Results
+```
+cargo nextest run → 252 tests passed
+cargo clippy -- -D warnings → ✅ clean
+Integration tests (real sites) → 6/6 passed
+Compliance (Spec 2) → 11/11
+```
+
+#### Technical Details
+- **File**: `src/application/http_client.rs` - HttpClient wrapper
+- **Config**: `nextest.toml` - Test runner config
+- **Config**: `bacon.toml` - Background checker
+- **Tests**: `tests/http_client_integration.rs` - Real site tests
+
+---
+
+### [v1.0.5] - 2026-03-11 - Embeddings Preservation Bug Fix
 
 **Tag**: v1.0.4  
 **Commits in Release**: 15+  
@@ -501,17 +541,48 @@ This project follows the [rust-skills](https://github.com/leonardomso/rust-skill
 - [ARCHITECTURE.md](./ARCHITECTURE.md) - Clean Architecture diagrams
 - [AI-SEMANTIC-CLEANING.md](./AI-SEMANTIC-CLEANING.md) - AI feature documentation
 - [rust-skills/INDEX.md](../rust-skills/INDEX.md) - 179 Rust rules
+- [DEVELOPMENT.md](../DEVELOPMENT.md) - Dev workflow with nextest + bacon
 
 ---
 
-**Last Verified**: 2026-03-11  
-**Verification Commands**:
+## 🧪 Testing Infrastructure (v1.0.6+)
+
+### Stack Optimizado 2025-26
+
+| Herramienta | Propósito | Mejora |
+|-------------|-----------|--------|
+| **cargo-nextest** | Test runner | 4x vs cargo test |
+| **cargo-llvm-cov** | Cobertura | 10x vs tarpaulin |
+| **sccache** | Cache compilación | 6x rebuilds |
+| **bacon** | Background checker | Instant feedback |
+| **mold** | Linker | seconds → ms |
+
+### Commands
+
 ```bash
-git log --oneline | head -30
-git tag -l
-git shortlog -sn
-gh issue list --state closed
-gh pr list --state closed
+# Tests (4x faster)
+cargo nextest run
+
+# Failed only
+cargo nextest run --failed
+
+# Real sites (ignored by default)
+cargo nextest run --run-ignored ignored-only
+
+# Linting
+cargo clippy -- -D warnings
+
+# Background checker
+bacon
 ```
 
-**Project Status**: ✅ Production Ready (v1.0.4)
+---
+
+**Last Verified**: 2026-03-31  
+**Verification Commands**:
+```bash
+cargo nextest run → 252 tests passed
+cargo clippy -- -D warnings → clean
+```
+
+**Project Status**: ✅ Production Ready (v1.0.6) - Validated with real sites

@@ -138,6 +138,18 @@
 //! Minimum Supported Rust Version: 1.75.0
 
 // ============================================================================
+// Lints — rust-skills compliance (CRITICAL: correctness -> HIGH -> MEDIUM)
+// ============================================================================
+#![deny(clippy::correctness)]
+#![warn(clippy::suspicious)]
+#![warn(clippy::style)]
+#![warn(clippy::complexity)]
+#![warn(clippy::perf)]
+#![allow(missing_docs)] // TODO: documentar incrementally
+#![warn(clippy::undocumented_unsafe_blocks)]
+#![allow(clippy::module_name_repetitions)] // domain::domain_entity etc.
+
+// ============================================================================
 // Public API Exports
 // ============================================================================
 
@@ -159,6 +171,7 @@ pub use error::SemanticError;
 pub mod application;
 pub use application::{
     crawl_site, crawl_with_sitemap, create_http_client, discover_urls_for_tui, extract_domain,
+    http_client::{HttpClient, HttpClientConfig, HttpError},
     is_allowed, is_excluded, is_internal_link, matches_pattern, scrape_multiple_with_limit,
     scrape_urls_for_tui, scrape_with_config, scrape_with_readability,
 };
@@ -927,7 +940,7 @@ mod tests {
     fn test_concurrency_config_auto() {
         let config = ConcurrencyConfig::auto();
         let value = config.resolve();
-        assert!(value >= 1 && value <= 16);
+        assert!((1..=16).contains(&value));
     }
 
     #[test]

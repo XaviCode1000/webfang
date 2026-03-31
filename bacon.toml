@@ -1,0 +1,27 @@
+# Configuración de bacon (background checker)
+# Optimizado para HDD
+#
+# Uso: bacon
+# Ver docs: https://dystroy.org/bacon/
+
+# Modo resumen reduce I/O del terminal en HDD
+summary = true
+
+# Keybindings para flujo de trabajo eficiente
+[keybindings]
+# t: Ejecutar nextest (integración nativa)
+t = "nextest"
+# f: Ejecutar solo tests fallidos
+f = "nextest --failed"
+# c: Ejecutar clippy
+c = "clippy"
+# r: build release
+r = "build --release"
+# d: doc
+d = "doc --no-deps"
+# Habilitar notificaciones para tareas largas
+notify = true
+
+# Jobs limitados para HDD
+[environment]
+CARGO_BUILD_JOBS = "3"

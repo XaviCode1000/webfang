@@ -3,7 +3,7 @@
 **Production-ready web scraper with Clean Architecture, TUI selector, and AI-powered semantic cleaning.**
 
 [![Build Status](https://github.com/XaviCode1000/rust-scraper/actions/workflows/ci.yml/badge.svg)](https://github.com/XaviCode1000/rust-scraper/actions)
-[![Tests](https://img.shields.io/badge/tests-281%20passing-brightgreen)](https://github.com/XaviCode1000/rust-scraper)
+[![Tests](https://img.shields.io/badge/tests-252%20passing-brightgreen)](https://github.com/XaviCode1000/rust-scraper)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange)](https://www.rust-lang.org)
 [![Version](https://img.shields.io/badge/version-1.0.5-blue)](https://github.com/XaviCode1000/rust-scraper/releases)
@@ -271,10 +271,19 @@ documents = loader.load()
 
 ## 🧪 Testing
 
-### Test Commands
+### Test Commands (Recommended: nextest)
 
 ```bash
-# Run all tests (281 total)
+# Nextest (4x faster than cargo test) ✅ RECOMMENDED
+cargo nextest run
+
+# Run only failed tests
+cargo nextest run --failed
+
+# Run ignored tests (real sites integration tests)
+cargo nextest run --run-ignored ignored-only
+
+# Traditional (slower)
 cargo test
 
 # Run with output
@@ -283,10 +292,10 @@ cargo test -- --nocapture
 # Run specific test
 cargo test test_validate_and_parse_url
 
-# Run AI integration tests (64 tests)
+# Run AI integration tests (requires --features ai)
 cargo test --features ai --test ai_integration -- --test-threads=2
 
-# Run library tests only (217 tests)
+# Run library tests only
 cargo test --lib
 ```
 
@@ -294,9 +303,21 @@ cargo test --lib
 
 | Test Suite | Count | Status |
 |------------|-------|--------|
-| **Library Tests** | 217 | ✅ Passing |
-| **AI Integration** | 64 | ✅ Passing |
-| **Total** | **281** | ✅ **All Passing** |
+| **Library Tests** | 252 | ✅ Passing |
+| **Total** | **252** | ✅ **All Passing** |
+
+### Linting
+
+```bash
+# Clippy with warnings as errors ✅ RECOMMENDED
+cargo clippy -- -D warnings
+
+# Check formatting
+cargo fmt --all -- --check
+
+# Run all checks
+cargo clippy --all-targets --all-features -- -D warnings
+```
 
 **Note:** AI tests require `--features ai` and run with `--test-threads=2` for stability.
 
@@ -612,12 +633,13 @@ By contributing to this project, you agree that your contributions will be licen
 | Metric | Value |
 |--------|-------|
 | **Lines of Code** | 3,754 (src/) |
-| **Total Tests** | 281 passing |
+| **Total Tests** | 252 passing (nextest) |
 | **Public Functions** | 64 |
 | **MSRV** | 1.80.0 |
 | **Dependencies** | 45+ (core), 60+ (with AI) |
 | **Latest Version** | 1.0.5 |
-| **Latest Commit** | 39779d6 |
+| **Test Runner** | cargo-nextest (4x faster) |
+| **Background Checker** | bacon (instant feedback) |
 
 ---
 
@@ -629,11 +651,13 @@ By contributing to this project, you agree that your contributions will be licen
 - [x] **v1.0.5** — AI-powered semantic cleaning (Issue #9)
 - [x] **v1.0.5** — Embeddings preservation bug fix (PR #11)
 - [x] **v1.0.5** — Performance optimization (eliminated unnecessary cloning)
+- [x] **v1.0.6** — HTTP Client improvements (Option A: headers, cookies, retry, backoff)
+- [x] **v1.0.6** — Real site validation (books.toscrape.com, quotes.toscrape.com, webscraper.io)
 
 ### Planned 🚧
 
 - [ ] **v1.1.0** — Multi-domain crawling
-- [ ] **v1.2.0** — JavaScript rendering (headless browser)
+- [ ] **v1.2.0** — JavaScript rendering (headless browser) - for SPA sites
 - [ ] **v2.0.0** — Distributed scraping
 
 ---
@@ -644,9 +668,10 @@ By contributing to this project, you agree that your contributions will be licen
 - Inspired by [ripgrep](https://github.com/BurntSushi/ripgrep) performance patterns
 - Uses [rust-skills](https://github.com/leonardomso/rust-skills) (179 rules)
 - AI features powered by [tract-onnx](https://github.com/sonos/tract) and [HuggingFace tokenizers](https://github.com/huggingface/tokenizers)
+- Test infrastructure: [cargo-nextest](https://nexte.st/), [bacon](https://dystroy.org/bacon/)
 
 ---
 
 **Made with ❤️ using Rust and Clean Architecture**
 
-**Current Status:** ✅ All tests passing (281/281) | ✅ CI/CD enabled | ✅ Production-ready
+**Current Status:** ✅ All tests passing (252/252) | ✅ CI/CD enabled | ✅ Production-ready | ✅ Validated with real sites

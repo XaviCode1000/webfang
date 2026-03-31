@@ -1,32 +1,45 @@
 # 🦀 Rust Scraper
 
 [![CI](https://github.com/XaviCode1000/rust-scraper/actions/workflows/ci.yml/badge.svg)](https://github.com/XaviCode1000/rust-scraper/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-252%20passing-brightgreen)](https://github.com/XaviCode1000/rust-scraper)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/Rust-2021-orange.svg)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](https://github.com/XaviCode1000/rust-scraper/releases)
+[![Version](https://img.shields.io/badge/version-1.0.6-blue)](https://github.com/XaviCode1000/rust-scraper/releases)
 
-Modern web scraper optimized for RAG (Retrieval-Augmented Generation) datasets. Built with **Clean Architecture** for maintainability and production use.
+**Production-ready web scraper with Clean Architecture, TUI selector, and AI-powered semantic cleaning.**
 
 ## ✨ Features
 
-### Core
+### Core (v1.0.0)
 - 📖 **Readability Algorithm** - Extracts clean content like Firefox Reader Mode
 - 🌐 **Modern HTTP Client** - reqwest with TLS (rustls), gzip/brotli compression
 - 📝 **Multiple Output Formats** - Markdown (with YAML frontmatter), JSON, plain text
 - 🔧 **CLI Interface** - Full control via command line arguments
+- 🕸️ **Sitemap Support** - Zero-allocation streaming parser (quick-xml)
+- 🖥️ **TUI Interactive Selector** - Ratatui + crossterm URL picker
 
-### Production Ready (v0.3.0)
-- 🔄 **Retry Logic** - Exponential backoff for transient failures (5xx, timeouts)
-- 🎯 **Bounded Concurrency** - Prevents resource exhaustion (3 concurrent for HDD)
-- 🎭 **User-Agent Rotation** - 14 modern browsers, weighted selection
+### HTTP Client Improvements (v1.0.6) - Option A
+- 🔄 **Retry Logic** - Exponential backoff 1s→2s→4s for 403/429/5xx
+- 🍪 **Cookie Persistence** - Session maintenance across requests
+- 🛡️ **Headers** - Accept-Language, Accept, Referer, Cache-Control
+- ✅ **Validated** - Tested against real sites: books.toscrape.com, quotes.toscrape.com, webscraper.io
+
+### Production Ready (v1.0.0+)
+- 🎯 **Bounded Concurrency** - Prevents resource exhaustion (HDD-aware)
+- 🎭 **User-Agent Rotation** - Chrome 131+ UAs with TTL caching
 - 🛡️ **Type-Safe Errors** - `ScraperError` enum with 14 variants
-- 🧪 **Well Tested** - 83 tests (unit, integration, doctests)
+- 🧪 **Well Tested** - 252 tests (unit, integration)
 
 ### Asset Download
 - 🖼️ **Image Download** - Automatic download to `output/images/`
 - 📄 **Document Download** - PDF, DOCX, XLSX to `output/documents/`
 - 🔍 **MIME Detection** - Automatic classification by extension
 - 🔐 **SHA256 Hashing** - Unique filenames, no collisions
+
+### AI-Powered (v1.0.5+)
+- 🧠 **Semantic Cleaning** - Local SLM inference (100% privacy, no API calls)
+- 📊 **Embeddings** - Preserved during relevance filtering
+- ⚡ **AVX2 SIMD** - 4-8x speedup on supported CPUs
 
 ## 🚀 Quick Start
 
@@ -214,7 +227,16 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture docum
 ## 🧪 Testing
 
 ```bash
-# Run all tests
+# Nextest (4x faster than cargo test) ✅ RECOMMENDED
+cargo nextest run
+
+# Run only failed tests
+cargo nextest run --failed
+
+# Run ignored tests (real sites)
+cargo nextest run --run-ignored ignored-only
+
+# Traditional (slower)
 cargo test
 
 # Run with output
@@ -223,14 +245,13 @@ cargo test -- --nocapture
 # Run specific test
 cargo test test_validate_url
 
-# Run with coverage (requires cargo-tarpaulin)
-cargo tarpaulin --out Html
+# Run with coverage
+cargo llvm-cov nextest --html
 ```
 
-**Test Coverage**: 83 tests passing
-- 70 unit tests
-- 11 doctests
-- 2 integration tests
+**Test Coverage**: 252 tests passing
+- Unit tests: 252
+- Integration tests (real sites): 6 (ignored by default)
 
 ## 📦 Installation (as Library)
 

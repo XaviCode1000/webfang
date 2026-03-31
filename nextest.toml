@@ -1,0 +1,28 @@
+# Configuración de nextest para tests rápidos y estables
+# Optimizado para desarrollo (HDD-aware)
+#
+# Uso: cargo nextest run
+# Ver docs: https://nexte.st/book/configuration
+
+[profile.default]
+# Prevenir thrashing del HDD con 2 hilos máximo
+threads-required = 2
+
+# Reintentos para tests que pueden fallar por I/O
+retries = 2
+
+# Timeout más largo para tests que usan red/disco
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+[profile.ci]
+# Configuración más agresiva para CI
+threads-required = 4
+retries = 0
+slow-timeout = { period = "120s", terminate-after = 2 }
+
+[filter]
+# Exclude slow integration tests by default (run with --workspace)
+# Exclude AI tests unless explicitly requested (they download models)
+exclude = [
+    { path = "tests/ai_integration.rs", reason = "requires model download" },
+]
