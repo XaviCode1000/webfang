@@ -7,6 +7,8 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
+use fs2::FileExt;
+
 use crate::domain::entities::DocumentChunk;
 use crate::domain::exporter::{ExportResult, ExporterConfig, ExporterError};
 
@@ -45,7 +47,16 @@ impl JsonlExporter {
             fs::create_dir_all(parent).map_err(ExporterError::DirectoryCreation)?;
         }
 
-        // Open file in append or write mode
+        // Acquire exclusive file lock to prevent concurrent writes
+        let lock_path = path.with_extension("jsonl.lock");
+        let lock_file = fs::File::create(&lock_path)
+            .map_err(|e| ExporterError::WriteError(format!("{}: {}", lock_path.display(), e)))?;
+        // allow: fs2::FileExt::lock_exclusive, clippy misidentifies as std::io::FileExt (1.89+)
+        #[allow(clippy::incompatible_msrv)]
+        lock_file.lock_exclusive().map_err(|e| {
+            ExporterError::WriteError(format!("failed to acquire file lock: {}", e))
+        })?;
+
         let file = OpenOptions::new()
             .create(true)
             .write(true)
@@ -54,6 +65,7 @@ impl JsonlExporter {
             .open(&path)
             .map_err(|e| ExporterError::WriteError(format!("{}: {}", path.display(), e)))?;
 
+        // Lock released automatically on drop (RAII)
         Ok(BufWriter::new(file))
     }
 

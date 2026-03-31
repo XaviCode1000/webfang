@@ -61,6 +61,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added target to rust-toolchain for cross-platform builds
 - Renamed artifacts to avoid name collisions
 
+## [1.0.7] - 2026-03-31
+
+**Release Commit:** `v1.0.7` — Indestructible & Lean Edition
+
+### 🎉 Added
+- **WAF/CAPTCHA Detection:** 19 WAF signatures detected in HTTP 200 responses (Cloudflare, reCAPTCHA, hCaptcha, DataDome, PerimeterX, Akamai). UA rotation retry before returning `ScraperError::WafBlocked`.
+- **File Locking:** `fs2` exclusive/shared locks in `state_store.rs` prevent data corruption with parallel scraper instances.
+- **OOM Protection:** Streaming size limits in `sitemap_parser.rs` — HTTP response capped at 50MB, GZIP decompression at 100MB.
+- **TUI Panic Safety:** Robust panic hook with independent restoration steps (raw mode, alternate screen, cursor).
+- **Network Hardening:** `connect_timeout(10s)` and `pool_max_idle_per_host` in HttpClient for resilient scraping.
+
+### 🔧 Fixed
+- **P0 Bug — `debug_assert_eq!` → `assert_eq!`:** In `ModelInput::new()` (`inference_engine.rs`). `debug_assert_eq!` compiles to nothing in `--release`, allowing mismatched tensor lengths to silently create invalid inputs. Now panics correctly in production.
+- **Dead Code Removal:** Removed `bumpalo` (arena created but never used) and `zvec-sys` (100% stub with CMake build failures).
+
+### 🧪 Testing
+- 265 tests passing (15 new WAF detection tests added)
+- 0 clippy warnings
+- 0 `.unwrap()` in production code
+
+### 📦 Dependencies
+- **Removed:** `bumpalo`, `zvec-sys` (dead code / vaporware)
+- **Added:** `fs2 = "0.4"` (file locking)
+
 ---
 
 ## [1.0.4] - 2026-03-10
@@ -351,6 +375,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | Version | Date | Commits | Key Feature |
 |---------|------|---------|-------------|
 | [Unreleased] | - | 15+ | AI Semantic Cleaning + Embedding Preservation |
+| [1.0.7] | 2026-03-31 | — | WAF Detection, File Locking, OOM Protection |
 | [1.0.4] | 2026-03-10 | 20 | RAG Export Pipeline + AI Foundation |
 | [1.0.0] | 2026-03-08 | 79 | Production Ready Release |
 | [0.4.0] | 2026-03-07 | - | TUI Interactive Mode |

@@ -14,6 +14,20 @@
 **Version:** v1.0.7 — Indestructible & Lean
 
 ### v1.0.7 Highlights
+- **SRE Hardening:** WAF/CAPTCHA detection (19 signatures), fs2 file locking, OOM protection, TUI panic safety
+- **Pure Rust:** Zero FFI dependencies (removed zvec-sys stub, bumpalo dead code)
+- **AI Safety:** Fixed P0 bug — `debug_assert_eq!` → `assert_eq!` in `ModelInput::new()` (was silent in --release)
+- **Network Hardening:** `connect_timeout(10s)` + `pool_max_idle_per_host` for resilient scraping
+**Version:** v1.0.7 — Indestructible & Lean
+
+### v1.0.7 Highlights
+- **SRE Hardening:** WAF/CAPTCHA detection (19 signatures), fs2 file locking, OOM protection, TUI panic safety
+- **Pure Rust:** Zero FFI dependencies (removed zvec-sys stub, bumpalo dead code)
+- **AI Safety:** Fixed P0 bug — `debug_assert_eq!` → `assert_eq!` in `ModelInput::new()` (was silent in --release)
+- **Network Hardening:** `connect_timeout(10s)` + `pool_max_idle_per_host` for resilient scraping
+**Version:** v1.0.7 — Indestructible & Lean
+
+### v1.0.7 Highlights
 - **SRE Hardening:** WAF/CAPTCHA detection, file locking, OOM protection, TUI safety
 - **Pure Rust:** Zero FFI dependencies (removed zvec-sys, bumpalo dead code)
 - **AI Safety:** Fixed P0 bug (`debug_assert_eq!` → `assert_eq!` in production)
