@@ -1,0 +1,76 @@
+# =============================================================================
+# Pre-commit hooks for Rust projects
+# =============================================================================
+# Instalar: pre-commit install
+# Ejecutar manualmente: pre-commit run --all-files
+#
+# Hooks:
+#   1. rustfmt --check: Verifica formato (falla si no está formateado)
+#   2. clippy: Verifica linting (falla si hay warnings)
+#
+# Uso:
+#   - pre-commit run --all-files  # Verificar todo
+#   - cargo fmt                    # Auto-formatear antes de commit
+#   - git commit                   # Commitear (ejecuta hooks)
+# =============================================================================
+
+repos:
+  # =============================================================================
+  # Rust hooks
+  # =============================================================================
+
+  - repo: local
+    hooks:
+      # Check formatting (NO modifica, solo verifica)
+      - id: rustfmt-check
+        name: rustfmt (check)
+        description: Check Rust code format
+        entry: cargo
+        args: ["fmt", "--", "--check"]
+        language: system
+        pass_filenames: false
+        types: [rust]
+        exclude: "^target/"
+
+      # Lint (falla con warnings)
+      - id: clippy
+        name: clippy
+        description: Lint Rust code
+        entry: cargo
+        args: ["clippy", "--all-targets", "--", "-D", "warnings"]
+        language: system
+        pass_filenames: false
+        types: [rust]
+        exclude: "^target/"
+
+  # =============================================================================
+  # Universal hooks
+  # =============================================================================
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        description: Trim trailing whitespace
+        name: Trim trailing whitespace
+        types: [rust]
+
+      - id: end-of-file-fixer
+        description: Ensure files end with newline
+        name: Fix end of files
+        types: [rust]
+
+      - id: check-yaml
+        description: Check YAML syntax
+        name: Check YAML
+
+      - id: check-added-large-files
+        description: Prevent large files
+        args: ["--maxkb=500"]
+        name: Check for large files
+
+# =============================================================================
+# Configuración global
+# =============================================================================
+default_install_hook_types: [pre-commit]
+default_stages: [pre-commit]

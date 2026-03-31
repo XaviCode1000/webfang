@@ -1,0 +1,11 @@
+[build]
+rustc-wrapper = "sccache"
+
+# Aliases removed - cargo-nextest/cargo-watch/cargo-llvm-cov already work
+# via `cargo nextest` / `cargo watch` / `cargo llvm-cov` when installed
+
+[profile.dev]
+opt-level = 0
+
+[profile.test]
+incremental = true
