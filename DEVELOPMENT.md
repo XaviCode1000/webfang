@@ -297,6 +297,53 @@ cargo clean
 cargo llvm-cov nextest --clean --html
 ```
 
+## ⚡ Build Performance
+
+### Why the first build takes ~7 minutes
+
+The initial compilation is dominated by heavy crates that compile native code:
+
+| Crate | Time | Reason |
+|-------|------|--------|
+| `tract-onnx` | ~3 min | ONNX runtime (C++ codegen) |
+| `syntect` | ~1-2 min | Oniguruma regex engine (C bindings) |
+| `tokenizers` | ~1 min | NLP tokenization |
+| `ring` | ~30s | Cryptography (C bindings) |
+
+### Speed it up with sccache
+
+```bash
+# Set sccache as the Rust compiler wrapper
+export RUSTC_WRAPPER=sccache
+
+# Start the sccache server
+sccache --start-server
+
+# Now build — first time is slow, subsequent builds are instant
+cargo build --release
+```
+
+**Expected improvement:**
+- First build: ~7 min (unchanged — must compile everything)
+- Rebuild after small change: **~10-30 seconds** (sccache hits)
+- Rebuild after `git pull`: **~1-2 min** (only changed crates recompile)
+
+### Build without AI features (saves ~3 minutes)
+
+```bash
+# Standard build (no AI/ONNX)
+cargo build --release
+
+# With all stable features (images, documents)
+cargo build --release --features full
+```
+
+### Duplicate dependencies (intentional)
+
+`cargo tree` shows duplicate versions of `selectors`, `dashmap`, `lru`, and `quick-xml`.
+This is **expected and unavoidable** — they come from different upstream crates that we all need.
+See comments in `Cargo.toml` for details. Do NOT try to unify them.
+
 ---
 
 ## 📚 Resources

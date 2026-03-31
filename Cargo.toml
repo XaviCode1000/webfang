@@ -57,6 +57,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # HTML Parsing for CSS selectors
+# NOTE: scraper brings in selectors 0.26. legible→dom_query brings selectors 0.35.
+# Both are needed. Do NOT try to unify — they come from different upstream crates.
 scraper = "0.22"
 
 # Async runtime
@@ -115,9 +117,13 @@ walkdir = "2"
 mimetype-detector = { version = "0.3", optional = true }
 
 # Rate limiting (hardware-aware para HDD) - FASE 1 Web Crawler
+# NOTE: governor depends on dashmap 5.x — we use dashmap 6.x directly below.
+# Both versions coexist because governor hasn't upgraded. Do NOT try to unify.
 governor = "0.6"
 
 # Concurrent data structures - FASE 1 Web Crawler
+# NOTE: dashmap 6.x is used directly by url_queue.rs (DashSet).
+# governor pulls in dashmap 5.x. Both are needed. Do NOT remove either.
 dashmap = "6"
 
 # TUI (preparar para Fase 2) - FASE 1 Web Crawler
@@ -125,6 +131,8 @@ ratatui = "0.29"
 crossterm = "0.28"
 
 # XML parsing (preparar para Fase 3) - FASE 1 Web Crawler
+# NOTE: quick-xml 0.37 is used directly here. syntect→plist pulls in 0.38.
+# Both are needed. Do NOT try to unify.
 quick-xml = "0.37"
 flate2 = "1"
 
