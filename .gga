@@ -3,7 +3,7 @@
 
 # AI Provider (required)
 # Using router for automatic provider selection
-PROVIDER="router"
+PROVIDER="kilo"
 
 # File patterns to include in review (comma-separated)
 # Rust project: .rs source files and .toml config files
