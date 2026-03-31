@@ -196,8 +196,12 @@ impl HttpClient {
     ///
     /// Returns `ScraperError::Config` if client creation fails
     pub fn new(config: HttpClientConfig) -> Result<Self, ScraperError> {
+        let pool_size = std::cmp::max(3, num_cpus::get() - 1);
         let builder = Client::builder()
             .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(10))
+            .pool_max_idle_per_host(pool_size)
+            .pool_idle_timeout(Duration::from_secs(60))
             .gzip(true)
             .brotli(true)
             .cookie_store(true); // Explicitly enable cookies for session persistence

@@ -92,13 +92,14 @@ impl ModelInput {
     /// Panics if the three vectors have different lengths.
     #[must_use]
     pub fn new(input_ids: Vec<i64>, attention_mask: Vec<i64>, token_type_ids: Vec<i64>) -> Self {
-        // Validate lengths match (debug assertion for performance)
-        debug_assert_eq!(
+        // Validate lengths match — must be assert_eq!, NOT debug_assert_eq!
+        // (debug_assert_eq! compiles to nothing in --release)
+        assert_eq!(
             input_ids.len(),
             attention_mask.len(),
             "input_ids and attention_mask must have same length"
         );
-        debug_assert_eq!(
+        assert_eq!(
             input_ids.len(),
             token_type_ids.len(),
             "input_ids and token_type_ids must have same length"
