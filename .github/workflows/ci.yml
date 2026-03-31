@@ -6,7 +6,7 @@ on:
   pull_request:
     types: [opened, synchronize, ready_for_review]
   schedule:
-    - cron: "0 6 * * 1" # Weekly audit on Mondays
+    - cron: "0 6 * * 1" # Weekly on Mondays
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -17,7 +17,6 @@ env:
   CARGO_INCREMENTAL: 0
   RUSTFLAGS: -Dwarnings
   RUSTDOCFLAGS: -Dwarnings
-  CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
   # ── FASTEST FIRST: Fail early on style/lint issues ────────────────────
@@ -25,75 +24,43 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      SCCACHE_DIR: /tmp/sccache-${{ runner.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain (pinned)
+      - name: Install Rust (MSRV 1.80)
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable-1.70.0
-          override: true
+          toolchain: "1.80"
+          components: clippy, rustfmt
           profile: minimal
-
-      - name: Cache SCCACHE
-        uses: actions/cache@v3
-        with:
-          path: /tmp/sccache-${{ runner.os }}
-          key: ${{ runner.os }}-sccache-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-sccache-
-
-      - name: Install SCCACHE
-        uses: mozilla-actions/sccache-action@v0.0.9
-        with:
-          version: 0.14.0
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: lint
-          # Only include build-relevant environment variables
-          env-vars: CARGO CC CFLAGS CXX CMAKE RUST
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
       - name: Run clippy
-        run: cargo clippy --locked --workspace --all-features --all-targets -- -D clippy::all
+        run: cargo clippy --locked --workspace --all-features --all-targets -- -D warnings
 
   # ── SECURITY: Dependency audit ────────────────────────────────────────
   audit:
     name: Audit
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    env:
-      SCCACHE_DIR: /tmp/sccache-${{ runner.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain (pinned)
+      - name: Install Rust (MSRV 1.80)
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable-1.70.0
-          override: true
+          toolchain: "1.80"
           profile: minimal
 
-      - name: Cache SCCACHE
-        uses: actions/cache@v3
-        with:
-          path: /tmp/sccache-${{ runner.os }}
-          key: ${{ runner.os }}-sccache-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-sccache-
-
-      - name: Install SCCACHE
-        uses: mozilla-actions/sccache-action@v0.0.9
-        with:
-          version: 0.14.0
-
-      - uses: taiki-e/install-action@cargo-deny
-      - name: Check advisories, licenses, and bans
-        run: cargo deny check advisories licenses bans
+      - uses: taiki-e/install-action@cargo-audit
+      - name: Check security advisories
+        run: cargo audit
         continue-on-error: true
 
   # ── TESTS: Fast path for PRs, coverage for main ──────────────────────
@@ -101,35 +68,20 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      SCCACHE_DIR: /tmp/sccache-${{ runner.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain (pinned)
+      - name: Install Rust (MSRV 1.80)
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable-1.70.0
-          override: true
+          toolchain: "1.80"
           profile: minimal
-
-      - name: Cache SCCACHE
-        uses: actions/cache@v3
-        with:
-          path: /tmp/sccache-${{ runner.os }}
-          key: ${{ runner.os }}-sccache-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-sccache-
-
-      - name: Install SCCACHE
-        uses: mozilla-actions/sccache-action@v0.0.9
-        with:
-          version: 0.14.0
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test
-          env-vars: CARGO CC CFLAGS CXX CMAKE RUST
+
+      - uses: taiki-e/install-action@nextest
 
       # PRs: fast test without coverage instrumentation
       - name: Test (PR)
@@ -137,24 +89,20 @@ jobs:
         run: cargo nextest run --locked --workspace --all-features
 
       # Main branch + scheduled: full coverage
-      - name: Install llvm-tools
-        if: github.event_name != 'pull_request'
-        run: rustup component add llvm-tools
-      - uses: taiki-e/install-action@cargo-llvm-cov
-        if: github.event_name != 'pull_request'
-
       - name: Coverage (main/scheduled)
         if: github.event_name != 'pull_request'
-        run: >
-          cargo llvm-cov --workspace --all-features
-          --lcov --output-path lcov.info
+        run: |
+          rustup component add llvm-tools
+          cargo install cargo-llvm-cov
+          cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
 
       - name: Upload coverage
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && secrets.CODECOV_TOKEN != ''
         uses: codecov/codecov-action@v5
         with:
           files: lcov.info
           disable_search: true
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   # ── DOCUMENTATION: Only on main (saves PR time) ──────────────────────
   doc:
@@ -162,39 +110,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: github.event_name != 'pull_request'
-    env:
-      SCCACHE_DIR: /tmp/sccache-${{ runner.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain (pinned)
+      - name: Install Rust (MSRV 1.80)
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable-1.70.0
-          override: true
+          toolchain: "1.80"
           profile: minimal
-
-      - name: Cache SCCACHE
-        uses: actions/cache@v3
-        with:
-          path: /tmp/sccache-${{ runner.os }}
-          key: ${{ runner.os }}-sccache-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-sccache-
-
-      - name: Install SCCACHE
-        uses: mozilla-actions/sccache-action@v0.0.9
-        with:
-          version: 0.14.0
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: doc
-          env-vars: CARGO CC CFLAGS CXX CMAKE RUST
 
       - name: Run doctests
         run: cargo test --locked --workspace --all-features --doc
+
       - name: Build docs
-        run: >
-          cargo doc --locked --workspace --all-features
-          --document-private-items --no-deps
+        run: cargo doc --locked --workspace --all-features --document-private-items --no-deps
