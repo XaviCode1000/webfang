@@ -79,7 +79,7 @@ jobs:
       - name: Coverage (main/scheduled)
         if: github.event_name != 'pull_request'
         run: >
-          cargo llvm-cov nextest --locked --workspace --all-features
+          cargo llvm-cov --workspace --all-features
           --lcov --output-path lcov.info
 
       - name: Upload coverage
