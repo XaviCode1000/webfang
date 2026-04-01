@@ -16,11 +16,12 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Result, ScraperError};
 use futures::stream::{self, StreamExt};
-use reqwest::{Client, Response};
 use sha2::{Digest, Sha256};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
+use wreq::{Client, Response};
+use wreq_util::Emulation;
 
 /// Result of a successful download
 #[derive(Debug)]
@@ -105,10 +106,11 @@ impl Downloader {
         })?;
 
         let client = Client::builder()
+            .emulation(Emulation::Chrome131)
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
             .user_agent(&config.user_agent)
             .build()
-            .map_err(|e| ScraperError::Config(format!("Failed to build HTTP client: {}", e)))?;
+            .map_err(|e| ScraperError::Config(format!("failed to build http client: {}", e)))?;
 
         Ok(Self { client, config })
     }
@@ -134,11 +136,11 @@ impl Downloader {
             .get(url)
             .send()
             .await
-            .map_err(ScraperError::Network)?;
+            .map_err(|e| ScraperError::Network(e.to_string()))?;
 
         let mime_type = response
             .headers()
-            .get(reqwest::header::CONTENT_TYPE)
+            .get(wreq::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(String::from);
 
@@ -163,7 +165,7 @@ impl Downloader {
         let mut hasher = Sha256::new();
 
         while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(ScraperError::Network)?;
+            let chunk = chunk_result.map_err(|e| ScraperError::Network(e.to_string()))?;
             if chunk.is_empty() {
                 continue;
             }
@@ -243,7 +245,7 @@ impl Downloader {
 }
 
 /// Convert a Response into a stream of bytes
-fn into_stream(response: Response) -> impl StreamExt<Item = reqwest::Result<bytes::Bytes>> {
+fn into_stream(response: Response) -> impl StreamExt<Item = wreq::Result<bytes::Bytes>> {
     response.bytes_stream()
 }
 

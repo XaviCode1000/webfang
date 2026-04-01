@@ -41,8 +41,8 @@ pub enum SitemapError {
     #[error("invalid URL: {0}")]
     InvalidUrl(#[from] url::ParseError),
 
-    #[error("HTTP request failed: {0}")]
-    HttpError(#[from] reqwest::Error),
+    #[error("http request failed: {0}")]
+    HttpError(String),
 
     #[error("XML parsing failed: {0}")]
     XmlError(#[from] quick_xml::Error),
@@ -145,7 +145,7 @@ impl Default for SitemapConfig {
             gzip_enabled: true,
             max_depth: 3,
             concurrency: 5,
-            max_response_size: 52_428_800,    // 50MB
+            max_response_size: 52_428_800,      // 50MB
             max_decompressed_size: 104_857_600, // 100MB
         }
     }
@@ -229,7 +229,7 @@ impl SitemapConfigBuilder {
 /// Following mem-streaming-large-data: streaming parser, no buffer accumulation
 pub struct SitemapParser {
     config: SitemapConfig,
-    client: reqwest::Client,
+    client: wreq::Client,
 }
 
 impl SitemapParser {
@@ -238,7 +238,8 @@ impl SitemapParser {
     pub fn new() -> Self {
         Self {
             config: SitemapConfig::default(),
-            client: reqwest::Client::builder()
+            client: wreq::Client::builder()
+                .emulation(wreq_util::Emulation::Chrome131)
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .expect("BUG: failed to build HTTP client"),
@@ -250,7 +251,8 @@ impl SitemapParser {
     pub fn with_config(config: SitemapConfig) -> Self {
         Self {
             config,
-            client: reqwest::Client::builder()
+            client: wreq::Client::builder()
+                .emulation(wreq_util::Emulation::Chrome131)
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .expect("BUG: failed to build HTTP client"),
@@ -288,8 +290,8 @@ impl SitemapParser {
         // Fetch sitemap content
         // Following security-no-unwrap-in-prod: proper error handling
         let response = self.client.get(url).send().await.map_err(|e| {
-            tracing::warn!("HTTP request failed for {}: {}", url, e);
-            SitemapError::HttpError(e)
+            tracing::warn!("http request failed for {}: {}", url, e);
+            SitemapError::HttpError(e.to_string())
         })?;
 
         // Check if gzip compressed
@@ -330,7 +332,7 @@ impl SitemapParser {
         let mut raw_bytes = Vec::with_capacity(8192);
         let mut total_bytes = 0usize;
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(SitemapError::HttpError)?;
+            let chunk = chunk.map_err(|e| SitemapError::HttpError(e.to_string()))?;
             total_bytes += chunk.len();
             if total_bytes > self.config.max_response_size {
                 tracing::warn!(
@@ -371,10 +373,8 @@ impl SitemapParser {
         let mut decoder = GzipDecoder::new(reader);
 
         // Limit decompressed size to prevent decompression bombs
-        let mut limited = tokio::io::AsyncReadExt::take(
-            &mut decoder,
-            self.config.max_decompressed_size as u64,
-        );
+        let mut limited =
+            tokio::io::AsyncReadExt::take(&mut decoder, self.config.max_decompressed_size as u64);
         let mut decompressed = Vec::new();
         tokio::io::AsyncReadExt::read_to_end(&mut limited, &mut decompressed).await?;
 
@@ -527,7 +527,10 @@ mod tests {
 
         let parser = SitemapParser::new();
         let base = Url::parse("https://example.com").unwrap();
-        let urls = parser.parse_xml_sitemap(xml.as_bytes(), &base).await.unwrap();
+        let urls = parser
+            .parse_xml_sitemap(xml.as_bytes(), &base)
+            .await
+            .unwrap();
 
         assert_eq!(urls.len(), 3);
         assert!(urls
@@ -547,7 +550,10 @@ mod tests {
 
         let parser = SitemapParser::new();
         let base = Url::parse("https://example.com").unwrap();
-        let urls = parser.parse_xml_sitemap(xml.as_bytes(), &base).await.unwrap();
+        let urls = parser
+            .parse_xml_sitemap(xml.as_bytes(), &base)
+            .await
+            .unwrap();
 
         // HashSet should deduplicate
         assert_eq!(urls.len(), 2);
@@ -654,7 +660,10 @@ mod tests {
 
         let parser = SitemapParser::new();
         let base = Url::parse("https://example.com").unwrap();
-        let urls = parser.parse_xml_sitemap(xml.as_bytes(), &base).await.unwrap();
+        let urls = parser
+            .parse_xml_sitemap(xml.as_bytes(), &base)
+            .await
+            .unwrap();
 
         // Only http/https should be included
         assert_eq!(urls.len(), 2);
@@ -678,7 +687,10 @@ mod tests {
 
         let parser = SitemapParser::new();
         let base = Url::parse("https://example.com").unwrap();
-        let urls = parser.parse_xml_sitemap(xml.as_bytes(), &base).await.unwrap();
+        let urls = parser
+            .parse_xml_sitemap(xml.as_bytes(), &base)
+            .await
+            .unwrap();
 
         // Should extract all loc elements (including image locs)
         assert!(urls.len() >= 2);

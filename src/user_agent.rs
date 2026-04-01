@@ -23,12 +23,13 @@
 //! ```
 
 use chrono::{DateTime, Datelike, Utc};
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing;
+use wreq::Client;
+use wreq_util::Emulation;
 
 /// API URL for fresh user agents
 const UA_LIST_URL: &str =
@@ -107,7 +108,10 @@ impl UserAgentCache {
 
     /// Fetch user agents from API and save to cache
     async fn fetch_and_cache() -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
-        let client = Client::builder().timeout(Duration::from_secs(5)).build()?;
+        let client = Client::builder()
+            .emulation(Emulation::Chrome131)
+            .timeout(Duration::from_secs(5))
+            .build()?;
 
         // Fetch from API
         let agents = match client.get(UA_LIST_URL).send().await {

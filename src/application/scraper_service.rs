@@ -11,13 +11,13 @@
 //! - **config-externalize**: Concurrency is configurable via ScraperConfig
 //! - **async-concurrency-limit**: Uses buffer_unordered for concurrency control
 
+use super::http_client::detect_waf_challenge;
 use crate::domain::{DownloadedAsset, ScrapedContent, ValidUrl};
 use crate::error::{Result, ScraperError};
 use crate::ScraperConfig;
-use super::http_client::detect_waf_challenge;
 use futures::stream::{self, StreamExt};
-use reqwest_middleware::ClientWithMiddleware;
 use tracing::{debug, info, warn};
+use wreq::Client;
 
 /// Scrape a URL using Readability algorithm for clean content extraction
 ///
@@ -38,7 +38,7 @@ use tracing::{debug, info, warn};
 /// # }
 /// ```
 pub async fn scrape_with_readability(
-    client: &ClientWithMiddleware,
+    client: &Client,
     url: &url::Url,
 ) -> Result<Vec<ScrapedContent>> {
     scrape_with_config(client, url, &ScraperConfig::default()).await
@@ -47,7 +47,7 @@ pub async fn scrape_with_readability(
 /// Scrape a URL with asset downloading configuration
 ///
 /// # Arguments
-/// * `client` - HTTP client with retry middleware
+/// * `client` - HTTP client
 /// * `url` - URL to scrape
 /// * `config` - Scraper configuration with download options
 ///
@@ -56,9 +56,9 @@ pub async fn scrape_with_readability(
 ///
 /// # Errors
 /// Returns `ScraperError::Http` for HTTP errors, `ScraperError::Network` for
-/// connection errors, `ScraperError::Middleware` for retry failures.
+/// connection errors.
 pub async fn scrape_with_config(
-    client: &ClientWithMiddleware,
+    client: &Client,
     url: &url::Url,
     config: &ScraperConfig,
 ) -> Result<Vec<ScrapedContent>> {
@@ -68,15 +68,18 @@ pub async fn scrape_with_config(
 
     let response = match client.get(url.as_str()).send().await {
         Ok(resp) => resp,
-        Err(e) => return Err(ScraperError::Middleware(e.to_string())),
+        Err(e) => return Err(ScraperError::Network(e.to_string())),
     };
 
     let status = response.status();
     if !status.is_success() {
-        return Err(ScraperError::http(status, url.as_str()));
+        return Err(ScraperError::http(status.as_u16(), url.as_str()));
     }
 
-    let html = response.text().await.map_err(ScraperError::Network)?;
+    let html = response
+        .text()
+        .await
+        .map_err(|e| ScraperError::Network(e.to_string()))?;
     debug!("📄 Downloaded {} bytes from {}", html.len(), url);
 
     // Detect WAF/CAPTCHA challenges disguised as HTTP 200
@@ -149,7 +152,7 @@ pub async fn scrape_with_config(
 /// Following **async-concurrency-limit**: Uses buffer_unordered for concurrency control.
 ///
 /// # Arguments
-/// * `client` - HTTP client with retry middleware
+/// * `client` - HTTP client
 /// * `urls` - URLs to scrape
 /// * `config` - Scraper configuration
 ///
@@ -159,7 +162,7 @@ pub async fn scrape_with_config(
 /// # Note
 /// Failed URLs are logged but don't stop the entire batch.
 pub async fn scrape_multiple_with_limit(
-    client: &ClientWithMiddleware,
+    client: &Client,
     urls: &[url::Url],
     config: &ScraperConfig,
 ) -> Result<Vec<ScrapedContent>> {

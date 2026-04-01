@@ -35,18 +35,16 @@ ai = [
 # CLI - Argument parsing obligatorio
 clap = { version = "4", features = ["derive"] }
 
-# HTTP & Networking - Reqwest con retry y tls
-# Nota: rustls-tls-native-roots usa certificados del sistema (/etc/ssl/certs)
-# Si falla SSL, actualizar certificados: sudo pacman -Sy ca-certificates
-reqwest = { version = "0.12", features = ["rustls-tls-native-roots", "gzip", "brotli", "stream", "json", "cookies"] }
+# HTTP & Networking - wreq with TLS fingerprint impersonation (Layer 2 WAF Evasion)
+# wreq 6.0.0-rc.28 is required for prefix-symbols feature (avoids openssl-sys conflicts on Linux)
+# wreq 5.3.0 lacks prefix-symbols, which is mandatory per design decision #2
+wreq = { version = "6.0.0-rc.28", features = ["gzip", "brotli", "stream", "json", "cookies", "prefix-symbols"] }
+
+# TLS fingerprint emulation presets (Chrome 131, Firefox 133, etc.)
+wreq-util = { version = "3.0.0-rc.10", features = ["emulation"] }
 
 # Bytes type for streaming
 bytes = "1"
-
-# Retry middleware for reqwest (TASK-01)
-reqwest-middleware = "0.4"
-reqwest-retry = "0.7"
-retry-policies = "0.4"
 
 # Content Extraction - Readability algorithm (Firefox Reader mode)
 legible = "0.4"

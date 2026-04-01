@@ -11,8 +11,9 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use reqwest::Client;
 use tracing::debug;
+use wreq::Client;
+use wreq_util::Emulation;
 
 use crate::domain::{CrawlError, CrawlerConfig};
 
@@ -40,6 +41,7 @@ pub fn create_rate_limited_client(delay_ms: u64) -> Result<Client> {
     let pool_size = std::cmp::max(3, num_cpus::get() - 1);
 
     let client = Client::builder()
+        .emulation(Emulation::Chrome131)
         .pool_max_idle_per_host(pool_size)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(30))

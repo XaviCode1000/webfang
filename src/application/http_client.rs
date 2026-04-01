@@ -18,9 +18,10 @@
 
 use crate::error::ScraperError;
 use crate::user_agent::UserAgentCache;
-use reqwest::Client;
 use std::time::Duration;
 use tracing::{debug, warn};
+use wreq::Client;
+use wreq_util::Emulation;
 
 /// Result type for HttpClient operations
 pub type HttpResult<T> = Result<T, HttpError>;
@@ -198,6 +199,7 @@ impl HttpClient {
     pub fn new(config: HttpClientConfig) -> Result<Self, ScraperError> {
         let pool_size = std::cmp::max(3, num_cpus::get() - 1);
         let builder = Client::builder()
+            .emulation(Emulation::Chrome131) // TLS fingerprint impersonation (Layer 2 WAF Evasion)
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
             .pool_max_idle_per_host(pool_size)
@@ -208,7 +210,7 @@ impl HttpClient {
 
         let client = builder
             .build()
-            .map_err(|e| ScraperError::Config(format!("Failed to create HTTP client: {}", e)))?;
+            .map_err(|e| ScraperError::Config(format!("failed to create http client: {}", e)))?;
 
         // Get user agents from fallback (synchronous)
         let user_agents = UserAgentCache::fallback_agents();
@@ -439,36 +441,27 @@ impl HttpClient {
     }
 }
 
-// Re-export types needed for legacy compatibility
-pub use reqwest_middleware::ClientWithMiddleware;
-
-// Legacy function - uses reqwest-middleware for backward compatibility
-/// Create configured HTTP client with retry middleware
+// Legacy function - simplified, returns wreq::Client directly
+/// Create configured HTTP client
 ///
-/// This function creates a client using reqwest-middleware for automatic retry.
+/// This function creates a client with basic configuration.
 /// For more control, use `HttpClient::new()` with `HttpClientConfig`.
-pub fn create_http_client() -> Result<ClientWithMiddleware, ScraperError> {
-    // Get fallback user agents (sync, no async needed)
+pub fn create_http_client() -> Result<Client, ScraperError> {
+    // Get fallback/user agents (sync, no async needed)
     let agents = UserAgentCache::fallback_agents();
     let user_agent = get_random_user_agent_from_pool(&agents);
 
     tracing::debug!("Using user agent: {}", user_agent);
 
-    let base_client = Client::builder()
+    let client = Client::builder()
+        .emulation(Emulation::Chrome131) // TLS fingerprint impersonation
         .user_agent(user_agent)
         .timeout(Duration::from_secs(30))
         .gzip(true)
         .brotli(true)
+        .cookie_store(true)
         .build()
-        .map_err(|e| ScraperError::Config(format!("Failed to create HTTP client: {}", e)))?;
-
-    use reqwest_middleware::ClientBuilder;
-    use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
-
-    let retry_policy = ExponentialBackoff::builder().build_with_max_retries(3);
-    let client = ClientBuilder::new(base_client)
-        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
-        .build();
+        .map_err(|e| ScraperError::Config(format!("failed to create http client: {}", e)))?;
 
     Ok(client)
 }
@@ -617,11 +610,10 @@ mod tests {
     #[test]
     fn test_http_client_has_user_agents() {
         let config = HttpClientConfig::default();
-        let _client = HttpClient::new(config).unwrap();
+        let client = HttpClient::new(config).unwrap();
 
-        // Client should have user agents (from fallback)
-        // We can't directly check private field, but we can verify it was created
-        assert!(true);
+        // Client was created successfully — user agents are loaded from fallback
+        drop(client);
     }
 
     #[tokio::test]
@@ -947,7 +939,8 @@ mod waf_detection_tests {
     async fn test_200_recaptcha_challenge_returns_waf_error() {
         let mock_server = MockServer::start().await;
 
-        let challenge_body = r#"<html><body><div class="g-recaptcha" data-sitekey="abc"></div></body></html>"#;
+        let challenge_body =
+            r#"<html><body><div class="g-recaptcha" data-sitekey="abc"></div></body></html>"#;
 
         Mock::given(method("GET"))
             .and(path("/"))
@@ -971,7 +964,8 @@ mod waf_detection_tests {
     async fn test_200_normal_page_returns_body() {
         let mock_server = MockServer::start().await;
 
-        let normal_body = "<html><body><article><h1>Real Content</h1><p>Normal page.</p></article></body></html>";
+        let normal_body =
+            "<html><body><article><h1>Real Content</h1><p>Normal page.</p></article></body></html>";
 
         Mock::given(method("GET"))
             .and(path("/"))

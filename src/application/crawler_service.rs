@@ -205,7 +205,7 @@ pub async fn scrape_urls_for_tui(
 ///
 /// Helper function for scrape_urls_for_tui.
 async fn scrape_single_url(
-    client: &reqwest_middleware::ClientWithMiddleware,
+    client: &wreq::Client,
     url: &Url,
     config: &ScraperConfig,
 ) -> ScraperResult<ScrapedContent> {
@@ -216,17 +216,17 @@ async fn scrape_single_url(
         .get(url.as_str())
         .send()
         .await
-        .map_err(|e| ScraperError::Middleware(e.to_string()))?;
+        .map_err(|e| ScraperError::Network(e.to_string()))?;
 
     let status = response.status();
     if !status.is_success() {
-        return Err(ScraperError::http(status, url.as_str()));
+        return Err(ScraperError::http(status.as_u16(), url.as_str()));
     }
 
     let html = response
         .text()
         .await
-        .map_err(|e| ScraperError::Middleware(e.to_string()))?;
+        .map_err(|e| ScraperError::Network(e.to_string()))?;
 
     // Try Readability first, fallback to plain text extraction
     match readability::parse(&html, Some(url.as_str())) {
@@ -716,11 +716,14 @@ async fn discover_sitemap_url(base_url: &str) -> Result<String, CrawlError> {
         .map_err(|e| CrawlError::InvalidUrl(e.to_string()))?;
 
     tracing::info!("Checking robots.txt: {}", robots_url);
-    if let Ok(response) = reqwest::get(robots_url).await {
+    if let Ok(response) = wreq::get(robots_url.as_str()).send().await {
         tracing::info!("robots.txt status: {}", response.status());
         if response.status().is_success() {
             if let Ok(content) = response.text().await {
-                tracing::info!("robots.txt content (first 500 chars):\n{}", &content[..content.len().min(500)]);
+                tracing::info!(
+                    "robots.txt content (first 500 chars):\n{}",
+                    &content[..content.len().min(500)]
+                );
                 // Extract Sitemap: directive
                 for line in content.lines() {
                     if line.to_lowercase().starts_with("sitemap:") {
@@ -728,19 +731,21 @@ async fn discover_sitemap_url(base_url: &str) -> Result<String, CrawlError> {
                             .strip_prefix("Sitemap:")
                             .or_else(|| line.strip_prefix("sitemap:"))
                         {
-                        let sitemap = sitemap.trim();
-                        // Resolve relative URLs from robots.txt against base
-                        let resolved = if sitemap.starts_with("http://") || sitemap.starts_with("https://") {
-                            Url::parse(sitemap).ok()
-                        } else {
-                            base.join(sitemap).ok()
-                        };
-                        if let Some(url) = resolved {
-                            tracing::debug!("Found sitemap in robots.txt: {}", url);
-                            return Ok(url.to_string());
-                        } else {
-                            tracing::warn!("Invalid sitemap URL in robots.txt: {}", sitemap);
-                        }
+                            let sitemap = sitemap.trim();
+                            // Resolve relative URLs from robots.txt against base
+                            let resolved = if sitemap.starts_with("http://")
+                                || sitemap.starts_with("https://")
+                            {
+                                Url::parse(sitemap).ok()
+                            } else {
+                                base.join(sitemap).ok()
+                            };
+                            if let Some(url) = resolved {
+                                tracing::debug!("Found sitemap in robots.txt: {}", url);
+                                return Ok(url.to_string());
+                            } else {
+                                tracing::warn!("Invalid sitemap URL in robots.txt: {}", sitemap);
+                            }
                         }
                     }
                 }
@@ -766,7 +771,7 @@ async fn discover_sitemap_url(base_url: &str) -> Result<String, CrawlError> {
 
         // Quick HEAD request to check if exists
         tracing::info!("Trying fallback sitemap: {}", sitemap_str);
-        if let Ok(response) = reqwest::Client::new().head(sitemap_str).send().await {
+        if let Ok(response) = wreq::Client::new().head(sitemap_str).send().await {
             tracing::info!("  Status: {}", response.status());
             if response.status().is_success() {
                 tracing::debug!("Found sitemap at fallback location: {}", sitemap_str);
@@ -882,11 +887,12 @@ fn parse_sitemap(xml_content: &str, base_url: &Url) -> Result<Vec<String>, Crawl
                 if !url_str.is_empty() {
                     // Resolve relative URLs against base_url
                     // Following url-join-relative: use base_url.join() for relative paths
-                    let resolved = if url_str.starts_with("http://") || url_str.starts_with("https://") {
-                        Url::parse(url_str).ok()
-                    } else {
-                        base_url.join(url_str).ok()
-                    };
+                    let resolved =
+                        if url_str.starts_with("http://") || url_str.starts_with("https://") {
+                            Url::parse(url_str).ok()
+                        } else {
+                            base_url.join(url_str).ok()
+                        };
                     if let Some(url) = resolved {
                         urls.push(url.to_string());
                     }
@@ -897,11 +903,12 @@ fn parse_sitemap(xml_content: &str, base_url: &Url) -> Result<Vec<String>, Crawl
                 let url_str = String::from_utf8_lossy(e).trim().to_string();
                 if !url_str.is_empty() {
                     // Resolve relative URLs against base_url
-                    let resolved = if url_str.starts_with("http://") || url_str.starts_with("https://") {
-                        Url::parse(&url_str).ok()
-                    } else {
-                        base_url.join(&url_str).ok()
-                    };
+                    let resolved =
+                        if url_str.starts_with("http://") || url_str.starts_with("https://") {
+                            Url::parse(&url_str).ok()
+                        } else {
+                            base_url.join(&url_str).ok()
+                        };
                     if let Some(url) = resolved {
                         urls.push(url.to_string());
                     }

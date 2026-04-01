@@ -27,8 +27,7 @@ use clap::Parser;
 use rust_scraper::{
     adapters::tui,
     application::{discover_urls_for_tui, scrape_urls_for_tui},
-    export_factory, validate_and_parse_url, Args, CrawlerConfig, ScraperConfig,
-    UserAgentCache,
+    export_factory, validate_and_parse_url, Args, CrawlerConfig, ScraperConfig, UserAgentCache,
 };
 use std::path::PathBuf;
 use tracing::{info, warn};

@@ -18,10 +18,10 @@ pub enum ScraperError {
     InvalidUrl(String),
 
     /// HTTP request failed with a status code
-    #[error("HTTP error {status} al acceder a {url}")]
+    #[error("http error {status} al acceder a {url}")]
     Http {
         /// The HTTP status code
-        status: reqwest::StatusCode,
+        status: u16,
         /// The URL that was being accessed
         url: String,
     },
@@ -35,11 +35,11 @@ pub enum ScraperError {
     Io(#[from] std::io::Error),
 
     /// Network error (connection failed, timeout, etc.)
-    #[error("Error de red: {0}")]
-    Network(#[from] reqwest::Error),
+    #[error("error de red: {0}")]
+    Network(String),
 
     /// Middleware error (from reqwest-middleware, e.g., retry failures)
-    #[error("Error de middleware: {0}")]
+    #[error("error de middleware: {0}")]
     Middleware(String),
 
     /// Serialization/Deserialization error (JSON, YAML, etc.)
@@ -228,7 +228,7 @@ impl ScraperError {
 
     /// Create an Http error
     #[must_use]
-    pub fn http(status: reqwest::StatusCode, url: &str) -> Self {
+    pub fn http(status: u16, url: &str) -> Self {
         Self::Http {
             status,
             url: url.to_string(),
@@ -293,8 +293,7 @@ mod tests {
 
     #[test]
     fn test_http_error() {
-        let status = reqwest::StatusCode::from_u16(404).unwrap();
-        let err = ScraperError::http(status, "https://example.com");
+        let err = ScraperError::http(404, "https://example.com");
         assert!(err.to_string().contains("404"));
         assert!(err.to_string().contains("example.com"));
     }

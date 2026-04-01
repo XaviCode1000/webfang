@@ -8,7 +8,7 @@ use crate::error::Result;
 use crate::ScraperConfig;
 use futures::stream::{self, StreamExt};
 use scraper;
-use std::path::PathBuf;
+use std::path::Path;
 use tracing::warn;
 
 /// Concurrency limit for asset downloads
@@ -61,10 +61,10 @@ pub async fn download_all(
 /// Download a batch of images with concurrency control
 async fn download_image_batch(
     images: &[crate::adapters::extractor::AssetUrl],
-    output_dir: &PathBuf,
+    output_dir: &Path,
 ) -> Vec<DownloadedAsset> {
     let tasks = images.iter().map(|img| {
-        let output_dir = output_dir.clone();
+        let output_dir = output_dir.to_path_buf();
         async move { download_single_asset(&img.url, "image", &output_dir).await }
     });
 
@@ -86,10 +86,10 @@ async fn download_image_batch(
 /// Download a batch of documents with concurrency control
 async fn download_document_batch(
     documents: &[crate::adapters::extractor::AssetUrl],
-    output_dir: &PathBuf,
+    output_dir: &Path,
 ) -> Vec<DownloadedAsset> {
     let tasks = documents.iter().map(|doc| {
-        let output_dir = output_dir.clone();
+        let output_dir = output_dir.to_path_buf();
         async move { download_single_asset(&doc.url, "document", &output_dir).await }
     });
 
@@ -112,13 +112,15 @@ async fn download_document_batch(
 async fn download_single_asset(
     url: &str,
     asset_type: &str,
-    output_dir: &PathBuf,
+    output_dir: &Path,
 ) -> Result<DownloadedAsset> {
-    use reqwest::Client;
     use sha2::{Digest, Sha256};
     use std::fs;
+    use wreq::Client;
+    use wreq_util::Emulation;
 
     let client = Client::builder()
+        .emulation(Emulation::Chrome131)
         .timeout(std::time::Duration::from_secs(30))
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .build()
@@ -152,10 +154,10 @@ async fn download_single_asset(
 
     // Create directory and write file
     if let Some(parent) = local_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| crate::error::ScraperError::Io(e))?;
+        fs::create_dir_all(parent).map_err(crate::error::ScraperError::Io)?;
     }
 
-    fs::write(&local_path, &bytes).map_err(|e| crate::error::ScraperError::Io(e))?;
+    fs::write(&local_path, &bytes).map_err(crate::error::ScraperError::Io)?;
 
     tracing::info!("Downloaded: {} -> {:?}", url, local_path);
 
