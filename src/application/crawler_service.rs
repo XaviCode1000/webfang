@@ -706,9 +706,19 @@ async fn discover_sitemap_url(base_url: &str) -> Result<String, CrawlError> {
                             .strip_prefix("Sitemap:")
                             .or_else(|| line.strip_prefix("sitemap:"))
                         {
-                            let sitemap = sitemap.trim();
-                            tracing::debug!("Found sitemap in robots.txt: {}", sitemap);
-                            return Ok(sitemap.to_string());
+                        let sitemap = sitemap.trim();
+                        // Resolve relative URLs from robots.txt against base
+                        let resolved = if sitemap.starts_with("http://") || sitemap.starts_with("https://") {
+                            Url::parse(sitemap).ok()
+                        } else {
+                            base.join(sitemap).ok()
+                        };
+                        if let Some(url) = resolved {
+                            tracing::debug!("Found sitemap in robots.txt: {}", url);
+                            return Ok(url.to_string());
+                        } else {
+                            tracing::warn!("Invalid sitemap URL in robots.txt: {}", sitemap);
+                        }
                         }
                     }
                 }
