@@ -641,8 +641,16 @@ pub async fn crawl_with_sitemap(
 
     // Auto-discover sitemap URL if not provided
     let sitemap_url = match sitemap_url {
-        Some(url) => url.to_string(),
-        None => discover_sitemap_url(base_url).await?,
+        Some(url) if !url.is_empty() => {
+            tracing::info!("Sitemap URL provided: {}", url);
+            url.to_string()
+        }
+        _ => {
+            tracing::info!("Auto-discovering sitemap URL for {}", base_url);
+            let discovered = discover_sitemap_url(base_url).await?;
+            tracing::info!("Discovered sitemap URL: {}", discovered);
+            discovered
+        }
     };
 
     tracing::info!("Using sitemap: {}", sitemap_url);
@@ -665,8 +673,11 @@ pub async fn crawl_with_sitemap(
 
     // Convert to DiscoveredUrl
     // Following own-borrow-over-clone: use Url directly, not String
-    let base_url =
-        Url::parse(&sitemap_url).unwrap_or_else(|_| Url::parse("https://example.com").unwrap());
+    // Following err-no-unwrap-prod: propagate parse errors instead of silent fallback
+    let base_url = Url::parse(&sitemap_url).map_err(|e| {
+        tracing::error!("Invalid sitemap URL '{}': {}", sitemap_url, e);
+        CrawlError::InvalidUrl(e.to_string())
+    })?;
     let discovered = urls
         .into_iter()
         .map(|url| DiscoveredUrl::html(url, 0, base_url.clone()))
@@ -696,9 +707,12 @@ async fn discover_sitemap_url(base_url: &str) -> Result<String, CrawlError> {
         .join("/robots.txt")
         .map_err(|e| CrawlError::InvalidUrl(e.to_string()))?;
 
+    tracing::info!("Checking robots.txt: {}", robots_url);
     if let Ok(response) = reqwest::get(robots_url).await {
+        tracing::info!("robots.txt status: {}", response.status());
         if response.status().is_success() {
             if let Ok(content) = response.text().await {
+                tracing::info!("robots.txt content (first 500 chars):\n{}", &content[..content.len().min(500)]);
                 // Extract Sitemap: directive
                 for line in content.lines() {
                     if line.to_lowercase().starts_with("sitemap:") {
@@ -743,7 +757,9 @@ async fn discover_sitemap_url(base_url: &str) -> Result<String, CrawlError> {
         let sitemap_str = sitemap_url.as_str();
 
         // Quick HEAD request to check if exists
+        tracing::info!("Trying fallback sitemap: {}", sitemap_str);
         if let Ok(response) = reqwest::Client::new().head(sitemap_str).send().await {
+            tracing::info!("  Status: {}", response.status());
             if response.status().is_success() {
                 tracing::debug!("Found sitemap at fallback location: {}", sitemap_str);
                 return Ok(sitemap_str.to_string());
@@ -752,10 +768,11 @@ async fn discover_sitemap_url(base_url: &str) -> Result<String, CrawlError> {
     }
 
     // Last resort: return default location (may 404, but caller handles)
-    Ok(base
+    let fallback = base
         .join("/sitemap.xml")
-        .map_err(|e| CrawlError::InvalidUrl(e.to_string()))?
-        .to_string())
+        .map_err(|e| CrawlError::InvalidUrl(e.to_string()))?;
+    tracing::info!("No sitemap found, using default: {}", fallback);
+    Ok(fallback.to_string())
 }
 
 /// Fetch and parse a sitemap.xml file (legacy - kept for backwards compatibility)
@@ -789,13 +806,14 @@ pub async fn fetch_sitemap(base_url: &str) -> Result<Vec<String>, CrawlError> {
 
         // Create minimal config for sitemap fetch
         let seed = Url::parse(base_url).map_err(|e| CrawlError::InvalidUrl(e.to_string()))?;
-        let config = Arc::new(CrawlerConfig::new(seed));
+        let config = Arc::new(CrawlerConfig::new(seed.clone()));
         let config_clone = Arc::clone(&config);
 
         match fetch_url(sitemap_url, &config_clone).await {
             Ok(response) => {
                 // Parse sitemap XML using quick-xml (streaming parser)
-                match parse_sitemap(&response) {
+                // Pass seed as base_url for relative URL resolution
+                match parse_sitemap(&response, &seed) {
                     Ok(urls) => {
                         info!("Found {} URLs in {}", urls.len(), sitemap_url);
                         all_urls.extend(urls);
@@ -831,7 +849,7 @@ pub async fn fetch_sitemap(base_url: &str) -> Result<Vec<String>, CrawlError> {
 ///
 /// * `Ok(Vec<String>)` - List of URLs
 /// * `Err(CrawlError)` - Parse error
-fn parse_sitemap(xml_content: &str) -> Result<Vec<String>, CrawlError> {
+fn parse_sitemap(xml_content: &str, base_url: &Url) -> Result<Vec<String>, CrawlError> {
     use quick_xml::events::Event;
     use quick_xml::Reader;
 
@@ -855,16 +873,33 @@ fn parse_sitemap(xml_content: &str) -> Result<Vec<String>, CrawlError> {
             }
             Ok(Event::Text(ref e)) if in_loc => {
                 let text = e.unescape().map_err(|e| CrawlError::Parse(e.to_string()))?;
-                let url = text.trim().to_string();
-                if !url.is_empty() {
-                    urls.push(url);
+                let url_str = text.trim();
+                if !url_str.is_empty() {
+                    // Resolve relative URLs against base_url
+                    // Following url-join-relative: use base_url.join() for relative paths
+                    let resolved = if url_str.starts_with("http://") || url_str.starts_with("https://") {
+                        Url::parse(url_str).ok()
+                    } else {
+                        base_url.join(url_str).ok()
+                    };
+                    if let Some(url) = resolved {
+                        urls.push(url.to_string());
+                    }
                 }
             }
             Ok(Event::CData(ref e)) if in_loc => {
                 // Handle CDATA sections - BytesCData derefs to [u8]
-                let url = String::from_utf8_lossy(e).trim().to_string();
-                if !url.is_empty() {
-                    urls.push(url);
+                let url_str = String::from_utf8_lossy(e).trim().to_string();
+                if !url_str.is_empty() {
+                    // Resolve relative URLs against base_url
+                    let resolved = if url_str.starts_with("http://") || url_str.starts_with("https://") {
+                        Url::parse(&url_str).ok()
+                    } else {
+                        base_url.join(&url_str).ok()
+                    };
+                    if let Some(url) = resolved {
+                        urls.push(url.to_string());
+                    }
                 }
             }
             Ok(Event::Eof) => break,
@@ -895,7 +930,8 @@ mod tests {
     </url>
 </urlset>"#;
 
-        let urls = parse_sitemap(xml).unwrap();
+        let base = Url::parse("https://example.com").unwrap();
+        let urls = parse_sitemap(xml, &base).unwrap();
         assert_eq!(urls.len(), 3);
         assert_eq!(urls[0], "https://example.com/page1");
         assert_eq!(urls[1], "https://example.com/page2");
@@ -910,7 +946,8 @@ mod tests {
     <url><loc>https://example.com/page2</loc></url>
 </urlset>"#;
 
-        let urls = parse_sitemap(xml).unwrap();
+        let base = Url::parse("https://example.com").unwrap();
+        let urls = parse_sitemap(xml, &base).unwrap();
         assert_eq!(urls.len(), 2);
         assert!(urls.contains(&"https://example.com/page1".to_string()));
         assert!(urls.contains(&"https://example.com/page2".to_string()));
@@ -926,7 +963,8 @@ mod tests {
     </url>
 </urlset>"#;
 
-        let urls = parse_sitemap(xml).unwrap();
+        let base = Url::parse("https://example.com").unwrap();
+        let urls = parse_sitemap(xml, &base).unwrap();
         assert_eq!(urls.len(), 1);
         assert_eq!(urls[0], "https://example.com/page1");
     }
@@ -937,7 +975,8 @@ mod tests {
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 </urlset>"#;
 
-        let urls = parse_sitemap(xml).unwrap();
+        let base = Url::parse("https://example.com").unwrap();
+        let urls = parse_sitemap(xml, &base).unwrap();
         assert!(urls.is_empty());
     }
 
