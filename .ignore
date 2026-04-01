@@ -1,0 +1,17 @@
+# ═══════════════════════════════════════════════════════════
+# .ignore — Ripgrep exceptions
+# ═══════════════════════════════════════════════════════════
+#
+# This file tells ripgrep (rg) to search directories that are
+# in .gitignore. Does NOT affect git — only rg/grep tools.
+#
+# See: https://github.com/BurntSushi/ripgrep/blob/master/GUIDE.md#automatic-filtering
+# ═══════════════════════════════════════════════════════════
+
+# AI agent instructions and skills (useful for searching conventions)
+!.agents/
+!.agent/
+!.qwen/
+
+# SDD artifacts (proposals, specs, designs)
+!.atl/
