@@ -18,7 +18,7 @@
 | **Issues Closed** | 11+ |
 | **PRs Merged** | 6+ |
 | **First Commit** | a70b17c - chore: initialize rust_scraper project structure |
-| **Latest Commit** | ef70671 - SPA detection warning + JsRenderer trait stub |
+| **Latest Commit** | 44b286d - fix(spa-detection): search markers in raw HTML, remove dead has_empty_title |
 
 ---
 
@@ -75,12 +75,18 @@
 #### Detection Heuristics
 A page is flagged as potentially SPA-dependent when:
 - Extracted content < 50 characters after readability/fallback extraction
-- Future phases will add: empty title detection, SPA mount point scanning, semantic HTML analysis
+- SPA mount points detected in raw HTML: `<div id="root">`, `<div id="app">`
+
+#### Bugfix (post-release)
+- **SPA markers now searched in raw HTML** instead of extracted text (they never matched before)
+- **Removed dead `has_empty_title` field** that analyzed hostname instead of HTML `<title>` tag
+- **Differentiated warning messages**: "SPA markers detected" vs "minimal content"
+- Commit: `44b286d`
 
 #### Test Results
 ```
-cargo nextest run → 271 tests passed
-cargo clippy -- -D warnings → ✅ clean
+cargo nextest run → 293 tests passed
+cargo clippy -- -D warnings → ✅ clean (pre-existing vector_exporter error fixed)
 ```
 
 ---

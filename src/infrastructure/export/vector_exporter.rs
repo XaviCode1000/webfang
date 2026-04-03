@@ -100,8 +100,8 @@ impl VectorExporter {
             if len > 0 {
                 let seek_start = len.saturating_sub(256);
                 f.seek(SeekFrom::Start(seek_start))?;
-                let mut buf = vec![0u8; (len - seek_start) as usize];
-                f.read(&mut buf)?;
+                let mut buf = Vec::new();
+                f.read_to_end(&mut buf)?;
 
                 let content = String::from_utf8_lossy(&buf);
                 if let Some(last_bracket) = content.rfind(']') {
