@@ -1,6 +1,6 @@
 # CLI Reference — rust-scraper
 
-**Version:** 1.6.0  
+**Version:** 1.1.0  
 **MSRV:** 1.88  
 **Last Updated:** 2026-04-04
 
@@ -114,7 +114,7 @@ cargo run -- --url "https://example.com" --export-format auto
 cargo run -- --url "https://example.com" -o ./my-scrapes
 ```
 
-### Obsidian Integration (v1.5.0+)
+### Obsidian Integration (v1.1.0+)
 
 #### Vault Detection
 

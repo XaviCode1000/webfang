@@ -11,7 +11,7 @@
 
 | Metric | Value |
 |--------|-------|
-| **Current Version** | v1.6.0 (unreleased) |
+| **Current Version** | v1.1.0 (unreleased) |
 | **Total Commits** | 110+ |
 | **Commits Since v1.0.0** | 65+ |
 | **Total Contributors** | 2 (XaviCode1000: 76, Xavi: 3) |
@@ -39,14 +39,14 @@
 | 2026-03-10 | AI Semantic Cleaning (Issue #9) | 17cc20c |
 | 2026-03-11 | Embeddings Bug Fix | 528657b |
 | 2026-04-01 | **v1.3.0 Release** - SPA Detection Phase 1 | ef70671 |
-| 2026-04-04 | **v1.5.0 Release** — Obsidian Markdown Export | PR #24 |
-| 2026-04-04 | **v1.6.0 Release** — Vault Auto-Detect & Quick-Save | PR #24 |
+| 2026-04-04 | **v1.1.0 Release** — Obsidian Markdown Export | PR #24 |
+| 2026-04-04 | **v1.1.0 Release** — Vault Auto-Detect & Quick-Save | PR #24 |
 
 ---
 
 ## 📦 Release History
 
-### [v1.6.0] - 2026-04-04 — Vault Auto-Detect & Quick-Save
+### [v1.1.0] - 2026-04-04 — Vault Auto-Detect & Quick-Save
 
 **PR**: [#24](https://github.com/XaviCode1000/rust-scraper/pull/24)
 
@@ -64,7 +64,7 @@
 - 361 tests passing (36 new)
 - 0 clippy warnings
 
-### [v1.5.0] - 2026-04-04 — Obsidian Markdown Export
+### [v1.1.0] - 2026-04-04 — Obsidian Markdown Export
 
 **PR**: [#24](https://github.com/XaviCode1000/rust-scraper/pull/24)
 

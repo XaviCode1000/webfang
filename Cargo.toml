@@ -1,6 +1,6 @@
 [package]
 name = "rust_scraper"
-version = "1.6.0"
+version = "1.1.0"
 edition = "2021"
 description = "Production-ready web scraper with Clean Architecture, TUI selector, and sitemap support"
 authors = ["GazaDev"]

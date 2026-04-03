@@ -4,16 +4,16 @@
 
 **Tests:** **361 passing** (nextest)  
 **Status:** ✅ **All tests passing, 0 failing**  
-**Version:** v1.6.0 — Vault Auto-Detect & Quick-Save
+**Version:** v1.1.0 — Vault Auto-Detect & Quick-Save
 
-### v1.6.0 Highlights
+### v1.1.0 Highlights
 - **Vault auto-detect:** 4-tier resolution (CLI > env > config > auto-scan)
 - **Quick-save mode:** `--obsidian --quick-save` bypasses TUI, saves to vault inbox
 - **Rich metadata:** readingTime, language, wordCount, contentType, status for Dataview
 - **Obsidian URI:** Opens saved notes in Obsidian via `obsidian://open` (Linux)
 - **36 new tests** covering vault detection, metadata generation, and URI building
 
-### v1.5.0 Highlights
+### v1.1.0 Highlights
 - **Obsidian Markdown export:** Wiki-links, relative asset paths, tags in frontmatter
 - **New module:** `src/infrastructure/converter/obsidian.rs`
 - **New dependency:** `pathdiff = "0.2"` for cross-platform relative paths

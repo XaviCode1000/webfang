@@ -6,7 +6,7 @@
 [![Tests](https://img.shields.io/badge/tests-361%20passing-brightgreen)](https://github.com/XaviCode1000/rust-scraper)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-1.6.0-blue)](https://github.com/XaviCode1000/rust-scraper/releases)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue)](https://github.com/XaviCode1000/rust-scraper/releases)
 
 ---
 
@@ -68,7 +68,7 @@
 - **Bounded Concurrency** — Configurable parallel downloads (HDD-aware defaults)
 - **Hardware-Aware** — Auto-detects CPU cores, adjusts concurrency accordingly
 
-### 📝 Obsidian Integration (v1.5.0+)
+### 📝 Obsidian Integration (v1.1.0+)
 
 - **Obsidian-compatible Markdown** — Wiki-links, relative asset paths, tags in frontmatter
 - **Vault auto-detect** — Automatic vault discovery via CLI, env var, config, or filesystem scan
@@ -215,7 +215,7 @@ cargo build --release --features ai
 
 **Requirements:** Compile with `--features ai`
 
-### Obsidian Integration (v1.5.0+)
+### Obsidian Integration (v1.1.0+)
 
 ```bash
 # Quick-save to detected vault (no TUI, no confirmation)
@@ -717,7 +717,7 @@ By contributing to this project, you agree that your contributions will be licen
 | **Public Functions** | 70+ |
 | **MSRV** | 1.88.0 |
 | **Dependencies** | 50+ (core), 65+ (with AI) |
-| **Latest Version** | 1.6.0 |
+| **Latest Version** | 1.1.0 |
 | **Test Runner** | cargo-nextest (4x faster) |
 | **Background Checker** | bacon (instant feedback) |
 | **Clippy** | 0 warnings, 0 errors |
@@ -741,8 +741,8 @@ By contributing to this project, you agree that your contributions will be licen
 - [x] **v1.0.7** — Network hardening (`connect_timeout`, `pool_max_idle_per_host`)
 - [x] **v1.1.0** — CLI UX: CliExit, sysexits, progress bars, dry-run, quiet, completions, config file, NO_COLOR
 - [x] **v1.1.0** — Vector Exporter: JSON with embeddings, cosine similarity, dimension validation, append mode fix
-- [x] **v1.5.0** — Obsidian Markdown export (wiki-links, relative assets, tags)
-- [x] **v1.6.0** — Vault auto-detect, quick-save mode, rich metadata, Obsidian URI
+- [x] **v1.1.0** — Obsidian Markdown export (wiki-links, relative assets, tags)
+- [x] **v1.1.0** — Vault auto-detect, quick-save mode, rich metadata, Obsidian URI
 
 ### Planned 🚧
 

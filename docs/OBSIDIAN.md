@@ -1,6 +1,6 @@
 # Obsidian Integration — rust-scraper
 
-**Version:** 1.6.0  
+**Version:** 1.1.0  
 **Last Updated:** 2026-04-04
 
 ---
