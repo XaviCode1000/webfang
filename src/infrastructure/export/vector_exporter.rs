@@ -30,21 +30,26 @@ use crate::domain::exporter::{ExportResult, Exporter, ExporterConfig, ExporterEr
 /// * `a` - First vector
 /// * `b` - Second vector
 ///
-/// # Panics
-/// Panics if vectors have different dimensions
+/// # Errors
+/// Returns `DimensionMismatch` if vectors have different dimensions
 #[inline]
-pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    assert_eq!(a.len(), b.len(), "vectors must have same dimensions");
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Result<f32, ExporterError> {
+    if a.len() != b.len() {
+        return Err(ExporterError::DimensionMismatch {
+            expected: b.len(),
+            actual: a.len(),
+        });
+    }
 
     let dot_product: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let mag_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let mag_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
 
     if mag_a == 0.0 || mag_b == 0.0 {
-        return 0.0;
+        return Ok(0.0);
     }
 
-    dot_product / (mag_a * mag_b)
+    Ok(dot_product / (mag_a * mag_b))
 }
 
 /// VectorExporter for RAG pipeline
@@ -70,9 +75,9 @@ impl VectorExporter {
 
     /// Create a new VectorExporter with custom output path
     #[must_use]
-    pub fn new_with_path(config: ExporterConfig, output_dir: PathBuf) -> Self {
+    pub fn new_with_path(config: ExporterConfig, output_dir: impl Into<PathBuf>) -> Self {
         let mut config = config;
-        config.output_dir = output_dir;
+        config.output_dir = output_dir.into();
         Self {
             config,
             dimensions: Mutex::new(None),
@@ -228,7 +233,7 @@ impl Exporter for VectorExporter {
         Ok(())
     }
 
-    fn export_batch(&self, documents: Vec<DocumentChunk>) -> ExportResult<()> {
+    fn export_batch(&self, documents: &[DocumentChunk]) -> ExportResult<()> {
         if documents.is_empty() {
             return Ok(());
         }
@@ -298,7 +303,7 @@ mod tests {
     fn test_cosine_similarity_identical() {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![1.0, 0.0, 0.0];
-        let result = cosine_similarity(&a, &b);
+        let result = cosine_similarity(&a, &b).unwrap();
         assert!((result - 1.0).abs() < 1e-6);
     }
 
@@ -306,7 +311,7 @@ mod tests {
     fn test_cosine_similarity_orthogonal() {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![0.0, 1.0, 0.0];
-        let result = cosine_similarity(&a, &b);
+        let result = cosine_similarity(&a, &b).unwrap();
         assert!(result.abs() < 1e-6);
     }
 
@@ -314,7 +319,7 @@ mod tests {
     fn test_cosine_similarity_zero_magnitude() {
         let a = vec![0.0, 0.0, 0.0];
         let b = vec![1.0, 2.0, 3.0];
-        let result = cosine_similarity(&a, &b);
+        let result = cosine_similarity(&a, &b).unwrap();
         assert_eq!(result, 0.0);
     }
 
@@ -322,18 +327,18 @@ mod tests {
     fn test_cosine_similarity_normal() {
         let a = vec![1.0, 2.0, 3.0];
         let b = vec![4.0, 5.0, 6.0];
-        let result = cosine_similarity(&a, &b);
+        let result = cosine_similarity(&a, &b).unwrap();
         // Expected: (1*4 + 2*5 + 3*6) / (sqrt(14) * sqrt(77))
         // = 32 / (3.741... * 8.774...) ≈ 0.9746
         assert!((result - 0.9746).abs() < 1e-3);
     }
 
     #[test]
-    #[should_panic(expected = "vectors must have same dimensions")]
     fn test_cosine_similarity_dimension_mismatch() {
         let a = vec![1.0, 2.0];
         let b = vec![1.0, 2.0, 3.0];
-        cosine_similarity(&a, &b);
+        let result = cosine_similarity(&a, &b);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -405,7 +410,7 @@ mod tests {
         let config = create_test_config();
         let exporter = VectorExporter::new(config);
 
-        let result = exporter.export_batch(vec![]);
+        let result = exporter.export_batch(&[]);
         assert!(result.is_ok());
     }
 
@@ -422,7 +427,7 @@ mod tests {
         let exporter1 = VectorExporter::new(config1);
 
         let docs1 = vec![create_test_chunk(), create_test_chunk()];
-        let result = exporter1.export_batch(docs1);
+        let result = exporter1.export_batch(&docs1);
         assert!(result.is_ok(), "first batch should succeed: {:?}", result.err());
 
         let file1_path = temp_dir.join("test_export.json");

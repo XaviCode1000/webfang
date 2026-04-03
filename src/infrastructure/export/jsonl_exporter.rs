@@ -86,12 +86,12 @@ impl crate::domain::exporter::Exporter for JsonlExporter {
         Ok(())
     }
 
-    fn export_batch(&self, documents: Vec<DocumentChunk>) -> ExportResult<()> {
+    fn export_batch(&self, documents: &[DocumentChunk]) -> ExportResult<()> {
         let count = documents.len();
         let mut writer = self.get_writer()?;
 
         for doc in documents {
-            let line = self.serialize_line(&doc)?;
+            let line = self.serialize_line(doc)?;
             writer.write_all(line.as_bytes())?;
             writer.write_all(b"\n")?;
         }
@@ -170,7 +170,7 @@ mod tests {
             create_test_chunk("Title 3"),
         ];
 
-        let result = exporter.export_batch(chunks);
+        let result = exporter.export_batch(&chunks);
         assert!(result.is_ok());
 
         let output_path = temp_dir.path().join("batch_test.jsonl");

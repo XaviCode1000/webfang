@@ -161,11 +161,11 @@ pub trait Exporter: Send + Sync + 'static {
     /// - Maintain transaction semantics
     ///
     /// # Arguments
-    /// * `documents` - Collection of document chunks to export
+    /// * `documents` - Slice of document chunks to export
     ///
     /// # Errors
     /// Returns ExporterError if any document fails to export
-    fn export_batch(&self, documents: Vec<DocumentChunk>) -> ExportResult<()>;
+    fn export_batch(&self, documents: &[DocumentChunk]) -> ExportResult<()>;
 
     /// Get the configuration for this exporter
     fn config(&self) -> &ExporterConfig;
@@ -190,13 +190,13 @@ pub trait ExporterExt: Exporter {
     /// Export multiple scraped contents in batch
     fn export_scraped_batch(
         &self,
-        scraped_contents: Vec<crate::domain::ScrapedContent>,
+        scraped_contents: &[crate::domain::ScrapedContent],
     ) -> ExportResult<()> {
         let chunks: Vec<DocumentChunk> = scraped_contents
             .iter()
             .map(DocumentChunk::from_scraped_content)
             .collect();
-        self.export_batch(chunks)
+        self.export_batch(&chunks)
     }
 
     /// Check if the exporter is configured to append
