@@ -127,7 +127,7 @@ fn save_as_markdown(
             rich_meta.as_ref(),
         );
 
-        let final_content = format!("---\n{}---\n\n{}", fm.trim(), processed);
+        let final_content = format!("---\n{}\n---\n\n{}", fm.trim_end(), processed);
         fs::write(&full_path, final_content)?;
         tracing::info!("💾 Saved: {}", full_path.display());
     }
