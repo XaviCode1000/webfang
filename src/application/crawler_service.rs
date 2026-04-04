@@ -109,10 +109,29 @@ pub async fn discover_urls_for_tui(
             .await
             .map_err(|e| anyhow::anyhow!("HTTP error: {}", e))?;
 
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap_or("unknown"))
+            .unwrap_or("unknown");
+        let content_length = response
+            .headers()
+            .get("content-length")
+            .map(|v| v.to_str().unwrap_or("0"))
+            .unwrap_or("0");
+
+        debug!(
+            "Response: status={}, content-type={}, content-length={}",
+            status, content_type, content_length
+        );
+
         let html = response
             .text()
             .await
             .map_err(|e| anyhow::anyhow!("Network error: {}", e))?;
+
+        debug!("Received HTML: {} bytes", html.len());
 
         let base = Url::parse(base_url).map_err(|e| anyhow::anyhow!("Invalid URL: {}", e))?;
 

@@ -206,7 +206,8 @@ impl HttpClient {
             .pool_idle_timeout(Duration::from_secs(60))
             .gzip(true)
             .brotli(true)
-            .cookie_store(true); // Explicitly enable cookies for session persistence
+            .cookie_store(true) // Explicitly enable cookies for session persistence
+            .redirect(wreq::redirect::Policy::limited(10)); // Follow up to 10 redirects
 
         let client = builder
             .build()
@@ -469,6 +470,7 @@ pub fn create_http_client() -> Result<Client, ScraperError> {
         .gzip(true)
         .brotli(true)
         .cookie_store(true)
+        .redirect(wreq::redirect::Policy::limited(10)) // Follow up to 10 redirects
         .build()
         .map_err(|e| ScraperError::Config(format!("failed to create http client: {}", e)))?;
 
