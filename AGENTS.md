@@ -407,7 +407,7 @@ cargo doc --no-deps              # Docs
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **rust_scraper** (3146 symbols, 5916 relationships, 277 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **rust_scraper** (3515 symbols, 6453 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `bunx gitnexus analyze` in terminal first.
 

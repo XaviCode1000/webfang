@@ -135,28 +135,15 @@ cargo build --release --features ai
 
 ## 🚀 Usage
 
-### Basic (Headless Mode)
+### Interactive Mode (TUI) — Recommended for Beginners
+
+The TUI lets you discover URLs, select which ones to scrape, and confirm before downloading:
 
 ```bash
-# Scrape all URLs from a website
-./target/release/rust_scraper --url https://example.com
-
-# With sitemap (auto-discovers from robots.txt)
-./target/release/rust_scraper --url https://example.com --use-sitemap
-
-# Explicit sitemap URL
-./target/release/rust_scraper --url https://example.com \
-  --use-sitemap \
-  --sitemap-url https://example.com/sitemap.xml.gz
-```
-
-### Interactive Mode (TUI)
-
-```bash
-# Select URLs interactively before downloading
+# Launch interactive URL selector
 ./target/release/rust_scraper --url https://example.com --interactive
 
-# With sitemap
+# With sitemap discovery
 ./target/release/rust_scraper --url https://example.com \
   --interactive \
   --use-sitemap
@@ -173,6 +160,23 @@ cargo build --release --features ai
 | `Enter` | Confirm download |
 | `Y` / `N` | Final confirmation |
 | `q` | Quit |
+
+### Basic (Headless Mode)
+
+For scripting and automation:
+
+```bash
+# Scrape all URLs from a website
+./target/release/rust_scraper --url https://example.com
+
+# With sitemap (auto-discovers from robots.txt)
+./target/release/rust_scraper --url https://example.com --use-sitemap
+
+# Explicit sitemap URL
+./target/release/rust_scraper --url https://example.com \
+  --use-sitemap \
+  --sitemap-url https://example.com/sitemap.xml.gz
+```
 
 ### Advanced Options
 
