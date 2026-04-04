@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-04-04
+
 ### 🎉 Added
 
-#### Obsidian Integration — v1.1.0
+#### Obsidian Integration
 - **Obsidian Markdown Export:** Wiki-links conversion (`[text](url)` → `[[slug|text]]`), relative asset paths, tags in YAML frontmatter
 - **Vault Auto-Detect:** 4-tier resolution: CLI `--vault` > env `OBSIDIAN_VAULT` > config file > auto-scan upward for `.obsidian/app.json`
 - **Quick-Save Mode:** `--obsidian --quick-save` bypasses TUI, saves directly to `{vault}/_inbox/YYYY-MM-DD-slug.md`
@@ -424,7 +426,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Commits | Key Feature |
 |---------|------|---------|-------------|
-| [Unreleased] | - | 20+ | Obsidian Markdown Export + Vault Auto-Detect + Quick-Save |
+| [1.1.0] | 2026-04-04 | 19 | Obsidian Integration + Vault Auto-Detect + Quick-Save |
 | [1.0.7] | 2026-03-31 | — | WAF Detection, File Locking, OOM Protection |
 | [1.0.4] | 2026-03-10 | 20 | RAG Export Pipeline + AI Foundation |
 | [1.0.0] | 2026-03-08 | 79 | Production Ready Release |

@@ -39,48 +39,37 @@
 | 2026-03-10 | AI Semantic Cleaning (Issue #9) | 17cc20c |
 | 2026-03-11 | Embeddings Bug Fix | 528657b |
 | 2026-04-01 | **v1.3.0 Release** - SPA Detection Phase 1 | ef70671 |
-| 2026-04-04 | **v1.1.0 Release** — Obsidian Markdown Export | PR #24 |
-| 2026-04-04 | **v1.1.0 Release** — Vault Auto-Detect & Quick-Save | PR #24 |
+| 2026-04-04 | **v1.1.0 Release** — Obsidian Integration (Markdown Export + Vault Auto-Detect + Quick-Save) | PR #24 |
 
 ---
 
 ## 📦 Release History
 
-### [v1.1.0] - 2026-04-04 — Vault Auto-Detect & Quick-Save
+### [v1.1.0] - 2026-04-04 — Obsidian Integration
 
 **PR**: [#24](https://github.com/XaviCode1000/rust-scraper/pull/24)
 
 #### Added
+- **Obsidian Markdown Export:** Wiki-links conversion, relative asset paths, tags in frontmatter
 - **Vault auto-detect** — 4-tier resolution: CLI `--vault` > env `OBSIDIAN_VAULT` > config file > auto-scan upward for `.obsidian/app.json`
 - **Quick-save mode** — `--obsidian --quick-save` bypasses TUI, saves directly to `{vault}/_inbox/YYYY-MM-DD-slug.md`
 - **Rich metadata** — Extended YAML frontmatter with `readingTime`, `language`, `wordCount`, `contentType`, `status` for Dataview
 - **Obsidian URI** — Opens saved notes in Obsidian via `obsidian://open?vault=...&file=...` (Linux, fire-and-forget)
-- **New module** — `src/infrastructure/obsidian/` with `vault_detector.rs`, `metadata.rs`, `uri.rs`
+- **New modules** — `src/infrastructure/converter/obsidian.rs`, `src/infrastructure/obsidian/` (vault_detector, metadata, uri)
 
 #### Dependencies
-- **Added:** `whatlang = "0.18"` (language detection), `urlencoding = "2.1"` (URI encoding), `slug = "0.1"` (filename generation)
+- **Added:** `pathdiff = "0.2"`, `whatlang = "0.18"`, `urlencoding = "2.1"`, `slug = "0.1"`
 
 #### Testing
 - 361 tests passing (36 new)
 - 0 clippy warnings
 
-### [v1.1.0] - 2026-04-04 — Obsidian Markdown Export
-
-**PR**: [#24](https://github.com/XaviCode1000/rust-scraper/pull/24)
-
-#### Added
-- **Wiki-links conversion** — Same-domain `[text](url)` → `[[slug|text]]` for Obsidian compatibility
-- **Relative asset paths** — Absolute paths rewritten as relative to `.md` file location
-- **Tags in frontmatter** — `--obsidian-tags "tag1,tag2"` adds YAML frontmatter tags
-- **CLI flags** — `--obsidian-wiki-links`, `--obsidian-tags`, `--obsidian-relative-assets`
-- **New module** — `src/infrastructure/converter/obsidian.rs` with regex alternation to skip code blocks
-
-#### Dependencies
-- **Added:** `pathdiff = "0.2"` for cross-platform relative paths
-
-#### Testing
-- 330 tests passing (11 new)
-- 0 clippy warnings
+#### Bug Fixes
+- `completions` subcommand no longer requires `--url`
+- Frontmatter closing `---` delimiter properly formatted
+- Wiki-links no longer corrupt embedded images
+- Relative paths correctly converted to wiki-links
+- HttpClient redirect policy for cross-subdomain support
 
 ### [v1.3.0] - 2026-04-01 - SPA Detection Warning + JsRenderer Trait (Phase 1)
 
