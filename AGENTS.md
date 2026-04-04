@@ -25,37 +25,6 @@ bacon                                                # Background checker (auto-
 
 ---
 
-## Code Style
-
-```rust
-// Error handling: thiserror for domain/infra, anyhow for app/binary
-#[derive(Error, Debug)]
-pub enum ScraperError {
-    #[error("URL inválida: {0}")]
-    InvalidUrl(String),
-    #[error("error de red: {0}")]
-    Network(String),
-}
-
-// Async: never hold locks across .await, use JoinSet for parallel tasks
-async fn scrape_urls(&self, urls: &[Url]) -> Vec<Result<Content>> {
-    let mut tasks = JoinSet::new();
-    for url in urls {
-        let client = self.client.clone();
-        tasks.spawn(async move { fetch(&client, url).await });
-    }
-    // collect results...
-}
-
-// Feature gating: #[cfg(feature = "ai")] for ONNX-dependent code
-#[cfg(feature = "ai")]
-pub use domain::semantic_cleaner::SemanticCleaner;
-```
-
-**Conventions:** Named exports only, no defaults. `snake_case` functions, `UpperCamelCase` types. No `get_` prefix. Error messages lowercase, no trailing punctuation.
-
----
-
 ## Non-Obvious Patterns
 
 ### Crate version conflicts (DO NOT try to unify)
@@ -78,34 +47,6 @@ Responses are scanned for 19 WAF signatures (Cloudflare, reCAPTCHA, hCaptcha, Da
 
 ---
 
-## Testing Rules
-
-```bash
-cargo nextest run --test-threads 2                   # Standard test run
-cargo nextest run --test-threads 2 --features ai     # With AI tests
-```
-
-- Tests use `#[cfg(test)] mod tests { }` pattern
-- Async tests: `#[tokio::test]`
-- Structure: Arrange → Act → Assert
-- Use `use super::*;` in test modules
-- Mock external dependencies with `mockall`
-- **Never delete a failing test** — only fix or extend
-
----
-
-## Clean Architecture
-
-```
-Domain (pure, no frameworks) → Application (orchestration) → Infrastructure (implementations) → Adapters (TUI, CLI)
-```
-
-**VIOLATION = REJECT:** Domain layer importing `tokio`, `wreq`, or any I/O crate.
-
-Error handling by layer: Domain → `thiserror`, Application → `anyhow`, Infrastructure → `thiserror`, Binary → `anyhow`.
-
----
-
 ## Boundaries
 
 ### ✅ Always
@@ -119,40 +60,33 @@ Error handling by layer: Domain → `thiserror`, Application → `anyhow`, Infra
 - Adding or removing dependencies
 - Changing feature flag structure
 - Modifying `Cargo.toml` profiles
-- Database or schema changes
 
 ### 🚫 Never
 - Commit secrets, `.env` files, or credentials
 - Use `.unwrap()` in production code — use `?` or `match`
-- Hold `Mutex`/`RwLock` across `.await` points
 - Force push to main or protected branches
 - Modify `target/`, `dist/`, or `build/` directories
 - Run `cargo build --release` during development (use `cargo check`)
 
 ---
 
-## GitNexus — Code Intelligence
+## Skills
 
-This project is indexed by GitNexus: **3515 symbols, 6453 relationships, 300 execution flows**.
+| Skill | Location | Trigger |
+|-------|----------|---------|
+| **rust-skills** | `~/.config/opencode/skills/rust-skills/SKILL.md` | Any Rust code (179 rules) |
+| **gitnexus-exploring** | `~/.config/opencode/skill/gitnexus-exploring/` | "How does X work?" |
+| **gitnexus-impact-analysis** | `~/.config/opencode/skill/gitnexus-impact-analysis/` | "What breaks if I change X?" |
+| **gitnexus-debugging** | `~/.config/opencode/skill/gitnexus-debugging/` | "Why is X failing?" |
+| **gitnexus-refactoring** | `~/.config/opencode/skill/gitnexus-refactoring/` | Rename, extract, split, move |
+| **gitnexus-cli** | `~/.config/opencode/skill/gitnexus-cli/` | Index, status, clean, wiki |
+| **gitnexus-guide** | `~/.config/opencode/skill/gitnexus-guide/` | Tools, schema, resources |
 
-```bash
-bunx gitnexus analyze              # Re-index after code changes
-bunx gitnexus status               # Check index freshness
-```
-
-**Before editing any symbol:** Run impact analysis to check blast radius.
-**Before committing:** Run `gitnexus_detect_changes()` to verify scope.
-**When exploring:** Use `gitnexus_query()` instead of grep for execution flows.
-**When debugging:** Use `gitnexus_context()` for 360° symbol view.
-
-> If index is stale, run `bunx gitnexus analyze` first.
+> Index: `bunx gitnexus analyze` · Status: `bunx gitnexus status`
 
 ---
 
 ## Resources
 
-- [rust-skills](rust-skills/SKILL.md) — 179 Rust rules (project local)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Architecture details
 - [DEVELOPMENT.md](DEVELOPMENT.md) — Dev workflow and tooling
-- [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)
-- [Rust Performance Book](https://nnethercote.github.io/perf-book/)
