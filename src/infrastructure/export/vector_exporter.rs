@@ -180,10 +180,17 @@ impl VectorExporter {
             let mut dim_guard = self.dimensions.lock().expect("lock poisoned");
             if let Some(exp) = *dim_guard {
                 if embeddings.len() != exp {
-                    return Err(ExporterError::DimensionMismatch {
-                        expected: exp,
-                        actual: embeddings.len(),
-                    });
+                    // Log warning and serialize without embeddings
+                    tracing::warn!(
+                        expected_dimensions = exp,
+                        actual_dimensions = embeddings.len(),
+                        "Dimension mismatch detected — serializing without embeddings"
+                    );
+                    // Create a copy without embeddings
+                    let mut doc_without_embeddings = doc.clone();
+                    doc_without_embeddings.embeddings = None;
+                    return serde_json::to_string(&doc_without_embeddings)
+                        .map_err(|e| ExporterError::WriteError(e.to_string()));
                 }
             } else {
                 // First document with embeddings - record dimensions
@@ -382,15 +389,23 @@ mod tests {
         let doc1 = create_test_chunk();
         let _ = exporter.serialize_document(&doc1);
 
-        // Second document with different dimensions
+        // Second document with different dimensions - should warn and serialize without embeddings
         let mut doc2 = create_test_chunk();
         doc2.embeddings = Some(vec![0.1, 0.2]); // Only 2 dimensions
 
         let result = exporter.serialize_document(&doc2);
-        assert!(matches!(
-            result,
-            Err(ExporterError::DimensionMismatch { .. })
-        ));
+        assert!(
+            result.is_ok(),
+            "dimension mismatch should serialize without embeddings, got: {:?}",
+            result
+        );
+
+        let json_str = result.unwrap();
+        // Should serialize without embeddings (not an error)
+        assert!(
+            !json_str.contains("\"embeddings\""),
+            "embeddings should be null/absent in output"
+        );
     }
 
     #[test]

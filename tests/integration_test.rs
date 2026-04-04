@@ -65,7 +65,7 @@ fn test_args_has_required_fields() {
 
     // Create Args with all required fields
     let args = Args {
-        url: "https://example.com".to_string(),
+        url: Some("https://example.com".to_string()),
         selector: "article".to_string(),
         output: std::path::PathBuf::from("custom_output"),
         format: OutputFormat::Markdown,
@@ -92,9 +92,31 @@ fn test_args_has_required_fields() {
         vault: None,
         quick_save: false,
         obsidian_rich_metadata: false,
+        // New crawler settings
+        max_depth: 2,
+        timeout_secs: 30,
+        include_patterns: vec![],
+        exclude_patterns: vec![],
+        // New HTTP client settings
+        max_retries: 3,
+        backoff_base_ms: 1000,
+        backoff_max_ms: 10000,
+        accept_language: "en-US,en;q=0.9".to_string(),
+        // New download settings
+        max_file_size: 52428800,
+        download_timeout: 30,
+        // New AI settings (feature-gated, use defaults)
+        #[cfg(feature = "ai")]
+        threshold: 0.3,
+        #[cfg(feature = "ai")]
+        max_tokens: 512,
+        #[cfg(feature = "ai")]
+        offline: false,
+        // Sitemap settings
+        sitemap_depth: 3,
     };
 
-    assert_eq!(args.url, "https://example.com");
+    assert_eq!(args.url, Some("https://example.com".to_string()));
     assert_eq!(args.selector, "article");
     assert_eq!(args.format, OutputFormat::Markdown);
     assert_eq!(args.export_format, ExportFormat::Jsonl);

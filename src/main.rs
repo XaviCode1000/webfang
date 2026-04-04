@@ -206,7 +206,8 @@ async fn main() -> CliExit {
         download_images: args.download_images,
         download_documents: args.download_documents,
         output_dir: args.output.clone(),
-        max_file_size: Some(50 * 1024 * 1024), // 50MB default
+        max_file_size: Some(args.max_file_size),
+        download_timeout_secs: args.download_timeout,
         scraper_concurrency: args.concurrency.resolve(),
     };
 
@@ -222,12 +223,14 @@ async fn main() -> CliExit {
     // =========================================================================
     let user_agent = get_random_user_agent_from_pool(&user_agents);
     let crawler_config = CrawlerConfig::builder(parsed_url.clone())
-        .max_depth(2)
+        .max_depth(args.max_depth)
         .max_pages(args.max_pages)
         .concurrency(args.concurrency.resolve())
         .delay_ms(args.delay_ms)
         .user_agent(user_agent)
-        .timeout_secs(30)
+        .timeout_secs(args.timeout_secs)
+        .include_patterns(args.include_patterns.clone())
+        .exclude_patterns(args.exclude_patterns.clone())
         .use_sitemap(args.use_sitemap)
         .sitemap_url(args.sitemap_url.clone().unwrap_or_default())
         .build();
@@ -399,7 +402,14 @@ async fn main() -> CliExit {
     let start_time = Instant::now();
 
     // Create HTTP client ONCE for all scraping (not per-URL!)
-    let http_client = match HttpClient::new(HttpClientConfig::default()) {
+    let http_config = HttpClientConfig {
+        max_retries: args.max_retries,
+        backoff_base_ms: args.backoff_base_ms,
+        backoff_max_ms: args.backoff_max_ms,
+        accept_language: args.accept_language.clone(),
+        ..HttpClientConfig::default()
+    };
+    let http_client = match HttpClient::new(http_config) {
         Ok(c) => c,
         Err(e) => {
             warn!("Failed to create HTTP client: {}", e);
@@ -497,7 +507,10 @@ async fn main() -> CliExit {
             use rust_scraper::SemanticCleaner;
             
             info!("Initializing AI semantic cleaner...");
-            let config = ModelConfig::default();
+            let config = ModelConfig::default()
+                .with_relevance_threshold(args.threshold)
+                .with_max_tokens(args.max_tokens)
+                .with_offline_mode(args.offline);
             let cleaner = match SemanticCleanerImpl::new(config).await {
                 Ok(c) => c,
                 Err(e) => {
