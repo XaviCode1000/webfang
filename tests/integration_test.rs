@@ -316,6 +316,7 @@ async fn test_download_images_from_website() {
         output_dir: output_dir.clone(),
         max_file_size: Some(10 * 1024 * 1024), // 10MB max
         scraper_concurrency: 3,
+        download_timeout_secs: 30,
     };
 
     // Act
@@ -382,6 +383,7 @@ async fn test_download_documents_from_website() {
         output_dir: output_dir.clone(),
         max_file_size: Some(50 * 1024 * 1024), // 50MB max
         scraper_concurrency: 3,
+        download_timeout_secs: 30,
     };
 
     // Act
