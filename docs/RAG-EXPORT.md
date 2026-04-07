@@ -51,10 +51,11 @@ src/infrastructure/output/
 
 ```rust
 // Domain trait (src/domain/exporter.rs)
-pub trait Exporter {
+pub trait Exporter: Send + Sync + 'static {
     fn export(&self, document: DocumentChunk) -> ExportResult<()>;
-    fn export_batch(&self, documents: Vec<DocumentChunk>) -> ExportResult<()>;
+    fn export_batch(&self, documents: &[DocumentChunk]) -> ExportResult<()>;
     fn config(&self) -> &ExporterConfig;
+    fn format(&self) -> ExportFormat { self.config().format }
 }
 
 // JsonlExporter implementation
@@ -68,7 +69,7 @@ impl Exporter for JsonlExporter {
         Ok(())
     }
 
-    fn export_batch(&self, documents: Vec<DocumentChunk>) -> ExportResult<()> {
+    fn export_batch(&self, documents: &[DocumentChunk]) -> ExportResult<()> {
         // Batch export with single file handle
     }
 }
@@ -295,7 +296,6 @@ pub struct StateStore {
 
 impl StateStore {
     /// Create a new StateStore for a specific domain
-    #[must_use]
     pub fn new(domain: &str) -> Self {
         let mut cache_dir = cache_dir().unwrap_or_else(|| PathBuf::from(".cache"));
         cache_dir.push("rust-scraper");
@@ -436,19 +436,19 @@ State is saved atomically using write-to-temp + rename pattern:
 
 ```bash
 # Test JSONL exporter
-cargo test jsonl
+cargo nextest run jsonl
 # Result: ok. 3 passed; 0 failed
 
 # Test state management
-cargo test state
+cargo nextest run state
 # Result: ok. 10 passed; 0 failed
 
 # Test state_store module
-cargo test state_store
+cargo nextest run state_store
 # Result: ok. 9 passed; 0 failed
 
 # Run all tests with output
-cargo test -- --nocapture
+cargo nextest run -- --nocapture
 ```
 
 ### Test Coverage
@@ -760,11 +760,11 @@ strip = true
 
 ```bash
 # Verify JSONL tests
-cargo test jsonl
+cargo nextest run jsonl
 # Expected: ok. 3 passed; 0 failed
 
 # Verify state tests
-cargo test state
+cargo nextest run state
 # Expected: ok. 10 passed; 0 failed
 
 # Verify module structure

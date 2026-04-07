@@ -368,6 +368,145 @@ cargo run -- --url "https://example.com/spa" --force-js-render
 
 ---
 
+## Crawler Settings
+
+| Flag | Default | Env Var | Description |
+|------|---------|---------|-------------|
+| `--max-depth <N>` | `2` | `RUST_SCRAPER_MAX_DEPTH` | Maximum crawl depth (0 = only seed URL) |
+| `--timeout-secs <N>` | `30` | `RUST_SCRAPER_TIMEOUT_SECS` | Request timeout in seconds |
+| `--include-pattern <PATTERN>` | — | `RUST_SCRAPER_INCLUDE` | URL patterns to include (glob-style, comma-separated) |
+| `--exclude-pattern <PATTERN>` | — | `RUST_SCRAPER_EXCLUDE` | URL patterns to exclude (glob-style, comma-separated) |
+
+### URL Pattern Filtering
+
+Filter URLs with glob-style patterns:
+
+```bash
+# Only scrape blog posts
+cargo run -- --url "https://example.com" \
+  --include-pattern "*/blog/*,*/posts/*"
+
+# Exclude admin and API pages
+cargo run -- --url "https://example.com" \
+  --exclude-pattern "*/admin/*,*/api/*"
+
+# Combine include and exclude
+cargo run -- --url "https://example.com" \
+  --include-pattern "*/docs/*" \
+  --exclude-pattern "*/docs/drafts/*"
+```
+
+## HTTP Client Settings
+
+| Flag | Default | Env Var | Description |
+|------|---------|---------|-------------|
+| `--max-retries <N>` | `3` | `RUST_SCRAPER_MAX_RETRIES` | Maximum retry attempts for failed requests |
+| `--backoff-base-ms <N>` | `1000` | `RUST_SCRAPER_BACKOFF_BASE_MS` | Base delay for exponential backoff (ms) |
+| `--backoff-max-ms <N>` | `10000` | `RUST_SCRAPER_BACKOFF_MAX_MS` | Maximum delay for exponential backoff (ms) |
+| `--accept-language <VALUE>` | `en-US,en;q=0.9` | `RUST_SCRAPER_ACCEPT_LANGUAGE` | Accept-Language header value |
+
+### Retry Behavior
+
+Failed requests are retried with exponential backoff:
+- Attempt 1: immediate
+- Attempt 2: `backoff-base-ms` delay (default 1s)
+- Attempt 3: 2× `backoff-base-ms` delay (default 2s)
+- Max delay capped at `backoff-max-ms` (default 10s)
+
+## Download Settings
+
+| Flag | Default | Env Var | Description |
+|------|---------|---------|-------------|
+| `--max-file-size <BYTES>` | `52428800` (50MB) | `RUST_SCRAPER_MAX_FILE_SIZE` | Maximum file size to download |
+| `--download-timeout <N>` | `30` | `RUST_SCRAPER_DOWNLOAD_TIMEOUT` | Timeout for individual asset downloads (seconds) |
+
+## AI Settings
+
+> **Requires** `--features ai` at compile time.
+
+| Flag | Default | Env Var | Description |
+|------|---------|---------|-------------|
+| `--threshold <FLOAT>` | `0.3` | `RUST_SCRAPER_THRESHOLD` | Relevance threshold for semantic filtering (0.0–1.0) |
+| `--max-tokens <N>` | `512` | `RUST_SCRAPER_MAX_TOKENS` | Maximum tokens per chunk for AI processing |
+| `--offline` | `false` | `RUST_SCRAPER_OFFLINE` | Run AI model in offline mode (fail if not cached) |
+
+```bash
+# AI with custom threshold
+cargo run --features ai -- --url "https://example.com" \
+  --clean-ai --threshold 0.5
+
+# AI offline mode (model must be pre-cached)
+cargo run --features ai -- --url "https://example.com" \
+  --clean-ai --offline
+```
+
+## Sitemap Settings
+
+| Flag | Default | Env Var | Description |
+|------|---------|---------|-------------|
+| `--sitemap-depth <N>` | `3` | `RUST_SCRAPER_SITEMAP_DEPTH` | Maximum recursion depth for sitemap indexes |
+
+## Environment Variables
+
+**Every CLI flag has a corresponding `RUST_SCRAPER_*` environment variable.**
+Precedence: CLI argument > environment variable > config file > defaults.
+
+### Complete Environment Variables Reference
+
+| Env Var | CLI Flag | Default | Description |
+|---------|----------|---------|-------------|
+| `RUST_SCRAPER_URL` | `--url` | — | Target URL |
+| `RUST_SCRAPER_SELECTOR` | `-s` | `body` | CSS selector |
+| `RUST_SCRAPER_OUTPUT` | `-o` | `output` | Output directory |
+| `RUST_SCRAPER_FORMAT` | `-f` | `markdown` | Output format |
+| `RUST_SCRAPER_EXPORT_FORMAT` | `--export-format` | `jsonl` | RAG export format |
+| `RUST_SCRAPER_OBSIDIAN_WIKI_LINKS` | `--obsidian-wiki-links` | `false` | Wiki-links conversion |
+| `RUST_SCRAPER_OBSIDIAN_TAGS` | `--obsidian-tags` | — | Frontmatter tags |
+| `RUST_SCRAPER_OBSIDIAN_RELATIVE_ASSETS` | `--obsidian-relative-assets` | `false` | Relative asset paths |
+| `RUST_SCRAPER_OBSIDIAN_VAULT` | `--vault` | auto-detect | Vault path |
+| `RUST_SCRAPER_OBSIDIAN_QUICK_SAVE` | `--quick-save` | `false` | Quick-save mode |
+| `RUST_SCRAPER_OBSIDIAN_RICH_METADATA` | `--obsidian-rich-metadata` | `false` | Rich frontmatter |
+| `RUST_SCRAPER_DELAY_MS` | `--delay-ms` | `1000` | Request delay |
+| `RUST_SCRAPER_MAX_PAGES` | `--max-pages` | `10` | Max pages |
+| `RUST_SCRAPER_CONCURRENCY` | `--concurrency` | `auto` | Concurrency |
+| `RUST_SCRAPER_USE_SITEMAP` | `--use-sitemap` | `false` | Sitemap discovery |
+| `RUST_SCRAPER_SITEMAP_URL` | `--sitemap-url` | — | Explicit sitemap |
+| `RUST_SCRAPER_RESUME` | `--resume` | `false` | Resume mode |
+| `RUST_SCRAPER_STATE_DIR` | `--state-dir` | `~/.cache/...` | State directory |
+| `RUST_SCRAPER_DOWNLOAD_IMAGES` | `--download-images` | `false` | Download images |
+| `RUST_SCRAPER_DOWNLOAD_DOCUMENTS` | `--download-documents` | `false` | Download documents |
+| `RUST_SCRAPER_INTERACTIVE` | `--interactive` | `false` | TUI mode |
+| `RUST_SCRAPER_CLEAN_AI` | `--clean-ai` | `false` | AI cleaning (feature-gated) |
+| `RUST_SCRAPER_FORCE_JS_RENDER` | `--force-js-render` | `false` | JS rendering (no-op) |
+| `RUST_SCRAPER_VERBOSE` | `-v` | `0` | Verbosity level |
+| `RUST_SCRAPER_QUIET` | `-q` | `false` | Quiet mode |
+| `RUST_SCRAPER_DRY_RUN` | `-n` | `false` | Dry-run mode |
+| `RUST_SCRAPER_MAX_DEPTH` | `--max-depth` | `2` | Crawl depth |
+| `RUST_SCRAPER_TIMEOUT_SECS` | `--timeout-secs` | `30` | Request timeout |
+| `RUST_SCRAPER_INCLUDE` | `--include-pattern` | — | URL include patterns |
+| `RUST_SCRAPER_EXCLUDE` | `--exclude-pattern` | — | URL exclude patterns |
+| `RUST_SCRAPER_MAX_RETRIES` | `--max-retries` | `3` | Retry attempts |
+| `RUST_SCRAPER_BACKOFF_BASE_MS` | `--backoff-base-ms` | `1000` | Backoff base |
+| `RUST_SCRAPER_BACKOFF_MAX_MS` | `--backoff-max-ms` | `10000` | Backoff max |
+| `RUST_SCRAPER_ACCEPT_LANGUAGE` | `--accept-language` | `en-US,en;q=0.9` | Accept-Language header |
+| `RUST_SCRAPER_MAX_FILE_SIZE` | `--max-file-size` | `52428800` | Max download size (bytes) |
+| `RUST_SCRAPER_DOWNLOAD_TIMEOUT` | `--download-timeout` | `30` | Download timeout (sec) |
+| `RUST_SCRAPER_THRESHOLD` | `--threshold` | `0.3` | AI relevance threshold |
+| `RUST_SCRAPER_MAX_TOKENS` | `--max-tokens` | `512` | AI max tokens per chunk |
+| `RUST_SCRAPER_OFFLINE` | `--offline` | `false` | AI offline mode |
+| `RUST_SCRAPER_SITEMAP_DEPTH` | `--sitemap-depth` | `3` | Sitemap recursion depth |
+
+### Other Environment Variables
+
+| Env Var | Description |
+|---------|-------------|
+| `OBSIDIAN_VAULT` | Fallback vault path (checked after `RUST_SCRAPER_OBSIDIAN_VAULT`) |
+| `XDG_CACHE_HOME` | Base cache directory (state store, models) |
+| `RUST_LOG` | Override tracing log level (e.g., `rust_scraper=debug`) |
+| `NO_COLOR` | Disable emojis and color output |
+
+---
+
 ## Complete Examples
 
 ### 1. Basic Scraping

@@ -1,8 +1,8 @@
 # 📋 CHANGES.md - Rust Scraper Project History
 
-**Project**: rust-scraper  
-**Repository**: https://github.com/XaviCode1000/rust_scraper  
-**Last Updated**: 2026-04-04  
+**Project**: rust-scraper
+**Repository**: https://github.com/XaviCode1000/rust_scraper
+**Last Updated**: 2026-04-07
 **Status**: Production Ready ✅
 
 ---
@@ -11,14 +11,14 @@
 
 | Metric | Value |
 |--------|-------|
-| **Current Version** | v1.1.0 (unreleased) |
+| **Current Version** | v1.1.0 |
 | **Total Commits** | 110+ |
 | **Commits Since v1.0.0** | 65+ |
-| **Total Contributors** | 2 (XaviCode1000: 76, Xavi: 3) |
+| **Total Contributors** | 2 (GazaDev: 76, Xavi: 3) |
 | **Issues Closed** | 13+ |
 | **PRs Merged** | 7+ |
 | **First Commit** | a70b17c - chore: initialize rust_scraper project structure |
-| **Latest Commit** | eb1c45b - chore: archive openspec changes and add exploration report |
+| **Latest Commit** | c93f602 - docs: update ARCHITECTURE.md and CHANGES.md for WAF Detection 2026 |
 
 ---
 
@@ -35,11 +35,11 @@
 | 2026-03-08 | TUI Interactive Mode | a0ae42a |
 | 2026-03-08 | Sitemap Support | 8bd22be |
 | 2026-03-09 | RAG Export Pipeline (PR #10) | 19e27a7 |
-| 2026-03-10 | **v1.0.4 Release** - AI Features | v1.0.4 tag |
 | 2026-03-10 | AI Semantic Cleaning (Issue #9) | 17cc20c |
 | 2026-03-11 | Embeddings Bug Fix | 528657b |
-| 2026-04-01 | **v1.3.0 Release** - SPA Detection Phase 1 | ef70671 |
-| 2026-04-04 | **v1.1.0 Release** — Obsidian Integration (Markdown Export + Vault Auto-Detect + Quick-Save) | PR #24 |
+| 2026-04-01 | SPA Detection Phase 1 + JsRenderer Trait | ef70671 |
+| 2026-04-04 | **v1.1.0 Release** — Obsidian Integration | PR #24 |
+| 2026-04-07 | WAF Detection 2026 (Chrome 145) | c93f602 |
 
 ---
 
@@ -71,10 +71,10 @@
 - Relative paths correctly converted to wiki-links
 - HttpClient redirect policy for cross-subdomain support
 
-### [v1.3.0] - 2026-04-01 - SPA Detection Warning + JsRenderer Trait (Phase 1)
+### [Unreleased] — SPA Detection + WAF Evasion 2026
 
-**Tag**: v1.3.0  
-**Key Focus**: Forward-compatible SPA detection, Issue #16 Phase 1
+**Work on main after v1.1.0, not yet tagged**
+**Key Focus**: SPA detection (Issue #16 Phase 1) + WAF evasion for 2026
 
 #### Changes
 - ✅ **SPA Detection:** `detect_spa_content()` function in `scraper_service.rs`
@@ -89,8 +89,9 @@
 - ✅ **6 New Tests:** SPA detection heuristics with threshold boundary testing
 - ✅ **README Updated:** "Known Limitations: SPA/JS-rendered Sites" section added
 
-### [v1.4.0] - 2026-04-07 - WAF Detection 2026 (Production Ready)
+### [Unreleased] — WAF Detection 2026 (Production Ready)
 
+**Work on main after v1.1.0, not yet tagged**
 **Key Focus**: Layer 2+7 WAF evasion for 2026 production deployment
 
 #### Changes
@@ -719,11 +720,11 @@ bacon
 
 ---
 
-**Last Verified**: 2026-03-31  
+**Last Verified**: 2026-04-07
 **Verification Commands**:
 ```bash
-cargo nextest run → 252 tests passed
+cargo nextest run --test-threads 2
 cargo clippy -- -D warnings → clean
 ```
 
-**Project Status**: ✅ Production Ready (v1.0.6) - Validated with real sites
+**Project Status**: ✅ Production Ready (v1.1.0) — WAF Detection 2026 on main

@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`built` integration** — Build-time metadata (version, profile, target) embedded in binary
 - **`dirs` integration** — XDG-compliant config and cache directory resolution
 
-#### Vector Exporter — v1.4.0
+#### Vector Exporter
 - **`ExportFormat::Vector`** variant — JSON format with metadata header and embeddings
 - **`VectorExporter`** implementation — full `Exporter` trait impl with streaming writes
 - **Cosine similarity** — pure Rust `cosine_similarity(a, b)` module function
@@ -97,7 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🧪 Testing
 
-- **304 tests passing** (up from 217)
+- **~271 tests passing** (nextest)
 - **0 failures** — all vector_exporter tests fixed
 - 64 AI integration tests
 - Test isolation for AI modules

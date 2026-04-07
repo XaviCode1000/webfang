@@ -59,7 +59,7 @@ Rewrites absolute asset paths to be relative to the `.md` file:
 
 | Before | After |
 |--------|-------|
-| `![](/home/user/output/images/photo.png)` | `![](../_attachments/photo.png)` |
+| `![](output/images/photo.png)` | `![](../_attachments/photo.png)` |
 
 Uses `pathdiff` crate for cross-platform compatibility. Always outputs `/` separators (Obsidian requirement).
 
@@ -196,3 +196,8 @@ src/infrastructure/obsidian/
 - [Obsidian URI Documentation](https://help.obsidian.md/Advanced+topics/Using+obsidian+URI)
 - [Dataview Plugin](https://github.com/blacksmithgu/obsidian-dataview)
 - [Obsidian Clipper Issues](https://github.com/obsidianmd/obsidian-clipper/issues/112)
+
+## Contexto de diseño (equipo de desarrollo)
+
+- [Especificación Obsidian Markdown](research/obsidian-markdown-spec.md) — Spec completa, matriz de competidores, diseño técnico
+- [Investigación de usuarios](research/obsidian-user-research.md) — Top 15 features demandadas, pain points de la comunidad, roadmap

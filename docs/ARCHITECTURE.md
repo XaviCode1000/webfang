@@ -1,7 +1,7 @@
 # Architecture — rust-scraper
 
-**Last Updated:** April 2026  
-**Version:** 1.4.0  
+**Last Updated:** April 2026
+**Version:** 1.1.0
 **Clean Architecture:** 4 layers with strict dependency rule
 
 ---
@@ -16,15 +16,15 @@ The rust-scraper follows **Clean Architecture** with strict separation of concer
 │  - Clap argument parsing                                     │
 │  - TUI selector (ratatui)                                    │
 │  - Logging initialization (tracing)                          │
-│  - 1,200+ LOC                                                │
+│  - ~895 LOC                                                  │
 └─────────────────────┬────────────────────────────────────────┘
                       │
 ┌─────────────────────▼─────────────────────────────────────────┐
 │                      Library (lib.rs)                         │
 │  - Public API re-exports                                      │
 │  - ScraperConfig, Args, OutputFormat                          │
-│  - Feature flags (ai, images, documents)                │
-│  - 28,780 LOC                                                 │
+│  - Feature flags (ai, images, documents)                      │
+│  - ~1,284 LOC                                                 │
 └─────────────────────┬─────────────────────────────────────────┘
                       │
       ┌───────────────┴──────────────────┐
@@ -32,27 +32,28 @@ The rust-scraper follows **Clean Architecture** with strict separation of concer
 ┌─────▼──────────┐              ┌────────▼─────────┐
 │   DOMAIN       │              │  APPLICATION     │
 │   (pure)       │              │  (use cases)     │
-│   1,678 LOC    │              │  1,747 LOC       │
+│   ~1,798 LOC   │              │  ~2,992 LOC      │
 │                │              │                  │
 │ - entities     │              │ - http_client    │
 │ - value_objs   │              │ - scraper_svc    │
 │ - exporter     │              │ - crawler_svc    │
 │ - semantic_*   │              │ - url_filter     │
 │ - crawler_*    │              │                  │
+│ - js_renderer  │              │                  │
 └────────────────┘              └──────────────────┘
                                        │
                     ┌──────────────────┼──────────────────┐
                     │                  │                  │
              ┌──────▼──────┐  ┌───────▼───────┐  ┌───────▼──────┐
              │INFRASTRUCTURE│  │   ADAPTERS    │  │   EXTRACTOR  │
-             │  7,507 LOC   │  │   1,417 LOC   │  │   (lib)      │
+             │  ~10,100 LOC │  │   ~1,428 LOC  │  │   (lib)      │
              │              │  │               │  │              │
              │ - ai/        │  │ - detector/   │  │ - mod.rs     │
              │ - crawler/   │  │ - downloader/ │  │              │
              │ - export/    │  │ - extractor/  │  │              │
              │ - converter/ │  │ - tui/        │  │              │
-             │ - output/    │  │               │  │              │
              │ - scraper/   │  │               │  │              │
+             │ - obsidian/  │  │               │  │              │
              │ - http/      │  │               │  │              │
              └──────────────┘  └───────────────┘  └──────────────┘
 ```
@@ -68,28 +69,28 @@ Adapters import Domain + Infrastructure
 
 **Verification:**
 ```bash
-cd /home/gazadev/Dev/my_apps/rust_scraper
-rg "^use (reqwest|tokio|scraper|tract)" src/domain/  # Returns nothing ✓
+# From project root
+rg "^use (wreq|tokio|scraper|tract)" src/domain/  # Returns nothing ✓
 ```
 
 ---
 
 ## Domain Layer (`src/domain/`)
 
-**Total:** 1,678 lines of code  
-**Purity:** Zero external framework dependencies (no reqwest, no tokio, no serde runtime)
+**Total:** ~1,798 lines of code
+**Purity:** Zero external framework dependencies (no wreq, no tokio, no serde runtime)
 
 ### Module Structure
 
 ```
 src/domain/
 ├── mod.rs                    (22 LOC)   — Module exports
-├── entities.rs               (311 LOC)  — Core business entities
-├── value_objects.rs          (148 LOC)  — Type-safe primitives
-├── exporter.rs               (279 LOC)  — Exporter trait + error types
-├── semantic_cleaner.rs       (174 LOC)  — AI cleaning trait (feature-gated)
-├── crawler_entities.rs       (746 LOC)  — Web crawler domain types
-└── js_renderer.rs            (92 LOC)   — JsRenderer trait + JsRenderError (SPA stub)
+├── entities.rs               (~311 LOC)  — Core business entities
+├── value_objects.rs          (~148 LOC)  — Type-safe primitives
+├── exporter.rs               (~279 LOC)  — Exporter trait + error types
+├── semantic_cleaner.rs       (~174 LOC)  — AI cleaning trait (feature-gated)
+├── crawler_entities.rs       (~746 LOC)  — Web crawler domain types
+└── js_renderer.rs            (~92 LOC)   — JsRenderer trait + JsRenderError (SPA stub)
 ```
 
 ### Core Entities (`entities.rs`)
@@ -211,34 +212,6 @@ pub trait JsRenderer: Send + Sync {
 
 **Native async fn in trait** — Uses Rust 1.88+ native async traits, no `async-trait` crate needed.
 
-### JavaScript Renderer Trait (`js_renderer.rs`)
-
-**Forward-compatible stub for SPA support (Phase 1 of Issue #16)**
-
-```rust
-pub trait JsRenderer: Send + Sync {
-    fn render(
-        &self,
-        url: &url::Url,
-    ) -> impl std::future::Future<Output = Result<String, JsRenderError>> + Send;
-}
-```
-
-| Type | Purpose | LOC |
-|------|---------|-----|
-| `JsRenderer` | Trait for JS rendering of web pages | ~20 |
-| `JsRenderError` | Error enum for JS rendering failures | ~30 |
-
-**Error variants:**
-- `Browser(String)` — Browser launch/communication failure
-- `Timeout { url, timeout_ms }` — Page load timeout
-- `Navigation(String)` — Navigation to URL failed
-- `Extraction(String)` — Content extraction after rendering failed
-
-**Architecture note:** This trait lives in the Domain layer because it defines a business capability (rendering JS-dependent pages), not a specific implementation. The actual renderer (e.g., headless Chrome via `headless_chrome` or `fantoccini`) will be provided by the Infrastructure layer in Phase 2 (v1.4).
-
-**Native async fn in trait** — Uses Rust 1.88+ native async traits, no `async-trait` crate needed.
-
 ---
 
 ## Application Layer (`src/application/`)
@@ -307,22 +280,16 @@ WafInspector::verify_integrity(&headers, &body)?;
 - Entropy analysis for "Silent Challenge" detection
 
 ```rust
-pub fn create_http_client() -> Result<reqwest_middleware::ClientWithMiddleware> {
-    let client = reqwest::Client::builder()
+// Uses wreq with TLS fingerprint emulation (Chrome 145)
+// wreq provides built-in retry, cookie persistence, and compression
+pub fn create_http_client() -> Result<wreq::Client> {
+    wreq::Client::builder()
+        .emulate(wreq_util::emulation::KnownVersion::Chrome131)
         .user_agent(random_user_agent())
         .timeout(Duration::from_secs(30))
         .compression(true)
-        .use_rustls_tls()
-        .build()?;
-    
-    let retry_policy = ExponentialBackoff::builder()
-        .base(100)
-        .max_delay(Duration::from_secs(5))
-        .build_with_max_retries(3);
-    
-    Ok(ClientBuilder::new(client)
-        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
-        .build())
+        .cookie_store(true)
+        .build()
 }
 ```
 
@@ -624,17 +591,17 @@ pub enum ScraperError {
     #[error("URL inválida: {0}")]
     InvalidUrl(String),
 
-    #[error("HTTP error {status} al acceder a {url}")]
-    Http { status: reqwest::StatusCode, url: String },
+    #[error("error HTTP {status} al acceder a {url}")]
+    Http { status: u16, url: String },
 
-    #[error("Error de legibilidad: {0}")]
+    #[error("error de legibilidad: {0}")]
     Readability(String),
 
-    #[error("Error de I/O: {0}")]
+    #[error("error de I/O: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("Error de red: {0}")]
-    Network(#[from] reqwest::Error),
+    #[error("error de red: {0}")]
+    Network(String),
 
     #[error("Error de middleware: {0}")]
     Middleware(String),
@@ -735,12 +702,12 @@ URL Input (String)
          │
          ▼
 ┌─────────────────┐
-│  Application    │  create_http_client() + retry middleware
+│  Application    │  create_http_client() (wreq with TLS fingerprint)
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│ Infrastructure  │  reqwest HTTP fetch (rustls-tls-native-roots)
+│ Infrastructure  │  wreq HTTP fetch (Chrome 145 emulation)
 └────────┬────────┘
          │
          ▼
@@ -936,17 +903,17 @@ mod tests {
 ### Test Commands
 
 ```bash
-# Run all library tests (2 threads for HDD optimization)
-cargo test --lib --test-threads=2
+# Run all tests (2 threads for HDD optimization)
+cargo nextest run --test-threads 2
 
 # Run specific test
-cargo test test_scrape_with_config_invalid_url
+cargo nextest run test_scrape_with_config_invalid_url
 
 # Run with output
-cargo test --lib -- --nocapture
+cargo nextest run -- --nocapture
 
 # Run AI feature tests (requires ONNX models)
-cargo test --features ai --lib
+cargo nextest run --features ai --test-threads 2
 ```
 
 ---
@@ -964,8 +931,8 @@ cargo test --features ai --lib
 
 **Verification:**
 ```bash
-cd /home/gazadev/Dev/my_apps/rust_scraper
-rg "^use (reqwest|tokio|scraper|tract)" src/domain/  # Returns nothing ✓
+# From project root
+rg "^use (wreq|tokio|scraper|tract)" src/domain/  # Returns nothing ✓
 ```
 
 ### 2. Why `ValidUrl` Newtype?
@@ -1047,19 +1014,19 @@ serde = { version = "1", features = ["derive"] }
 url = { version = "2", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
 ```
 
 ### Application
 ```toml
-reqwest-middleware = "0.4"
-reqwest-retry = "0.7"
-retry-policies = "0.4"
+wreq = { version = "6.0.0-rc.28", features = ["gzip", "brotli", "stream", "json", "cookies"] }
+wreq-util = { version = "3.0.0-rc.10", features = ["emulation"] }
+tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 ```
 
 ### Infrastructure
 ```toml
-reqwest = { version = "0.12", features = ["rustls-tls-native-roots", "gzip", "brotli", "stream", "json"] }
 legible = "0.4"
 htmd = "0.5"
 html-to-markdown-rs = "2.3"
@@ -1068,28 +1035,39 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 governor = "0.6"
 dashmap = "6"
-ratatui = "0.29"
-crossterm = "0.28"
 quick-xml = "0.37"
+async-compression = "0.4"
+pathdiff = "0.2"
+whatlang = "0.18"
+urlencoding = "2.1"
+slug = "0.1"
+fs2 = "0.4"
+aho-corasick = "1"
+once_cell = "1"
 ```
 
 ### Adapters
 ```toml
 scraper = "0.22"
+ratatui = "0.29"
+crossterm = "0.28"
 mimetype-detector = { version = "0.3", optional = true }
-rand = "0.8"
+indicatif = "0.18"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
 ```
 
 ### AI (feature-gated)
 ```toml
 tract-onnx = { version = "0.21", optional = true }
 tokenizers = { version = "0.21", optional = true }
-hf-hub = { version = "0.5", features = ["tokio"], optional = true }
 memmap2 = { version = "0.9", optional = true }
 ndarray = { version = "0.17", optional = true }
 unicode-segmentation = { version = "1.12", optional = true }
 smallvec = { version = "1.13", optional = true }
 wide = { version = "0.7", optional = true }
+async-trait = { version = "0.1", optional = true }
 ```
 
 ---
@@ -1128,15 +1106,15 @@ strip = true
 ### Runtime Optimizations
 
 1. **Async I/O** — Tokio runtime for non-blocking operations
-2. **Connection Pooling** — Reqwest reuses connections
+2. **Connection Pooling** — wreq reuses connections
 3. **Compression** — Gzip/Brotli support reduces bandwidth
 4. **Bounded Concurrency** — Prevents resource exhaustion
-5. **Retry Backoff** — Reduces server load on failures
+5. **TLS Fingerprint** — Chrome 145 emulation for WAF evasion
 6. **Lazy Statics** — CSS selectors compiled once
 7. **SHA256 Hashing** — Fast unique filenames
 8. **Zero-Copy** — Memory-mapped model loading
 9. **SIMD** — Cosine similarity with `wide` crate
-10. **SIMD** — Cosine similarity with `wide` crate
+10. **WAF Detection** — Aho-Corasick multi-pattern matching
 
 ---
 
@@ -1165,7 +1143,7 @@ application
 **Verification:**
 ```bash
 # Domain has no external dependencies
-rg "^use (reqwest|tokio|scraper)" src/domain/  # Returns nothing ✓
+rg "^use (wreq|tokio|scraper)" src/domain/  # Returns nothing ✓
 
 # Application only imports domain
 rg "^use rust_scraper::domain" src/application/  # Returns matches ✓
@@ -1297,21 +1275,21 @@ rg "^use rust_scraper::(domain|application)" src/infrastructure/  # Returns matc
 
 **Verify architecture:**
 ```bash
-cd /home/gazadev/Dev/my_apps/rust_scraper
-
 # Check domain has no external dependencies
-rg "^use (reqwest|tokio|scraper|tract)" src/domain/
+rg "^use (wreq|tokio|scraper|tract)" src/domain/
 
 # Count lines per layer
-wc -l src/domain/*.rs src/application/*.rs src/infrastructure/*.rs src/adapters/*.rs
+fd . src/domain -e rs | xargs wc -l
+fd . src/application -e rs | xargs wc -l
+fd . src/infrastructure -e rs | xargs wc -l
+fd . src/adapters -e rs | xargs wc -l
 
 # Run tests
-cargo test --lib --test-threads=2
+cargo nextest run --test-threads 2
 
 # Check Clippy
-cargo clippy --all-targets --all-features -- -D correctness
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-**Last verified:** April 1, 2026  
-**Tests passing:** 271/271  
+**Last verified:** April 7, 2026  
 **Clippy:** Clean

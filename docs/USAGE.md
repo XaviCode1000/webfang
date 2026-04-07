@@ -24,7 +24,7 @@ cargo run -- --help
 >> Rust Scraper v1.1.0 - Clean Architecture
 INFO Target: https://example.com
 INFO Output: output
-INFO Config loaded: /home/user/.config/rust-scraper/config.toml
+INFO Config loaded: ~/.config/rust-scraper/config.toml
 INFO User agent loaded: 5 agents available
 INFO URL validated: https://example.com/
 INFO Checking connectivity...
@@ -184,10 +184,14 @@ AI-powered semantic cleaning for better RAG output:
 # Enable AI semantic cleaning
 cargo run --features ai -- --url https://example.com --clean-ai
 
-# With custom threshold (if available)
+# With custom threshold
 cargo run --features ai -- --url https://example.com \
   --clean-ai \
-  --ai-threshold 0.7
+  --threshold 0.7
+
+# AI offline mode (model must be pre-cached)
+cargo run --features ai -- --url https://example.com \
+  --clean-ai --offline
 ```
 
 **What it does:**
@@ -587,36 +591,71 @@ use_sitemap = true
 
 ---
 
-## Configuration File
+## Advanced Options
 
-The scraper loads defaults from `~/.config/rust-scraper/config.toml` if it exists.
-CLI arguments always take precedence over config file values.
+### Crawler Settings
 
-```toml
-# ~/.config/rust-scraper/config.toml
-format = "markdown"
-export_format = "jsonl"
-concurrency = "auto"
-selector = "body"
-max_pages = 50
-delay_ms = 500
-use_sitemap = true
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--max-depth <N>` | `2` | Maximum crawl depth (0 = only seed URL) |
+| `--timeout-secs <N>` | `30` | Request timeout in seconds |
+| `--include-pattern <PATTERN>` | — | URL patterns to include (glob-style, comma-separated) |
+| `--exclude-pattern <PATTERN>` | — | URL patterns to exclude (glob-style, comma-separated) |
+
+### HTTP Client Settings
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--max-retries <N>` | `3` | Maximum retry attempts for failed requests |
+| `--backoff-base-ms <N>` | `1000` | Base delay for exponential backoff (ms) |
+| `--backoff-max-ms <N>` | `10000` | Maximum delay for exponential backoff (ms) |
+| `--accept-language <VALUE>` | `en-US,en;q=0.9` | Accept-Language header value |
+
+### Download Settings
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--max-file-size <BYTES>` | `52428800` (50MB) | Maximum file size to download |
+| `--download-timeout <N>` | `30` | Timeout for individual asset downloads (seconds) |
+
+### AI Settings (`--features ai` required)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--threshold <FLOAT>` | `0.3` | Relevance threshold for semantic filtering (0.0–1.0) |
+| `--max-tokens <N>` | `512` | Maximum tokens per chunk for AI processing |
+| `--offline` | `false` | Run AI model in offline mode (fail if not cached) |
+
+### Sitemap Settings
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--sitemap-depth <N>` | `3` | Maximum recursion depth for sitemap indexes |
+
+## Environment Variables
+
+**Every CLI flag has a corresponding `RUST_SCRAPER_*` environment variable.**
+Precedence: CLI argument > environment variable > config file > defaults.
+
+```bash
+# Example: set defaults via environment
+export RUST_SCRAPER_MAX_PAGES=50
+export RUST_SCRAPER_DELAY_MS=2000
+export RUST_SCRAPER_CONCURRENCY=3
+
+# Now run without flags — uses env var defaults
+cargo run -- --url "https://example.com"
 ```
 
-**Precedence:** CLI arguments > environment variables > config file > struct defaults
+For the complete list of all 40+ environment variables, see [`docs/CLI.md`](CLI.md#environment-variables).
 
----
-
-## Exit Codes
-
-| Code | Description |
-|------|-------------|
-| `0` | Success — all URLs scraped without errors |
-| `64` | Invalid arguments or URL parsing error |
-| `69` | Network error or partial success (some URLs failed) |
-| `74` | I/O error — failed to write output files |
-| `76` | Protocol error — TUI failure, WAF blocked |
-| `78` | Configuration error — config file parsing failed |
+| Env Var | Description |
+|---------|-------------|
+| `RUST_SCRAPER_*` | One env var per CLI flag (see CLI.md for full table) |
+| `OBSIDIAN_VAULT` | Fallback vault path |
+| `XDG_CACHE_HOME` | Base cache directory (state store, models) |
+| `RUST_LOG` | Override tracing log level |
+| `NO_COLOR` | Disable emojis and color output |
 
 ---
 
@@ -691,5 +730,5 @@ MIT License — See [LICENSE](../LICENSE) for details.
 
 ---
 
-**Last updated:** April 2026  
-**Version:** rust-scraper v1.3.0
+**Last updated:** April 2026
+**Version:** rust-scraper v1.1.0

@@ -3,9 +3,9 @@
 > **Feature:** AI-Powered Semantic Cleaning via Local SLM Inference
 > **Issue:** [#9](https://github.com/XaviCode1000/rust-scraper/issues/9)
 > **PR:** [#11](https://github.com/XaviCode1000/rust-scraper/pull/11)
-> **Status:** ✅ Complete (v1.0.5+)
+> **Status:** ✅ Complete (v1.1.0+)
 > **Feature Flag:** `--features ai`
-> **Last Verified:** March 11, 2026 — 64/64 tests passing
+> **Last Verified:** April 2026
 
 ## Overview
 
@@ -138,7 +138,6 @@ tract-ndarray = "0.21"
 
 # Tokenization
 tokenizers = { version = "0.21", optional = true }
-hf-hub = { version = "0.5", features = ["tokio"], optional = true }
 
 # Memory optimization
 memmap2 = { version = "0.9", optional = true }
@@ -390,41 +389,14 @@ pub fn filter_with_embeddings(
 ### Run AI Tests (Verified)
 
 ```bash
-# Run AI integration tests (64 tests passing)
-cargo test --features ai --test ai_integration -- --test-threads=2
-
-# Output (March 11, 2026):
-# test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-```
-
-### Test Coverage
-
-```
-AI Integration Tests: 64/64 passing ✅
-Library Tests: 304/304 passing ✅
-─────────────────────────────────
-Total: 368 tests passing
-Failures: 0
-```
-
-**Key Tests:**
-- `test_semantic_cleaner_full_pipeline` - End-to-end pipeline
-- `test_concurrent_embeddings` - Parallel inference with `try_join_all`
-- `test_relevance_filtering` - Threshold-based filtering
-- `test_cosine_similarity_identical` - SIMD verification
-- `test_ai_embedding_preservation` - **NEW** Verifies 384-dim embeddings preserved
-
-### Test Commands
-
-```bash
-# Run all tests with AI feature (hardware-aware: 2 threads for HDD)
-cargo test --features ai -- --test-threads=2
+# Run AI integration tests
+cargo nextest run --features ai --test ai_integration --test-threads 2
 
 # Run specific test with output
-cargo test --features ai test_semantic_cleaner_full_pipeline -- --nocapture
+cargo nextest run --features ai test_semantic_cleaner_full_pipeline -- --nocapture
 
-# Run AI tests only
-cargo test --features ai --test ai_integration -- --test-threads=2
+# Run all tests with AI feature (hardware-aware: 2 threads for HDD)
+cargo nextest run --features ai --test-threads 2
 ```
 
 ## Rust-Skills Applied
@@ -587,7 +559,7 @@ let filtered = scorer.filter_with_embeddings(
 
 ## Migration Guide
 
-### From v1.0.4 (No AI) to v1.0.5+ (With AI)
+### From v1.0.x (No AI) to v1.1.0+ (With AI)
 
 **No breaking changes** - AI feature is optional and feature-gated.
 
@@ -678,7 +650,7 @@ cargo test --features ai --test ai_integration
 
 ---
 
-**Last Updated:** March 11, 2026
-**Version:** 1.0.5+ (PR #11 merged)
-**Maintained By:** @XaviCode1000
+**Last Updated:** April 2026
+**Version:** 1.1.0+ (PR #11 merged)
+**Maintained By:** @GazaDev
 **Documentation Status:** ✅ Verified with code

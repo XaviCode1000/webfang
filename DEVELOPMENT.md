@@ -2,8 +2,8 @@
 
 ## 🎉 Latest Achievements
 
-**Tests:** **361 passing** (nextest)  
-**Status:** ✅ **All tests passing, 0 failing**  
+**Tests:** **~271 passing** (nextest)
+**Status:** ✅ **All tests passing, 0 failing**
 **Version:** v1.1.0 — Vault Auto-Detect & Quick-Save
 
 ### v1.1.0 Highlights
@@ -11,17 +11,15 @@
 - **Quick-save mode:** `--obsidian --quick-save` bypasses TUI, saves to vault inbox
 - **Rich metadata:** readingTime, language, wordCount, contentType, status for Dataview
 - **Obsidian URI:** Opens saved notes in Obsidian via `obsidian://open` (Linux)
-- **36 new tests** covering vault detection, metadata generation, and URI building
-
-### v1.1.0 Highlights
 - **Obsidian Markdown export:** Wiki-links, relative asset paths, tags in frontmatter
-- **New module:** `src/infrastructure/converter/obsidian.rs`
-- **New dependency:** `pathdiff = "0.2"` for cross-platform relative paths
+- **36 new tests** covering vault detection, metadata generation, and URI building
+- **New modules:** `src/infrastructure/converter/obsidian.rs`, `src/infrastructure/obsidian/`
+- **New dependencies:** `pathdiff = "0.2"`, `whatlang = "0.18"`, `urlencoding = "2.1"`, `slug = "0.1"`
 - **Backward compatible:** All flags optional, zero breaking changes
 
-### v1.3.0 Highlights
+### SPA Detection (unreleased)
 - **SPA Detection:** `detect_spa_content()` heuristic in ScraperService warns when pages return minimal content
-- **JsRenderer Trait:** Forward-compatible domain trait for Phase 2 (headless browser rendering)
+- **JsRenderer Trait:** Forward-compatible domain trait for headless browser rendering
 - **6 new tests:** SPA detection unit tests covering threshold, markers, and edge cases
 
 ### v1.0.7 Highlights
@@ -178,20 +176,12 @@ r = "build --release"
 ### `.cargo/config.toml`
 
 ```toml
-[build]
-rustc-linker = "clang"
-rustc-linker-arg = ["-fuse-ld=mold"]
-split-debuginfo = "unpacked"
-jobs = 3
-
-[profile.dev]
-lto = true
-codegen-units = 1
-
-[profile.release]
-lto = "fat"
-codegen-units = 1
+# Cargo configuration for local development
+# For sccache, set RUSTC_WRAPPER=sccache in your shell environment
+# CI uses Swatinem/rust-cache@v2 instead
 ```
+
+The file is minimal — sccache is configured via environment variable (`RUSTC_WRAPPER=sccache`), not config file.
 
 ### sccache Stats
 
@@ -353,7 +343,7 @@ See comments in `Cargo.toml` for details. Do NOT try to unify them.
 
 ---
 
-**Last updated**: 2026-04-04  
-**Rust version**: 1.93.0  
+**Last updated**: 2026-04-07
+**Rust version**: 1.93.0
 **Stack version**: 2025-26 optimal
-**Tests**: 361 passing (nextest)
+**Tests**: ~271 passing (nextest)
