@@ -1,7 +1,7 @@
 # Architecture — rust-scraper
 
 **Last Updated:** April 2026  
-**Version:** 1.3.0  
+**Version:** 1.4.0  
 **Clean Architecture:** 4 layers with strict dependency rule
 
 ---
@@ -265,6 +265,46 @@ src/application/
 - Gzip/Brotli compression
 - 30s timeout
 - TLS via rustls with system certificates
+- **WAF Detection (2026):** Chrome145 TLS fingerprint + Client Hints for Layer 2 evasion
+
+#### WAF Detection System
+
+The scraper includes a multi-layer WAF detection system for production-grade bot evasion:
+
+```rust
+// Layer 1: TLS Fingerprint (Layer 2 - Evasion)
+Client::builder()
+    .emulation(Emulation::Chrome145)  // 2026 standard
+    .default_headers(headers)         // Client Hints
+    ...
+
+// Layer 2: Body Signature Detection (O(N) with Aho-Corasick)
+if let Some(provider) = detect_waf_challenge(&body) {
+    warn!("WAF challenge detected: {}", provider);
+    // Rotate UA and retry once
+}
+
+// Layer 3: WafInspector (advanced)
+use crate::infrastructure::http::waf_engine::WafInspector;
+WafInspector::verify_integrity(&headers, &body)?;
+```
+
+**Client Hints (2026 Standard):**
+| Header | Value |
+|--------|-------|
+| `Sec-CH-UA` | `"Google Chrome";v="145"` |
+| `Sec-CH-UA-Mobile` | `?0` |
+| `Sec-CH-UA-Platform` | `"Linux"` |
+| `Sec-Fetch-Dest` | `document` |
+| `Sec-Fetch-Mode` | `navigate` |
+| `Sec-Fetch-Site` | `none` |
+| `Sec-Fetch-User` | `?1` |
+| `Upgrade-Insecure-Requests` | `1` |
+
+**WafInspector (`src/infrastructure/http/waf_engine.rs`):**
+- 50+ WAF signatures with O(N) Aho-Corasick matching
+- Control header detection: `x-datadome-response`, `cf-mitigated`, `x-akamai-edge-auth`
+- Entropy analysis for "Silent Challenge" detection
 
 ```rust
 pub fn create_http_client() -> Result<reqwest_middleware::ClientWithMiddleware> {
@@ -848,10 +888,10 @@ Output: Vec<DocumentChunk> with embeddings
 
 ```bash
 $ cargo nextest run 2>&1 | tail -5
-test result: ok. 271 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 366 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
 
-**Total:** 271 tests passing (includes 6 new SPA detection tests)
+**Total:** 366 tests passing (includes 20 new WAF tests + 6 SPA detection tests)
 
 ### Test Distribution by Layer
 

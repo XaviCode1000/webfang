@@ -89,6 +89,43 @@
 - ✅ **6 New Tests:** SPA detection heuristics with threshold boundary testing
 - ✅ **README Updated:** "Known Limitations: SPA/JS-rendered Sites" section added
 
+### [v1.4.0] - 2026-04-07 - WAF Detection 2026 (Production Ready)
+
+**Key Focus**: Layer 2+7 WAF evasion for 2026 production deployment
+
+#### Changes
+- ✅ **Chrome 145 TLS Fingerprint:** Updated from Chrome131 to Chrome145 across all 7 files:
+  - `src/application/http_client.rs`
+  - `src/user_agent.rs`
+  - `src/infrastructure/scraper/asset_download.rs`
+  - `src/infrastructure/crawler/sitemap_parser.rs`
+  - `src/infrastructure/crawler/http_client.rs`
+  - `src/adapters/downloader/mod.rs`
+- ✅ **Client Hints Headers:** Implemented 2026 standard headers:
+  - `Sec-CH-UA`: `"Google Chrome";v="145"`
+  - `Sec-CH-UA-Mobile`: `?0`
+  - `Sec-CH-UA-Platform`: `"Linux"`
+  - `Sec-Fetch-Dest`, `Sec-Fetch-Mode`, `Sec-Fetch-Site`, `Sec-Fetch-User`
+  - `Upgrade-Insecure-Requests`: `1`
+- ✅ **WafInspector Module:** Advanced WAF detection in `src/infrastructure/http/waf_engine.rs`:
+  - O(N) multi-pattern matching using Aho-Corasick (50+ signatures)
+  - Control header detection: `x-datadome-response`, `cf-mitigated`, `x-akamai-edge-auth`
+  - Entropy-based "Silent Challenge" detection for 2026 WAF patterns
+- ✅ **WAF Detection Integration:** Both `http_client.rs` and `scraper_service.rs` detect WAF challenges in HTTP 200 responses
+- ✅ **Real-World Testing:** Verified against cloudflare-protected sites:
+  - `cloudflarechallenge.com` — ✅ Pass through
+  - `l3man.com` — ✅ Pass through (10 URLs)
+  - `waf.cumulusfire.net` — ✅ Pass through (1 page)
+  - `cloudflare.com/rate-limit-test` — ✅ Pass through (121 pages)
+
+#### Dependencies
+- **Already present:** `aho-corasick = "1"`, `once_cell = "1"` (v1.1.0)
+
+#### Testing
+- 366 tests passing (20 new WAF tests)
+- 0 clippy warnings
+- Full integration tests against real WAF-protected sites
+
 #### Files Added
 - `src/domain/js_renderer.rs` — JsRenderer trait + JsRenderError (92 LOC)
 
