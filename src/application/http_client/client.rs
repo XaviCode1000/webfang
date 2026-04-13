@@ -1,21 +1,10 @@
-//! HTTP client wrapper with retry middleware and status-specific handling
+//! HTTP client implementation
 //!
-//! Provides a configurable HTTP client with:
-//! - Custom headers (Accept-Language, Accept, Referer, Cache-Control)
-//! - Exponential backoff retry policy
-//! - Specific handling for 403 (rotate UA), 429 (backoff), 5xx (retry)
-//! - Cookie support
-//!
-//! # Examples
-//!
-//! ```no_run
-//! use rust_scraper::application::http_client::{HttpClient, HttpClientConfig};
-//!
-//! let config = HttpClientConfig::default();
-//! let client = HttpClient::new(config).unwrap();
-//! // Use client for HTTP requests
-//! ```
+//! Wraps `wreq::Client` with retry logic, UA rotation, and WAF detection.
 
+use super::config::HttpClientConfig;
+use super::error::{HttpError, HttpResult};
+use super::waf::detect_waf_challenge;
 use crate::error::ScraperError;
 use crate::user_agent::UserAgentCache;
 use std::time::Duration;
@@ -24,6 +13,7 @@ use wreq::header::{HeaderMap, HeaderName, HeaderValue};
 use wreq::Client;
 use wreq_util::Emulation;
 
+
 /// Client Hints headers for Chrome 145 (2026 Standard)
 /// These headers must match the TLS fingerprint to avoid "Headless Spoofing" detection
 const CLIENT_HINTS_SEC_CH_UA: &str =
@@ -31,166 +21,15 @@ const CLIENT_HINTS_SEC_CH_UA: &str =
 const CLIENT_HINTS_SEC_CH_UA_MOBILE: &str = "?0";
 const CLIENT_HINTS_SEC_CH_UA_PLATFORM: &str = "\"Linux\"";
 
-/// Result type for HttpClient operations
-pub type HttpResult<T> = Result<T, HttpError>;
-
-/// Configuration for HTTP client behavior
-///
-/// Controls headers, retry behavior, and cookie handling.
-/// Use `Default` for sensible production defaults.
-#[derive(Debug, Clone)]
-pub struct HttpClientConfig {
-    /// Accept-Language header value
-    pub accept_language: String,
-    /// Accept header value
-    pub accept: String,
-    /// Referer header value
-    pub referer: String,
-    /// Cache-Control header value
-    pub cache_control: String,
-    /// Maximum number of retry attempts
-    pub max_retries: u32,
-    /// Base delay for exponential backoff (in milliseconds)
-    pub backoff_base_ms: u64,
-    /// Maximum delay for exponential backoff (in milliseconds)
-    pub backoff_max_ms: u64,
-    /// Enable cookie jar
-    pub enable_cookies: bool,
-}
-
-impl Default for HttpClientConfig {
-    fn default() -> Self {
-        Self {
-            accept_language: "en-US,en;q=0.9".into(),
-            accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8".into(),
-            referer: "https://www.google.com/".into(),
-            cache_control: "no-cache".into(),
-            max_retries: 3,
-            backoff_base_ms: 1000,
-            backoff_max_ms: 10000,
-            enable_cookies: true,
-        }
-    }
-}
-
-/// HTTP-specific errors with status code information
-///
-/// Variants provide specific handling hints:
-/// - `Forbidden`: 403 - retry with different UA
-/// - `RateLimited`: 429 - respect Retry-After header
-/// - `ClientError` / `ServerError`: other 4xx/5xx codes
-#[derive(Debug, Clone, PartialEq)]
-pub enum HttpError {
-    /// 403 Forbidden - site blocking
-    Forbidden,
-    /// 429 Rate Limited - contains retry-after seconds
-    RateLimited(u64),
-    /// Other 4xx errors - contains status code
-    ClientError(u16),
-    /// 5xx server errors - contains status code
-    ServerError(u16),
-    /// Request timeout
-    Timeout,
-    /// Connection error - contains error message
-    Connection(String),
-    /// Request building/error - contains error message
-    Request(String),
-    /// WAF/CAPTCHA challenge detected in HTTP 200 (false positive)
-    WafChallenge(String),
-}
-
-impl std::fmt::Display for HttpError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HttpError::Forbidden => write!(f, "403 Forbidden - site blocking"),
-            HttpError::RateLimited(retry_after) => {
-                write!(f, "429 Rate Limited - retry after {} seconds", retry_after)
-            },
-            HttpError::ClientError(code) => write!(f, "Client Error {}", code),
-            HttpError::ServerError(code) => write!(f, "Server Error {}", code),
-            HttpError::Timeout => write!(f, "Request Timeout"),
-            HttpError::Connection(msg) => write!(f, "Connection Error: {}", msg),
-            HttpError::Request(msg) => write!(f, "Request Error: {}", msg),
-            HttpError::WafChallenge(provider) => {
-                write!(f, "WAF/CAPTCHA challenge detected ({})", provider)
-            },
-        }
-    }
-}
-
-impl std::error::Error for HttpError {}
-
-/// WAF/CAPTCHA challenge signature for detection in HTTP 200 responses
-///
-/// Each entry is (signature, provider_name). The detector scans the response body
-/// for these substrings — zero allocations, O(N*M) where M is the signature count.
-///
-/// Following **perf-iter-over-index**: iterator-based scanning, no regex needed.
-const WAF_SIGNATURES: &[(&str, &str)] = &[
-    // Cloudflare Turnstile / JS Challenge
-    ("cf-turnstile", "Cloudflare Turnstile"),
-    ("challenge-platform", "Cloudflare JS Challenge"),
-    ("Just a moment...", "Cloudflare"),
-    ("Checking your browser", "Cloudflare"),
-    ("__cf_chl_f_tk", "Cloudflare"),
-    // Google reCAPTCHA
-    ("g-recaptcha", "reCAPTCHA"),
-    ("recaptcha/api.js", "reCAPTCHA"),
-    ("grecaptcha.execute", "reCAPTCHA"),
-    // hCaptcha
-    ("hcaptcha.com", "hCaptcha"),
-    ("h-captcha", "hCaptcha"),
-    // DataDome
-    ("datadome", "DataDome"),
-    ("dd-captcha", "DataDome"),
-    // PerimeterX / HUMAN Security
-    ("perimeterx", "PerimeterX"),
-    ("_pxCaptcha", "PerimeterX"),
-    // Akamai Bot Manager
-    ("_abck", "Akamai Bot Manager"),
-    ("SensorData", "Akamai Bot Manager"),
-    // Generic challenge phrases
-    ("Please verify you are a human", "Generic Challenge"),
-    ("verify you are human", "Generic Challenge"),
-    ("bot detection", "Generic Detection"),
-];
-
-/// Detect WAF/CAPTCHA challenge pages disguised as HTTP 200
-///
-/// Scans the response body for known WAF signatures. Returns the provider name
-/// if a challenge is detected, or `None` if the content appears legitimate.
-///
-/// # Arguments
-///
-/// * `body` - The HTTP response body as a string
-///
-/// # Returns
-///
-/// * `Some(provider_name)` if a WAF challenge signature is found
-/// * `None` if no challenge detected
-///
-/// # Performance
-///
-/// O(N * M) where N = body length, M = signature count (currently 19).
-/// Zero allocations — uses `str::contains()` with static string slices.
-/// For M > 20, consider upgrading to `aho-corasick` for O(N) DFA matching.
-#[inline]
-pub fn detect_waf_challenge(body: &str) -> Option<&'static str> {
-    // Following **perf-iter-over-index**: iterator scan, no intermediate collections
-    WAF_SIGNATURES
-        .iter()
-        .find_map(|(sig, provider)| body.contains(sig).then_some(*provider))
-}
-
 /// HTTP client wrapper with configurable retry behavior
 ///
-/// Wraps `reqwest::Client` and adds:
+/// Wraps `wreq::Client` and adds:
 /// - Custom headers from config
 /// - Status-specific retry logic
 /// - User-agent rotation on 403
 /// - Exponential backoff on 429 and 5xx
 pub struct HttpClient {
-    /// Internal reqwest client
+    /// Internal wreq client
     client: Client,
     /// Configuration for headers and retry
     config: HttpClientConfig,
@@ -245,7 +84,7 @@ impl HttpClient {
         );
 
         let builder = Client::builder()
-            .emulation(Emulation::Chrome145) // TLS fingerprint impersonation (Layer 2 WAF Evasion) - Updated to Chrome 145 for 2026
+            .emulation(Emulation::Chrome145)
             .default_headers(headers)
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
@@ -253,14 +92,13 @@ impl HttpClient {
             .pool_idle_timeout(Duration::from_secs(60))
             .gzip(true)
             .brotli(true)
-            .cookie_store(true) // Explicitly enable cookies for session persistence
-            .redirect(wreq::redirect::Policy::limited(10)); // Follow up to 10 redirects
+            .cookie_store(true)
+            .redirect(wreq::redirect::Policy::limited(10));
 
         let client = builder
             .build()
             .map_err(|e| ScraperError::Config(format!("failed to create http client: {}", e)))?;
 
-        // Get user agents from fallback (synchronous)
         let user_agents = UserAgentCache::fallback_agents();
 
         debug!("HttpClient created with {} user agents", user_agents.len());
@@ -293,12 +131,10 @@ impl HttpClient {
     ///
     /// Returns `HttpError` for failed requests
     pub async fn get(&self, url: &str) -> HttpResult<String> {
-        // Try with first UA, then loop handles 403 retry
         let mut ua_index = 0;
         let max_attempts = self.config.max_retries;
 
         loop {
-            // Check if we've exhausted retries
             if ua_index >= self.user_agents.len() && ua_index > 0 {
                 return Err(HttpError::Forbidden);
             }
@@ -339,13 +175,11 @@ impl HttpClient {
                         .await
                         .map_err(|e| HttpError::Request(e.to_string()))?;
 
-                    // Detect WAF/CAPTCHA challenges disguised as HTTP 200
                     if let Some(provider) = detect_waf_challenge(&body) {
                         warn!(
                             "WAF challenge detected from {} ({}), rotating UA",
                             url, provider
                         );
-                        // Same retry logic as 403: rotate UA once
                         if ua_index == 0 {
                             ua_index += 1;
                             continue;
@@ -357,7 +191,6 @@ impl HttpClient {
                 },
                 403 => {
                     warn!("403 Forbidden from {}", url);
-                    // Retry once with different UA
                     if ua_index == 0 {
                         ua_index += 1;
                         continue;
@@ -365,7 +198,6 @@ impl HttpClient {
                     return Err(HttpError::Forbidden);
                 },
                 429 => {
-                    // Try to get Retry-After header
                     let retry_after = response
                         .headers()
                         .get("retry-after")
@@ -375,7 +207,6 @@ impl HttpClient {
 
                     debug!("429 Rate Limited, retry after {}s", retry_after);
 
-                    // Do retry loop with backoff for 429
                     let mut attempt = 0;
                     let ua_for_retry = ua.clone();
                     while attempt < max_attempts {
@@ -384,7 +215,6 @@ impl HttpClient {
                         let delay_ms = if retry_after > 0 {
                             retry_after * 1000
                         } else {
-                            // Backoff: 1s -> 2s -> 4s (attempt starts at 1)
                             let exponent = attempt.saturating_sub(1);
                             let delay = self.config.backoff_base_ms * (2_u64.pow(exponent));
                             delay.min(self.config.backoff_max_ms)
@@ -393,7 +223,6 @@ impl HttpClient {
                         debug!("429 retry attempt {} after {}ms", attempt, delay_ms);
                         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
 
-                        // Try request again
                         let request = self
                             .client
                             .get(url)
@@ -411,13 +240,10 @@ impl HttpClient {
                                         .await
                                         .map_err(|e| HttpError::Request(e.to_string()));
                                 } else if resp.status().as_u16() == 429 {
-                                    // Still rate limited, continue backing off
                                     continue;
                                 } else if resp.status().is_server_error() {
-                                    // Server error, continue retrying
                                     continue;
                                 } else {
-                                    // Client error (other than 429/403)
                                     return Err(HttpError::ClientError(resp.status().as_u16()));
                                 }
                             },
@@ -425,24 +251,20 @@ impl HttpClient {
                                 if e.is_timeout() {
                                     return Err(HttpError::Timeout);
                                 }
-                                // Connection error, continue retrying
                                 continue;
                             },
                         }
                     }
-                    // Exhausted retries
                     return Err(HttpError::RateLimited(retry_after));
                 },
                 500..=599 => {
                     debug!("{} from {}", status, url);
 
-                    // Retry loop with exponential backoff
                     let mut attempt = 0;
                     let ua_for_retry = ua.clone();
                     while attempt < max_attempts {
                         attempt += 1;
 
-                        // Backoff: 1s -> 2s -> 4s (attempt starts at 1)
                         let exponent = attempt.saturating_sub(1);
                         let delay = self.config.backoff_base_ms * (2_u64.pow(exponent));
                         let delay_ms = delay.min(self.config.backoff_max_ms);
@@ -450,7 +272,6 @@ impl HttpClient {
                         debug!("5xx retry attempt {} after {}ms", attempt, delay_ms);
                         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
 
-                        // Try request again
                         let request = self
                             .client
                             .get(url)
@@ -468,10 +289,8 @@ impl HttpClient {
                                         .await
                                         .map_err(|e| HttpError::Request(e.to_string()));
                                 } else if resp.status().is_server_error() {
-                                    // Server error, continue retrying
                                     continue;
                                 } else {
-                                    // Client error (4xx)
                                     return Err(HttpError::ClientError(resp.status().as_u16()));
                                 }
                             },
@@ -479,12 +298,10 @@ impl HttpClient {
                                 if e.is_timeout() {
                                     return Err(HttpError::Timeout);
                                 }
-                                // Connection error, continue retrying
                                 continue;
                             },
                         }
                     }
-                    // Exhausted retries
                     return Err(HttpError::ServerError(status.as_u16()));
                 },
                 code if (400..=499).contains(&code) => {
@@ -504,20 +321,19 @@ impl HttpClient {
 /// This function creates a client with basic configuration.
 /// For more control, use `HttpClient::new()` with `HttpClientConfig`.
 pub fn create_http_client() -> Result<Client, ScraperError> {
-    // Get fallback/user agents (sync, no async needed)
     let agents = UserAgentCache::fallback_agents();
     let user_agent = get_random_user_agent_from_pool(&agents);
 
     tracing::debug!("Using user agent: {}", user_agent);
 
     let client = Client::builder()
-        .emulation(Emulation::Chrome145) // TLS fingerprint impersonation (Updated to Chrome 145 for 2026)
+        .emulation(Emulation::Chrome145)
         .user_agent(user_agent)
         .timeout(Duration::from_secs(30))
         .gzip(true)
         .brotli(true)
         .cookie_store(true)
-        .redirect(wreq::redirect::Policy::limited(10)) // Follow up to 10 redirects
+        .redirect(wreq::redirect::Policy::limited(10))
         .build()
         .map_err(|e| ScraperError::Config(format!("failed to create http client: {}", e)))?;
 
@@ -535,131 +351,10 @@ pub fn get_random_user_agent_from_pool(pool: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // =========================================================================
-    // HttpClientConfig tests
-    // =========================================================================
+    use crate::application::http_client::config::HttpClientConfig;
 
     #[test]
-    fn test_http_client_config_default_values() {
-        let config = HttpClientConfig::default();
-
-        assert_eq!(config.accept_language, "en-US,en;q=0.9");
-        assert_eq!(
-            config.accept,
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-        );
-        assert_eq!(config.referer, "https://www.google.com/");
-        assert_eq!(config.cache_control, "no-cache");
-        assert_eq!(config.max_retries, 3);
-        assert_eq!(config.backoff_base_ms, 1000);
-        assert_eq!(config.backoff_max_ms, 10000);
-        assert!(config.enable_cookies);
-    }
-
-    #[test]
-    fn test_http_client_config_clone() {
-        let config = HttpClientConfig::default();
-        let cloned = config.clone();
-
-        assert_eq!(config.accept_language, cloned.accept_language);
-        assert_eq!(config.max_retries, cloned.max_retries);
-    }
-
-    #[test]
-    fn test_http_client_config_custom_values() {
-        let config = HttpClientConfig {
-            accept_language: "es-ES".into(),
-            accept: "application/json".into(),
-            referer: "https://example.com/".into(),
-            cache_control: "max-age=3600".into(),
-            max_retries: 5,
-            backoff_base_ms: 500,
-            backoff_max_ms: 5000,
-            enable_cookies: false,
-        };
-
-        assert_eq!(config.accept_language, "es-ES");
-        assert_eq!(config.max_retries, 5);
-        assert!(!config.enable_cookies);
-    }
-
-    // =========================================================================
-    // HttpError tests
-    // =========================================================================
-
-    #[test]
-    fn test_http_error_forbidden() {
-        let err = HttpError::Forbidden;
-        assert_eq!(err, HttpError::Forbidden);
-    }
-
-    #[test]
-    fn test_http_error_rate_limited() {
-        let err = HttpError::RateLimited(60);
-        assert_eq!(err, HttpError::RateLimited(60));
-
-        let err2 = HttpError::RateLimited(30);
-        assert_ne!(err, err2);
-    }
-
-    #[test]
-    fn test_http_error_client_error() {
-        let err = HttpError::ClientError(404);
-        assert_eq!(err, HttpError::ClientError(404));
-    }
-
-    #[test]
-    fn test_http_error_server_error() {
-        let err = HttpError::ServerError(500);
-        assert_eq!(err, HttpError::ServerError(500));
-    }
-
-    #[test]
-    fn test_http_error_timeout() {
-        let err = HttpError::Timeout;
-        assert_eq!(err, HttpError::Timeout);
-    }
-
-    #[test]
-    fn test_http_error_connection() {
-        let err = HttpError::Connection("Connection refused".into());
-        assert_eq!(err, HttpError::Connection("Connection refused".into()));
-    }
-
-    #[test]
-    fn test_http_error_request() {
-        let err = HttpError::Request("Invalid URL".into());
-        assert_eq!(err, HttpError::Request("Invalid URL".into()));
-    }
-
-    #[test]
-    fn test_http_error_display() {
-        assert_eq!(
-            format!("{}", HttpError::Forbidden),
-            "403 Forbidden - site blocking"
-        );
-        assert_eq!(
-            format!("{}", HttpError::RateLimited(30)),
-            "429 Rate Limited - retry after 30 seconds"
-        );
-        assert_eq!(
-            format!("{}", HttpError::ClientError(404)),
-            "Client Error 404"
-        );
-        assert_eq!(
-            format!("{}", HttpError::ServerError(500)),
-            "Server Error 500"
-        );
-        assert_eq!(format!("{}", HttpError::Timeout), "Request Timeout");
-    }
-
-    // =========================================================================
-    // HttpClient creation tests
-    // =========================================================================
-
-    #[test]
-    fn test_http_client_new_success() {
+    fn test_http_client_creation_default() {
         let config = HttpClientConfig::default();
         let result = HttpClient::new(config);
         assert!(result.is_ok());
@@ -669,7 +364,6 @@ mod tests {
     fn test_http_client_has_user_agents() {
         let config = HttpClientConfig::default();
 
-        // Verify defaults are sane before creating the client
         assert!(
             config.max_retries > 0,
             "HttpClientConfig should have positive max_retries default"
@@ -679,7 +373,6 @@ mod tests {
             "HttpClientConfig should have positive backoff_base_ms default"
         );
 
-        // Verify the client can be created — it loads fallback user agents internally
         let _client = HttpClient::new(config).unwrap();
     }
 
@@ -688,7 +381,6 @@ mod tests {
         let config = HttpClientConfig::default();
         let client = HttpClient::new(config).unwrap();
 
-        // Invalid URL should fail
         let result = client.get("not-a-valid-url").await;
         assert!(result.is_err());
     }
@@ -699,7 +391,6 @@ mod tests {
         let config = HttpClientConfig::default();
         let client = HttpClient::new(config).unwrap();
 
-        // Valid request to example.com should succeed
         let result = client.get("https://example.com").await;
         assert!(result.is_ok());
 
@@ -711,18 +402,14 @@ mod tests {
 #[cfg(test)]
 mod wiremock_tests {
     use super::*;
+    use crate::application::http_client::config::HttpClientConfig;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    // =========================================================================
-    // 403 Handling with User-Agent Rotation
-    // =========================================================================
 
     #[tokio::test]
     async fn test_403_returns_error() {
         let mock_server = MockServer::start().await;
 
-        // Request returns 403
         Mock::given(method("GET"))
             .and(path("/"))
             .respond_with(ResponseTemplate::new(403))
@@ -730,27 +417,21 @@ mod wiremock_tests {
             .await;
 
         let config = HttpClientConfig {
-            max_retries: 1, // Only 1 retry
+            max_retries: 1,
             ..Default::default()
         };
         let client = HttpClient::new(config).unwrap();
 
         let result = client.get(&mock_server.uri()).await;
 
-        // Should return 403 error after exhausting retries
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), HttpError::Forbidden));
     }
-
-    // =========================================================================
-    // 429 Rate Limited with Backoff
-    // =========================================================================
 
     #[tokio::test]
     async fn test_429_returns_error() {
         let mock_server = MockServer::start().await;
 
-        // Request returns 429
         Mock::given(method("GET"))
             .and(path("/"))
             .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "1"))
@@ -769,22 +450,15 @@ mod wiremock_tests {
         let result = client.get(&mock_server.uri()).await;
         let elapsed = start.elapsed();
 
-        // Should fail with rate limit error
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), HttpError::RateLimited(_)));
-        // Should have waited at least for the retry-after
         assert!(elapsed.as_millis() >= 10);
     }
-
-    // =========================================================================
-    // 500 Server Error with Automatic Retry
-    // =========================================================================
 
     #[tokio::test]
     async fn test_500_returns_error() {
         let mock_server = MockServer::start().await;
 
-        // Always return 500
         Mock::given(method("GET"))
             .and(path("/"))
             .respond_with(ResponseTemplate::new(500))
@@ -801,7 +475,6 @@ mod wiremock_tests {
 
         let result = client.get(&mock_server.uri()).await;
 
-        // Should fail after exhausting retries
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), HttpError::ServerError(500)));
     }
@@ -810,7 +483,6 @@ mod wiremock_tests {
     async fn test_500_exhausts_retries() {
         let mock_server = MockServer::start().await;
 
-        // Always return 500
         Mock::given(method("GET"))
             .and(path("/"))
             .respond_with(ResponseTemplate::new(500))
@@ -827,14 +499,9 @@ mod wiremock_tests {
 
         let result = client.get(&mock_server.uri()).await;
 
-        // Should fail after exhausting retries
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), HttpError::ServerError(500)));
     }
-
-    // =========================================================================
-    // Client Error (4xx except 403/429)
-    // =========================================================================
 
     #[tokio::test]
     async fn test_404_returns_client_error() {
@@ -854,10 +521,6 @@ mod wiremock_tests {
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), HttpError::ClientError(404)));
     }
-
-    // =========================================================================
-    // Successful Response
-    // =========================================================================
 
     #[tokio::test]
     async fn test_200_returns_body() {
@@ -883,96 +546,7 @@ mod wiremock_tests {
 #[cfg(test)]
 mod waf_detection_tests {
     use super::*;
-
-    // =========================================================================
-    // detect_waf_challenge unit tests
-    // =========================================================================
-
-    #[test]
-    fn test_detect_cloudflare_turnstile() {
-        let html = r#"<div id="cf-turnstile" data-sitekey="abc123"></div>"#;
-        assert_eq!(detect_waf_challenge(html), Some("Cloudflare Turnstile"));
-    }
-
-    #[test]
-    fn test_detect_cloudflare_just_a_moment() {
-        let html = "<html><body><h1>Just a moment...</h1></body></html>";
-        assert_eq!(detect_waf_challenge(html), Some("Cloudflare"));
-    }
-
-    #[test]
-    fn test_detect_cloudflare_checking_browser() {
-        let html = "<html><body>Checking your browser before accessing...</body></html>";
-        assert_eq!(detect_waf_challenge(html), Some("Cloudflare"));
-    }
-
-    #[test]
-    fn test_detect_recaptcha() {
-        let html = r#"<script src="https://www.google.com/recaptcha/api.js?render=abc"></script>"#;
-        assert_eq!(detect_waf_challenge(html), Some("reCAPTCHA"));
-    }
-
-    #[test]
-    fn test_detect_g_recaptcha() {
-        let html = r#"<div class="g-recaptcha" data-sitekey="abc"></div>"#;
-        assert_eq!(detect_waf_challenge(html), Some("reCAPTCHA"));
-    }
-
-    #[test]
-    fn test_detect_hcaptcha() {
-        let html = r#"<div class="h-captcha" data-sitekey="abc"></div>"#;
-        assert_eq!(detect_waf_challenge(html), Some("hCaptcha"));
-    }
-
-    #[test]
-    fn test_detect_datadome() {
-        let html = r#"<script src="https://js.datadome.co/captcha.js"></script>"#;
-        assert_eq!(detect_waf_challenge(html), Some("DataDome"));
-    }
-
-    #[test]
-    fn test_detect_perimeterx() {
-        let html = r#"<script>var _pxCaptcha = {};</script>"#;
-        assert_eq!(detect_waf_challenge(html), Some("PerimeterX"));
-    }
-
-    #[test]
-    fn test_detect_akamai() {
-        let html = r#"<input type="hidden" name="_abck" value="xxx">"#;
-        assert_eq!(detect_waf_challenge(html), Some("Akamai Bot Manager"));
-    }
-
-    #[test]
-    fn test_detect_generic_challenge() {
-        let html = "<p>Please verify you are a human to continue.</p>";
-        assert_eq!(detect_waf_challenge(html), Some("Generic Challenge"));
-    }
-
-    #[test]
-    fn test_clean_html_no_detection() {
-        let html = r#"
-            <html>
-                <head><title>Normal Page</title></head>
-                <body>
-                    <article>
-                        <h1>Welcome</h1>
-                        <p>This is a normal page with real content.</p>
-                    </article>
-                </body>
-            </html>
-        "#;
-        assert_eq!(detect_waf_challenge(html), None);
-    }
-
-    #[test]
-    fn test_empty_body_no_detection() {
-        assert_eq!(detect_waf_challenge(""), None);
-    }
-
-    // =========================================================================
-    // Wiremock integration: HTTP 200 with WAF body
-    // =========================================================================
-
+    use crate::application::http_client::config::HttpClientConfig;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -980,7 +554,6 @@ mod waf_detection_tests {
     async fn test_200_cloudflare_challenge_returns_waf_error() {
         let mock_server = MockServer::start().await;
 
-        // Cloudflare challenge page returns 200
         let challenge_body = r#"<html><head><title>Just a moment...</title></head>
         <body><div id="challenge-running">Checking your browser...</div></body></html>"#;
 
@@ -991,7 +564,7 @@ mod waf_detection_tests {
             .await;
 
         let config = HttpClientConfig {
-            max_retries: 1, // Only 1 retry
+            max_retries: 1,
             ..Default::default()
         };
         let client = HttpClient::new(config).unwrap();
