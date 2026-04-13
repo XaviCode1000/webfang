@@ -16,7 +16,7 @@
 #![cfg(feature = "ai")]
 
 use rust_scraper::domain::DocumentChunk;
-use rust_scraper::infrastructure::ai::model_cache::{
+use rust_scraper::infrastructure::ai::{
     default_cache_dir, CacheConfig, ModelCache, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO,
 };
 use rust_scraper::infrastructure::ai::model_downloader::ModelDownloader;

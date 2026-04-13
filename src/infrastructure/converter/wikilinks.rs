@@ -88,10 +88,7 @@ fn should_convert_wikilink(url_str: &str, base_domain: &str) -> Option<String> {
         Err(_) => return None,
     };
 
-    let host = match parsed.host_str() {
-        Some(h) => h,
-        None => return None,
-    };
+    let host = parsed.host_str()?;
 
     // Only convert same-domain links
     if host != base_domain {

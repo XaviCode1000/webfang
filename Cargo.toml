@@ -255,3 +255,7 @@ needless_pass_by_value = "allow"
 return_self_not_must_use = "allow"
 single_match_else = "allow"
 trivially_copy_pass_by_ref = "allow"
+
+
+
+
