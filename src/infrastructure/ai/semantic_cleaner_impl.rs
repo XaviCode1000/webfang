@@ -60,8 +60,9 @@ use tracing::{debug, info, warn};
 use crate::domain::semantic_cleaner::{private, SemanticCleaner};
 use crate::domain::DocumentChunk;
 use crate::error::SemanticError;
-use crate::infrastructure::ai::model_cache::{
-    default_cache_dir, CacheConfig, ModelCache, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO,
+use crate::infrastructure::ai::model_cache::ModelCache;
+use crate::infrastructure::ai::cache_config::{
+    default_cache_dir, CacheConfig, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO,
 };
 use crate::infrastructure::ai::{HtmlChunker, InferenceEngine, MiniLmTokenizer, RelevanceScorer};
 

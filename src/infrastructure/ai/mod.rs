@@ -72,6 +72,8 @@
 
 // Core AI infrastructure (Modules 1-2)
 #[cfg(feature = "ai")]
+pub mod cache_config;
+#[cfg(feature = "ai")]
 pub mod model_cache;
 
 #[cfg(feature = "ai")]
@@ -107,7 +109,10 @@ pub mod threshold_config;
 
 // Re-exports for convenience (Modules 1-2)
 #[cfg(feature = "ai")]
-pub use model_cache::{CacheConfig, ModelCache};
+pub use cache_config::{default_cache_dir, CacheConfig, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO, DEFAULT_MODEL_SHA256};
+
+#[cfg(feature = "ai")]
+pub use model_cache::ModelCache;
 
 #[cfg(feature = "ai")]
 pub use model_downloader::{DownloadProgress, ModelDownloader};

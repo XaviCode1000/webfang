@@ -167,7 +167,7 @@ impl MiniLmTokenizer {
     /// * `Err(SemanticError::Tokenize)` - Failed to load
     pub async fn load_default() -> Result<Self, SemanticError> {
         // Try to load from cache first
-        let cache_dir = crate::infrastructure::ai::model_cache::default_cache_dir();
+        let cache_dir = crate::infrastructure::ai::cache_config::default_cache_dir();
         let tokenizer_path = cache_dir.join("tokenizer.json");
 
         if tokenizer_path.exists() {
