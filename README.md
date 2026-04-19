@@ -82,7 +82,25 @@ rust_scraper --url https://example.com --use-sitemap
 
 Encuentra todas las páginas del sitio usando su sitemap.
 
-### Modo interactivo (recomendado)
+### Modo automático (sin argumentos)
+
+```bash
+# Sin --url — detecta terminal y pregunta interactivamente
+rust_scraper
+# → "Enter the URL to scrape: https://example.com"
+```
+
+El scraper detecta automáticamente si estás en un terminal interactivo y te pide la URL. En pipelines o scripts, falla gracefully con mensaje de error claro.
+
+**Control automático:**
+
+| Entorno | Comportamiento |
+|---------|-------------|
+| Terminal | Pide la URL interactivamente |
+| Pipe | Error: "--url is required" |
+| CI=true | Error: "--url is required (CI mode)" |
+
+### Modo interactivo (TUI completo)
 
 ```bash
 rust_scraper --url https://example.com --interactive
@@ -91,18 +109,20 @@ rust_scraper --url https://example.com --interactive
 Se abre una interfaz en la terminal donde puedes:
 - Ver todas las URLs encontradas
 - Seleccionar cuáles quieres descargar
-- Confirmar antes de empezar
+- Ver progreso en tiempo real durante scraping
+- Ver errores mientras ocurren
 
 **Controles del TUI:**
 
-| Tecla | Acción |
-|-------|--------|
-| `↑` / `↓` | Navegar entre URLs |
-| `Espacio` | Seleccionar / deseleccionar |
-| `A` | Seleccionar todo |
-| `D` | Deseleccionar todo |
-| `Enter` | Confirmar y empezar |
-| `q` | Salir |
+| Fase | Tecla | Acción |
+|------|-------|--------|
+| Selección | `↑` / `↓` | Navegar entre URLs |
+| Selección | `Espacio` | Seleccionar / deseleccionar |
+| Selección | `A` | Seleccionar todo |
+| Selección | `D` | Deseleccionar todo |
+| Selección | `Enter` | Confirmar y empezar |
+| Scraping | `j` / `k` | Scroll errores |
+| Cualquiera | `q` | Salir |
 
 ### Guardar en Obsidian
 

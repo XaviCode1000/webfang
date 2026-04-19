@@ -1,6 +1,8 @@
-# TUI — Selector Interactivo de URLs
+# TUI — Selector Interactivo y Progress Widget
 
-**Versión:** 1.1.0 · **Última actualización:** Abril 2026
+**Versión:** 1.2.0 · **Última actualización:** Abril 2026
+
+> Esta guía cubre el TUISelector (selección de URLs) y el Progress Widget (scraping en tiempo real). Para el modo wizard (prompts automáticos), consulta la sección abajo.
 
 ---
 
@@ -196,6 +198,71 @@ rust-scraper --url https://ejemplo.com --max-pages 50 --interactive
 
 ---
 
+## Progress Widget — Seguimiento en tiempo real
+
+Durante el scraping, se muestra un widget de progreso en tiempo real:
+
+```
+┌────────────────────────────────────────────────────────┐
+│ 🕷️ Scraping Progress                                    │
+├────────────────────────────────────────────────────────┤
+│ [████████░░░░░░░░░░░░░░░░░] 40% (4/10)          │
+│ 🌐 https://example.com/page-3 • Est: 30s             │
+├────────────────────────────────────────────────────────┤
+│ Errors (1)                                            │
+│ ⚠️ 404 https://example.com/page-5                      │
+├────────────────────────────────────────────────────────┤
+│ 📊 4 completed | 1 failed | 5 pending             │
+│ j/k: scroll | q: quit                                 │
+└────────────────────────────────────────────────────────┘
+```
+
+### Características
+
+- **Barra de progreso** — Porcentaje visual con estimación de tiempo
+- **URL activa** — La página que se está procesando actualmente
+- **Widget de errores** — Muestra errores en rojo/amarillo según tipo
+- **Auto-scroll** — Mantiene los errores más recientes visibles
+
+### Controles durante scraping
+
+| Tecla | Acción |
+|-------|--------|
+| `j` | Scroll abajo en errores |
+| `k` | Scroll arriba en errores |
+| `q` | Cancelar scraping |
+
+---
+
+## Modo Wizard — Prompts automáticos
+
+Cuando ejecutas `rust_scraper` sin `--url`, detecta si estás en un terminal interactivo:
+
+```bash
+# Sin argumentos — automática pide la URL
+rust_scraper
+# → "Enter the URL to scrape: https://example.com"
+```
+
+### Detección automática
+
+| Entorno | Comportamiento |
+|---------|-------------|
+| **Terminal interactivo** | Pide la URL interactivamente |
+| **Pipe / script** | Error: "--url is required" |
+| **CI=true** | Error: "--url is required (CI mode)" |
+
+### Subcommands
+
+Los subcommands (`completions`, `help`) funcionan sin `--url`:
+
+```bash
+rust_scraper completions bash
+# → Genera completions sin pedir URL
+```
+
+---
+
 ## Integración con otras funciones
 
 El TUI funciona con todas las demás opciones del scraper:
@@ -209,8 +276,7 @@ El TUI funciona con todas las demás opciones del scraper:
 | `--download-images` | ✅ — Descarga imágenes de las URLs seleccionadas |
 | `--obsidian-wiki-links` | ✅ — Guarda en Obsidian |
 | `--clean-ai` | ✅ — Limpia contenido con IA |
-| `--quiet` | ⚠️ — No recomendado con TUI (silencia info) |
-| `--dry-run` | ⚠️ — El dry-run muestra URLs sin TUI |
+| `--quiet` | ⚠️ — Silencia widgets de progreso |
 
 ---
 
@@ -220,10 +286,29 @@ El TUI está implementado como un **Adapter** en Clean Architecture:
 
 ```
 src/adapters/tui/
-├── mod.rs              # Módulo público (run_selector, TuiError)
+├── mod.rs              # Módulo público (exports)
 ├── terminal.rs         # Setup/restore del terminal + panic hook
-└── url_selector.rs     # State machine + widget de ratatui
+├── url_selector.rs     # URL selection state machine + widget
+├── progress_types.rs # ScrapeProgress, ScrapeStatus, AppEvent
+├── event_loop.rs     # tokio::select! async event loop
+├── progress_widget.rs # Progress bar + ETA display
+├── error_log_widget.rs # Error display con auto-scroll
+└── progress_view.rs # run_progress_view (scraping stage)
 ```
+
+### Tecnologías
+
+- **ratatui** — Framework de UI para terminal
+- **crossterm** — Control del terminal (raw mode, alternate screen, eventos)
+- **tokio** + **tokio::mpsc** — Async event loop + progress channel
+- **inquire** — Prompts interactivos para wizard
+
+### Patrones implementados
+
+1. **Channel-based progress** — `tokio::sync::mpsc` para eventos de scraping → UI
+2. **tokio::select!** — Concurrent input + progress + tick events
+3. **Typestate** — Estados compilados (Selecting, Scraping, Completed)
+4. **TTY detection** — `std::io::IsTerminal` para wizard
 
 **Principio clave:** La capa Application **nunca** importa `ratatui` ni `crossterm`. El TUI es un puerto de entrada, no lógica de negocio.
 
