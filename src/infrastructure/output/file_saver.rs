@@ -168,7 +168,7 @@ fn save_as_markdown(
     Ok(())
 }
 
-/// Save results as plain text files
+/// Save results as plain text files with structured format
 fn save_as_text(
     results: &[ScrapedContent],
     output_dir: &Path,
@@ -182,7 +182,26 @@ fn save_as_text(
             Err(e) => {
                 warn!("Failed to parse URL {}: {}, using fallback", item.url, e);
                 let fallback_path = output_dir.join("index.txt");
-                fs::write(&fallback_path, &item.content)?;
+                // Structured text format with delimiters
+                let author = item.author.as_deref().unwrap_or("Unknown");
+                let date = item.date.as_deref().unwrap_or("N/A");
+                let content = format!(
+                    "========================================\n\
+                     TITLE: {}\n\
+                     URL: {}\n\
+                     AUTHOR: {}\n\
+                     DATE: {}\n\
+                     ----------------------------------------\n\
+                     CONTENT:\n\
+                     {}\n\
+                     ========================================",
+                    item.title,
+                    item.url,
+                    author,
+                    date,
+                    item.content
+                );
+                fs::write(&fallback_path, &content)?;
                 continue;
             },
         };
@@ -197,7 +216,26 @@ fn save_as_text(
             fs::create_dir_all(parent)?;
         }
 
-        fs::write(&full_path, &item.content)?;
+        // Structured text format with delimiters
+        let author = item.author.as_deref().unwrap_or("Unknown");
+        let date = item.date.as_deref().unwrap_or("N/A");
+        let content = format!(
+            "========================================\n\
+             TITLE: {}\n\
+             URL: {}\n\
+             AUTHOR: {}\n\
+             DATE: {}\n\
+             ----------------------------------------\n\
+             CONTENT:\n\
+             {}\n\
+             ========================================",
+            item.title,
+            item.url,
+            author,
+            date,
+            item.content
+        );
+        fs::write(&full_path, &content)?;
         tracing::info!("💾 Saved: {}", full_path.display());
     }
 
