@@ -41,7 +41,7 @@ pub async fn run(args: Args) -> CliExit {
 
     // Run preflight checks
     let PreflightContext {
-        vault_path,
+        vault_path: _,
         config_path: _,
         target_url: _,
     } = match preflight(&args).await {
