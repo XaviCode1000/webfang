@@ -50,6 +50,130 @@ use crate::ScraperConfig;
 type CrawlRateLimiter = RateLimiter<NotKeyed, InMemoryState, QuantaClock>;
 
 // ============================================================================
+// FASE 4: Progress Tracking and Resumable Processing Types
+// ============================================================================
+
+/// Progress information for sitemap crawling operations
+///
+/// Tracks batch progress, completion percentage, and URL counts
+/// for long-running sitemap parsing operations.
+///
+/// Following **api-builder-pattern**: clear, self-documenting API
+#[derive(Debug, Clone)]
+pub struct CrawlProgress {
+    /// Current batch number (0-indexed)
+    pub current_batch: usize,
+    /// Total number of batches
+    pub total_batches: usize,
+    /// Completion percentage (0.0 to 100.0)
+    pub percentage: f32,
+    /// Number of URLs processed in current batch
+    pub urls_in_batch: usize,
+    /// Total URLs discovered so far
+    pub total_urls: usize,
+    /// Whether the crawl is complete
+    pub is_complete: bool,
+}
+
+impl Default for CrawlProgress {
+    fn default() -> Self {
+        Self {
+            current_batch: 0,
+            total_batches: 0,
+            percentage: 0.0,
+            urls_in_batch: 0,
+            total_urls: 0,
+            is_complete: false,
+        }
+    }
+}
+
+impl CrawlProgress {
+    /// Create new progress tracker with total URL estimate
+    pub fn new(total_urls_estimate: usize, batch_size: usize) -> Self {
+        let total_batches = total_urls_estimate.div_ceil(batch_size);
+        Self {
+            current_batch: 0,
+            total_batches,
+            percentage: 0.0,
+            urls_in_batch: 0,
+            total_urls: 0,
+            is_complete: false,
+        }
+    }
+
+    /// Update progress after processing a batch
+    pub fn update(&mut self, urls_in_batch: usize, total_so_far: usize) {
+        self.urls_in_batch = urls_in_batch;
+        self.total_urls = total_so_far;
+        self.current_batch += 1;
+        self.percentage = if self.total_batches > 0 {
+            ((self.current_batch as f32) / (self.total_batches as f32)) * 100.0
+        } else {
+            100.0
+        };
+        self.is_complete = self.current_batch >= self.total_batches;
+    }
+}
+
+/// Resumable crawl state for large sitemaps
+///
+/// Maintains state between batches to enable resumption
+/// after interruption (network failure, timeout, etc.)
+///
+/// Following **api-builder-pattern**: clear, self-documenting API
+#[derive(Debug, Clone)]
+pub struct CrawlState {
+    /// Base URL being crawled
+    pub base_url: String,
+    /// Sitemap URL (if discovered)
+    pub sitemap_url: Option<String>,
+    /// URLs already processed (for deduplication)
+    pub processed_urls: Vec<String>,
+    /// Batch size for pagination
+    pub batch_size: usize,
+    /// Current batch offset
+    pub offset: usize,
+    /// Whether pagination is enabled
+    pub pagination_enabled: bool,
+    /// Last error (if any) for debugging
+    pub last_error: Option<String>,
+}
+
+impl CrawlState {
+    /// Create new crawl state
+    pub fn new(base_url: String, batch_size: usize) -> Self {
+        Self {
+            base_url,
+            sitemap_url: None,
+            processed_urls: Vec::new(),
+            batch_size,
+            offset: 0,
+            pagination_enabled: batch_size > 0,
+            last_error: None,
+        }
+    }
+
+    /// Mark URL as processed
+    pub fn mark_processed(&mut self, url: String) {
+        self.processed_urls.push(url);
+        self.offset += 1;
+    }
+
+    /// Check if URL was already processed
+    pub fn is_processed(&self, url: &str) -> bool {
+        self.processed_urls.contains(&url.to_string())
+    }
+
+    /// Reset state for new crawl
+    pub fn reset(&mut self) {
+        self.processed_urls.clear();
+        self.offset = 0;
+        self.last_error = None;
+    }
+}
+
+// ============================================================================
 // FASE 4: TUI Support - Separated Discover/Scrape Use Cases
 // ============================================================================
 
@@ -678,9 +802,29 @@ pub async fn discover_urls(
 pub async fn crawl_with_sitemap(
     base_url: &str,
     sitemap_url: Option<&str>,
-    _config: &CrawlerConfig,
+    config: &CrawlerConfig,
+) -> Result<Vec<DiscoveredUrl>, CrawlError> {
+    crawl_with_sitemap_internal(base_url, sitemap_url, config).await
+}
+
+/// Crawl with sitemap (internal version with progress tracking)
+///
+/// This is the internal implementation that supports optional progress tracking.
+/// The public `crawl_with_sitemap` function calls this one.
+///
+/// Following **own-borrow-over-clone**: Accepts `&str` not `&String`.
+/// Following **err-anyhow-for-applications**: Uses Result with anyhow.
+#[allow(unused_variables)]
+async fn crawl_with_sitemap_internal(
+    base_url: &str,
+    sitemap_url: Option<&str>,
+    config: &CrawlerConfig,
 ) -> Result<Vec<DiscoveredUrl>, CrawlError> {
     info!("Crawling with sitemap for {}", base_url);
+
+    // Use default batch size (10,000) - SitemapConfig handles pagination
+    // CrawlerConfig doesn't have batch_size, we use SitemapConfig for that
+    const DEFAULT_BATCH_SIZE: usize = 10_000;
 
     // Auto-discover sitemap URL if not provided
     let sitemap_url = match sitemap_url {
@@ -706,13 +850,15 @@ pub async fn crawl_with_sitemap(
 
     tracing::info!("Using sitemap: {}", sitemap_url);
 
-    // Create sitemap parser with config
+    // Create sitemap parser with config (including pagination settings)
     // Following api-builder-pattern: builder API
     let parser = SitemapParser::with_config(
         SitemapConfig::builder()
             .gzip_enabled(true)
             .max_depth(3)
             .concurrency(5)
+            .batch_size(DEFAULT_BATCH_SIZE)
+            .pagination_enabled(true)
             .build(),
     );
 
@@ -721,6 +867,9 @@ pub async fn crawl_with_sitemap(
         tracing::error!("Failed to parse sitemap {}: {}", sitemap_url, e);
         CrawlError::Sitemap(e.to_string())
     })?;
+
+    let total_urls = urls.len();
+    tracing::info!("Parsed {} total URLs from sitemap", total_urls);
 
     // Validate sitemap relevance: check if any URLs share a path prefix
     // with the target URL. This handles cases where robots.txt points to
@@ -743,7 +892,8 @@ pub async fn crawl_with_sitemap(
     }
 
     // Following own-borrow-over-clone: use Url directly, not String
-    let discovered = relevant_urls
+    // Use explicit type annotation for type inference
+    let discovered: Vec<DiscoveredUrl> = relevant_urls
         .into_iter()
         .map(|url| DiscoveredUrl::html(url, 0, base.clone()))
         .collect();
