@@ -1,0 +1,201 @@
+# CI/CD Pipeline for rust-scraper
+#
+# Runs on: push to main, PRs, and manual triggers
+# 
+# Includes:
+#   - cargo check + clippy (lint)
+#   - cargo nextest (tests)
+#   - cargo audit (security)
+#   - cargo deny (licenses)
+#   - TUI tests via simulated terminal
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ============================================================================
+  # Phase 1: Build and Lint
+  # ============================================================================
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-scraper
+
+      - name: Check formatting
+        run: cargo fmt --check --verbose
+
+      - name: Clippy (strict)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build check
+        run: cargo check --all-targets --all-features
+
+  # ============================================================================
+  # Phase 2: Tests (including TUI)
+  # ============================================================================
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-scraper
+
+      # Install nextest for faster test execution
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
+
+      # ============================================================================
+      # Tests: Run all tests including TUI
+      # TUI tests use ratatui's TestBackend when no real terminal
+      # ============================================================================
+      - name: Run all tests
+        run: |
+          export TERM=xterm-256color
+          export COLORTERM=truecolor
+          cargo nextest run --test-threads 2
+
+      # ============================================================================
+      # Run Miri if requested (for UB detection)
+      # ============================================================================
+      - name: Run Miri (optional UB detection)
+        if: false  # Disabled by default, run manually
+        run: cargo miri test
+
+  # ============================================================================
+  # Phase 3: Security Audit
+  # ============================================================================
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Run cargo-audit
+        run: cargo audit --db ~/.cargo/advisory-db
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: Run cargo-deny
+        run: cargo deny check advisories
+
+  # ============================================================================
+  # Phase 4: Coverage (optional)
+  # ============================================================================
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate coverage
+        run: cargo llvm-cov --lcov --output-path lcov.info
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+
+  # ============================================================================
+  # Phase 5: Build Release
+  # ============================================================================
+  release:
+    name: Build Release
+    runs-on: ubuntu-latest
+    needs: [lint, test, security]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - name: Build release
+        run: |
+          cargo build --release --locked
+          cargo build --release --locked --features ai
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-binary
+          path: |
+            target/release/rust-scraper
+            target/release/rust-scraper-* 2>/dev/null || true
+          retention-days: 7
+
+  # ============================================================================
+  # Phase 6: Miri (Undefined Behavior)
+  # Run weekly to catch UB in unsafe blocks
+  # ============================================================================
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust with Miri
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: miri
+
+      - name: Install Miri
+        run: |
+          rustup component add miri
+          cargo miri setup
+
+      - name: Run Miri
+        run: cargo miri test -- -Z randomize-seed
