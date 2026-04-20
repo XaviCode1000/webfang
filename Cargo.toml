@@ -166,7 +166,7 @@ pulldown-cmark = "0.13"
 
 # UUID for temp file generation (production-ready streaming)
 uuid = { version = "1", features = ["v4", "serde"] }
-async-compression = { version = "0.4.41", features = ["tokio", "gzip"] }
+async-compression = { version = "0.4.41", features = ["tokio", "gzip", "deflate", "brotli", "zstd"] }
 
 # Language detection for Obsidian rich metadata
 whatlang = "0.18"

@@ -11,6 +11,8 @@
 //! - [`error`] — Error types (`CrawlError`)
 //! - [`pattern_matching`] — SSRF-safe URL pattern matching
 
+use url::Url;
+
 pub mod crawl_job;
 pub mod crawler_entities;
 pub mod entities;
@@ -36,3 +38,29 @@ pub use pattern_matching::matches_pattern;
 pub use result::CrawlResult;
 pub use site::{CrawlerConfig, CrawlerConfigBuilder};
 pub use value_objects::ValidUrl;
+
+/// Compression types supported for sitemap parsing
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompressionType {
+    None,
+    Gzip,
+    Deflate,
+    Brotli,
+    Zstd,
+}
+
+/// Batch of URLs for paginated processing
+#[derive(Debug, Clone)]
+pub struct UrlBatch {
+    pub urls: Vec<Url>,
+    pub batch_id: u32,
+    pub has_more: bool,
+}
+
+/// Result of URL validation
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValidationResult {
+    Valid,
+    Invalid(String), // reason
+    NeedsRedirect(Url), // new URL
+}

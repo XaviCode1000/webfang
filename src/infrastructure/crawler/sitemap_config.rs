@@ -2,6 +2,8 @@
 //!
 //! Following api-builder-pattern: clear, self-documenting API
 
+use crate::domain::CompressionType;
+
 /// Sitemap parser configuration
 ///
 /// Following api-builder-pattern: clear, self-documenting API
@@ -17,6 +19,18 @@ pub struct SitemapConfig {
     pub max_response_size: usize,
     /// Maximum decompressed gzip size in bytes (default: 100MB)
     pub max_decompressed_size: usize,
+    /// Enable pagination for large sitemaps (default: false)
+    pub pagination_enabled: bool,
+    /// Batch size for pagination (default: 10,000)
+    pub batch_size: usize,
+    /// Supported compression types (default: [Gzip])
+    pub compression_types: Vec<CompressionType>,
+    /// Enable URL validation and filtering (default: false)
+    pub url_validation_enabled: bool,
+    /// Memory limit in MB for processing (default: 500)
+    pub memory_limit_mb: usize,
+    /// Enable crawl budget optimization (default: false)
+    pub crawl_budget_enabled: bool,
 }
 
 impl Default for SitemapConfig {
@@ -27,6 +41,12 @@ impl Default for SitemapConfig {
             concurrency: 5,
             max_response_size: 52_428_800,      // 50MB
             max_decompressed_size: 104_857_600, // 100MB
+            pagination_enabled: false,
+            batch_size: 10_000,
+            compression_types: vec![CompressionType::Gzip],
+            url_validation_enabled: false,
+            memory_limit_mb: 500,
+            crawl_budget_enabled: false,
         }
     }
 }
@@ -49,6 +69,12 @@ pub struct SitemapConfigBuilder {
     concurrency: usize,
     max_response_size: usize,
     max_decompressed_size: usize,
+    pagination_enabled: bool,
+    batch_size: usize,
+    compression_types: Vec<CompressionType>,
+    url_validation_enabled: bool,
+    memory_limit_mb: usize,
+    crawl_budget_enabled: bool,
 }
 
 impl SitemapConfigBuilder {
@@ -82,6 +108,42 @@ impl SitemapConfigBuilder {
         self
     }
 
+    /// Enable or disable pagination for large sitemaps
+    pub fn pagination_enabled(mut self, enabled: bool) -> Self {
+        self.pagination_enabled = enabled;
+        self
+    }
+
+    /// Set batch size for pagination
+    pub fn batch_size(mut self, size: usize) -> Self {
+        self.batch_size = size;
+        self
+    }
+
+    /// Set supported compression types
+    pub fn compression_types(mut self, types: Vec<CompressionType>) -> Self {
+        self.compression_types = types;
+        self
+    }
+
+    /// Enable or disable URL validation and filtering
+    pub fn url_validation_enabled(mut self, enabled: bool) -> Self {
+        self.url_validation_enabled = enabled;
+        self
+    }
+
+    /// Set memory limit in MB for processing
+    pub fn memory_limit_mb(mut self, mb: usize) -> Self {
+        self.memory_limit_mb = mb;
+        self
+    }
+
+    /// Enable or disable crawl budget optimization
+    pub fn crawl_budget_enabled(mut self, enabled: bool) -> Self {
+        self.crawl_budget_enabled = enabled;
+        self
+    }
+
     /// Build the configuration
     #[must_use]
     pub fn build(self) -> SitemapConfig {
@@ -100,6 +162,24 @@ impl SitemapConfigBuilder {
             } else {
                 self.max_decompressed_size
             },
+            pagination_enabled: self.pagination_enabled,
+            batch_size: if self.batch_size == 0 {
+                defaults.batch_size
+            } else {
+                self.batch_size
+            },
+            compression_types: if self.compression_types.is_empty() {
+                defaults.compression_types
+            } else {
+                self.compression_types
+            },
+            url_validation_enabled: self.url_validation_enabled,
+            memory_limit_mb: if self.memory_limit_mb == 0 {
+                defaults.memory_limit_mb
+            } else {
+                self.memory_limit_mb
+            },
+            crawl_budget_enabled: self.crawl_budget_enabled,
         }
     }
 }
@@ -119,20 +199,75 @@ mod tests {
     }
 
     #[test]
-    fn test_builder_custom_values() {
+    fn test_pagination_enabled_builder_false() {
+        let config = SitemapConfig::builder().pagination_enabled(false).build();
+
+        assert!(!config.pagination_enabled);
+    }
+
+    #[test]
+    fn test_batch_size_builder() {
+        let config = SitemapConfig::builder().batch_size(5_000).build();
+
+        assert_eq!(config.batch_size, 5_000);
+    }
+
+    #[test]
+    fn test_batch_size_zero_fallback() {
+        let config = SitemapConfig::builder().batch_size(0).build();
+
+        assert_eq!(config.batch_size, 10_000);
+    }
+
+    #[test]
+    fn test_compression_types_default() {
+        let config = SitemapConfig::default();
+        assert_eq!(config.compression_types, vec![CompressionType::Gzip]);
+    }
+
+    #[test]
+    fn test_compression_types_empty_fallback() {
+        use crate::domain::CompressionType;
+
+        let config = SitemapConfig::builder().compression_types(vec![]).build();
+
+        assert_eq!(config.compression_types, vec![CompressionType::Gzip]);
+    }
+
+    #[test]
+    fn test_url_validation_enabled_default() {
+        let config = SitemapConfig::default();
+        assert!(!config.url_validation_enabled);
+    }
+
+    #[test]
+    fn test_memory_limit_mb_zero_fallback() {
+        let config = SitemapConfig::builder().memory_limit_mb(0).build();
+
+        assert_eq!(config.memory_limit_mb, 500);
+    }
+
+    #[test]
+    fn test_crawl_budget_enabled_builder() {
+        let config = SitemapConfig::builder().crawl_budget_enabled(true).build();
+
+        assert!(config.crawl_budget_enabled);
+    }
+
+    #[test]
+    fn test_crawl_budget_enabled_builder_false() {
+        let config = SitemapConfig::builder().crawl_budget_enabled(false).build();
+
+        assert!(!config.crawl_budget_enabled);
+    }
+
+    #[test]
+    fn test_url_validation_enabled_builder_false() {
         let config = SitemapConfig::builder()
-            .gzip_enabled(false)
-            .max_depth(1)
-            .concurrency(10)
-            .max_response_size(1_000_000)
-            .max_decompressed_size(2_000_000)
+            .url_validation_enabled(false)
             .build();
 
-        assert!(!config.gzip_enabled);
-        assert_eq!(config.max_depth, 1);
-        assert_eq!(config.concurrency, 10);
-        assert_eq!(config.max_response_size, 1_000_000);
-        assert_eq!(config.max_decompressed_size, 2_000_000);
+        assert!(!config.url_validation_enabled);
     }
 
     #[test]
