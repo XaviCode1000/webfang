@@ -6,8 +6,8 @@
 use std::path::PathBuf;
 use tracing::warn;
 
-use rust_scraper::cli::config::ConfigDefaults;
-use rust_scraper::{Args, ConcurrencyConfig, ExportFormat, OutputFormat};
+use crate::cli::config::ConfigDefaults;
+use crate::{Args, ConcurrencyConfig, ExportFormat, OutputFormat};
 
 // ============================================================================
 // Config Defaults Merge
@@ -118,8 +118,8 @@ pub fn apply_config_defaults(mut args: Args, config: &ConfigDefaults) -> Args {
 /// This runs after config_tui returns user-submitted values.
 /// Precedence: TUI values > CLI args (they override what was passed).
 pub fn apply_tui_config(mut args: Args, config_values: &serde_json::Value) -> Args {
-    use rust_scraper::OutputFormat as O;
-    use rust_scraper::ExportFormat as E;
+    use crate::OutputFormat as O;
+    use crate::ExportFormat as E;
 
     // Output directory
     if let Some(output) = config_values.get("output").and_then(|v| v.as_str()) {
@@ -216,7 +216,7 @@ pub enum PreflightResult {
 /// Send a HEAD request to verify connectivity before starting discovery.
 /// Falls back to GET with Range: bytes=0-0 if HEAD is blocked (405) or times out.
 pub async fn preflight_check(url: &url::Url) -> PreflightResult {
-    let client = match rust_scraper::create_http_client() {
+    let client = match crate::create_http_client() {
         Ok(c) => c,
         Err(e) => return PreflightResult::Failed(format!("failed to create HTTP client: {}", e)),
     };
@@ -271,7 +271,7 @@ async fn preflight_get_fallback(client: &wreq::Client, url: &url::Url) -> Prefli
 /// Return emoji or ASCII equivalent based on NO_COLOR setting.
 #[inline]
 pub fn icon(emoji: &str, ascii: &str) -> String {
-    if rust_scraper::should_emit_emoji() {
+    if crate::should_emit_emoji() {
         emoji.to_string()
     } else {
         ascii.to_string()

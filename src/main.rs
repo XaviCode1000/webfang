@@ -20,9 +20,7 @@
 //!
 //! **Golden Rule:** Application layer NEVER imports ratatui/crossterm/indicatif.
 
-mod export_flow;
 mod orchestrator;
-mod preflight;
 
 use std::env;
 use std::io::{self, IsTerminal};
@@ -34,6 +32,7 @@ use rust_scraper::adapters::tui::{restore_terminal, setup_terminal, ConfigFormSt
 use rust_scraper::cli::config::ConfigDefaults;
 use rust_scraper::cli::error::CliExit;
 use rust_scraper::{init_logging_dual, is_no_color, Args, Commands};
+use rust_scraper::cli::preflight;
 
 /// Check if running in CI environment.
 fn is_ci() -> bool {

@@ -11,6 +11,7 @@
 //! - **own-borrow-over-clone**: Accept `&str` not `&String`
 //! - **mem-with-capacity**: Vec::with_capacity when size is known
 //! - **xml-no-regex**: Uses quick-xml for streaming XML parsing
+//! - **async-mpsc-results**: Uses mpsc channel for lock-free result collection
 
 use std::collections::HashSet;
 use std::num::NonZeroU32;
@@ -31,6 +32,7 @@ use crate::domain::{
     CrawlError, CrawlResult, CrawlerConfig, DiscoveredUrl, ScrapedContent, ValidUrl,
 };
 
+use super::results_channel::{CrawlMessage, ResultsCollector};
 use super::url_filter::is_allowed;
 use crate::infrastructure::crawler::{
     extract_links, fetch_url, is_internal_link, normalize_url, UrlQueue,
@@ -401,8 +403,10 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
     // Track visited URLs
     let visited = Arc::new(Mutex::new(HashSet::<String>::new()));
 
-    // Results collector
-    let results = Arc::new(Mutex::new(Vec::new()));
+    // Results collector - usa mpsc channel para lock-free collection
+    // Capacidad basada en max_pages para evitar reallocs
+    let results_collector = ResultsCollector::new(config_clone.max_pages, Some(config_clone.max_pages));
+    // Sender clonado para los workers - puede ser compartido via Arc si es necesario
     let error_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     let mut tasks = tokio::task::JoinSet::new();
@@ -415,14 +419,10 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
 
     // Main crawl loop
     while !url_queue.is_empty() || !tasks.is_empty() {
-        // Check if we've reached max pages
-        {
-            let results_guard = results.lock().await;
-            if results_guard.len() >= config_clone.max_pages {
-                info!("Reached max pages limit: {}", config_clone.max_pages);
-                drop(results_guard);
-                break;
-            }
+        // Check if we've reached max pages (sin lock - atomic)
+        if results_collector.is_full(config_clone.max_pages) {
+            info!("Reached max pages limit: {}", config_clone.max_pages);
+            break;
         }
 
         // Process completed tasks FIRST (non-blocking)
@@ -458,7 +458,7 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
             // Clone data for task (async-clone-before-await)
             let config_task = Arc::clone(&config);
             let queue_task = Arc::clone(&queue);
-            let results_task = Arc::clone(&results);
+            let results_sender = results_collector.clone(); // Clone sender para este worker
             let visited_task = Arc::clone(&visited);
             let error_count_task = Arc::clone(&error_count);
             let rate_limiter_task = Arc::clone(&rate_limiter);
@@ -480,10 +480,9 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
                 // Fetch URL
                 match fetch_url(&url_str, &config_task).await {
                     Ok(response) => {
-                        // Add to results
-                        {
-                            let mut results_guard = results_task.lock().await;
-                            results_guard.push(discovered_url_task);
+                        // Add to results via channel (sin lock)
+                        if let Err(e) = results_sender.send(CrawlMessage::success(discovered_url_task)).await {
+                            debug!("Failed to send result: {}", e);
                         }
 
                         // Extract links and add to queue
@@ -552,14 +551,14 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
         handle_crawl_result(result, &error_count);
     }
 
-    // Collect results
-    let results_guard = results.lock().await;
-    let total_pages = results_guard.len();
+    // Collect results via mpsc channel (shutdown limpio)
+    let collected_urls = results_collector.collect().await;
+    let total_pages = collected_urls.len();
     let errors = error_count.load(std::sync::atomic::Ordering::SeqCst);
 
     info!("Crawl complete: {} pages, {} errors", total_pages, errors);
 
-    Ok(CrawlResult::new(results_guard.clone(), total_pages, errors))
+    Ok(CrawlResult::new(collected_urls, total_pages, errors))
 }
 
 /// Handle result from a completed crawl task

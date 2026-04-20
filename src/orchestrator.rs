@@ -3,25 +3,25 @@
 //! The orchestrator handles URL discovery, TUI selection, scraping, and export.
 //! It delegates config merging to `preflight` and export logic to `export_flow`.
 
-use std::path::PathBuf;
 use std::time::Instant;
 use tracing::{info, warn};
-
-use rust_scraper::application::{
-    discover_urls_for_tui,
-    http_client::{HttpClient, HttpClientConfig},
-    scrape_single_url_for_tui,
-};
 use rust_scraper::cli::error::{format_cli_error, CliError, CliExit};
 use rust_scraper::cli::summary::ScrapeSummary;
-use rust_scraper::infrastructure::obsidian::detect_vault;
 use rust_scraper::{
-    adapters, export_factory, get_random_user_agent_from_pool, Args, CrawlerConfig,
-    ObsidianOptions, ScraperConfig, UserAgentCache,
+    get_random_user_agent_from_pool, Args, CrawlerConfig,
+    ScraperConfig, UserAgentCache,
 };
 
-use crate::export_flow::{self, ExportConfig};
-use crate::preflight::{self, PreflightResult};
+
+
+use rust_scraper::cli::commands::{preflight, PreflightContext};
+use rust_scraper::cli::SelectedUrls;
+use rust_scraper::cli::url_discovery::{discover_urls, select_urls};
+use rust_scraper::cli::scrape_flow::{apply_resume_mode, scrape_urls};
+use rust_scraper::cli::export_flow::{run_export_flow, determine_output_dir, build_obsidian_options};
+use rust_scraper::export_flow;
+
+
 
 /// Run the full scraping pipeline.
 ///
@@ -39,42 +39,20 @@ pub async fn run(args: Args) -> CliExit {
     // Target URL is guaranteed to exist (checked by caller)
     let target_url = args.url.clone().expect("url required");
 
+    // Run preflight checks
+    let PreflightContext {
+        vault_path,
+        config_path: _,
+        target_url: _,
+    } = match preflight(&args).await {
+        Ok(ctx) => ctx,
+        Err(exit) => return exit,
+    };
+
     // Emoji helpers (resolved once after NO_COLOR check)
-    let ok = preflight::icon("✅", "OK");
-    let warn_icon = preflight::icon("⚠️", "WARN");
-    let info_icon = preflight::icon("📌", "INFO");
-
-    // Vault detection
-    let config_path = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("rust-scraper")
-        .join("config.toml");
-    let config_defaults = rust_scraper::cli::config::ConfigDefaults::load(&config_path);
-
-    if config_path.exists() {
-        info!("Config loaded: {}", config_path.display());
-    }
-
-    let vault_path = detect_vault(
-        args.vault.as_deref(),
-        None,
-        config_defaults.vault_path.as_deref(),
-    );
-
-    if let Some(ref vault) = vault_path {
-        info!("Obsidian vault detected: {}", vault.display());
-    } else {
-        info!("No Obsidian vault detected, using output directory");
-    }
-
-    // GAP 3 (Bug #30): Warn when vault is provided but headless mode (no --quick-save)
-    if let Some(ref _vault) = vault_path {
-        if !args.quick_save {
-            warn!("Vault path provided but --quick-save not enabled.");
-            warn!("   Files will be saved to ./output/, not to the vault.");
-            warn!("   Use --quick-save to save directly to vault _inbox.");
-        }
-    }
+    let ok = rust_scraper::cli::preflight::icon("✅", "OK");
+    let warn_icon = rust_scraper::cli::preflight::icon("⚠️", "WARN");
+    let info_icon = rust_scraper::cli::preflight::icon("📌", "INFO");
 
     info!(
         "Rust Scraper {} - Clean Architecture",
@@ -109,29 +87,15 @@ pub async fn run(args: Args) -> CliExit {
 
     info!("{} URL validated: {}", ok, parsed_url);
 
-    // Pre-flight HEAD check
-    info!("Checking connectivity...");
-    match preflight::preflight_check(&parsed_url).await {
-        PreflightResult::Ok => {
-            info!("{} Connectivity check passed", ok);
-        },
-        PreflightResult::Warning(status) => {
-            warn!(
-                "{} Server returned {} but connectivity OK",
-                warn_icon, status
-            );
-        },
-        PreflightResult::Failed(msg) => {
-            let suggestion = "Check your network connection and URL. Verify the host is reachable";
-            let cli_err = CliError::PreflightFailed {
-                msg: msg.clone(),
-                suggestion: suggestion.into(),
-            };
-            let no_color = rust_scraper::is_no_color();
-            eprintln!("{}", format_cli_error(&cli_err, no_color));
-            return CliExit::NetworkError(msg);
-        },
-    }
+    // Run preflight checks
+    let PreflightContext {
+        vault_path,
+        config_path: _,
+        target_url: _,
+    } = match rust_scraper::cli::commands::preflight(&args).await {
+        Ok(ctx) => ctx,
+        Err(exit) => return exit,
+    };
 
     // Create scraper config
     let scraper_config = ScraperConfig {
@@ -315,395 +279,6 @@ pub async fn run(args: Args) -> CliExit {
             success: results.len(),
             failed: failures.len(),
         }
-    }
-}
-
-// ============================================================================
-// Sub-functions (extracted for readability)
-// ============================================================================
-
-/// Result of URL selection.
-enum SelectedUrls {
-    Urls(Vec<url::Url>),
-    None, // User cancelled or no selection
-    Error(CliExit),
-}
-
-/// Discover URLs with progress bar.
-async fn discover_urls(crawler_config: &CrawlerConfig, args: &Args) -> Vec<url::Url> {
-    use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-
-    let target_url = args.url.as_ref().expect("url required");
-
-    let discovery_pb = if !args.quiet {
-        let pb = ProgressBar::new_spinner();
-        pb.set_draw_target(ProgressDrawTarget::stderr());
-        pb.enable_steady_tick(std::time::Duration::from_millis(100));
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner} {msg}")
-                .expect("valid spinner template"),
-        );
-        pb.set_message("Discovering URLs...");
-        Some(pb)
-    } else {
-        None
-    };
-
-    let discovered_urls = match discover_urls_for_tui(target_url, crawler_config).await {
-        Ok(urls) => urls,
-        Err(e) => {
-            if let Some(pb) = discovery_pb.as_ref() {
-                pb.finish_with_message("Discovery failed");
-            }
-            warn!("URL discovery failed: {}", e);
-            Vec::new()
-        },
-    };
-
-    if let Some(pb) = discovery_pb {
-        pb.finish_with_message(format!("Found {} URLs", discovered_urls.len()).to_owned());
-    }
-
-    discovered_urls
-}
-
-/// Select URLs via TUI, quick-save, or headless mode.
-async fn select_urls(
-    discovered_urls: &[url::Url],
-    args: &Args,
-    vault_path: &Option<PathBuf>,
-) -> SelectedUrls {
-    let ok = preflight::icon("✅", "OK");
-
-    if args.quick_save && vault_path.is_some() {
-        info!("Quick-save mode: bypassing TUI, will save to vault _inbox");
-        SelectedUrls::Urls(discovered_urls.to_vec())
-    } else if args.interactive {
-        info!("Starting interactive TUI selector...");
-        match adapters::tui::run_selector(discovered_urls).await {
-            Ok(selected) => {
-                info!("{} User selected {} URLs", ok, selected.len());
-                if selected.is_empty() {
-                    info!("No URLs selected, exiting");
-                    SelectedUrls::None
-                } else {
-                    SelectedUrls::Urls(selected)
-                }
-            },
-            Err(adapters::tui::TuiError::Interrupted) => {
-                info!("User interrupted TUI selector, exiting");
-                SelectedUrls::None
-            },
-            Err(e) => {
-                warn!("TUI error: {}", e);
-                SelectedUrls::Error(CliExit::ProtocolError(e.to_string()))
-            },
-        }
-    } else {
-        info!(
-            "Headless mode: will scrape all {} URLs",
-            discovered_urls.len()
-        );
-        SelectedUrls::Urls(discovered_urls.to_vec())
-    }
-}
-
-/// Apply resume mode filtering.
-async fn apply_resume_mode(
-    urls_to_scrape: Vec<url::Url>,
-    args: &Args,
-    target_url: &str,
-) -> (
-    Vec<url::Url>,
-    Option<rust_scraper::infrastructure::export::state_store::StateStore>,
-) {
-    let state_store = if args.resume {
-        info!("Resume mode enabled - tracking processed URLs");
-        let state_dir = args.state_dir.clone().unwrap_or_else(|| {
-            let cache_base = std::env::var("XDG_CACHE_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| {
-                    dirs::home_dir()
-                        .unwrap_or_else(|| PathBuf::from("."))
-                        .join(".cache")
-                });
-            cache_base.join("rust-scraper").join("state")
-        });
-
-        let domain = export_factory::domain_from_url(target_url);
-        info!("State store domain: {}", domain);
-        match export_factory::create_state_store(state_dir, &domain) {
-            Ok(store) => Some(store),
-            Err(e) => {
-                warn!("Failed to create state store: {}", e);
-                None
-            },
-        }
-    } else {
-        None
-    };
-
-    let filtered = if args.resume {
-        if let Some(store) = state_store.as_ref() {
-            match store.load_or_default() {
-                Ok(state) => {
-                    let original_count = urls_to_scrape.len();
-                    let filtered: Vec<_> = urls_to_scrape
-                        .into_iter()
-                        .filter(|url| {
-                            let should_skip = store.is_processed(&state, url.as_str());
-                            if should_skip {
-                                info!("Skipping already processed: {}", url);
-                            }
-                            !should_skip
-                        })
-                        .collect();
-
-                    let skipped_count = original_count - filtered.len();
-                    info!(
-                        "Resume mode: {} URLs already processed, {} new URLs to scrape",
-                        skipped_count,
-                        filtered.len()
-                    );
-
-                    filtered
-                },
-                Err(e) => {
-                    warn!("Failed to load state: {}", e);
-                    urls_to_scrape
-                },
-            }
-        } else {
-            urls_to_scrape
-        }
-    } else {
-        urls_to_scrape
-    };
-
-    (filtered, state_store)
-}
-
-/// Scrape all URLs with progress events via mpsc channel.
-///
-/// When progress_tx is provided (non-TUI mode), emits ScrapeProgress events.
-/// When progress_tx is None (TUI mode), no progress events are emitted.
-/// The --quiet flag suppresses all output including progress events.
-async fn scrape_urls(
-    urls: &[url::Url],
-    scraper_config: &ScraperConfig,
-    args: &Args,
-    progress_tx: Option<tokio::sync::mpsc::Sender<rust_scraper::adapters::tui::ScrapeProgress>>,
-) -> (
-    Vec<rust_scraper::domain::ScrapedContent>,
-    Vec<(String, String)>,
-) {
-    use rust_scraper::adapters::tui::{ScrapeError, ScrapeProgress, ScrapeStatus};
-
-    let http_config = HttpClientConfig {
-        max_retries: args.max_retries,
-        backoff_base_ms: args.backoff_base_ms,
-        backoff_max_ms: args.backoff_max_ms,
-        accept_language: args.accept_language.clone(),
-        ..HttpClientConfig::default()
-    };
-    let http_client = match HttpClient::new(http_config) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("Failed to create HTTP client: {}", e);
-            return (Vec::new(), vec![("http_client".into(), e.to_string())]);
-        },
-    };
-
-    let total_urls = urls.len();
-
-    let mut results = Vec::with_capacity(total_urls);
-    let mut failures: Vec<(String, String)> = Vec::new();
-
-    for url in urls {
-        let url_str = url.as_str();
-        let _url_host = url.host_str().unwrap_or("unknown").to_string();
-
-        // Emit progress event: Started
-        if !args.quiet {
-            if let Some(ref tx) = progress_tx {
-                let _ = tx
-                    .send(ScrapeProgress::Started {
-                        url: url_str.to_string(),
-                    })
-                    .await;
-            }
-        }
-
-        // Emit progress event: StatusChanged to Fetching
-        if !args.quiet {
-            if let Some(ref tx) = progress_tx {
-                let _ = tx
-                    .send(ScrapeProgress::StatusChanged {
-                        url: url_str.to_string(),
-                        status: ScrapeStatus::Fetching,
-                    })
-                    .await;
-            }
-        }
-
-        match scrape_single_url_for_tui(http_client.client(), url, scraper_config).await {
-            Ok(content) => {
-                let chars = content.content.chars().count();
-                results.push(content);
-                // Emit progress event: Completed (only if not quiet)
-                if !args.quiet {
-                    if let Some(ref tx) = progress_tx {
-                        let _ = tx
-                            .send(ScrapeProgress::Completed {
-                                url: url_str.to_string(),
-                                chars,
-                            })
-                            .await;
-                    }
-                }
-            },
-            Err(e) => {
-                let url_str = url.as_str().to_string();
-                let err_msg = e.to_string();
-                warn!("Failed to scrape {}: {}", url_str, err_msg);
-                failures.push((url_str.clone(), err_msg));
-                // Emit progress event: Failed
-                if !args.quiet {
-                    if let Some(ref tx) = progress_tx {
-                        let _ = tx
-                            .send(ScrapeProgress::Failed {
-                                url: url_str.clone(),
-                                error: ScrapeError::Other(format!("{}", e)),
-                            })
-                            .await;
-                    }
-                }
-            },
-        }
-    }
-
-    // Count totals from results/failures
-    let total_successful = results.len();
-    let total_failed = failures.len();
-
-    // Emit Finished event when all done (only if not quiet)
-    if !args.quiet {
-        if let Some(ref tx) = progress_tx {
-            let _ = tx
-                .send(ScrapeProgress::Finished {
-                    total: total_urls,
-                    successful: total_successful,
-                    failed: total_failed,
-                })
-                .await;
-        }
-    }
-
-    (results, failures)
-}
-
-/// Run the export flow (AI or standard).
-async fn run_export_flow(
-    results: &[rust_scraper::domain::ScrapedContent],
-    args: &Args,
-    vault_path: &Option<PathBuf>,
-    state_store: Option<&rust_scraper::infrastructure::export::state_store::StateStore>,
-) -> Result<Vec<String>, CliExit> {
-    let ok = preflight::icon("✅", "OK");
-    info!("Exporting results (format: {:?})...", args.export_format);
-
-    let output_dir = determine_output_dir(args, vault_path);
-    let obsidian_options = build_obsidian_options(args, vault_path);
-
-    let export_config = build_export_config(
-        results,
-        args,
-        output_dir,
-        vault_path,
-        obsidian_options,
-        state_store,
-    );
-
-    let processed_urls = match export_flow::run_export(export_config).await {
-        Ok(urls) => urls,
-        Err(exit) => return Err(exit),
-    };
-
-    info!(
-        "{} Export completed: {} URLs processed",
-        ok,
-        processed_urls.len()
-    );
-
-    Ok(processed_urls)
-}
-
-/// Build ExportConfig from args, handling feature-gated AI fields.
-fn build_export_config<'a>(
-    results: &'a [rust_scraper::domain::ScrapedContent],
-    args: &'a Args,
-    output_dir: PathBuf,
-    vault_path: &'a Option<PathBuf>,
-    obsidian_options: ObsidianOptions,
-    state_store: Option<&'a rust_scraper::infrastructure::export::state_store::StateStore>,
-) -> ExportConfig<'a> {
-    ExportConfig {
-        results,
-        output_dir,
-        format: args.format,
-        export_format: args.export_format,
-        clean_ai: args.clean_ai,
-        quick_save: args.quick_save,
-        vault_path: vault_path.as_ref(),
-        obsidian_options,
-        state_store,
-        resume: args.resume,
-        #[cfg(feature = "ai")]
-        ai_threshold: args.threshold,
-        #[cfg(feature = "ai")]
-        ai_max_tokens: args.max_tokens,
-        #[cfg(feature = "ai")]
-        ai_offline: args.offline,
-        #[cfg(not(feature = "ai"))]
-        ai_threshold: 0.3,
-        #[cfg(not(feature = "ai"))]
-        ai_max_tokens: 512,
-        #[cfg(not(feature = "ai"))]
-        ai_offline: false,
-    }
-}
-
-/// Determine output directory (vault _inbox for quick-save mode).
-fn determine_output_dir(args: &Args, vault_path: &Option<PathBuf>) -> PathBuf {
-    if args.quick_save {
-        if let Some(ref vault) = vault_path {
-            let inbox_path = vault.join("_inbox");
-            if let Err(e) = std::fs::create_dir_all(&inbox_path) {
-                warn!("Failed to create vault _inbox directory: {}", e);
-                args.output.clone()
-            } else {
-                info!("Quick-save: using vault inbox {}", inbox_path.display());
-                inbox_path
-            }
-        } else {
-            warn!("Quick-save mode but no vault detected, using output directory");
-            args.output.clone()
-        }
-    } else {
-        args.output.clone()
-    }
-}
-
-/// Build ObsidianOptions from CLI args.
-fn build_obsidian_options(args: &Args, vault_path: &Option<PathBuf>) -> ObsidianOptions {
-    ObsidianOptions {
-        wiki_links: args.obsidian_wiki_links,
-        tags: args.obsidian_tags.clone().unwrap_or_default(),
-        relative_assets: args.obsidian_relative_assets,
-        rich_metadata: args.obsidian_rich_metadata,
-        quick_save: args.quick_save,
-        vault_path: vault_path.clone(),
     }
 }
 

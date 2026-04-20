@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 #[allow(unused_imports)]
 use tracing::{info, warn};
 
-use rust_scraper::cli::error::CliExit;
-use rust_scraper::domain::ScrapedContent;
-use rust_scraper::infrastructure::export::state_store::StateStore;
-use rust_scraper::infrastructure::output::file_saver::ObsidianOptions;
-use rust_scraper::{export_factory, save_results, ExportFormat, OutputFormat};
+use crate::cli::error::CliExit;
+use crate::domain::ScrapedContent;
+use crate::infrastructure::export::state_store::StateStore;
+use crate::infrastructure::output::file_saver::ObsidianOptions;
+use crate::{export_factory, save_results, ExportFormat, OutputFormat};
 
 // ============================================================================
 // Export Results (RAG pipeline)
