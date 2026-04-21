@@ -19,17 +19,22 @@ use rust_scraper::infrastructure::export::jsonl_exporter::JsonlExporter;
 use rust_scraper::infrastructure::export::vector_exporter::VectorExporter;
 
 /// Create a test DocumentChunk with unique title
-fn make_chunk(title: &str) -> DocumentChunk {
-    DocumentChunk {
-        id: Uuid::new_v4(),
-        url: format!("https://example.com/page-{}", title.replace(' ', "-")),
+fn make_chunk(title: &str) -> rust_scraper::domain::DocumentChunkValidated {
+    use rust_scraper::domain::{ScrapedContent, ValidUrl};
+
+    let scraped = ScrapedContent {
         title: title.to_string(),
         content: format!("Content for {}", title),
-        metadata: Default::default(),
-        timestamp: Utc::now(),
-        embeddings: None,
-        correlation_id: None,
-    }
+        url: ValidUrl::parse(&format!("https://example.com/page-{}", title.replace(' ', "-"))).expect("valid URL"),
+        excerpt: None,
+        author: None,
+        date: None,
+        html: None,
+        assets: vec![],
+    };
+
+    let unvalidated: rust_scraper::domain::DocumentChunkUnvalidated = scraped.into();
+    unvalidated.validate().expect("valid document")
 }
 
 /// Create an ExporterConfig for JSONL with the given temp dir
@@ -191,7 +196,7 @@ async fn concurrent_vector_exports_no_corruption() {
     for task_id in 0..num_tasks {
         let exporter = Arc::clone(&exporter);
         let handle = task::spawn(async move {
-            let docs: Vec<DocumentChunk> = (0..docs_per_task)
+            let docs: Vec<rust_scraper::domain::DocumentChunkValidated> = (0..docs_per_task)
                 .map(|doc_id| make_chunk(&format!("vec-task{}-doc{}", task_id, doc_id)))
                 .collect();
             exporter.export_batch(&docs)
@@ -243,7 +248,7 @@ async fn concurrent_jsonl_append_preserves_content() {
     // Write initial batch without append
     let config_initial = jsonl_config(temp_dir.path().to_path_buf(), "append_test", false);
     let initial_exporter = JsonlExporter::new(config_initial);
-    let initial_docs: Vec<DocumentChunk> = (0..5)
+    let initial_docs: Vec<rust_scraper::domain::DocumentChunkValidated> = (0..5)
         .map(|i| make_chunk(&format!("initial-{}", i)))
         .collect();
     initial_exporter

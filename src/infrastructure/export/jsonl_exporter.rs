@@ -126,11 +126,12 @@ mod tests {
 
     use super::*;
 
-    fn create_test_chunk(title: &str) -> DocumentChunk {
+    fn create_test_chunk(title: &str) -> DocumentChunkValidated {
+        use crate::domain::Validated;
         use chrono::Utc;
         use uuid::Uuid;
 
-        DocumentChunk {
+        crate::domain::DocumentChunkValidated {
             id: Uuid::new_v4(),
             url: "https://example.com/test".to_string(),
             title: title.to_string(),
@@ -139,6 +140,7 @@ mod tests {
             timestamp: Utc::now(),
             embeddings: None,
             correlation_id: None,
+            _state: std::marker::PhantomData::<Validated>,
         }
     }
 

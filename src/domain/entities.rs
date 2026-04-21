@@ -13,6 +13,30 @@ use uuid::Uuid;
 use crate::domain::{CorrelationId, ValidUrl};
 
 // ============================================================================
+// Validation Errors
+// ============================================================================
+
+/// Errors that can occur during DocumentChunk validation
+///
+/// Domain errors define WHAT failed, not HOW to present to users.
+/// Error messages are neutral identifiers for programmatic handling.
+/// Presentation layer (CLI/TUI) maps these to user-friendly messages.
+#[derive(Debug, thiserror::Error)]
+pub enum ValidationError {
+    #[error("empty_content")]
+    EmptyContent,
+
+    #[error("empty_title")]
+    EmptyTitle,
+
+    #[error("invalid_url: {0}")]
+    InvalidUrl(String),
+
+    #[error("invalid_metadata: {0}")]
+    InvalidMetadata(String),
+}
+
+// ============================================================================
 // Typestate Markers — Private state types for DocumentChunk
 // ============================================================================
 
@@ -311,18 +335,39 @@ impl DocumentChunk<Draft> {
     /// Returns Validated state if content is valid:
     /// - content is not empty
     /// - title is not empty
+    /// - URL is a valid HTTP/HTTPS URL
+    /// - metadata values are reasonable
     ///
     /// # Errors
-    /// Returns error if validation fails
-    pub fn validate(self) -> Result<DocumentChunkValidated, &'static str> {
+    /// Returns ValidationError if validation fails
+    pub fn validate(self) -> Result<DocumentChunkValidated, ValidationError> {
         // Validation: content must not be empty
         if self.content.trim().is_empty() {
-            return Err("content cannot be empty");
+            return Err(ValidationError::EmptyContent);
         }
+
         // Validation: title must not be empty
         if self.title.trim().is_empty() {
-            return Err("title cannot be empty");
+            return Err(ValidationError::EmptyTitle);
         }
+
+        // Validation: URL must be valid
+        if let Err(e) = url::Url::parse(&self.url) {
+            return Err(ValidationError::InvalidUrl(e.to_string()));
+        }
+
+        // Validation: metadata values should not be empty strings
+        for (key, value) in &self.metadata {
+            if value.trim().is_empty() {
+                return Err(ValidationError::InvalidMetadata(format!(
+                    "metadata key '{}' has empty value",
+                    key
+                )));
+            }
+        }
+
+        // Pure move: consume self (Draft state) and produce Validated state
+        // No clones - all fields are moved from self to the new instance
         Ok(DocumentChunk {
             id: self.id,
             url: self.url,
@@ -333,7 +378,7 @@ impl DocumentChunk<Draft> {
             embeddings: self.embeddings,
             correlation_id: self.correlation_id,
             _state: PhantomData,
-})
+        })
     }
 }
 

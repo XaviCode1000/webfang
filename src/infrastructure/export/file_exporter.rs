@@ -28,14 +28,18 @@ impl FileExporter {
 
     /// Create from output directory and format
     #[must_use]
-    pub fn new_with_path(output_dir: PathBuf, format: OutputFormat, filename: impl Into<String>) -> Self {
+    pub fn new_with_path(
+        output_dir: PathBuf,
+        format: OutputFormat,
+        filename: impl Into<String>,
+    ) -> Self {
         // Map OutputFormat to ExportFormat
         let export_format = match format {
             OutputFormat::Markdown => crate::domain::entities::ExportFormat::Jsonl, // Use Jsonl for file export
             OutputFormat::Text => crate::domain::entities::ExportFormat::Jsonl,
             OutputFormat::Json => crate::domain::entities::ExportFormat::Jsonl,
         };
-        
+
         let config = ExporterConfig::new(output_dir, export_format, filename);
         Self::new(config)
     }
@@ -44,7 +48,7 @@ impl FileExporter {
     #[allow(dead_code)]
     fn save_md(&self, doc: &DocumentChunkValidated) -> ExportResult<()> {
         let path = self.output_path(doc, "md");
-        
+
         // Build markdown content with YAML frontmatter
         let content = format!(
             "---\n\
@@ -62,7 +66,7 @@ impl FileExporter {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| ExporterError::WriteError(e.to_string()))?;
         }
-        
+
         fs::write(&path, content).map_err(|e| ExporterError::WriteError(e.to_string()))?;
         tracing::info!("💾 Saved: {}", path.display());
         Ok(())
@@ -72,14 +76,15 @@ impl FileExporter {
     #[allow(dead_code)]
     fn save_txt(&self, doc: &DocumentChunkValidated) -> ExportResult<()> {
         let path = self.output_path(doc, "txt");
-        
+
         // Extract metadata as formatted string
-        let metadata = doc.metadata
+        let metadata = doc
+            .metadata
             .iter()
             .map(|(k, v)| format!("{}: {}", k, v))
             .collect::<Vec<_>>()
             .join("\n");
-        
+
         let content = format!(
             "========================================\n\
              TITLE: {}\n\
@@ -95,14 +100,18 @@ impl FileExporter {
             doc.title,
             doc.url,
             doc.timestamp.format("%Y-%m-%d %H:%M:%S"),
-            if metadata.is_empty() { "N/A".to_string() } else { metadata },
+            if metadata.is_empty() {
+                "N/A".to_string()
+            } else {
+                metadata
+            },
             doc.content
         );
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| ExporterError::WriteError(e.to_string()))?;
         }
-        
+
         fs::write(&path, content).map_err(|e| ExporterError::WriteError(e.to_string()))?;
         tracing::info!("💾 Saved: {}", path.display());
         Ok(())
@@ -111,14 +120,13 @@ impl FileExporter {
     /// Export a single document as JSON
     fn save_json(&self, doc: &DocumentChunkValidated) -> ExportResult<()> {
         let path = self.output_path(doc, "json");
-        
-        let json = serde_json::to_string_pretty(doc)
-            .map_err(ExporterError::Serialization)?;
+
+        let json = serde_json::to_string_pretty(doc).map_err(ExporterError::Serialization)?;
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| ExporterError::WriteError(e.to_string()))?;
         }
-        
+
         fs::write(&path, json).map_err(|e| ExporterError::WriteError(e.to_string()))?;
         tracing::info!("💾 Saved: {}", path.display());
         Ok(())
@@ -127,27 +135,30 @@ impl FileExporter {
     /// Generate output path for a document
     fn output_path(&self, doc: &DocumentChunkValidated, ext: &str) -> PathBuf {
         let output_dir = &self.config.output_dir;
-        
+
         // Extract domain from URL
         let domain = url::Url::parse(&doc.url)
             .ok()
             .and_then(|u| u.host_str().map(String::from))
             .unwrap_or_else(|| "unknown".to_string());
-        
+
         // Generate filename from URL path
         #[allow(clippy::collapsible_str_replace)]
-        let filename = doc.url
+        let filename = doc
+            .url
             .trim_start_matches("https://")
             .trim_start_matches("http://")
             .replace('/', "-")
-            .replace('?', "_").replace('&', "_").replace(':', "_");
-        
+            .replace('?', "_")
+            .replace('&', "_")
+            .replace(':', "_");
+
         let filename = if filename.is_empty() || filename.ends_with('-') {
             format!("index.{}", ext)
         } else {
             format!("{}.{}", filename, ext)
         };
-        
+
         output_dir.join(domain).join(filename)
     }
 }
@@ -156,25 +167,26 @@ impl Exporter for FileExporter {
     fn export(&self, document: DocumentChunkValidated) -> ExportResult<()> {
         // Use config's format to determine export method
         let format = self.config.format;
-        
+
         // Map to save methods - we use config's format field for format selection
         match format {
             crate::domain::entities::ExportFormat::Jsonl => {
                 // JSONL: append mode
-                let json = serde_json::to_string(&document)
-                    .map_err(ExporterError::Serialization)?;
-                
+                let json =
+                    serde_json::to_string(&document).map_err(ExporterError::Serialization)?;
+
                 let path = self.config.output_path();
                 if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent).map_err(|e| ExporterError::WriteError(e.to_string()))?;
+                    fs::create_dir_all(parent)
+                        .map_err(|e| ExporterError::WriteError(e.to_string()))?;
                 }
-                
+
                 let mut file = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(&path)
                     .map_err(|e| ExporterError::WriteError(e.to_string()))?;
-                
+
                 use std::io::Write;
                 writeln!(file, "{}", json).map_err(|e| ExporterError::WriteError(e.to_string()))?;
                 Ok(())
@@ -215,6 +227,7 @@ mod tests {
     use std::env::temp_dir;
 
     fn make_test_doc() -> DocumentChunkValidated {
+        use crate::domain::DocumentChunkUnvalidated;
         let unvalidated = DocumentChunkUnvalidated {
             id: uuid::Uuid::new_v4(),
             url: "https://example.com/page".to_string(),
@@ -238,12 +251,12 @@ mod tests {
         let format = crate::domain::entities::ExportFormat::Jsonl;
         let config = ExporterConfig::new(dir.clone(), format, "test");
         let exporter = FileExporter::new(config);
-        
+
         let doc = make_test_doc();
         let result = exporter.export(doc);
-        
+
         assert!(result.is_ok());
-        
+
         // Cleanup
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -264,7 +277,7 @@ mod tests {
             assets: vec![],
         };
 
-        let chunk: DocumentChunkUnvalidated = scraped.into();
+        let chunk: crate::domain::DocumentChunkUnvalidated = scraped.into();
 
         assert_eq!(chunk.title, "Test Title");
         assert_eq!(chunk.content, "Test Content");

@@ -231,6 +231,20 @@ Responses are scanned for 19 WAF signatures (Cloudflare, reCAPTCHA, hCaptcha, Da
 - Run `cargo nextest run` (never `cargo test`) before marking any task complete
 - Use `--test-threads 2` to avoid HDD I/O bottleneck
 
+### HDD Configuration (CRÍTICO)
+**Para Intel i5-4590, 8GB RAM, HDD:**
+
+```toml
+# .config/nextest.toml
+[profile.default]
+threads-required = 2 # MÁXIMO 2 hilos - previene thrashing
+retries = { backoff = "exponential", count = 2, delay = "1s" }
+slow-timeout = { period = "60s", terminate-after = 3 }
+```
+
+- **nunca** usar más de 2 threads en desarrollo
+- Perfiles nextest: `dev` (rápido), `agent` (conservador), `ci` (completo)
+
 ---
 
 ## Boundaries
@@ -265,6 +279,15 @@ Responses are scanned for 19 WAF signatures (Cloudflare, reCAPTCHA, hCaptcha, Da
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Architecture details
 - [DEVELOPMENT.md](DEVELOPMENT.md) — Dev workflow and tooling
 - [justfile](justfile) — Task recipes (check, test, audit, cov)
+
+## Herramientas de Búsqueda
+
+| Herramienta | Uso |
+|------------|-----|
+| gitnexus_query | Encontrar código por concepto (execution flows) |
+| gitnexus_context | Vista 360° de símbolos |
+| fff_find_files | Encontrar archivos por nombre |
+| fff_grep | Contenido específico |
 
 ---
 
@@ -319,6 +342,50 @@ This project is indexed by **rust_scraper**: 3963 symbols, 6951 relationships, 3
 2. No HIGH/CRITICAL risk warnings were ignored
 3. `gitnexus_detect_changes()` confirms expected scope
 4. All d=1 (WILL BREAK) dependents were updated
+
+---
+
+## SDD Workflow
+
+Este proyecto soporta Spec-Driven Development via skills en `~/.config/kilo/skills/`:
+
+| Skill | Propósito |
+|-------|-----------|
+| sdd-init | Inicializar contexto, detectar stack |
+| sdd-explore | Investigar código existente |
+| sdd-propose | Crear propuesta |
+| sdd-spec | Escribir especificaciones |
+| sdd-design | Diseño técnico |
+| sdd-tasks | Lista de tareas |
+| sdd-apply | Implementar (con gitnexus_impact) |
+| sdd-verify | Verificar contra specs |
+| sdd-archive | Archivar cambio |
+
+### Pipeline SDD + GitNexus
+1. `just analyze` → iniciar
+2. `gitnexus_impact` → antes de editar
+3. `gitnexus_detect_changes` → pre-commit
+4. `just test-ci` → verificación final
+
+## Rust Best Practices
+
+Este proyecto incluye **50+ reglas de rust-skills** en `.atl/skills/rust-skills/rules/`:
+
+| Categoría | Ejemplos |
+|-----------|----------|
+| Memory | mem-zero-copy, mem-smallvec, mem-compact-string |
+| Performance | perf-release-profile, perf-profile-first, perf-collect-once |
+| API Design | api-typestate, api-non-exhaustive, api-serde-optional |
+| Async | async-tokio-runtime, async-no-lock-await |
+| Testing | test-integration-dir, test-tokio-async, test-proptest-properties |
+| Error Handling | err-question-mark, err-lowercase-msg |
+
+### Auto-load de rust-skills
+Cuando el agente escribe código **Rust**, cargar automáticamente:
+```
+skill(name: "rust-skills")
+```
+(Path: `.atl/skills/rust-skills/`)
 
 ---
 

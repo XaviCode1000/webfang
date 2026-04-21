@@ -33,6 +33,7 @@ pub use crawl_job::{ContentType, DiscoveredUrl};
 pub use entities::{
     DocumentChunk, DocumentChunkExported, DocumentChunkUnvalidated, DocumentChunkValidated,
     DownloadedAsset, Draft, Exported, ExportFormat, ExportState, ScrapedContent, Validated,
+    ValidationError,
 };
 pub use error::CrawlError;
 pub use exporter::{ExportResult, Exporter, ExporterConfig, ExporterError};
