@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🏗️ Architecture Improvements
+
+#### Typestate Pattern Implementation
+- **Zero-Cost Type Safety:** Implemented typestate pattern for `DocumentChunk` with `Draft`/`Validated`/`Exported` states
+- **Compile-Time Guarantees:** Invalid states (exporting unvalidated chunks) now physically impossible
+- **Domain Error Handling:** Replaced primitive `&str` errors with `ValidationError` enum using `thiserror`
+- **Comprehensive Validation:** Content, title, URL parsing, and metadata validation with neutral error messages
+- **Pure Move Semantics:** State transitions consume `self` with zero cloning overhead
+- **Separation of Concerns:** Domain defines WHAT failed, presentation layer handles HOW to display errors
+- **Updated Tests:** All integration tests updated to handle new error types (10/10 passing)
+- **Documentation:** Architecture docs updated with typestate examples and LOC corrections
+
+#### Code Quality
+- **Error Type Evolution:** `ValidationError` provides strongly typed, programmatic error handling
+- **Zero Runtime Cost:** `PhantomData<S>` ensures state markers don't affect memory layout
+- **Extensible Design:** Easy to add new validation rules and error variants
+- **Memory Safety:** Pure move semantics prevent accidental clones in hot paths
+
 ## [1.1.0] - 2026-04-04
 
 ### 🎉 Added

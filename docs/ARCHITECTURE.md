@@ -1,6 +1,6 @@
 # Architecture — rust-scraper
 
-**Last Updated:** April 2026
+**Last Updated:** April 21, 2026
 **Version:** 1.1.0
 **Clean Architecture:** 4 layers with strict dependency rule
 
@@ -32,7 +32,7 @@ The rust-scraper follows **Clean Architecture** with strict separation of concer
 ┌─────▼──────────┐              ┌────────▼─────────┐
 │   DOMAIN       │              │  APPLICATION     │
 │   (pure)       │              │  (use cases)     │
-│   ~1,798 LOC   │              │  ~2,992 LOC      │
+│   ~2,018 LOC   │              │  ~2,992 LOC      │
 │                │              │                  │
 │ - entities     │              │ - http_client    │
 │ - value_objs   │              │ - scraper_svc    │
@@ -77,7 +77,7 @@ rg "^use (wreq|tokio|scraper|tract)" src/domain/  # Returns nothing ✓
 
 ## Domain Layer (`src/domain/`)
 
-**Total:** ~1,798 lines of code
+**Total:** ~2,018 lines of code
 **Purity:** Zero external framework dependencies (no wreq, no tokio, no serde runtime)
 
 ### Module Structure
@@ -85,7 +85,7 @@ rg "^use (wreq|tokio|scraper|tract)" src/domain/  # Returns nothing ✓
 ```
 src/domain/
 ├── mod.rs                    (22 LOC)   — Module exports
-├── entities.rs               (~311 LOC)  — Core business entities
+├── entities.rs               (~531 LOC)  — Core business entities with typestate pattern
 ├── value_objects.rs          (~148 LOC)  — Type-safe primitives
 ├── exporter.rs               (~279 LOC)  — Exporter trait + error types
 ├── semantic_cleaner.rs       (~174 LOC)  — AI cleaning trait (feature-gated)
@@ -99,24 +99,61 @@ src/domain/
 |------|---------|-----|
 | `DownloadedAsset` | Downloaded image/document with metadata | ~30 |
 | `ScrapedContent` | Main output: title, content, URL, metadata, assets | ~50 |
-| `ExportFormat` | JSONL, Auto for RAG pipeline | ~40 |
-| `ExportState` | Pending, Exported, Failed with metadata | ~30 |
-| `DocumentChunk` | AI semantic chunk with embedding | ~50 |
+| `ExportFormat` | JSONL, Vector, Auto for RAG pipeline | ~40 |
+| `ExportState` | Domain state tracking for export resumption | ~30 |
+| `DocumentChunk<S>` | **Typestate Pattern**: AI semantic chunk with compile-time state guarantees | ~150 |
+| `ValidationError` | Domain error enum for validation failures | ~20 |
+| `Draft` | Typestate marker: DocumentChunk not validated | ~5 |
+| `Validated` | Typestate marker: DocumentChunk passed all validations | ~5 |
+| `Exported` | Typestate marker: DocumentChunk successfully exported | ~5 |
 
-**Example:**
+**Typestate Pattern Example:**
 ```rust
+// Zero-cost type safety: Invalid states physically impossible
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScrapedContent {
+pub struct DocumentChunk<S = Draft> {
+    pub id: Uuid,
+    pub url: String,
     pub title: String,
     pub content: String,
-    pub url: ValidUrl,  // Type-safe, guaranteed valid
-    pub excerpt: Option<String>,
-    pub author: Option<String>,
-    pub date: Option<String>,
-    pub html: Option<String>,
-    pub assets: Vec<DownloadedAsset>,
+    pub metadata: HashMap<String, String>,
+    pub timestamp: DateTime<Utc>,
+    pub embeddings: Option<Vec<f32>>,
+    pub correlation_id: Option<String>,
+    // PhantomData ensures zero runtime cost
+    #[serde(skip)]
+    pub(crate) _state: PhantomData<S>,
+}
+
+// Type-safe state transitions
+impl DocumentChunk<Draft> {
+    pub fn validate(self) -> Result<DocumentChunk<Validated>, ValidationError> {
+        // Comprehensive validation with domain errors
+        if self.content.trim().is_empty() {
+            return Err(ValidationError::EmptyContent);
+        }
+        if self.title.trim().is_empty() {
+            return Err(ValidationError::EmptyTitle);
+        }
+        // Pure move: no clones, zero cost
+        Ok(DocumentChunk { _state: PhantomData, ..self })
+    }
+}
+
+// Only Validated chunks can be exported
+impl DocumentChunk<Validated> {
+    pub fn export(&self) -> &Self {
+        // Compiler guarantees: validation already passed
+        self
+    }
 }
 ```
+
+**Why Typestate?**
+- **Compile-Time Guarantees:** Cannot export unvalidated documents
+- **Zero Runtime Cost:** `PhantomData<S>` elided by compiler
+- **Type Safety:** Invalid states irrepresentable
+- **Domain Integrity:** Business rules enforced at type level
 
 ### Value Objects (`value_objects.rs`)
 
