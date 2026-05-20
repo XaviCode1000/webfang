@@ -2,6 +2,12 @@
 ignore = [
     # tonic 0.12.3 (transitive via console-subscriber) — optional feature, low risk
     "RUSTSEC-2026-0097",
+    # Transitive dependencies with no safe upgrade available
+    "RUSTSEC-2025-0141",
+    "RUSTSEC-2025-0119",
+    "RUSTSEC-2024-0436",
+    "RUSTSEC-2026-0104",
+    "RUSTSEC-2024-0320",
 ]
 
 [licenses]
