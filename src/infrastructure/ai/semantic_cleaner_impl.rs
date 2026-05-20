@@ -55,6 +55,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures::future::try_join_all;
+use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 
 use crate::domain::semantic_cleaner::{private, SemanticCleaner};
@@ -212,6 +213,9 @@ pub struct SemanticCleanerImpl {
     // Config
     /// Model and pipeline configuration
     config: ModelConfig,
+
+    /// Semaphore to limit concurrent inference blocking tasks (avoids thread thrashing on 4-core CPUs)
+    semaphore: Arc<Semaphore>,
 }
 
 impl SemanticCleanerImpl {
@@ -362,6 +366,7 @@ impl SemanticCleanerImpl {
             chunker,
             scorer,
             config,
+            semaphore: Arc::new(Semaphore::new(num_cpus::get().max(1))),
         })
     }
 
@@ -458,11 +463,15 @@ impl SemanticCleaner for SemanticCleanerImpl {
         // Following `async-join-parallel`: use try_join_all for concurrent independent operations
         // Following `async-spawn-blocking`: InferenceEngine already uses spawn_blocking internally
         // Following `anti-lock-across-await`: No locks held across await points
-        let embeddings = try_join_all(
-            token_buffers
-                .iter()
-                .map(|input| self.inference_engine.run_inference(input)),
-        )
+        let semaphore = Arc::clone(&self.semaphore);
+        let embeddings = try_join_all(token_buffers.iter().map(|input| {
+            let sem = Arc::clone(&semaphore);
+            let engine = &self.inference_engine;
+            async move {
+                let _permit = sem.acquire_owned().await.expect("semaphore no fue cerrado");
+                engine.run_inference(input).await
+            }
+        }))
         .await
         .map_err(|e| {
             SemanticError::Inference(format!("Concurrent embedding generation failed: {}", e))
