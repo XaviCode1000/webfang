@@ -228,11 +228,21 @@ static_assertions = "1.1"
 assert_cmd = "2"
 predicates = "3"
 
+criterion = { version = "0.5", features = ["html_reports"] }
 
 tempfile = "3"
 walkdir = "2"
 wiremock = "0.6"
 proptest = "1.6"
+
+[[bench]]
+name = "waf_detection"
+harness = false
+
+[[bench]]
+name = "cosine_similarity"
+harness = false
+required-features = ["ai"]
 
 [build-dependencies]
 built = { version = "0.7", features = ["git2", "chrono"] }
