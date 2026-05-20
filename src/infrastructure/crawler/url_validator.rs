@@ -130,9 +130,9 @@ mod tests {
 
     #[test]
     fn test_url_validator_creation() {
-        let _validator = UrlValidator::new();
-        // Just test that it can be created
-        assert!(true);
+        let validator = UrlValidator::new();
+        // Just test that it can be created without panicking
+        let _ = validator;
     }
 
     #[test]

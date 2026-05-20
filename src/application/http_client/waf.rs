@@ -295,7 +295,7 @@ mod tests {
     fn test_detect_by_entropy_low_small() {
         // Small, low-entropy content — not large enough for entropy detection
         let small_content = "<html><body>Redirecting...</body></html>";
-        let result = detect_waf_challenge(&small_content);
+        let result = detect_waf_challenge(small_content);
         // Size is too small to trigger entropy check — returns None
         assert_eq!(result, None);
         // But should still detect via signatures if any match

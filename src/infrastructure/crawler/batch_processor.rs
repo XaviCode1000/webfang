@@ -106,9 +106,9 @@ mod tests {
 
     #[test]
     fn test_batch_processor_creation() {
-        let _processor = BatchProcessor::new();
-        // Just verify it can be created
-        assert!(true);
+        let processor = BatchProcessor::new();
+        // Just verify it can be created without panicking
+        let _ = processor;
     }
 
     #[test]

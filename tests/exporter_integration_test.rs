@@ -100,7 +100,7 @@ fn test_file_exporter_text_structure() {
 
     // Verify content is valid JSON
     let content = fs::read_to_string(&file_path).unwrap();
-    let json: serde_json::Value = serde_json::from_str(&content.lines().next().unwrap()).unwrap();
+    let json: serde_json::Value = serde_json::from_str(content.lines().next().unwrap()).unwrap();
     assert_eq!(json["title"], "Page Title");
 
     // Cleanup

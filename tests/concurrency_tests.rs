@@ -8,12 +8,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use chrono::Utc;
 use tempfile::TempDir;
 use tokio::task;
-use uuid::Uuid;
 
-use rust_scraper::domain::entities::{DocumentChunk, ExportFormat, ExportState};
+use rust_scraper::domain::entities::{ExportFormat, ExportState};
 use rust_scraper::domain::exporter::{Exporter, ExporterConfig};
 use rust_scraper::infrastructure::export::jsonl_exporter::JsonlExporter;
 use rust_scraper::infrastructure::export::vector_exporter::VectorExporter;

@@ -30,24 +30,23 @@ pub async fn download_all(
 ) -> Result<Vec<DownloadedAsset>> {
     let mut assets = Vec::new();
 
-    // Parse HTML for asset extraction
-    let document = scraper::Html::parse_document(html);
-
-    // Extract URLs BEFORE any .await — scraper::Html is not Send
-    let image_urls: Vec<crate::adapters::extractor::AssetUrl> = if config.download_images {
-        crate::extractor::extract_images(&document, base_url)
-    } else {
-        Vec::new()
+    // Extract URLs in a scope so `document` is dropped BEFORE any .await
+    // scraper::Html contains NonAtomic (Cell<usize>) which is not Send
+    let (image_urls, document_urls) = {
+        let document = scraper::Html::parse_document(html);
+        let images = if config.download_images {
+            crate::extractor::extract_images(&document, base_url)
+        } else {
+            Vec::new()
+        };
+        let docs = if config.download_documents {
+            crate::extractor::extract_documents(&document, base_url)
+        } else {
+            Vec::new()
+        };
+        (images, docs)
+        // `document` dropped here at end of scope
     };
-
-    let document_urls: Vec<crate::adapters::extractor::AssetUrl> = if config.download_documents {
-        crate::extractor::extract_documents(&document, base_url)
-    } else {
-        Vec::new()
-    };
-
-    // Drop non-Send document before crossing .await boundaries
-    drop(document);
 
     // Download images if enabled
     if !image_urls.is_empty() {
@@ -71,8 +70,9 @@ async fn download_image_batch(
     images: &[crate::adapters::extractor::AssetUrl],
     output_dir: &Path,
 ) -> Vec<DownloadedAsset> {
-    let tasks = images.iter().map(|img| {
-        let output_dir = output_dir.to_path_buf();
+    let output_dir = output_dir.to_path_buf();
+    let tasks = images.iter().cloned().map(|img| {
+        let output_dir = output_dir.clone();
         async move { download_single_asset(&img.url, "image", &output_dir).await }
     });
 
@@ -96,8 +96,9 @@ async fn download_document_batch(
     documents: &[crate::adapters::extractor::AssetUrl],
     output_dir: &Path,
 ) -> Vec<DownloadedAsset> {
-    let tasks = documents.iter().map(|doc| {
-        let output_dir = output_dir.to_path_buf();
+    let output_dir = output_dir.to_path_buf();
+    let tasks = documents.iter().cloned().map(|doc| {
+        let output_dir = output_dir.clone();
         async move { download_single_asset(&doc.url, "document", &output_dir).await }
     });
 

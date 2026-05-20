@@ -174,6 +174,21 @@ fn extract_domain(url: &str) -> Option<&str> {
         .and_then(|rest| rest.split('/').next())
 }
 
+/// HTML link extractor implementation
+///
+/// Implements the domain LinkExtractor trait using scraper library.
+pub struct HtmlLinkExtractor;
+
+impl LinkExtractor for HtmlLinkExtractor {
+    fn extract_links(
+        &self,
+        html: &str,
+        base_url: &str,
+    ) -> Result<Vec<String>, crate::domain::CrawlError> {
+        extract_links(html, base_url)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,20 +380,5 @@ mod tests {
         // Links contain the path portion; query params may be normalized
         assert!(links.iter().any(|l| l.contains("/search")));
         assert!(links.iter().any(|l| l.contains("/page")));
-    }
-}
-
-/// HTML link extractor implementation
-///
-/// Implements the domain LinkExtractor trait using scraper library.
-pub struct HtmlLinkExtractor;
-
-impl LinkExtractor for HtmlLinkExtractor {
-    fn extract_links(
-        &self,
-        html: &str,
-        base_url: &str,
-    ) -> Result<Vec<String>, crate::domain::CrawlError> {
-        extract_links(html, base_url)
     }
 }
