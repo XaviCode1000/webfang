@@ -99,11 +99,8 @@ jobs:
     needs: [build-and-test]
     steps:
       - uses: actions/checkout@v4
-      - uses: taiki-e/install-action@cargo-audit
-      - name: CVE scan
-        run: cargo audit
       - uses: taiki-e/install-action@cargo-deny
-      - name: License + bans + sources check
+      - name: Advisories + licenses + bans + sources
         run: cargo deny check
 
   # ============================================================================
