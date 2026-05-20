@@ -24,6 +24,7 @@ use rmcp::handler::server::ServerHandler;
 use rmcp::{ErrorData as McpError, model::{CallToolResult, Content}};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tracing::instrument;
 pub use state::McpState;
 
 /// Main MCP handler struct.
@@ -53,13 +54,13 @@ impl McpHandler {
 // Request parameter structs (shared across tools)
 // ============================================================================
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct ScrapeUrlParams {
     /// URL to scrape (must start with http:// or https://)
     url: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct ScrapeWithOptionsParams {
     /// URL to scrape
     url: String,
@@ -71,7 +72,7 @@ struct ScrapeWithOptionsParams {
     download_documents: Option<bool>,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct ScrapeBatchParams {
     /// List of URLs to scrape
     urls: Vec<String>,
@@ -79,7 +80,7 @@ struct ScrapeBatchParams {
     concurrency: Option<usize>,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct CrawlSiteParams {
     /// Base URL to crawl
     url: String,
@@ -89,7 +90,7 @@ struct CrawlSiteParams {
     max_pages: Option<u32>,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct CrawlWithSitemapParams {
     /// Base URL of the website
     url: String,
@@ -97,31 +98,31 @@ struct CrawlWithSitemapParams {
     sitemap_url: Option<String>,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct DiscoverUrlsParams {
     /// URL to extract links from
     url: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct DetectSpaParams {
     /// URL to check for SPA content
     url: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct CleanHtmlParams {
     /// Raw HTML to clean
     html: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct HtmlToMarkdownParams {
     /// HTML to convert
     html: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct ExtractLinksParams {
     /// HTML to extract links from
     html: String,
@@ -129,13 +130,13 @@ struct ExtractLinksParams {
     base_url: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct HighlightCodeParams {
     /// Markdown with code blocks
     markdown: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct ConvertWikiLinksParams {
     /// Markdown content
     markdown: String,
@@ -143,25 +144,25 @@ struct ConvertWikiLinksParams {
     base_domain: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct ValidateUrlParams {
     /// URL to validate
     url: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct ExtractDomainParams {
     /// URL to extract domain from
     url: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct NormalizeUrlParams {
     /// URL to normalize
     url: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct MatchUrlPatternParams {
     /// URL to check
     url: String,
@@ -169,7 +170,7 @@ struct MatchUrlPatternParams {
     pattern: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct IsInternalLinkParams {
     /// URL to check
     url: String,
@@ -177,13 +178,13 @@ struct IsInternalLinkParams {
     seed_domain: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct DetectWafParams {
     /// HTML body to scan for WAF signatures
     html: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct ExportFileParams {
     /// Output directory path
     output_dir: String,
@@ -193,13 +194,13 @@ struct ExportFileParams {
     format: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct DetectVaultParams {
     /// Explicit vault path (optional)
     vault_path: Option<String>,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct BuildObsidianUriParams {
     /// Vault name
     vault_name: String,
@@ -208,7 +209,7 @@ struct BuildObsidianUriParams {
 }
 
 #[allow(dead_code)]
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct SearchObsidianParams {
     /// Search query
     query: String,
@@ -219,7 +220,7 @@ struct SearchObsidianParams {
 }
 
 #[allow(dead_code)]
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct DownloadAssetsParams {
     /// HTML containing asset references
     html: String,
@@ -243,6 +244,7 @@ impl McpHandler {
 
     /// Scrape a single URL and extract clean content using Readability algorithm
     #[tool(description = "Scrape a single URL and extract clean content using Readability algorithm (Firefox Reader mode). Returns title, content, excerpt, author, and date.")]
+    #[instrument(skip(self), fields(url = %params.url))]
     async fn scrape_url(&self, Parameters(params): Parameters<ScrapeUrlParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.scraping.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -263,6 +265,7 @@ impl McpHandler {
 
     /// Scrape a URL with configurable options (asset download, concurrency)
     #[tool(description = "Scrape a URL with configurable options including asset downloading, concurrency, and delay settings.")]
+    #[instrument(skip(self), fields(url = %params.url))]
     async fn scrape_with_options(&self, Parameters(params): Parameters<ScrapeWithOptionsParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.scraping.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -288,6 +291,7 @@ impl McpHandler {
 
     /// Scrape multiple URLs with concurrency control
     #[tool(description = "Scrape multiple URLs with concurrency control. Failed URLs are logged but don't stop the batch.")]
+    #[instrument(skip(self), fields(url_count = params.urls.len()))]
     async fn scrape_batch(&self, Parameters(params): Parameters<ScrapeBatchParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.scraping.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -316,6 +320,7 @@ impl McpHandler {
 
     /// Crawl a website with BFS and depth limit
     #[tool(description = "Crawl a website using BFS with configurable depth limit, concurrency control, and rate limiting.")]
+    #[instrument(skip(self), fields(url = %params.url))]
     async fn crawl_site(&self, Parameters(params): Parameters<CrawlSiteParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.scraping.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -344,6 +349,7 @@ impl McpHandler {
 
     /// Discover and crawl URLs from a sitemap
     #[tool(description = "Discover URLs from a website's sitemap and crawl them. Auto-discovers sitemap from robots.txt if not provided.")]
+    #[instrument(skip(self), fields(url = %params.url))]
     async fn crawl_with_sitemap(&self, Parameters(params): Parameters<CrawlWithSitemapParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.scraping.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -366,6 +372,7 @@ impl McpHandler {
 
     /// Discover URLs from a single page's HTML links
     #[tool(description = "Fetch a single page and extract all internal links. Lightweight URL discovery without full crawl.")]
+    #[instrument(skip(self), fields(url = %params.url))]
     async fn discover_urls(&self, Parameters(params): Parameters<DiscoverUrlsParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.scraping.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -394,6 +401,7 @@ impl McpHandler {
     /// Auto-discover sitemap URL from robots.txt or common locations
     #[allow(deprecated)]
     #[tool(description = "Auto-discover a website's sitemap URL by checking robots.txt and common locations (/sitemap.xml, /sitemap_index.xml, etc.).")]
+    #[instrument(skip(self), fields(url = %params.url))]
     async fn discover_sitemap(&self, Parameters(params): Parameters<DiscoverUrlsParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.scraping.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -410,6 +418,7 @@ impl McpHandler {
 
     /// Detect if a URL requires JavaScript rendering (SPA)
     #[tool(description = "Detect if a page requires JavaScript rendering (Single Page Application). Checks for minimal content and SPA markers like <div id=\"root\"> or <div id=\"app\">.")]
+    #[instrument(skip(self), fields(url = %params.url))]
     async fn detect_spa(&self, Parameters(params): Parameters<DetectSpaParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.scraping.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -445,6 +454,7 @@ impl McpHandler {
 
     /// Remove boilerplate from HTML (scripts, nav, sidebar, footer, SVG)
     #[tool(description = "Remove boilerplate from HTML including scripts, styles, navigation, sidebar, footer, and SVG elements. Returns cleaned HTML.")]
+    #[instrument(skip(self), fields(html_len = params.html.len()))]
     async fn clean_html(&self, Parameters(params): Parameters<CleanHtmlParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.content.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -455,6 +465,7 @@ impl McpHandler {
 
     /// Convert HTML to Markdown
     #[tool(description = "Convert HTML to Markdown, preserving headings, code blocks, lists, and formatting.")]
+    #[instrument(skip(self), fields(html_len = params.html.len()))]
     async fn convert_html_to_markdown(&self, Parameters(params): Parameters<HtmlToMarkdownParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.content.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -465,6 +476,7 @@ impl McpHandler {
 
     /// Extract all href links from HTML
     #[tool(description = "Extract all href links from HTML content. Returns list of raw href values.")]
+    #[instrument(skip(self), fields(base_url = %params.base_url))]
     async fn extract_links(&self, Parameters(params): Parameters<ExtractLinksParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.content.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -481,6 +493,7 @@ impl McpHandler {
 
     /// Add syntax highlighting to fenced code blocks
     #[tool(description = "Add syntax highlighting to fenced code blocks in Markdown using syntect. Returns Markdown with highlighted code.")]
+    #[instrument(skip(self), fields(markdown_len = params.markdown.len()))]
     async fn highlight_code_blocks(&self, Parameters(params): Parameters<HighlightCodeParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.content.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -491,6 +504,7 @@ impl McpHandler {
 
     /// Convert HTTP links to Obsidian [[wiki-link]] syntax
     #[tool(description = "Convert same-domain HTTP links to Obsidian [[wiki-link]] syntax for internal note linking.")]
+    #[instrument(skip(self), fields(base_domain = %params.base_domain))]
     async fn convert_wiki_links(&self, Parameters(params): Parameters<ConvertWikiLinksParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.content.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -501,6 +515,7 @@ impl McpHandler {
 
     /// Generate YAML frontmatter for a scraped document
     #[tool(description = "Generate YAML frontmatter with title, URL, date, author, excerpt, and optional rich metadata.")]
+    #[instrument(skip(self), fields(params = ?params))]
     async fn generate_frontmatter(&self, Parameters(params): Parameters<serde_json::Value>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.content.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -515,6 +530,7 @@ impl McpHandler {
 
     /// Generate rich metadata from scraped content (word count, reading time, language, content type)
     #[tool(description = "Generate rich metadata from scraped content including word count, reading time (200 WPM), language detection, and content type classification.")]
+    #[instrument(skip(self), fields(params = ?params))]
     async fn generate_rich_metadata(&self, Parameters(params): Parameters<serde_json::Value>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.content.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -537,6 +553,7 @@ impl McpHandler {
 
     /// Save scraped content as a file (Markdown, Text, or JSON)
     #[tool(description = "Save scraped content as a file in Markdown, Text, or JSON format with YAML frontmatter.")]
+    #[instrument(skip(self), fields(filename = %params.filename, format = %params.format))]
     async fn export_file(&self, Parameters(params): Parameters<ExportFileParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.export.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -556,6 +573,7 @@ impl McpHandler {
 
     /// Export scraped content to JSONL format (one JSON object per line, RAG-ready)
     #[tool(description = "Export content to JSONL format (one JSON object per line). Optimal for RAG pipeline ingestion.")]
+    #[instrument(skip(self), fields(params = ?params))]
     async fn export_jsonl(&self, Parameters(params): Parameters<serde_json::Value>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.export.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -567,6 +585,7 @@ impl McpHandler {
 
     /// Export content with embeddings for vector database ingestion
     #[tool(description = "Export content with embeddings to JSON format for vector database ingestion. Includes metadata header.")]
+    #[instrument(skip(self), fields(params = ?params))]
     async fn export_vector(&self, Parameters(params): Parameters<serde_json::Value>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.export.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -578,6 +597,7 @@ impl McpHandler {
 
     /// Full export pipeline: scrape → chunk → validate → export
     #[tool(description = "Run the full export pipeline: scrape content, chunk it, validate, and export to the specified format.")]
+    #[instrument(skip(self), fields(params = ?params))]
     async fn process_export_pipeline(&self, Parameters(params): Parameters<serde_json::Value>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.export.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -594,6 +614,7 @@ impl McpHandler {
 
     /// Validate and parse a URL (RFC 3986 compliant)
     #[tool(description = "Validate and parse a URL. Returns parsed components (scheme, host, port, path, query) or error details.")]
+    #[instrument(skip(self), fields(url = %params.url))]
     async fn validate_url(&self, Parameters(params): Parameters<ValidateUrlParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.url_utils.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -619,6 +640,7 @@ impl McpHandler {
 
     /// Extract domain/host from a URL
     #[tool(description = "Extract the domain (host) from a URL. E.g., 'https://www.example.com/path' → 'www.example.com'.")]
+    #[instrument(skip(self), fields(url = %params.url))]
     async fn extract_domain(&self, Parameters(params): Parameters<ExtractDomainParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.url_utils.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -634,6 +656,7 @@ impl McpHandler {
 
     /// Normalize a URL (remove fragments, trailing slashes, etc.)
     #[tool(description = "Normalize a URL by removing fragments, trailing slashes, and default ports.")]
+    #[instrument(skip(self), fields(url = %params.url))]
     async fn normalize_url(&self, Parameters(params): Parameters<NormalizeUrlParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.url_utils.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -653,6 +676,7 @@ impl McpHandler {
 
     /// Match a URL against a glob pattern
     #[tool(description = "Check if a URL matches a glob-style pattern. SSRF-safe, host-only comparison.")]
+    #[instrument(skip(self), fields(url = %params.url, pattern = %params.pattern))]
     async fn match_url_pattern(&self, Parameters(params): Parameters<MatchUrlPatternParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.url_utils.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -663,6 +687,7 @@ impl McpHandler {
 
     /// Check if a URL is internal to a seed domain
     #[tool(description = "Check if a URL belongs to the same domain (or subdomain) as the seed domain.")]
+    #[instrument(skip(self), fields(url = %params.url, seed_domain = %params.seed_domain))]
     async fn is_internal_link(&self, Parameters(params): Parameters<IsInternalLinkParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.url_utils.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -676,6 +701,7 @@ impl McpHandler {
 
     /// Convert a URL to a domain-based file path
     #[tool(description = "Convert a URL to a domain-based file path. E.g., 'https://example.com/docs/page' → 'example.com/docs/page.md'.")]
+    #[instrument(skip(self), fields(url = %params.url))]
     async fn url_to_file_path(&self, Parameters(params): Parameters<ValidateUrlParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.url_utils.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -699,6 +725,7 @@ impl McpHandler {
 
     /// Detect WAF/CAPTCHA challenge in HTML body
     #[tool(description = "Scan HTML body for WAF/CAPTCHA signatures (Cloudflare, reCAPTCHA, hCaptcha, DataDome, PerimeterX, Akamai, etc.). Returns provider name if detected.")]
+    #[instrument(skip(self), fields(html_len = params.html.len()))]
     async fn detect_waf(&self, Parameters(params): Parameters<DetectWafParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.security.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -711,6 +738,7 @@ impl McpHandler {
 
     /// Multi-layer WAF inspection (headers + body + entropy analysis)
     #[tool(description = "Multi-layer WAF inspection: checks control headers, body signatures via Aho-Corasick, and entropy analysis for silent challenges.")]
+    #[instrument(skip(self), fields(params = ?params))]
     async fn verify_waf_integrity(&self, Parameters(params): Parameters<serde_json::Value>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.security.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -725,6 +753,7 @@ impl McpHandler {
 
     /// List all supported WAF providers
     #[tool(description = "List all WAF/CAPTCHA providers that can be detected by the WAF inspector.")]
+    #[instrument(skip(self))]
     async fn list_waf_providers(&self) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.security.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -735,6 +764,7 @@ impl McpHandler {
 
     /// Get scrape metrics (request timing, status codes, pages scraped)
     #[tool(description = "Get scraping metrics including request timing, status code distribution, and pages scraped per domain.")]
+    #[instrument(skip(self))]
     async fn get_scrape_metrics(&self) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.security.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -752,6 +782,7 @@ impl McpHandler {
 
     /// Detect Obsidian vault path using multi-priority detection
     #[tool(description = "Detect Obsidian vault path using multi-priority detection: CLI flag → env var → config file → registry → auto-scan.")]
+    #[instrument(skip(self), fields(vault_path = ?params.vault_path))]
     async fn detect_obsidian_vault(&self, Parameters(params): Parameters<DetectVaultParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.obsidian.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -765,6 +796,7 @@ impl McpHandler {
 
     /// Build obsidian:// URI protocol link
     #[tool(description = "Build an obsidian:// URI protocol link to open a specific note in the Obsidian app.")]
+    #[instrument(skip(self), fields(vault_name = %params.vault_name, file_path = %params.file_path))]
     async fn build_obsidian_uri(&self, Parameters(params): Parameters<BuildObsidianUriParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.obsidian.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -775,6 +807,7 @@ impl McpHandler {
 
     /// Open a note in Obsidian app via URI protocol
     #[tool(description = "Open a note in the Obsidian app using the obsidian:// URI protocol. Launches the Obsidian application.")]
+    #[instrument(skip(self), fields(vault_name = %params.vault_name, file_path = %params.file_path))]
     async fn open_in_obsidian(&self, Parameters(params): Parameters<BuildObsidianUriParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.obsidian.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -788,6 +821,7 @@ impl McpHandler {
 
     /// Semantic search over Obsidian vault using embeddings
     #[tool(description = "Semantic search over Obsidian vault using tract-onnx embeddings. Returns top matching notes by cosine similarity.")]
+    #[instrument(skip(self), fields(query = %params.query))]
     async fn search_obsidian(&self, Parameters(params): Parameters<SearchObsidianParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.obsidian.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
@@ -807,6 +841,7 @@ impl McpHandler {
 
     /// Download images and documents from HTML
     #[tool(description = "Download images (PNG, JPG, GIF, WEBP, SVG, BMP) and/or documents (PDF, DOCX, XLSX, PPTX) from HTML content. Uses SHA256-hashed filenames.")]
+    #[instrument(skip(self), fields(base_url = %params.base_url, images = params.images.unwrap_or(true), documents = params.documents.unwrap_or(false)))]
     async fn download_assets(&self, Parameters(params): Parameters<DownloadAssetsParams>) -> Result<CallToolResult, McpError> {
         let _permit = self.state.semaphores.assets.acquire().await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
