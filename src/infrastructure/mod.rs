@@ -16,6 +16,7 @@ pub mod converter;
 pub mod crawler;
 pub mod export;
 pub mod http;
+pub mod mcp_server;
 pub mod observability;
 pub mod obsidian;
 pub mod output;

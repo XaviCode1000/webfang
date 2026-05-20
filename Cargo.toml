@@ -210,6 +210,15 @@ wide = { version = "0.7", optional = true }
 rustls-webpki = ">=0.103.12"
 time = ">=0.3.47"
 
+# MCP Server (Model Context Protocol) — expose scraper tools to AI agents
+rmcp = { version = "1.7", features = ["server", "macros", "schemars", "transport-streamable-http-server"] }
+axum = "0.8"
+schemars = "1.0"
+
+# Observability — OpenTelemetry tracing for MCP tool calls
+tracing-opentelemetry = "0.32"
+opentelemetry = "0.32"
+
 # Secrets protection (Phase 2: zeroize/secrecy)
 secrecy = { version = "0.8", features = ["serde"] }
 # Compile-time assertions for type safety
