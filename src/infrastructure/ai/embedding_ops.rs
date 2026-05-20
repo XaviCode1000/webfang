@@ -472,8 +472,16 @@ mod tests {
         let mask = vec![1i64, 1, 0, 0];
         let pooled = mean_pool(&data, 4, 2, &mask);
         // Mean of first 2 rows: [(1+10)/2, (2+20)/2] = [5.5, 11.0]
-        assert!((pooled[0] - 5.5).abs() < 0.1, "expected 5.5, got {}", pooled[0]);
-        assert!((pooled[1] - 11.0).abs() < 0.1, "expected 11.0, got {}", pooled[1]);
+        assert!(
+            (pooled[0] - 5.5).abs() < 0.1,
+            "expected 5.5, got {}",
+            pooled[0]
+        );
+        assert!(
+            (pooled[1] - 11.0).abs() < 0.1,
+            "expected 11.0, got {}",
+            pooled[1]
+        );
     }
 
     #[test]
