@@ -81,7 +81,6 @@ impl DocumentChunk<Draft> {
 /// Public constructor for DocumentChunk<Draft> in production code
 /// Required for modules that create DocumentChunk directly (e.g., chunker, relevance_scorer)
 impl DocumentChunk<Draft> {
-    #[allow(dead_code)]
     pub fn new(
         id: Uuid,
         url: impl Into<String>,
@@ -103,7 +102,6 @@ impl DocumentChunk<Draft> {
 }
 
 /// Constructor with metadata for chunks that need to preserve source metadata
-#[allow(dead_code)]
 impl DocumentChunk<Draft> {
     pub fn with_metadata(
         id: Uuid,
@@ -236,8 +234,31 @@ impl ExportFormat {
 /// by a separate embedding pipeline.
 ///
 /// Uses typestate pattern: must call `.validate()` before export.
+///
+/// ```compile_fail
+/// use rust_scraper::domain::DocumentChunkUnvalidated;
+/// use rust_scraper::domain::Exporter;
+/// use rust_scraper::domain::exporter::ExporterConfig;
+/// use rust_scraper::infrastructure::export::FileExporter;
+/// use rust_scraper::ExportFormat;
+/// use uuid::Uuid;
+/// use std::path::PathBuf;
+///
+/// // DocumentChunk<Draft> cannot be compiled into the export path.
+/// // The typestate pattern enforces .validate() before export at compile time.
+/// let config = ExporterConfig::new(PathBuf::from("/tmp"), ExportFormat::Jsonl, "test");
+/// let exporter = FileExporter::new(config);
+/// let chunk = DocumentChunkUnvalidated::new(
+///     Uuid::new_v4(),
+///     "https://example.com",
+///     "Test Title",
+///     "Test content",
+/// );
+///
+/// // This MUST fail: Exporter::export() expects DocumentChunk<Validated>
+/// let _ = exporter.export(chunk);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct DocumentChunk<S = Draft> {
     /// Unique identifier for this chunk (UUID v4)
     pub id: Uuid,
