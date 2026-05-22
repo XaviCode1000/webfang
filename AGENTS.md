@@ -7,6 +7,65 @@ Production-ready web scraper. Clean Architecture, TUI selector, AI semantic clea
 
 ---
 
+## Workflow Phases
+
+### 1. Session Start
+
+```
+gitnexus analyze                    # Refresh index (re-run after branch switch)
+gitnexus analyze --skills           # Regenerate skill files if communities changed
+```
+
+If you see "Index is stale" from any gitnexus tool → stop and run `gitnexus analyze` first.
+
+**Never** run `gitnexus analyze --skip-agents-md` or add `--no-stats` — we want AGENTS.md to stay in sync.
+
+### 2. Before Editing Code
+
+```
+gitnexus_impact({target: "symbolName", direction: "upstream"})
+```
+
+- **LOW/MEDIUM risk** → proceed with changes
+- **HIGH risk** → stop, warn user, get approval
+- **CRITICAL risk** → stop, require user sign-off
+
+Consult `gitnexus-master` skill for full impact analysis protocol (depth groups, confidence scores).
+
+### 3. Before Writing Rust
+
+Load `rust-skills` skill. This is **mandatory** for any Rust code — ownership rules, error handling, async patterns, testing conventions.
+
+### 4. Pre-Commit Protocol (every commit)
+
+```bash
+cargo check                    # Must pass
+cargo clippy -- -D warnings    # Must pass — fix ALL warnings
+cargo fmt                      # Must run
+gitnexus_detect_changes()      # Verify only expected symbols changed
+```
+
+If `gitnexus_detect_changes()` shows unexpected affected symbols → review before committing.
+
+### 5. Before Finishing (self-check)
+
+1. `cargo check` passes
+2. No clippy warnings
+3. `gitnexus_impact` was run for modified symbols
+4. No HIGH/CRITICAL risk ignored
+5. `gitnexus_detect_changes()` confirms expected scope
+
+### 6. Cloud Verification (after commit)
+
+```bash
+gh workflow run ci.yml --ref $(git branch --show-current)
+gh run watch
+```
+
+Only push after CI shows ✅. If CI fails → fix locally, re-commit, re-trigger CI.
+
+---
+
 ## Commands
 
 ### Local (safe, <30s total)
@@ -16,6 +75,7 @@ cargo check                    # Verify compilation
 cargo check --features ai      # With AI feature
 cargo clippy -- -D warnings    # Lint
 cargo fmt --check              # Format check
+cargo fmt                      # Format
 ```
 
 ### Forbidden on this machine (HDD + 8GB RAM — WILL freeze system)
@@ -30,8 +90,33 @@ cargo fmt --check              # Format check
 | `cargo llvm-cov` | Instrument + test, 15+ min | CI |
 | `cargo miri test` | Interprets instructions, 30+ min | CI |
 
+**Exception:** single test for debugging is allowed:
+```bash
+cargo nextest run --test-threads 2 -E 'test(specific_test_name)'
 ```
-RULE: LOCAL = cargo check/clippy/fmt (<30s) | CLOUD = everything else
+
+---
+
+## Delegation Rules
+
+Sub-agents get a fresh context with no memory. The orchestrator controls context access.
+
+**Delegate when:**
+- Reading 4+ files to understand codebase → exploration sub-agent
+- Writing code across 2+ files → writer sub-agent
+- Running tests or CI → sub-agent
+- Multi-step refactoring → sub-agent with gitnexus-master + rust-skills
+
+**Do inline when:**
+- Reading 1-3 files for decision/verification
+- Single-file mechanical edits
+- Git/gh state checks (status, log, diff)
+
+**When delegating, pass skill paths explicitly:**
+```
+## Skills to load before work
+- /path/to/gitnexus-master/SKILL.md
+- /path/to/rust-skills/SKILL.md
 ```
 
 ---
@@ -88,15 +173,15 @@ Responses scanned for WAF signatures (Cloudflare, reCAPTCHA, hCaptcha, DataDome,
 
 ---
 
-## Skills (load before work)
+## Skills Reference
 
 | Purpose | Skill | Load when |
 |---------|-------|-----------|
-| Code intelligence | `gitnexus-master` | Any code work, editing, debugging |
-| Rust quality | `rust-skills` | Writing Rust code |
+| Code intelligence | `gitnexus-master` | Any code work — has full MCP tools, CLI commands, impact protocol |
+| Rust quality | `rust-skills` | Writing Rust — ownership, error handling, async, testing |
 | SDD workflow | `sdd-*` skills | Planning/verifying changes |
 
-The orchestrator passes exact `SKILL.md` paths to sub-agents. Sub-agents read skills BEFORE task work.
+Skills contain tool details (parameters, flags, schemas). This file contains workflow (when, sequence).
 
 ---
 
