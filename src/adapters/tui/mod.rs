@@ -26,6 +26,9 @@
 //! # }
 //! ```
 
+pub mod component;
+pub mod theme;
+
 mod config_form;
 mod error_log_widget;
 mod event_loop;
@@ -36,6 +39,7 @@ mod terminal;
 pub mod theme;
 mod url_selector;
 
+pub use component::{AppMode, Component, Header, StatusBar};
 pub use error_log_widget::{ErrorLogWidget, DEFAULT_MAX_ERRORS};
 
 pub use config_form::ConfigFormState;
