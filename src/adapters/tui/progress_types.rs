@@ -14,7 +14,7 @@ use thiserror::Error;
 /// - Completed: Operation completed successfully for a URL
 /// - Failed: Operation terminated with a non-recoverable error for a URL
 /// - Finished: Final state after completion or failure of all URLs
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScrapeProgress {
     /// Scraping started for a specific URL
     Started {
@@ -102,7 +102,7 @@ impl ScrapeStatus {
 ///
 /// These errors are categorized by the failure mode and may include
 /// WAF/CAPTCHA blocks, network issues, or parsing failures.
-#[derive(Debug, Error, Clone, PartialEq)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ScrapeError {
     #[error("Network error: {0}")]
     Network(String),
@@ -167,7 +167,7 @@ pub enum AppEvent {
 }
 
 /// Type of error for classification
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorType {
     /// Network-level error
     Network,
@@ -189,7 +189,7 @@ pub enum ErrorType {
 ///
 /// Errors are timestamped and may carry contextual information
 /// to help diagnose issues during the scraping process.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorEntry {
     /// When the error occurred
     pub timestamp: SystemTime,

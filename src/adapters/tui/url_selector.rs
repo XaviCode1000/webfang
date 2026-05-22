@@ -10,19 +10,22 @@
 //! - `UrlSelector`: Rendering widget (requires ratatui)
 //! - `run_selector`: Main event loop (orchestrates state + render)
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use anyhow::Result;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Rect, Size},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
-use std::time::Duration;
+use tokio::sync::mpsc::UnboundedSender;
 use url::Url;
 
+use super::action::Action;
+use super::app::{App, AppResult};
+use super::component::{AppMode, Component, Header, StatusBar};
 use super::theme::Theme;
-use super::{restore_terminal, setup_terminal, Result, TuiError};
 
 /// URL selector state (testable without rendering)
 ///
@@ -41,20 +44,25 @@ pub struct UrlSelectorState {
     confirm_mode: bool,
     /// Terminal height for scroll calculation
     visible_height: usize,
+    /// Channel sender for dispatching actions to the App
+    action_tx: Option<UnboundedSender<Action>>,
 }
 
 impl UrlSelectorState {
     /// Create new selector state from URLs
+    ///
+    /// Follows own-borrow-over-clone: accepts `&[Url]`, clones internally
     #[must_use]
-    pub fn new(urls: Vec<Url>) -> Self {
+    pub fn new(urls: &[Url]) -> Self {
         let selected = vec![false; urls.len()];
         Self {
-            urls,
+            urls: urls.to_vec(),
             selected,
             cursor: 0,
             scroll: 0,
             confirm_mode: false,
-            visible_height: 10, // Default, updated during render
+            visible_height: 10, // Default, updated during render/init
+            action_tx: None,
         }
     }
 
@@ -283,7 +291,92 @@ impl<'a> UrlSelector<'a> {
     }
 }
 
-/// Run URL selector interactively
+/// Implement the Component trait for UrlSelectorState.
+///
+/// This wires the URL selector into the reactive App architecture:
+/// - `handle_key_event` processes keys and returns Actions
+/// - `draw` delegates to the existing `UrlSelector` rendering widget
+/// - `update` handles resize events for scroll calculation
+impl Component for UrlSelectorState {
+    fn register_action_handler(&mut self, tx: UnboundedSender<Action>) -> Result<()> {
+        self.action_tx = Some(tx);
+        Ok(())
+    }
+
+    fn init(&mut self, area: Size) -> Result<()> {
+        self.visible_height = area.height as usize;
+        Ok(())
+    }
+
+    fn handle_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
+        match key.code {
+            // Navigation
+            KeyCode::Up => self.cursor_up(),
+            KeyCode::Down => self.cursor_down(),
+
+            // Selection toggles (local navigation, no action)
+            KeyCode::Char(' ') => self.toggle_selection(),
+            KeyCode::Char('a') | KeyCode::Char('A') => self.select_all(),
+            KeyCode::Char('d') | KeyCode::Char('D') => self.deselect_all(),
+
+            // Enter confirmation mode
+            KeyCode::Enter if self.has_selections() => {
+                self.enter_confirm_mode();
+            },
+
+            // Confirm — convert selected URLs to strings and send action
+            KeyCode::Char('y') | KeyCode::Char('Y') if self.confirm_mode => {
+                let urls: Vec<String> = self
+                    .get_selected_urls()
+                    .into_iter()
+                    .map(|u| u.to_string())
+                    .collect();
+                return Ok(Some(Action::UrlConfirmed(urls)));
+            },
+
+            // Cancel confirmation
+            KeyCode::Char('n') | KeyCode::Char('N') if self.confirm_mode => {
+                self.exit_confirm_mode();
+            },
+            KeyCode::Esc if self.confirm_mode => {
+                self.exit_confirm_mode();
+            },
+
+            // Quit without selection
+            KeyCode::Esc | KeyCode::Char('q') => {
+                return Ok(Some(Action::UrlCancelled));
+            },
+
+            // No-op for other keys
+            _ => {},
+        }
+        Ok(None)
+    }
+
+    fn update(&mut self, action: Action) -> Result<Option<Action>> {
+        match action {
+            Action::Resize(_, h) => {
+                self.visible_height = h as usize;
+            },
+            Action::Tick | Action::Render => {},
+            _ => {},
+        }
+        Ok(None)
+    }
+
+    fn draw(&mut self, f: &mut Frame, rect: Rect) -> Result<()> {
+        // Update visible height so auto-scroll works correctly
+        self.visible_height = rect.height as usize;
+        let selector = UrlSelector::new(self);
+        selector.render(f, rect);
+        Ok(())
+    }
+}
+
+/// Run URL selector interactively using the reactive App architecture.
+///
+/// Constructs an `App` with Header, UrlSelector, and StatusBar components,
+/// runs the event loop, and returns the selected URLs.
 ///
 /// # Arguments
 ///
@@ -291,12 +384,11 @@ impl<'a> UrlSelector<'a> {
 ///
 /// # Returns
 ///
-/// Vector of selected URLs (owned)
+/// Vector of selected URLs (owned). Returns an empty vector if cancelled.
 ///
 /// # Errors
 ///
-/// Returns `TuiError::Interrupted` if user quits without selection
-/// Returns `TuiError::TerminalSetup` if terminal setup fails
+/// Returns an error if terminal setup or the event loop fails.
 ///
 /// # Example
 ///
@@ -314,60 +406,22 @@ impl<'a> UrlSelector<'a> {
 /// # }
 /// ```
 pub async fn run_selector(urls: &[Url]) -> Result<Vec<Url>> {
-    // Follow own-borrow-over-clone: accept &[Url], clone only when storing state
-    let mut terminal = setup_terminal()?;
-    let mut state = UrlSelectorState::new(urls.to_vec());
+    let mut app = App::new(AppMode::Selector)?
+        .with_component(Header::new(AppMode::Selector))
+        .with_component(UrlSelectorState::new(urls))
+        .with_component(StatusBar::new().with_items(vec![
+            ("↑↓", "Navegar"),
+            ("Space", "Seleccionar"),
+            ("Enter", "Confirmar"),
+            ("Esc/q", "Cancelar"),
+        ]));
 
-    loop {
-        // Render current state
-        terminal.draw(|frame| {
-            let selector = UrlSelector::new(&state);
-            selector.render(frame, frame.area());
-        })?;
-
-        // Handle input events
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        // Quit without selection
-                        KeyCode::Char('q') => {
-                            restore_terminal()?;
-                            return Err(TuiError::Interrupted);
-                        },
-
-                        // Navigation
-                        KeyCode::Up => state.cursor_up(),
-                        KeyCode::Down => state.cursor_down(),
-
-                        // Selection
-                        KeyCode::Char(' ') => state.toggle_selection(),
-                        KeyCode::Char('a') | KeyCode::Char('A') => state.select_all(),
-                        KeyCode::Char('d') | KeyCode::Char('D') => state.deselect_all(),
-
-                        // Enter confirmation mode
-                        KeyCode::Enter if state.has_selections() => {
-                            state.enter_confirm_mode();
-                        },
-
-                        // Confirmation responses
-                        KeyCode::Char('y') | KeyCode::Char('Y') if state.confirm_mode => {
-                            restore_terminal()?;
-                            return Ok(state.get_selected_urls());
-                        },
-
-                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc
-                            if state.confirm_mode =>
-                        {
-                            state.exit_confirm_mode();
-                        },
-
-                        // No-op for other keys
-                        _ => {},
-                    }
-                }
-            }
-        }
+    match app.run().await? {
+        AppResult::Urls(urls) => Ok(urls
+            .into_iter()
+            .filter_map(|s| Url::parse(&s).ok())
+            .collect()),
+        _ => Ok(vec![]),
     }
 }
 
@@ -386,7 +440,7 @@ mod tests {
     #[test]
     fn test_url_selector_state_creation() {
         let urls = test_urls();
-        let state = UrlSelectorState::new(urls.clone());
+        let state = UrlSelectorState::new(&urls);
 
         assert_eq!(state.total_count(), 3);
         assert_eq!(state.selected_count(), 0);
@@ -399,7 +453,7 @@ mod tests {
     #[test]
     fn test_cursor_movement() {
         let urls = test_urls();
-        let mut state = UrlSelectorState::new(urls);
+        let mut state = UrlSelectorState::new(&urls);
 
         // Move down
         state.cursor_down();
@@ -427,7 +481,7 @@ mod tests {
     #[test]
     fn test_toggle_selection() {
         let urls = test_urls();
-        let mut state = UrlSelectorState::new(urls);
+        let mut state = UrlSelectorState::new(&urls);
 
         // Initially none selected
         assert!(!state.has_selections());
@@ -448,7 +502,7 @@ mod tests {
     #[test]
     fn test_select_all() {
         let urls = test_urls();
-        let mut state = UrlSelectorState::new(urls);
+        let mut state = UrlSelectorState::new(&urls);
 
         state.select_all();
 
@@ -462,7 +516,7 @@ mod tests {
     #[test]
     fn test_deselect_all() {
         let urls = test_urls();
-        let mut state = UrlSelectorState::new(urls);
+        let mut state = UrlSelectorState::new(&urls);
 
         // Select some
         state.select_all();
@@ -477,7 +531,7 @@ mod tests {
     #[test]
     fn test_get_selected_urls() {
         let urls = test_urls();
-        let mut state = UrlSelectorState::new(urls.clone());
+        let mut state = UrlSelectorState::new(&urls);
 
         // Select first and third
         state.selected[0] = true;
@@ -492,7 +546,7 @@ mod tests {
     #[test]
     fn test_cursor_down_with_scroll() {
         let urls = test_urls();
-        let mut state = UrlSelectorState::new(urls);
+        let mut state = UrlSelectorState::new(&urls);
         state.set_visible_height(2); // Only 2 visible at a time
 
         // Move past visible area
@@ -508,7 +562,7 @@ mod tests {
     #[test]
     fn test_cursor_up_with_scroll() {
         let urls = test_urls();
-        let mut state = UrlSelectorState::new(urls);
+        let mut state = UrlSelectorState::new(&urls);
         state.set_visible_height(2);
         state.scroll = 1;
         state.cursor = 2;
@@ -526,7 +580,7 @@ mod tests {
     #[test]
     fn test_confirmation_mode() {
         let urls = test_urls();
-        let mut state = UrlSelectorState::new(urls);
+        let mut state = UrlSelectorState::new(&urls);
 
         assert!(!state.is_confirming());
 
@@ -540,7 +594,7 @@ mod tests {
     #[test]
     fn test_get_url() {
         let urls = test_urls();
-        let state = UrlSelectorState::new(urls.clone());
+        let state = UrlSelectorState::new(&urls);
 
         assert_eq!(state.get_url(0).unwrap().as_str(), "https://example.com/1");
         assert_eq!(state.get_url(1).unwrap().as_str(), "https://example.com/2");

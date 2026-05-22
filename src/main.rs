@@ -26,9 +26,8 @@ use std::env;
 use std::io::{self, IsTerminal};
 
 use clap::Parser;
-use crossterm::event;
 use inquire::Text;
-use rust_scraper::adapters::tui::{restore_terminal, setup_terminal, ConfigFormState};
+use rust_scraper::adapters::tui::{App, AppMode, AppResult, ConfigFormState, Header, StatusBar};
 use rust_scraper::cli::config::ConfigDefaults;
 use rust_scraper::cli::error::CliExit;
 use rust_scraper::cli::preflight;
@@ -44,59 +43,49 @@ fn stdin_is_tty() -> bool {
     io::stdin().is_terminal()
 }
 
-/// Run the configuration TUI and return the submitted config values.
+/// Run the configuration TUI using the App + Component architecture.
 ///
 /// Returns `Ok(Some(values))` if form was submitted,
 /// `Ok(None)` if cancelled, or `Err` if TTY not available.
-fn run_config_tui() -> Result<Option<serde_json::Value>, CliExit> {
+async fn run_config_tui() -> Result<Option<serde_json::Value>, CliExit> {
     // Check if stdout is a TTY
     if !io::stdout().is_terminal() {
-        eprintln!("Error: --config-tui requires a terminal");
+        eprintln!("Error: --config-tui requiere un terminal interactivo");
         return Err(CliExit::UsageError(
-            "--config-tui requires interactive terminal".into(),
+            "--config-tui requiere un terminal interactivo".into(),
         ));
     }
 
-    // Setup terminal
-    let mut terminal = match setup_terminal() {
-        Ok(t) => t,
+    let mut app = match App::new(AppMode::Config) {
+        Ok(app) => app,
         Err(e) => {
-            eprintln!("Error: Failed to setup terminal: {}", e);
-            return Err(CliExit::UsageError(format!("Terminal setup failed: {}", e)));
+            eprintln!("Error al crear la aplicación TUI: {}", e);
+            return Err(CliExit::UsageError(format!(
+                "Error creando la aplicación: {}",
+                e
+            )));
         },
-    };
+    }
+    .with_component(Header::new(AppMode::Config))
+    .with_component(ConfigFormState::new_default())
+    .with_component(StatusBar::new().with_items(vec![
+        ("↑↓", "Navegar"),
+        ("Enter", "Confirmar"),
+        ("q", "Salir"),
+    ]));
 
-    // Create config form state
-    let mut config_state = ConfigFormState::new_default();
-
-    // Run the event loop for the config form
-    let result = loop {
-        // Render the form
-        let _ = terminal.draw(|f| {
-            config_state.render(f, f.area());
-        });
-
-        // Check if we're done
-        if config_state.is_done() {
-            break if config_state.submitted {
-                Some(config_state.data())
-            } else {
-                None
-            };
-        }
-
-        // Poll for events with timeout
-        if let Ok(true) = event::poll(std::time::Duration::from_millis(50)) {
-            if let Ok(event::Event::Key(key)) = event::read() {
-                config_state.handle_input(key);
-            }
-        }
-    };
-
-    // Restore terminal
-    let _ = restore_terminal();
-
-    Ok(result)
+    match app.run().await {
+        Ok(AppResult::Config(values)) => Ok(values),
+        Ok(AppResult::None) => Ok(None),
+        Ok(_) => {
+            // En modo Config no deberían llegar otros resultados
+            Ok(None)
+        },
+        Err(e) => {
+            eprintln!("Error en TUI de configuración: {}", e);
+            Ok(None)
+        },
+    }
 }
 
 /// Prompt for URL using inquire (interactive mode).
@@ -152,7 +141,7 @@ async fn __main() -> CliExit {
     // =========================================================================
     if args.config_tui {
         // Run config TUI and get submitted values
-        let config_result = run_config_tui();
+        let config_result = run_config_tui().await;
         match config_result {
             Ok(Some(config_values)) => {
                 // Apply TUI config values to args (overrides CLI values)

@@ -72,12 +72,8 @@ pub async fn select_urls(
                     SelectedUrls::Urls(selected)
                 }
             },
-            Err(adapters::tui::TuiError::Interrupted) => {
-                info!("User interrupted TUI selector, exiting");
-                SelectedUrls::None
-            },
             Err(e) => {
-                warn!("TUI error: {}", e);
+                warn!("Error en selector TUI: {}", e);
                 SelectedUrls::Error(CliExit::ProtocolError(e.to_string()))
             },
         }

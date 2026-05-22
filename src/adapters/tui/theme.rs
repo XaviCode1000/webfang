@@ -48,4 +48,24 @@ impl Theme {
     pub fn error() -> Color {
         Color::Rgb(0xf3, 0x8b, 0xa8)
     }
+
+    /// Background / base colour — Base `#1e1e2e`
+    pub fn background() -> Color {
+        Color::Rgb(0x1e, 0x1e, 0x2e)
+    }
+
+    /// Processing / active state — Sky `#89dceb`
+    pub fn processing() -> Color {
+        Color::Rgb(0x89, 0xdc, 0xeb)
+    }
+
+    /// Highlight / cursor — Lavender `#b4befe`
+    pub fn highlight() -> Color {
+        Color::Rgb(0xb4, 0xbe, 0xfe)
+    }
+
+    /// Parse error / warning — Peach `#fab387`
+    pub fn parse_error() -> Color {
+        Color::Rgb(0xfa, 0xb3, 0x87)
+    }
 }

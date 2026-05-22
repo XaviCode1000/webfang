@@ -8,21 +8,29 @@
 //!
 //! # Architecture
 //!
-//! Follows the same pattern as `url_selector.rs`:
-//! - `ProgressState`: Pure data (defined in progress_types.rs)
-//! - `ProgressWidget`: Rendering logic (this module)
+//! Follows the Component pattern from `component.rs`:
+//! - `ProgressWidget` owns `ProgressState` and implements Component
+//! - Receives `Action::Progress` events to update state
+//! - Renders progress bars, URL list, and error panels
 //!
 //! ## Example Integration
 //!
 //! ```no_run
-//! use rust_scraper::adapters::tui::{ProgressWidget, ProgressState, ScrapeStatus};
+//! use rust_scraper::adapters::tui::{App, AppMode, Header, ProgressWidget};
+//! use url::Url;
 //!
-//! let mut state = ProgressState::new(urls);
-//! // ... update state from events ...
-//! let widget = ProgressWidget::new(&state);
-//! widget.render(frame, area);
+//! # async fn example() -> anyhow::Result<()> {
+//! let urls = vec![Url::parse("https://example.com")?];
+//! let mut app = App::new(AppMode::Progress)?
+//!     .with_component(Header::new(AppMode::Progress))
+//!     .with_component(ProgressWidget::new(&urls));
+//! let _ = app.run().await;
+//! # Ok(())
+//! # }
 //! ```
 
+use anyhow::Result;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
@@ -30,7 +38,11 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, Paragraph},
     Frame,
 };
+use tokio::sync::mpsc::UnboundedSender;
+use url::Url;
 
+use super::action::Action;
+use super::component::Component;
 use super::theme::Theme;
 use crate::adapters::tui::{ErrorType, ProgressState, ScrapeStatus};
 use std::time::{Instant, SystemTime};
@@ -121,29 +133,35 @@ impl Default for ProgressIcons {
 /// - URL list showing per-URL status
 /// - Error count panel
 ///
-/// Follows the same render pattern as `UrlSelector` in `url_selector.rs`:
-/// `render(&self, frame: &mut Frame, area: Rect)`.
+/// Follows the Component pattern: owns its state, updates from actions,
+/// and renders in the draw phase.
 #[derive(Debug, Clone)]
-pub struct ProgressWidget<'a> {
-    /// Reference to progress state
-    state: &'a ProgressState,
+pub struct ProgressWidget {
+    /// Owned progress state (no lifetime param needed)
+    state: ProgressState,
     /// Animation icons for visual feedback
     icons: ProgressIcons,
     /// Whether to show detailed error panel
     show_errors: bool,
     /// Max errors to display
     max_errors: usize,
+    /// Channel sender for dispatching actions
+    action_tx: Option<UnboundedSender<Action>>,
 }
 
-impl<'a> ProgressWidget<'a> {
-    /// Create a new progress widget from state.
+impl ProgressWidget {
+    /// Create a new progress widget from a list of URLs.
+    ///
+    /// Initializes the internal `ProgressState` with the given URLs.
     #[must_use]
-    pub fn new(state: &'a ProgressState) -> Self {
+    pub fn new(urls: &[Url]) -> Self {
+        let url_strings: Vec<String> = urls.iter().map(|u| u.to_string()).collect();
         Self {
-            state,
+            state: ProgressState::new(url_strings),
             icons: ProgressIcons::new(),
             show_errors: true,
             max_errors: 10,
+            action_tx: None,
         }
     }
 
@@ -477,6 +495,49 @@ impl<'a> ProgressWidget<'a> {
             .block(Block::default().borders(Borders::ALL));
 
         frame.render_widget(footer, area);
+    }
+}
+
+/// Implement the Component trait for ProgressWidget.
+///
+/// This wires the progress view into the reactive App architecture:
+/// - `handle_key_event` sends Action::Quit on 'q'
+/// - `update` processes Tick (animation) and Action::Progress (state updates)
+/// - `draw` delegates to the existing render logic
+impl Component for ProgressWidget {
+    fn register_action_handler(&mut self, tx: UnboundedSender<Action>) -> Result<()> {
+        self.action_tx = Some(tx);
+        Ok(())
+    }
+
+    fn init(&mut self, _area: ratatui::layout::Size) -> Result<()> {
+        Ok(())
+    }
+
+    fn handle_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
+        if key.code == KeyCode::Char('q') || key.code == KeyCode::Char('Q') {
+            return Ok(Some(Action::Quit));
+        }
+        Ok(None)
+    }
+
+    fn update(&mut self, action: Action) -> Result<Option<Action>> {
+        match action {
+            Action::Tick => {
+                // Advance animation frame
+                self.icons.spinner();
+            },
+            Action::Progress(progress) => {
+                self.state.update(progress);
+            },
+            _ => {},
+        }
+        Ok(None)
+    }
+
+    fn draw(&mut self, f: &mut Frame, rect: Rect) -> Result<()> {
+        self.render(f, rect);
+        Ok(())
     }
 }
 

@@ -8,22 +8,12 @@
 //!
 //! # Architecture
 //!
-//! Standalone widget that can be integrated with progress widget.
-//! Uses ratatui's List widget with scroll state for navigation.
-//!
-//! ## Example Integration
-//!
-//! ```ignore
-//! use rust_scraper::adapters::tui::{ErrorLogWidget, ProgressState};
-//!
-//! let url_strings = vec!["https://example.com".to_string()];
-//! let mut state = ProgressState::new(url_strings);
-//! // ... add errors to state ...
-//! let errors = state.errors.clone();
-//! let mut widget = ErrorLogWidget::new(&errors);
-//! // widget.render(frame, area);
-//! ```
+//! Follows the Component pattern from `component.rs`:
+//! - `ErrorLogWidget` owns `Vec<ErrorEntry>` and implements Component
+//! - Receives `Action::Progress` events to extract and display errors
+//! - Renders a dedicated error list widget
 
+use anyhow::Result;
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
@@ -31,9 +21,13 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
+use std::time::SystemTime;
+use tokio::sync::mpsc::UnboundedSender;
 
+use super::action::Action;
+use super::component::Component;
 use super::theme::Theme;
-use crate::adapters::tui::progress_types::ErrorType;
+use crate::adapters::tui::progress_types::{ErrorEntry, ErrorType, ScrapeProgress};
 
 /// Default maximum number of errors to display
 pub const DEFAULT_MAX_ERRORS: usize = 10;
@@ -47,27 +41,36 @@ pub const DEFAULT_MAX_ERRORS: usize = 10;
 /// - Other errors: White
 ///
 /// Supports scrolling when errors exceed visible area.
+///
+/// Owns its error data and updates from `Action::Progress` events
+/// (extracts errors from `ScrapeProgress::Failed` events).
 #[derive(Debug)]
-pub struct ErrorLogWidget<'a> {
-    /// Reference to error entries
-    errors: &'a [crate::adapters::tui::progress_types::ErrorEntry],
+pub struct ErrorLogWidget {
+    /// Owned error entries (no lifetime param needed)
+    errors: Vec<ErrorEntry>,
     /// Maximum number of errors to display
     max_errors: usize,
     /// Auto-scroll to bottom when new errors arrive
     auto_scroll: bool,
     /// Current scroll offset (for manual scrolling)
     scroll_offset: usize,
+    /// Channel sender for dispatching actions
+    action_tx: Option<UnboundedSender<Action>>,
 }
 
-impl<'a> ErrorLogWidget<'a> {
-    /// Create a new error log widget from error entries.
+impl ErrorLogWidget {
+    /// Create a new empty error log widget.
+    ///
+    /// Errors are added dynamically via `Action::Progress` events
+    /// through the Component system.
     #[must_use]
-    pub fn new(errors: &'a [crate::adapters::tui::progress_types::ErrorEntry]) -> Self {
+    pub fn new() -> Self {
         Self {
-            errors,
+            errors: Vec::new(),
             max_errors: DEFAULT_MAX_ERRORS,
             auto_scroll: true,
             scroll_offset: 0,
+            action_tx: None,
         }
     }
 
@@ -75,8 +78,7 @@ impl<'a> ErrorLogWidget<'a> {
     ///
     /// # Example
     /// ```ignore
-    /// let errors = vec![];
-    /// let widget = ErrorLogWidget::new(&errors).with_max_errors(100);
+    /// let widget = ErrorLogWidget::new().with_max_errors(100);
     /// ```
     #[must_use]
     pub fn with_max_errors(mut self, max: usize) -> Self {
@@ -91,8 +93,7 @@ impl<'a> ErrorLogWidget<'a> {
     ///
     /// # Example
     /// ```ignore
-    /// let errors = vec![];
-    /// let widget = ErrorLogWidget::new(&errors).with_auto_scroll(true);
+    /// let widget = ErrorLogWidget::new().with_auto_scroll(true);
     /// ```
     #[must_use]
     pub fn with_auto_scroll(mut self, auto_scroll: bool) -> Self {
@@ -110,7 +111,7 @@ impl<'a> ErrorLogWidget<'a> {
     /// - HTTP: Yellow
     /// - WafBlocked: Red + Bold
     /// - Others: White
-    fn style_error_entry(entry: &'a crate::adapters::tui::progress_types::ErrorEntry) -> Line<'a> {
+    fn style_error_entry(entry: &ErrorEntry) -> Line<'_> {
         // Format timestamp as HH:MM:SS
         let time_str = format_time(entry.timestamp);
 
@@ -240,8 +241,54 @@ impl<'a> ErrorLogWidget<'a> {
     }
 }
 
+impl Default for ErrorLogWidget {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Implement the Component trait for ErrorLogWidget.
+///
+/// This wires the error log into the reactive App architecture:
+/// - `register_action_handler` stores the action channel
+/// - `update` extracts errors from `Action::Progress(ScrapeProgress::Failed)` events
+/// - `draw` renders the error list using existing render logic
+/// - Key events are handled by ProgressWidget, not ErrorLogWidget
+impl Component for ErrorLogWidget {
+    fn register_action_handler(&mut self, tx: UnboundedSender<Action>) -> Result<()> {
+        self.action_tx = Some(tx);
+        Ok(())
+    }
+
+    fn init(&mut self, _area: ratatui::layout::Size) -> Result<()> {
+        Ok(())
+    }
+
+    fn handle_key_event(&mut self, _key: crossterm::event::KeyEvent) -> Result<Option<Action>> {
+        // Key events handled by ProgressWidget
+        Ok(None)
+    }
+
+    fn update(&mut self, action: Action) -> Result<Option<Action>> {
+        if let Action::Progress(ScrapeProgress::Failed { url, error }) = action {
+            self.errors.push(ErrorEntry {
+                timestamp: SystemTime::now(),
+                url,
+                error_type: error.error_type(),
+                message: error.message(),
+            });
+        }
+        Ok(None)
+    }
+
+    fn draw(&mut self, f: &mut Frame, rect: Rect) -> Result<()> {
+        self.render(f, rect);
+        Ok(())
+    }
+}
+
 /// Helper to format SystemTime as HH:MM:SS
-fn format_time(timestamp: std::time::SystemTime) -> String {
+fn format_time(timestamp: SystemTime) -> String {
     use chrono::{DateTime, Utc};
     let dt: DateTime<Utc> = timestamp.into();
     dt.format("%H:%M:%S").to_string()
@@ -250,7 +297,6 @@ fn format_time(timestamp: std::time::SystemTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::tui::progress_types::ErrorEntry;
     use std::time::SystemTime;
 
     fn sample_errors() -> Vec<ErrorEntry> {
@@ -290,26 +336,20 @@ mod tests {
 
     #[test]
     fn test_error_log_widget_new() {
-        let errors = sample_errors();
-        let widget = ErrorLogWidget::new(&errors);
-
+        let widget = ErrorLogWidget::new();
         assert_eq!(widget.max_errors, DEFAULT_MAX_ERRORS);
-        assert!(widget.errors.len() == 5);
+        assert!(widget.errors.is_empty());
     }
 
     #[test]
     fn test_error_log_widget_with_max_errors() {
-        let errors = sample_errors();
-        let widget = ErrorLogWidget::new(&errors).with_max_errors(10);
-
+        let widget = ErrorLogWidget::new().with_max_errors(10);
         assert_eq!(widget.max_errors, 10);
     }
 
     #[test]
     fn test_error_log_widget_empty() {
-        let errors: Vec<ErrorEntry> = vec![];
-        let widget = ErrorLogWidget::new(&errors);
-
+        let widget = ErrorLogWidget::new();
         assert!(widget.errors.is_empty());
     }
 
@@ -323,7 +363,6 @@ mod tests {
         };
 
         let line = ErrorLogWidget::style_error_entry(&entry);
-        // Just verify it doesn't panic and produces a line
         assert!(!line.spans.is_empty());
     }
 
@@ -355,11 +394,9 @@ mod tests {
 
     #[test]
     fn test_format_time() {
-        // Just verify the function works
         let now = SystemTime::now();
         let result = format_time(now);
-        // Should produce HH:MM:SS format (8 characters)
-        assert!(result.len() >= 6); // At least some time components
+        assert!(result.len() >= 6);
     }
 
     #[test]
