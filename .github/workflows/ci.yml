@@ -144,7 +144,7 @@ jobs:
           components: miri
       - name: Setup & Run Miri
         env:
-          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks -Zmiri-disable-ffi -Zmiri-seed=42
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks -Zmiri-seed=42
         run: |
           cargo miri setup
           cargo miri test --lib
