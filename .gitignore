@@ -19,6 +19,24 @@ coverage/
 # ═══════════════════════════════════════════════════════════
 # AI AGENTS (2026)
 # ═══════════════════════════════════════════════════════════
+# SDD / Agent working directories
+.pi/
+.sdd/
+.sdd
+.atl/
+.gga
+.sdd/
+.ignore
+openspec/
+sdd/
+specs/
+scripts/
+
+# Refactor artifacts
+.refactor-guardian
+REFACTOR_LOG.md
+STATE.md
+
 # Qwen Code
 .qwenignore
 .qwen/settings.json
@@ -34,11 +52,6 @@ coverage/
 .cursor/
 .cursorignore
 
-.atl/
-.sdd/
-.ignore
-.gga
-openspec/
 # GitHub Copilot
 .copilot/
 
