@@ -126,18 +126,7 @@ cargo run --example mcp_server
 | Obsidian | `detect_obsidian_vault`, `search_obsidian`, `build_obsidian_uri` |
 | URLs | `validate_url`, `normalize_url`, `is_internal_link` |
 
-Configuración para OpenCode (`opencode.json`):
-
-```json
-{
-  "mcp": {
-    "rust_scraper": {
-      "type": "local",
-      "command": ["cargo", "run", "--example", "mcp_server_stdio", "--quiet"]
-    }
-  }
-}
-```
+Configuración para OpenCode — manejado globalmente en `~/.config/opencode/opencode.json`.
 
 ---
 

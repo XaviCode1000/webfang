@@ -209,7 +209,6 @@ Skills contain tool details (parameters, flags, schemas). This file contains wor
 ## Resources
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Architecture details
-- [DEVELOPMENT.md](DEVELOPMENT.md) — Dev workflow and tooling
 - [justfile](justfile) — Task recipes
 - [docs/wiki/](docs/wiki/) — GitNexus auto-generated documentation
 
