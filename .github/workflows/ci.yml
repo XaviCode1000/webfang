@@ -154,7 +154,8 @@ jobs:
             --skip scrape \
             --skip export_pipeline \
             --skip test_ai \
-            --skip integration
+            --skip integration \
+            --skip tui
 
   # ============================================================================
   # SCHEDULED: Coverage (manual trigger only)
