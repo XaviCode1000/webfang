@@ -25,12 +25,13 @@
 
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Gauge, Paragraph},
     Frame,
 };
 
+use super::theme::Theme;
 use crate::adapters::tui::{ErrorType, ProgressState, ScrapeStatus};
 use std::time::{Instant, SystemTime};
 
@@ -230,18 +231,21 @@ impl<'a> ProgressWidget<'a> {
     /// Render title bar.
     fn render_title(&self, frame: &mut Frame, area: Rect) {
         let title = Paragraph::new(Line::from(vec![
-            Span::styled("🕷️ ", Style::default().fg(Color::Yellow)),
+            Span::styled("🕷️ ", Style::default().fg(Theme::warning())),
             Span::styled(
                 "Scraping Progress",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(Theme::accent())
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("  q: Quit | Ctrl+C: Stop", Style::default().fg(Color::Gray)),
+            Span::styled(
+                "  q: Quit | Ctrl+C: Stop",
+                Style::default().fg(Theme::text_muted()),
+            ),
         ]));
         let block = Block::default()
             .borders(Borders::ALL)
-            .style(Style::default().fg(Color::White));
+            .style(Style::default().fg(Theme::text()));
         frame.render_widget(title.block(block), area);
     }
 
@@ -280,11 +284,11 @@ impl<'a> ProgressWidget<'a> {
 
         // Choose color based on state
         let gauge_color = if self.state.failed > 0 && self.state.failed < self.state.total {
-            Color::Yellow // partial failure
+            Theme::warning() // partial failure
         } else if self.state.failed == self.state.total {
-            Color::Red // all failed
+            Theme::error() // all failed
         } else {
-            Color::Green // success or in progress
+            Theme::success() // success or in progress
         };
 
         let gauge = Gauge::default()
@@ -292,7 +296,7 @@ impl<'a> ProgressWidget<'a> {
             .gauge_style(
                 Style::default()
                     .fg(gauge_color)
-                    .bg(Color::Black)
+                    .bg(Theme::background())
                     .add_modifier(Modifier::BOLD),
             )
             .percent(percent as u16)
@@ -334,11 +338,11 @@ impl<'a> ProgressWidget<'a> {
 
                 let line = if url_state.status == ScrapeStatus::Pending {
                     Line::from(vec![
-                        Span::styled(icon, Style::default().fg(Color::Gray)),
+                        Span::styled(icon, Style::default().fg(Theme::text_muted())),
                         Span::raw(" "),
-                        Span::styled(&url_state.url, Style::default().fg(Color::Gray)),
+                        Span::styled(&url_state.url, Style::default().fg(Theme::text_muted())),
                         Span::raw("  "),
-                        Span::styled(status_text, Style::default().fg(Color::Gray)),
+                        Span::styled(status_text, Style::default().fg(Theme::text_muted())),
                     ])
                 } else if url_state.status == ScrapeStatus::Fetching
                     || url_state.status == ScrapeStatus::Extracting
@@ -348,30 +352,30 @@ impl<'a> ProgressWidget<'a> {
                         Span::styled(
                             icon,
                             Style::default()
-                                .fg(Color::Blue)
+                                .fg(Theme::processing())
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::raw(" "),
-                        Span::styled(&url_state.url, Style::default().fg(Color::White)),
+                        Span::styled(&url_state.url, Style::default().fg(Theme::text())),
                         Span::raw("  "),
-                        Span::styled(status_text, Style::default().fg(Color::Yellow)),
+                        Span::styled(status_text, Style::default().fg(Theme::warning())),
                     ])
                 } else if url_state.status == ScrapeStatus::Completed {
                     Line::from(vec![
-                        Span::styled(icon, Style::default().fg(Color::Green)),
+                        Span::styled(icon, Style::default().fg(Theme::success())),
                         Span::raw(" "),
-                        Span::styled(&url_state.url, Style::default().fg(Color::White)),
+                        Span::styled(&url_state.url, Style::default().fg(Theme::text())),
                         Span::raw("  "),
-                        Span::styled(status_text, Style::default().fg(Color::Green)),
+                        Span::styled(status_text, Style::default().fg(Theme::success())),
                     ])
                 } else {
                     // Failed
                     Line::from(vec![
-                        Span::styled(icon, Style::default().fg(Color::Red)),
+                        Span::styled(icon, Style::default().fg(Theme::error())),
                         Span::raw(" "),
-                        Span::styled(&url_state.url, Style::default().fg(Color::White)),
+                        Span::styled(&url_state.url, Style::default().fg(Theme::text())),
                         Span::raw("  "),
-                        Span::styled(status_text, Style::default().fg(Color::Red)),
+                        Span::styled(status_text, Style::default().fg(Theme::error())),
                     ])
                 };
                 ListItem::new(line)
@@ -392,7 +396,7 @@ impl<'a> ProgressWidget<'a> {
 
         if error_count == 0 {
             let para = Paragraph::new("No errors")
-                .style(Style::default().fg(Color::Gray))
+                .style(Style::default().fg(Theme::text_muted()))
                 .block(block);
             frame.render_widget(para, area);
             return;
@@ -422,13 +426,13 @@ impl<'a> ProgressWidget<'a> {
                 };
 
                 let line = Line::from(vec![
-                    Span::styled(icon, Style::default().fg(Color::Yellow)),
+                    Span::styled(icon, Style::default().fg(Theme::warning())),
                     Span::raw(" "),
-                    Span::styled(time_str, Style::default().fg(Color::Gray)),
+                    Span::styled(time_str, Style::default().fg(Theme::text_muted())),
                     Span::raw(" "),
-                    Span::styled(&entry.url, Style::default().fg(Color::White)),
+                    Span::styled(&entry.url, Style::default().fg(Theme::text())),
                     Span::raw(" → "),
-                    Span::styled(&entry.message, Style::default().fg(Color::Red)),
+                    Span::styled(&entry.message, Style::default().fg(Theme::error())),
                 ]);
                 ListItem::new(line)
             })
@@ -469,7 +473,7 @@ impl<'a> ProgressWidget<'a> {
         let combined = format!("{}    {}", status_line, eta_line);
 
         let footer = Paragraph::new(combined)
-            .style(Style::default().fg(Color::White))
+            .style(Style::default().fg(Theme::text()))
             .block(Block::default().borders(Borders::ALL));
 
         frame.render_widget(footer, area);

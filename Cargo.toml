@@ -138,6 +138,7 @@ dashmap = "6"
 
 # TUI (preparar para Fase 2) - FASE 1 Web Crawler
 ratatui = "0.29"
+catppuccin = "2"
 ratatui-form = "0.1.1"
 crossterm = "0.28"
 

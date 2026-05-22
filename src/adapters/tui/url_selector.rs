@@ -13,7 +13,7 @@
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
@@ -21,6 +21,7 @@ use ratatui::{
 use std::time::Duration;
 use url::Url;
 
+use super::theme::Theme;
 use super::{restore_terminal, setup_terminal, Result, TuiError};
 
 /// URL selector state (testable without rendering)
@@ -226,7 +227,7 @@ impl<'a> UrlSelector<'a> {
         let title = Paragraph::new("🕷️ URL Selector - Space: Select, Enter: Download, q: Quit")
             .style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(Theme::accent())
                     .add_modifier(Modifier::BOLD),
             )
             .block(Block::default().borders(Borders::ALL));
@@ -246,7 +247,7 @@ impl<'a> UrlSelector<'a> {
                 let cursor = if i == self.state.cursor { "▶ " } else { "  " };
                 let style = if i == self.state.cursor {
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(Theme::highlight())
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
@@ -276,7 +277,7 @@ impl<'a> UrlSelector<'a> {
         };
 
         let footer = Paragraph::new(footer_text.to_string())
-            .style(Style::default().fg(Color::White))
+            .style(Style::default().fg(Theme::text()))
             .block(Block::default().borders(Borders::ALL));
         frame.render_widget(footer, chunks[2]);
     }

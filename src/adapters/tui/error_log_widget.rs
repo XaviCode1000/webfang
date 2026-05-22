@@ -26,12 +26,13 @@
 
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
 
+use super::theme::Theme;
 use crate::adapters::tui::progress_types::ErrorType;
 
 /// Default maximum number of errors to display
@@ -115,29 +116,31 @@ impl<'a> ErrorLogWidget<'a> {
 
         // Get icon based on error type
         let (icon, icon_style) = match &entry.error_type {
-            ErrorType::Network => ("🌐", Style::default().fg(Color::Red)),
-            ErrorType::Http(_) => ("📡", Style::default().fg(Color::Yellow)),
+            ErrorType::Network => ("🌐", Style::default().fg(Theme::error())),
+            ErrorType::Http(_) => ("📡", Style::default().fg(Theme::warning())),
             ErrorType::WafBlocked(_) => (
                 "🛡️",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Theme::error())
+                    .add_modifier(Modifier::BOLD),
             ),
-            ErrorType::Parse(_) => ("🔍", Style::default().fg(Color::Magenta)),
-            ErrorType::Timeout => ("⏱️", Style::default().fg(Color::Yellow)),
-            ErrorType::Connection => ("🔗", Style::default().fg(Color::Red)),
-            ErrorType::Other => ("⚠️", Style::default().fg(Color::White)),
+            ErrorType::Parse(_) => ("🔍", Style::default().fg(Theme::parse_error())),
+            ErrorType::Timeout => ("⏱️", Style::default().fg(Theme::warning())),
+            ErrorType::Connection => ("🔗", Style::default().fg(Theme::error())),
+            ErrorType::Other => ("⚠️", Style::default().fg(Theme::text())),
         };
 
         // Get message color based on error type
         let message_style = match &entry.error_type {
-            ErrorType::Network => Style::default().fg(Color::Red),
-            ErrorType::Http(_) => Style::default().fg(Color::Yellow),
-            ErrorType::WafBlocked(_) => {
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-            },
-            ErrorType::Parse(_) => Style::default().fg(Color::Magenta),
-            ErrorType::Timeout => Style::default().fg(Color::Yellow),
-            ErrorType::Connection => Style::default().fg(Color::Red),
-            ErrorType::Other => Style::default().fg(Color::White),
+            ErrorType::Network => Style::default().fg(Theme::error()),
+            ErrorType::Http(_) => Style::default().fg(Theme::warning()),
+            ErrorType::WafBlocked(_) => Style::default()
+                .fg(Theme::error())
+                .add_modifier(Modifier::BOLD),
+            ErrorType::Parse(_) => Style::default().fg(Theme::parse_error()),
+            ErrorType::Timeout => Style::default().fg(Theme::warning()),
+            ErrorType::Connection => Style::default().fg(Theme::error()),
+            ErrorType::Other => Style::default().fg(Theme::text()),
         };
 
         // Truncate URL if too long
@@ -150,9 +153,9 @@ impl<'a> ErrorLogWidget<'a> {
         Line::from(vec![
             Span::styled(icon, icon_style),
             Span::raw(" "),
-            Span::styled(time_str, Style::default().fg(Color::DarkGray)),
+            Span::styled(time_str, Style::default().fg(Theme::text_subtle())),
             Span::raw(" "),
-            Span::styled(url, Style::default().fg(Color::Cyan)),
+            Span::styled(url, Style::default().fg(Theme::accent())),
             Span::raw(" -> "),
             Span::styled(&entry.message, message_style),
         ])
@@ -178,7 +181,7 @@ impl<'a> ErrorLogWidget<'a> {
 
         if error_count == 0 {
             let para = Paragraph::new("No errors encountered")
-                .style(Style::default().fg(Color::DarkGray))
+                .style(Style::default().fg(Theme::text_subtle()))
                 .block(block);
             frame.render_widget(para, area);
             return;

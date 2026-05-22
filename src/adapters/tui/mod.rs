@@ -33,6 +33,7 @@ mod progress_types;
 mod progress_view;
 mod progress_widget;
 mod terminal;
+pub mod theme;
 mod url_selector;
 
 pub use error_log_widget::{ErrorLogWidget, DEFAULT_MAX_ERRORS};
