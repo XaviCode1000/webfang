@@ -8,6 +8,8 @@
 //!
 //! Run with: cargo nextest run --test-threads 2 rate_limiting_integration
 
+#![cfg(not(miri))]
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rust_scraper::application::http_client::{HttpClient, HttpClientConfig, HttpError};

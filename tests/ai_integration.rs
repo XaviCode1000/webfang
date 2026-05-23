@@ -13,7 +13,7 @@
 //! cargo test --features ai --test ai_integration test_semantic_cleaner_trait_defined
 //! ```
 
-#![cfg(feature = "ai")]
+#![cfg(all(feature = "ai", not(miri)))]
 
 use rust_scraper::domain::DocumentChunk;
 use rust_scraper::infrastructure::ai::model_downloader::ModelDownloader;

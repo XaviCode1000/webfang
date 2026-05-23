@@ -12,6 +12,8 @@
 //! use common::{load_fixture, mock_server};
 //! ```
 
+#![cfg(not(miri))]
+
 use std::path::Path;
 
 /// TestHttpServer - RAII wrapper for wiremock MockServer

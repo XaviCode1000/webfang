@@ -5,6 +5,8 @@
 //!
 //! Run with: cargo nextest run --test-threads 2 security_integration
 
+#![cfg(not(miri))]
+
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
