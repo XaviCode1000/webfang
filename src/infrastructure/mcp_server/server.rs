@@ -64,7 +64,10 @@ mod tests {
         McpHandler::new(state)
     }
 
-    #[cfg_attr(miri, ignore = "Container::new creates HttpClient with boring-sys2 FFI (unsupported by Miri)")]
+    #[cfg_attr(
+        miri,
+        ignore = "Container::new creates HttpClient with boring-sys2 FFI (unsupported by Miri)"
+    )]
     #[tokio::test]
     async fn test_handler_builds_with_all_tools() {
         let handler = test_handler().await;

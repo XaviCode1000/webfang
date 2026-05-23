@@ -14,9 +14,7 @@ use std::time::Duration;
 
 /// Helper: send a JSON-RPC request and return parsed response
 fn send_request(cmd: &mut Command, request: &str) -> serde_json::Value {
-    cmd.write_stdin(request)
-        .assert()
-        .success();
+    cmd.write_stdin(request).assert().success();
 
     let output = cmd.output().expect("failed to get output");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -37,19 +35,18 @@ fn send_request(cmd: &mut Command, request: &str) -> serde_json::Value {
 #[test]
 fn test_mcp_binary_exists() {
     // Just verify the binary exists and is executable
-    let mut cmd = Command::cargo_bin("examples/mcp_server_stdio")
-        .expect("MCP server binary not found — run 'cargo build --release --example mcp_server_stdio'");
+    let mut cmd = Command::cargo_bin("examples/mcp_server_stdio").expect(
+        "MCP server binary not found — run 'cargo build --release --example mcp_server_stdio'",
+    );
     cmd.timeout(Duration::from_secs(5));
     // Write and close stdin
-    cmd.write_stdin("")
-        .assert()
-        .failure(); // fails because stdin closes before JSON-RPC
+    cmd.write_stdin("").assert().failure(); // fails because stdin closes before JSON-RPC
 }
 
 #[test]
 fn test_mcp_tools_list() {
-    let mut cmd = Command::cargo_bin("examples/mcp_server_stdio")
-        .expect("MCP server binary not found");
+    let mut cmd =
+        Command::cargo_bin("examples/mcp_server_stdio").expect("MCP server binary not found");
     cmd.timeout(Duration::from_secs(10));
 
     let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
@@ -59,9 +56,12 @@ fn test_mcp_tools_list() {
     assert_eq!(response["id"], 1, "response id should match request id");
 
     // Check for tools array in result
-    let has_tools = response["result"]["tools"].is_array()
-        || response["result"].is_array();
-    assert!(has_tools, "response should contain tools array: {}", response);
+    let has_tools = response["result"]["tools"].is_array() || response["result"].is_array();
+    assert!(
+        has_tools,
+        "response should contain tools array: {}",
+        response
+    );
 
     let tools = if response["result"]["tools"].is_array() {
         response["result"]["tools"].as_array().unwrap()
@@ -112,8 +112,8 @@ fn test_mcp_tools_list() {
 
 #[test]
 fn test_mcp_validate_url_tool() {
-    let mut cmd = Command::cargo_bin("examples/mcp_server_stdio")
-        .expect("MCP server binary not found");
+    let mut cmd =
+        Command::cargo_bin("examples/mcp_server_stdio").expect("MCP server binary not found");
     cmd.timeout(Duration::from_secs(10));
 
     let request = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"validate_url","arguments":{"url":"https://example.com:8080/path?q=1#frag"}}}"#;
@@ -122,15 +122,21 @@ fn test_mcp_validate_url_tool() {
     let content = response["result"]["content"][0]["text"]
         .as_str()
         .unwrap_or("");
-    assert!(content.contains("valid"), "response should contain validity info");
-    assert!(content.contains("example.com"), "response should contain host");
+    assert!(
+        content.contains("valid"),
+        "response should contain validity info"
+    );
+    assert!(
+        content.contains("example.com"),
+        "response should contain host"
+    );
     assert!(content.contains("8080"), "response should contain port");
 }
 
 #[test]
 fn test_mcp_invalid_url_shows_error() {
-    let mut cmd = Command::cargo_bin("examples/mcp_server_stdio")
-        .expect("MCP server binary not found");
+    let mut cmd =
+        Command::cargo_bin("examples/mcp_server_stdio").expect("MCP server binary not found");
     cmd.timeout(Duration::from_secs(10));
 
     let request = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"validate_url","arguments":{"url":"not-a-valid-url"}}}"#;
@@ -139,14 +145,17 @@ fn test_mcp_invalid_url_shows_error() {
     let text = response["result"]["content"][0]["text"]
         .as_str()
         .unwrap_or("");
-    assert!(text.contains("valid"), "should return validity info even for invalid URLs");
+    assert!(
+        text.contains("valid"),
+        "should return validity info even for invalid URLs"
+    );
     assert!(text.contains("false"), "should mark as invalid");
 }
 
 #[test]
 fn test_mcp_clean_html_removes_scripts() {
-    let mut cmd = Command::cargo_bin("examples/mcp_server_stdio")
-        .expect("MCP server binary not found");
+    let mut cmd =
+        Command::cargo_bin("examples/mcp_server_stdio").expect("MCP server binary not found");
     cmd.timeout(Duration::from_secs(10));
 
     let html = "<html><script>alert('xss')</script><body><p>Hello</p></body></html>";
@@ -159,14 +168,22 @@ fn test_mcp_clean_html_removes_scripts() {
         .as_str()
         .unwrap_or("");
 
-    assert!(!cleaned.contains("<script>"), "scripts should be removed: {}", cleaned);
-    assert!(cleaned.contains("Hello"), "content should be preserved: {}", cleaned);
+    assert!(
+        !cleaned.contains("<script>"),
+        "scripts should be removed: {}",
+        cleaned
+    );
+    assert!(
+        cleaned.contains("Hello"),
+        "content should be preserved: {}",
+        cleaned
+    );
 }
 
 #[test]
 fn test_mcp_extract_domain() {
-    let mut cmd = Command::cargo_bin("examples/mcp_server_stdio")
-        .expect("MCP server binary not found");
+    let mut cmd =
+        Command::cargo_bin("examples/mcp_server_stdio").expect("MCP server binary not found");
     cmd.timeout(Duration::from_secs(10));
 
     let request = r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"extract_domain","arguments":{"url":"https://blog.example.com/docs"}}}"#;
@@ -175,13 +192,16 @@ fn test_mcp_extract_domain() {
         .as_str()
         .unwrap_or("");
 
-    assert_eq!(domain, "blog.example.com", "should extract domain correctly");
+    assert_eq!(
+        domain, "blog.example.com",
+        "should extract domain correctly"
+    );
 }
 
 #[test]
 fn test_mcp_list_waf_providers() {
-    let mut cmd = Command::cargo_bin("examples/mcp_server_stdio")
-        .expect("MCP server binary not found");
+    let mut cmd =
+        Command::cargo_bin("examples/mcp_server_stdio").expect("MCP server binary not found");
     cmd.timeout(Duration::from_secs(10));
 
     let request = r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"list_waf_providers","arguments":{}}}"#;
