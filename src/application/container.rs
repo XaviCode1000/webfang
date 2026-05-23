@@ -84,6 +84,7 @@ mod tests {
     use crate::infrastructure::config::ScraperConfig;
     use tempfile::TempDir;
 
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_container_wires_crawl_result_repository() {
         let tmp = TempDir::new().unwrap();
