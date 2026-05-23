@@ -187,7 +187,7 @@ fn test_mcp_extract_domain() {
     cmd.timeout(Duration::from_secs(10));
 
     let request = r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"extract_domain","arguments":{"url":"https://blog.example.com/docs"}}}"#;
-    let response = send_request(&mut cmd, &request);
+    let response = send_request(&mut cmd, request);
     let domain = response["result"]["content"][0]["text"]
         .as_str()
         .unwrap_or("");
@@ -205,7 +205,7 @@ fn test_mcp_list_waf_providers() {
     cmd.timeout(Duration::from_secs(10));
 
     let request = r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"list_waf_providers","arguments":{}}}"#;
-    let response = send_request(&mut cmd, &request);
+    let response = send_request(&mut cmd, request);
     let providers = response["result"]["content"][0]["text"]
         .as_str()
         .unwrap_or("");
