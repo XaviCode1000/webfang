@@ -8,8 +8,9 @@
 # - Estructura optimizada para agentes de código
 
 [profile.default]
-# HDD-aware: Máximo 2 hilos para evitar thrashing
-threads-required = 4
+# NVMe-aware: run up to 4 tests in parallel by default.
+test-threads = 4
+threads-required = 1
 
 # Retries con backoff para tests flaky (red, I/O)
 retries = { backoff = "exponential", count = 2, delay = "1s" }
@@ -33,7 +34,8 @@ default-filter = "not test(ai_integration)"
 
 [profile.ci]
 # Configuración agresiva para CI (más paralelismo)
-threads-required = 8
+test-threads = 8
+threads-required = 1
 retries = 0
 fail-fast = false
 failure-output = "immediate-final"
@@ -49,7 +51,8 @@ status-level = "all"
 [profile.dev]
 # Perfil para desarrollo iterativo (ultra-rápido)
 # Ejecuta solo lo afectado → 8-25 segundos típico
-threads-required = 4
+test-threads = 4
+threads-required = 1
 fail-fast = false
 retries = 1
 
@@ -63,8 +66,9 @@ failure-output = "immediate"
 status-level = "skip"
 
 [profile.agent]
-# Perfil específico para agentes de código (menos paralelismo, más timeout)
-threads-required = 4
+# Perfil específico para agentes de código (paralelismo moderado, más timeout)
+test-threads = 4
+threads-required = 1
 global-timeout = "15m"
 fail-fast = false
 

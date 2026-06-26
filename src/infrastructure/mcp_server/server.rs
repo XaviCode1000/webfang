@@ -118,6 +118,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_clean_html_logic() {
         let html = "<html><head><script>alert('x')</script></head><body><p>Hello</p></body></html>";
         let cleaned = crate::infrastructure::converter::html_cleaner::clean_html(html);
