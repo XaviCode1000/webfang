@@ -8,11 +8,16 @@
 //!
 //! - **Sealed trait pattern** (`api-sealed-trait`): Prevents external implementations
 //!   that could violate invariants. Only infrastructure/ai module can implement.
-//! - **Async interface** (`async-trait`): All cleaning operations are async for non-blocking I/O
+//! - **Async interface** (boxed futures): Async methods are manually desugared to
+//!   `Pin<Box<dyn Future<Output = T> + Send>>` to preserve dyn-compatibility
+//!   (`Box<dyn SemanticCleaner>`) without depending on the `async-trait` macro.
 //! - **Explicit error types**: Uses `SemanticError` for type-safe error handling
 //!   (`err-thiserror-lib`, `err-context-chain`)
 //! - **Borrowed input**: Accepts `&str` not `&String` (`own-borrow-over-clone`)
 //! - **Owned output**: Returns `Vec<DocumentChunk>` for ownership transfer
+
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::domain::DocumentChunk;
 use crate::error::SemanticError;
@@ -61,7 +66,6 @@ pub(crate) mod private {
 /// - Implementations MUST be thread-safe (`Send + Sync`)
 /// - Implementations MUST cache models to avoid reloading
 /// - Implementations MUST use memory-mapped files for large models (`mem-zero-copy`)
-#[async_trait::async_trait]
 pub trait SemanticCleaner: private::Sealed + Send + Sync {
     /// Clean HTML content and split into semantic chunks
     ///
@@ -108,7 +112,17 @@ pub trait SemanticCleaner: private::Sealed + Send + Sync {
     /// - **First call**: May trigger model download (~90MB) + load (~100-500ms)
     /// - **Subsequent calls**: Cache hit, ~10-50ms per page
     /// - **Memory**: Uses memory-mapped files, ~90MB virtual memory (not RSS)
-    async fn clean(&self, html: &str) -> Result<Vec<DocumentChunk>, SemanticError>;
+    ///
+    /// # Note
+    ///
+    /// Desugared to a boxed future (`Pin<Box<dyn Future + Send>>`) instead of
+    /// `async fn` so the trait stays dyn-compatible (`Box<dyn SemanticCleaner>`).
+    /// The single lifetime `'a` ties `&self` and `html` to the returned future,
+    /// matching the `async-trait` macro's default desugaring.
+    fn clean<'a>(
+        &'a self,
+        html: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<DocumentChunk>, SemanticError>> + Send + 'a>>;
 
     /// Get the model's maximum token limit
     ///

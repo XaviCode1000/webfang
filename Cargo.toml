@@ -20,7 +20,6 @@ full = ["images", "documents"]
 # AI-powered semantic cleaning (Module 3 + 4 + 5 + 7)
 ai = [
     "dep:tokenizers",
-    "dep:async-trait",
     "dep:unicode-segmentation",
     "dep:smallvec",
     "dep:wide",
@@ -191,8 +190,6 @@ tokenizers = { version = "0.21", optional = true }
 # CRITICAL: Use rustls-tls to avoid OpenSSL native linking
 # Also disable default-tls to prevent pulling native-tls
 hf-hub = { version = "0.5", default-features = false, features = ["tokio", "rustls-tls"], optional = true }
-# Async trait support for dyn-compatible traits
-async-trait = { version = "0.1", optional = true }
 
 # ============================================================================
 # Semantic Chunking Dependencies (feature-gated: --features ai)

@@ -51,7 +51,9 @@
 //! # }
 //! ```
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::future::try_join_all;
@@ -412,92 +414,96 @@ impl SemanticCleanerImpl {
 // This is required by the sealed trait pattern
 impl private::Sealed for SemanticCleanerImpl {}
 
-#[async_trait::async_trait]
 impl SemanticCleaner for SemanticCleanerImpl {
-    async fn clean(&self, html: &str) -> Result<Vec<DocumentChunk>, SemanticError> {
-        debug!(
-            html_length = html.len(),
-            "Starting full RAG pipeline: chunk → tokenize → embed → score"
-        );
+    fn clean<'a>(
+        &'a self,
+        html: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<DocumentChunk>, SemanticError>> + Send + 'a>> {
+        Box::pin(async move {
+            debug!(
+                html_length = html.len(),
+                "Starting full RAG pipeline: chunk → tokenize → embed → score"
+            );
 
-        // Step 1: Semantic chunking (uses arena internally)
-        // Following `own-borrow-over-clone`: borrow html, don't clone
-        let chunks = self
-            .chunker
-            .chunk(html)
-            .map_err(|e| SemanticError::Tokenize(format!("Chunking failed: {}", e)))?;
+            // Step 1: Semantic chunking (uses arena internally)
+            // Following `own-borrow-over-clone`: borrow html, don't clone
+            let chunks = self
+                .chunker
+                .chunk(html)
+                .map_err(|e| SemanticError::Tokenize(format!("Chunking failed: {}", e)))?;
 
-        if chunks.is_empty() {
-            debug!("No chunks produced from HTML");
-            return Ok(Vec::new());
-        }
+            if chunks.is_empty() {
+                debug!("No chunks produced from HTML");
+                return Ok(Vec::new());
+            }
 
-        debug!(chunks_count = chunks.len(), "Step 1: Chunking complete");
+            debug!(chunks_count = chunks.len(), "Step 1: Chunking complete");
 
-        // Step 2: Tokenize all chunks (mem-reuse-collections: reuse buffer)
-        // Pre-allocate with capacity following `mem-with-capacity`
-        let mut token_buffers = Vec::with_capacity(chunks.len());
-        for chunk in &chunks {
-            let input = self.tokenizer.tokenize(&chunk.content).map_err(|e| {
-                SemanticError::Tokenize(format!("Tokenization failed for chunk: {}", e))
+            // Step 2: Tokenize all chunks (mem-reuse-collections: reuse buffer)
+            // Pre-allocate with capacity following `mem-with-capacity`
+            let mut token_buffers = Vec::with_capacity(chunks.len());
+            for chunk in &chunks {
+                let input = self.tokenizer.tokenize(&chunk.content).map_err(|e| {
+                    SemanticError::Tokenize(format!("Tokenization failed for chunk: {}", e))
+                })?;
+
+                // Validate token count
+                if input.seq_len() > self.config.max_tokens {
+                    return Err(SemanticError::ChunkTooLarge {
+                        chunk_id: format!("chunk-{}", token_buffers.len()),
+                        tokens: input.seq_len(),
+                        max: self.config.max_tokens,
+                    });
+                }
+
+                token_buffers.push(input);
+            }
+
+            debug!(
+                tokens_generated = token_buffers.len(),
+                "Step 2: Tokenization complete"
+            );
+
+            // Step 3: Generate embeddings CONCURRENTLY (async-join-parallel)
+            // Following `async-join-parallel`: use try_join_all for concurrent independent operations
+            // Following `async-spawn-blocking`: InferenceEngine already uses spawn_blocking internally
+            // Following `anti-lock-across-await`: No locks held across await points
+            let semaphore = Arc::clone(&self.semaphore);
+            let embeddings = try_join_all(token_buffers.iter().map(|input| {
+                let sem = Arc::clone(&semaphore);
+                let engine = &self.inference_engine;
+                async move {
+                    let _permit = sem.acquire_owned().await.expect("semaphore no fue cerrado");
+                    engine.run_inference(input).await
+                }
+            }))
+            .await
+            .map_err(|e| {
+                SemanticError::Inference(format!("Concurrent embedding generation failed: {}", e))
             })?;
 
-            // Validate token count
-            if input.seq_len() > self.config.max_tokens {
-                return Err(SemanticError::ChunkTooLarge {
-                    chunk_id: format!("chunk-{}", token_buffers.len()),
-                    tokens: input.seq_len(),
-                    max: self.config.max_tokens,
-                });
-            }
+            debug!(
+                embeddings_generated = embeddings.len(),
+                embedding_dim = embeddings.first().map(|e| e.len()).unwrap_or(0),
+                "Step 3: Embedding generation complete"
+            );
 
-            token_buffers.push(input);
-        }
+            // Step 4: Score and filter (own-borrow-over-clone: borrow embeddings)
+            // Following `own-borrow-over-clone`: borrow &chunks and &embeddings, don't clone
+            // Following `opt-simd-portable`: RelevanceScorer uses SIMD cosine similarity
+            let filtered = self.filter_by_relevance(&chunks, &embeddings)?;
 
-        debug!(
-            tokens_generated = token_buffers.len(),
-            "Step 2: Tokenization complete"
-        );
+            debug!(
+                chunks_before = chunks.len(),
+                chunks_after = filtered.len(),
+                filtered_out = chunks.len() - filtered.len(),
+                "Step 4: Relevance filtering complete"
+            );
 
-        // Step 3: Generate embeddings CONCURRENTLY (async-join-parallel)
-        // Following `async-join-parallel`: use try_join_all for concurrent independent operations
-        // Following `async-spawn-blocking`: InferenceEngine already uses spawn_blocking internally
-        // Following `anti-lock-across-await`: No locks held across await points
-        let semaphore = Arc::clone(&self.semaphore);
-        let embeddings = try_join_all(token_buffers.iter().map(|input| {
-            let sem = Arc::clone(&semaphore);
-            let engine = &self.inference_engine;
-            async move {
-                let _permit = sem.acquire_owned().await.expect("semaphore no fue cerrado");
-                engine.run_inference(input).await
-            }
-        }))
-        .await
-        .map_err(|e| {
-            SemanticError::Inference(format!("Concurrent embedding generation failed: {}", e))
-        })?;
+            info!(total_chunks = filtered.len(), "Full RAG pipeline complete");
 
-        debug!(
-            embeddings_generated = embeddings.len(),
-            embedding_dim = embeddings.first().map(|e| e.len()).unwrap_or(0),
-            "Step 3: Embedding generation complete"
-        );
-
-        // Step 4: Score and filter (own-borrow-over-clone: borrow embeddings)
-        // Following `own-borrow-over-clone`: borrow &chunks and &embeddings, don't clone
-        // Following `opt-simd-portable`: RelevanceScorer uses SIMD cosine similarity
-        let filtered = self.filter_by_relevance(&chunks, &embeddings)?;
-
-        debug!(
-            chunks_before = chunks.len(),
-            chunks_after = filtered.len(),
-            filtered_out = chunks.len() - filtered.len(),
-            "Step 4: Relevance filtering complete"
-        );
-
-        info!(total_chunks = filtered.len(), "Full RAG pipeline complete");
-
-        Ok(filtered)
+            Ok(filtered)
+        })
     }
 
     fn max_tokens(&self) -> usize {
