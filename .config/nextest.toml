@@ -9,7 +9,7 @@
 
 [profile.default]
 # HDD-aware: Máximo 2 hilos para evitar thrashing
-threads-required = 2
+threads-required = 4
 
 # Retries con backoff para tests flaky (red, I/O)
 retries = { backoff = "exponential", count = 2, delay = "1s" }
@@ -33,7 +33,7 @@ default-filter = "not test(ai_integration)"
 
 [profile.ci]
 # Configuración agresiva para CI (más paralelismo)
-threads-required = 4
+threads-required = 8
 retries = 0
 fail-fast = false
 failure-output = "immediate-final"
@@ -49,7 +49,7 @@ status-level = "all"
 [profile.dev]
 # Perfil para desarrollo iterativo (ultra-rápido)
 # Ejecuta solo lo afectado → 8-25 segundos típico
-threads-required = 2
+threads-required = 4
 fail-fast = false
 retries = 1
 
@@ -64,7 +64,7 @@ status-level = "skip"
 
 [profile.agent]
 # Perfil específico para agentes de código (menos paralelismo, más timeout)
-threads-required = 2
+threads-required = 4
 global-timeout = "15m"
 fail-fast = false
 

@@ -44,7 +44,7 @@ test-filter filter:
         -E '{{filter}}'
 
 test-ai:
-    cargo nextest run --profile agent --test-threads 2 --features ai
+    cargo nextest run --profile agent --features ai
 
 # -- Auditoría --
 
@@ -129,7 +129,6 @@ test-ci:
     @echo "4/4 → Ejecutando suite completa de tests..."
     cargo nextest run \
         --profile ci \
-        --test-threads 2 \
         --no-fail-fast
     @echo "✅ CI PASADO - Listo para commit/push/PR"
 
@@ -138,5 +137,5 @@ test-ci-quick:
     @echo "🔥 CI rápido (clippy + tests)..."
     cargo clippy --all-targets --all-features -- -D warnings
     gitnexus analyze || echo "GitNexus ya estaba actualizado"
-    cargo nextest run --profile ci --test-threads 2 --no-fail-fast
+    cargo nextest run --profile ci --no-fail-fast
     @echo "✅ CI rápido pasado"

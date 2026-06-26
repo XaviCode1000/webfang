@@ -11,7 +11,8 @@ console = "run --features console"
 # Usage: RUSTFLAGS="--cfg tokio_unstable" cargo debug
 debug = "build --features console"
 
-# HDD-safe: limit local compilation to 1 core to prevent thrashing
-# Cloud CI ignores this — uses all available cores
+# NVMe-optimized: 8 parallel jobs for fast local builds
+# Cloud CI can override with its own settings or use env var CARGO_BUILD_JOBS
 [build]
-jobs = 1
+# Optimized for NVMe - increased from 1 (HDD-era) to 8 for parallel builds
+jobs = 8
