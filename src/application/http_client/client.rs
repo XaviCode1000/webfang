@@ -473,7 +473,7 @@ mod tests {
     #[test]
     fn test_http_client_with_custom_tls_emulation() {
         let config = HttpClientConfig {
-            tls_emulation: wreq_util::Emulation::Chrome131,
+            tls_emulation: wreq_util::Profile::Chrome131,
             ..Default::default()
         };
         let result = HttpClient::new(config);

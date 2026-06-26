@@ -32,7 +32,7 @@ pub struct HttpClientConfig {
     /// Rate limit: requests per minute (None for no limit)
     pub rate_limit_rpm: Option<u32>,
     /// TLS fingerprint emulation preset
-    pub tls_emulation: wreq_util::Emulation,
+    pub tls_emulation: wreq_util::Profile,
 }
 
 impl Default for HttpClientConfig {
@@ -49,7 +49,7 @@ impl Default for HttpClientConfig {
             timeout_secs: 30,
             connect_timeout_secs: 10,
             rate_limit_rpm: None,
-            tls_emulation: wreq_util::Emulation::Chrome145,
+            tls_emulation: wreq_util::Profile::Chrome145,
         }
     }
 }
@@ -76,7 +76,7 @@ mod tests {
         assert_eq!(config.timeout_secs, 30);
         assert_eq!(config.connect_timeout_secs, 10);
         assert_eq!(config.rate_limit_rpm, None);
-        assert_eq!(config.tls_emulation, wreq_util::Emulation::Chrome145);
+        assert_eq!(config.tls_emulation, wreq_util::Profile::Chrome145);
     }
 
     #[test]
@@ -102,7 +102,7 @@ mod tests {
             timeout_secs: 60,
             connect_timeout_secs: 20,
             rate_limit_rpm: Some(30),
-            tls_emulation: wreq_util::Emulation::Chrome131,
+            tls_emulation: wreq_util::Profile::Chrome131,
         };
 
         assert_eq!(config.accept_language, "es-ES");
@@ -111,6 +111,6 @@ mod tests {
         assert_eq!(config.timeout_secs, 60);
         assert_eq!(config.connect_timeout_secs, 20);
         assert_eq!(config.rate_limit_rpm, Some(30));
-        assert_eq!(config.tls_emulation, wreq_util::Emulation::Chrome131);
+        assert_eq!(config.tls_emulation, wreq_util::Profile::Chrome131);
     }
 }

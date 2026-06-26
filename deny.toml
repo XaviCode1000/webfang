@@ -7,6 +7,13 @@ ignore = [
     "RUSTSEC-2025-0119",
     "RUSTSEC-2024-0436",
     "RUSTSEC-2024-0320",
+    # git2 0.20.4 (build-only via built) — unsound, not in runtime binary
+    "RUSTSEC-2026-0183",
+    "RUSTSEC-2026-0184",
+    # memmap2 0.9.11 (ai-only via tract-onnx) — unsound, only under --features ai
+    "RUSTSEC-2026-0186",
+    # lru 0.12.5 (transitive via ratatui 0.29) — unsound, cannot pin transitively
+    "RUSTSEC-2026-0002",
 ]
 
 [licenses]

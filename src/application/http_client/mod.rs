@@ -14,12 +14,12 @@
 //!
 //! ```no_run
 //! use rust_scraper::application::http_client::{HttpClient, HttpClientConfig};
-//! use wreq_util::Emulation;
+//! use wreq_util::Profile;
 //!
 //! let config = HttpClientConfig {
 //!     timeout_secs: 60,
 //!     rate_limit_rpm: Some(30),
-//!     tls_emulation: Emulation::Chrome131,
+//!     tls_emulation: Profile::Chrome131,
 //!     ..Default::default()
 //! };
 //! let client = HttpClient::new(config).unwrap();

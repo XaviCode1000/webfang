@@ -36,11 +36,11 @@ console = ["dep:console-subscriber"]
 clap = { version = "4", features = ["derive", "env"] }
 
 # HTTP & Networking - wreq with TLS fingerprint impersonation (Layer 2 WAF Evasion)
-# wreq 6.0.0-rc.28 is required for prefix-symbols feature (avoids openssl-sys conflicts on Linux)
+# wreq 6.0.0-rc.28+ is required for prefix-symbols feature (avoids openssl-sys conflicts on Linux)
 # wreq 5.3.0 lacks prefix-symbols, which is mandatory per design decision #2
 wreq = { version = "6.0.0-rc.28", features = ["gzip", "brotli", "stream", "json", "cookies", "prefix-symbols"] }
 
-# TLS fingerprint emulation presets (Chrome 131, Firefox 133, etc.)
+# TLS fingerprint emulation presets (Chrome 131, Firefox 133, etc.); rc.13 exposes Profile presets.
 wreq-util = { version = "3.0.0-rc.10", features = ["emulation"] }
 
 # Bytes type for streaming
@@ -301,7 +301,6 @@ needless_pass_by_value = "allow"
 return_self_not_must_use = "allow"
 single_match_else = "allow"
 trivially_copy_pass_by_ref = "allow"
-
 
 
 
