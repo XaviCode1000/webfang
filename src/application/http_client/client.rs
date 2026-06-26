@@ -251,8 +251,9 @@ impl HttpClient {
 
                         // Fallback strategy 3: Add random delay (1-3 seconds)
                         if ua_index == 4 {
+                            use rand::Rng;
                             ua_index += 1;
-                            let delay_ms = 1000 + (rand::random::<u64>() % 2000);
+                            let delay_ms = 1000 + (rand::rng().random::<u64>() % 2000);
                             warn!("Adding random delay {}ms for WAF bypass", delay_ms);
                             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                             continue;
@@ -417,8 +418,8 @@ pub fn create_http_client() -> Result<Client, ScraperError> {
 /// Get random user agent from pool (legacy function)
 pub fn get_random_user_agent_from_pool(pool: &[String]) -> String {
     use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let index = rng.gen_range(0..pool.len());
+    let mut rng = rand::rng();
+    let index = rng.random_range(0..pool.len());
     pool[index].clone()
 }
 

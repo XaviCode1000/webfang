@@ -108,7 +108,7 @@ sha2 = "0.10"
 thiserror = "2"
 
 # Random for user agent rotation (TASK-05)
-rand = "0.8"
+rand = "0.9"
 
 # Cache directory management (TASK-001: User-Agent lazy update)
 dirs = "5"

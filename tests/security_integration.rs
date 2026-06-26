@@ -110,13 +110,12 @@ async fn test_datadome_silent_challenge_detection() {
 #[tokio::test]
 async fn test_datadome_high_entropy_detection() {
     // RED: Test that DataDome high-entropy challenge is detected
-    // Create a high-entropy string (>100KB) with uniform byte distribution
-    // to trigger the entropy-based detection. Repeating a random Base64-like
-    // string ensures high Shannon entropy (>6.5).
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let high_entropy_chunk: String = (0..256).map(|_| rng.gen::<u8>() as char).collect();
-    let obfuscated_js = high_entropy_chunk.repeat(400); // ~100KB of high-entropy data
+    // Create deterministic high-entropy content (>100KB) so CI does not depend on randomness.
+    let obfuscated_js: String = (32u8..=126)
+        .cycle()
+        .take(95 * 1100)
+        .map(char::from)
+        .collect();
 
     // With threshold lowered to 5.5, high-entropy content should be detected
     // UTF-8 encoding of code points 128-255 produces non-uniform bytes (~5.5-6.0 bits)

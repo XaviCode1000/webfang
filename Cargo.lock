@@ -4023,7 +4023,7 @@ dependencies = [
  "proptest",
  "pulldown-cmark",
  "quick-xml 0.37.5",
- "rand 0.8.6",
+ "rand 0.9.4",
  "ratatui",
  "ratatui-form",
  "redis",

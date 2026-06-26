@@ -211,8 +211,9 @@ impl UserAgentCache {
 /// ```
 #[must_use]
 pub fn get_random_user_agent_from_pool(pool: &[String]) -> String {
-    let rand_idx = rand::random::<usize>() % pool.len();
-    pool[rand_idx].clone()
+    use rand::Rng;
+    let index = rand::rng().random_range(0..pool.len());
+    pool[index].clone()
 }
 
 /// Legacy function for backward compatibility (DEPRECATED)

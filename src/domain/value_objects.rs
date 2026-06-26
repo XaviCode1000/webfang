@@ -49,9 +49,11 @@ impl CorrelationId {
     /// assert!(traceparent.starts_with("00-"));
     /// ```
     pub fn new() -> Self {
+        use rand::Rng;
+        let mut rng = rand::rng();
         Self {
             trace_id: Uuid::now_v7(),
-            span_id: rand::random(),
+            span_id: rng.random(),
         }
     }
 
