@@ -42,6 +42,7 @@
 #![allow(missing_docs)]
 #![warn(clippy::undocumented_unsafe_blocks)]
 #![allow(clippy::module_name_repetitions)]
+#![allow(clippy::uninlined_format_args)]
 
 // ============================================================================
 // Modules

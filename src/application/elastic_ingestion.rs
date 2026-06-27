@@ -279,8 +279,11 @@ mod tests {
     #[derive(Default)]
     struct RepoState {
         resources: HashMap<String, (String, String, u64)>,
-        chunks: Vec<(String, String, i64, String, Option<Vec<f32>>)>,
+        chunks: Vec<ChunkRecord>,
     }
+
+    /// In-memory chunk record: (id, resource_url, index, content, embedding).
+    type ChunkRecord = (String, String, i64, String, Option<Vec<f32>>);
 
     /// In-memory `VectorRepository` (the trait is NOT sealed, so the crate's
     /// test module can implement it — no SQLite needed for orchestrator unit tests).
