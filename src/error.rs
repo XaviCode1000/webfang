@@ -4,6 +4,7 @@
 //! This provides type-safe, structured error handling instead of anyhow.
 
 use thiserror::Error;
+use wreq::Error as WreqError;
 
 /// Main error type for the scraper library.
 ///
@@ -99,6 +100,38 @@ pub enum ScraperError {
     /// Batch export failed (partial success)
     #[error("Error de exportación en batch: {0}")]
     ExportBatch(String),
+
+    /// Global download timeout (30s)
+    #[error("descarga superó tiempo global de 30 segundos")]
+    GlobalTimeout,
+
+    /// Slowloris attack detected (per-chunk timeout)
+    #[error("descarga superó timeout de inactividad de 5 segundos por chunk")]
+    SlowlorisTimeout,
+
+    /// Payload exceeded 25MB limit
+    #[error("recurso superó límite de 25 MB")]
+    PayloadTooLarge,
+
+    /// Network error (connection failed, timeout, etc.)
+    #[error("error de red: {0}")]
+    NetworkFailure(#[from] WreqError),
+
+    /// Semaphore exhausted (backpressure)
+    #[error("semáforo agotado: no hay permisos disponibles")]
+    SemaphoreInanition,
+
+    /// Persistence error (SQLite storage layer — resources/chunks CRUD, pool).
+    ///
+    /// Holds the underlying error rendered to a string so it uniformly covers
+    /// both `rusqlite::Error` and `deadpool_sqlite` pool errors (which are
+    /// different types) without forcing two `#[from]` variants.
+    #[error("Error de persistencia: {0}")]
+    Persistence(String),
+
+    /// Elastic ingestion pipeline error (orchestration / dispatch failures).
+    #[error("Error de ingestión: {0}")]
+    Ingestion(String),
 
     /// Semantic cleaning error (AI-powered content processing)
     #[cfg(feature = "ai")]
@@ -288,6 +321,21 @@ impl ScraperError {
     pub fn export_batch(msg: impl Into<String>) -> Self {
         Self::ExportBatch(msg.into())
     }
+
+    /// Create a Persistence error from anything displayable.
+    ///
+    /// Used to uniformly convert `rusqlite::Error` and `deadpool_sqlite` pool
+    /// errors into `ScraperError::Persistence` without `#[from]` ambiguity.
+    #[must_use]
+    pub fn persistence(err: impl std::fmt::Display) -> Self {
+        Self::Persistence(err.to_string())
+    }
+
+    /// Create an Ingestion error from anything displayable.
+    #[must_use]
+    pub fn ingestion(err: impl std::fmt::Display) -> Self {
+        Self::Ingestion(err.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -321,6 +369,38 @@ mod tests {
         let std_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
         let err: ScraperError = std_err.into();
         assert!(err.to_string().contains("file not found"));
+    }
+
+    #[test]
+    fn test_persistence_error_message() {
+        let err = ScraperError::persistence("disco lleno");
+        assert_eq!(err.to_string(), "Error de persistencia: disco lleno");
+    }
+
+    #[test]
+    fn test_ingestion_error_message() {
+        let err = ScraperError::ingestion("pipeline abortó");
+        assert_eq!(err.to_string(), "Error de ingestión: pipeline abortó");
+    }
+
+    #[test]
+    fn test_persistence_error_from_rusqlite() {
+        // Triangulation: the Display-based helper must carry the real rusqlite
+        // error text (proves it converts a genuine DB error, not a hardcoded value).
+        let db = rusqlite::Connection::open_in_memory().expect("open in-memory sqlite");
+        let rusqlite_err = db
+            .prepare("SELECT * FROM tabla_inexistente")
+            .expect_err("expected error for missing table");
+        let scraper_err = ScraperError::persistence(&rusqlite_err);
+        let msg = scraper_err.to_string();
+        assert!(
+            msg.contains("persistencia"),
+            "missing Spanish prefix: {msg}"
+        );
+        assert!(
+            msg.contains("no such table"),
+            "missing rusqlite detail: {msg}"
+        );
     }
 
     #[cfg(feature = "ai")]

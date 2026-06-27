@@ -114,7 +114,9 @@ pub use cli::{
 pub use infrastructure::observability::LogGuard;
 
 // Config types
-pub use infrastructure::config::{ConcurrencyConfig, OutputFormat, ScraperConfig};
+pub use infrastructure::config::{
+    AutotuningConfig, ConcurrencyConfig, OutputFormat, ScraperConfig,
+};
 
 // Error and result types
 pub use clap::{Parser, ValueEnum};

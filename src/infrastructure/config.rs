@@ -343,6 +343,65 @@ impl clap::builder::TypedValueParser for ConcurrencyValueParser {
 }
 
 // ============================================================================
+// Elastic Ingestion Autotuning Config (Issue #51)
+// ============================================================================
+
+/// Hardware-autotuning configuration snapshot for the elastic ingestion
+/// pipeline (Issue #51).
+///
+/// Serializable so it can be written to / read from a config file. Holds the
+/// two core auto-detected sizing values; the fuller
+/// [`crate::infrastructure::autotuning::ElasticConfig`] adds DB/pool parameters.
+///
+/// Resolution priority (frozen design decision #12): explicit override >
+/// `RUST_SCRAPER_*` env var > auto-detected default.
+///
+/// # Examples
+///
+/// ```
+/// use rust_scraper::AutotuningConfig;
+///
+/// // Explicit overrides win.
+/// let cfg = AutotuningConfig::resolve(Some(4), Some(8 * 1024 * 1024 * 1024));
+/// assert_eq!(cfg.cpu_cores, 4);
+/// assert_eq!(cfg.ram_budget_bytes, 8 * 1024 * 1024 * 1024);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AutotuningConfig {
+    /// Detected/overridden CPU core count.
+    pub cpu_cores: usize,
+    /// Detected/overridden RAM budget in bytes.
+    pub ram_budget_bytes: u64,
+}
+
+impl AutotuningConfig {
+    /// Resolve the autotuning snapshot.
+    ///
+    /// Priority: `cpu_override`/`ram_override` > `RUST_SCRAPER_CPU_CORES` /
+    /// `RUST_SCRAPER_RAM_BUDGET` env > auto-detected defaults.
+    #[must_use]
+    pub fn resolve(cpu_override: Option<usize>, ram_override: Option<u64>) -> Self {
+        use crate::infrastructure::autotuning;
+        Self {
+            cpu_cores: autotuning::resolve_cpu_cores(cpu_override, autotuning::env_cpu_cores()),
+            ram_budget_bytes: autotuning::resolve_ram_budget(
+                ram_override,
+                autotuning::env_ram_budget(),
+            ),
+        }
+    }
+
+    /// Build a snapshot from a resolved [`ElasticConfig`].
+    #[must_use]
+    pub fn from_elastic(elastic: &crate::infrastructure::autotuning::ElasticConfig) -> Self {
+        Self {
+            cpu_cores: elastic.cpu_cores,
+            ram_budget_bytes: elastic.ram_budget_bytes,
+        }
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -423,5 +482,50 @@ mod tests {
     fn test_concurrency_config_from_str_invalid() {
         let config = ConcurrencyConfig::from("not-a-number");
         assert!(config.is_auto());
+    }
+
+    #[test]
+    fn test_autotuning_config_resolve_with_overrides() {
+        let cfg = AutotuningConfig::resolve(Some(4), Some(8 * 1024 * 1024 * 1024));
+        assert_eq!(cfg.cpu_cores, 4);
+        assert_eq!(cfg.ram_budget_bytes, 8 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_autotuning_config_resolve_without_overrides_is_sane() {
+        // No overrides → falls through env (likely unset) → auto-detected defaults.
+        let cfg = AutotuningConfig::resolve(None, None);
+        assert!(cfg.cpu_cores > 0, "cpu_cores must be positive");
+        assert!(
+            cfg.ram_budget_bytes > 0,
+            "ram_budget_bytes must be positive"
+        );
+    }
+
+    #[test]
+    fn test_autotuning_config_serializes_roundtrip() {
+        let cfg = AutotuningConfig {
+            cpu_cores: 8,
+            ram_budget_bytes: 16 * 1024 * 1024 * 1024,
+        };
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        assert!(json.contains("\"cpu_cores\":8"), "json: {json}");
+        assert!(json.contains("\"ram_budget_bytes\":"));
+        let back: AutotuningConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, cfg);
+    }
+
+    #[test]
+    fn test_autotuning_config_from_elastic() {
+        let elastic = crate::infrastructure::autotuning::ElasticConfig {
+            cpu_cores: 6,
+            ram_budget_bytes: 12 * 1024 * 1024 * 1024,
+            max_resource_bytes: 25 * 1024 * 1024,
+            db_pool_size: 6,
+            db_path: std::path::PathBuf::from("/tmp/elastic.db"),
+        };
+        let snap = AutotuningConfig::from_elastic(&elastic);
+        assert_eq!(snap.cpu_cores, 6);
+        assert_eq!(snap.ram_budget_bytes, 12 * 1024 * 1024 * 1024);
     }
 }

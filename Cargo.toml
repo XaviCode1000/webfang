@@ -154,6 +154,23 @@ quick-xml = "0.37"
 # CPU detection for hardware-aware concurrency
 num_cpus = "1"
 
+# ============================================================================
+# Elastic Ingestion (Issue #51) — autotuning + SQLite persistence + CPU pool
+# ============================================================================
+# SQLite embedded persistence (bundled libsqlite3; chrono/uuid feature gates)
+rusqlite = { version = "0.31", features = ["bundled", "chrono", "uuid"] }
+# Async SQLite connection pool (WAL-friendly, pooled blocking calls off Tokio)
+# NOTE: task pinned "0.15" (nonexistent); 0.13 needs rusqlite 0.38 (conflicts
+# with proposal-pinned rusqlite 0.31). Frozen design.md pins no version.
+# Resolver-selected max version compatible with rusqlite 0.31 is 0.8.1.
+deadpool-sqlite = "0.8"
+# Total RAM detection for hardware autotuning (CPU uses num_cpus above)
+# NOTE: task pinned "0.10" but that version does not exist on crates.io
+# (candidates: 0.9.1, 0.9.0). proposal.md specifies "0.9" — using that.
+sys-info = "0.9"
+# Promoted from transitive to direct: explicit isolated Rayon thread pool (PR3)
+rayon = "1.10"
+
 # Progress bars
 indicatif = { version = "0.17", features = ["improved_unicode"] }
 

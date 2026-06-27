@@ -23,5 +23,9 @@ pub mod output;
 pub mod scraper;
 pub mod user_agent;
 
+// Elastic ingestion (Issue #51) — hardware autotuning + SQLite persistence.
+pub mod autotuning;
+pub mod persistence;
+
 #[cfg(feature = "ai")]
 pub mod ai;
