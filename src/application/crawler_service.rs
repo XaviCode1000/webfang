@@ -373,7 +373,7 @@ pub async fn scrape_single_url_for_tui(
             let assets = download_assets_if_enabled(&html, url, config).await?;
 
             Ok(ScrapedContent {
-                title: article.title,
+                title: crate::application::resolve_title(&article.title, url),
                 content: article.text_content,
                 url: ValidUrl::new(url.clone()),
                 excerpt: article.excerpt,

@@ -13,6 +13,7 @@ pub mod http_client;
 pub mod rate_limiter;
 pub mod results_channel;
 pub mod scraper_service;
+pub mod title_resolver;
 pub mod url_filter;
 
 pub use crawler_service::{
@@ -27,4 +28,5 @@ pub use scraper_service::{
     detect_spa_content, scrape_multiple_with_limit, scrape_with_config, scrape_with_readability,
     SpaDetectionResult,
 };
+pub use title_resolver::resolve_title;
 pub use url_filter::{extract_domain, is_allowed, is_excluded, is_internal_link, matches_pattern};

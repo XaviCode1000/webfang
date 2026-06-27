@@ -213,7 +213,7 @@ pub async fn scrape_with_config(
             }
 
             results.push(ScrapedContent {
-                title: article.title,
+                title: crate::application::resolve_title(&article.title, url),
                 content: article.text_content,
                 url: ValidUrl::new(url.clone()),
                 excerpt: article.excerpt,
