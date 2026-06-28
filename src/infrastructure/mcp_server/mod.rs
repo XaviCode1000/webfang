@@ -515,7 +515,7 @@ impl McpHandler {
             )
         })?;
         let config = crate::domain::CrawlerConfig::new(seed_url);
-        match crate::application::crawler_service::crawl_with_sitemap(
+        match crate::application::crawler::crawl_with_sitemap(
             &params.url,
             params.sitemap_url.as_deref(),
             &config,

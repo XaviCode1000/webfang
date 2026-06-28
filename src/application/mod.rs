@@ -19,8 +19,9 @@ pub mod scraper_service;
 pub mod title_resolver;
 pub mod url_filter;
 
-pub use crawler_service::{
-    crawl_site, crawl_with_sitemap, discover_urls_for_tui, scrape_single_url_for_tui,
+pub use crawler_service::crawl_site;
+pub use crawler::{
+    crawl_with_sitemap, discover_urls_for_tui, scrape_single_url_for_tui,
     scrape_urls_for_tui,
 };
 pub use deduplicator::{normalize_url, UrlDeduplicator};
