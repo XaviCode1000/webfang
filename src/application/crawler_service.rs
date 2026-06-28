@@ -911,8 +911,10 @@ async fn crawl_with_sitemap_internal(
 
     // Following own-borrow-over-clone: use Url directly, not String
     // Use explicit type annotation for type inference
+    // Apply include/exclude patterns from config (Fix: sitemap URLs were bypassing filters)
     let discovered: Vec<DiscoveredUrl> = relevant_urls
         .into_iter()
+        .filter(|url| is_allowed(url.as_str(), config))
         .map(|url| DiscoveredUrl::html(url, 0, base.clone()))
         .collect();
 

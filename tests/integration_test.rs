@@ -120,6 +120,7 @@ fn test_args_has_required_fields() {
         ram_budget: None,
         cpu_cores: None,
         db_path: None,
+        elastic: false,
     };
 
     assert_eq!(args.url, Some("https://example.com".to_string()));

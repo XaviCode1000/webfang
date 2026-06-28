@@ -12,6 +12,8 @@ debug/
 
 # Testing
 coverage/
+test-flags/
+test-output/
 *.gcno
 *.gcda
 **/mutants.out*/

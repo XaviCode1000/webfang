@@ -7,10 +7,18 @@
 use std::sync::Arc;
 
 use crate::application::crawl_result_repository::CrawlResultRepositoryImpl;
+use crate::application::elastic_ingestion::ElasticIngestion;
 use crate::application::http_client::{HttpClient, HttpClientConfig};
 use crate::domain::{repositories::CrawlResultRepository, CrawlerConfig};
+use crate::infrastructure::autotuning::ElasticConfig;
+use crate::infrastructure::bridge::CpuBridge;
 use crate::infrastructure::config::ScraperConfig;
+use crate::infrastructure::cpu_pool::RayonCpuPool;
+use crate::infrastructure::crawler::resource_downloader::ResourceDownloader;
 use crate::infrastructure::export::state_store::StateStore;
+use crate::infrastructure::persistence::sqlite::{
+    self as sqlite_persistence, SqliteVectorRepository,
+};
 
 /// Dependency Injection Container
 ///
@@ -23,6 +31,8 @@ pub struct Container {
     pub http_client: Arc<HttpClient>,
     pub state_store: Option<Arc<StateStore>>,
     pub crawl_result_repo: Option<Arc<dyn CrawlResultRepository>>,
+    /// Elastic ingestion pipeline (optional, activated via `--elastic`).
+    pub elastic_ingestion: Option<Arc<ElasticIngestion<SqliteVectorRepository>>>,
 }
 
 impl Container {
@@ -62,6 +72,7 @@ impl Container {
             http_client,
             state_store,
             crawl_result_repo,
+            elastic_ingestion: None,
         })
     }
 
@@ -74,6 +85,61 @@ impl Container {
     /// Get a repository for crawl results (backed by append-only log).
     pub fn crawl_result_repository(&self) -> Option<Arc<dyn CrawlResultRepository>> {
         self.crawl_result_repo.clone()
+    }
+
+    /// Activate the elastic ingestion pipeline with the given config.
+    ///
+    /// Resolves `ElasticConfig` from the provided overrides, then wires
+    /// `RayonCpuPool` → `CpuBridge` → `SqliteVectorRepository` →
+    /// `ResourceDownloader` → `ElasticIngestion`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Rayon pool or SQLite pool fails to initialize.
+    pub async fn with_elastic(
+        mut self,
+        overrides: &crate::infrastructure::autotuning::ElasticOverrides,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let config = ElasticConfig::resolve(overrides);
+
+        // 1. Rayon CPU pool for lol_html processing
+        let cpu_pool = RayonCpuPool::new(config.cpu_cores)?;
+
+        // 2. CpuBridge wraps the Rayon pool with catch_unwind safety
+        let bridge = CpuBridge::new(cpu_pool);
+
+        // 3. SQLite pool → repository (WAL mode, auto-creates parent dir)
+        let pool = sqlite_persistence::create_pool(&config.db_path, config.db_pool_size)?;
+        sqlite_persistence::setup_schema(&pool).await?;
+        let repository = SqliteVectorRepository::new(pool);
+
+        // 4. HTTP client for resource downloads (separate from scraping client)
+        let client = crate::application::http_client::create_http_client()?;
+        let max_concurrent = (config.ram_budget_bytes / config.max_resource_bytes).max(1) as usize;
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+
+        // 5. Resource downloader with elastic semaphore (byte-weighted backpressure)
+        let downloader = ResourceDownloader::with_config(
+            semaphore,
+            client,
+            crate::infrastructure::crawler::resource_downloader::DownloadConfig {
+                max_size_bytes: config.max_resource_bytes,
+                ..Default::default()
+            },
+        );
+
+        // 6. Assemble pipeline — ElasticIngestion monomorphized for SqliteVectorRepository
+        let autotune = crate::infrastructure::config::AutotuningConfig::from_elastic(&config);
+        let ingestion = ElasticIngestion::new(downloader, bridge, repository, autotune);
+
+        self.elastic_ingestion = Some(Arc::new(ingestion));
+        Ok(self)
+    }
+
+    /// Access the elastic ingestion pipeline, if activated.
+    #[must_use]
+    pub fn elastic_ingestion(&self) -> Option<&ElasticIngestion<SqliteVectorRepository>> {
+        self.elastic_ingestion.as_deref()
     }
 }
 

@@ -326,6 +326,11 @@ pub struct Args {
     #[arg(long, env = "RUST_SCRAPER_DB_PATH")]
     #[clap(next_help_heading = "Elastic Ingestion")]
     pub db_path: Option<std::path::PathBuf>,
+
+    /// Enable elastic ingestion pipeline (streaming, SQLite dedup, Rayon CPU bridge)
+    #[arg(long, default_value = "false", env = "RUST_SCRAPER_ELASTIC")]
+    #[clap(next_help_heading = "Elastic Ingestion")]
+    pub elastic: bool,
 }
 
 /// Subcommands.

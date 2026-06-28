@@ -2,7 +2,10 @@
 //!
 //! Orchestrates URL discovery, scraping, and export phases.
 
-use tracing::info;
+use std::sync::Arc;
+
+use tokio::task::JoinSet;
+use tracing::{info, warn};
 
 use crate::cli::completions::generate_completions;
 use crate::cli::error::CliExit;
@@ -83,10 +86,43 @@ pub async fn run(args: Args) -> CliExit {
         scraper_config = scraper_config.with_documents();
     }
 
+    // Initialize elastic ingestion if requested
+    let elastic: Option<
+        Arc<
+            crate::application::elastic_ingestion::ElasticIngestion<
+                crate::infrastructure::persistence::sqlite::SqliteVectorRepository,
+            >,
+        >,
+    > = if args.elastic {
+        match build_elastic_pipeline(&args).await {
+            Ok(ingestion) => {
+                info!(
+                    "pipeline elástico activado: db={}",
+                    args.db_path
+                        .as_deref()
+                        .unwrap_or(std::path::Path::new("elastic.db"))
+                        .display()
+                );
+                Some(ingestion)
+            },
+            Err(e) => {
+                warn!("no se pudo inicializar el pipeline elástico: {e}");
+                None
+            },
+        }
+    } else {
+        None
+    };
+
     // Scraping phase
 
     let (results, failures): (Vec<domain::ScrapedContent>, Vec<(String, String)>) =
         scrape_urls(&urls_to_scrape, &scraper_config, &args, None).await;
+
+    // Post-scrape: elastic ingestion (best-effort, no abort on failure)
+    if let Some(ref ingestion) = elastic {
+        run_elastic_ingestion(ingestion, &results).await;
+    }
 
     // Report failures
     for (url, error) in &failures {
@@ -154,6 +190,108 @@ pub async fn run(args: Args) -> CliExit {
             eprintln!("Export failed: {e:?}");
             e
         },
+    }
+}
+
+/// Build the elastic ingestion pipeline from CLI args.
+///
+/// Wires `RayonCpuPool` → `CpuBridge` → `SqliteVectorRepository` →
+/// `ResourceDownloader` → `ElasticIngestion<SqliteVectorRepository>`
+/// using `ElasticConfig::resolve` with the CLI-provided overrides.
+async fn build_elastic_pipeline(
+    args: &Args,
+) -> Result<
+    Arc<
+        crate::application::elastic_ingestion::ElasticIngestion<
+            crate::infrastructure::persistence::sqlite::SqliteVectorRepository,
+        >,
+    >,
+    Box<dyn std::error::Error + Send + Sync>,
+> {
+    use crate::application::elastic_ingestion::ElasticIngestion;
+    use crate::infrastructure::autotuning::ElasticConfig;
+    use crate::infrastructure::bridge::CpuBridge;
+    use crate::infrastructure::config::AutotuningConfig;
+    use crate::infrastructure::cpu_pool::RayonCpuPool;
+    use crate::infrastructure::crawler::resource_downloader::ResourceDownloader;
+    use crate::infrastructure::persistence::sqlite::{
+        self as sqlite_persistence, SqliteVectorRepository,
+    };
+
+    let config = ElasticConfig::resolve(&args.elastic_overrides());
+
+    let cpu_pool = RayonCpuPool::new(config.cpu_cores)?;
+    let bridge = CpuBridge::new(cpu_pool);
+
+    let pool = sqlite_persistence::create_pool(&config.db_path, config.db_pool_size)?;
+    sqlite_persistence::setup_schema(&pool).await?;
+    let repository = SqliteVectorRepository::new(pool);
+
+    let client = crate::application::http_client::create_http_client()?;
+    let max_concurrent = (config.ram_budget_bytes / config.max_resource_bytes).max(1) as usize;
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+    let downloader = ResourceDownloader::with_config(
+        semaphore,
+        client,
+        crate::infrastructure::crawler::resource_downloader::DownloadConfig {
+            max_size_bytes: config.max_resource_bytes,
+            ..Default::default()
+        },
+    );
+
+    let autotune = AutotuningConfig::from_elastic(&config);
+    let ingestion = ElasticIngestion::new(downloader, bridge, repository, autotune);
+
+    Ok(Arc::new(ingestion))
+}
+
+/// Run the elastic ingestion pipeline on all scraped results.
+///
+/// Each URL is processed concurrently via a bounded `JoinSet` with
+/// concurrency limited by the elastic config's CPU core count.
+/// Ingestion failures are logged but do NOT abort the export phase
+/// (best-effort semantics).
+async fn run_elastic_ingestion(
+    ingestion: &Arc<
+        crate::application::elastic_ingestion::ElasticIngestion<
+            crate::infrastructure::persistence::sqlite::SqliteVectorRepository,
+        >,
+    >,
+    results: &[crate::domain::ScrapedContent],
+) {
+    if results.is_empty() {
+        return;
+    }
+
+    let mut join_set = JoinSet::new();
+    let concurrency = num_cpus::get().max(4); // bounded concurrency
+
+    for result in results {
+        let ing = Arc::clone(ingestion);
+        let url = result.url.clone();
+
+        while join_set.len() >= concurrency {
+            match join_set.join_next().await {
+                Some(Ok(Ok(()))) => {}, // success
+                Some(Ok(Err(e))) => warn!("error en tarea de ingesta elástica: {e}"),
+                Some(Err(e)) => warn!("error en tarea de ingesta elástica: {e}"),
+                None => break,
+            }
+        }
+
+        join_set.spawn(async move {
+            let url_str = url.to_string();
+            ing.run(&url_str).await
+        });
+    }
+
+    // Await remaining tasks (all result variants, not just panics)
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(Ok(())) => {}, // success
+            Ok(Err(e)) => warn!("error en tarea de ingesta elástica: {e}"),
+            Err(e) => warn!("error en tarea de ingesta elástica: {e}"),
+        }
     }
 }
 
