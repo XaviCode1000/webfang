@@ -468,7 +468,7 @@ impl McpHandler {
             .max_pages(params.max_pages.unwrap_or(100) as usize)
             .build();
 
-        match crate::application::crawler_service::crawl_site(crawler_config).await {
+        match crate::application::crawler::crawl_site(crawler_config).await {
             Ok(result) => {
                 let urls: Vec<String> = result.urls.iter().map(|u| u.url.to_string()).collect();
                 let json = serde_json::json!({
