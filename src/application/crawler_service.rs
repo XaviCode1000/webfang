@@ -370,7 +370,7 @@ pub async fn scrape_single_url_for_tui(
     // Try Readability first, fallback to plain text extraction
     match readability::parse(&cleaned_html, Some(url.as_str())) {
         Ok(article) => {
-            let assets = download_assets_if_enabled(&html, url, config).await?;
+            let assets = super::scraper_service::download_assets_if_enabled(&html, url, config).await?;
 
             Ok(ScrapedContent {
                 title: crate::application::resolve_title(&article.title, url),
@@ -404,7 +404,7 @@ pub async fn scrape_single_url_for_tui(
                 });
             }
 
-            let assets = download_assets_if_enabled(&html, url, config).await?;
+            let assets = super::scraper_service::download_assets_if_enabled(&html, url, config).await?;
 
             Ok(ScrapedContent {
                 title: url
@@ -421,36 +421,6 @@ pub async fn scrape_single_url_for_tui(
             })
         },
     }
-}
-
-/// Download assets if enabled in config
-///
-/// Helper function to conditionally download assets.
-#[cfg(any(feature = "images", feature = "documents"))]
-async fn download_assets_if_enabled(
-    html: &str,
-    url: &Url,
-    config: &ScraperConfig,
-) -> ScraperResult<Vec<crate::domain::DownloadedAsset>> {
-    if config.has_downloads() {
-        tracing::debug!("Calling download_all for assets...");
-        use crate::infrastructure::scraper::asset_download::download_all;
-
-        download_all(html, url, config).await
-    } else {
-        tracing::debug!("has_downloads is false, skipping asset download");
-        Ok(Vec::new())
-    }
-}
-
-/// Download assets stub when features are disabled
-#[cfg(not(any(feature = "images", feature = "documents")))]
-async fn download_assets_if_enabled(
-    _html: &str,
-    _url: &Url,
-    _config: &ScraperConfig,
-) -> ScraperResult<Vec<crate::domain::DownloadedAsset>> {
-    Ok(Vec::new())
 }
 
 // ============================================================================

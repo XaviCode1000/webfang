@@ -339,7 +339,7 @@ pub async fn scrape_multiple_with_limit(
 /// Helper: Download assets if config has downloads enabled
 ///
 /// Delegates to infrastructure layer for actual downloading.
-async fn download_assets_if_enabled(
+pub(crate) async fn download_assets_if_enabled(
     _html: &str,
     _base_url: &url::Url,
     _config: &ScraperConfig,
