@@ -92,7 +92,12 @@ impl Engine {
         // Main crawl loop
         while !url_queue.is_empty() || !tasks.is_empty() {
             // Check if we've reached max pages (sin lock - atomic)
-            if self.collector.as_ref().unwrap().is_full(config_clone.max_pages) {
+            if self
+                .collector
+                .as_ref()
+                .unwrap()
+                .is_full(config_clone.max_pages)
+            {
                 info!("Reached max pages limit: {}", config_clone.max_pages);
                 break;
             }
@@ -165,15 +170,12 @@ impl Engine {
                                                         && is_allowed(&normalized, &config_task)
                                                         && visited_task.try_insert(&normalized)
                                                     {
-                                                        let new_discovered =
-                                                            DiscoveredUrl::html(
-                                                                parsed_url,
-                                                                url_depth + 1,
-                                                                parent_url.clone(),
-                                                            );
-                                                        queue_task
-                                                            .push(new_discovered)
-                                                            .await;
+                                                        let new_discovered = DiscoveredUrl::html(
+                                                            parsed_url,
+                                                            url_depth + 1,
+                                                            parent_url.clone(),
+                                                        );
+                                                        queue_task.push(new_discovered).await;
                                                     }
                                                 }
                                             }
@@ -181,18 +183,15 @@ impl Engine {
                                     },
                                     Err(e) => {
                                         warn!("Failed to extract links from {}: {}", url_str, e);
-                                        error_count_task.fetch_add(
-                                            1,
-                                            std::sync::atomic::Ordering::SeqCst,
-                                        );
+                                        error_count_task
+                                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                     },
                                 }
                             }
                         },
                         Err(e) => {
                             error!("Failed to fetch {}: {}", url_str, e);
-                            error_count_task
-                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            error_count_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             return Err(e);
                         },
                     }

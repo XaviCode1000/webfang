@@ -7,16 +7,13 @@ use anyhow::Result;
 use tracing::{debug, info, instrument, span, warn, Level};
 use url::Url;
 
-use crate::domain::{
-    CrawlError, CrawlerConfig, DiscoveredUrl, ScrapedContent, ValidUrl,
-};
+use crate::application::url_filter::is_allowed;
+use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl, ScrapedContent, ValidUrl};
 use crate::error::{Result as ScraperResult, ScraperError};
 use crate::infrastructure::crawler::{
-    extract_links, is_internal_link, normalize_url,
-    SitemapConfig, SitemapParser,
+    extract_links, is_internal_link, normalize_url, SitemapConfig, SitemapParser,
 };
 use crate::infrastructure::scraper::{fallback, readability};
-use crate::application::url_filter::is_allowed;
 use crate::ScraperConfig;
 
 // ============================================================================
@@ -270,7 +267,9 @@ pub async fn scrape_single_url_for_tui(
     // Try Readability first, fallback to plain text extraction
     match readability::parse(&cleaned_html, Some(url.as_str())) {
         Ok(article) => {
-            let assets = crate::application::scraper_service::download_assets_if_enabled(&html, url, config).await?;
+            let assets =
+                crate::application::scraper_service::download_assets_if_enabled(&html, url, config)
+                    .await?;
 
             Ok(ScrapedContent {
                 title: crate::application::resolve_title(&article.title, url),
@@ -304,7 +303,9 @@ pub async fn scrape_single_url_for_tui(
                 });
             }
 
-            let assets = crate::application::scraper_service::download_assets_if_enabled(&html, url, config).await?;
+            let assets =
+                crate::application::scraper_service::download_assets_if_enabled(&html, url, config)
+                    .await?;
 
             Ok(ScrapedContent {
                 title: url
