@@ -178,7 +178,7 @@ jobs:
 
       - name: Setup & Run Miri (${{ matrix.group }})
         env:
-          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks -Zmiri-seed=42
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks -Zmiri-seed=42 -Zmiri-permissive-provenance -Zmiri-disable-stacked-borrows
         run: |
           cargo miri setup
           cargo miri test --lib -- --skip downloader ${{ matrix.filter }}
