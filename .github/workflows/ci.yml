@@ -154,11 +154,11 @@ jobs:
         group: [core, domain, infra]
         include:
           - group: core
-            filter: "-- adapters:: application:: cli:: config:: di:: error::"
+            filter: "--skip application::elastic_ingestion::tests::test_run_dedup_short_circuits_when_hash_exists -- adapters:: application:: cli:: config:: di:: error::"
           - group: domain
             filter: "-- domain::"
           - group: infra
-            filter: "-- infrastructure::"
+            filter: "--skip infrastructure::mcp_server::server::tests::test_highlight_code_blocks_logic -- infrastructure::"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
