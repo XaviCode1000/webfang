@@ -275,6 +275,11 @@ pub struct Args {
     #[clap(next_help_heading = "HTTP Client Settings")]
     pub accept_language: String,
 
+    /// Custom User-Agent header value (overrides Chrome 145 default)
+    #[arg(long, env = "RUST_SCRAPER_USER_AGENT")]
+    #[clap(next_help_heading = "HTTP Client Settings")]
+    pub user_agent: Option<String>,
+
     // ========== Download Settings ==========
     /// Maximum file size to download in bytes (default: 50MB)
     #[arg(long, default_value = "52428800", env = "RUST_SCRAPER_MAX_FILE_SIZE")]
@@ -428,7 +433,7 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
                 sitemap_url: args.sitemap_url,
             },
             network: NetworkOptions {
-                user_agent: None,
+                user_agent: args.user_agent,
                 accept_language: args.accept_language,
                 concurrency: args.concurrency,
                 delay_ms: args.delay_ms,
@@ -468,6 +473,7 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
 mod tests {
     use super::*;
     use crate::infrastructure::autotuning::ElasticOverrides;
+    use proptest::prelude::*;
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -510,5 +516,731 @@ mod tests {
             args.elastic_overrides().ram_budget_bytes,
             Some(2048 * 1024 * 1024)
         );
+    }
+
+    // ========================================================================
+    // Args → CrawlOptions full parity test
+    // ========================================================================
+
+    /// Build a minimal `Args` with **every** field set to a non-default,
+    /// identifiable value so we can assert 1:1 mapping into `CrawlOptions`.
+    fn args_with_all_fields_set() -> Args {
+        Args {
+            subcommand: None,
+
+            // Target
+            url: Some("https://example.com/test".into()),
+            selector: "article.main".into(),
+
+            // Output
+            output: std::path::PathBuf::from("/tmp/test-output"),
+            format: crate::OutputFormat::Json,
+            export_format: crate::ExportFormat::Vector,
+
+            // Obsidian
+            obsidian_wiki_links: true,
+            obsidian_tags: Some(vec!["tag-a".into(), "tag-b".into()]),
+            obsidian_relative_assets: true,
+            vault: Some(std::path::PathBuf::from("/tmp/vault")),
+            quick_save: true,
+            obsidian_rich_metadata: true,
+
+            // Discovery
+            delay_ms: 500,
+            max_pages: 25,
+            concurrency: crate::ConcurrencyConfig::new(8),
+            use_sitemap: true,
+            sitemap_url: Some("https://example.com/sitemap.xml".into()),
+
+            // Behavior
+            single_page: true,
+            resume: true,
+            state_dir: Some(std::path::PathBuf::from("/tmp/state")),
+            download_images: true,
+            download_documents: true,
+            interactive: true,
+            config_tui: true,
+            clean_ai: true,
+            force_js_render: true,
+
+            // Display
+            verbose: 3,
+            quiet: true,
+            dry_run: true,
+
+            // Crawler settings
+            max_depth: 5,
+            timeout_secs: 60,
+            include_patterns: vec!["/blog/**".into(), "/docs/**".into()],
+            exclude_patterns: vec!["/admin/**".into()],
+
+            // HTTP client
+            max_retries: 7,
+            backoff_base_ms: 2000,
+            backoff_max_ms: 30_000,
+            accept_language: "es-ES,es;q=0.9".into(),
+            user_agent: Some("TestAgent/1.0".into()),
+
+            // Download settings
+            max_file_size: 100_000_000,
+            download_timeout: 120,
+
+            // Sitemap
+            sitemap_depth: 4,
+
+            // Elastic ingestion
+            cpu_cores: Some(6),
+            ram_budget: Some("4GB".into()),
+            db_path: Some(std::path::PathBuf::from("/tmp/test.db")),
+            elastic: true,
+        }
+    }
+
+    #[test]
+    fn test_args_to_crawl_options_full_parity() {
+        let args = args_with_all_fields_set();
+        let opts = crate::application::crawl_options::CrawlOptions::from(args);
+
+        // ── Top-level ──────────────────────────────────────────────────────
+        assert_eq!(opts.url.as_str(), "https://example.com/test");
+        assert_eq!(opts.verbosity, 3);
+        assert!(opts.quiet);
+
+        // ── CrawlLimits ────────────────────────────────────────────────────
+        assert_eq!(opts.crawl.selector, "article.main");
+        assert_eq!(opts.crawl.max_depth, 5);
+        assert_eq!(opts.crawl.max_pages, 25);
+        assert!(opts.crawl.single_page);
+        assert_eq!(
+            opts.crawl.include_patterns,
+            vec!["/blog/**".to_owned(), "/docs/**".to_owned()]
+        );
+        assert_eq!(opts.crawl.exclude_patterns, vec!["/admin/**".to_owned()]);
+        assert!(opts.crawl.interactive);
+        assert!(opts.crawl.resume);
+        assert_eq!(
+            opts.crawl.state_dir,
+            Some(std::path::PathBuf::from("/tmp/state"))
+        );
+        assert!(opts.crawl.use_sitemap);
+        assert_eq!(
+            opts.crawl.sitemap_url.as_deref(),
+            Some("https://example.com/sitemap.xml")
+        );
+
+        // ── NetworkOptions ─────────────────────────────────────────────────
+        assert_eq!(opts.network.user_agent.as_deref(), Some("TestAgent/1.0"));
+        assert_eq!(opts.network.accept_language, "es-ES,es;q=0.9");
+        assert!(!opts.network.concurrency.is_auto());
+        assert_eq!(opts.network.concurrency.get(), Some(8));
+        assert_eq!(opts.network.delay_ms, 500);
+        assert_eq!(opts.network.timeout_secs, 60);
+        assert_eq!(opts.network.max_retries, 7);
+        assert_eq!(opts.network.backoff_base_ms, 2000);
+        assert_eq!(opts.network.backoff_max_ms, 30_000);
+        assert!(opts.network.download_images);
+        assert!(opts.network.download_documents);
+        assert!(opts.network.force_js_render);
+
+        // ── ExportOptions ──────────────────────────────────────────────────
+        assert_eq!(opts.export.output_format, crate::OutputFormat::Json);
+        assert_eq!(opts.export.export_format, crate::ExportFormat::Vector);
+        assert_eq!(
+            opts.export.output_dir,
+            std::path::PathBuf::from("/tmp/test-output")
+        );
+        assert!(opts.export.dry_run);
+        assert!(opts.export.quiet);
+        assert_eq!(
+            opts.export.obsidian_vault,
+            Some(std::path::PathBuf::from("/tmp/vault"))
+        );
+        assert!(opts.export.obsidian_rich_metadata);
+        assert_eq!(
+            opts.export.obsidian_tags,
+            vec!["tag-a".to_owned(), "tag-b".to_owned()]
+        );
+        assert!(opts.export.obsidian_wiki_links);
+        assert!(opts.export.obsidian_relative_assets);
+        assert!(opts.export.quick_save);
+
+        // ── IngestionTuning ────────────────────────────────────────────────
+        assert!(opts.elastic.enabled);
+        assert_eq!(opts.elastic.cpu_cores, Some(6));
+        assert_eq!(opts.elastic.ram_budget_bytes, Some(4 * 1024 * 1024 * 1024));
+        assert_eq!(
+            opts.elastic.db_path,
+            Some(std::path::PathBuf::from("/tmp/test.db"))
+        );
+    }
+
+    #[test]
+    fn test_args_to_crawl_options_defaults() {
+        let args = Args::try_parse_from(["rust_scraper"]).expect("minimal parse must succeed");
+        let opts = crate::application::crawl_options::CrawlOptions::from(args);
+
+        // url defaults to example.com when None
+        assert_eq!(opts.url.as_str(), "https://example.com/");
+        assert_eq!(opts.verbosity, 0);
+        assert!(!opts.quiet);
+
+        assert_eq!(opts.crawl.selector, "body");
+        assert_eq!(opts.crawl.max_depth, 2);
+        assert_eq!(opts.crawl.max_pages, 10);
+        assert!(!opts.crawl.single_page);
+        assert!(opts.crawl.include_patterns.is_empty());
+        assert!(opts.crawl.exclude_patterns.is_empty());
+        assert!(!opts.crawl.interactive);
+        assert!(!opts.crawl.resume);
+        assert!(opts.crawl.state_dir.is_none());
+        assert!(!opts.crawl.use_sitemap);
+        assert!(opts.crawl.sitemap_url.is_none());
+
+        assert!(opts.network.user_agent.is_none());
+        assert_eq!(opts.network.accept_language, "en-US,en;q=0.9");
+        assert!(opts.network.concurrency.is_auto());
+        assert_eq!(opts.network.delay_ms, 1000);
+        assert_eq!(opts.network.timeout_secs, 30);
+        assert_eq!(opts.network.max_retries, 3);
+        assert_eq!(opts.network.backoff_base_ms, 1000);
+        assert_eq!(opts.network.backoff_max_ms, 10_000);
+        assert!(!opts.network.download_images);
+        assert!(!opts.network.download_documents);
+        assert!(!opts.network.force_js_render);
+
+        assert_eq!(opts.export.output_format, crate::OutputFormat::Markdown);
+        assert_eq!(opts.export.export_format, crate::ExportFormat::Jsonl);
+        assert_eq!(opts.export.output_dir, std::path::PathBuf::from("output"));
+        assert!(!opts.export.dry_run);
+        assert!(!opts.export.quiet);
+        assert!(opts.export.obsidian_vault.is_none());
+        assert!(!opts.export.obsidian_rich_metadata);
+        assert!(opts.export.obsidian_tags.is_empty());
+        assert!(!opts.export.obsidian_wiki_links);
+        assert!(!opts.export.obsidian_relative_assets);
+        assert!(!opts.export.quick_save);
+
+        assert!(!opts.elastic.enabled);
+        assert!(opts.elastic.cpu_cores.is_none());
+        assert!(opts.elastic.ram_budget_bytes.is_none());
+        assert!(opts.elastic.db_path.is_none());
+    }
+
+    #[test]
+    fn test_obsidian_tags_none_maps_to_empty_vec() {
+        let args = Args {
+            obsidian_tags: None,
+            ..args_with_all_fields_set()
+        };
+        let opts = crate::application::crawl_options::CrawlOptions::from(args);
+        assert!(opts.export.obsidian_tags.is_empty());
+    }
+
+    #[test]
+    fn test_url_none_falls_back_to_example_com() {
+        let args = Args {
+            url: None,
+            ..args_with_all_fields_set()
+        };
+        let opts = crate::application::crawl_options::CrawlOptions::from(args);
+        assert_eq!(opts.url.as_str(), "https://example.com/");
+    }
+
+    // ========================================================================
+    // Property-based tests with proptest
+    // ========================================================================
+
+    proptest! {
+        #[test]
+        fn prop_bool_fields_roundtrip(
+            wiki_links in proptest::bool::ANY,
+            relative_assets in proptest::bool::ANY,
+            quick_save in proptest::bool::ANY,
+            rich_metadata in proptest::bool::ANY,
+            single_page in proptest::bool::ANY,
+            resume in proptest::bool::ANY,
+            download_images in proptest::bool::ANY,
+            download_documents in proptest::bool::ANY,
+            interactive in proptest::bool::ANY,
+            config_tui in proptest::bool::ANY,
+            force_js_render in proptest::bool::ANY,
+            quiet in proptest::bool::ANY,
+            dry_run in proptest::bool::ANY,
+            use_sitemap in proptest::bool::ANY,
+            elastic in proptest::bool::ANY,
+            clean_ai in proptest::bool::ANY,
+        ) {
+            let args = Args {
+                subcommand: None,
+                url: Some("https://example.com/prop".into()),
+                selector: "body".into(),
+                output: std::path::PathBuf::from("out"),
+                format: crate::OutputFormat::Markdown,
+                export_format: crate::ExportFormat::Jsonl,
+                obsidian_wiki_links: wiki_links,
+                obsidian_tags: None,
+                obsidian_relative_assets: relative_assets,
+                vault: None,
+                quick_save,
+                obsidian_rich_metadata: rich_metadata,
+                delay_ms: 0,
+                max_pages: 1,
+                concurrency: crate::ConcurrencyConfig::default(),
+                use_sitemap,
+                sitemap_url: None,
+                single_page,
+                resume,
+                state_dir: None,
+                download_images,
+                download_documents,
+                interactive,
+                config_tui,
+                clean_ai,
+                force_js_render,
+                verbose: 0,
+                quiet,
+                dry_run,
+                max_depth: 0,
+                timeout_secs: 1,
+                include_patterns: vec![],
+                exclude_patterns: vec![],
+                max_retries: 0,
+                backoff_base_ms: 0,
+                backoff_max_ms: 0,
+                accept_language: "en".into(),
+                user_agent: None,
+                max_file_size: 0,
+                download_timeout: 0,
+                sitemap_depth: 0,
+                cpu_cores: None,
+                ram_budget: None,
+                db_path: None,
+                elastic,
+            };
+
+            let opts = crate::application::crawl_options::CrawlOptions::from(args);
+
+            // Every bool field must roundtrip
+            prop_assert_eq!(opts.export.obsidian_wiki_links, wiki_links);
+            prop_assert_eq!(opts.export.obsidian_relative_assets, relative_assets);
+            prop_assert_eq!(opts.export.quick_save, quick_save);
+            prop_assert_eq!(opts.export.obsidian_rich_metadata, rich_metadata);
+            prop_assert_eq!(opts.crawl.single_page, single_page);
+            prop_assert_eq!(opts.crawl.resume, resume);
+            prop_assert_eq!(opts.network.download_images, download_images);
+            prop_assert_eq!(opts.network.download_documents, download_documents);
+            prop_assert_eq!(opts.crawl.interactive, interactive);
+            prop_assert_eq!(opts.network.force_js_render, force_js_render);
+            prop_assert_eq!(opts.quiet, quiet);
+            prop_assert_eq!(opts.export.quiet, quiet);
+            prop_assert_eq!(opts.export.dry_run, dry_run);
+            prop_assert_eq!(opts.crawl.use_sitemap, use_sitemap);
+            prop_assert_eq!(opts.elastic.enabled, elastic);
+        }
+
+        #[test]
+        fn prop_numeric_fields_roundtrip(
+            verbose in 0u8..4,
+            max_depth in 0u8..20,
+            delay_ms in 0u64..60_000,
+            max_pages in 1usize..10_000,
+            timeout_secs in 1u64..300,
+            max_retries in 0u32..20,
+            backoff_base_ms in 0u64..10_000,
+            backoff_max_ms in 1u64..60_000,
+            max_file_size in 1u64..1_000_000_000,
+            download_timeout in 1u64..300,
+            sitemap_depth in 0u8..10,
+        ) {
+            let args = Args {
+                subcommand: None,
+                url: Some("https://example.com/prop".into()),
+                selector: "body".into(),
+                output: std::path::PathBuf::from("out"),
+                format: crate::OutputFormat::Markdown,
+                export_format: crate::ExportFormat::Jsonl,
+                obsidian_wiki_links: false,
+                obsidian_tags: None,
+                obsidian_relative_assets: false,
+                vault: None,
+                quick_save: false,
+                obsidian_rich_metadata: false,
+                delay_ms,
+                max_pages,
+                concurrency: crate::ConcurrencyConfig::default(),
+                use_sitemap: false,
+                sitemap_url: None,
+                single_page: false,
+                resume: false,
+                state_dir: None,
+                download_images: false,
+                download_documents: false,
+                interactive: false,
+                config_tui: false,
+                clean_ai: false,
+                force_js_render: false,
+                verbose,
+                quiet: false,
+                dry_run: false,
+                max_depth,
+                timeout_secs,
+                include_patterns: vec![],
+                exclude_patterns: vec![],
+                max_retries,
+                backoff_base_ms,
+                backoff_max_ms,
+                accept_language: "en".into(),
+                user_agent: None,
+                max_file_size,
+                download_timeout,
+                sitemap_depth,
+                cpu_cores: None,
+                ram_budget: None,
+                db_path: None,
+                elastic: false,
+            };
+
+            let opts = crate::application::crawl_options::CrawlOptions::from(args);
+
+            prop_assert_eq!(opts.verbosity, verbose);
+            prop_assert_eq!(opts.crawl.max_depth, max_depth);
+            prop_assert_eq!(opts.network.delay_ms, delay_ms);
+            prop_assert_eq!(opts.crawl.max_pages, max_pages);
+            prop_assert_eq!(opts.network.timeout_secs, timeout_secs);
+            prop_assert_eq!(opts.network.max_retries, max_retries);
+            prop_assert_eq!(opts.network.backoff_base_ms, backoff_base_ms);
+            prop_assert_eq!(opts.network.backoff_max_ms, backoff_max_ms);
+        }
+
+        #[test]
+        fn prop_string_fields_roundtrip(
+            selector in "[a-z]{1,20}",
+            accept_language in "[a-z-]{1,30}",
+            user_agent in proptest::option::of("[A-Za-z0-9/ .]{1,40}"),
+            sitemap_url in proptest::option::of("https://[a-z]{1,10}\\.com/sitemap\\.xml".prop_map(|s| s.to_string())),
+        ) {
+            // Filter invalid URLs
+            if let Some(ref u) = sitemap_url {
+                if url::Url::parse(u).is_err() {
+                    return Ok(());
+                }
+            }
+
+            let args = Args {
+                subcommand: None,
+                url: Some("https://example.com/prop".into()),
+                selector,
+                output: std::path::PathBuf::from("out"),
+                format: crate::OutputFormat::Markdown,
+                export_format: crate::ExportFormat::Jsonl,
+                obsidian_wiki_links: false,
+                obsidian_tags: None,
+                obsidian_relative_assets: false,
+                vault: None,
+                quick_save: false,
+                obsidian_rich_metadata: false,
+                delay_ms: 0,
+                max_pages: 1,
+                concurrency: crate::ConcurrencyConfig::default(),
+                use_sitemap: sitemap_url.is_some(),
+                sitemap_url,
+                single_page: false,
+                resume: false,
+                state_dir: None,
+                download_images: false,
+                download_documents: false,
+                interactive: false,
+                config_tui: false,
+                clean_ai: false,
+                force_js_render: false,
+                verbose: 0,
+                quiet: false,
+                dry_run: false,
+                max_depth: 0,
+                timeout_secs: 1,
+                include_patterns: vec![],
+                exclude_patterns: vec![],
+                max_retries: 0,
+                backoff_base_ms: 0,
+                backoff_max_ms: 0,
+                accept_language,
+                user_agent,
+                max_file_size: 0,
+                download_timeout: 0,
+                sitemap_depth: 0,
+                cpu_cores: None,
+                ram_budget: None,
+                db_path: None,
+                elastic: false,
+            };
+
+            let expected_selector = args.selector.clone();
+            let expected_accept_language = args.accept_language.clone();
+            let expected_user_agent = args.user_agent.clone();
+            let expected_sitemap_url = args.sitemap_url.clone();
+
+            let opts = crate::application::crawl_options::CrawlOptions::from(args);
+
+            prop_assert_eq!(opts.crawl.selector, expected_selector);
+            prop_assert_eq!(opts.network.accept_language, expected_accept_language);
+            prop_assert_eq!(opts.network.user_agent, expected_user_agent);
+            prop_assert_eq!(opts.crawl.sitemap_url, expected_sitemap_url);
+        }
+
+        #[test]
+        fn prop_path_fields_roundtrip(
+            output in "[a-z0-9/._-]{1,30}",
+            vault in proptest::option::of("[a-z0-9/._-]{1,30}"),
+            state_dir in proptest::option::of("[a-z0-9/._-]{1,30}"),
+            db_path in proptest::option::of("[a-z0-9/._-]{1,30}"),
+        ) {
+            let args = Args {
+                subcommand: None,
+                url: Some("https://example.com/prop".into()),
+                selector: "body".into(),
+                output: std::path::PathBuf::from(&output),
+                format: crate::OutputFormat::Markdown,
+                export_format: crate::ExportFormat::Jsonl,
+                obsidian_wiki_links: false,
+                obsidian_tags: None,
+                obsidian_relative_assets: false,
+                vault: vault.as_deref().map(std::path::PathBuf::from),
+                quick_save: false,
+                obsidian_rich_metadata: false,
+                delay_ms: 0,
+                max_pages: 1,
+                concurrency: crate::ConcurrencyConfig::default(),
+                use_sitemap: false,
+                sitemap_url: None,
+                single_page: false,
+                resume: false,
+                state_dir: state_dir.as_deref().map(std::path::PathBuf::from),
+                download_images: false,
+                download_documents: false,
+                interactive: false,
+                config_tui: false,
+                clean_ai: false,
+                force_js_render: false,
+                verbose: 0,
+                quiet: false,
+                dry_run: false,
+                max_depth: 0,
+                timeout_secs: 1,
+                include_patterns: vec![],
+                exclude_patterns: vec![],
+                max_retries: 0,
+                backoff_base_ms: 0,
+                backoff_max_ms: 0,
+                accept_language: "en".into(),
+                user_agent: None,
+                max_file_size: 0,
+                download_timeout: 0,
+                sitemap_depth: 0,
+                cpu_cores: None,
+                ram_budget: None,
+                db_path: db_path.as_deref().map(std::path::PathBuf::from),
+                elastic: false,
+            };
+
+            let opts = crate::application::crawl_options::CrawlOptions::from(args);
+
+            prop_assert_eq!(opts.export.output_dir, std::path::PathBuf::from(&output));
+            prop_assert_eq!(opts.export.obsidian_vault, vault.map(std::path::PathBuf::from));
+            prop_assert_eq!(opts.crawl.state_dir, state_dir.map(std::path::PathBuf::from));
+            prop_assert_eq!(opts.elastic.db_path, db_path.map(std::path::PathBuf::from));
+        }
+
+        #[test]
+        fn prop_concurrency_roundtrip(
+            value in proptest::option::of(1usize..17),
+        ) {
+            let concurrency = match value {
+                Some(v) => crate::ConcurrencyConfig::new(v),
+                None => crate::ConcurrencyConfig::default(),
+            };
+
+            let expected_auto = concurrency.is_auto();
+            let expected_value = concurrency.get();
+
+            let args = Args {
+                subcommand: None,
+                url: Some("https://example.com/prop".into()),
+                selector: "body".into(),
+                output: std::path::PathBuf::from("out"),
+                format: crate::OutputFormat::Markdown,
+                export_format: crate::ExportFormat::Jsonl,
+                obsidian_wiki_links: false,
+                obsidian_tags: None,
+                obsidian_relative_assets: false,
+                vault: None,
+                quick_save: false,
+                obsidian_rich_metadata: false,
+                delay_ms: 0,
+                max_pages: 1,
+                concurrency,
+                use_sitemap: false,
+                sitemap_url: None,
+                single_page: false,
+                resume: false,
+                state_dir: None,
+                download_images: false,
+                download_documents: false,
+                interactive: false,
+                config_tui: false,
+                clean_ai: false,
+                force_js_render: false,
+                verbose: 0,
+                quiet: false,
+                dry_run: false,
+                max_depth: 0,
+                timeout_secs: 1,
+                include_patterns: vec![],
+                exclude_patterns: vec![],
+                max_retries: 0,
+                backoff_base_ms: 0,
+                backoff_max_ms: 0,
+                accept_language: "en".into(),
+                user_agent: None,
+                max_file_size: 0,
+                download_timeout: 0,
+                sitemap_depth: 0,
+                cpu_cores: None,
+                ram_budget: None,
+                db_path: None,
+                elastic: false,
+            };
+
+            let opts = crate::application::crawl_options::CrawlOptions::from(args);
+
+            prop_assert_eq!(
+                opts.network.concurrency.is_auto(),
+                expected_auto
+            );
+            prop_assert_eq!(
+                opts.network.concurrency.get(),
+                expected_value
+            );
+        }
+
+        #[test]
+        fn prop_obsidian_tags_roundtrip(
+            tags in proptest::collection::vec("[a-z]{1,10}", 0..10),
+        ) {
+            let args = Args {
+                subcommand: None,
+                url: Some("https://example.com/prop".into()),
+                selector: "body".into(),
+                output: std::path::PathBuf::from("out"),
+                format: crate::OutputFormat::Markdown,
+                export_format: crate::ExportFormat::Jsonl,
+                obsidian_wiki_links: false,
+                obsidian_tags: Some(tags.clone()),
+                obsidian_relative_assets: false,
+                vault: None,
+                quick_save: false,
+                obsidian_rich_metadata: false,
+                delay_ms: 0,
+                max_pages: 1,
+                concurrency: crate::ConcurrencyConfig::default(),
+                use_sitemap: false,
+                sitemap_url: None,
+                single_page: false,
+                resume: false,
+                state_dir: None,
+                download_images: false,
+                download_documents: false,
+                interactive: false,
+                config_tui: false,
+                clean_ai: false,
+                force_js_render: false,
+                verbose: 0,
+                quiet: false,
+                dry_run: false,
+                max_depth: 0,
+                timeout_secs: 1,
+                include_patterns: vec![],
+                exclude_patterns: vec![],
+                max_retries: 0,
+                backoff_base_ms: 0,
+                backoff_max_ms: 0,
+                accept_language: "en".into(),
+                user_agent: None,
+                max_file_size: 0,
+                download_timeout: 0,
+                sitemap_depth: 0,
+                cpu_cores: None,
+                ram_budget: None,
+                db_path: None,
+                elastic: false,
+            };
+
+            let opts = crate::application::crawl_options::CrawlOptions::from(args);
+            prop_assert_eq!(opts.export.obsidian_tags, tags);
+        }
+
+        #[test]
+        fn prop_elastic_overrides_roundtrip(
+            cpu_cores in proptest::option::of(1usize..32),
+            ram_gb in proptest::option::of(1u64..128),
+        ) {
+            let ram_budget = ram_gb.map(|g| format!("{g}GB"));
+
+            let args = Args {
+                subcommand: None,
+                url: Some("https://example.com/prop".into()),
+                selector: "body".into(),
+                output: std::path::PathBuf::from("out"),
+                format: crate::OutputFormat::Markdown,
+                export_format: crate::ExportFormat::Jsonl,
+                obsidian_wiki_links: false,
+                obsidian_tags: None,
+                obsidian_relative_assets: false,
+                vault: None,
+                quick_save: false,
+                obsidian_rich_metadata: false,
+                delay_ms: 0,
+                max_pages: 1,
+                concurrency: crate::ConcurrencyConfig::default(),
+                use_sitemap: false,
+                sitemap_url: None,
+                single_page: false,
+                resume: false,
+                state_dir: None,
+                download_images: false,
+                download_documents: false,
+                interactive: false,
+                config_tui: false,
+                clean_ai: false,
+                force_js_render: false,
+                verbose: 0,
+                quiet: false,
+                dry_run: false,
+                max_depth: 0,
+                timeout_secs: 1,
+                include_patterns: vec![],
+                exclude_patterns: vec![],
+                max_retries: 0,
+                backoff_base_ms: 0,
+                backoff_max_ms: 0,
+                accept_language: "en".into(),
+                user_agent: None,
+                max_file_size: 0,
+                download_timeout: 0,
+                sitemap_depth: 0,
+                cpu_cores,
+                ram_budget: ram_budget.clone(),
+                db_path: None,
+                elastic: true,
+            };
+
+            let opts = crate::application::crawl_options::CrawlOptions::from(args);
+
+            prop_assert_eq!(opts.elastic.enabled, true);
+            prop_assert_eq!(opts.elastic.cpu_cores, cpu_cores);
+            prop_assert_eq!(
+                opts.elastic.ram_budget_bytes,
+                ram_gb.map(|g| g * 1024 * 1024 * 1024)
+            );
+        }
     }
 }

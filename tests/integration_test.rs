@@ -104,6 +104,7 @@ fn test_args_has_required_fields() {
         backoff_base_ms: 1000,
         backoff_max_ms: 10000,
         accept_language: "en-US,en;q=0.9".to_string(),
+        user_agent: None,
         // New download settings
         max_file_size: 52428800,
         download_timeout: 30,

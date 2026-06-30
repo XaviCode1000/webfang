@@ -33,6 +33,8 @@ pub struct HttpClientConfig {
     pub rate_limit_rpm: Option<u32>,
     /// TLS fingerprint emulation preset
     pub tls_emulation: wreq_util::Profile,
+    /// Custom User-Agent override
+    pub user_agent: Option<String>,
 }
 
 impl Default for HttpClientConfig {
@@ -50,6 +52,7 @@ impl Default for HttpClientConfig {
             connect_timeout_secs: 10,
             rate_limit_rpm: None,
             tls_emulation: wreq_util::Profile::Chrome145,
+            user_agent: None,
         }
     }
 }
@@ -77,6 +80,7 @@ mod tests {
         assert_eq!(config.connect_timeout_secs, 10);
         assert_eq!(config.rate_limit_rpm, None);
         assert_eq!(config.tls_emulation, wreq_util::Profile::Chrome145);
+        assert_eq!(config.user_agent, None);
     }
 
     #[test]
@@ -103,6 +107,7 @@ mod tests {
             connect_timeout_secs: 20,
             rate_limit_rpm: Some(30),
             tls_emulation: wreq_util::Profile::Chrome131,
+            user_agent: Some("custom".into()),
         };
 
         assert_eq!(config.accept_language, "es-ES");

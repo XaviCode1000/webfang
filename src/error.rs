@@ -67,6 +67,10 @@ pub enum ScraperError {
     #[error("Error de configuración: {0}")]
     Config(String),
 
+    /// Feature not yet implemented (gated for future release)
+    #[error("funcionalidad no disponible: {0}")]
+    FeatureGated(String),
+
     /// WAF/CAPTCHA challenge detected in HTTP 200 response
     #[error("WAF/CAPTCHA detectado en {url}: {provider}")]
     WafBlocked {

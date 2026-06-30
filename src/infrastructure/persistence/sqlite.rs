@@ -11,7 +11,7 @@
 //!   task's `idx_chunks_hash ON chunks(content_hash)` referenced a non-existent
 //!   column and would fail `setup_schema`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use deadpool_sqlite::{Config, Hook, HookError, Manager, Pool, Runtime};
 
@@ -89,6 +89,24 @@ pub fn create_pool(db_path: &Path, pool_size: usize) -> Result<Pool, ScraperErro
     Ok(pool)
 }
 
+/// Create a SQLite pool backed by `:memory:` for testing.
+///
+/// Uses a single connection with no WAL pragmas (in-memory databases don't
+/// support WAL mode). The pool **must** be kept alive for the entire test
+/// lifetime — dropping the pool closes all connections and destroys the
+/// in-memory database.
+pub fn create_memory_pool() -> Result<Pool, ScraperError> {
+    let cfg = Config::new(PathBuf::from(":memory:"));
+    let manager = Manager::from_config(&cfg, Runtime::Tokio1);
+    let pool = Pool::builder(manager)
+        .max_size(1)
+        .runtime(Runtime::Tokio1)
+        // No post_create hook: in-memory databases don't support WAL mode.
+        .build()
+        .map_err(|e| ScraperError::persistence(format!("construir pool SQLite en memoria: {e}")))?;
+    Ok(pool)
+}
+
 /// `post_create` hook applying the WAL-mode pragmas to each new connection.
 fn pragma_hook() -> Hook {
     Hook::async_fn(|obj, _metrics| {
@@ -124,6 +142,16 @@ impl SqliteVectorRepository {
     #[must_use]
     pub fn new(pool: Pool) -> Self {
         Self { pool }
+    }
+
+    /// Create a repository backed by an in-memory SQLite database.
+    ///
+    /// Intended for integration tests — no disk I/O, automatic cleanup on drop.
+    /// Does **not** call [`setup_schema`]; the caller must do that explicitly
+    /// if tables are needed.
+    pub fn from_memory() -> Result<Self, ScraperError> {
+        let pool = create_memory_pool()?;
+        Ok(Self::new(pool))
     }
 
     /// Borrow the underlying pool (used by PR2+ wiring and tests).

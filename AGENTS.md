@@ -107,7 +107,15 @@ cargo build --release          # ~3-5 min (LTO fat)
 
 ```bash
 cargo llvm-cov                 # Coverage instrumentation (~5-8 min)
-cargo miri test                # Memory safety interpretation (~10-15 min)
+```
+
+### Miri Local (opcional, solo durante desarrollo activo de código unsafe/concurrente)
+
+```bash
+cargo +nightly miri test infrastructure::bridge::
+cargo +nightly miri test infrastructure::network::
+# Nota: Miri requiere nightly. Ejecutar desde el directorio raíz.
+# Los flags de MIRIFLAGS están definidos en .github/workflows/ci.yml línea 181.
 ```
 
 ---

@@ -114,7 +114,10 @@ impl HttpClient {
             .build()
             .map_err(|e| ScraperError::Config(format!("failed to create http client: {e}")))?;
 
-        let user_agents = UserAgentCache::fallback_agents();
+        let mut user_agents = UserAgentCache::fallback_agents();
+        if let Some(ref ua) = config.user_agent {
+            user_agents.insert(0, ua.clone());
+        }
 
         // Create rate limiter if configured
         let rate_limiter = if let Some(rpm) = config.rate_limit_rpm {

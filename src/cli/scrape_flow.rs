@@ -97,6 +97,21 @@ pub async fn scrape_urls(
     opts: &CrawlOptions,
     progress_tx: Option<mpsc::Sender<ScrapeProgress>>,
 ) -> (Vec<ScrapedContent>, Vec<(String, String)>) {
+    // Early return if --force-js-render is requested (Phase 2 feature)
+    if opts.network.force_js_render {
+        warn!("--force-js-render no está implementado (Fase 2)");
+        return (
+            Vec::new(),
+            vec![(
+                "force_js_render".into(),
+                crate::error::ScraperError::FeatureGated(
+                    "JavaScript rendering no está implementado. Fase 2 planificada.".into(),
+                )
+                .to_string(),
+            )],
+        );
+    }
+
     let http_config = build_http_client_config(opts);
     let http_client = match HttpClient::new(http_config) {
         Ok(c) => c,
@@ -217,6 +232,7 @@ fn build_http_client_config(opts: &CrawlOptions) -> HttpClientConfig {
         backoff_base_ms: opts.network.backoff_base_ms,
         backoff_max_ms: opts.network.backoff_max_ms,
         accept_language: opts.network.accept_language.clone(),
+        user_agent: opts.network.user_agent.clone(),
         timeout_secs: opts.network.timeout_secs,
         ..HttpClientConfig::default()
     }

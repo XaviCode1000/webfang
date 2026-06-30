@@ -114,6 +114,11 @@ const WAF_BODY_SIGNATURES: &[(&str, &str)] = &[
     ("captcha.js", "Generic Challenge"),
     ("verify.js", "Generic Challenge"),
     ("bot-check", "Generic Detection"),
+    // AWS WAF (Amazon Web Services WAF)
+    ("awsWafCookieDomainList", "AWS WAF"),
+    ("AwsWafIntegration", "AWS WAF"),
+    ("gokuProps", "AWS WAF"),
+    ("aws-waf-token", "AWS WAF"),
 ];
 
 /// Shannon entropy threshold for obfuscated WAF detection
@@ -429,6 +434,30 @@ mod tests {
         assert_eq!(WafInspector::detect_body(""), None);
     }
 
+    #[test]
+    fn test_detect_body_aws_waf_cookie_domain_list() {
+        let html = r#"<script>window.awsWafCookieDomainList = [];</script>"#;
+        assert_eq!(WafInspector::detect_body(html), Some("AWS WAF"));
+    }
+
+    #[test]
+    fn test_detect_body_aws_waf_integration() {
+        let html = r#"<script>AwsWafIntegration.saveReferrer();</script>"#;
+        assert_eq!(WafInspector::detect_body(html), Some("AWS WAF"));
+    }
+
+    #[test]
+    fn test_detect_body_aws_waf_goku_props() {
+        let html = r#"<script>window.gokuProps = {"key":"AQIDAH..."};</script>"#;
+        assert_eq!(WafInspector::detect_body(html), Some("AWS WAF"));
+    }
+
+    #[test]
+    fn test_detect_body_aws_waf_token() {
+        let html = r#"<meta name="aws-waf-token" content="abc123">"#;
+        assert_eq!(WafInspector::detect_body(html), Some("AWS WAF"));
+    }
+
     // ========================================================================
     // Entropy tests — ported from waf.rs
     // ========================================================================
@@ -540,5 +569,6 @@ mod tests {
         assert!(providers.contains(&"Cloudflare"));
         assert!(providers.contains(&"reCAPTCHA"));
         assert!(providers.contains(&"DataDome"));
+        assert!(providers.contains(&"AWS WAF"));
     }
 }

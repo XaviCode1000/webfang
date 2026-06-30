@@ -4,15 +4,19 @@
 //! - HTML fixture loading
 //! - WireMock server setup
 //! - Test content generators
+//! - MockVault for Obsidian vault testing
 //!
 //! # Usage
 //!
 //! ```ignore
 //! mod common;
-//! use common::{load_fixture, mock_server};
+//! use common::{load_fixture, mock_server, MockVault};
 //! ```
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use tempfile::TempDir;
+
+use deadpool_sqlite::Pool;
 
 /// TestHttpServer - RAII wrapper for wiremock MockServer
 ///
@@ -66,23 +70,17 @@ impl TestHttpServer {
     /// Example:
     /// ```ignore
     /// server.mock_response(
-    ///     wiremock::matchers::method(wiremock::Method::GET),
+    ///     wiremock::matchers::method("GET"),
     ///     "/api/data",
     ///     200,
     ///     r#"{"key":"value"}"#
     /// ).await;
     /// ```
-    pub async fn mock_response<M>(
-        &mut self,
-        matcher: M,
-        path: &str,
-        status: u16,
-        body: &str,
-    ) where
-        M: wiremock::matcher::Matcher<wiremock::Request> + Clone + Send + Sync + 'static,
+    pub async fn mock_response<M>(&mut self, matcher: M, path: &str, status: u16, body: &str)
+    where
+        M: wiremock::Match + Send + Sync + 'static,
     {
-        let response = wiremock::ResponseTemplate::new(status)
-            .set_body_string(body);
+        let response = wiremock::ResponseTemplate::new(status).set_body_string(body);
 
         wiremock::Mock::given(matcher)
             .and(wiremock::matchers::path(path))
@@ -94,31 +92,34 @@ impl TestHttpServer {
     /// Register a mock that returns 429 Rate Limited.
     pub async fn mock_rate_limit(&mut self, path: &str) {
         self.mock_response(
-            wiremock::matchers::method(wiremock::Method::GET),
+            wiremock::matchers::method("GET"),
             path,
             429,
-            r#"{"error":"Too Many Requests"}"#
-        ).await;
+            r#"{"error":"Too Many Requests"}"#,
+        )
+        .await;
     }
 
     /// Register a mock that returns 500 Server Error.
     pub async fn mock_server_error(&mut self, path: &str) {
         self.mock_response(
-            wiremock::matchers::method(wiremock::Method::GET),
+            wiremock::matchers::method("GET"),
             path,
             500,
-            r#"{"error":"Internal Server Error"}"#
-        ).await;
+            r#"{"error":"Internal Server Error"}"#,
+        )
+        .await;
     }
 
     /// Register a mock that returns 404 Not Found.
     pub async fn mock_not_found(&mut self, path: &str) {
         self.mock_response(
-            wiremock::matchers::method(wiremock::Method::GET),
+            wiremock::matchers::method("GET"),
             path,
             404,
-            r#"{"error":"Not Found"}"#
-        ).await;
+            r#"{"error":"Not Found"}"#,
+        )
+        .await;
     }
 }
 
@@ -132,13 +133,8 @@ pub fn load_fixture(name: &str) -> String {
         .join("tests")
         .join("fixtures")
         .join(name);
-    std::fs::read_to_string(&fixture_path).unwrap_or_else(|e| {
-        panic!(
-            "Failed to load fixture {}: {}",
-            fixture_path.display(),
-            e
-        )
-    })
+    std::fs::read_to_string(&fixture_path)
+        .unwrap_or_else(|e| panic!("Failed to load fixture {}: {}", fixture_path.display(), e))
 }
 
 /// Get the path to the fixtures directory.
@@ -181,6 +177,129 @@ pub fn mock_scraped_content_with_html(
     }
 }
 
+/// MockVault — RAII test helper that simulates an Obsidian vault environment.
+///
+/// Creates a temporary directory with the standard Obsidian vault structure:
+/// - `.obsidian/` directory
+/// - `.obsidian/workspace.json` (empty)
+/// - `.obsidian/obsidian.json` (test metadata)
+/// - `test-note.md` (sample note with frontmatter)
+///
+/// The temp directory is automatically cleaned up when the `MockVault` is dropped.
+///
+/// # Usage
+///
+/// ```ignore
+/// #[test]
+/// fn test_vault_structure() {
+///     let vault = MockVault::new();
+///     assert!(vault.is_recognized_as_vault());
+///     // vault.path() gives you the root
+///     // vault.vault_json() gives you the obsidian.json path
+/// }
+/// ```
+pub struct MockVault {
+    _temp_dir: TempDir,
+    vault_path: PathBuf,
+}
+
+impl MockVault {
+    /// Create a new mock Obsidian vault in a temporary directory.
+    ///
+    /// Sets up the full `.obsidian/` structure that Obsidian expects,
+    /// plus a sample markdown note.
+    pub fn new() -> Self {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let vault_path = temp_dir.path().to_path_buf();
+
+        // Create .obsidian/ directory
+        let obsidian_dir = vault_path.join(".obsidian");
+        std::fs::create_dir_all(&obsidian_dir).expect("failed to create .obsidian directory");
+
+        // Create empty workspace.json
+        std::fs::write(obsidian_dir.join("workspace.json"), "{}")
+            .expect("failed to create workspace.json");
+
+        // Create obsidian.json with test metadata
+        let vault_fs_path = vault_path.to_string_lossy();
+        let obsidian_json = format!(
+            r#"{{"vault":{{"fsPath":"{}","id":"test-vault-id","name":"TestVault"}}}}"#,
+            vault_fs_path
+        );
+        std::fs::write(obsidian_dir.join("obsidian.json"), &obsidian_json)
+            .expect("failed to create obsidian.json");
+
+        // Create a sample markdown note with frontmatter
+        let test_note = "---\ntags: [test]\n---\n# Test Note\n\nMock note content.\n";
+        std::fs::write(vault_path.join("test-note.md"), test_note)
+            .expect("failed to create test-note.md");
+
+        Self {
+            _temp_dir: temp_dir,
+            vault_path,
+        }
+    }
+
+    /// Returns a reference to the vault root path.
+    pub fn path(&self) -> &PathBuf {
+        &self.vault_path
+    }
+
+    /// Returns the path to `.obsidian/obsidian.json`.
+    pub fn vault_json(&self) -> PathBuf {
+        self.vault_path.join(".obsidian").join("obsidian.json")
+    }
+
+    /// Checks if this vault would be recognized as a valid Obsidian vault.
+    ///
+    /// A vault is recognized when:
+    /// - `.obsidian/` directory exists
+    /// - `.obsidian/obsidian.json` exists
+    pub fn is_recognized_as_vault(&self) -> bool {
+        let obsidian_dir = self.vault_path.join(".obsidian");
+        obsidian_dir.is_dir() && obsidian_dir.join("obsidian.json").is_file()
+    }
+}
+
+/// A managed in-memory SQLite database for testing.
+///
+/// Wraps a [`deadpool_sqlite::Pool`] backed by `:memory:`. The pool **must**
+/// stay alive for the entire test lifetime — dropping it closes all
+/// connections and the in-memory database is destroyed.
+///
+/// # Usage
+///
+/// ```ignore
+/// #[tokio::test]
+/// async fn test_something_with_sqlite() {
+///     let mem = MemoryDb::new();
+///     let pool = mem.pool();
+///     // ... use pool for testing
+/// }
+/// ```
+pub struct MemoryDb {
+    pool: Pool,
+}
+
+impl MemoryDb {
+    /// Create a new in-memory SQLite database with a single-connection pool.
+    pub fn new() -> Self {
+        let pool = rust_scraper::infrastructure::persistence::create_memory_pool()
+            .expect("create_memory_pool must succeed in tests");
+        Self { pool }
+    }
+
+    /// Borrow the underlying connection pool.
+    pub fn pool(&self) -> &Pool {
+        &self.pool
+    }
+
+    /// Consume the helper and return the pool (for ownership transfer).
+    pub fn into_pool(self) -> Pool {
+        self.pool
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,11 +320,8 @@ mod tests {
 
     #[test]
     fn test_mock_scraped_content() {
-        let content = mock_scraped_content(
-            "https://example.com/test",
-            "Test Title",
-            "Test content",
-        );
+        let content =
+            mock_scraped_content("https://example.com/test", "Test Title", "Test content");
         assert_eq!(content.title, "Test Title");
         assert_eq!(content.content, "Test content");
         assert_eq!(content.url.as_str(), "https://example.com/test");

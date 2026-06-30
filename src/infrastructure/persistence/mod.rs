@@ -8,4 +8,4 @@
 
 pub mod sqlite;
 
-pub use sqlite::{create_pool, setup_schema, SqliteVectorRepository};
+pub use sqlite::{create_memory_pool, create_pool, setup_schema, SqliteVectorRepository};
