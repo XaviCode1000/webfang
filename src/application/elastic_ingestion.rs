@@ -351,133 +351,134 @@ mod tests {
         }
     }
 
-    fn make_orchestrator(repo: InMemoryRepo) -> ElasticIngestion<InMemoryRepo> {
-        let client = wreq::Client::builder()
-            .build()
-            .expect("fallo construyendo cliente wreq de prueba");
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(1 << 20));
-        let downloader = ResourceDownloader::with_config(
-            semaphore,
-            client,
-            DownloadConfig {
-                global_timeout_seconds: 5,
-                chunk_timeout_seconds: 5,
-                max_size_bytes: 1024 * 1024,
-                ..DownloadConfig::default()
-            },
-        );
-        let pool = RayonCpuPool::new(2).expect("pool de 2 hilos");
-        let bridge = CpuBridge::new(pool);
-        let config = AutotuningConfig {
-            cpu_cores: 2,
-            ram_budget_bytes: 1 << 20,
-        };
-        ElasticIngestion::new(downloader, bridge, repo, config)
-    }
+    // ====================================================================
+    // wreq/HTTP-dependent orchestrator tests
+    //
+    // Miri interpreta MIR y no puede ejecutar C FFI. make_orchestrator()
+    // construye un wreq::Client que depende de boring-sys2 (BoringSSL →
+    // TLS_method FFI). Aislar estos tests en un solo bloque #[cfg(not(miri))]
+    // evita parchear test por test y mantiene Miri enfocado en detectar UB
+    // en la lógica Rust pura.
+    // ====================================================================
 
-    async fn serve_html(body: &str) -> (MockServer, String) {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.as_bytes().to_vec()))
-            .mount(&server)
-            .await;
-        let url = format!("{}/", server.uri());
-        (server, url)
-    }
+    #[cfg(not(miri))]
+    mod wreq {
+        use super::*;
 
-    // ---- Task 5.1: full pipeline persists a resource + chunk ----
+        fn make_orchestrator
+        (repo: InMemoryRepo) -> ElasticIngestion<InMemoryRepo> {
+            let client = ::wreq::Client::builder()
+                .build()
+                .expect("fallo construyendo cliente wreq de prueba");
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(1 << 20));
+            let downloader = ResourceDownloader::with_config(
+                semaphore,
+                client,
+                DownloadConfig {
+                    global_timeout_seconds: 5,
+                    chunk_timeout_seconds: 5,
+                    max_size_bytes: 1024 * 1024,
+                    ..DownloadConfig::default()
+                },
+            );
+            let pool = RayonCpuPool::new(2).expect("pool de 2 hilos");
+            let bridge = CpuBridge::new(pool);
+            let config = AutotuningConfig {
+                cpu_cores: 2,
+                ram_budget_bytes: 1 << 20,
+            };
+            ElasticIngestion::new(downloader, bridge, repo, config)
+        }
 
-    #[tokio::test]
-    async fn test_run_persists_resource_and_chunk() {
-        let repo = InMemoryRepo::default();
-        let orc = make_orchestrator(repo.clone());
-        let (_server, url) =
-            serve_html("<nav>menu</nav><main><p>hello elastic world</p></main>").await;
+        async fn serve_html(body: &str) -> (MockServer, String) {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/"))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(body.as_bytes().to_vec()))
+                .mount(&server)
+                .await;
+            let url = format!("{}/", server.uri());
+            (server, url)
+        }
 
-        orc.run(&url).await.expect("pipeline debe completarse");
+        #[tokio::test]
+        async fn test_run_persists_resource_and_chunk() {
+            let repo = InMemoryRepo::default();
+            let orc = make_orchestrator(repo.clone());
+            let (_server, url) =
+                serve_html("<nav>menu</nav><main><p>hello elastic world</p></main>").await;
 
-        let state = repo.state.lock().expect("repo mutex poisoned");
-        assert_eq!(
-            state.resources.len(),
-            1,
-            "exactamente un recurso persistido"
-        );
-        let (_hash, (saved_url, _title, size)) = state.resources.iter().next().expect("un recurso");
-        assert_eq!(saved_url, &url);
-        assert!(*size > 0, "size_bytes debe ser positivo");
-        assert_eq!(state.chunks.len(), 1, "exactamente un chunk persistido");
-        let chunk = &state.chunks[0];
-        assert_eq!(chunk.1, url, "chunk enlaza al recurso correcto");
-        assert_eq!(chunk.2, 0, "primer chunk_index == 0");
-        assert!(
-            chunk.3.contains("hello elastic world"),
-            "contenido limpio persistido: {}",
-            chunk.3
-        );
-        assert!(
-            !chunk.3.contains("menu"),
-            "el boilerplate (nav) no debe persistir: {}",
-            chunk.3
-        );
-        assert!(
-            chunk.4.is_none(),
-            "sin limpiador ONNX, embedding debe ser None"
-        );
-    }
+            orc.run(&url).await.expect("pipeline debe completarse");
 
-    // ---- Task 5.1: dedup short-circuit (frozen Decision 3) ----
+            let state = repo.state.lock().expect("repo mutex poisoned");
+            assert_eq!(state.resources.len(), 1, "exactamente un recurso persistido");
+            let (_hash, (saved_url, _title, size)) =
+                state.resources.iter().next().expect("un recurso");
+            assert_eq!(saved_url, &url);
+            assert!(*size > 0, "size_bytes debe ser positivo");
+            assert_eq!(state.chunks.len(), 1, "exactamente un chunk persistido");
+            let chunk = &state.chunks[0];
+            assert_eq!(chunk.1, url, "chunk enlaza al recurso correcto");
+            assert_eq!(chunk.2, 0, "primer chunk_index == 0");
+            assert!(
+                chunk.3.contains("hello elastic world"),
+                "contenido limpio persistido: {}",
+                chunk.3
+            );
+            assert!(
+                !chunk.3.contains("menu"),
+                "el boilerplate (nav) no debe persistir: {}",
+                chunk.3
+            );
+            assert!(
+                chunk.4.is_none(),
+                "sin limpiador ONNX, embedding debe ser None"
+            );
+        }
 
-    #[cfg_attr(miri, ignore)]
-    #[tokio::test]
-    async fn test_run_dedup_short_circuits_when_hash_exists() {
-        let repo = InMemoryRepo::default();
-        let orc = make_orchestrator(repo.clone());
-        let (_server, url) = serve_html("<main><p>duplicate content</p></main>").await;
+        #[tokio::test]
+        async fn test_run_dedup_short_circuits_when_hash_exists() {
+            let repo = InMemoryRepo::default();
+            let orc = make_orchestrator(repo.clone());
+            let (_server, url) = serve_html("<main><p>duplicate content</p></main>").await;
 
-        // First run persists.
-        orc.run(&url).await.expect("primera ingestión ok");
-        let after_first = {
-            let s = repo.state.lock().expect("poisoned");
-            (s.resources.len(), s.chunks.len())
-        };
-        assert_eq!(after_first, (1, 1));
+            orc.run(&url).await.expect("primera ingestión ok");
+            let after_first = {
+                let s = repo.state.lock().expect("poisoned");
+                (s.resources.len(), s.chunks.len())
+            };
+            assert_eq!(after_first, (1, 1));
 
-        // Second run of the SAME content → dedup: no new resource/chunk rows.
-        orc.run(&url).await.expect("segunda ingestión (dedup) ok");
-        let after_second = {
-            let s = repo.state.lock().expect("poisoned");
-            (s.resources.len(), s.chunks.len())
-        };
-        assert_eq!(
-            after_second,
-            (1, 1),
-            "dedup debe impedir filas duplicadas para el mismo content_hash"
-        );
-    }
+            orc.run(&url).await.expect("segunda ingestión (dedup) ok");
+            let after_second = {
+                let s = repo.state.lock().expect("poisoned");
+                (s.resources.len(), s.chunks.len())
+            };
+            assert_eq!(
+                after_second,
+                (1, 1),
+                "dedup debe impedir filas duplicadas para el mismo content_hash"
+            );
+        }
 
-    // ---- Task 5.1: fail-fast on network error (frozen Decision 3) ----
+        #[tokio::test]
+        async fn test_run_network_error_propagates_without_retry() {
+            let repo = InMemoryRepo::default();
+            let orc = make_orchestrator(repo.clone());
+            let port = {
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+                listener.local_addr().expect("addr").port()
+            };
+            let url = format!("http://127.0.0.1:{port}/");
 
-    #[cfg_attr(miri, ignore)]
-    #[tokio::test]
-    async fn test_run_network_error_propagates_without_retry() {
-        let repo = InMemoryRepo::default();
-        let orc = make_orchestrator(repo.clone());
-        // Bind a loopback port then drop the listener → connections are refused
-        // (deterministic wreq network error, not a 404 body wiremock would serve).
-        let port = {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-            listener.local_addr().expect("addr").port()
-        };
-        let url = format!("http://127.0.0.1:{port}/");
-
-        let result = orc.run(&url).await;
-        assert!(result.is_err(), "error de red debe propagarse (fail-fast)");
-        let state = repo.state.lock().expect("repo mutex poisoned");
-        assert!(
-            state.resources.is_empty() && state.chunks.is_empty(),
-            "ningún recurso/chunk debe persistirse tras un fallo de red"
-        );
+            let result = orc.run(&url).await;
+            assert!(result.is_err(), "error de red debe propagarse (fail-fast)");
+            let state = repo.state.lock().expect("repo mutex poisoned");
+            assert!(
+                state.resources.is_empty() && state.chunks.is_empty(),
+                "ningún recurso/chunk debe persistirse tras un fallo de red"
+            );
+        }
     }
 
     // ---- Task 5.1: static Send + Sync (orchestrator is shareable) ----

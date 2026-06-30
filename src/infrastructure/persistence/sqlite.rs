@@ -373,160 +373,9 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// Build a fresh pool over a temp-file DB and run the schema.
-    async fn fresh_pool(size: usize) -> (TempDir, Pool) {
-        let dir = TempDir::new().expect("tempdir");
-        let db_path = dir.path().join("crawl.db");
-        let pool = create_pool(&db_path, size).expect("create_pool");
-        SqliteVectorRepository::setup_schema(&pool)
-            .await
-            .expect("setup_schema");
-        (dir, pool)
-    }
-
-    /// Count rows in `sqlite_master` matching `type` and `name`.
-    async fn master_count(pool: &Pool, kind: &str, name: &str) -> i64 {
-        // Own the strings: the `interact` closure must be `Send + 'static`, so it
-        // cannot capture borrowed `&str` from this function's frame.
-        let kind = kind.to_string();
-        let name = name.to_string();
-        let conn = pool.get().await.expect("get");
-        conn.interact(move |c| {
-            c.query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = ?1 AND name = ?2",
-                rusqlite::params![kind, name],
-                |row| row.get::<_, i64>(0),
-            )
-        })
-        .await
-        .expect("interact")
-        .expect("count")
-    }
-
-    async fn pragma_string(pool: &Pool, pragma: &str) -> String {
-        let sql = format!("PRAGMA {pragma}");
-        let conn = pool.get().await.expect("get");
-        conn.interact(move |c| c.query_row(&sql, [], |row| row.get::<_, String>(0)))
-            .await
-            .expect("interact")
-            .expect("pragma row")
-    }
-
-    async fn pragma_int(pool: &Pool, pragma: &str) -> i64 {
-        let sql = format!("PRAGMA {pragma}");
-        let conn = pool.get().await.expect("get");
-        conn.interact(move |c| c.query_row(&sql, [], |row| row.get::<_, i64>(0)))
-            .await
-            .expect("interact")
-            .expect("pragma row")
-    }
-
-    #[tokio::test]
-    async fn test_setup_schema_creates_resources_table() {
-        let (_dir, pool) = fresh_pool(4).await;
-        assert_eq!(master_count(&pool, "table", "resources").await, 1);
-    }
-
-    #[tokio::test]
-    async fn test_setup_schema_creates_chunks_table() {
-        let (_dir, pool) = fresh_pool(4).await;
-        assert_eq!(master_count(&pool, "table", "chunks").await, 1);
-    }
-
-    #[tokio::test]
-    async fn test_setup_schema_creates_indexes() {
-        let (_dir, pool) = fresh_pool(4).await;
-        assert_eq!(
-            master_count(&pool, "index", "idx_chunks_resource").await,
-            1,
-            "idx_chunks_resource missing"
-        );
-        assert_eq!(
-            master_count(&pool, "index", "idx_resources_content_hash").await,
-            1,
-            "idx_resources_content_hash missing"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_wal_pragmas_applied_to_connection() {
-        // A freshly-created pooled connection must carry all three pragmas
-        // (proves the post_create hook runs on each connection).
-        let (_dir, pool) = fresh_pool(4).await;
-        assert_eq!(pragma_string(&pool, "journal_mode").await, "wal");
-        // synchronous: 0=OFF,1=NORMAL,2=FULL,3=EXTRA — NORMAL must be 1.
-        assert_eq!(pragma_int(&pool, "synchronous").await, 1);
-        assert_eq!(pragma_int(&pool, "cache_size").await, -4000);
-    }
-
-    #[tokio::test]
-    async fn test_db_file_created_when_absent() {
-        let dir = TempDir::new().expect("tempdir");
-        let db_path = dir.path().join("nested").join("crawl.db");
-        assert!(!db_path.exists());
-        let pool = create_pool(&db_path, 4).expect("create_pool");
-        SqliteVectorRepository::setup_schema(&pool)
-            .await
-            .expect("setup_schema");
-        // setup_schema materializes the DB file (parent dir created by create_pool).
-        assert!(db_path.exists(), "DB file should exist after setup_schema");
-    }
-
-    #[tokio::test]
-    async fn test_pool_size_is_configurable() {
-        let (_dir, pool) = fresh_pool(8).await;
-        let status = pool.status();
-        assert_eq!(status.max_size, 8, "pool max_size must honor configuration");
-    }
-
-    #[tokio::test]
-    async fn test_setup_schema_is_idempotent() {
-        let (_dir, pool) = fresh_pool(4).await;
-        // Running setup_schema twice must not error (CREATE ... IF NOT EXISTS).
-        SqliteVectorRepository::setup_schema(&pool)
-            .await
-            .expect("second setup_schema should be a no-op");
-        assert_eq!(master_count(&pool, "table", "resources").await, 1);
-        assert_eq!(master_count(&pool, "table", "chunks").await, 1);
-    }
-
-    #[tokio::test]
-    async fn test_repository_wraps_pool() {
-        let (_dir, pool) = fresh_pool(4).await;
-        let repo = SqliteVectorRepository::new(pool.clone());
-        assert_eq!(repo.pool().status().max_size, 4);
-    }
-
-    // ========================================================================
-    // PR4: VectorRepository CRUD + content-hash dedup (Strict TDD)
-    // Frozen design: BLOB = raw LE f32 bytes (decision #7); dedup short-circuit
-    // (decision #3); no separate StorageError enum (decision #4).
-    // ========================================================================
-
-    /// Build a fresh schema-initialized repo over a temp-file DB.
-    async fn fresh_repo(size: usize) -> (TempDir, SqliteVectorRepository) {
-        let (dir, pool) = fresh_pool(size).await;
-        let repo = SqliteVectorRepository::new(pool);
-        (dir, repo)
-    }
-
-    /// Count rows in `resources` matching a content_hash (test inspection only).
-    async fn count_resources_by_hash(repo: &SqliteVectorRepository, hash: &str) -> i64 {
-        let hash = hash.to_string();
-        let conn = repo.pool().get().await.expect("get");
-        conn.interact(move |c| {
-            c.query_row(
-                "SELECT COUNT(*) FROM resources WHERE content_hash = ?1",
-                rusqlite::params![hash],
-                |row| row.get::<_, i64>(0),
-            )
-        })
-        .await
-        .expect("interact")
-        .expect("count")
-    }
-
-    // --- Pure serialization functions (frozen design decision #7) ---
+    // ====================================================================
+    // Pure serialization round-trips (Miri-safe — no FFI, no I/O)
+    // ====================================================================
 
     #[test]
     fn test_embedding_roundtrip() {
@@ -555,182 +404,339 @@ mod tests {
         assert!(msg.contains('5'), "missing length in message: {msg}");
     }
 
-    // --- resource_exists_by_hash ---
+    // ====================================================================
+    // SQLite-backed integration tests
+    //
+    // Miri es un intérprete de MIR, no un emulador de binarios. No puede
+    // ejecutar código C nativo (libsqlite3-sys → sqlite3_threadsafe FFI).
+    // Estos tests requieren SQLite3 real del sistema operativo.
+    //
+    // Estrategia: Aislamiento de Capas (Layer Isolation) — el bloque entero
+    // se excluye de Miri con #[cfg(not(miri))] en lugar de parchear cada
+    // test uno por uno. Misma práctica que tokio, serde, regex.
+    // ====================================================================
 
-    #[tokio::test]
-    async fn test_resource_exists_by_hash_returns_none_when_empty() {
-        let (_dir, repo) = fresh_repo(4).await;
-        let got = repo.resource_exists_by_hash("nope").await.expect("query");
-        assert!(got.is_none(), "fresh DB has no resources");
-    }
+    #[cfg(not(miri))]
+    mod sqlite {
+        use super::*;
 
-    // --- save_resource + dedup (frozen decision #3) ---
-
-    #[tokio::test]
-    async fn test_save_and_get_resource() {
-        let (_dir, repo) = fresh_repo(4).await;
-        let url = repo
-            .save_resource("https://example.com/a", "Example", "hash-aaa", 1234)
-            .await
-            .expect("save_resource");
-        assert_eq!(
-            url, "https://example.com/a",
-            "save_resource must return the URL"
-        );
-        // Triangulation: the hash is now retrievable and exactly one row exists.
-        let found = repo
-            .resource_exists_by_hash("hash-aaa")
-            .await
-            .expect("query");
-        assert_eq!(found.as_deref(), Some("https://example.com/a"));
-        assert_eq!(count_resources_by_hash(&repo, "hash-aaa").await, 1);
-    }
-
-    #[tokio::test]
-    async fn test_dedup_skips_duplicate_hash() {
-        let (_dir, repo) = fresh_repo(4).await;
-        let first = repo
-            .save_resource("https://example.com/first", "First", "dup-hash", 100)
-            .await
-            .expect("save_resource #1");
-        // Same content_hash, different URL → must short-circuit and return the
-        // existing URL without inserting a duplicate row.
-        let second = repo
-            .save_resource("https://example.com/second", "Second", "dup-hash", 200)
-            .await
-            .expect("save_resource #2 (dedup)");
-        assert_eq!(
-            first, "https://example.com/first",
-            "dedup returns existing URL"
-        );
-        assert_eq!(second, first, "dedup must return the SAME (existing) URL");
-        assert_eq!(
-            count_resources_by_hash(&repo, "dup-hash").await,
-            1,
-            "no duplicate row must be inserted on dedup hit"
-        );
-    }
-
-    // --- save_chunk + get_vector ---
-
-    #[tokio::test]
-    async fn test_save_and_get_chunk_with_embedding() {
-        let (_dir, repo) = fresh_repo(4).await;
-        repo.save_resource("https://example.com/c", "C", "hash-c", 10)
-            .await
-            .expect("save_resource");
-        let emb = vec![0.1_f32, 0.2, 0.3, 0.4];
-        repo.save_chunk(
-            "chunk-1",
-            "https://example.com/c",
-            0,
-            "hello world",
-            Some(&emb),
-        )
-        .await
-        .expect("save_chunk");
-        let got = repo.get_vector("chunk-1").await.expect("get_vector");
-        assert_eq!(
-            got.as_deref(),
-            Some(emb.as_slice()),
-            "embedding must round-trip through BLOB"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_save_chunk_without_embedding_returns_none() {
-        let (_dir, repo) = fresh_repo(4).await;
-        repo.save_resource("https://example.com/n", "N", "hash-n", 10)
-            .await
-            .expect("save_resource");
-        repo.save_chunk(
-            "chunk-none",
-            "https://example.com/n",
-            0,
-            "no vec here",
-            None,
-        )
-        .await
-        .expect("save_chunk");
-        let got = repo.get_vector("chunk-none").await.expect("get_vector");
-        assert!(
-            got.is_none(),
-            "chunk saved without embedding must yield None"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_get_vector_nonexistent_chunk() {
-        let (_dir, repo) = fresh_repo(4).await;
-        let got = repo.get_vector("does-not-exist").await.expect("get_vector");
-        assert!(
-            got.is_none(),
-            "missing chunk must yield Ok(None), not an error"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_corrupt_blob_returns_error() {
-        let (_dir, repo) = fresh_repo(4).await;
-        repo.save_resource("https://example.com/bad", "Bad", "hash-bad", 1)
-            .await
-            .expect("save_resource");
-        // Inject a corrupt 5-byte BLOB directly via SQL (bypasses the serializer).
-        let url = "https://example.com/bad".to_string();
-        let conn = repo.pool().get().await.expect("get");
-        conn.interact(move |c| {
-            c.execute(
-                "INSERT INTO chunks \
-                 (id, resource_url, chunk_index, content, embedding_vector, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
-                rusqlite::params!["bad-chunk", url, 0_i64, "", vec![1_u8, 2, 3, 4, 5]],
-            )
-        })
-        .await
-        .expect("interact")
-        .expect("raw insert");
-        // get_vector must reject the corrupt BLOB with a Persistence error.
-        let err = repo
-            .get_vector("bad-chunk")
-            .await
-            .expect_err("corrupt BLOB must surface as an error");
-        let msg = err.to_string();
-        assert!(msg.contains("corrupto"), "missing Spanish marker: {msg}");
-        assert!(msg.contains('5'), "missing length in message: {msg}");
-    }
-
-    #[cfg_attr(miri, ignore)]
-    #[tokio::test]
-    async fn test_concurrent_writes_via_pool() {
-        // Spec §Connection Pooling "concurrent writes via pool": 4 concurrent
-        // writes on a pool of size 4 must all complete without blocking the
-        // runtime. Native async-trait futures are NOT `Send`, so we run them
-        // concurrently on the test task via `join_all` (no `tokio::spawn`).
-        let (_dir, repo) = fresh_repo(4).await;
-        let futures = (0..4_u8).map(|i| {
-            let repo = repo.clone();
-            async move {
-                repo.save_resource(
-                    &format!("https://example.com/c{i}"),
-                    "Concurrent",
-                    &format!("hash-c{i}"),
-                    1,
-                )
+        /// Build a fresh pool over a temp-file DB and run the schema.
+        async fn fresh_pool(size: usize) -> (TempDir, Pool) {
+            let dir = TempDir::new().expect("tempdir");
+            let db_path = dir.path().join("crawl.db");
+            let pool = create_pool(&db_path, size).expect("create_pool");
+            SqliteVectorRepository::setup_schema(&pool)
                 .await
-            }
-        });
-        let results: Vec<_> = futures::future::join_all(futures).await;
-        assert_eq!(results.len(), 4, "all 4 concurrent saves must complete");
-        for r in &results {
-            assert!(r.is_ok(), "concurrent save must not error: {r:?}");
+                .expect("setup_schema");
+            (dir, pool)
         }
-        // All 4 rows present (distinct hashes → no dedup).
-        for i in 0..4_u8 {
+
+        /// Count rows in `sqlite_master` matching `type` and `name`.
+        async fn master_count(pool: &Pool, kind: &str, name: &str) -> i64 {
+            // Own the strings: the `interact` closure must be `Send + 'static`, so it
+            // cannot capture borrowed `&str` from this function's frame.
+            let kind = kind.to_string();
+            let name = name.to_string();
+            let conn = pool.get().await.expect("get");
+            conn.interact(move |c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = ?1 AND name = ?2",
+                    rusqlite::params![kind, name],
+                    |row| row.get::<_, i64>(0),
+                )
+            })
+            .await
+            .expect("interact")
+            .expect("count")
+        }
+
+        async fn pragma_string(pool: &Pool, pragma: &str) -> String {
+            let sql = format!("PRAGMA {pragma}");
+            let conn = pool.get().await.expect("get");
+            conn.interact(move |c| c.query_row(&sql, [], |row| row.get::<_, String>(0)))
+                .await
+                .expect("interact")
+                .expect("pragma row")
+        }
+
+        async fn pragma_int(pool: &Pool, pragma: &str) -> i64 {
+            let sql = format!("PRAGMA {pragma}");
+            let conn = pool.get().await.expect("get");
+            conn.interact(move |c| c.query_row(&sql, [], |row| row.get::<_, i64>(0)))
+                .await
+                .expect("interact")
+                .expect("pragma row")
+        }
+
+        #[tokio::test]
+        async fn test_setup_schema_creates_resources_table() {
+            let (_dir, pool) = fresh_pool(4).await;
+            assert_eq!(master_count(&pool, "table", "resources").await, 1);
+        }
+
+        #[tokio::test]
+        async fn test_setup_schema_creates_chunks_table() {
+            let (_dir, pool) = fresh_pool(4).await;
+            assert_eq!(master_count(&pool, "table", "chunks").await, 1);
+        }
+
+        #[tokio::test]
+        async fn test_setup_schema_creates_indexes() {
+            let (_dir, pool) = fresh_pool(4).await;
             assert_eq!(
-                count_resources_by_hash(&repo, &format!("hash-c{i}")).await,
+                master_count(&pool, "index", "idx_chunks_resource").await,
                 1,
-                "row for hash-c{i} must exist after concurrent writes"
+                "idx_chunks_resource missing"
             );
+            assert_eq!(
+                master_count(&pool, "index", "idx_resources_content_hash").await,
+                1,
+                "idx_resources_content_hash missing"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_wal_pragmas_applied_to_connection() {
+            // A freshly-created pooled connection must carry all three pragmas
+            // (proves the post_create hook runs on each connection).
+            let (_dir, pool) = fresh_pool(4).await;
+            assert_eq!(pragma_string(&pool, "journal_mode").await, "wal");
+            // synchronous: 0=OFF,1=NORMAL,2=FULL,3=EXTRA — NORMAL must be 1.
+            assert_eq!(pragma_int(&pool, "synchronous").await, 1);
+            assert_eq!(pragma_int(&pool, "cache_size").await, -4000);
+        }
+
+        #[tokio::test]
+        async fn test_db_file_created_when_absent() {
+            let dir = TempDir::new().expect("tempdir");
+            let db_path = dir.path().join("nested").join("crawl.db");
+            assert!(!db_path.exists());
+            let pool = create_pool(&db_path, 4).expect("create_pool");
+            SqliteVectorRepository::setup_schema(&pool)
+                .await
+                .expect("setup_schema");
+            // setup_schema materializes the DB file (parent dir created by create_pool).
+            assert!(db_path.exists(), "DB file should exist after setup_schema");
+        }
+
+        #[tokio::test]
+        async fn test_pool_size_is_configurable() {
+            let (_dir, pool) = fresh_pool(8).await;
+            let status = pool.status();
+            assert_eq!(status.max_size, 8, "pool max_size must honor configuration");
+        }
+
+        #[tokio::test]
+        async fn test_setup_schema_is_idempotent() {
+            let (_dir, pool) = fresh_pool(4).await;
+            // Running setup_schema twice must not error (CREATE ... IF NOT EXISTS).
+            SqliteVectorRepository::setup_schema(&pool)
+                .await
+                .expect("second setup_schema should be a no-op");
+            assert_eq!(master_count(&pool, "table", "resources").await, 1);
+            assert_eq!(master_count(&pool, "table", "chunks").await, 1);
+        }
+
+        #[tokio::test]
+        async fn test_repository_wraps_pool() {
+            let (_dir, pool) = fresh_pool(4).await;
+            let repo = SqliteVectorRepository::new(pool.clone());
+            assert_eq!(repo.pool().status().max_size, 4);
+        }
+
+        // ================================================================
+        // PR4: VectorRepository CRUD + content-hash dedup (Strict TDD)
+        // ================================================================
+
+        /// Build a fresh schema-initialized repo over a temp-file DB.
+        async fn fresh_repo(size: usize) -> (TempDir, SqliteVectorRepository) {
+            let (dir, pool) = fresh_pool(size).await;
+            let repo = SqliteVectorRepository::new(pool);
+            (dir, repo)
+        }
+
+        /// Count rows in `resources` matching a content_hash (test inspection only).
+        async fn count_resources_by_hash(repo: &SqliteVectorRepository, hash: &str) -> i64 {
+            let hash = hash.to_string();
+            let conn = repo.pool().get().await.expect("get");
+            conn.interact(move |c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM resources WHERE content_hash = ?1",
+                    rusqlite::params![hash],
+                    |row| row.get::<_, i64>(0),
+                )
+            })
+            .await
+            .expect("interact")
+            .expect("count")
+        }
+
+        // --- resource_exists_by_hash ---
+
+        #[tokio::test]
+        async fn test_resource_exists_by_hash_returns_none_when_empty() {
+            let (_dir, repo) = fresh_repo(4).await;
+            let got = repo.resource_exists_by_hash("nope").await.expect("query");
+            assert!(got.is_none(), "fresh DB has no resources");
+        }
+
+        // --- save_resource + dedup (frozen decision #3) ---
+
+        #[tokio::test]
+        async fn test_save_and_get_resource() {
+            let (_dir, repo) = fresh_repo(4).await;
+            let url = repo
+                .save_resource("https://example.com/a", "Example", "hash-aaa", 1234)
+                .await
+                .expect("save_resource");
+            assert_eq!(
+                url, "https://example.com/a",
+                "save_resource must return the URL"
+            );
+            let found = repo
+                .resource_exists_by_hash("hash-aaa")
+                .await
+                .expect("query");
+            assert_eq!(found.as_deref(), Some("https://example.com/a"));
+            assert_eq!(count_resources_by_hash(&repo, "hash-aaa").await, 1);
+        }
+
+        #[tokio::test]
+        async fn test_dedup_skips_duplicate_hash() {
+            let (_dir, repo) = fresh_repo(4).await;
+            let first = repo
+                .save_resource("https://example.com/first", "First", "dup-hash", 100)
+                .await
+                .expect("save_resource #1");
+            let second = repo
+                .save_resource("https://example.com/second", "Second", "dup-hash", 200)
+                .await
+                .expect("save_resource #2 (dedup)");
+            assert_eq!(
+                first, "https://example.com/first",
+                "dedup returns existing URL"
+            );
+            assert_eq!(second, first, "dedup must return the SAME (existing) URL");
+            assert_eq!(
+                count_resources_by_hash(&repo, "dup-hash").await,
+                1,
+                "no duplicate row must be inserted on dedup hit"
+            );
+        }
+
+        // --- save_chunk + get_vector ---
+
+        #[tokio::test]
+        async fn test_save_and_get_chunk_with_embedding() {
+            let (_dir, repo) = fresh_repo(4).await;
+            repo.save_resource("https://example.com/c", "C", "hash-c", 10)
+                .await
+                .expect("save_resource");
+            let emb = vec![0.1_f32, 0.2, 0.3, 0.4];
+            repo.save_chunk(
+                "chunk-1",
+                "https://example.com/c",
+                0,
+                "hello world",
+                Some(&emb),
+            )
+            .await
+            .expect("save_chunk");
+            let got = repo.get_vector("chunk-1").await.expect("get_vector");
+            assert_eq!(
+                got.as_deref(),
+                Some(emb.as_slice()),
+                "embedding must round-trip through BLOB"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_save_chunk_without_embedding_returns_none() {
+            let (_dir, repo) = fresh_repo(4).await;
+            repo.save_resource("https://example.com/n", "N", "hash-n", 10)
+                .await
+                .expect("save_resource");
+            repo.save_chunk(
+                "chunk-none",
+                "https://example.com/n",
+                0,
+                "no vec here",
+                None,
+            )
+            .await
+            .expect("save_chunk");
+            let got = repo.get_vector("chunk-none").await.expect("get_vector");
+            assert!(
+                got.is_none(),
+                "chunk saved without embedding must yield None"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_get_vector_nonexistent_chunk() {
+            let (_dir, repo) = fresh_repo(4).await;
+            let got = repo.get_vector("does-not-exist").await.expect("get_vector");
+            assert!(
+                got.is_none(),
+                "missing chunk must yield Ok(None), not an error"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_corrupt_blob_returns_error() {
+            let (_dir, repo) = fresh_repo(4).await;
+            repo.save_resource("https://example.com/bad", "Bad", "hash-bad", 1)
+                .await
+                .expect("save_resource");
+            let url = "https://example.com/bad".to_string();
+            let conn = repo.pool().get().await.expect("get");
+            conn.interact(move |c| {
+                c.execute(
+                    "INSERT INTO chunks \
+                     (id, resource_url, chunk_index, content, embedding_vector, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
+                    rusqlite::params!["bad-chunk", url, 0_i64, "", vec![1_u8, 2, 3, 4, 5]],
+                )
+            })
+            .await
+            .expect("interact")
+            .expect("raw insert");
+            let err = repo
+                .get_vector("bad-chunk")
+                .await
+                .expect_err("corrupt BLOB must surface as an error");
+            let msg = err.to_string();
+            assert!(msg.contains("corrupto"), "missing Spanish marker: {msg}");
+            assert!(msg.contains('5'), "missing length in message: {msg}");
+        }
+
+        #[tokio::test]
+        async fn test_concurrent_writes_via_pool() {
+            let (_dir, repo) = fresh_repo(4).await;
+            let futures = (0..4_u8).map(|i| {
+                let repo = repo.clone();
+                async move {
+                    repo.save_resource(
+                        &format!("https://example.com/c{i}"),
+                        "Concurrent",
+                        &format!("hash-c{i}"),
+                        1,
+                    )
+                    .await
+                }
+            });
+            let results: Vec<_> = futures::future::join_all(futures).await;
+            assert_eq!(results.len(), 4, "all 4 concurrent saves must complete");
+            for r in &results {
+                assert!(r.is_ok(), "concurrent save must not error: {r:?}");
+            }
+            for i in 0..4_u8 {
+                assert_eq!(
+                    count_resources_by_hash(&repo, &format!("hash-c{i}")).await,
+                    1,
+                    "row for hash-c{i} must exist after concurrent writes"
+                );
+            }
         }
     }
 }
