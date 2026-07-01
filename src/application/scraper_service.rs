@@ -223,6 +223,10 @@ pub async fn scrape_with_config(
                 // This is what downstream Markdown converters receive.
                 html: Some(article.content),
                 assets,
+                #[cfg(feature = "otel")]
+                correlation_id: crate::domain::CorrelationId::from_otel_context(),
+                #[cfg(not(feature = "otel"))]
+                correlation_id: None,
             });
         },
         Err(e) => {
@@ -257,6 +261,10 @@ pub async fn scrape_with_config(
                 date: None,
                 html: Some(html),
                 assets,
+                #[cfg(feature = "otel")]
+                correlation_id: crate::domain::CorrelationId::from_otel_context(),
+                #[cfg(not(feature = "otel"))]
+                correlation_id: None,
             });
         },
     }

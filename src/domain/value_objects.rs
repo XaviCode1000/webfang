@@ -94,6 +94,43 @@ impl CorrelationId {
     pub fn to_tracestate(&self) -> String {
         format!("rust_scraper=v1:{:032x}", self.trace_id.as_u128())
     }
+
+    /// Convert to OpenTelemetry TraceId.
+    ///
+    /// UUID v7 is 128-bit, mapping directly to OTel's 128-bit TraceId.
+    #[cfg(feature = "otel")]
+    pub fn as_otel_trace_id(&self) -> opentelemetry::TraceId {
+        opentelemetry::TraceId::from(self.trace_id.as_u128())
+    }
+
+    /// Convert to OpenTelemetry SpanId.
+    ///
+    /// The raw 64-bit span_id maps directly to OTel's 64-bit SpanId.
+    #[cfg(feature = "otel")]
+    pub fn as_otel_span_id(&self) -> opentelemetry::SpanId {
+        opentelemetry::SpanId::from(self.span_id)
+    }
+
+    /// Create a CorrelationId from the current OTel span context.
+    ///
+    /// Extracts trace_id and span_id from the active OpenTelemetry span,
+    /// connecting the domain-level CorrelationId to the infrastructure-level
+    /// OTel distributed tracing context.
+    ///
+    /// Returns `None` if no OTel span is active or the context is invalid.
+    #[cfg(feature = "otel")]
+    pub fn from_otel_context() -> Option<Self> {
+        use opentelemetry::trace::TraceContextExt;
+        let ctx = opentelemetry::Context::current();
+        let span = ctx.span();
+        let span_ctx = span.span_context();
+        if !span_ctx.is_valid() {
+            return None;
+        }
+        let trace_id = Uuid::from_u128(u128::from_be_bytes(span_ctx.trace_id().to_bytes()));
+        let span_id = u64::from_be_bytes(span_ctx.span_id().to_bytes());
+        Some(Self { trace_id, span_id })
+    }
 }
 
 impl Default for CorrelationId {
@@ -325,5 +362,70 @@ mod tests {
         assert!(tracestate.starts_with("rust_scraper=v1:"));
         assert!(tracestate.contains('='));
         assert_eq!(tracestate.len(), 48);
+    }
+
+    // ========================================================================
+    // CorrelationId → OTel context bridge tests
+    // ========================================================================
+
+    #[cfg(feature = "otel")]
+    mod otel_bridge {
+        use super::*;
+
+        #[test]
+        fn test_correlation_id_as_otel_trace_id_matches_uuid() {
+            let corr = CorrelationId::new();
+            let otel_trace_id = corr.as_otel_trace_id();
+            let expected_bytes = corr.trace_id().as_u128().to_be_bytes();
+            assert_eq!(
+                otel_trace_id.to_bytes(),
+                expected_bytes,
+                "OTel TraceId bytes must match UUID v7 bytes"
+            );
+        }
+
+        #[test]
+        fn test_correlation_id_as_otel_span_id_matches_raw() {
+            let corr = CorrelationId::new();
+            let otel_span_id = corr.as_otel_span_id();
+            let expected_bytes = corr.span_id().to_be_bytes();
+            assert_eq!(
+                otel_span_id.to_bytes(),
+                expected_bytes,
+                "OTel SpanId bytes must match raw span_id"
+            );
+        }
+
+        #[test]
+        fn test_correlation_id_as_otel_context_valid() {
+            let corr = CorrelationId::new();
+            let trace_id = corr.as_otel_trace_id();
+            let span_id = corr.as_otel_span_id();
+            assert_ne!(
+                trace_id,
+                opentelemetry::TraceId::INVALID,
+                "trace_id must not be OTel invalid"
+            );
+            assert_ne!(
+                span_id,
+                opentelemetry::SpanId::INVALID,
+                "span_id must not be OTel invalid"
+            );
+        }
+
+        #[test]
+        fn test_correlation_id_new_with_ids_otel_bridge() {
+            let trace_uuid = Uuid::now_v7();
+            let span_raw: u64 = 0xDEAD_BEEF_CAFE_BABE;
+            let corr = CorrelationId::new_with_ids(trace_uuid, span_raw);
+            assert_eq!(
+                corr.as_otel_trace_id().to_bytes(),
+                trace_uuid.as_u128().to_be_bytes()
+            );
+            assert_eq!(
+                corr.as_otel_span_id().to_bytes(),
+                span_raw.to_be_bytes()
+            );
+        }
     }
 }

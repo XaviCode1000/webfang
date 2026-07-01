@@ -66,8 +66,15 @@ pub fn should_emit_emoji() -> bool {
 }
 
 /// Initialize logging with configurable level, routing ALL output to stderr.
+#[cfg(not(feature = "otel"))]
 pub fn init_logging(level: &str) {
     init_logging_dual(level, false, is_no_color());
+}
+
+/// Initialize logging with configurable level (otel-enabled variant).
+#[cfg(feature = "otel")]
+pub fn init_logging(level: &str) {
+    init_logging_dual(level, false, is_no_color(), None);
 }
 
 /// Dual-mode logging: forces stderr, supports quiet mode and NO_COLOR.
@@ -77,6 +84,7 @@ pub fn init_logging(level: &str) {
 /// * `level` - Log level: "error", "warn", "info", "debug", "trace"
 /// * `quiet` - If true, only warn+level output is shown
 /// * `no_color` - If true, ANSI colors are disabled
+#[cfg(not(feature = "otel"))]
 pub fn init_logging_dual(level: &str, quiet: bool, no_color: bool) {
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -95,6 +103,36 @@ pub fn init_logging_dual(level: &str, quiet: bool, no_color: bool) {
     tracing_subscriber::registry()
         .with(fmt_layer)
         .with(filter)
+        .init();
+}
+
+/// Dual-mode logging with optional OTel layer.
+#[cfg(feature = "otel")]
+pub fn init_logging_dual(
+    level: &str,
+    quiet: bool,
+    no_color: bool,
+    otel_layer: Option<tracing_opentelemetry::OpenTelemetryLayer<tracing_subscriber::Registry, opentelemetry_sdk::trace::Tracer>>,
+) {
+    use tracing_subscriber::{fmt, prelude::*};
+
+    let filter = if quiet {
+        tracing_subscriber::EnvFilter::new("rust_scraper=warn,tokio=warn,reqwest=warn")
+    } else {
+        tracing_subscriber::EnvFilter::new(format!("rust_scraper={level},tokio=warn,reqwest=warn"))
+    };
+
+    let fmt_layer = fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_ansi(!no_color)
+        .with_target(true)
+        .pretty();
+
+    // OTel layer must be added directly on Registry, before EnvFilter
+    tracing_subscriber::registry()
+        .with(otel_layer)
+        .with(filter)
+        .with(fmt_layer)
         .init();
 }
 
@@ -138,5 +176,25 @@ max_pages = 20
     #[test]
     fn test_should_emit_emoji_default() {
         assert!(should_emit_emoji());
+    }
+
+    #[cfg(feature = "otel")]
+    mod otel_layer {
+        use super::*;
+
+        #[test]
+        fn test_init_logging_dual_accepts_none_layer() {
+            init_logging_dual("info", false, false, None);
+        }
+
+        #[test]
+        fn test_init_logging_dual_accepts_some_layer() {
+            let config =
+                crate::infrastructure::observability::otel::OtelConfig::from_env();
+            let (_guard, layer) =
+                crate::infrastructure::observability::otel::init_otel_tracing(config)
+                    .unwrap();
+            init_logging_dual("info", false, false, Some(layer));
+        }
     }
 }

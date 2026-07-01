@@ -165,6 +165,9 @@ pub struct ScrapedContent {
     /// Downloaded assets (images, documents)
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub assets: Vec<DownloadedAsset>,
+    /// Distributed tracing correlation ID (links to OTel span context)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<CorrelationId>,
 }
 
 /// Export format variants for RAG pipeline
@@ -326,7 +329,7 @@ impl From<ScrapedContent> for DocumentChunk<Draft> {
             metadata,
             timestamp: Utc::now(),
             embeddings: None,
-            correlation_id: None,
+            correlation_id: scraped.correlation_id.map(|c| c.to_traceparent()),
             _state: PhantomData,
         }
     }
@@ -339,7 +342,7 @@ impl DocumentChunk<Draft> {
     /// to the RAG pipeline's input format.
     #[must_use]
     pub fn from_scraped_content(scraped: &ScrapedContent) -> Self {
-        Self::from_scraped_content_with_correlation(scraped, None)
+        Self::from_scraped_content_with_correlation(scraped, scraped.correlation_id.as_ref())
     }
 
     /// Create a new DocumentChunk from ScrapedContent with correlation ID
@@ -560,6 +563,7 @@ mod tests {
             date: None,
             html: None,
             assets: Vec::new(),
+            correlation_id: None,
         };
 
         assert_eq!(content.title, "Test Article");
@@ -583,6 +587,7 @@ mod tests {
                 asset_type: "image".to_string(),
                 size: 2048,
             }],
+            correlation_id: None,
         };
 
         assert_eq!(content.author, Some("John Doe".to_string()));

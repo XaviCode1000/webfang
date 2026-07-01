@@ -10,6 +10,8 @@ use std::path::Path;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+#[cfg(feature = "otel")]
+use tracing_subscriber::Registry;
 
 /// Guard for JSON logging - ensures flush on drop (RAII)
 ///
@@ -90,12 +92,23 @@ impl std::fmt::Display for LogFormat {
 ///     // Logs are flushed when _guard is dropped at end of main
 /// }
 /// ```
+#[cfg(not(feature = "otel"))]
 pub fn init_json_logging(
     level: &str,
     log_dir: Option<&Path>,
     app_name: &str,
 ) -> anyhow::Result<LogGuard> {
     init_json_logging_dual(level, false, false, log_dir, app_name)
+}
+
+/// Initialize JSON logging with file rotation (otel-enabled variant).
+#[cfg(feature = "otel")]
+pub fn init_json_logging(
+    level: &str,
+    log_dir: Option<&Path>,
+    app_name: &str,
+) -> anyhow::Result<LogGuard> {
+    init_json_logging_dual(level, false, false, log_dir, app_name, None)
 }
 
 /// Extended JSON logging with quiet mode and no-color support.
@@ -107,6 +120,7 @@ pub fn init_json_logging(
 /// * `no_color` - If true, disable ANSI colors
 /// * `log_dir` - Optional directory for log files
 /// * `app_name` - Application name for log file naming
+#[cfg(not(feature = "otel"))]
 pub fn init_json_logging_dual(
     level: &str,
     quiet: bool,
@@ -134,14 +148,9 @@ pub fn init_json_logging_dual(
 
     // JSON file layer if log_dir provided
     if let Some(dir) = log_dir {
-        // Create file appender with daily rotation
         let file_appender =
             RollingFileAppender::new(Rotation::DAILY, dir, format!("{app_name}.log"));
-
-        // NON-BLOCKING: Worker thread handles file I/O, Tokio threads never block
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-
-        // RAII: Return guard to ensure flush on drop
         let log_guard = LogGuard {
             _guard: Some(guard),
         };
@@ -156,7 +165,63 @@ pub fn init_json_logging_dual(
         Ok(log_guard)
     } else {
         subscriber.init();
-        // No file logging - create a no-op guard
+        Ok(LogGuard::no_op())
+    }
+}
+
+/// Extended JSON logging with quiet mode, no-color support, and optional OTel layer.
+///
+/// When the `otel` feature is enabled, accepts an optional `OpenTelemetryLayer`
+/// that is inserted into the subscriber chain after the EnvFilter and before
+/// the fmt layers. When `None`, behavior is identical to the non-otel build.
+#[cfg(feature = "otel")]
+pub fn init_json_logging_dual(
+    level: &str,
+    quiet: bool,
+    no_color: bool,
+    log_dir: Option<&Path>,
+    app_name: &str,
+    otel_layer: Option<tracing_opentelemetry::OpenTelemetryLayer<Registry, opentelemetry_sdk::trace::Tracer>>,
+) -> anyhow::Result<LogGuard> {
+    let filter = if quiet {
+        EnvFilter::new("rust_scraper=warn,tokio=warn,reqwest=warn")
+    } else {
+        EnvFilter::new(format!("rust_scraper={level},tokio=warn,reqwest=warn"))
+    };
+
+    // Build subscriber: OTel layer must be added directly on Registry, before EnvFilter
+    let subscriber = tracing_subscriber::registry()
+        .with(otel_layer)
+        .with(filter);
+
+    // Text layer for stderr (always)
+    let text_layer = fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_ansi(!no_color)
+        .with_target(true)
+        .pretty();
+
+    let subscriber = subscriber.with(text_layer);
+
+    // JSON file layer if log_dir provided
+    if let Some(dir) = log_dir {
+        let file_appender =
+            RollingFileAppender::new(Rotation::DAILY, dir, format!("{app_name}.log"));
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+        let log_guard = LogGuard {
+            _guard: Some(guard),
+        };
+
+        let json_layer = fmt::layer()
+            .with_writer(non_blocking)
+            .with_ansi(false)
+            .with_target(true)
+            .json();
+
+        subscriber.with(json_layer).init();
+        Ok(log_guard)
+    } else {
+        subscriber.init();
         Ok(LogGuard::no_op())
     }
 }
@@ -220,5 +285,33 @@ mod tests {
     fn test_init_otel_tracing() {
         let result = init_otel_tracing();
         assert!(result.is_ok());
+    }
+
+    #[cfg(feature = "otel")]
+    mod otel_layer {
+        use super::*;
+
+        #[test]
+        fn test_init_json_logging_dual_accepts_none_layer() {
+            let result = init_json_logging_dual("info", false, false, None, "test-app", None);
+            assert!(
+                result.is_ok(),
+                "init_json_logging_dual with None OTel layer must succeed"
+            );
+        }
+
+        #[test]
+        fn test_init_json_logging_dual_accepts_some_layer() {
+            let config = crate::infrastructure::observability::otel::OtelConfig::from_env();
+            let (_guard, layer) =
+                crate::infrastructure::observability::otel::init_otel_tracing(config).unwrap();
+
+            let result =
+                init_json_logging_dual("info", false, false, None, "test-app", Some(layer));
+            assert!(
+                result.is_ok(),
+                "init_json_logging_dual with OTel layer must succeed"
+            );
+        }
     }
 }
