@@ -221,6 +221,11 @@ pub struct Args {
     #[clap(next_help_heading = "Display")]
     pub dry_run: bool,
 
+    /// Path to write OTel spans as JSONL for offline debugging
+    #[arg(long, env = "RUST_SCRAPER_TRACE_FILE")]
+    #[clap(next_help_heading = "Display")]
+    pub trace_file: Option<std::path::PathBuf>,
+
     // ========== Crawler Settings ==========
     /// Maximum depth to crawl (0 = only seed URL)
     #[arg(long, default_value = "2", env = "RUST_SCRAPER_MAX_DEPTH")]

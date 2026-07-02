@@ -221,7 +221,13 @@ async fn __main() -> CliExit {
     }
 
     // =========================================================================
-    // 6. Convert Args → CrawlOptions and apply config file defaults
+    // 6. Extract trace_file before args is moved into CrawlOptions
+    // =========================================================================
+    #[cfg(feature = "otel")]
+    let trace_file = args.trace_file.take();
+
+    // =========================================================================
+    // 6b. Convert Args → CrawlOptions and apply config file defaults
     // =========================================================================
     let opts = CrawlOptions::from(args);
     let opts = preflight::apply_config_defaults(opts, &config_defaults);
@@ -239,7 +245,10 @@ async fn __main() -> CliExit {
     // OpenTelemetry tracing + metrics (feature-gated)
     #[cfg(feature = "otel-metrics")]
     let _otel_guard = {
-        let config = rust_scraper::infrastructure::observability::otel::OtelConfig::from_env();
+        let mut config = rust_scraper::infrastructure::observability::otel::OtelConfig::from_env();
+        if let Some(path) = trace_file {
+            config = config.with_trace_file(path);
+        }
         match rust_scraper::infrastructure::observability::otel::init_otel_metrics(config) {
             Ok((_meter, guard, layer)) => {
                 init_logging_dual(log_level, opts.export.quiet, no_color, Some(layer));
@@ -254,7 +263,10 @@ async fn __main() -> CliExit {
     };
     #[cfg(all(feature = "otel", not(feature = "otel-metrics")))]
     let _otel_guard = {
-        let config = rust_scraper::infrastructure::observability::otel::OtelConfig::from_env();
+        let mut config = rust_scraper::infrastructure::observability::otel::OtelConfig::from_env();
+        if let Some(path) = trace_file {
+            config = config.with_trace_file(path);
+        }
         match rust_scraper::infrastructure::observability::otel::init_otel_tracing(config) {
             Ok((guard, layer)) => {
                 init_logging_dual(log_level, opts.export.quiet, no_color, Some(layer));

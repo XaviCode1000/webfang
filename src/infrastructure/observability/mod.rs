@@ -26,6 +26,8 @@
 //! ```
 
 pub mod async_logging;
+#[cfg(feature = "otel")]
+pub mod file_trace_exporter;
 pub mod logging;
 #[cfg(feature = "otel")]
 pub mod otel;
@@ -61,6 +63,8 @@ pub use logging::{
     init_json_logging, init_json_logging_dual, init_otel_tracing, LogFormat, LogGuard,
 };
 
+#[cfg(feature = "otel")]
+pub use file_trace_exporter::FileTraceExporter;
 #[cfg(feature = "otel")]
 pub use otel::{OtelConfig, OtelGuard};
 

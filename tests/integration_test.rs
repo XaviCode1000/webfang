@@ -86,6 +86,7 @@ fn test_args_has_required_fields() {
         clean_ai: false,
         force_js_render: false,
         dry_run: false,
+        trace_file: None,
         quiet: false,
         subcommand: None,
         obsidian_wiki_links: false,

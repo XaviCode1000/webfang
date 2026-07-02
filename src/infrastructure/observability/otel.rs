@@ -22,6 +22,7 @@
 //! ```
 
 use std::env;
+use std::path::PathBuf;
 
 use opentelemetry::global;
 use opentelemetry::trace::TracerProvider as _;
@@ -31,6 +32,8 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::Registry;
+
+use super::file_trace_exporter::FileTraceExporter;
 
 #[cfg(feature = "otel-metrics")]
 use opentelemetry_otlp::MetricExporter;
@@ -44,19 +47,27 @@ pub struct OtelConfig {
     pub endpoint: String,
     /// Service name for resource attributes (default: `rust_scraper`)
     pub service_name: String,
+    /// Optional path to write OTel spans as JSONL for offline debugging.
+    /// When set, a synchronous file exporter is added alongside the OTLP exporter.
+    pub trace_file: Option<PathBuf>,
 }
 
 impl OtelConfig {
     /// Create config from environment variables with defaults.
     ///
-    /// Reads `OTEL_EXPORTER_OTLP_ENDPOINT` (default: `http://localhost:4318`)
-    /// and `OTEL_SERVICE_NAME` (default: `rust_scraper`).
+    /// Reads `OTEL_EXPORTER_OTLP_ENDPOINT` (default: `http://localhost:4318`),
+    /// `OTEL_SERVICE_NAME` (default: `rust_scraper`), and
+    /// `RUST_SCRAPER_TRACE_FILE` (optional).
     pub fn from_env() -> Self {
         Self {
             endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
                 .unwrap_or_else(|_| "http://localhost:4318".to_string()),
             service_name: env::var("OTEL_SERVICE_NAME")
                 .unwrap_or_else(|_| "rust_scraper".to_string()),
+            trace_file: env::var("RUST_SCRAPER_TRACE_FILE")
+                .ok()
+                .map(PathBuf::from)
+                .filter(|p| !p.as_os_str().is_empty()),
         }
     }
 
@@ -71,6 +82,13 @@ impl OtelConfig {
     #[must_use]
     pub fn with_service_name(mut self, name: impl Into<String>) -> Self {
         self.service_name = name.into();
+        self
+    }
+
+    /// Set a file path for JSONL span export (offline debugging).
+    #[must_use]
+    pub fn with_trace_file(mut self, path: PathBuf) -> Self {
+        self.trace_file = Some(path);
         self
     }
 }
@@ -160,10 +178,17 @@ fn build_tracer_provider(
         .with_service_name(config.service_name.clone())
         .build();
 
-    let provider = SdkTracerProvider::builder()
+    let mut builder = SdkTracerProvider::builder()
         .with_batch_exporter(exporter)
-        .with_resource(resource)
-        .build();
+        .with_resource(resource);
+
+    if let Some(trace_path) = &config.trace_file {
+        let file_exporter = FileTraceExporter::new(trace_path.clone())
+            .map_err(|e| anyhow::anyhow!("failed to open trace file: {e}"))?;
+        builder = builder.with_simple_exporter(file_exporter);
+    }
+
+    let provider = builder.build();
 
     let tracer = provider.tracer("rust_scraper");
 
