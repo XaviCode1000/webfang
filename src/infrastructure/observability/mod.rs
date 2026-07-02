@@ -27,7 +27,6 @@
 
 pub mod async_logging;
 pub mod logging;
-pub mod metrics;
 #[cfg(feature = "otel")]
 pub mod otel;
 
@@ -61,7 +60,6 @@ pub use async_logging::{init_async_logging, AsyncLogWriter, WriterConfig};
 pub use logging::{
     init_json_logging, init_json_logging_dual, init_otel_tracing, LogFormat, LogGuard,
 };
-pub use metrics::MetricsCollector;
 
 #[cfg(feature = "otel")]
 pub use otel::{OtelConfig, OtelGuard};
