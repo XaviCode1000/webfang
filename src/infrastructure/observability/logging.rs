@@ -9,9 +9,9 @@ use std::path::Path;
 
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 #[cfg(feature = "otel")]
 use tracing_subscriber::Registry;
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 /// Guard for JSON logging - ensures flush on drop (RAII)
 ///
@@ -181,7 +181,9 @@ pub fn init_json_logging_dual(
     no_color: bool,
     log_dir: Option<&Path>,
     app_name: &str,
-    otel_layer: Option<tracing_opentelemetry::OpenTelemetryLayer<Registry, opentelemetry_sdk::trace::Tracer>>,
+    otel_layer: Option<
+        tracing_opentelemetry::OpenTelemetryLayer<Registry, opentelemetry_sdk::trace::Tracer>,
+    >,
 ) -> anyhow::Result<LogGuard> {
     let filter = if quiet {
         EnvFilter::new("rust_scraper=warn,tokio=warn,reqwest=warn")
@@ -190,9 +192,7 @@ pub fn init_json_logging_dual(
     };
 
     // Build subscriber: OTel layer must be added directly on Registry, before EnvFilter
-    let subscriber = tracing_subscriber::registry()
-        .with(otel_layer)
-        .with(filter);
+    let subscriber = tracing_subscriber::registry().with(otel_layer).with(filter);
 
     // Text layer for stderr (always)
     let text_layer = fmt::layer()

@@ -422,10 +422,7 @@ mod tests {
                 corr.as_otel_trace_id().to_bytes(),
                 trace_uuid.as_u128().to_be_bytes()
             );
-            assert_eq!(
-                corr.as_otel_span_id().to_bytes(),
-                span_raw.to_be_bytes()
-            );
+            assert_eq!(corr.as_otel_span_id().to_bytes(), span_raw.to_be_bytes());
         }
     }
 }

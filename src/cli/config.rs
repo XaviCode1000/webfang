@@ -112,7 +112,12 @@ pub fn init_logging_dual(
     level: &str,
     quiet: bool,
     no_color: bool,
-    otel_layer: Option<tracing_opentelemetry::OpenTelemetryLayer<tracing_subscriber::Registry, opentelemetry_sdk::trace::Tracer>>,
+    otel_layer: Option<
+        tracing_opentelemetry::OpenTelemetryLayer<
+            tracing_subscriber::Registry,
+            opentelemetry_sdk::trace::Tracer,
+        >,
+    >,
 ) {
     use tracing_subscriber::{fmt, prelude::*};
 
@@ -189,11 +194,9 @@ max_pages = 20
 
         #[test]
         fn test_init_logging_dual_accepts_some_layer() {
-            let config =
-                crate::infrastructure::observability::otel::OtelConfig::from_env();
+            let config = crate::infrastructure::observability::otel::OtelConfig::from_env();
             let (_guard, layer) =
-                crate::infrastructure::observability::otel::init_otel_tracing(config)
-                    .unwrap();
+                crate::infrastructure::observability::otel::init_otel_tracing(config).unwrap();
             init_logging_dual("info", false, false, Some(layer));
         }
     }
