@@ -42,6 +42,13 @@ otel = [
     "dep:opentelemetry-otlp",
     "dep:tracing-opentelemetry",
 ]
+# OpenTelemetry metrics (extends otel with metrics API + OTLP metric export)
+otel-metrics = [
+    "otel",
+    "opentelemetry/metrics",
+    "opentelemetry_sdk/metrics",
+    "opentelemetry-otlp/metrics",
+]
 
 [dependencies]
 # CLI - Argument parsing obligatorio
@@ -161,9 +168,9 @@ ratatui-form = "0.1.1"
 crossterm = { version = "0.28", features = ["event-stream"] }
 
 # XML parsing (preparar para Fase 3) - FASE 1 Web Crawler
-# NOTE: quick-xml 0.37 is used directly here. syntect→plist pulls in 0.38.
-# Both are needed. Do NOT try to unify.
-quick-xml = "0.37"
+# NOTE: quick-xml 0.41 fixes RUSTSEC-2026-0194/0195 (quadratic + OOM).
+# syntect→plist pulls in 0.39 — both are needed. Do NOT try to unify.
+quick-xml = "0.41"
 
 # CPU detection for hardware-aware concurrency
 num_cpus = "1"

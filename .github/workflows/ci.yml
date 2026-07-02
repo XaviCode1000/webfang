@@ -6,9 +6,9 @@
 #
 # Pipeline flow:
 #   build-and-test (single job): fmt → clippy → check → nextest → MCP smoke
-#   security (after build): cargo-audit + cargo-deny (no Rust compile)
-#   release (main only): cargo build --release with LTO
-#   miri (scheduled): UB detection on nightly
+#   security (parallel): cargo-deny + cargo-audit (no Rust compile)
+#   release (main only, after build+security): cargo build --release with LTO
+#   miri (scheduled): UB detection on nightly with Tree Borrows aliasing model
 #
 # Key optimization: single runner = single compilation, single cache.
 # Swatinem/rust-cache restores ~300MB of compiled deps on warm runs.
@@ -31,6 +31,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Forces v4 actions (checkout, cache, upload-artifact, codecov) to run on Node 24
+  # instead of deprecated Node 20. Remove when all actions migrate to v5+.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -41,7 +43,16 @@ jobs:
   build-and-test:
     name: Build & Test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
+      # Free ~30GB: remove pre-installed Android SDK, .NET, Haskell, CodeQL, Docker images
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          docker rmi $(docker images -q) 2>/dev/null || true
+          sudo apt-get clean
+          df -h /
+
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -75,7 +86,7 @@ jobs:
           ./target/debug/examples/mcp_server &
           MCP_PID=$!
           for i in $(seq 1 10); do
-            if curl -sf http://127.0.0.1:8080/mcp -X POST \
+            if curl -sf --max-time 2 http://127.0.0.1:8080/mcp -X POST \
               -H "Content-Type: application/json" \
               -H "Accept: application/json, text/event-stream" \
               -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"1.0"}},"id":1}' \
@@ -91,17 +102,36 @@ jobs:
           exit 1
 
   # ============================================================================
-  # SECURITY: no Rust compile needed — fast standalone job
+  # SECURITY: no Rust compile needed — runs in parallel with build-and-test
+  # cargo-deny covers advisories via RustSec + licenses + bans + sources.
+  # cargo-audit is a redundant second opinion on advisories (belt + suspenders).
   # ============================================================================
   security:
     name: Security Audit
     runs-on: ubuntu-latest
-    needs: [build-and-test]
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: taiki-e/install-action@cargo-deny
+      - uses: taiki-e/install-action@cargo-audit
       - name: Advisories + licenses + bans + sources
         run: cargo deny check
+      # --ignore flags mirror deny.toml [advisories] ignore list.
+      # quick-xml 0.39.4 is transitive via plist→syntect (plist 1.9.0 is latest,
+      # pins quick-xml 0.39.x). No upstream fix available yet.
+      - name: Audit (RustSec, redundant with cargo-deny)
+        run: |
+          cargo audit \
+            --ignore RUSTSEC-2025-0141 \
+            --ignore RUSTSEC-2025-0119 \
+            --ignore RUSTSEC-2024-0436 \
+            --ignore RUSTSEC-2024-0320 \
+            --ignore RUSTSEC-2026-0183 \
+            --ignore RUSTSEC-2026-0184 \
+            --ignore RUSTSEC-2026-0186 \
+            --ignore RUSTSEC-2026-0002 \
+            --ignore RUSTSEC-2026-0194 \
+            --ignore RUSTSEC-2026-0195
 
   # ============================================================================
   # RELEASE: build optimized binary (main only)
@@ -109,6 +139,7 @@ jobs:
   release:
     name: Build Release
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [build-and-test, security]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
@@ -142,11 +173,15 @@ jobs:
   #   3. Matrix: tests split into parallel groups so ALL failures surface
   #      in ONE run instead of blocking on the first UB.
   #   4. Sysroot cache: cargo miri setup drops from ~15min to ~2s warm.
-  #   5. Flags: MIRIFLAGS with disable-isolation, ignore-leaks, seed=42.
+  #   5. Tree Borrows: aliasing model that tolerates sound-en-practice patterns
+  #      (ahash, dashmap, smallvec) while still detecting real UB.
+  #      If a specific test fails under Tree Borrows, isolate it with
+  #      #[cfg(not(miri))] — never disable aliasing detection globally.
   # ============================================================================
   miri:
     name: Miri (${{ matrix.group }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false  # show ALL failures, not just the first UB
@@ -178,7 +213,11 @@ jobs:
 
       - name: Setup & Run Miri (${{ matrix.group }})
         env:
-          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks -Zmiri-seed=42 -Zmiri-permissive-provenance -Zmiri-disable-stacked-borrows
+          # Tree Borrows: aliasing model more permissive than Stacked Borrows.
+          # Tolerates sound-in-practice patterns from ahash/dashmap/smallvec/wide,
+          # but still detects real aliasing UB (unlike -Zmiri-disable-stacked-borrows).
+          # If a third-party crate fails, isolate that test with #[cfg(not(miri))].
+          MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-disable-isolation -Zmiri-ignore-leaks -Zmiri-seed=42 -Zmiri-permissive-provenance
         run: |
           cargo miri setup
           cargo miri test --lib -- --skip downloader ${{ matrix.filter }}
@@ -189,6 +228,7 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     if: github.event_name == 'workflow_dispatch'
     needs: [build-and-test]
     steps:

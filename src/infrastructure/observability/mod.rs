@@ -2,27 +2,15 @@
 //!
 //! Production-grade observability infrastructure:
 //! - Structured JSON logging with file rotation
-//! - Metrics collection (HTTP, crawler)
-//! - OpenTelemetry tracing (stub)
+//! - OpenTelemetry tracing and metrics (feature-gated)
 //! - Tokio console for runtime debugging
 //!
-//! # Usage
+//! # Features
 //!
-//! ```rust
-//! use rust_scraper::infrastructure::observability::{init_json_logging, MetricsCollector};
-//!
-//! // Initialize logging
-//! init_json_logging("info", Some(&log_dir), "rust_scraper")?;
-//!
-//! // Use metrics collector
-//! let metrics = MetricsCollector::new();
-//! metrics.record_request("example.com", 150.0, 200);
-//! metrics.record_page_scraped("example.com");
-//!
-//! // Export on completion
-//! let export = metrics.export();
-//! println!("{}", serde_json::to_string_pretty(&export).unwrap());
-//! ```
+//! | Feature | Description |
+//! |---------|-------------|
+//! | `otel` | OpenTelemetry distributed tracing via OTLP HTTP/protobuf |
+//! | `otel-metrics` | Extends `otel` with metric instruments and OTLP metric export |
 //!
 //! # Tokio Console (Optional)
 //!
@@ -42,6 +30,12 @@ pub mod logging;
 pub mod metrics;
 #[cfg(feature = "otel")]
 pub mod otel;
+
+#[cfg(feature = "otel-metrics")]
+pub mod metrics_instruments;
+
+#[cfg(feature = "otel-metrics")]
+pub mod trace_correlation;
 
 /// Initialize tokio-console for runtime debugging
 ///
@@ -71,3 +65,9 @@ pub use metrics::MetricsCollector;
 
 #[cfg(feature = "otel")]
 pub use otel::{OtelConfig, OtelGuard};
+
+#[cfg(feature = "otel-metrics")]
+pub use otel::init_otel_metrics;
+
+#[cfg(feature = "otel-metrics")]
+pub use trace_correlation::trace_correlation_layer;

@@ -334,7 +334,7 @@ impl SitemapParser {
                     in_loc = true;
                 },
                 Ok(Event::Text(ref e)) if in_loc => {
-                    if let Ok(text) = e.unescape() {
+                    if let Ok(text) = e.decode() {
                         if let Some(url) = resolve_url(base_url, &text) {
                             // [3.5] UrlValidator integration: filter invalid patterns
                             let validation = self.url_validator.filter_invalid_patterns(&url);

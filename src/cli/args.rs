@@ -752,6 +752,7 @@ mod tests {
     // ========================================================================
 
     proptest! {
+        #[cfg_attr(miri, ignore)] // proptest too slow under Miri interpreter (~2-11min per test)
         #[test]
         fn prop_bool_fields_roundtrip(
             wiki_links in proptest::bool::ANY,
@@ -840,6 +841,7 @@ mod tests {
             prop_assert_eq!(opts.elastic.enabled, elastic);
         }
 
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_numeric_fields_roundtrip(
             verbose in 0u8..4,
@@ -915,6 +917,7 @@ mod tests {
             prop_assert_eq!(opts.network.backoff_max_ms, backoff_max_ms);
         }
 
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_string_fields_roundtrip(
             selector in "[a-z]{1,20}",
@@ -991,6 +994,7 @@ mod tests {
             prop_assert_eq!(opts.crawl.sitemap_url, expected_sitemap_url);
         }
 
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_path_fields_roundtrip(
             output in "[a-z0-9/._-]{1,30}",
@@ -1055,6 +1059,7 @@ mod tests {
             prop_assert_eq!(opts.elastic.db_path, db_path.map(std::path::PathBuf::from));
         }
 
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_concurrency_roundtrip(
             value in proptest::option::of(1usize..17),
@@ -1128,6 +1133,7 @@ mod tests {
             );
         }
 
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_obsidian_tags_roundtrip(
             tags in proptest::collection::vec("[a-z]{1,10}", 0..10),
@@ -1185,6 +1191,7 @@ mod tests {
             prop_assert_eq!(opts.export.obsidian_tags, tags);
         }
 
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_elastic_overrides_roundtrip(
             cpu_cores in proptest::option::of(1usize..32),
