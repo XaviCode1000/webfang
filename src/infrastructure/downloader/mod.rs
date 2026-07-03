@@ -15,6 +15,10 @@
 // The trait is not dyn-compatible, which is intentional for this use case.
 #![allow(async_fn_in_trait)]
 
+pub mod chromiumoxide_downloader;
+pub mod hybrid_router;
+pub mod obscura_downloader;
+pub mod resource_governor;
 pub mod spa_detector;
 pub mod wreq_downloader;
 
