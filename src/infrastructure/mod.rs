@@ -14,6 +14,7 @@
 pub mod config;
 pub mod converter;
 pub mod crawler;
+pub mod downloader;
 pub mod export;
 pub mod http;
 pub mod mcp_server;

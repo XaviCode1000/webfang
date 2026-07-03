@@ -99,6 +99,10 @@ pub enum CrawlError {
     /// Discovery error (robots.txt or sitemap auto-discovery failure)
     #[error("discovery error: {0}")]
     Discovery(String),
+
+    /// Download error (fetch failed, SPA detected, or WAF blocked during download)
+    #[error("download error: {0}")]
+    Download(String),
 }
 
 #[cfg(test)]
@@ -205,5 +209,12 @@ mod tests {
         let error = CrawlError::Discovery("robots.txt unreachable".to_string());
         assert!(error.to_string().contains("discovery error"));
         assert!(error.to_string().contains("robots.txt unreachable"));
+    }
+
+    #[test]
+    fn test_crawl_error_download() {
+        let error = CrawlError::Download("connection reset".to_string());
+        assert!(error.to_string().contains("download error"));
+        assert!(error.to_string().contains("connection reset"));
     }
 }
