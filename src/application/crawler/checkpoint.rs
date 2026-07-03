@@ -1,13 +1,13 @@
 //! Checkpoint persistence for crawl state — Application layer
 //!
 //! Saves and loads crawl state (visited URLs, queued URLs, pages crawled)
-//! using bincode serialization with CRC32 integrity checks and atomic writes.
+//! using jzon-rs JSON serialization with CRC32 integrity checks and atomic writes.
 //!
 //! # Design Decisions
 //!
 //! - **Sealed trait pattern** (`api-sealed-trait`): Prevents external implementations
 //!   that could violate atomicity or integrity invariants.
-//! - **File format**: `[4 bytes CRC32][bincode payload]` — simple, verifiable.
+//! - **File format**: `[4 bytes CRC32][JSON payload]` — simple, verifiable, human-readable.
 //! - **Atomic write**: serialize → write to `.tmp` → `fs::rename` to final path.
 //! - **Integrity**: CRC32 of payload stored as header; load verifies before deserializing.
 //! - **Generic state**: Accepts any `Serialize + Deserialize` type, not just a fixed struct.
@@ -35,13 +35,17 @@ mod private {
 /// Serializable crawl state for checkpoint persistence.
 ///
 /// Captures enough information to resume a crawl from where it left off.
+/// Fields use `#[serde(default)]` for forward-compatible schema evolution.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CrawlCheckpoint {
     /// URLs already visited (fully processed).
+    #[serde(default)]
     pub visited: HashSet<String>,
     /// URLs queued for processing (not yet visited).
+    #[serde(default)]
     pub queued: Vec<String>,
     /// Number of pages successfully crawled.
+    #[serde(default)]
     pub pages_crawled: u64,
 }
 
@@ -102,9 +106,9 @@ pub trait CheckpointStore: private::Sealed {
 // BincodeCheckpoint — the default implementation
 // ---------------------------------------------------------------------------
 
-/// Checkpoint store using bincode serialization with CRC32 integrity.
+/// Checkpoint store using jzon-rs JSON serialization with CRC32 integrity.
 ///
-/// File format: `[4-byte CRC32][bincode payload]`
+/// File format: `[4-byte CRC32][JSON payload]`
 ///
 /// Write path: serialize → write `.tmp` → atomic rename.
 /// Read path: read full file → verify CRC32 → deserialize.
@@ -115,9 +119,10 @@ impl private::Sealed for BincodeCheckpoint {}
 impl CheckpointStore for BincodeCheckpoint {
     #[instrument(skip(self, state), fields(path = %path.display()))]
     fn save(&self, state: &CrawlCheckpoint, path: &Path) -> Result<(), String> {
-        // Serialize with bincode
-        let payload = bincode::serialize(state)
-            .map_err(|e| format!("checkpoint serialization failed: {e}"))?;
+        // Serialize to JSON
+        let payload = jzon_serde::to_string(state)
+            .map_err(|e| format!("checkpoint serialization failed: {e}"))?
+            .into_bytes();
 
         // Compute CRC32 of the payload
         let checksum = crc32fast::hash(&payload);
@@ -182,8 +187,8 @@ impl CheckpointStore for BincodeCheckpoint {
             return None;
         }
 
-        // Deserialize
-        match bincode::deserialize::<CrawlCheckpoint>(payload) {
+        // Deserialize from JSON
+        match jzon_serde::from_slice::<CrawlCheckpoint>(payload) {
             Ok(state) => {
                 info!(
                     "checkpoint loaded: {} (visited={}, queued={}, pages={})",
@@ -251,7 +256,7 @@ mod tests {
     #[test]
     fn round_trip_save_load() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("checkpoint.bin");
+        let path = tmp.path().join("checkpoint.json");
 
         let store = BincodeCheckpoint::new();
         let original = sample_checkpoint();
@@ -265,7 +270,7 @@ mod tests {
     #[test]
     fn empty_state_round_trip() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("checkpoint.bin");
+        let path = tmp.path().join("checkpoint.json");
 
         let store = BincodeCheckpoint::new();
         let original = CrawlCheckpoint::new();
@@ -282,7 +287,7 @@ mod tests {
     #[test]
     fn corruption_detection_tamper_checksum() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("checkpoint.bin");
+        let path = tmp.path().join("checkpoint.json");
 
         let store = BincodeCheckpoint::new();
         let original = sample_checkpoint();
@@ -302,7 +307,7 @@ mod tests {
     #[test]
     fn corruption_detection_tamper_payload() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("checkpoint.bin");
+        let path = tmp.path().join("checkpoint.json");
 
         let store = BincodeCheckpoint::new();
         let original = sample_checkpoint();
@@ -331,7 +336,7 @@ mod tests {
     #[test]
     fn load_truncated_file_returns_none() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("checkpoint.bin");
+        let path = tmp.path().join("checkpoint.json");
 
         // Write only 2 bytes (less than CRC32 header)
         fs::write(&path, [0u8; 2]).unwrap();
@@ -351,7 +356,7 @@ mod tests {
     #[test]
     fn checksum_is_first_four_bytes() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("checkpoint.bin");
+        let path = tmp.path().join("checkpoint.json");
 
         let store = BincodeCheckpoint::new();
         let state = sample_checkpoint();
