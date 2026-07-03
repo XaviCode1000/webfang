@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use tracing::{debug, error, info, instrument, span, warn, Level};
+use tracing::{debug, info, instrument, span, warn, Level};
 use url::Url;
 
 use super::collector::{CrawlMessage, ResultsCollector};
@@ -18,15 +18,56 @@ use super::discovery::{is_allowed_by_robots, new_robots_cache, RobotsCache};
 use crate::application::deduplicator::UrlDeduplicator;
 use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::application::url_filter::is_allowed;
-use crate::domain::{CrawlError, CrawlResult, CrawlerConfig, DiscoveredUrl};
+use crate::domain::{CrawlError, CrawlResult, CrawlerConfig, DiscoveredUrl, JsStrategy};
+use crate::infrastructure::checkpoint::store::BannedDomain;
 use crate::infrastructure::checkpoint::BincodeCheckpoint;
 use crate::infrastructure::crawler::{
     extract_links, fetch_url, is_internal_link, normalize_url, UrlQueue, UrlSource,
 };
+use crate::infrastructure::downloader::chromiumoxide_downloader::ChromiumoxideDownloader;
+use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
+use crate::infrastructure::downloader::hybrid_router::HybridRouter;
+use crate::infrastructure::downloader::obscura_downloader::ObscuraDownloader;
+use crate::infrastructure::downloader::wreq_downloader::WreqDownloader;
+use crate::infrastructure::downloader::{DownloadError, Downloader, FetchedPage};
 use crate::infrastructure::session::DomainSessionPool;
 
 /// Shared shutdown signal — set to `true` when SIGINT/SIGTERM received.
 type ShutdownSignal = Arc<AtomicBool>;
+
+/// Type-erased fetch router that dispatches to the appropriate downloader
+/// based on the configured [`JsStrategy`].
+///
+/// Since the `Downloader` trait uses native `async fn` in traits (not dyn-compatible),
+/// we use an enum to dispatch at runtime. Inner types are `Arc`-wrapped so the router
+/// can be cheaply cloned into spawned tasks.
+#[derive(Clone)]
+enum FetchRouter {
+    /// Static HTTP only (wreq). Default.
+    Static(Arc<WreqDownloader>),
+    /// Hybrid 3-layer: wreq → Obscura → Chromiumoxide.
+    Hybrid(Arc<HybridRouter<WreqDownloader, ObscuraDownloader, ChromiumoxideDownloader>>),
+}
+
+impl FetchRouter {
+    async fn fetch(
+        &self,
+        url: &Url,
+    ) -> Result<FetchedPage, crate::infrastructure::downloader::DownloadError> {
+        match self {
+            Self::Static(dl) => dl.fetch(url).await,
+            Self::Hybrid(dl) => dl.fetch(url).await,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn supports_interactions(&self) -> bool {
+        match self {
+            Self::Static(dl) => dl.supports_interactions(),
+            Self::Hybrid(dl) => dl.supports_interactions(),
+        }
+    }
+}
 
 /// Crawl engine — orchestrates URL fetching with concurrency control
 ///
@@ -58,6 +99,14 @@ pub struct Engine {
     pages_crawled: Arc<AtomicU64>,
     /// Shared shutdown signal for graceful termination.
     shutdown: ShutdownSignal,
+    /// JavaScript rendering strategy.
+    js_strategy: JsStrategy,
+    /// Optional fetch router for hybrid/full JS rendering.
+    fetch_router: Option<FetchRouter>,
+    /// Cookie bridge for extracting and injecting cookies.
+    cookie_bridge: Arc<RwLock<CookieBridge>>,
+    /// Domains currently banned due to WAF or rate limiting.
+    banned_domains: Arc<RwLock<Vec<BannedDomain>>>,
 }
 
 impl Engine {
@@ -103,6 +152,10 @@ impl Engine {
             session_pool: None,
             pages_crawled,
             shutdown,
+            js_strategy: JsStrategy::default(),
+            fetch_router: None,
+            cookie_bridge: Arc::new(RwLock::new(CookieBridge::new())),
+            banned_domains: Arc::new(RwLock::new(Vec::new())),
         })
     }
 
@@ -140,6 +193,41 @@ impl Engine {
         self
     }
 
+    /// Set the JavaScript rendering strategy.
+    pub fn with_js_strategy(mut self, strategy: JsStrategy) -> Self {
+        self.js_strategy = strategy;
+        match strategy {
+            JsStrategy::Static => {
+                self.fetch_router =
+                    Some(FetchRouter::Static(Arc::new(WreqDownloader::new(30, 10))));
+            },
+            JsStrategy::Hybrid => {
+                let l1 = WreqDownloader::new(30, 10);
+                let l2 = ObscuraDownloader::new();
+                let l3 = ChromiumoxideDownloader::new();
+                self.fetch_router =
+                    Some(FetchRouter::Hybrid(Arc::new(HybridRouter::new(l1, l2, l3))));
+            },
+            JsStrategy::Full => {
+                // Full strategy: use Chromiumoxide only via HybridRouter with wreq fallback
+                let l1 = WreqDownloader::new(30, 10);
+                let l2 = ObscuraDownloader::new();
+                let l3 = ChromiumoxideDownloader::new();
+                self.fetch_router =
+                    Some(FetchRouter::Hybrid(Arc::new(HybridRouter::new(l1, l2, l3))));
+            },
+        }
+        self
+    }
+
+    /// Restore banned domains from a checkpoint.
+    pub fn with_banned_domains(self, domains: Vec<BannedDomain>) -> Self {
+        if let Ok(mut banned) = self.banned_domains.write() {
+            *banned = domains;
+        }
+        self
+    }
+
     /// Save the current checkpoint to disk (non-blocking wrapper).
     async fn save_checkpoint(&self) {
         if let (Some(_cp), Some(path)) = (&self.checkpoint, &self.checkpoint_path) {
@@ -150,7 +238,12 @@ impl Engine {
             let pages = self
                 .pages_crawled
                 .load(std::sync::atomic::Ordering::Relaxed);
-            let new_cp = BincodeCheckpoint::from_state(&visited_set, &[], pages);
+            let banned = self
+                .banned_domains
+                .read()
+                .map(|d| d.clone())
+                .unwrap_or_default();
+            let new_cp = BincodeCheckpoint::from_state(&visited_set, &[], pages, banned);
 
             // Save on blocking thread to avoid blocking the event loop
             let path = path.clone();
@@ -213,6 +306,15 @@ impl Engine {
                     self.record_visit(url);
                 }
                 info!("Restored {} visited URLs from checkpoint", cp.visited.len());
+            }
+            if !cp.banned_domains.is_empty() {
+                if let Ok(mut banned) = self.banned_domains.write() {
+                    *banned = cp.banned_domains.clone();
+                }
+                info!(
+                    "Restored {} banned domains from checkpoint",
+                    cp.banned_domains.len()
+                );
             }
         }
 
@@ -303,6 +405,9 @@ impl Engine {
                 let pages_crawled_task = Arc::clone(&self.pages_crawled);
                 let ignore_robots_task = self.ignore_robots;
                 let robots_cache_task = self.robots_cache.clone();
+                let cookie_bridge_task = Arc::clone(&self.cookie_bridge);
+                let banned_domains_task = Arc::clone(&self.banned_domains);
+                let fetch_router_task = self.fetch_router.clone();
 
                 // Clone parent URL before moving discovered_url_task
                 let parent_url = discovered_url_task.url.clone();
@@ -336,97 +441,140 @@ impl Engine {
 
                     debug!("Crawling: {} (depth={})", url_str, url_depth);
 
-                    // Fetch URL
-                    match fetch_url(&url_str, &config_task).await {
-                        Ok(response) => {
-                            // Report success to session pool
-                            if let Some(ref pool) = session_pool_task {
-                                if let Ok(parsed) = url::Url::parse(&url_str) {
-                                    if let Some(domain) = parsed.host_str() {
-                                        pool.report_success(domain).await;
+                    // Fetch URL — use fetch_router if available, else static fetch_url()
+                    let (response, fetched_cookies) = if let Some(ref router) = fetch_router_task {
+                        let parsed_url = url::Url::parse(&url_str)
+                            .map_err(|e| CrawlError::Internal(format!("invalid URL: {e}")))?;
+                        match router.fetch(&parsed_url).await {
+                            Ok(page) => {
+                                let cookies = page.cookies.clone();
+                                (page.html, cookies)
+                            },
+                            Err(DownloadError::WafChallenge(msg)) => {
+                                // Ban the domain
+                                if let Some(domain) = parsed_url.host_str() {
+                                    let banned = BannedDomain {
+                                        domain: domain.to_string(),
+                                        banned_until: None,
+                                        reason: msg.clone(),
+                                    };
+                                    if let Ok(mut domains) = banned_domains_task.write() {
+                                        if !domains.iter().any(|d| d.domain == domain) {
+                                            domains.push(banned);
+                                            warn!("Banned domain {} due to WAF: {}", domain, msg);
+                                        }
                                     }
                                 }
-                            }
-
-                            // Track pages crawled
-                            pages_crawled_task.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-                            // Add to results via channel (sin lock)
-                            if let Err(e) = results_sender
-                                .send(CrawlMessage::success(discovered_url_task))
-                                .await
-                            {
-                                debug!("Failed to send result: {}", e);
-                            }
-
-                            // Extract links and add to queue
-                            if url_depth < config_task.max_depth {
-                                match extract_links(&response, &url_str) {
-                                    Ok(links) => {
-                                        for link in links {
-                                            let normalized = normalize_url(&link);
-                                            if let Ok(parsed_url) = Url::parse(&normalized) {
-                                                if let Some(seed_domain) =
-                                                    config_task.seed_url.host_str()
-                                                {
-                                                    let link_domain =
-                                                        parsed_url.host_str().unwrap_or("");
-                                                    if is_internal_link(&normalized, seed_domain)
-                                                        && is_allowed(&normalized, &config_task)
-                                                        && (ignore_robots_task
-                                                            || is_allowed_by_robots(
-                                                                &normalized,
-                                                                link_domain,
-                                                                &robots_cache_task,
-                                                            )
-                                                            .await)
-                                                        && visited_task.try_insert(&normalized)
-                                                    {
-                                                        // Record URL string for checkpoint
-                                                        if let Ok(mut urls) =
-                                                            visited_urls_task.write()
-                                                        {
-                                                            urls.push(normalized.clone());
-                                                        }
-
-                                                        let new_discovered = DiscoveredUrl::html(
-                                                            parsed_url,
-                                                            url_depth + 1,
-                                                            parent_url.clone(),
-                                                        );
-                                                        queue_task
-                                                            .push_prioritized(
-                                                                new_discovered,
-                                                                UrlSource::Link,
-                                                            )
-                                                            .await;
-                                                    }
-                                                }
+                                return Err(CrawlError::Download(format!("WAF: {msg}")));
+                            },
+                            Err(e) => {
+                                return Err(CrawlError::Download(e.to_string()));
+                            },
+                        }
+                    } else {
+                        match fetch_url(&url_str, &config_task).await {
+                            Ok(html) => (html, Vec::new()),
+                            Err(CrawlError::Download(ref msg)) if msg.contains("WAF") => {
+                                // Ban the domain
+                                if let Ok(parsed) = url::Url::parse(&url_str) {
+                                    if let Some(domain) = parsed.host_str() {
+                                        let banned = BannedDomain {
+                                            domain: domain.to_string(),
+                                            banned_until: None,
+                                            reason: msg.clone(),
+                                        };
+                                        if let Ok(mut domains) = banned_domains_task.write() {
+                                            if !domains.iter().any(|d| d.domain == domain) {
+                                                domains.push(banned);
+                                                warn!(
+                                                    "Banned domain {} due to WAF: {}",
+                                                    domain, msg
+                                                );
                                             }
                                         }
-                                    },
-                                    Err(e) => {
-                                        warn!("Failed to extract links from {}: {}", url_str, e);
-                                        error_count_task
-                                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                                    },
-                                }
-                            }
-                        },
-                        Err(e) => {
-                            // Report failure to session pool
-                            if let Some(ref pool) = session_pool_task {
-                                if let Ok(parsed) = url::Url::parse(&url_str) {
-                                    if let Some(domain) = parsed.host_str() {
-                                        pool.report_failure(domain).await;
                                     }
                                 }
-                            }
+                                return Err(CrawlError::Download(msg.clone()));
+                            },
+                            Err(e) => return Err(e),
+                        }
+                    };
 
-                            error!("Failed to fetch {}: {}", url_str, e);
-                            error_count_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                            return Err(e);
-                        },
+                    // Ingest cookies into the cookie bridge
+                    if !fetched_cookies.is_empty() {
+                        if let Ok(mut bridge) = cookie_bridge_task.write() {
+                            for cookie in &fetched_cookies {
+                                bridge.add(cookie.clone());
+                            }
+                        }
+                    }
+
+                    // Report success to session pool
+                    if let Some(ref pool) = session_pool_task {
+                        if let Ok(parsed) = url::Url::parse(&url_str) {
+                            if let Some(domain) = parsed.host_str() {
+                                pool.report_success(domain).await;
+                            }
+                        }
+                    }
+
+                    // Track pages crawled
+                    pages_crawled_task.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                    // Add to results via channel (sin lock)
+                    if let Err(e) = results_sender
+                        .send(CrawlMessage::success(discovered_url_task))
+                        .await
+                    {
+                        debug!("Failed to send result: {}", e);
+                    }
+
+                    // Extract links and add to queue
+                    if url_depth < config_task.max_depth {
+                        match extract_links(&response, &url_str) {
+                            Ok(links) => {
+                                for link in links {
+                                    let normalized = normalize_url(&link);
+                                    if let Ok(parsed_url) = Url::parse(&normalized) {
+                                        if let Some(seed_domain) = config_task.seed_url.host_str() {
+                                            let link_domain = parsed_url.host_str().unwrap_or("");
+                                            if is_internal_link(&normalized, seed_domain)
+                                                && is_allowed(&normalized, &config_task)
+                                                && (ignore_robots_task
+                                                    || is_allowed_by_robots(
+                                                        &normalized,
+                                                        link_domain,
+                                                        &robots_cache_task,
+                                                    )
+                                                    .await)
+                                                && visited_task.try_insert(&normalized)
+                                            {
+                                                // Record URL string for checkpoint
+                                                if let Ok(mut urls) = visited_urls_task.write() {
+                                                    urls.push(normalized.clone());
+                                                }
+
+                                                let new_discovered = DiscoveredUrl::html(
+                                                    parsed_url,
+                                                    url_depth + 1,
+                                                    parent_url.clone(),
+                                                );
+                                                queue_task
+                                                    .push_prioritized(
+                                                        new_discovered,
+                                                        UrlSource::Link,
+                                                    )
+                                                    .await;
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                warn!("Failed to extract links from {}: {}", url_str, e);
+                                error_count_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            },
+                        }
                     }
 
                     Ok(())
@@ -508,6 +656,8 @@ pub struct EngineOptions {
     pub session_pool_enabled: bool,
     /// Skip robots.txt enforcement.
     pub ignore_robots: bool,
+    /// JavaScript rendering strategy.
+    pub js_strategy: JsStrategy,
 }
 
 /// Crawl a website starting from the seed URL
@@ -668,6 +818,9 @@ pub async fn crawl_site_with_options(
     if options.session_pool_enabled {
         engine = engine.with_session_pool(Duration::from_secs(2), 5);
     }
+
+    // Apply JS strategy
+    engine = engine.with_js_strategy(options.js_strategy);
 
     let result = engine.run().await;
     engine.shutdown().await;

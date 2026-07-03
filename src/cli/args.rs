@@ -2,6 +2,7 @@
 //!
 //! Parsed using `clap` with derive macros.
 
+use crate::domain::JsStrategy;
 use crate::{ConcurrencyConfig, ExportFormat, OutputFormat};
 use clap::Parser;
 
@@ -367,6 +368,21 @@ pub struct Args {
     #[arg(long, default_value = "Chrome145", env = "RUST_SCRAPER_H2_PROFILE")]
     #[clap(next_help_heading = "Competitive Features")]
     pub h2_profile: String,
+
+    /// JavaScript rendering strategy: static (wreq only), hybrid (3-layer), full (Chromiumoxide only)
+    #[arg(
+        long,
+        default_value = "static",
+        value_enum,
+        env = "RUST_SCRAPER_JS_STRATEGY"
+    )]
+    #[clap(next_help_heading = "JS Rendering")]
+    pub js_strategy: JsStrategy,
+
+    /// Path to the obscura binary (default: "obscura")
+    #[arg(long, default_value = "obscura", env = "RUST_SCRAPER_OBSCURA_BINARY")]
+    #[clap(next_help_heading = "JS Rendering")]
+    pub obscura_binary: String,
 }
 
 /// Subcommands.
@@ -480,6 +496,8 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
                 download_documents: args.download_documents,
                 force_js_render: args.force_js_render,
                 h2_profile: args.h2_profile,
+                js_strategy: args.js_strategy,
+                obscura_binary: args.obscura_binary,
             },
             export: ExportOptions {
                 output_format: args.format,
@@ -637,6 +655,10 @@ mod tests {
             no_session_health: true,
             h2_profile: "Chrome131".into(),
 
+            // JS Rendering
+            js_strategy: crate::domain::JsStrategy::Hybrid,
+            obscura_binary: "/usr/local/bin/obscura".into(),
+
             ..Default::default()
         }
     }
@@ -691,6 +713,8 @@ mod tests {
         assert!(opts.network.download_documents);
         assert!(opts.network.force_js_render);
         assert_eq!(opts.network.h2_profile, "Chrome131");
+        assert_eq!(opts.network.js_strategy, crate::domain::JsStrategy::Hybrid);
+        assert_eq!(opts.network.obscura_binary, "/usr/local/bin/obscura");
 
         // ── ExportOptions ──────────────────────────────────────────────────
         assert_eq!(opts.export.output_format, crate::OutputFormat::Json);

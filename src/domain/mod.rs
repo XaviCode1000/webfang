@@ -20,6 +20,7 @@ pub mod entities;
 pub mod error;
 pub mod exporter;
 pub mod js_renderer;
+pub mod js_strategy;
 pub mod link_extractor;
 pub mod pattern_matching;
 pub mod repositories;
@@ -47,6 +48,7 @@ pub use entities::{
 pub use error::CrawlError;
 pub use exporter::{ExportResult, Exporter, ExporterConfig, ExporterError};
 pub use js_renderer::{JsRenderError, JsRenderer};
+pub use js_strategy::JsStrategy;
 pub use link_extractor::{LinkExtractor, LinkProcessor};
 pub use pattern_matching::matches_pattern;
 pub use repositories::CrawlResultRepository;

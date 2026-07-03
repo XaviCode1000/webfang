@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use url::Url;
 
+use crate::domain::JsStrategy;
 use crate::infrastructure::autotuning::ElasticOverrides;
 use crate::{ConcurrencyConfig, ExportFormat, OutputFormat};
 
@@ -104,6 +105,10 @@ pub struct NetworkOptions {
     pub force_js_render: bool,
     /// TLS/HTTP2 profile name (e.g. Chrome145).
     pub h2_profile: String,
+    /// JavaScript rendering strategy (static, hybrid, full).
+    pub js_strategy: JsStrategy,
+    /// Path to the obscura binary (default: "obscura").
+    pub obscura_binary: String,
 }
 
 /// Output format, export format, and Obsidian integration settings.
@@ -189,6 +194,8 @@ impl Default for NetworkOptions {
             download_documents: false,
             force_js_render: false,
             h2_profile: "Chrome145".to_owned(),
+            js_strategy: JsStrategy::default(),
+            obscura_binary: "obscura".to_owned(),
         }
     }
 }
@@ -283,6 +290,8 @@ mod tests {
         assert!(!net.download_documents);
         assert!(!net.force_js_render);
         assert_eq!(net.h2_profile, "Chrome145");
+        assert_eq!(net.js_strategy, JsStrategy::Static);
+        assert_eq!(net.obscura_binary, "obscura");
     }
 
     #[test]

@@ -6,10 +6,22 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use crate::domain::CrawlError;
+
+/// A domain temporarily banned due to WAF or rate-limiting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BannedDomain {
+    /// The banned domain (e.g. "example.com").
+    pub domain: String,
+    /// When the ban expires. `None` means banned until restart.
+    pub banned_until: Option<DateTime<Utc>>,
+    /// Reason for the ban (e.g. "WAF challenge", "rate limit exceeded").
+    pub reason: String,
+}
 
 /// Serializable crawl checkpoint saved to disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +34,9 @@ pub struct BincodeCheckpoint {
     pub pages_crawled: u64,
     /// Checkpoint version for forward compatibility.
     pub version: u32,
+    /// Domains currently banned due to WAF or rate limiting.
+    #[serde(default)]
+    pub banned_domains: Vec<BannedDomain>,
 }
 
 impl Default for BincodeCheckpoint {
@@ -31,6 +46,7 @@ impl Default for BincodeCheckpoint {
             queued: Vec::new(),
             pages_crawled: 0,
             version: 1,
+            banned_domains: Vec::new(),
         }
     }
 }
@@ -85,12 +101,18 @@ impl BincodeCheckpoint {
     }
 
     /// Build a checkpoint from current crawl state.
-    pub fn from_state(visited: &HashSet<String>, queued: &[String], pages_crawled: u64) -> Self {
+    pub fn from_state(
+        visited: &HashSet<String>,
+        queued: &[String],
+        pages_crawled: u64,
+        banned_domains: Vec<BannedDomain>,
+    ) -> Self {
         Self {
             visited: visited.iter().cloned().collect(),
             queued: queued.to_vec(),
             pages_crawled,
             version: 1,
+            banned_domains,
         }
     }
 }
@@ -146,7 +168,8 @@ mod tests {
         visited.insert("https://a.com".to_string());
         visited.insert("https://b.com".to_string());
 
-        let cp = BincodeCheckpoint::from_state(&visited, &["https://c.com".to_string()], 42);
+        let cp =
+            BincodeCheckpoint::from_state(&visited, &["https://c.com".to_string()], 42, vec![]);
         cp.save(&path).unwrap();
 
         let loaded = BincodeCheckpoint::load(&path).unwrap();
@@ -170,5 +193,43 @@ mod tests {
             .file()
             .to_string_lossy()
             .contains("crawl_checkpoint.json"));
+    }
+
+    #[test]
+    fn test_banned_domains_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("checkpoint.json");
+
+        let banned = vec![
+            BannedDomain {
+                domain: "waf.example.com".into(),
+                banned_until: None,
+                reason: "WAF challenge".into(),
+            },
+            BannedDomain {
+                domain: "rate.example.com".into(),
+                banned_until: Some("2026-12-31T23:59:59Z".parse().unwrap()),
+                reason: "rate limit exceeded".into(),
+            },
+        ];
+
+        let cp = BincodeCheckpoint::from_state(&HashSet::new(), &[], 0, banned);
+        cp.save(&path).unwrap();
+
+        let loaded = BincodeCheckpoint::load(&path).unwrap();
+        assert_eq!(loaded.banned_domains.len(), 2);
+        assert_eq!(loaded.banned_domains[0].domain, "waf.example.com");
+        assert!(loaded.banned_domains[0].banned_until.is_none());
+        assert_eq!(loaded.banned_domains[0].reason, "WAF challenge");
+        assert_eq!(loaded.banned_domains[1].domain, "rate.example.com");
+        assert!(loaded.banned_domains[1].banned_until.is_some());
+    }
+
+    #[test]
+    fn test_banned_domains_backward_compat() {
+        // Simulate an old checkpoint file without banned_domains field
+        let json = r#"{"visited":[],"queued":[],"pages_crawled":0,"version":1}"#;
+        let cp: BincodeCheckpoint = jzon_serde::from_str(json).unwrap();
+        assert!(cp.banned_domains.is_empty());
     }
 }

@@ -16,6 +16,7 @@
 #![allow(async_fn_in_trait)]
 
 pub mod chromiumoxide_downloader;
+pub mod cookie_bridge;
 pub mod hybrid_router;
 pub mod obscura_downloader;
 pub mod resource_governor;
