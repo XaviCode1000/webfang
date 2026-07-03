@@ -56,7 +56,7 @@ async fn test_engine_with_checkpoint_enabled() {
     );
 
     // Checkpoint file should exist after crawl
-    let checkpoint_file = checkpoint_dir.join("crawl_checkpoint.bin");
+    let checkpoint_file = checkpoint_dir.join("crawl_checkpoint.json");
     assert!(
         checkpoint_file.exists(),
         "checkpoint file should be created at {}",
@@ -163,7 +163,7 @@ async fn test_engine_resume_from_checkpoint() {
     visited.insert(seed_url);
     let checkpoint = BincodeCheckpoint::from_state(&visited, &[], 1);
 
-    let checkpoint_file = checkpoint_dir.join("crawl_checkpoint.bin");
+    let checkpoint_file = checkpoint_dir.join("crawl_checkpoint.json");
     checkpoint.save(&checkpoint_file).unwrap();
 
     // Now crawl with the same checkpoint dir — engine should resume

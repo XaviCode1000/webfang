@@ -249,7 +249,7 @@ rustls-webpki = ">=0.103.12"
 time = ">=0.3.47"
 
 # Competitive Features Phase 1 — Foundation
-bincode = "1"               # Binary serialization for checkpoint/session state
+jzon-rs-serde = "0.3"       # SIMD-accelerated JSON serialization, serde-compatible drop-in
 crc32fast = "1"             # Fast CRC32 checksums for content deduplication
 robotstxt = "0.3"           # robots.txt parsing and compliance
 

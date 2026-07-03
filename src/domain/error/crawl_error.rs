@@ -88,7 +88,7 @@ pub enum CrawlError {
     #[error("error de almacenamiento: {0}")]
     Storage(String),
 
-    /// Checkpoint serialization/deserialization error (bincode)
+    /// Checkpoint serialization/deserialization error
     #[error("checkpoint error: {0}")]
     Checkpoint(String),
 
@@ -188,9 +188,9 @@ mod tests {
 
     #[test]
     fn test_crawl_error_checkpoint() {
-        let error = CrawlError::Checkpoint("bincode decode failed".to_string());
+        let error = CrawlError::Checkpoint("json decode failed".to_string());
         assert!(error.to_string().contains("checkpoint error"));
-        assert!(error.to_string().contains("bincode decode failed"));
+        assert!(error.to_string().contains("json decode failed"));
     }
 
     #[test]

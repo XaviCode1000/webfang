@@ -1,7 +1,7 @@
-//! Bincode-based checkpoint store for persisting crawl state.
+//! JSON-based checkpoint store for persisting crawl state.
 //!
 //! Serializes visited URLs and queue state to disk for crash recovery
-//! and resume support. Uses bincode for compact binary serialization.
+//! and resume support. Uses jzon-rs for SIMD-accelerated JSON serialization.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -46,7 +46,7 @@ impl BincodeCheckpoint {
         let data = std::fs::read(path)
             .map_err(|e| CrawlError::Checkpoint(format!("failed to read checkpoint: {e}")))?;
 
-        let checkpoint: Self = bincode::deserialize(&data).map_err(|e| {
+        let checkpoint: Self = jzon_serde::from_slice(&data).map_err(|e| {
             CrawlError::Checkpoint(format!("failed to deserialize checkpoint: {e}"))
         })?;
 
@@ -62,8 +62,9 @@ impl BincodeCheckpoint {
 
     /// Save checkpoint to disk atomically (write to temp file, then rename).
     pub fn save(&self, path: &Path) -> Result<(), CrawlError> {
-        let data = bincode::serialize(self)
-            .map_err(|e| CrawlError::Checkpoint(format!("failed to serialize checkpoint: {e}")))?;
+        let data = jzon_serde::to_string(self)
+            .map_err(|e| CrawlError::Checkpoint(format!("failed to serialize checkpoint: {e}")))?
+            .into_bytes();
 
         let tmp_path = path.with_extension("tmp");
 
@@ -111,7 +112,7 @@ impl CheckpointPath {
     /// Get the checkpoint file path.
     #[must_use]
     pub fn file(&self) -> PathBuf {
-        self.base_dir.join("crawl_checkpoint.bin")
+        self.base_dir.join("crawl_checkpoint.json")
     }
 
     /// Ensure the base directory exists.
@@ -139,7 +140,7 @@ mod tests {
     #[test]
     fn test_save_and_load_roundtrip() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("checkpoint.bin");
+        let path = tmp.path().join("checkpoint.json");
 
         let mut visited = HashSet::new();
         visited.insert("https://a.com".to_string());
@@ -165,6 +166,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cp = CheckpointPath::new(tmp.path());
         cp.ensure_dir().unwrap();
-        assert!(cp.file().to_string_lossy().contains("crawl_checkpoint.bin"));
+        assert!(cp
+            .file()
+            .to_string_lossy()
+            .contains("crawl_checkpoint.json"));
     }
 }
