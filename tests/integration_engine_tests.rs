@@ -5,6 +5,7 @@
 //! Run with: `cargo test --test integration_engine_tests`
 
 use rust_scraper::application::crawler::engine::EngineOptions;
+use rust_scraper::domain::JsStrategy;
 use rust_scraper::{crawl_site_with_options, CrawlerConfig};
 use tempfile::TempDir;
 use url::Url;
@@ -44,6 +45,7 @@ async fn test_engine_with_checkpoint_enabled() {
         checkpoint_path: Some(checkpoint_dir.clone()),
         session_pool_enabled: false,
         ignore_robots: true,
+        js_strategy: JsStrategy::Static,
     };
 
     let result = crawl_site_with_options(config, options).await;
@@ -96,6 +98,7 @@ async fn test_engine_with_session_pool_429() {
         checkpoint_path: None,
         session_pool_enabled: true,
         ignore_robots: true,
+        js_strategy: JsStrategy::Static,
     };
 
     // The crawl should NOT panic — 429 is handled gracefully.
@@ -161,7 +164,7 @@ async fn test_engine_resume_from_checkpoint() {
     let seed_url = format!("{}/index.html", server.uri());
     let mut visited = std::collections::HashSet::new();
     visited.insert(seed_url);
-    let checkpoint = BincodeCheckpoint::from_state(&visited, &[], 1);
+    let checkpoint = BincodeCheckpoint::from_state(&visited, &[], 1, vec![]);
 
     let checkpoint_file = checkpoint_dir.join("crawl_checkpoint.json");
     checkpoint.save(&checkpoint_file).unwrap();
@@ -172,6 +175,7 @@ async fn test_engine_resume_from_checkpoint() {
         checkpoint_path: Some(checkpoint_dir),
         session_pool_enabled: false,
         ignore_robots: true,
+        js_strategy: JsStrategy::Static,
     };
 
     let result = crawl_site_with_options(config, options).await;
@@ -253,7 +257,8 @@ async fn test_robots_txt_enforcement() {
     let options = EngineOptions {
         checkpoint_path: None,
         session_pool_enabled: false,
-        ignore_robots: false, // Also respect robots.txt at engine level
+        ignore_robots: false,
+        js_strategy: JsStrategy::Static,
     };
 
     let result = crawl_site_with_options(config, options).await;
