@@ -135,6 +135,10 @@ fn test_args_has_required_fields() {
         // Item Pipeline
         pipeline: false,
         pipeline_output: rust_scraper::cli::args::PipelineOutputFormat::Jsonl,
+        // Batch Processing
+        batch: false,
+        batch_file: None,
+        batch_concurrency: 5,
     };
 
     assert_eq!(args.url, Some("https://example.com".to_string()));

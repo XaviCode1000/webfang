@@ -79,6 +79,7 @@ pub use error::SemanticError;
 
 // Application layer
 pub use application::{
+    batch::{BatchJob, BatchProcessor, BatchProgress, BatchResult},
     crawl_options::CrawlOptions,
     crawl_site, crawl_site_with_options, crawl_with_sitemap, create_http_client,
     detect_spa_content, discover_urls_for_tui, extract_domain,

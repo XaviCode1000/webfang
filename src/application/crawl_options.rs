@@ -42,6 +42,19 @@ pub struct CrawlOptions {
     pub pipeline_enabled: bool,
     /// Pipeline output format (jsonl, none).
     pub pipeline_output_format: PipelineOutputFormat,
+    /// Batch processing settings.
+    pub batch: BatchOptions,
+}
+
+/// Batch processing settings.
+#[derive(Debug, Clone)]
+pub struct BatchOptions {
+    /// Enable batch mode — read URLs from stdin or file.
+    pub enabled: bool,
+    /// Path to a file containing URLs (one per line). None = read from stdin.
+    pub batch_file: Option<PathBuf>,
+    /// Maximum concurrent URLs in batch mode.
+    pub concurrency: usize,
 }
 
 // ============================================================================
@@ -241,6 +254,17 @@ impl Default for CrawlOptions {
             elastic: IngestionTuning::default(),
             pipeline_enabled: false,
             pipeline_output_format: PipelineOutputFormat::default(),
+            batch: BatchOptions::default(),
+        }
+    }
+}
+
+impl Default for BatchOptions {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            batch_file: None,
+            concurrency: 5,
         }
     }
 }

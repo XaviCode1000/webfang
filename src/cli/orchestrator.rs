@@ -40,6 +40,11 @@ pub fn handle_completions(shell: Shell) -> CliExit {
 /// 2. Scraping with progress
 /// 3. Export results
 pub async fn run(opts: CrawlOptions) -> CliExit {
+    // Batch mode: process URLs from stdin or file, then exit early
+    if opts.batch.enabled {
+        return run_batch(opts).await;
+    }
+
     let urls_to_scrape = if opts.crawl.single_page {
         plan_urls(true, opts.url.clone(), Vec::new())
     } else {
@@ -251,6 +256,64 @@ async fn run_elastic_ingestion(
             Ok(Err(e)) => warn!("error en tarea de ingesta elástica: {e}"),
             Err(e) => warn!("error en tarea de ingesta elástica: {e}"),
         }
+    }
+}
+
+/// Run batch processing mode: crawl multiple URLs from stdin or file
+async fn run_batch(opts: CrawlOptions) -> CliExit {
+    use crate::application::batch::BatchManager;
+    use crate::domain::CrawlerConfig;
+
+    let crawler_config = CrawlerConfig::builder(opts.url.clone())
+        .max_pages(opts.crawl.max_pages)
+        .max_depth(opts.crawl.max_depth)
+        .include_patterns(opts.crawl.include_patterns.clone())
+        .exclude_patterns(opts.crawl.exclude_patterns.clone())
+        .ignore_robots(opts.crawl.ignore_robots)
+        .build();
+
+    let manager_result = if let Some(ref path) = opts.batch.batch_file {
+        info!("Reading URLs from file: {}", path.display());
+        BatchManager::from_file(path, crawler_config, opts.batch.concurrency)
+    } else {
+        info!("Reading URLs from stdin");
+        BatchManager::from_stdin(crawler_config, opts.batch.concurrency)
+    };
+
+    let manager = match manager_result {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("Failed to read URLs: {e}");
+            return CliExit::NetworkError(format!("Failed to read URLs: {e}"));
+        },
+    };
+
+    if manager.job_count() == 0 {
+        eprintln!("No URLs provided for batch processing");
+        return CliExit::UsageError("No URLs provided".into());
+    }
+
+    info!(
+        "Starting batch processing: {} jobs, concurrency={}",
+        manager.job_count(),
+        opts.batch.concurrency
+    );
+
+    let summary = manager.process_all_summary().await;
+
+    println!(
+        "Batch complete: {}/{} succeeded, {} failed",
+        summary.succeeded, summary.total_urls, summary.failed
+    );
+
+    for (url, err) in &summary.errors {
+        eprintln!("  Failed: {url} — {err}");
+    }
+
+    if summary.failed > 0 && summary.succeeded == 0 {
+        CliExit::NetworkError("All batch URLs failed".into())
+    } else {
+        CliExit::Success
     }
 }
 

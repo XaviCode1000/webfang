@@ -389,6 +389,22 @@ pub struct Args {
     #[clap(next_help_heading = "JS Rendering")]
     pub obscura_binary: String,
 
+    // ========== Batch Processing ==========
+    /// Enable batch mode — read URLs from stdin (one per line)
+    #[arg(long, default_value = "false", env = "RUST_SCRAPER_BATCH")]
+    #[clap(next_help_heading = "Batch Processing")]
+    pub batch: bool,
+
+    /// Path to a file containing URLs to crawl (one per line)
+    #[arg(long, env = "RUST_SCRAPER_BATCH_FILE")]
+    #[clap(next_help_heading = "Batch Processing")]
+    pub batch_file: Option<std::path::PathBuf>,
+
+    /// Maximum concurrent URLs in batch mode
+    #[arg(long, default_value = "5", env = "RUST_SCRAPER_BATCH_CONCURRENCY")]
+    #[clap(next_help_heading = "Batch Processing")]
+    pub batch_concurrency: usize,
+
     // ========== Item Pipeline ==========
     /// Enable item pipeline processing (validate → clean → output)
     #[arg(long, default_value = "false", env = "RUST_SCRAPER_PIPELINE")]
@@ -553,6 +569,11 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
             },
             pipeline_enabled: args.pipeline,
             pipeline_output_format: args.pipeline_output,
+            batch: crate::application::crawl_options::BatchOptions {
+                enabled: args.batch || args.batch_file.is_some(),
+                batch_file: args.batch_file,
+                concurrency: args.batch_concurrency,
+            },
         }
     }
 }
@@ -697,6 +718,11 @@ mod tests {
             // Item Pipeline
             pipeline: true,
             pipeline_output: PipelineOutputFormat::None,
+
+            // Batch Processing
+            batch: true,
+            batch_file: Some(std::path::PathBuf::from("/tmp/urls.txt")),
+            batch_concurrency: 8,
 
             ..Default::default()
         }

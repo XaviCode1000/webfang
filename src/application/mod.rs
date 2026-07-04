@@ -3,6 +3,7 @@
 //! This layer contains the business logic that orchestrates the domain objects
 //! using infrastructure services. It depends on both domain and infrastructure.
 
+pub mod batch;
 pub mod container;
 pub mod crawl_options;
 pub mod crawl_result_repository;
@@ -19,6 +20,9 @@ pub mod scraper_service;
 pub mod title_resolver;
 pub mod url_filter;
 
+pub use batch::{
+    BatchJob, BatchManager, BatchManagerSummary, BatchProcessor, BatchProgress, BatchResult,
+};
 pub use crawler::collector::{CrawlMessage, ResultsAdapter, ResultsCollector};
 pub use crawler::engine::EngineOptions;
 pub use crawler::{
