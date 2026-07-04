@@ -8,20 +8,15 @@ use std::fmt;
 /// Aggressiveness level for content pruning.
 ///
 /// Controls how aggressively `legible` strips non-content elements.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PruneAggressiveness {
     /// Minimal pruning — keep most structural elements.
     Gentle,
     /// Standard pruning — remove nav, sidebar, ads, footer (default).
+    #[default]
     Standard,
     /// Aggressive pruning — extract only the core article text.
     Aggressive,
-}
-
-impl Default for PruneAggressiveness {
-    fn default() -> Self {
-        Self::Standard
-    }
 }
 
 /// Sealed trait for content pruning implementations.

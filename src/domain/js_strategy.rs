@@ -14,22 +14,17 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 /// JavaScript rendering strategy for page fetching.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 #[value(rename_all = "kebab-case")]
 pub enum JsStrategy {
     /// Static HTTP only (wreq). Fastest, no JS rendering.
+    #[default]
     Static,
     /// Hybrid 3-layer: wreq → Obscura → Chromiumoxide.
     Hybrid,
     /// Full JS rendering only (Chromiumoxide). Slowest, handles all SPAs.
     Full,
-}
-
-impl Default for JsStrategy {
-    fn default() -> Self {
-        Self::Static
-    }
 }
 
 impl fmt::Display for JsStrategy {

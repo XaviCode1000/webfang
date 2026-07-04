@@ -439,7 +439,7 @@ impl Engine {
                 let pages = self
                     .pages_crawled
                     .load(std::sync::atomic::Ordering::Relaxed);
-                if pages > 0 && pages % self.checkpoint_interval == 0 {
+                if pages > 0 && pages.is_multiple_of(self.checkpoint_interval) {
                     debug!("Periodic checkpoint save at {pages} pages");
                     self.save_checkpoint().await;
                 }
