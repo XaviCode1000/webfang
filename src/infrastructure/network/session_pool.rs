@@ -232,6 +232,11 @@ impl SessionManager for DomainSessionPool {
             None
         };
 
+        // Drop the DashMap RefMut before refreshing the gauge to avoid deadlock:
+        // refresh_healthy_gauge calls self.sessions.iter() which needs read access
+        // to the same shard that `sessions` holds a write lock on.
+        drop(sessions);
+
         #[cfg(feature = "otel-metrics")]
         self.refresh_healthy_gauge();
 
