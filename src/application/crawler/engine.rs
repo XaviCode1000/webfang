@@ -956,8 +956,8 @@ pub async fn crawl_site_with_options(
 #[cfg(feature = "otel-metrics")]
 mod metrics_tests {
     use crate::infrastructure::observability::metrics_instruments::{
-        ENGINE_CHECKPOINT_SAVES, ENGINE_CONCURRENCY_LEVEL, ENGINE_PAGES_CRAWLED,
-        engine_concurrency_get, update_engine_concurrency,
+        engine_concurrency_get, update_engine_concurrency, ENGINE_CHECKPOINT_SAVES,
+        ENGINE_CONCURRENCY_LEVEL, ENGINE_PAGES_CRAWLED,
     };
 
     #[test]

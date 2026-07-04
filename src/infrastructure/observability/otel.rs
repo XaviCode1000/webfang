@@ -39,7 +39,9 @@ use super::file_trace_exporter::FileTraceExporter;
 #[cfg(feature = "otel-metrics")]
 use opentelemetry_otlp::MetricExporter;
 #[cfg(feature = "otel-metrics")]
-use opentelemetry_sdk::metrics::SdkMeterProvider;
+use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
+#[cfg(feature = "otel-metrics")]
+use std::time::Duration;
 
 /// OpenTelemetry configuration.
 #[derive(Debug, Clone)]
@@ -122,21 +124,32 @@ impl OtelGuard {
 
     /// Flush pending telemetry and shut down providers.
     ///
-    /// Must be called **before** the Tokio runtime shuts down. The OTel
-    /// batch processor and periodic reader threads need a live reactor to
-    /// drain their buffers. Call this explicitly rather than relying on
-    /// `Drop`, which may run after the runtime is gone.
-    pub fn flush(&self) {
-        // Force flush first — drains batch processor buffers while the
-        // Tokio runtime is still alive. Then shutdown signals termination.
+    /// Must be called **before** the Tokio runtime shuts down, and from
+    /// within a running Tokio context. The PeriodicReader's reqwest HTTP
+    /// call needs the Tokio runtime to make progress — using
+    /// `tokio::time::sleep` instead of `std::thread::sleep` ensures the
+    /// runtime stays responsive so the export can complete.
+    pub async fn flush(&self) {
         if let Some(ref provider) = self.provider {
-            let _ = provider.force_flush();
-            let _ = provider.shutdown();
+            if let Err(e) = provider.shutdown() {
+                eprintln!("Warning: OTel trace shutdown failed: {e}");
+            }
         }
         #[cfg(feature = "otel-metrics")]
         if let Some(ref meter) = self.meter_provider {
-            let _ = meter.force_flush();
-            let _ = meter.shutdown();
+            // force_flush triggers an immediate export cycle; the
+            // tokio::time::sleep yields the runtime so the PeriodicReader's
+            // background thread (which uses futures_executor::block_on for
+            // the blocking reqwest call) can complete.
+            if let Err(e) = meter.force_flush() {
+                eprintln!("Warning: OTel metrics force_flush failed: {e}");
+            }
+            // Give the PeriodicReader's background thread time to
+            // collect and send via the blocking reqwest client.
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            if let Err(e) = meter.shutdown() {
+                eprintln!("Warning: OTel metrics shutdown failed: {e}");
+            }
         }
     }
 }
@@ -244,26 +257,60 @@ pub fn init_otel_metrics(
     OtelGuard,
     OpenTelemetryLayer<Registry, opentelemetry_sdk::trace::Tracer>,
 )> {
-    use opentelemetry_otlp::WithExportConfig;
-
-    let exporter = MetricExporter::builder()
-        .with_http()
-        .with_endpoint(&config.endpoint)
-        .build()
-        .map_err(|e| anyhow::anyhow!("failed to build OTLP metric exporter: {e}"))?;
+    use opentelemetry_sdk::metrics::PeriodicReader;
 
     let resource = Resource::builder()
         .with_service_name(config.service_name.clone())
         .build();
 
-    let meter_provider = SdkMeterProvider::builder()
-        .with_periodic_exporter(exporter)
-        .with_resource(resource)
-        .build();
+    let meter_provider = if std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok() || config.endpoint != "http://localhost:4318" {
+        // OTLP export to Grafana Cloud or custom collector
+        use opentelemetry_otlp::{WithExportConfig, WithHttpConfig};
+        use std::collections::HashMap;
+
+        let mut headers = HashMap::new();
+        if let Ok(auth) = std::env::var("OTEL_EXPORTER_OTLP_HEADERS") {
+            if let Some(value) = auth.strip_prefix("Authorization=") {
+                headers.insert("Authorization".to_string(), value.to_string());
+            }
+        }
+
+        let exporter = MetricExporter::builder()
+            .with_http()
+            .with_endpoint(&config.endpoint)
+            .with_headers(headers)
+            .build()
+            .map_err(|e| anyhow::anyhow!("failed to build OTLP metric exporter: {e}"))?;
+
+        let reader = PeriodicReader::builder(exporter)
+            .with_interval(std::time::Duration::from_secs(5))
+            .build();
+
+        SdkMeterProvider::builder()
+            .with_reader(reader)
+            .with_resource(resource)
+            .build()
+    } else {
+        // Console export for local development — prints metrics to stdout
+        use opentelemetry_sdk::metrics::PeriodicReader;
+        use opentelemetry_sdk::metrics::export::stdout::StdoutExporterBuilder;
+
+        let exporter = StdoutExporterBuilder::new()
+            .with_writer(std::io::stdout())
+            .build();
+
+        let reader = PeriodicReader::builder(exporter)
+            .with_interval(std::time::Duration::from_secs(10))
+            .build();
+
+        SdkMeterProvider::builder()
+            .with_reader(reader)
+            .with_resource(resource)
+            .build()
+    };
 
     global::set_meter_provider(meter_provider.clone());
 
-    // Also initialize tracing so the guard can shut down both providers
     let (tracer_provider, layer) = build_tracer_provider(&config)?;
     let guard = OtelGuard::new(tracer_provider).with_meter_provider(meter_provider.clone());
 

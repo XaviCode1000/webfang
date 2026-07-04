@@ -306,16 +306,16 @@ async fn __main() -> CliExit {
     let result = orchestrator::run(opts).await;
 
     // Flush OpenTelemetry while the Tokio runtime is still alive.
-    // The batch processor and periodic reader threads need a live reactor
+    // The batch processor and periodic reader tasks need a live reactor
     // to drain their buffers — if we rely on Drop, the runtime may already
     // be gone, causing "there is no reactor running" panics.
     #[cfg(feature = "otel-metrics")]
     if let Some(ref guard) = _otel_guard {
-        guard.flush();
+        guard.flush().await;
     }
     #[cfg(all(feature = "otel", not(feature = "otel-metrics")))]
     if let Some(ref guard) = _otel_guard {
-        guard.flush();
+        guard.flush().await;
     }
 
     result

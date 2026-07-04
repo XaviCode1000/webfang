@@ -140,3 +140,6 @@ CLAUDE.md
 
 # Scraper output (should never be committed)
 output/
+
+# GitNexus local config
+.gitnexusrc

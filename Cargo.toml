@@ -47,6 +47,7 @@ otel-metrics = [
     "otel",
     "opentelemetry/metrics",
     "opentelemetry_sdk/metrics",
+    "opentelemetry_sdk/rt-tokio",
     "opentelemetry-otlp/metrics",
 ]
 
@@ -102,12 +103,15 @@ tracing-appender = "0.2"
 # OpenTelemetry (feature-gated: --features otel)
 opentelemetry = { version = "0.32", optional = true }
 opentelemetry_sdk = { version = "0.32", optional = true, features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.32", optional = true, features = ["http-proto", "reqwest-client"] }
+opentelemetry-otlp = { version = "0.32", optional = true, features = ["http-proto", "reqwest-blocking-client"] }
 tracing-opentelemetry = { version = "0.33", optional = true }
 
 # Utilities
 url = { version = "2", features = ["serde"] }
 futures = "0.3"
+# Force reqwest to use native-tls (OpenSSL) instead of rustls for OTel export.
+# Grafana Cloud TLS certificates are in the system store, not in rustls webpki.
+reqwest = { version = "0.13", optional = true, default-features = false, features = ["blocking", "native-tls"] }
 
 # HTML to Markdown conversion (preserves headings, code blocks, lists)
 # Pinned to <2.21 to avoid edition2024 requirement (needs Rust 1.85+)
