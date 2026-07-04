@@ -263,7 +263,9 @@ pub fn init_otel_metrics(
         .with_service_name(config.service_name.clone())
         .build();
 
-    let meter_provider = if std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok() || config.endpoint != "http://localhost:4318" {
+    let meter_provider = if std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok()
+        || config.endpoint != "http://localhost:4318"
+    {
         // OTLP export to Grafana Cloud or custom collector
         use opentelemetry_otlp::{WithExportConfig, WithHttpConfig};
         use std::collections::HashMap;
@@ -292,8 +294,8 @@ pub fn init_otel_metrics(
             .build()
     } else {
         // Console export for local development — prints metrics to stdout
-        use opentelemetry_sdk::metrics::PeriodicReader;
         use opentelemetry_sdk::metrics::export::stdout::StdoutExporterBuilder;
+        use opentelemetry_sdk::metrics::PeriodicReader;
 
         let exporter = StdoutExporterBuilder::new()
             .with_writer(std::io::stdout())
