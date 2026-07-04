@@ -13,6 +13,13 @@ use url::Url;
 
 use super::{DownloadError, Downloader, FetchedPage};
 
+#[cfg(feature = "otel-metrics")]
+use crate::infrastructure::observability::metrics_instruments::{
+    DOWNLOAD_OBSCURA_LATENCY, DOWNLOAD_OBSCURA_TIMEOUT,
+};
+#[cfg(feature = "otel-metrics")]
+use std::time::Instant;
+
 /// Memory budget for one Obscura subprocess (~30 MB).
 const OBSCURA_MEMORY_COST: usize = 30_000_000;
 
@@ -41,6 +48,9 @@ impl Downloader for ObscuraDownloader {
     async fn fetch(&self, url: &Url) -> Result<FetchedPage, DownloadError> {
         debug!("Obscura fetch: {}", url);
 
+        #[cfg(feature = "otel-metrics")]
+        let start = Instant::now();
+
         let url_string = url.to_string();
 
         let result = timeout(
@@ -67,6 +77,9 @@ impl Downloader for ObscuraDownloader {
 
                 debug!("Obscura returned {} bytes", markdown.len());
 
+                #[cfg(feature = "otel-metrics")]
+                DOWNLOAD_OBSCURA_LATENCY.record(start.elapsed().as_secs_f64(), &[]);
+
                 Ok(FetchedPage {
                     url: url.clone(),
                     html: markdown,
@@ -74,11 +87,29 @@ impl Downloader for ObscuraDownloader {
                     cookies: vec![],
                 })
             },
-            Ok(Ok(Err(e))) => Err(DownloadError::Internal(format!(
-                "obscura process failed to start: {e}"
-            ))),
-            Ok(Err(_)) => Err(DownloadError::Timeout(OBSCURA_TIMEOUT.as_secs())),
-            Err(_) => Err(DownloadError::Timeout(OBSCURA_TIMEOUT.as_secs())),
+            Ok(Ok(Err(e))) => {
+                #[cfg(feature = "otel-metrics")]
+                DOWNLOAD_OBSCURA_LATENCY.record(start.elapsed().as_secs_f64(), &[]);
+                Err(DownloadError::Internal(format!(
+                    "obscura process failed to start: {e}"
+                )))
+            },
+            Ok(Err(_)) => {
+                #[cfg(feature = "otel-metrics")]
+                {
+                    DOWNLOAD_OBSCURA_LATENCY.record(start.elapsed().as_secs_f64(), &[]);
+                    DOWNLOAD_OBSCURA_TIMEOUT.add(1, &[]);
+                }
+                Err(DownloadError::Timeout(OBSCURA_TIMEOUT.as_secs()))
+            },
+            Err(_) => {
+                #[cfg(feature = "otel-metrics")]
+                {
+                    DOWNLOAD_OBSCURA_LATENCY.record(start.elapsed().as_secs_f64(), &[]);
+                    DOWNLOAD_OBSCURA_TIMEOUT.add(1, &[]);
+                }
+                Err(DownloadError::Timeout(OBSCURA_TIMEOUT.as_secs()))
+            },
         }
     }
 
@@ -106,5 +137,15 @@ mod tests {
     fn test_obscura_default() {
         let dl = ObscuraDownloader;
         assert_eq!(dl.memory_cost(), OBSCURA_MEMORY_COST);
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "otel-metrics")]
+mod metrics_tests {
+    #[test]
+    fn test_obscura_instruments_init() {
+        let _ = &*super::DOWNLOAD_OBSCURA_LATENCY;
+        let _ = &*super::DOWNLOAD_OBSCURA_TIMEOUT;
     }
 }

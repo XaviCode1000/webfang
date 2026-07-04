@@ -14,6 +14,11 @@ use url::Url;
 use wreq::Client;
 use wreq_util::Emulation;
 
+#[cfg(feature = "otel-metrics")]
+use crate::infrastructure::observability::metrics_instruments::DOWNLOAD_WREQ_LATENCY;
+#[cfg(feature = "otel-metrics")]
+use std::time::Instant;
+
 use super::{Cookie, DownloadError, Downloader, FetchedPage};
 
 /// Estimated memory cost of a wreq client instance in bytes.
@@ -182,6 +187,9 @@ impl Downloader for WreqDownloader {
     async fn fetch(&self, url: &Url) -> Result<FetchedPage, DownloadError> {
         debug!("Fetching URL: {}", url);
 
+        #[cfg(feature = "otel-metrics")]
+        let start = Instant::now();
+
         let response = self.client.get(url.as_str()).send().await.map_err(|e| {
             if e.is_timeout() {
                 DownloadError::Timeout(self.timeout_secs)
@@ -219,12 +227,17 @@ impl Downloader for WreqDownloader {
             cookies.len()
         );
 
-        Ok(FetchedPage {
+        let result = Ok(FetchedPage {
             url: final_url,
             html,
             status,
             cookies,
-        })
+        });
+
+        #[cfg(feature = "otel-metrics")]
+        DOWNLOAD_WREQ_LATENCY.record(start.elapsed().as_secs_f64(), &[]);
+
+        result
     }
 
     fn supports_interactions(&self) -> bool {
@@ -425,5 +438,14 @@ mod wiremock_tests {
 
         let page = result.unwrap();
         assert!(page.url.as_str().contains("/target"));
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "otel-metrics")]
+mod metrics_tests {
+    #[test]
+    fn test_download_wreq_latency_instrument_init() {
+        let _ = &*super::DOWNLOAD_WREQ_LATENCY;
     }
 }

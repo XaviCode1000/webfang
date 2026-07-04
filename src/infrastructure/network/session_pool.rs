@@ -13,8 +13,16 @@
 use std::fmt;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "otel-metrics")]
+use std::hash::{Hash, Hasher};
+
 use dashmap::DashMap;
 use tracing::{debug, instrument, warn};
+
+#[cfg(feature = "otel-metrics")]
+use crate::infrastructure::observability::metrics_instruments::{
+    update_session_pool_healthy, SESSION_POOL_BACKOFF, SESSION_POOL_BANNED,
+};
 
 /// Unique identifier for a session slot within a domain pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -118,6 +126,16 @@ pub struct DomainSessionPool {
     config: SessionPoolConfig,
 }
 
+/// Hash a domain string to a bounded bucket (0–999) for metric attributes.
+///
+/// Prevents cardinality explosion from unbounded domain strings.
+#[cfg(feature = "otel-metrics")]
+fn domain_bucket(domain: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    domain.hash(&mut hasher);
+    hasher.finish() % 1000
+}
+
 impl DomainSessionPool {
     /// Create a new session pool with the given configuration.
     #[must_use]
@@ -132,6 +150,20 @@ impl DomainSessionPool {
     #[must_use]
     pub fn default_pool() -> Self {
         Self::new(SessionPoolConfig::default())
+    }
+
+    /// Count total healthy sessions across all domains and update the gauge.
+    #[cfg(feature = "otel-metrics")]
+    fn refresh_healthy_gauge(&self) {
+        let mut count: u64 = 0;
+        for entry in self.sessions.iter() {
+            for state in entry.value().iter() {
+                if state.status == SessionStatus::Healthy {
+                    count += 1;
+                }
+            }
+        }
+        update_session_pool_healthy(count);
     }
 
     /// Calculate exponential backoff delay for a given failure count.
@@ -178,26 +210,32 @@ impl SessionManager for DomainSessionPool {
         }
 
         // Find first healthy or recoverable session
-        for (idx, state) in sessions.iter().enumerate() {
-            match state.status {
-                SessionStatus::Healthy => {
-                    debug!(domain, session_id = idx, "acquired healthy session");
-                    return Some(SessionId(idx));
-                },
-                SessionStatus::Banned => {
-                    if let Some(next_retry) = state.next_retry_time {
-                        if now >= next_retry {
-                            debug!(domain, session_id = idx, "acquired session after cooldown");
-                            return Some(SessionId(idx));
+        let result = 'find: {
+            for (idx, state) in sessions.iter().enumerate() {
+                match state.status {
+                    SessionStatus::Healthy => {
+                        debug!(domain, session_id = idx, "acquired healthy session");
+                        break 'find Some(SessionId(idx));
+                    },
+                    SessionStatus::Banned => {
+                        if let Some(next_retry) = state.next_retry_time {
+                            if now >= next_retry {
+                                debug!(domain, session_id = idx, "acquired session after cooldown");
+                                break 'find Some(SessionId(idx));
+                            }
                         }
-                    }
-                },
-                SessionStatus::Retiring => continue,
+                    },
+                    SessionStatus::Retiring => continue,
+                }
             }
-        }
+            warn!(domain, "no available sessions for domain");
+            None
+        };
 
-        warn!(domain, "no available sessions for domain");
-        None
+        #[cfg(feature = "otel-metrics")]
+        self.refresh_healthy_gauge();
+
+        result
     }
 
     #[instrument(skip(self), fields(domain = %domain, session_id = %session_id.0))]
@@ -211,6 +249,8 @@ impl SessionManager for DomainSessionPool {
                 debug!(domain, session_id = session_id.0, "session marked healthy");
             }
         }
+        #[cfg(feature = "otel-metrics")]
+        self.refresh_healthy_gauge();
     }
 
     #[instrument(skip(self), fields(domain = %domain, session_id = %session_id.0, status_code))]
@@ -227,6 +267,24 @@ impl SessionManager for DomainSessionPool {
                     let delay = self.backoff_delay(state.consecutive_failures);
                     state.next_retry_time = Some(Instant::now() + delay);
                     state.status = SessionStatus::Banned;
+                    #[cfg(feature = "otel-metrics")]
+                    {
+                        let bucket = domain_bucket(domain);
+                        SESSION_POOL_BANNED.add(
+                            1,
+                            &[opentelemetry::KeyValue::new(
+                                "domain",
+                                format!("{bucket:04}"),
+                            )],
+                        );
+                        SESSION_POOL_BACKOFF.record(
+                            delay.as_secs_f64(),
+                            &[opentelemetry::KeyValue::new(
+                                "domain",
+                                format!("{bucket:04}"),
+                            )],
+                        );
+                    }
                     warn!(
                         domain,
                         session_id = session_id.0,
@@ -249,6 +307,8 @@ impl SessionManager for DomainSessionPool {
                 }
             }
         }
+        #[cfg(feature = "otel-metrics")]
+        self.refresh_healthy_gauge();
     }
 
     #[instrument(skip(self))]
@@ -557,5 +617,38 @@ mod tests {
     fn report_success_on_nonexistent_session_no_panic() {
         let pool = DomainSessionPool::default_pool();
         pool.report_success("ghost.com", SessionId(99));
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "otel-metrics")]
+mod metrics_tests {
+    use super::*;
+
+    #[test]
+    fn test_session_pool_instruments_init() {
+        let _ = &*SESSION_POOL_BANNED;
+        let _ = &*SESSION_POOL_BACKOFF;
+    }
+
+    #[test]
+    fn test_domain_bucket_is_bounded() {
+        let b1 = domain_bucket("example.com");
+        let b2 = domain_bucket("another-domain.org");
+        let b3 = domain_bucket("a".repeat(1000).as_str());
+        assert!(b1 < 1000);
+        assert!(b2 < 1000);
+        assert!(b3 < 1000);
+    }
+
+    #[test]
+    fn test_domain_bucket_deterministic() {
+        assert_eq!(domain_bucket("test.com"), domain_bucket("test.com"));
+    }
+
+    #[test]
+    fn test_domain_bucket_different_domains_differ() {
+        // Not guaranteed, but overwhelmingly likely for 1000 buckets
+        assert_ne!(domain_bucket("a.com"), domain_bucket("b.com"));
     }
 }

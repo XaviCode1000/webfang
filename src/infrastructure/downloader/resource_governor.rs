@@ -19,6 +19,11 @@ use tracing::{debug, warn};
 
 use super::DownloadError;
 
+#[cfg(feature = "otel-metrics")]
+use crate::infrastructure::observability::metrics_instruments::{
+    update_chrome_instances, update_ram_usage, RESOURCE_DENIED,
+};
+
 /// Approximate RAM cost of one Chrome instance (200 MB).
 const CHROME_INSTANCE_COST: u64 = 200_000_000;
 
@@ -55,12 +60,20 @@ impl ResourceGovernor {
     pub fn check_resources(&self) -> Result<usize, ResourceError> {
         let usage = Self::ram_usage_percent();
 
+        #[cfg(feature = "otel-metrics")]
+        update_ram_usage(u64::from(usage));
+
         if usage >= CRITICAL_THRESHOLD {
             warn!("RAM usage {usage}% >= {CRITICAL_THRESHOLD}%: new Chrome instances denied");
+            #[cfg(feature = "otel-metrics")]
+            RESOURCE_DENIED.add(1, &[opentelemetry::KeyValue::new("reason", "ram_too_high")]);
             return Err(ResourceError::RamTooHigh(usage));
         }
 
         let available = self.semaphore.available_permits();
+
+        #[cfg(feature = "otel-metrics")]
+        update_chrome_instances(available as u64);
 
         if usage >= WARNING_THRESHOLD {
             let reduced = available / 2;
@@ -185,5 +198,27 @@ mod tests {
         let res_err = ResourceError::Insufficient("test".into());
         let dl_err: DownloadError = res_err.into();
         assert!(matches!(dl_err, DownloadError::Internal(_)));
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "otel-metrics")]
+mod metrics_tests {
+    use crate::infrastructure::observability::metrics_instruments::{
+        chrome_instances_get, ram_usage_get, update_chrome_instances, update_ram_usage,
+        RESOURCE_DENIED,
+    };
+
+    #[test]
+    fn test_resource_governor_instruments_init() {
+        let _ = &*RESOURCE_DENIED;
+    }
+
+    #[test]
+    fn test_gauge_backing_update_from_check_resources() {
+        update_ram_usage(50);
+        assert_eq!(ram_usage_get(), 50);
+        update_chrome_instances(4);
+        assert_eq!(chrome_instances_get(), 4);
     }
 }

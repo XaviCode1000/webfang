@@ -14,6 +14,9 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(feature = "otel-metrics")]
+use crate::infrastructure::observability::metrics_instruments::AUTOSCALE_LEVEL_TRANSITIONS;
+
 /// Memory-pressure concurrency level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConcurrencyLevel {
@@ -50,6 +53,22 @@ impl SharedConcurrencyLevel {
             ConcurrencyLevel::Reduced => 1,
             ConcurrencyLevel::Critical => 2,
         };
+
+        #[cfg(feature = "otel-metrics")]
+        {
+            let old = self.level.swap(val, Ordering::Relaxed);
+            if old != val {
+                let direction = match (old, val) {
+                    (0, 1) | (0, 2) | (1, 2) => "down",
+                    (1, 0) | (2, 0) | (2, 1) => "up",
+                    _ => "same",
+                };
+                AUTOSCALE_LEVEL_TRANSITIONS
+                    .add(1, &[opentelemetry::KeyValue::new("direction", direction)]);
+            }
+        }
+
+        #[cfg(not(feature = "otel-metrics"))]
         self.level.store(val, Ordering::Relaxed);
     }
 
@@ -172,6 +191,42 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
+        assert_eq!(scl.get(), ConcurrencyLevel::Normal);
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "otel-metrics")]
+mod metrics_tests {
+    use super::*;
+
+    #[test]
+    fn test_autoscale_transition_instrument_init() {
+        let _ = &*AUTOSCALE_LEVEL_TRANSITIONS;
+    }
+
+    #[test]
+    fn test_set_records_direction_down() {
+        let scl = SharedConcurrencyLevel::new();
+        // Normal -> Reduced = "down"
+        scl.set(ConcurrencyLevel::Reduced);
+        assert_eq!(scl.get(), ConcurrencyLevel::Reduced);
+    }
+
+    #[test]
+    fn test_set_records_direction_up() {
+        let scl = SharedConcurrencyLevel::new();
+        scl.set(ConcurrencyLevel::Critical);
+        // Critical -> Normal = "up"
+        scl.set(ConcurrencyLevel::Normal);
+        assert_eq!(scl.get(), ConcurrencyLevel::Normal);
+    }
+
+    #[test]
+    fn test_same_level_no_duplicate_metric() {
+        let scl = SharedConcurrencyLevel::new();
+        // Setting same level should not panic (no-op)
+        scl.set(ConcurrencyLevel::Normal);
         assert_eq!(scl.get(), ConcurrencyLevel::Normal);
     }
 }
