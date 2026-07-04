@@ -8,6 +8,7 @@
 //! | Variable | Default | Description |
 //! |----------|---------|-------------|
 //! | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | OTLP HTTP collector endpoint |
+//! | `OTEL_EXPORTER_OTLP_HEADERS` | `""` | Extra headers (`k1=v1,k2=v2`) — e.g. Grafana Cloud auth |
 //! | `OTEL_SERVICE_NAME` | `rust_scraper` | Service name in OTel resource |
 //!
 //! # Usage
@@ -117,6 +118,26 @@ impl OtelGuard {
     fn with_meter_provider(mut self, meter_provider: SdkMeterProvider) -> Self {
         self.meter_provider = Some(meter_provider);
         self
+    }
+
+    /// Flush pending telemetry and shut down providers.
+    ///
+    /// Must be called **before** the Tokio runtime shuts down. The OTel
+    /// batch processor and periodic reader threads need a live reactor to
+    /// drain their buffers. Call this explicitly rather than relying on
+    /// `Drop`, which may run after the runtime is gone.
+    pub fn flush(&self) {
+        // Force flush first — drains batch processor buffers while the
+        // Tokio runtime is still alive. Then shutdown signals termination.
+        if let Some(ref provider) = self.provider {
+            let _ = provider.force_flush();
+            let _ = provider.shutdown();
+        }
+        #[cfg(feature = "otel-metrics")]
+        if let Some(ref meter) = self.meter_provider {
+            let _ = meter.force_flush();
+            let _ = meter.shutdown();
+        }
     }
 }
 

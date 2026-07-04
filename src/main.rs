@@ -24,6 +24,7 @@ use rust_scraper::cli::orchestrator;
 
 use std::env;
 use std::io::{self, IsTerminal};
+use std::panic;
 
 use clap::Parser;
 use inquire::Text;
@@ -123,6 +124,22 @@ fn prompt_for_url() -> Result<String, CliExit> {
 
 #[tokio::main]
 async fn main() -> CliExit {
+    // Suppress OTel background thread panics during Tokio runtime shutdown.
+    // The BatchSpanProcessor and PeriodicReader threads panic when the reactor
+    // drops before they finish — this is a known SDK limitation, not our bug.
+    let default_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        let thread_name = std::thread::current()
+            .name()
+            .unwrap_or("unknown")
+            .to_string();
+        if thread_name.starts_with("OpenTelemetry.") {
+            eprintln!("Warning: OTel background thread '{thread_name}' panicked during shutdown (safe to ignore)");
+            return;
+        }
+        default_hook(info);
+    }));
+
     // tokio-console: usa 'cargo install tokio-console' y corre en otra terminal
     // El runtime con tokio[unstable] ya expone el endpoint automaticamente
     __main().await
@@ -286,5 +303,20 @@ async fn __main() -> CliExit {
     // =========================================================================
     // 8. Delegate to orchestrator
     // =========================================================================
-    orchestrator::run(opts).await
+    let result = orchestrator::run(opts).await;
+
+    // Flush OpenTelemetry while the Tokio runtime is still alive.
+    // The batch processor and periodic reader threads need a live reactor
+    // to drain their buffers — if we rely on Drop, the runtime may already
+    // be gone, causing "there is no reactor running" panics.
+    #[cfg(feature = "otel-metrics")]
+    if let Some(ref guard) = _otel_guard {
+        guard.flush();
+    }
+    #[cfg(all(feature = "otel", not(feature = "otel-metrics")))]
+    if let Some(ref guard) = _otel_guard {
+        guard.flush();
+    }
+
+    result
 }
