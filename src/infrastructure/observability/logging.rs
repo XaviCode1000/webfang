@@ -137,6 +137,16 @@ pub fn init_json_logging_dual(
     // Build subscriber layers
     let subscriber = tracing_subscriber::registry().with(filter);
 
+    #[cfg(feature = "dev-tracing")]
+    let subscriber = {
+        use tracing_tree::HierarchicalLayer;
+        subscriber.with(
+            HierarchicalLayer::new(2)
+                .with_targets(true)
+                .with_bracketed_fields(true),
+        )
+    };
+
     // Text layer for stderr (always)
     let text_layer = fmt::layer()
         .with_writer(std::io::stderr)
@@ -193,6 +203,16 @@ pub fn init_json_logging_dual(
 
     // Build subscriber: OTel layer must be added directly on Registry, before EnvFilter
     let subscriber = tracing_subscriber::registry().with(otel_layer).with(filter);
+
+    #[cfg(feature = "dev-tracing")]
+    let subscriber = {
+        use tracing_tree::HierarchicalLayer;
+        subscriber.with(
+            HierarchicalLayer::new(2)
+                .with_targets(true)
+                .with_bracketed_fields(true),
+        )
+    };
 
     // Text layer for stderr (always)
     let text_layer = fmt::layer()

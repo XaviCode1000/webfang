@@ -35,6 +35,9 @@ ai = [
 # Tokio console for runtime observability (task-starvation debugging)
 # Requires: RUSTFLAGS="--cfg tokio_unstable" at compile time
 console = ["dep:console-subscriber"]
+# Hierarchical span tree rendering for local dev debugging
+# Activates tracing-tree HierarchicalLayer — terminal-friendly tree output
+dev-tracing = ["dep:tracing-tree"]
 # OpenTelemetry distributed tracing (OTLP HTTP/protobuf export)
 otel = [
     "dep:opentelemetry",
@@ -99,6 +102,7 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 tracing-appender = "0.2"
+tracing-tree = { version = "0.4", optional = true }
 
 # OpenTelemetry (feature-gated: --features otel)
 opentelemetry = { version = "0.32", optional = true }
