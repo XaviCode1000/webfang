@@ -1,0 +1,50 @@
+[package]
+name = "rust_scraper-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+url = "2"
+
+[dependencies.rust_scraper]
+path = ".."
+
+[[bin]]
+name = "fuzz_html_cleaner"
+path = "fuzz_targets/fuzz_html_cleaner.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_url_validation"
+path = "fuzz_targets/fuzz_url_validation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_extract_links"
+path = "fuzz_targets/fuzz_extract_links.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_parse_sitemap"
+path = "fuzz_targets/fuzz_parse_sitemap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_extract_text"
+path = "fuzz_targets/fuzz_extract_text.rs"
+test = false
+doc = false
+bench = false

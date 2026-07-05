@@ -292,6 +292,26 @@ name = "cosine_similarity"
 harness = false
 required-features = ["ai"]
 
+[[bench]]
+name = "url_parsing"
+harness = false
+
+[[bench]]
+name = "sitemap_parsing"
+harness = false
+
+[[bench]]
+name = "html_conversion"
+harness = false
+
+[[bench]]
+name = "readability"
+harness = false
+
+[[bench]]
+name = "export"
+harness = false
+
 [build-dependencies]
 built = { version = "0.7", features = ["git2", "chrono"] }
 

@@ -674,4 +674,125 @@ mod tests {
         assert_eq!(config.max_response_size, 52_428_800);
         assert_eq!(config.max_decompressed_size, 104_857_600);
     }
+
+    // -- Mutation-killing tests for sitemap_parser --
+
+    // Gap A: resolve_url — absolute URL passthrough
+    #[test]
+    fn test_resolve_url_absolute_passthrough() {
+        let base = Url::parse("https://example.com/sitemap.xml").unwrap();
+
+        let resolved = resolve_url(&base, "https://other.com/page").unwrap();
+        assert_eq!(resolved.as_str(), "https://other.com/page");
+
+        let resolved = resolve_url(&base, "http://insecure.com/page").unwrap();
+        assert_eq!(resolved.as_str(), "http://insecure.com/page");
+    }
+
+    #[test]
+    fn test_resolve_url_absolute_overrides_base() {
+        let base = Url::parse("https://example.com/sitemap.xml").unwrap();
+        let resolved = resolve_url(&base, "https://completely-different.org/path").unwrap();
+        assert_eq!(resolved.host_str(), Some("completely-different.org"));
+    }
+
+    // Gap B: parse_with_depth — depth=0 returns MaxDepthExceeded without HTTP
+    #[tokio::test]
+    async fn test_parse_from_url_depth_zero_returns_error() {
+        let config = SitemapConfig::builder().max_depth(0).build();
+        let parser = SitemapParser::with_config(config);
+        let result = parser
+            .parse_from_url("https://example.com/sitemap.xml")
+            .await;
+        assert!(matches!(result, Err(SitemapError::MaxDepthExceeded)));
+    }
+
+    #[tokio::test]
+    async fn test_parse_from_url_depth_one_attempts_fetch() {
+        let config = SitemapConfig::builder().max_depth(1).build();
+        let parser = SitemapParser::with_config(config);
+        // depth=1 means it tries the HTTP fetch — with an invalid host it should fail
+        let result = parser
+            .parse_from_url("https://invalid-host-xyz-12345.com/sitemap.xml")
+            .await;
+        assert!(result.is_err());
+    }
+
+    // Gap C: is_sitemap_index — various URL patterns
+    #[test]
+    fn test_is_sitemap_index_xml_gz() {
+        let parser = SitemapParser::new();
+        let urls = vec![Url::parse("https://example.com/sitemap.xml.gz").unwrap()];
+        assert!(parser.is_sitemap_index(&urls));
+    }
+
+    #[test]
+    fn test_is_sitemap_index_mixed() {
+        let parser = SitemapParser::new();
+        let urls = vec![
+            Url::parse("https://example.com/page1").unwrap(),
+            Url::parse("https://example.com/sitemap2.xml").unwrap(),
+        ];
+        assert!(parser.is_sitemap_index(&urls));
+    }
+
+    #[test]
+    fn test_is_sitemap_index_no_xml() {
+        let parser = SitemapParser::new();
+        let urls = vec![
+            Url::parse("https://example.com/page1.html").unwrap(),
+            Url::parse("https://example.com/page2.json").unwrap(),
+        ];
+        assert!(!parser.is_sitemap_index(&urls));
+    }
+
+    // Gap D: is_valid_sitemap_url
+    #[test]
+    fn test_is_valid_sitemap_url_normal() {
+        assert!(SitemapParser::is_valid_sitemap_url(
+            &Url::parse("https://example.com/page").unwrap()
+        ));
+    }
+
+    #[test]
+    fn test_is_valid_sitemap_url_nodejs_valid_version() {
+        assert!(SitemapParser::is_valid_sitemap_url(
+            &Url::parse("https://nodejs.org/blog/release/v10.6.0").unwrap()
+        ));
+        assert!(SitemapParser::is_valid_sitemap_url(
+            &Url::parse("https://nodejs.org/blog/release/v14.17.0").unwrap()
+        ));
+        assert!(SitemapParser::is_valid_sitemap_url(
+            &Url::parse("https://nodejs.org/blog/release/v99.0.0").unwrap()
+        ));
+    }
+
+    #[test]
+    fn test_is_valid_sitemap_url_nodejs_invalid_version() {
+        assert!(!SitemapParser::is_valid_sitemap_url(
+            &Url::parse("https://nodejs.org/blog/release/v106.0").unwrap()
+        ));
+        assert!(!SitemapParser::is_valid_sitemap_url(
+            &Url::parse("https://nodejs.org/blog/release/v1311.0").unwrap()
+        ));
+    }
+
+    #[test]
+    fn test_is_valid_sitemap_url_nodejs_invalid_with_query() {
+        assert!(!SitemapParser::is_valid_sitemap_url(
+            &Url::parse("https://nodejs.org/blog/release/v106.0?foo=bar").unwrap()
+        ));
+    }
+
+    #[test]
+    fn test_max_depth_accessor() {
+        let parser = SitemapParser::with_config(SitemapConfig::builder().max_depth(7).build());
+        assert_eq!(parser.max_depth(), 7);
+    }
+
+    #[test]
+    fn test_max_depth_default() {
+        let parser = SitemapParser::new();
+        assert_eq!(parser.max_depth(), 3);
+    }
 }

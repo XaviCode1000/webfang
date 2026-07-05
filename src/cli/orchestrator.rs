@@ -326,8 +326,18 @@ async fn run_batch(opts: CrawlOptions) -> CliExit {
         eprintln!("  Failed: {url} — {err}");
     }
 
-    if summary.failed > 0 && summary.succeeded == 0 {
+    batch_exit_code(summary.succeeded, summary.failed)
+}
+
+/// Determine the CLI exit code from batch scrape results.
+fn batch_exit_code(succeeded: usize, failed: usize) -> CliExit {
+    if failed > 0 && succeeded == 0 {
         CliExit::NetworkError("All batch URLs failed".into())
+    } else if failed > 0 {
+        CliExit::PartialSuccess {
+            success: succeeded,
+            failed,
+        }
     } else {
         CliExit::Success
     }
@@ -347,7 +357,8 @@ fn plan_urls(
 
 #[cfg(test)]
 mod tests {
-    use super::plan_urls;
+    use super::{batch_exit_code, plan_urls};
+    use crate::cli::error::CliExit;
 
     #[test]
     fn plan_urls_returns_only_seed_url_for_single_page() {
@@ -373,5 +384,35 @@ mod tests {
         let planned = plan_urls(false, seed_url, discovered_urls.clone());
 
         assert_eq!(planned, discovered_urls);
+    }
+
+    #[test]
+    fn batch_all_fail_returns_network_error() {
+        let exit = batch_exit_code(0, 5);
+        assert!(
+            matches!(exit, CliExit::NetworkError(_)),
+            "Expected NetworkError when all URLs failed, got: {exit:?}"
+        );
+    }
+
+    #[test]
+    fn batch_all_succeed_returns_success() {
+        let exit = batch_exit_code(10, 0);
+        assert!(
+            matches!(exit, CliExit::Success),
+            "Expected Success when all URLs succeed, got: {exit:?}"
+        );
+    }
+
+    #[test]
+    fn batch_partial_success_returns_partial() {
+        let exit = batch_exit_code(3, 2);
+        match exit {
+            CliExit::PartialSuccess { success, failed } => {
+                assert_eq!(success, 3, "success count mismatch");
+                assert_eq!(failed, 2, "failed count mismatch");
+            },
+            other => panic!("Expected PartialSuccess, got: {other:?}"),
+        }
     }
 }

@@ -784,4 +784,79 @@ mod tests {
             other => panic!("expected WafBlocked, got: {other}"),
         }
     }
+
+    // -- Mutation-killing tests for scraper_service --
+
+    #[tokio::test]
+    async fn test_scrape_multiple_with_limit_returns_results() {
+        let html = r#"<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body>
+<article>
+<h1>Article Title</h1>
+<p>This is substantial content that should be extracted by Readability. It has enough text to pass the minimum threshold.</p>
+</article>
+</body>
+</html>"#;
+
+        let url1 = url::Url::parse("https://example.com/page1").unwrap();
+        let url2 = url::Url::parse("https://example.com/page2").unwrap();
+        let mock = MockHttpClient::new()
+            .with_response(
+                url1.as_str(),
+                Ok(HttpResponse {
+                    status: 200,
+                    body: html.to_string(),
+                    headers: HashMap::new(),
+                }),
+            )
+            .with_response(
+                url2.as_str(),
+                Ok(HttpResponse {
+                    status: 200,
+                    body: html.to_string(),
+                    headers: HashMap::new(),
+                }),
+            );
+
+        let config = ScraperConfig::default();
+        let result = scrape_multiple_with_limit(&mock, &[url1, url2], &config)
+            .await
+            .expect("scrape_multiple_with_limit should succeed");
+
+        assert_eq!(result.len(), 2, "should return content from both URLs");
+    }
+
+    #[tokio::test]
+    async fn test_scrape_multiple_with_limit_empty_urls() {
+        let mock = MockHttpClient::new();
+        let config = ScraperConfig::default();
+        let result = scrape_multiple_with_limit(&mock, &[], &config)
+            .await
+            .expect("empty URL list should return Ok");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_download_assets_disabled_returns_empty() {
+        let config = ScraperConfig::default();
+        assert!(!config.has_downloads());
+    }
+
+    #[test]
+    fn test_download_assets_enabled_config() {
+        let config = ScraperConfig::default().with_images();
+        assert!(config.has_downloads());
+    }
+
+    #[test]
+    fn test_max_instrumented_body_size_is_1mb() {
+        assert_eq!(MAX_INSTRUMENTED_BODY_SIZE, 1_048_576);
+    }
+
+    #[test]
+    fn test_min_content_chars_is_50() {
+        assert_eq!(MIN_CONTENT_CHARS, 50);
+    }
 }

@@ -1299,4 +1299,169 @@ Disallow: /tmp/";
             "Empty robots.txt (no Disallow) should allow everything"
         );
     }
+
+    // =========================================================================
+    // derive_filename_from_response tests
+    // =========================================================================
+
+    #[test]
+    fn test_derive_filename_pdf() {
+        let headers = wreq::header::HeaderMap::new();
+        let url = Url::parse("https://example.com/").expect("valid url");
+        let result = derive_filename_from_response(&headers, &url, "application/pdf");
+        assert!(
+            result.ends_with(".pdf"),
+            "Expected .pdf extension, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_derive_filename_png() {
+        let headers = wreq::header::HeaderMap::new();
+        let url = Url::parse("https://example.com/").expect("valid url");
+        let result = derive_filename_from_response(&headers, &url, "image/png");
+        assert!(
+            result.ends_with(".png"),
+            "Expected .png extension, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_derive_filename_jpg() {
+        let headers = wreq::header::HeaderMap::new();
+        let url = Url::parse("https://example.com/").expect("valid url");
+        let result = derive_filename_from_response(&headers, &url, "image/jpeg");
+        assert!(
+            result.ends_with(".jpg"),
+            "Expected .jpg extension, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_derive_filename_gif() {
+        let headers = wreq::header::HeaderMap::new();
+        let url = Url::parse("https://example.com/").expect("valid url");
+        let result = derive_filename_from_response(&headers, &url, "image/gif");
+        assert!(
+            result.ends_with(".gif"),
+            "Expected .gif extension, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_derive_filename_webp() {
+        let headers = wreq::header::HeaderMap::new();
+        let url = Url::parse("https://example.com/").expect("valid url");
+        let result = derive_filename_from_response(&headers, &url, "image/webp");
+        assert!(
+            result.ends_with(".webp"),
+            "Expected .webp extension, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_derive_filename_mp3() {
+        let headers = wreq::header::HeaderMap::new();
+        let url = Url::parse("https://example.com/").expect("valid url");
+        let result = derive_filename_from_response(&headers, &url, "audio/mpeg");
+        assert!(
+            result.ends_with(".mp3"),
+            "Expected .mp3 extension, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_derive_filename_mp4() {
+        let headers = wreq::header::HeaderMap::new();
+        let url = Url::parse("https://example.com/").expect("valid url");
+        let result = derive_filename_from_response(&headers, &url, "video/mp4");
+        assert!(
+            result.ends_with(".mp4"),
+            "Expected .mp4 extension, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_derive_filename_zip() {
+        let headers = wreq::header::HeaderMap::new();
+        let url = Url::parse("https://example.com/").expect("valid url");
+        let result = derive_filename_from_response(&headers, &url, "application/zip");
+        assert!(
+            result.ends_with(".zip"),
+            "Expected .zip extension, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_derive_filename_unknown() {
+        let headers = wreq::header::HeaderMap::new();
+        let url = Url::parse("https://example.com/").expect("valid url");
+        let result = derive_filename_from_response(&headers, &url, "text/plain");
+        assert!(
+            result.ends_with(".bin"),
+            "Expected .bin extension for unknown type, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_derive_filename_from_url_path() {
+        let headers = wreq::header::HeaderMap::new();
+        let url = Url::parse("https://example.com/docs/report.pdf").expect("valid url");
+        let result = derive_filename_from_response(&headers, &url, "application/octet-stream");
+        assert_eq!(
+            result, "report.pdf",
+            "URL basename should take priority over content-type"
+        );
+    }
+
+    #[test]
+    fn test_derive_filename_from_content_disposition() {
+        let mut headers = wreq::header::HeaderMap::new();
+        headers.insert(
+            wreq::header::CONTENT_DISPOSITION,
+            "attachment; filename=\"invoice.pdf\""
+                .parse()
+                .expect("valid header value"),
+        );
+        let url = Url::parse("https://example.com/download").expect("valid url");
+        let result = derive_filename_from_response(&headers, &url, "application/octet-stream");
+        assert_eq!(
+            result, "invoice.pdf",
+            "Content-Disposition should have highest priority"
+        );
+    }
+
+    // =========================================================================
+    // parse_content_disposition tests
+    // =========================================================================
+
+    #[test]
+    fn test_parse_content_disposition_filename() {
+        let result = parse_content_disposition("attachment; filename=\"report.pdf\"");
+        assert_eq!(result, Some("report.pdf".to_string()));
+    }
+
+    #[test]
+    fn test_parse_content_disposition_filename_unquoted() {
+        let result = parse_content_disposition("attachment; filename=report.pdf");
+        assert_eq!(result, Some("report.pdf".to_string()));
+    }
+
+    #[test]
+    fn test_parse_content_disposition_utf8() {
+        let result = parse_content_disposition("attachment; filename*=UTF-8''encoded.pdf");
+        assert_eq!(result, Some("encoded.pdf".to_string()));
+    }
+
+    #[test]
+    fn test_parse_content_disposition_empty() {
+        let result = parse_content_disposition("");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_content_disposition_no_filename() {
+        let result = parse_content_disposition("attachment");
+        assert_eq!(result, None);
+    }
 }

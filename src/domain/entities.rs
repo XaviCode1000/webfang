@@ -738,4 +738,119 @@ mod tests {
         assert!(dbg.contains("example.com"));
         assert!(dbg.contains("ScrapedContent"));
     }
+
+    // -- ExportFormat::parse_str mutation-killing tests --
+
+    #[test]
+    fn test_export_format_parse_str_all_variants() {
+        assert_eq!(ExportFormat::parse_str("jsonl"), Ok(ExportFormat::Jsonl));
+        assert_eq!(ExportFormat::parse_str("vector"), Ok(ExportFormat::Vector));
+        assert_eq!(ExportFormat::parse_str("auto"), Ok(ExportFormat::Auto));
+    }
+
+    #[test]
+    fn test_export_format_parse_str_case_insensitive() {
+        assert_eq!(ExportFormat::parse_str("JSONL"), Ok(ExportFormat::Jsonl));
+        assert_eq!(ExportFormat::parse_str("Vector"), Ok(ExportFormat::Vector));
+        assert_eq!(ExportFormat::parse_str("AUTO"), Ok(ExportFormat::Auto));
+    }
+
+    #[test]
+    fn test_export_format_parse_str_invalid_returns_error() {
+        assert!(ExportFormat::parse_str("bogus").is_err());
+        assert!(ExportFormat::parse_str("json").is_err());
+        assert!(ExportFormat::parse_str("markdown").is_err());
+        assert!(ExportFormat::parse_str("").is_err());
+    }
+
+    // -- DocumentChunk accessor mutation-killing tests --
+
+    #[test]
+    fn test_document_chunk_has_embeddings_true() {
+        let chunk = DocumentChunk::test_new(
+            uuid::Uuid::new_v4(),
+            "https://example.com",
+            "Title",
+            "content",
+        )
+        .with_embeddings(vec![0.1, 0.2, 0.3]);
+        assert!(chunk.has_embeddings());
+    }
+
+    #[test]
+    fn test_document_chunk_has_embeddings_false() {
+        let chunk = DocumentChunk::test_new(
+            uuid::Uuid::new_v4(),
+            "https://example.com",
+            "Title",
+            "content",
+        );
+        assert!(!chunk.has_embeddings());
+    }
+
+    #[test]
+    fn test_document_chunk_text_length_nonempty() {
+        let chunk = DocumentChunk::test_new(
+            uuid::Uuid::new_v4(),
+            "https://example.com",
+            "Title",
+            "hello world",
+        );
+        assert_eq!(chunk.text_length(), 11);
+    }
+
+    #[test]
+    fn test_document_chunk_text_length_empty() {
+        let chunk =
+            DocumentChunk::test_new(uuid::Uuid::new_v4(), "https://example.com", "Title", "");
+        assert_eq!(chunk.text_length(), 0);
+    }
+
+    // -- ExportState side-effect mutation-killing tests --
+
+    #[test]
+    fn test_export_state_mark_processed_increments_counter() {
+        let mut state = ExportState::new("example.com");
+        assert_eq!(state.total_exported, 0);
+
+        state.mark_processed("https://example.com/page1");
+        assert_eq!(state.total_exported, 1);
+        assert_eq!(state.processed_urls.len(), 1);
+    }
+
+    #[test]
+    fn test_export_state_mark_processed_no_duplicate() {
+        let mut state = ExportState::new("example.com");
+        state.mark_processed("https://example.com/page1");
+        state.mark_processed("https://example.com/page1");
+        assert_eq!(state.total_exported, 1);
+        assert_eq!(state.processed_urls.len(), 1);
+    }
+
+    #[test]
+    fn test_export_state_mark_processed_multiple_urls() {
+        let mut state = ExportState::new("example.com");
+        state.mark_processed("https://example.com/page1");
+        state.mark_processed("https://example.com/page2");
+        state.mark_processed("https://example.com/page3");
+        assert_eq!(state.total_exported, 3);
+        assert!(state.is_processed("https://example.com/page1"));
+        assert!(state.is_processed("https://example.com/page2"));
+        assert!(!state.is_processed("https://example.com/other"));
+    }
+
+    #[test]
+    fn test_export_state_update_timestamp() {
+        let mut state = ExportState::new("example.com");
+        assert!(state.last_export.is_none());
+
+        state.update_timestamp();
+        assert!(state.last_export.is_some());
+
+        let ts1 = state.last_export.unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        state.update_timestamp();
+        let ts2 = state.last_export.unwrap();
+        assert!(ts2 >= ts1);
+    }
 }
