@@ -350,6 +350,7 @@ async fn test_download_images_from_website() {
         scraper_concurrency: 3,
         download_timeout_secs: 30,
         max_pages: None,
+        selector: "body".to_string(),
     };
 
     // Act
@@ -420,6 +421,7 @@ async fn test_download_documents_from_website() {
         scraper_concurrency: 3,
         download_timeout_secs: 30,
         max_pages: None,
+        selector: "body".to_string(),
     };
 
     // Act

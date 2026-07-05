@@ -454,12 +454,13 @@ async fn test_max_pages_limits_crawl() {
 /// --batch from stdin processes URLs and exits.
 #[test]
 fn test_batch_stdin_processes_urls() {
-    cmd()
+    let _ = cmd()
         .arg("--batch")
         .write_stdin("https://example.com\n")
         .timeout(Duration::from_secs(10))
         .assert();
 }
+
 
 /// --batch-file reads URLs from a file.
 #[test]
@@ -468,7 +469,7 @@ fn test_batch_file_processes_urls() {
     let batch_file = temp.path().join("urls.txt");
     std::fs::write(&batch_file, "https://example.com\n").unwrap();
 
-    cmd()
+    let _ = cmd()
         .arg("--batch-file")
         .arg(&batch_file)
         .timeout(Duration::from_secs(10))
@@ -649,7 +650,7 @@ async fn test_download_images_saves_files() {
     let image_files: Vec<_> = std::fs::read_dir(&images_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map_or(false, |ft| ft.is_file()))
+        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_file()))
         .collect();
     assert!(
         !image_files.is_empty(),
@@ -713,7 +714,7 @@ async fn test_download_documents_saves_files() {
     let doc_files: Vec<_> = std::fs::read_dir(&docs_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map_or(false, |ft| ft.is_file()))
+        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_file()))
         .collect();
     assert!(
         !doc_files.is_empty(),
@@ -1168,5 +1169,105 @@ async fn test_download_pdf_saves_binary_file() {
     assert_eq!(
         saved, pdf_content,
         "saved PDF content should match the original"
+    );
+}
+
+// ============================================================================
+// 12. Sitemap URL — explicit --sitemap-url flag
+// ============================================================================
+
+/// --sitemap-url with --use-sitemap fetches the explicit sitemap URL and
+/// scrapes the URLs listed in it.
+#[tokio::test]
+async fn test_sitemap_url_scrapes_listed_urls() {
+    let server = MockServer::start().await;
+    let output = TempDir::new().unwrap();
+
+    // Seed page (may or may not be fetched — sitemap discovery takes precedence)
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "<html><body><article>\
+                 <h1>Seed Page</h1>\
+                 <p>Seed content.</p>\
+                 </article></body></html>",
+        ))
+        .mount(&server)
+        .await;
+
+    // robots.txt (empty — allow all)
+    Mock::given(method("GET"))
+        .and(path("/robots.txt"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("User-agent: *\n"))
+        .mount(&server)
+        .await;
+
+    // Explicit sitemap listing two pages
+    let base = server.uri();
+    Mock::given(method("GET"))
+        .and(path("/sitemap.xml"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>{}/page-a</loc></url>
+    <url><loc>{}/page-b</loc></url>
+</urlset>"#,
+            base, base,
+        )))
+        .mount(&server)
+        .await;
+
+    // Pages listed in the sitemap
+    Mock::given(method("GET"))
+        .and(path("/page-a"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "<html><body><article>\
+                 <h1>Page A</h1>\
+                 <p>Content from sitemap page A.</p>\
+                 </article></body></html>",
+        ))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/page-b"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "<html><body><article>\
+                 <h1>Page B</h1>\
+                 <p>Content from sitemap page B.</p>\
+                 </article></body></html>",
+        ))
+        .mount(&server)
+        .await;
+
+    cmd()
+        .arg("--url")
+        .arg(server.uri())
+        .arg("--use-sitemap")
+        .arg("--sitemap-url")
+        .arg(format!("{}/sitemap.xml", server.uri()))
+        .arg("--output")
+        .arg(output.path())
+        .arg("--max-pages")
+        .arg("5")
+        .arg("--quiet")
+        .assert()
+        .success();
+
+    // Verify both pages from the sitemap were scraped
+    let all_content: String = WalkDir::new(output.path())
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .collect();
+
+    assert!(
+        all_content.contains("Page A"),
+        "output should contain content from sitemap page A"
+    );
+    assert!(
+        all_content.contains("Page B"),
+        "output should contain content from sitemap page B"
     );
 }

@@ -265,7 +265,7 @@ fn build_http_client_config(opts: &CrawlOptions) -> HttpClientConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_http_client_config, new_robots_cache, is_allowed_by_robots};
+    use super::{build_http_client_config, is_allowed_by_robots, new_robots_cache};
     use crate::application::crawl_options::CrawlOptions;
 
     #[test]

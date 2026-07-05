@@ -56,13 +56,17 @@ pub async fn run(opts: CrawlOptions) -> CliExit {
         plan_urls(true, opts.url.clone(), Vec::new())
     } else {
         // Create crawler config from CrawlOptions
-        let crawler_config = CrawlerConfig::builder(opts.url.clone())
+        let mut crawler_config = CrawlerConfig::builder(opts.url.clone())
             .max_pages(opts.crawl.max_pages)
             .max_depth(opts.crawl.max_depth)
             .include_patterns(opts.crawl.include_patterns.clone())
             .exclude_patterns(opts.crawl.exclude_patterns.clone())
             .ignore_robots(opts.crawl.ignore_robots)
-            .build();
+            .use_sitemap(opts.crawl.use_sitemap);
+        if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
+            crawler_config = crawler_config.sitemap_url(sitemap_url);
+        }
+        let crawler_config = crawler_config.build();
 
         // URL discovery phase
         let discovered_urls: Vec<url::Url> = discover_urls(&crawler_config, &opts).await;
@@ -272,13 +276,17 @@ async fn run_batch(opts: CrawlOptions) -> CliExit {
     use crate::application::batch::BatchManager;
     use crate::domain::CrawlerConfig;
 
-    let crawler_config = CrawlerConfig::builder(opts.url.clone())
+    let mut crawler_config = CrawlerConfig::builder(opts.url.clone())
         .max_pages(opts.crawl.max_pages)
         .max_depth(opts.crawl.max_depth)
         .include_patterns(opts.crawl.include_patterns.clone())
         .exclude_patterns(opts.crawl.exclude_patterns.clone())
         .ignore_robots(opts.crawl.ignore_robots)
-        .build();
+        .use_sitemap(opts.crawl.use_sitemap);
+    if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
+        crawler_config = crawler_config.sitemap_url(sitemap_url);
+    }
+    let crawler_config = crawler_config.build();
 
     let manager_result = if let Some(ref path) = opts.batch.batch_file {
         info!("Reading URLs from file: {}", path.display());

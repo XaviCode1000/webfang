@@ -7,10 +7,10 @@
 //!
 //! Run with: cargo nextest run --test mcp_behavioral_test
 
-use wreq::Client;
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
+use wreq::Client;
 
 use rust_scraper::config::Config;
 use rust_scraper::di::Container;
@@ -315,7 +315,10 @@ async fn test_no_session_id_handled() {
 
     // Should either succeed (stateless mode) or return a clear error (400, 401, 422)
     assert!(
-        status.is_success() || status.as_u16() == 400 || status.as_u16() == 401 || status.as_u16() == 422,
+        status.is_success()
+            || status.as_u16() == 400
+            || status.as_u16() == 401
+            || status.as_u16() == 422,
         "request without session should return 2xx or 4xx, got {}: {}",
         status,
         &body[..body.len().min(500)]

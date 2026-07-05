@@ -1,11 +1,12 @@
 # CI/CD Pipeline for rust_scraper — Tiered Feedback
 #
-# Strategy: 3-tier pipeline with needs gates.
+# Strategy: 4-tier pipeline with needs gates.
 # Each tier only runs if the previous tier PASSED.
-# Developer gets feedback in <60s (fmt), <3min (clippy), <8min (full).
+# Developer gets feedback in <30s (toolchain), <60s (fmt), <3min (clippy), <8min (full).
 #
 # Pipeline flow:
-#   fmt (30s) → clippy (2min) → test-core (3min) → test-full (5min)
+#   toolchain (15s) → fmt (30s) → clippy (2min) → test-core (3min) → test-full (5min)
+#   test-core runs: unit tests (--lib) then integration/behavioral tests (--test '*')
 #   security runs in parallel with tests (no Rust compile)
 #   mcp smoke runs after test-full
 #   release runs after all gates pass (main only)
@@ -40,12 +41,40 @@ env:
 
 jobs:
   # ============================================================================
+  # TIER 0: TOOLCHAIN GATE (< 30 seconds)
+  # Verify the installed Rust version matches rust-version in Cargo.toml.
+  # Runs first — catches version drift before any compilation.
+  # ============================================================================
+  toolchain:
+    name: Verify rust-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check rust-version matches Cargo.toml
+        run: |
+          REQUIRED=$(grep '^rust-version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          INSTALLED=$(rustc --version | grep -oP '\d+\.\d+\.\d+')
+          echo "Required: $REQUIRED"
+          echo "Installed: $INSTALLED"
+          # Extract major.minor for comparison (ignore patch)
+          REQUIRED_MM=$(echo "$REQUIRED" | cut -d. -f1-2)
+          INSTALLED_MM=$(echo "$INSTALLED" | cut -d. -f1-2)
+          if [ "$REQUIRED_MM" != "$INSTALLED_MM" ]; then
+            echo "ERROR: Rust version mismatch. Cargo.toml requires $REQUIRED (>= $REQUIRED_MM.0), got $INSTALLED"
+            exit 1
+          fi
+          echo "OK: Rust $INSTALLED satisfies rust-version $REQUIRED"
+
+  # ============================================================================
   # TIER 1: FORMAT GATE (30-60 seconds)
   # No compilation needed — instant feedback on style.
   # If this fails, NOTHING else runs.
   # ============================================================================
   fmt:
     name: Check formatting
+    needs: [toolchain]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -81,12 +110,12 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
   # ============================================================================
-  # TIER 3: TEST CORE (2-3 minutes)
-  # Fast tests without heavy features (ai, otel).
+  # TIER 3: TEST CORE — Split by category for targeted feedback.
+  # Unit tests first (fast), then integration + behavioral (heavier).
   # Gate: must pass before full suite.
   # ============================================================================
   test-core:
-    name: Tests (core)
+    name: Tests (unit + integration + behavioral)
     needs: [clippy]
     runs-on: ubuntu-latest
     steps:
@@ -94,7 +123,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
-      - run: cargo nextest run --test-threads 4 --retries 2
+      - name: Unit tests (lib)
+        run: cargo nextest run --lib --test-threads 4 --retries 2
+      - name: Integration tests
+        run: cargo nextest run --test '*' --test-threads 4 --retries 2
 
   # ============================================================================
   # TIER 3: TEST FULL (4-6 minutes)
