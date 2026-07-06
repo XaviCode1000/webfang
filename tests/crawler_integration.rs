@@ -34,8 +34,7 @@ fn test_matches_pattern_domain_wildcard() {
 
 #[test]
 fn test_matches_pattern_prefix_wildcard() {
-    // Note: matches_pattern compares HOSTS only, not paths
-    // Pattern "*.example.com/*" matches any subdomain of example.com
+    // Host-only patterns (no leading '/') match HOSTS only
     assert!(matches_pattern(
         "https://blog.example.com/post",
         "*.example.com/*"
@@ -49,7 +48,7 @@ fn test_matches_pattern_prefix_wildcard() {
         "https://other.com/page",
         "*.example.com/*"
     ));
-    // example.com itself should NOT match *.example.com/* (needs subdomain)
+    // Root domain does NOT match *.example.com/* (must be subdomain)
     assert!(!matches_pattern(
         "https://example.com/admin/users",
         "*.example.com/*"

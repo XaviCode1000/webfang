@@ -1,82 +1,92 @@
-//! URL pattern matching
+//! URL pattern matching — dual-mode (host-only + full URL glob)
 //!
-//! SSRF-safe pattern matching that compares HOSTS only, not raw URL strings.
+//! SSRF-safe pattern matching with two modes:
+//!
+//! - **Host-only patterns** (no `/`): matches against the parsed hostname only.
+//!   Examples: `example.com`, `*.example.com`
+//! - **Path patterns** (contains `/`): matches against the full normalized URL.
+//!   Examples: `*/pricing*`, `/admin/*`, `*.example.com/api/*`
 //!
 //! Following **own-borrow-over-clone**: Accepts `&str` not `&String`.
 //! Following **opt-inline**: Inlined for hot path performance.
-//! Following **security-ssrf-prevention**: Parses URL before comparison (no `.contains()` on raw string)
+//! Following **security-ssrf-prevention**: Parses URL via `url::Url` before
+//! comparison — no `.contains()` on raw strings. `Url::parse()` normalizes the
+//! URL (strips query params, fragments, etc.), preventing SSRF via crafted URLs.
 //!
 //! # Security
 //!
-//! This function parses the URL using `url::Url` and compares HOSTS only,
-//! NOT raw string substrings. This prevents SSRF attacks where malicious
-//! URLs like `https://evil.com/?q=example.com/path` could bypass filters.
+//! All patterns go through `url::Url::parse()` first. For path patterns, the
+//! glob is matched against `url.as_str()` (the normalized URL), NOT the raw
+//! input string. This prevents SSRF attacks where malicious URLs like
+//! `https://evil.com/?q=example.com/pricing` could bypass filters.
 
+use globset::Glob;
 use url::Url;
 
-/// Check if a URL matches a glob-style pattern
+/// Check if a URL matches a glob-style pattern (dual-mode)
+///
+/// Two modes depending on whether the pattern starts with `/`:
+///
+/// - **Path pattern** (starts with `/`): matched against the URL path component.
+///   Examples: `/pricing`, `/admin/*`, `/api/v2/*`
+/// - **Host pattern** (no leading `/`): matched against the parsed hostname
+///   for backward-compatible behavior.
+///   Examples: `example.com`, `*.example.com`, `*.example.com/*`
 ///
 /// Following **own-borrow-over-clone**: Accepts `&str` not `&String`.
 /// Following **opt-inline**: Inlined for hot path performance.
-/// Following **security-ssrf-prevention**: Parses URL before comparison (no `.contains()` on raw string)
-///
-/// # Security
-///
-/// This function parses the URL using `url::Url` and compares HOSTS only,
-/// NOT raw string substrings. This prevents SSRF attacks where malicious
-/// URLs like `https://evil.com/?q=example.com/path` could bypass filters.
+/// Following **security-ssrf-prevention**: Always parses URL first; never
+/// compares raw strings.
 ///
 /// # Examples
 ///
 /// ```
 /// use rust_scraper::domain::pattern_matching::matches_pattern;
 ///
-/// // Valid subdomain match
-/// assert!(matches_pattern("https://blog.example.com/post", "*.example.com/*"));
+/// // Path pattern: matches URL path
+/// assert!(matches_pattern("https://example.com/pricing", "/pricing"));
+/// assert!(matches_pattern("https://example.com/admin/settings", "/admin/*"));
+/// assert!(!matches_pattern("https://example.com/page", "/admin/*"));
 ///
-/// // SSRF bypass attempt (should NOT match)
-/// assert!(!matches_pattern("https://evil.com/?q=example.com/path", "*.example.com/*"));
+/// // Host pattern: matches hostname (backward-compatible)
+/// assert!(matches_pattern("https://blog.example.com/page", "*.example.com"));
+/// assert!(matches_pattern("https://example.com/page", "example.com"));
+/// assert!(!matches_pattern("https://evil.com/page", "example.com"));
 /// ```
 #[inline]
 #[must_use]
 pub fn matches_pattern(url_str: &str, pattern: &str) -> bool {
-    // Parse URL FIRST (extract real host)
     let url = match Url::parse(url_str) {
         Ok(u) => u,
-        Err(_) => return false, // Invalid URL → no match
+        Err(_) => return false,
     };
 
+    if pattern.is_empty() || pattern == "*" {
+        return true;
+    }
+
+    // Path pattern: starts with '/' → match against URL path component
+    if pattern.starts_with('/') {
+        let path = url.path();
+        let glob = match Glob::new(pattern) {
+            Ok(g) => g.compile_matcher(),
+            Err(_) => return false,
+        };
+        return glob.is_match(path);
+    }
+
+    // Host pattern: backward-compatible host-only matching
     let host = match url.host_str() {
         Some(h) => h,
-        None => return false, // No host → no match
+        None => return false,
     };
-
-    // Handle empty pattern
-    if pattern.is_empty() {
-        return true;
-    }
-
-    // Handle wildcard
-    if pattern == "*" {
-        return true;
-    }
-
-    // Compare HOSTS only (NOT raw URL strings)
     match pattern {
-        // *.example.com/* → match subdomain ONLY (not root domain)
-        p if p.starts_with("*.") && p.ends_with("*") => {
-            let domain = &p[2..p.len() - 1]; // "example.com/"
-            let domain = domain.trim_end_matches('/');
-            // Must be a subdomain, NOT the root domain itself
-            host.ends_with(&format!(".{domain}"))
-        },
-        // *.example.com → match subdomain ONLY (not root domain)
         p if p.starts_with("*.") => {
-            let domain = &p[2..];
-            // Must be a subdomain, NOT the root domain itself
+            // Strip trailing "/*" if present (e.g. "*.example.com/*" → domain = "example.com")
+            let rest = &p[2..];
+            let domain = rest.strip_suffix("/*").unwrap_or(rest);
             host.ends_with(&format!(".{domain}"))
         },
-        // Exact host match (no wildcard)
         p => host == p,
     }
 }
@@ -192,7 +202,7 @@ mod tests {
             "https://admin.example.com/users",
             "*.example.com/*"
         ));
-        // Root domain does NOT match *.example.com/*
+        // Root domain does NOT match *.example.com/* (host-only: must be subdomain)
         assert!(!matches_pattern(
             "https://example.com/admin/users",
             "*.example.com/*"
@@ -212,6 +222,39 @@ mod tests {
         assert!(!matches_pattern(
             "https://example.com/admin/users",
             "*.example.com/*"
+        ));
+    }
+
+    #[test]
+    fn test_matches_pattern_path_pattern() {
+        // Path patterns start with '/' → match against URL path component
+        assert!(matches_pattern("https://example.com/admin/settings", "/admin/*"));
+        assert!(matches_pattern("https://example.com/admin/users", "/admin/*"));
+        assert!(!matches_pattern("https://example.com/page", "/admin/*"));
+    }
+
+    #[test]
+    fn test_matches_pattern_path_pattern_exact() {
+        assert!(matches_pattern("https://example.com/pricing", "/pricing"));
+        assert!(!matches_pattern("https://example.com/pricing/page", "/pricing"));
+    }
+
+    #[test]
+    fn test_matches_pattern_path_pattern_ssrf_safe() {
+        // SSRF: query params should NOT match path patterns
+        assert!(!matches_pattern(
+            "https://evil.com/?q=target.com/pricing",
+            "/target.com/pricing"
+        ));
+    }
+
+    #[test]
+    fn test_matches_pattern_host_pattern_unchanged() {
+        assert!(matches_pattern("https://example.com/page", "example.com"));
+        assert!(!matches_pattern("https://sub.example.com/page", "example.com"));
+        assert!(matches_pattern(
+            "https://sub.example.com/page",
+            "*.example.com"
         ));
     }
 }

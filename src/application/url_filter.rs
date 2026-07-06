@@ -12,17 +12,18 @@
 
 use crate::domain::CrawlerConfig;
 
-/// Check if a URL matches a glob-style pattern
+/// Check if a URL matches a glob-style pattern (dual-mode)
+///
+/// Two modes depending on whether the pattern starts with `/`:
+///
+/// - **Path pattern** (starts with `/`): matched against the URL path component.
+///   Example: `/pricing`, `/admin/*`, `/api/v2/*`
+/// - **Host-only pattern** (no leading `/`): matched against the parsed hostname.
+///   Example: `example.com`, `*.example.com`, `*.example.com/*`
 ///
 /// Following **own-borrow-over-clone**: Accepts `&str` not `&String`.
 /// Following **opt-inline**: Inlined for hot path performance.
 /// Following **security-ssrf-prevention**: Delegates to domain implementation (SSRF-safe).
-///
-/// # Security Note
-///
-/// This function uses SSRF-safe pattern matching that compares HOSTS only,
-/// NOT full URL paths. Patterns like `*/admin/*` are NOT supported.
-/// Use domain-based patterns like `*.example.com/*` instead.
 ///
 /// # Arguments
 ///
@@ -39,7 +40,8 @@ use crate::domain::CrawlerConfig;
 /// use rust_scraper::application::url_filter::matches_pattern;
 ///
 /// assert!(matches_pattern("https://example.com/page", "*"));
-/// assert!(matches_pattern("https://blog.example.com/post", "*.example.com/*"));
+/// assert!(matches_pattern("https://example.com/pricing", "/pricing"));
+/// assert!(matches_pattern("https://blog.example.com/post", "*.example.com"));
 /// assert!(!matches_pattern("https://other.com/page", "example.com"));
 /// ```
 #[inline]

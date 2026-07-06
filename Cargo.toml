@@ -112,6 +112,7 @@ tracing-opentelemetry = { version = "0.33", optional = true }
 
 # Utilities
 url = { version = "2", features = ["serde"] }
+globset = "0.4"
 futures = "0.3"
 # Use rustls (default TLS) for OTel export — avoids OpenSSL system dependency.
 # rustls-platform-verifier handles system certs (Grafana Cloud, etc.).
