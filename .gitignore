@@ -143,3 +143,8 @@ output/
 
 # GitNexus local config
 .gitnexusrc
+TEST-RESULTS*.md
+TEST-MASTER-PLAN.md
+TEST-REFACTORING-PLAN.md
+TEST-COMPARISON-*.md
+REALITY.md
