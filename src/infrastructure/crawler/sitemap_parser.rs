@@ -408,47 +408,6 @@ impl SitemapParser {
         self.config.gzip_enabled
     }
 
-    /// Check if a URL is valid for sitemap crawling
-    ///
-    /// Filters out known invalid URL patterns like:
-    /// - Node.js release URLs with invalid version numbers (e.g., v106.0 instead of v10.6.0)
-    #[allow(dead_code)]
-    fn is_valid_sitemap_url(url: &Url) -> bool {
-        let path = url.path();
-
-        // Filter Node.js release URLs with invalid version patterns
-        // Valid: v10.6.0, v0.12.18, v14.17.0
-        // Invalid: v106.0 (should be v10.6.0), v1311.0 (should be v13.11.0)
-        if path.contains("/blog/release/v") {
-            if let Some(version_part) = path.split("/blog/release/v").nth(1) {
-                // Extract version number (before any query or fragment)
-                let version = version_part
-                    .split(&['?', '#'][..])
-                    .next()
-                    .unwrap_or(version_part);
-
-                // Check if version has invalid pattern (e.g., v106.0 instead of v10.6.0)
-                // Valid patterns: v0.x.x, v1.x.x, v2.x.x, ..., v9.x.x, v10.x.x, v11.x.x, ..., v99.x.x
-                // Invalid patterns: v100.x.x, v1000.x.x, etc. (major version > 99)
-                if let Some(major_str) = version.split('.').next() {
-                    if let Ok(major) = major_str.parse::<u32>() {
-                        // Filter out major versions > 99 (Node.js versions are typically < 100)
-                        if major > 99 {
-                            tracing::debug!(
-                                "Filtered Node.js release URL with invalid major version: {} (version: {})",
-                                url,
-                                version
-                            );
-                            return false;
-                        }
-                    }
-                }
-            }
-        }
-
-        true
-    }
-
     /// Get current max depth
     #[must_use]
     pub fn max_depth(&self) -> u8 {
@@ -744,44 +703,6 @@ mod tests {
             Url::parse("https://example.com/page2.json").unwrap(),
         ];
         assert!(!parser.is_sitemap_index(&urls));
-    }
-
-    // Gap D: is_valid_sitemap_url
-    #[test]
-    fn test_is_valid_sitemap_url_normal() {
-        assert!(SitemapParser::is_valid_sitemap_url(
-            &Url::parse("https://example.com/page").unwrap()
-        ));
-    }
-
-    #[test]
-    fn test_is_valid_sitemap_url_nodejs_valid_version() {
-        assert!(SitemapParser::is_valid_sitemap_url(
-            &Url::parse("https://nodejs.org/blog/release/v10.6.0").unwrap()
-        ));
-        assert!(SitemapParser::is_valid_sitemap_url(
-            &Url::parse("https://nodejs.org/blog/release/v14.17.0").unwrap()
-        ));
-        assert!(SitemapParser::is_valid_sitemap_url(
-            &Url::parse("https://nodejs.org/blog/release/v99.0.0").unwrap()
-        ));
-    }
-
-    #[test]
-    fn test_is_valid_sitemap_url_nodejs_invalid_version() {
-        assert!(!SitemapParser::is_valid_sitemap_url(
-            &Url::parse("https://nodejs.org/blog/release/v106.0").unwrap()
-        ));
-        assert!(!SitemapParser::is_valid_sitemap_url(
-            &Url::parse("https://nodejs.org/blog/release/v1311.0").unwrap()
-        ));
-    }
-
-    #[test]
-    fn test_is_valid_sitemap_url_nodejs_invalid_with_query() {
-        assert!(!SitemapParser::is_valid_sitemap_url(
-            &Url::parse("https://nodejs.org/blog/release/v106.0?foo=bar").unwrap()
-        ));
     }
 
     #[test]
