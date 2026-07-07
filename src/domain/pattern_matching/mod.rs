@@ -25,11 +25,13 @@ use url::Url;
 
 /// Check if a URL matches a glob-style pattern (dual-mode)
 ///
-/// Two modes depending on whether the pattern starts with `/`:
+/// Three modes depending on pattern shape:
 ///
 /// - **Path pattern** (starts with `/`): matched against the URL path component.
 ///   Examples: `/pricing`, `/admin/*`, `/api/v2/*`
-/// - **Host pattern** (no leading `/`): matched against the parsed hostname
+/// - **Path glob** (starts with `*/`): matched against the URL path component.
+///   Examples: `*/pricing*`, `*/cloud*`
+/// - **Host pattern** (no leading `/` or `*/`): matched against the parsed hostname
 ///   for backward-compatible behavior.
 ///   Examples: `example.com`, `*.example.com`, `*.example.com/*`
 ///
@@ -73,6 +75,15 @@ pub fn matches_pattern(url_str: &str, pattern: &str) -> bool {
             Err(_) => return false,
         };
         return glob.is_match(path);
+    }
+
+    // Path glob: pattern starts with '*/' → match against URL path
+    if pattern.starts_with("*/") {
+        let glob = match Glob::new(pattern) {
+            Ok(g) => g.compile_matcher(),
+            Err(_) => return false,
+        };
+        return glob.is_match(url.path());
     }
 
     // Host pattern: backward-compatible host-only matching
@@ -266,6 +277,46 @@ mod tests {
         ));
         assert!(matches_pattern(
             "https://sub.example.com/page",
+            "*.example.com"
+        ));
+    }
+
+    #[test]
+    fn test_matches_pattern_path_glob_with_leading_wildcard() {
+        // Patterns with '/' (but not starting with '/') match against URL path
+        assert!(matches_pattern(
+            "https://example.com/pricing",
+            "*/pricing*"
+        ));
+        assert!(matches_pattern(
+            "https://example.com/cloud-scraper",
+            "*/cloud*"
+        ));
+        assert!(!matches_pattern(
+            "https://example.com/about",
+            "*/pricing*"
+        ));
+    }
+
+    #[test]
+    fn test_matches_pattern_path_glob_preserves_existing_behavior() {
+        // Path patterns starting with '/' still work
+        assert!(matches_pattern(
+            "https://example.com/admin/settings",
+            "/admin/*"
+        ));
+        assert!(!matches_pattern(
+            "https://example.com/page",
+            "/admin/*"
+        ));
+
+        // Host patterns without '/' still work
+        assert!(matches_pattern(
+            "https://example.com/page",
+            "example.com"
+        ));
+        assert!(matches_pattern(
+            "https://blog.example.com/page",
             "*.example.com"
         ));
     }

@@ -171,15 +171,13 @@ pub async fn run(opts: CrawlOptions) -> CliExit {
 
     // Determine output directory for individual files
     let output_dir = if opts.export.quick_save {
-        if let Some(v) = &opts.export.obsidian_vault {
-            let inbox = v.join("_inbox");
-            if !inbox.exists() {
-                let _ = std::fs::create_dir_all(&inbox);
-            }
-            inbox
-        } else {
-            opts.export.output_dir.clone()
+        let base = opts.export.obsidian_vault.as_deref()
+            .unwrap_or(&opts.export.output_dir);
+        let inbox = base.join("_inbox");
+        if !inbox.exists() {
+            let _ = std::fs::create_dir_all(&inbox);
         }
+        inbox
     } else {
         opts.export.output_dir.clone()
     };

@@ -70,19 +70,24 @@ pub fn slug_from_url(url_path: &str) -> String {
 
 /// Determines if a URL should be converted to a wiki-link.
 /// Returns Some(slug) if conversion is possible, None otherwise.
+///
+/// Relative paths (e.g. `/about`, `/product/1`) are treated as same-domain
+/// links and converted to wiki-links when they match `base_domain`.
 fn should_convert_wikilink(url_str: &str, base_domain: &str) -> Option<String> {
     // Skip anchor links
     if url_str.starts_with('#') {
         return None;
     }
 
-    // Skip relative paths
-    if url_str.starts_with('/') && !url_str.contains("://") {
-        return None;
-    }
+    // Convert relative paths to absolute URLs for domain comparison
+    let resolved_url = if url_str.starts_with('/') && !url_str.contains("://") {
+        format!("https://{base_domain}{url_str}")
+    } else {
+        url_str.to_string()
+    };
 
     // Try to parse the URL
-    let parsed = match url::Url::parse(url_str) {
+    let parsed = match url::Url::parse(&resolved_url) {
         Ok(p) => p,
         Err(_) => return None,
     };
@@ -386,8 +391,29 @@ mod tests {
     }
 
     #[test]
-    fn test_relative_links_unchanged() {
+    fn test_relative_single_segment_converts() {
         let md = "[About](/about)";
+        let result = convert_wiki_links(md, "example.com");
+        assert_eq!(result, "[[about]]");
+    }
+
+    #[test]
+    fn test_relative_multi_segment_converts() {
+        let md = "[Product](/product/1)";
+        let result = convert_wiki_links(md, "example.com");
+        assert_eq!(result, "[[product-1|Product]]");
+    }
+
+    #[test]
+    fn test_relative_external_not_converted() {
+        let md = "[External](https://other.com/page)";
+        let result = convert_wiki_links(md, "example.com");
+        assert_eq!(result, md);
+    }
+
+    #[test]
+    fn test_relative_anchor_not_converted() {
+        let md = "[Anchor](#section)";
         let result = convert_wiki_links(md, "example.com");
         assert_eq!(result, md);
     }
