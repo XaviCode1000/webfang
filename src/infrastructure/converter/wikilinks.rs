@@ -64,7 +64,7 @@ pub fn slug_from_url(url_path: &str) -> String {
             let parent = decode_and_normalize(segments[len - 2]).to_kebab_case();
             let current = decode_and_normalize(segments[len - 1]).to_kebab_case();
             format!("{parent}-{current}")
-        }
+        },
     }
 }
 

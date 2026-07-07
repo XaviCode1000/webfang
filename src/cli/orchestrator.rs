@@ -171,7 +171,10 @@ pub async fn run(opts: CrawlOptions) -> CliExit {
 
     // Determine output directory for individual files
     let output_dir = if opts.export.quick_save {
-        let base = opts.export.obsidian_vault.as_deref()
+        let base = opts
+            .export
+            .obsidian_vault
+            .as_deref()
             .unwrap_or(&opts.export.output_dir);
         let inbox = base.join("_inbox");
         if !inbox.exists() {

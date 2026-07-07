@@ -284,18 +284,12 @@ mod tests {
     #[test]
     fn test_matches_pattern_path_glob_with_leading_wildcard() {
         // Patterns with '/' (but not starting with '/') match against URL path
-        assert!(matches_pattern(
-            "https://example.com/pricing",
-            "*/pricing*"
-        ));
+        assert!(matches_pattern("https://example.com/pricing", "*/pricing*"));
         assert!(matches_pattern(
             "https://example.com/cloud-scraper",
             "*/cloud*"
         ));
-        assert!(!matches_pattern(
-            "https://example.com/about",
-            "*/pricing*"
-        ));
+        assert!(!matches_pattern("https://example.com/about", "*/pricing*"));
     }
 
     #[test]
@@ -305,16 +299,10 @@ mod tests {
             "https://example.com/admin/settings",
             "/admin/*"
         ));
-        assert!(!matches_pattern(
-            "https://example.com/page",
-            "/admin/*"
-        ));
+        assert!(!matches_pattern("https://example.com/page", "/admin/*"));
 
         // Host patterns without '/' still work
-        assert!(matches_pattern(
-            "https://example.com/page",
-            "example.com"
-        ));
+        assert!(matches_pattern("https://example.com/page", "example.com"));
         assert!(matches_pattern(
             "https://blog.example.com/page",
             "*.example.com"

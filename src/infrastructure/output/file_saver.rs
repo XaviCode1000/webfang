@@ -194,7 +194,11 @@ fn rewrite_image_urls_to_relative(content: &str, _md_file_dir: &Path) -> String 
             // For simplicity, use the last 2 segments as the relative path
             let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
             let rel_path = if segments.len() >= 2 {
-                format!("./{}/{}", segments[segments.len() - 2], segments[segments.len() - 1])
+                format!(
+                    "./{}/{}",
+                    segments[segments.len() - 2],
+                    segments[segments.len() - 1]
+                )
             } else if segments.len() == 1 {
                 format!("./{}", segments[0])
             } else {
@@ -385,10 +389,7 @@ mod tests {
         let content = "First ![a](https://example.com/x.png) then ![b](https://example.com/y.jpg)";
         let dir = Path::new("/output/example.com");
         let result = rewrite_image_urls_to_relative(content, dir);
-        assert_eq!(
-            result,
-            "First ![a](./x.png) then ![b](./y.jpg)"
-        );
+        assert_eq!(result, "First ![a](./x.png) then ![b](./y.jpg)");
     }
 
     #[test]
