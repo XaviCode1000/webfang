@@ -1268,3 +1268,22 @@ async fn test_sitemap_url_scrapes_listed_urls() {
         "output should contain content from sitemap page B"
     );
 }
+
+// ============================================================================
+// 12. Default feature flags (Issue #126)
+// ============================================================================
+// These are COMPILE-TIME guards, not runtime tests. If someone removes
+// "images" or "documents" from default features, the build fails here
+// instead of silently breaking --download-images/--download-documents.
+
+#[cfg(not(feature = "images"))]
+compile_error!(
+    "images feature must be enabled by default (see Cargo.toml default features). \
+     Users expect --download-images to work out of the box."
+);
+
+#[cfg(not(feature = "documents"))]
+compile_error!(
+    "documents feature must be enabled by default (see Cargo.toml default features). \
+     Users expect --download-documents to work out of the box."
+);

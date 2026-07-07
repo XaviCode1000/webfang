@@ -19,7 +19,7 @@ ignored = ["rustls-webpki", "time"]
 ignore = ["rustls-webpki"]
 
 [features]
-default = []
+default = ["images", "documents"]
 images = ["dep:mimetype-detector"]
 documents = ["dep:mimetype-detector"]
 full = ["images", "documents"]
