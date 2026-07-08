@@ -80,6 +80,7 @@ fn test_args_has_required_fields() {
         sitemap_url: None,
         interactive: false,
         config_tui: false,
+        tui: false,
         single_page: false,
         resume: false,
         state_dir: None,
