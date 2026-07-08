@@ -170,13 +170,18 @@ pub struct Args {
     #[clap(next_help_heading = "Behavior")]
     pub download_documents: bool,
 
-    /// Interactive mode with TUI URL selector
-    #[arg(long, env = "RUST_SCRAPER_INTERACTIVE")]
+    /// Unified TUI mode: config form (collapsible sections) → URL selector → scraping
+    #[arg(long, env = "RUST_SCRAPER_TUI")]
+    #[clap(next_help_heading = "Behavior")]
+    pub tui: bool,
+
+    /// [DEPRECATED] Use --tui instead. Interactive mode with TUI URL selector
+    #[arg(long, env = "RUST_SCRAPER_INTERACTIVE", hide = true)]
     #[clap(next_help_heading = "Behavior")]
     pub interactive: bool,
 
-    /// Open configuration TUI to set all scraper options interactively
-    #[arg(long, env = "RUST_SCRAPER_CONFIG_TUI")]
+    /// [DEPRECATED] Use --tui instead. Open configuration TUI
+    #[arg(long, env = "RUST_SCRAPER_CONFIG_TUI", hide = true)]
     #[clap(next_help_heading = "Behavior")]
     pub config_tui: bool,
 

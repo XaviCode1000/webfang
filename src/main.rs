@@ -29,7 +29,7 @@ use std::panic;
 use clap::Parser;
 use inquire::Text;
 use rust_scraper::adapters::tui::modal::HelpModal;
-use rust_scraper::adapters::tui::{App, AppMode, AppResult, ConfigFormState, Header, StatusBar};
+use rust_scraper::adapters::tui::{App, AppMode, AppResult, CollapsibleConfig, ConfigFormState, Header, StatusBar};
 use rust_scraper::application::crawl_options::CrawlOptions;
 use rust_scraper::cli::config::ConfigDefaults;
 use rust_scraper::cli::error::CliExit;
@@ -95,6 +95,66 @@ async fn run_config_tui() -> Result<Option<serde_json::Value>, CliExit> {
         },
         Err(e) => {
             eprintln!("Error en TUI de configuración: {}", e);
+            Ok(None)
+        },
+    }
+}
+
+/// Run the unified TUI with collapsible config sections.
+///
+/// Phase 1: Config form with 8 collapsible sections (45 fields)
+/// Phase 2: URL selector (after config submitted)
+///
+/// Returns `Ok(Some(values))` if form was submitted,
+/// `Ok(None)` if cancelled, or `Err` if TTY not available.
+async fn run_unified_tui() -> Result<Option<serde_json::Value>, CliExit> {
+    // Check if stdout is a TTY
+    if !io::stdout().is_terminal() {
+        eprintln!("Error: --tui requiere un terminal interactivo");
+        return Err(CliExit::UsageError(
+            "--tui requiere un terminal interactivo".into(),
+        ));
+    }
+
+    let mut app = match App::new(AppMode::Config) {
+        Ok(app) => app,
+        Err(e) => {
+            eprintln!("Error al crear la aplicación TUI: {}", e);
+            return Err(CliExit::UsageError(format!(
+                "Error creando la aplicación: {}",
+                e
+            )));
+        },
+    }
+    .with_component(Header::new(AppMode::Config))
+    .with_component(CollapsibleConfig::new())
+    .with_component(StatusBar::new().with_items(vec![
+        ("↑↓", "Navegar"),
+        ("Enter", "Expandir"),
+        ("←", "Colapsar"),
+        ("Ctrl+S", "Enviar"),
+        ("q", "Salir"),
+    ]))
+    .with_modal(HelpModal::new(
+        "Ayuda — Configuración".into(),
+        vec![
+            ("↑↓".into(), "Navegar secciones".into()),
+            ("Enter/→".into(), "Expandir sección".into()),
+            ("←".into(), "Colapsar sección".into()),
+            ("Space".into(), "Toggle expand/collapse".into()),
+            ("Tab".into(), "Mover a campos".into()),
+            ("Ctrl+S".into(), "Enviar formulario".into()),
+            ("?".into(), "Mostrar ayuda".into()),
+            ("q".into(), "Salir".into()),
+        ],
+    ));
+
+    match app.run().await {
+        Ok(AppResult::Config(values)) => Ok(values),
+        Ok(AppResult::None) => Ok(None),
+        Ok(_) => Ok(None),
+        Err(e) => {
+            eprintln!("Error en TUI: {}", e);
             Ok(None)
         },
     }
@@ -173,26 +233,46 @@ async fn __main() -> CliExit {
     }
 
     // =========================================================================
-    // 3. Config TUI (if --config-tui flag is set)
+    // 3. Unified TUI mode (if --tui flag is set)
     // =========================================================================
-    if args.config_tui {
-        // Run config TUI and get submitted values
-        let config_result = run_config_tui().await;
-        match config_result {
+    if args.tui {
+        // Run unified TUI: config form → URL selector → scraping
+        let tui_result = run_unified_tui().await;
+        match tui_result {
             Ok(Some(config_values)) => {
                 // Apply TUI config values to args (overrides CLI values)
-                // TUI operates on Args because it needs config_tui/url fields
                 args = preflight::apply_tui_config_args(args, &config_values);
-                println!("Config applied from TUI form.");
+                println!("Config applied from TUI.");
             },
             Ok(None) => {
-                println!("Config TUI cancelled.");
+                println!("TUI cancelled.");
                 return CliExit::Success;
             },
             Err(e) => {
-                // Error already printed in run_config_tui
                 return e;
             },
+        }
+    } else if args.config_tui {
+        // [DEPRECATED] Legacy config TUI — redirects to unified TUI
+        eprintln!("Warning: --config-tui is deprecated, use --tui instead");
+        let tui_result = run_unified_tui().await;
+        match tui_result {
+            Ok(Some(config_values)) => {
+                args = preflight::apply_tui_config_args(args, &config_values);
+            },
+            Ok(None) => return CliExit::Success,
+            Err(e) => return e,
+        }
+    } else if args.interactive {
+        // [DEPRECATED] Legacy interactive — redirects to unified TUI
+        eprintln!("Warning: --interactive is deprecated, use --tui instead");
+        let tui_result = run_unified_tui().await;
+        match tui_result {
+            Ok(Some(config_values)) => {
+                args = preflight::apply_tui_config_args(args, &config_values);
+            },
+            Ok(None) => return CliExit::Success,
+            Err(e) => return e,
         }
     }
 
