@@ -8,8 +8,8 @@
 //! - Color space conversions via `palette::Srgb`
 //! - Theme generation via `Lighten`/`Darken`/`ShiftHue` traits
 
+use ratatui::palette::{Darken, Lighten, Srgb};
 use ratatui::style::Color;
-use ratatui::palette::{Srgb, Lighten, Darken};
 
 // ============================================================================
 // Color conversion helpers
@@ -248,7 +248,11 @@ impl Theme {
         }
 
         let d = max - min;
-        let s = if l > 0.5 { d / (2.0 - max - min) } else { d / (max + min) };
+        let s = if l > 0.5 {
+            d / (2.0 - max - min)
+        } else {
+            d / (max + min)
+        };
 
         let h = if max == r {
             ((g - b) / d + if g < b { 6.0 } else { 0.0 }) * 60.0
@@ -344,67 +348,100 @@ mod tests {
     #[test]
     fn text_has_sufficient_contrast_against_background() {
         let ratio = contrast_ratio(Theme::text(), Theme::background());
-        assert!(ratio >= 4.5, "text vs background contrast {ratio:.2} < 4.5 (WCAG AA)");
+        assert!(
+            ratio >= 4.5,
+            "text vs background contrast {ratio:.2} < 4.5 (WCAG AA)"
+        );
     }
 
     #[test]
     fn error_has_sufficient_contrast() {
         let ratio = contrast_ratio(Theme::error(), Theme::background());
-        assert!(ratio >= 4.5, "error vs background contrast {ratio:.2} < 4.5");
+        assert!(
+            ratio >= 4.5,
+            "error vs background contrast {ratio:.2} < 4.5"
+        );
     }
 
     #[test]
     fn success_has_sufficient_contrast() {
         let ratio = contrast_ratio(Theme::success(), Theme::background());
-        assert!(ratio >= 4.5, "success vs background contrast {ratio:.2} < 4.5");
+        assert!(
+            ratio >= 4.5,
+            "success vs background contrast {ratio:.2} < 4.5"
+        );
     }
 
     #[test]
     fn warning_has_sufficient_contrast() {
         let ratio = contrast_ratio(Theme::warning(), Theme::background());
-        assert!(ratio >= 4.5, "warning vs background contrast {ratio:.2} < 4.5");
+        assert!(
+            ratio >= 4.5,
+            "warning vs background contrast {ratio:.2} < 4.5"
+        );
     }
 
     #[test]
     fn accent_has_sufficient_contrast() {
         let ratio = contrast_ratio(Theme::accent(), Theme::background());
-        assert!(ratio >= 4.5, "accent vs background contrast {ratio:.2} < 4.5");
+        assert!(
+            ratio >= 4.5,
+            "accent vs background contrast {ratio:.2} < 4.5"
+        );
     }
 
     #[test]
     fn text_muted_has_minimum_contrast() {
         let ratio = contrast_ratio(Theme::text_muted(), Theme::background());
-        assert!(ratio >= 3.0, "text_muted vs background contrast {ratio:.2} < 3.0 (WCAG AA large text)");
+        assert!(
+            ratio >= 3.0,
+            "text_muted vs background contrast {ratio:.2} < 3.0 (WCAG AA large text)"
+        );
     }
 
     #[test]
     fn surface_has_distinct_border_contrast() {
         let ratio = contrast_ratio(Theme::surface(), Theme::background());
-        assert!(ratio >= 1.5, "surface vs background contrast {ratio:.2} < 1.5 (minimum visibility)");
+        assert!(
+            ratio >= 1.5,
+            "surface vs background contrast {ratio:.2} < 1.5 (minimum visibility)"
+        );
     }
 
     #[test]
     fn processing_has_sufficient_contrast() {
         let ratio = contrast_ratio(Theme::processing(), Theme::background());
-        assert!(ratio >= 4.5, "processing vs background contrast {ratio:.2} < 4.5");
+        assert!(
+            ratio >= 4.5,
+            "processing vs background contrast {ratio:.2} < 4.5"
+        );
     }
 
     #[test]
     fn highlight_has_sufficient_contrast() {
         let ratio = contrast_ratio(Theme::highlight(), Theme::background());
-        assert!(ratio >= 4.5, "highlight vs background contrast {ratio:.2} < 4.5");
+        assert!(
+            ratio >= 4.5,
+            "highlight vs background contrast {ratio:.2} < 4.5"
+        );
     }
 
     #[test]
     fn parse_error_has_sufficient_contrast() {
         let ratio = contrast_ratio(Theme::parse_error(), Theme::background());
-        assert!(ratio >= 4.5, "parse_error vs background contrast {ratio:.2} < 4.5");
+        assert!(
+            ratio >= 4.5,
+            "parse_error vs background contrast {ratio:.2} < 4.5"
+        );
     }
 
     #[test]
     fn text_subtle_has_minimum_contrast() {
         let ratio = contrast_ratio(Theme::text_subtle(), Theme::background());
-        assert!(ratio >= 3.0, "text_subtle vs background contrast {ratio:.2} < 3.0 (WCAG AA large text)");
+        assert!(
+            ratio >= 3.0,
+            "text_subtle vs background contrast {ratio:.2} < 3.0 (WCAG AA large text)"
+        );
     }
 
     // ------------------------------------------------------------------
@@ -454,6 +491,10 @@ mod tests {
 
     #[test]
     fn has_contrast_returns_false_for_poor_contrast() {
-        assert!(!Theme::has_contrast(Theme::surface(), Theme::background(), 4.5));
+        assert!(!Theme::has_contrast(
+            Theme::surface(),
+            Theme::background(),
+            4.5
+        ));
     }
 }

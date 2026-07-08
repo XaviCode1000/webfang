@@ -68,7 +68,10 @@ fn collapsible_config_q_cancels() {
     let mut config = CollapsibleConfig::new();
     let action = config.handle_key_event(key(KeyCode::Char('q'))).unwrap();
     assert!(config.cancelled);
-    assert!(matches!(action, Some(rust_scraper::adapters::tui::action::Action::ConfigCancelled)));
+    assert!(matches!(
+        action,
+        Some(rust_scraper::adapters::tui::action::Action::ConfigCancelled)
+    ));
 }
 
 #[test]
@@ -76,13 +79,18 @@ fn collapsible_config_uppercase_q_cancels() {
     let mut config = CollapsibleConfig::new();
     let action = config.handle_key_event(key(KeyCode::Char('Q'))).unwrap();
     assert!(config.cancelled);
-    assert!(matches!(action, Some(rust_scraper::adapters::tui::action::Action::ConfigCancelled)));
+    assert!(matches!(
+        action,
+        Some(rust_scraper::adapters::tui::action::Action::ConfigCancelled)
+    ));
 }
 
 #[test]
 fn collapsible_config_ctrl_s_submits() {
     let mut config = CollapsibleConfig::new();
-    let action = config.handle_key_event(key_ctrl(KeyCode::Char('s'))).unwrap();
+    let action = config
+        .handle_key_event(key_ctrl(KeyCode::Char('s')))
+        .unwrap();
     assert!(config.submitted);
     assert!(matches!(
         action,
@@ -171,13 +179,15 @@ fn collapsible_config_navigation_does_not_panic() {
 #[test]
 fn collapsible_config_ctrl_s_returns_config_done_with_json() {
     let mut config = CollapsibleConfig::new();
-    let action = config.handle_key_event(key_ctrl(KeyCode::Char('s'))).unwrap();
+    let action = config
+        .handle_key_event(key_ctrl(KeyCode::Char('s')))
+        .unwrap();
     match action {
         Some(rust_scraper::adapters::tui::action::Action::ConfigDone(Some(value))) => {
             assert!(value.is_object());
             let obj = value.as_object().unwrap();
             assert!(obj.contains_key("url"));
-        }
+        },
         _ => panic!("Expected ConfigDone with Some(value)"),
     }
 }
@@ -243,7 +253,7 @@ fn theme_all_named_colors_are_rgb() {
     ];
     for c in &colors {
         match c {
-            ratatui::style::Color::Rgb(_, _, _) => {}
+            ratatui::style::Color::Rgb(_, _, _) => {},
             _ => panic!("All theme colors must be Rgb variants"),
         }
     }
@@ -371,7 +381,11 @@ fn theme_has_contrast_text_vs_background() {
 
 #[test]
 fn theme_has_contrast_fails_for_surface_vs_bg() {
-    assert!(!Theme::has_contrast(Theme::surface(), Theme::background(), 4.5));
+    assert!(!Theme::has_contrast(
+        Theme::surface(),
+        Theme::background(),
+        4.5
+    ));
 }
 
 #[test]
@@ -578,7 +592,10 @@ fn apply_tui_config_sets_sitemap_depth() {
 #[test]
 fn apply_tui_config_sets_sitemap_url() {
     let args = default_args();
-    let json = config_json(&[("sitemap_url", serde_json::json!("https://example.com/sitemap.xml"))]);
+    let json = config_json(&[(
+        "sitemap_url",
+        serde_json::json!("https://example.com/sitemap.xml"),
+    )]);
     let result = apply_tui_config_args(args, &json);
     assert_eq!(
         result.sitemap_url.as_deref(),
@@ -973,15 +990,15 @@ fn args_tui_flag_default_false() {
 
 #[test]
 fn args_interactive_flag_hidden_but_parseable() {
-    let args = Args::try_parse_from(["rust_scraper", "--interactive"])
-        .expect("--interactive must parse");
+    let args =
+        Args::try_parse_from(["rust_scraper", "--interactive"]).expect("--interactive must parse");
     assert!(args.interactive);
 }
 
 #[test]
 fn args_config_tui_flag_hidden_but_parseable() {
-    let args = Args::try_parse_from(["rust_scraper", "--config-tui"])
-        .expect("--config-tui must parse");
+    let args =
+        Args::try_parse_from(["rust_scraper", "--config-tui"]).expect("--config-tui must parse");
     assert!(args.config_tui);
 }
 
@@ -1006,8 +1023,8 @@ fn args_format_markdown_default() {
 
 #[test]
 fn args_format_json() {
-    let args = Args::try_parse_from(["rust_scraper", "--format", "json"])
-        .expect("--format must parse");
+    let args =
+        Args::try_parse_from(["rust_scraper", "--format", "json"]).expect("--format must parse");
     assert_eq!(args.format, OutputFormat::Json);
 }
 
@@ -1101,8 +1118,8 @@ fn args_pipeline_flag() {
 
 #[test]
 fn args_use_sitemap_flag() {
-    let args = Args::try_parse_from(["rust_scraper", "--use-sitemap"])
-        .expect("--use-sitemap must parse");
+    let args =
+        Args::try_parse_from(["rust_scraper", "--use-sitemap"]).expect("--use-sitemap must parse");
     assert!(args.use_sitemap);
 }
 
@@ -1136,15 +1153,15 @@ fn args_download_documents_flag() {
 
 #[test]
 fn args_quick_save_flag() {
-    let args = Args::try_parse_from(["rust_scraper", "--quick-save"])
-        .expect("--quick-save must parse");
+    let args =
+        Args::try_parse_from(["rust_scraper", "--quick-save"]).expect("--quick-save must parse");
     assert!(args.quick_save);
 }
 
 #[test]
 fn args_autoscale_flag() {
-    let args = Args::try_parse_from(["rust_scraper", "--autoscale"])
-        .expect("--autoscale must parse");
+    let args =
+        Args::try_parse_from(["rust_scraper", "--autoscale"]).expect("--autoscale must parse");
     assert!(args.autoscale);
 }
 
@@ -1165,12 +1182,8 @@ fn args_vault_path() {
 
 #[test]
 fn args_include_patterns_comma_separated() {
-    let args = Args::try_parse_from([
-        "rust_scraper",
-        "--include-pattern",
-        "*/blog/*,*/docs/*",
-    ])
-    .expect("--include-pattern must parse");
+    let args = Args::try_parse_from(["rust_scraper", "--include-pattern", "*/blog/*,*/docs/*"])
+        .expect("--include-pattern must parse");
     assert_eq!(args.include_patterns, vec!["*/blog/*", "*/docs/*"]);
 }
 

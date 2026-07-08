@@ -219,9 +219,9 @@ pub fn apply_tui_config(mut opts: CrawlOptions, config_values: &serde_json::Valu
 /// Only applies values that are present in the JSON (non-null, non-empty).
 pub fn apply_tui_config_args(mut args: Args, config_values: &serde_json::Value) -> Args {
     use crate::cli::args::PipelineOutputFormat as P;
+    use crate::domain::JsStrategy;
     use crate::ExportFormat as E;
     use crate::OutputFormat as O;
-    use crate::domain::JsStrategy;
 
     // ========================================================================
     // Helper macros for type conversion
@@ -353,12 +353,18 @@ pub fn apply_tui_config_args(mut args: Args, config_values: &serde_json::Value) 
         }
     }
     // Include/exclude patterns
-    if let Some(v) = config_values.get("include_pattern").and_then(|v| v.as_str()) {
+    if let Some(v) = config_values
+        .get("include_pattern")
+        .and_then(|v| v.as_str())
+    {
         if !v.is_empty() {
             args.include_patterns = v.split(',').map(String::from).collect();
         }
     }
-    if let Some(v) = config_values.get("exclude_pattern").and_then(|v| v.as_str()) {
+    if let Some(v) = config_values
+        .get("exclude_pattern")
+        .and_then(|v| v.as_str())
+    {
         if !v.is_empty() {
             args.exclude_patterns = v.split(',').map(String::from).collect();
         }
@@ -423,7 +429,10 @@ pub fn apply_tui_config_args(mut args: Args, config_values: &serde_json::Value) 
     apply_bool!("elastic", args.elastic);
     // Note: cpu_cores, ram_budget, db_path are handled in orchestrator via ElasticOverrides
     apply_bool!("pipeline", args.pipeline);
-    if let Some(v) = config_values.get("pipeline_output").and_then(|v| v.as_str()) {
+    if let Some(v) = config_values
+        .get("pipeline_output")
+        .and_then(|v| v.as_str())
+    {
         args.pipeline_output = match v {
             "none" => P::None,
             _ => P::Jsonl,

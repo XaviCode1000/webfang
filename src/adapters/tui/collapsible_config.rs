@@ -59,7 +59,12 @@ impl ConfigSection {
     }
 
     /// Create a section with field count.
-    pub fn with_fields(title: impl Into<String>, form: Form, expanded: bool, field_count: usize) -> Self {
+    pub fn with_fields(
+        title: impl Into<String>,
+        form: Form,
+        expanded: bool,
+        field_count: usize,
+    ) -> Self {
         Self {
             title: title.into(),
             expanded,
@@ -469,7 +474,7 @@ impl Component for CollapsibleConfig {
             .direction(ratatui::layout::Direction::Vertical)
             .constraints([
                 Constraint::Length(3), // Header
-                Constraint::Min(1),   // Sections
+                Constraint::Min(1),    // Sections
                 Constraint::Length(2), // Footer
             ])
             .split(area);
@@ -497,7 +502,10 @@ impl CollapsibleConfig {
             ConfigMode::SectionList => "Configuration — Select a section",
             ConfigMode::FieldEdit => {
                 let section = &self.sections[self.cursor];
-                &format!("Configuration — {} ({} fields)", section.title, section.field_count)
+                &format!(
+                    "Configuration — {} ({} fields)",
+                    section.title, section.field_count
+                )
             },
         };
 
@@ -572,10 +580,7 @@ impl CollapsibleConfig {
                     .fg(Theme::accent())
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                "← back",
-                Style::default().fg(Theme::text_muted()),
-            ),
+            Span::styled("← back", Style::default().fg(Theme::text_muted())),
         ]));
 
         let chunks = Layout::default()

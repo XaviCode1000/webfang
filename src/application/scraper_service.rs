@@ -441,8 +441,10 @@ mod tests {
     async fn test_scrape_with_config_invalid_url() {
         let url = url::Url::parse("https://invalid-host-that-does-not-exist-12345.com").unwrap();
         let config = ScraperConfig::default();
-        let mock =
-            MockHttpClient::new().with_response(url.as_str(), Err(HttpError::Connection("no route to host".into())));
+        let mock = MockHttpClient::new().with_response(
+            url.as_str(),
+            Err(HttpError::Connection("no route to host".into())),
+        );
 
         let result = scrape_with_config(&mock, &url, &config).await;
         assert!(result.is_err(), "connection error should propagate as Err");
