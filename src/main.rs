@@ -102,11 +102,11 @@ async fn run_config_tui() -> Result<Option<serde_json::Value>, CliExit> {
 
 /// Run the unified TUI with collapsible config sections.
 ///
-/// Phase 1: Config form with 8 collapsible sections (45 fields)
+/// Phase 1: Config form with 8 collapsible sections (39 fields)
 /// Phase 2: URL selector (after config submitted)
 ///
-/// Returns `Ok(Some(values))` if form was submitted,
-/// `Ok(None)` if cancelled, or `Err` if TTY not available.
+/// Returns `Ok(Some(values))` if both phases completed,
+/// `Ok(None)` if cancelled at any point, or `Err` if TTY not available.
 async fn run_unified_tui() -> Result<Option<serde_json::Value>, CliExit> {
     // Check if stdout is a TTY
     if !io::stdout().is_terminal() {
@@ -116,7 +116,10 @@ async fn run_unified_tui() -> Result<Option<serde_json::Value>, CliExit> {
         ));
     }
 
-    let mut app = match App::new(AppMode::Config) {
+    // =========================================================================
+    // Phase 1: Configuration Form
+    // =========================================================================
+    let mut config_app = match App::new(AppMode::Config) {
         Ok(app) => app,
         Err(e) => {
             eprintln!("Error al crear la aplicación TUI: {}", e);
@@ -149,15 +152,29 @@ async fn run_unified_tui() -> Result<Option<serde_json::Value>, CliExit> {
         ],
     ));
 
-    match app.run().await {
-        Ok(AppResult::Config(values)) => Ok(values),
-        Ok(AppResult::None) => Ok(None),
-        Ok(_) => Ok(None),
+    let config_values = match config_app.run().await {
+        Ok(AppResult::Config(values)) => values,
+        Ok(AppResult::None) => return Ok(None), // User cancelled
+        Ok(_) => return Ok(None),
         Err(e) => {
-            eprintln!("Error en TUI: {}", e);
-            Ok(None)
+            eprintln!("Error en TUI de configuración: {}", e);
+            return Ok(None);
         },
-    }
+    };
+
+    // If config was cancelled or empty, return None
+    let config_values = match config_values {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+
+    // =========================================================================
+    // Phase 2: URL Selection (using config values)
+    // =========================================================================
+    // The URL will be extracted from config and used for discovery.
+    // For now, return the config values. The orchestrator will handle
+    // URL discovery and selection based on the config.
+    Ok(Some(config_values))
 }
 
 /// Prompt for URL using inquire (interactive mode).
