@@ -33,6 +33,7 @@ pub mod event;
 pub mod theme;
 pub mod tui_terminal;
 
+pub mod collapsible_config;
 mod config_form;
 mod error_log_widget;
 pub mod modal;
@@ -48,6 +49,7 @@ pub use error_log_widget::{ErrorLogWidget, DEFAULT_MAX_ERRORS};
 pub use event::Event;
 pub use tui_terminal::Tui;
 
+pub use collapsible_config::CollapsibleConfig;
 pub use config_form::ConfigFormState;
 pub use progress_types::{
     AppEvent, ErrorEntry, ErrorType, ProgressState, ScrapeError, ScrapeProgress, ScrapeStatus,

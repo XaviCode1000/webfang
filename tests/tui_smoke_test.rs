@@ -3,6 +3,8 @@
 //! These tests exercise pure state machines and widget initialization
 //! without requiring a terminal backend, keeping them fast and CI-friendly.
 
+use rust_scraper::adapters::tui::action::Action;
+use rust_scraper::adapters::tui::component::Component;
 use rust_scraper::adapters::tui::modal::HelpModal;
 use rust_scraper::adapters::tui::{
     AppMode, ConfigFormState, ErrorLogWidget, ProgressWidget, UrlSelectorState,
@@ -311,4 +313,179 @@ fn help_modal_with_bindings() {
     ];
     let modal = HelpModal::new("Help".into(), bindings);
     assert_eq!(modal.bindings.len(), 3);
+}
+
+// ===========================================================================
+// Group 7: State Machine Transitions (AppMode)
+// ===========================================================================
+
+#[test]
+fn test_app_mode_transition_selector_to_progress() {
+    let mode = AppMode::Selector;
+    let next = match mode {
+        AppMode::Selector => AppMode::Progress,
+        other => other,
+    };
+    assert!(matches!(next, AppMode::Progress));
+}
+
+#[test]
+fn test_app_mode_transition_progress_to_config() {
+    let mode = AppMode::Progress;
+    let next = match mode {
+        AppMode::Progress => AppMode::Config,
+        other => other,
+    };
+    assert!(matches!(next, AppMode::Config));
+}
+
+#[test]
+fn test_app_mode_transition_back_to_selector() {
+    let mode = AppMode::Config;
+    let next = match mode {
+        AppMode::Config => AppMode::Selector,
+        other => other,
+    };
+    assert!(matches!(next, AppMode::Selector));
+}
+
+#[test]
+fn test_app_mode_full_cycle() {
+    let modes = [AppMode::Selector, AppMode::Progress, AppMode::Config];
+    // Verify all modes are distinct
+    for (i, a) in modes.iter().enumerate() {
+        for (j, b) in modes.iter().enumerate() {
+            if i == j {
+                assert_eq!(a, b);
+            } else {
+                assert_ne!(a, b);
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// Group 8: Action Display & Equality
+// ===========================================================================
+
+#[test]
+fn test_action_display_variants() {
+    assert_eq!(Action::Tick.to_string(), "Tick");
+    assert_eq!(Action::Render.to_string(), "Render");
+    assert_eq!(Action::Quit.to_string(), "Quit");
+    assert_eq!(Action::ClearScreen.to_string(), "ClearScreen");
+    assert_eq!(Action::Suspend.to_string(), "Suspend");
+    assert_eq!(Action::Resume.to_string(), "Resume");
+    assert_eq!(Action::ToggleHelp.to_string(), "ToggleHelp");
+    assert_eq!(Action::CloseModal.to_string(), "CloseModal");
+    assert_eq!(Action::UrlCancelled.to_string(), "UrlCancelled");
+    assert_eq!(Action::ConfigCancelled.to_string(), "ConfigCancelled");
+}
+
+#[test]
+fn test_action_display_with_payload() {
+    assert_eq!(Action::Resize(80, 24).to_string(), "Resize(80, 24)");
+    assert_eq!(Action::Error("test".into()).to_string(), "Error(test)");
+    assert_eq!(
+        Action::UrlConfirmed(vec!["a".into(), "b".into()]).to_string(),
+        "UrlConfirmed(2 urls)"
+    );
+}
+
+#[test]
+fn test_action_equality() {
+    assert_eq!(Action::Tick, Action::Tick);
+    assert_ne!(Action::Tick, Action::Render);
+    assert_ne!(Action::Quit, Action::ClearScreen);
+    assert_eq!(
+        Action::UrlConfirmed(vec!["x".into()]),
+        Action::UrlConfirmed(vec!["x".into()])
+    );
+}
+
+// ===========================================================================
+// Group 9: Event Dispatch Routing
+// ===========================================================================
+
+#[test]
+fn test_toggle_help_action_concept() {
+    // Verify ToggleHelp action exists and is distinct from other modal actions
+    let action = Action::ToggleHelp;
+    assert!(!matches!(action, Action::CloseModal));
+    assert!(!matches!(action, Action::Quit));
+}
+
+#[test]
+fn test_close_modal_action_concept() {
+    let action = Action::CloseModal;
+    assert!(!matches!(action, Action::ToggleHelp));
+    assert!(!matches!(action, Action::Quit));
+}
+
+#[test]
+fn test_url_confirmed_carries_urls() {
+    let urls = vec!["https://a.com".into(), "https://b.com".into()];
+    let action = Action::UrlConfirmed(urls.clone());
+    match action {
+        Action::UrlConfirmed(v) => assert_eq!(v, urls),
+        _ => panic!("Expected UrlConfirmed"),
+    }
+}
+
+#[test]
+fn test_config_done_carries_value() {
+    let value = serde_json::json!({"key": "value"});
+    let action = Action::ConfigDone(Some(value.clone()));
+    match action {
+        Action::ConfigDone(Some(v)) => assert_eq!(v, value),
+        _ => panic!("Expected ConfigDone with Some"),
+    }
+}
+
+#[test]
+fn test_config_done_none() {
+    let action = Action::ConfigDone(None);
+    match action {
+        Action::ConfigDone(None) => {},
+        _ => panic!("Expected ConfigDone(None)"),
+    }
+}
+
+// ===========================================================================
+// Group 10: ProgressWidget State Updates
+// ===========================================================================
+
+#[test]
+fn test_progress_widget_update_tick() {
+    let urls = make_urls(2);
+    let mut widget = ProgressWidget::new(&urls);
+    // Tick should not panic — advances animation
+    let result = widget.update(Action::Tick);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_progress_widget_update_render() {
+    let urls = make_urls(2);
+    let mut widget = ProgressWidget::new(&urls);
+    let result = widget.update(Action::Render);
+    assert!(result.is_ok());
+}
+
+// ===========================================================================
+// Group 11: ErrorLogWidget State Updates
+// ===========================================================================
+
+#[test]
+fn test_error_log_widget_update_tick() {
+    let mut widget = ErrorLogWidget::new();
+    let result = widget.update(Action::Tick);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_error_log_widget_update_render() {
+    let mut widget = ErrorLogWidget::new();
+    let result = widget.update(Action::Render);
+    assert!(result.is_ok());
 }

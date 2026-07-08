@@ -175,7 +175,7 @@ dashmap = "6"
 ahash = { version = "0.8", features = ["std"] }
 
 # TUI (preparar para Fase 2) - FASE 1 Web Crawler
-ratatui = "0.29"
+ratatui = { version = "0.29", features = ["palette", "serde"] }
 ratatui-form = "0.1.1"
 crossterm = { version = "0.28", features = ["event-stream"] }
 

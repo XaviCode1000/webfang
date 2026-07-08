@@ -213,17 +213,107 @@ pub fn apply_tui_config(mut opts: CrawlOptions, config_values: &serde_json::Valu
 /// Apply config values from TUI form to Args.
 ///
 /// This runs on Args before conversion to CrawlOptions, because the TUI
-/// needs access to Args-specific fields (config_tui, url).
+/// Apply TUI config values to Args.
+///
+/// Handles all 39 fields from CollapsibleConfig.
+/// Only applies values that are present in the JSON (non-null, non-empty).
 pub fn apply_tui_config_args(mut args: Args, config_values: &serde_json::Value) -> Args {
+    use crate::cli::args::PipelineOutputFormat as P;
     use crate::ExportFormat as E;
     use crate::OutputFormat as O;
+    use crate::domain::JsStrategy;
 
-    // Output directory
-    if let Some(output) = config_values.get("output").and_then(|v| v.as_str()) {
-        args.output = PathBuf::from(output);
+    // ========================================================================
+    // Helper macros for type conversion
+    // ========================================================================
+    macro_rules! apply_str {
+        ($key:expr, $field:expr) => {
+            if let Some(v) = config_values.get($key).and_then(|v| v.as_str()) {
+                if !v.is_empty() {
+                    $field = v.to_string();
+                }
+            }
+        };
     }
 
-    // Output format (markdown, json, text)
+    macro_rules! apply_str_opt {
+        ($key:expr, $field:expr) => {
+            if let Some(v) = config_values.get($key).and_then(|v| v.as_str()) {
+                if !v.is_empty() {
+                    $field = Some(v.to_string());
+                }
+            }
+        };
+    }
+
+    macro_rules! apply_path_opt {
+        ($key:expr, $field:expr) => {
+            if let Some(v) = config_values.get($key).and_then(|v| v.as_str()) {
+                if !v.is_empty() {
+                    $field = Some(PathBuf::from(v));
+                }
+            }
+        };
+    }
+
+    macro_rules! apply_path {
+        ($key:expr, $field:expr) => {
+            if let Some(v) = config_values.get($key).and_then(|v| v.as_str()) {
+                if !v.is_empty() {
+                    $field = PathBuf::from(v);
+                }
+            }
+        };
+    }
+
+    macro_rules! apply_bool {
+        ($key:expr, $field:expr) => {
+            if let Some(v) = config_values.get($key).and_then(|v| v.as_bool()) {
+                $field = v;
+            }
+        };
+    }
+
+    macro_rules! apply_u64 {
+        ($key:expr, $field:expr) => {
+            if let Some(v) = config_values.get($key).and_then(|v| v.as_str()) {
+                if let Ok(n) = v.parse() {
+                    $field = n;
+                }
+            }
+        };
+    }
+
+    macro_rules! apply_usize {
+        ($key:expr, $field:expr) => {
+            if let Some(v) = config_values.get($key).and_then(|v| v.as_str()) {
+                if let Ok(n) = v.parse() {
+                    $field = n;
+                }
+            }
+        };
+    }
+
+    macro_rules! apply_u8 {
+        ($key:expr, $field:expr) => {
+            if let Some(v) = config_values.get($key).and_then(|v| v.as_str()) {
+                if let Ok(n) = v.parse() {
+                    $field = n;
+                }
+            }
+        };
+    }
+
+    // ========================================================================
+    // Target
+    // ========================================================================
+    apply_str_opt!("url", args.url);
+    apply_str!("selector", args.selector);
+
+    // ========================================================================
+    // Output
+    // ========================================================================
+    apply_path!("output", args.output);
     if let Some(fmt) = config_values.get("format").and_then(|v| v.as_str()) {
         args.format = match fmt {
             "json" => O::Json,
@@ -231,8 +321,6 @@ pub fn apply_tui_config_args(mut args: Args, config_values: &serde_json::Value) 
             _ => O::Markdown,
         };
     }
-
-    // Export format (jsonl, vector, auto)
     if let Some(fmt) = config_values.get("export_format").and_then(|v| v.as_str()) {
         args.export_format = match fmt {
             "vector" => E::Vector,
@@ -241,66 +329,118 @@ pub fn apply_tui_config_args(mut args: Args, config_values: &serde_json::Value) 
         };
     }
 
-    // Discovery: use_sitemap
-    if let Some(v) = config_values.get("use_sitemap").and_then(|v| v.as_bool()) {
-        args.use_sitemap = v;
-    }
+    // ========================================================================
+    // Discovery
+    // ========================================================================
+    apply_bool!("use_sitemap", args.use_sitemap);
+    apply_str_opt!("sitemap_url", args.sitemap_url);
+    apply_usize!("max_pages", args.max_pages);
+    apply_u8!("max_depth", args.max_depth);
+    apply_u8!("sitemap_depth", args.sitemap_depth);
 
-    // Discovery: max_pages
-    if let Some(v) = config_values.get("max_pages").and_then(|v| v.as_str()) {
-        if let Ok(n) = v.parse() {
-            args.max_pages = n;
+    // ========================================================================
+    // Crawler
+    // ========================================================================
+    apply_u64!("timeout_secs", args.timeout_secs);
+    apply_u64!("max_retries", args.max_retries);
+    apply_u64!("delay_ms", args.delay_ms);
+    // Concurrency: special handling (auto or number)
+    if let Some(v) = config_values.get("concurrency").and_then(|v| v.as_str()) {
+        if v == "auto" {
+            args.concurrency = crate::ConcurrencyConfig::default();
+        } else if let Ok(n) = v.parse::<usize>() {
+            args.concurrency = crate::ConcurrencyConfig::new(n);
+        }
+    }
+    // Include/exclude patterns
+    if let Some(v) = config_values.get("include_pattern").and_then(|v| v.as_str()) {
+        if !v.is_empty() {
+            args.include_patterns = v.split(',').map(String::from).collect();
+        }
+    }
+    if let Some(v) = config_values.get("exclude_pattern").and_then(|v| v.as_str()) {
+        if !v.is_empty() {
+            args.exclude_patterns = v.split(',').map(String::from).collect();
         }
     }
 
-    // Crawler: max_depth
-    if let Some(v) = config_values.get("max_depth").and_then(|v| v.as_str()) {
-        if let Ok(n) = v.parse() {
-            args.max_depth = n;
+    // ========================================================================
+    // Network
+    // ========================================================================
+    apply_str_opt!("user_agent", args.user_agent);
+    apply_str!("accept_language", args.accept_language);
+    apply_str!("h2_profile", args.h2_profile);
+    if let Some(v) = config_values.get("js_strategy").and_then(|v| v.as_str()) {
+        args.js_strategy = match v {
+            "hybrid" => JsStrategy::Hybrid,
+            "full" => JsStrategy::Full,
+            _ => JsStrategy::Static,
+        };
+    }
+    apply_bool!("force_js_render", args.force_js_render);
+
+    // ========================================================================
+    // Download
+    // ========================================================================
+    apply_bool!("download_images", args.download_images);
+    apply_bool!("download_documents", args.download_documents);
+    apply_u64!("max_file_size", args.max_file_size);
+    apply_u64!("download_timeout", args.download_timeout);
+
+    // ========================================================================
+    // Obsidian
+    // ========================================================================
+    apply_bool!("obsidian_wiki_links", args.obsidian_wiki_links);
+    // Tags: comma-separated string → Vec<String>
+    if let Some(v) = config_values.get("obsidian_tags").and_then(|v| v.as_str()) {
+        if !v.is_empty() {
+            args.obsidian_tags = Some(v.split(',').map(String::from).collect());
         }
     }
+    apply_bool!("obsidian_relative_assets", args.obsidian_relative_assets);
+    apply_bool!("obsidian_rich_metadata", args.obsidian_rich_metadata);
+    apply_path_opt!("vault", args.vault);
+    apply_bool!("quick_save", args.quick_save);
 
-    // Behavior: download_images
-    if let Some(v) = config_values
-        .get("download_images")
-        .and_then(|v| v.as_bool())
-    {
-        args.download_images = v;
-    }
-
-    // Behavior: download_documents
-    if let Some(v) = config_values
-        .get("download_documents")
-        .and_then(|v| v.as_bool())
-    {
-        args.download_documents = v;
-    }
-
-    // Obsidian: obsidian_wiki_links
-    if let Some(v) = config_values
-        .get("obsidian_wiki_links")
-        .and_then(|v| v.as_bool())
-    {
-        args.obsidian_wiki_links = v;
-    }
-
-    // Obsidian: vault path
-    if let Some(vault) = config_values.get("vault").and_then(|v| v.as_str()) {
-        if !vault.is_empty() {
-            args.vault = Some(PathBuf::from(vault));
-        }
-    }
-
-    // Obsidian: quick_save
-    if let Some(v) = config_values.get("quick_save").and_then(|v| v.as_bool()) {
-        args.quick_save = v;
-    }
-
-    // AI: clean_ai (only applies when feature is enabled)
+    // ========================================================================
+    // AI (feature-gated)
+    // ========================================================================
     #[cfg(feature = "ai")]
-    if let Some(v) = config_values.get("clean_ai").and_then(|v| v.as_bool()) {
-        args.clean_ai = v;
+    {
+        apply_bool!("clean_ai", args.clean_ai);
+        apply_usize!("max_tokens", args.max_tokens);
+        if let Some(v) = config_values.get("threshold").and_then(|v| v.as_str()) {
+            if let Ok(n) = v.parse::<f32>() {
+                args.threshold = n;
+            }
+        }
+        apply_bool!("offline", args.offline);
     }
+
+    // ========================================================================
+    // Advanced
+    // ========================================================================
+    apply_bool!("elastic", args.elastic);
+    // Note: cpu_cores, ram_budget, db_path are handled in orchestrator via ElasticOverrides
+    apply_bool!("pipeline", args.pipeline);
+    if let Some(v) = config_values.get("pipeline_output").and_then(|v| v.as_str()) {
+        args.pipeline_output = match v {
+            "none" => P::None,
+            _ => P::Jsonl,
+        };
+    }
+    apply_bool!("batch", args.batch);
+    apply_path_opt!("batch_file", args.batch_file);
+    apply_usize!("batch_concurrency", args.batch_concurrency);
+    apply_u64!("checkpoint_interval", args.checkpoint_interval);
+    apply_bool!("no_checkpoint", args.no_checkpoint);
+    apply_bool!("ignore_robots", args.ignore_robots);
+    apply_bool!("autoscale", args.autoscale);
+    apply_bool!("no_session_health", args.no_session_health);
+    apply_u8!("verbose", args.verbose);
+    apply_bool!("quiet", args.quiet);
+    apply_bool!("dry_run", args.dry_run);
+    apply_path_opt!("trace_file", args.trace_file);
 
     args
 }
