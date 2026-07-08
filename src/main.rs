@@ -29,7 +29,7 @@ use std::panic;
 use clap::Parser;
 use inquire::Text;
 use rust_scraper::adapters::tui::modal::HelpModal;
-use rust_scraper::adapters::tui::{App, AppMode, AppResult, CollapsibleConfig, ConfigFormState, Header, StatusBar};
+use rust_scraper::adapters::tui::{App, AppMode, AppResult, CollapsibleConfig, Header, StatusBar};
 use rust_scraper::application::crawl_options::CrawlOptions;
 use rust_scraper::cli::config::ConfigDefaults;
 use rust_scraper::cli::error::CliExit;
@@ -44,60 +44,6 @@ fn is_ci() -> bool {
 /// Check if stdin is a terminal.
 fn stdin_is_tty() -> bool {
     io::stdin().is_terminal()
-}
-
-/// Run the configuration TUI using the App + Component architecture.
-///
-/// Returns `Ok(Some(values))` if form was submitted,
-/// `Ok(None)` if cancelled, or `Err` if TTY not available.
-async fn run_config_tui() -> Result<Option<serde_json::Value>, CliExit> {
-    // Check if stdout is a TTY
-    if !io::stdout().is_terminal() {
-        eprintln!("Error: --config-tui requiere un terminal interactivo");
-        return Err(CliExit::UsageError(
-            "--config-tui requiere un terminal interactivo".into(),
-        ));
-    }
-
-    let mut app = match App::new(AppMode::Config) {
-        Ok(app) => app,
-        Err(e) => {
-            eprintln!("Error al crear la aplicación TUI: {}", e);
-            return Err(CliExit::UsageError(format!(
-                "Error creando la aplicación: {}",
-                e
-            )));
-        },
-    }
-    .with_component(Header::new(AppMode::Config))
-    .with_component(ConfigFormState::new_default())
-    .with_component(StatusBar::new().with_items(vec![
-        ("↑↓", "Navegar"),
-        ("Enter", "Confirmar"),
-        ("q", "Salir"),
-    ]))
-    .with_modal(HelpModal::new(
-        "Ayuda — Configuración".into(),
-        vec![
-            ("↑↓".into(), "Navegar campos".into()),
-            ("Enter".into(), "Editar campo / Confirmar".into()),
-            ("?".into(), "Mostrar ayuda".into()),
-            ("q".into(), "Salir".into()),
-        ],
-    ));
-
-    match app.run().await {
-        Ok(AppResult::Config(values)) => Ok(values),
-        Ok(AppResult::None) => Ok(None),
-        Ok(_) => {
-            // En modo Config no deberían llegar otros resultados
-            Ok(None)
-        },
-        Err(e) => {
-            eprintln!("Error en TUI de configuración: {}", e);
-            Ok(None)
-        },
-    }
 }
 
 /// Run the unified TUI with collapsible config sections.

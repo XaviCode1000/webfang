@@ -98,6 +98,12 @@ pub struct CollapsibleConfig {
     action_tx: Option<UnboundedSender<Action>>,
 }
 
+impl Default for CollapsibleConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CollapsibleConfig {
     /// Create a new collapsible config with all sections.
     pub fn new() -> Self {
