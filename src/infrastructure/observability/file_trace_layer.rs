@@ -18,6 +18,7 @@
 use std::cell::RefCell;
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
@@ -33,6 +34,33 @@ use tracing_subscriber::Layer;
 // span exits.
 thread_local! {
     static SPAN_STACK: RefCell<Vec<tracing::Id>> = const { RefCell::new(Vec::new()) };
+}
+
+// Global atomic counter for assigning stable, platform-independent thread IDs.
+// ThreadId::as_u64() is unstable (tracking #67939) and its Debug format is
+// platform-dependent. This counter guarantees unique, sequential IDs regardless
+// of OS.
+static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1);
+
+// Thread-local mapping from OS ThreadId to our stable internal ID.
+// Each thread gets assigned a unique u64 on first encounter.
+thread_local! {
+    static THREAD_INTERNAL_ID: RefCell<Option<u64>> = const { RefCell::new(None) };
+}
+
+/// Get or assign a stable, platform-independent ID for the current thread.
+/// Returns the same u64 for the same thread across calls, and different u64s
+/// for different threads. No string parsing, no platform-specific formatting.
+fn current_thread_id() -> u64 {
+    THREAD_INTERNAL_ID.with(|cell| {
+        let mut id = cell.borrow_mut();
+        if let Some(id) = *id {
+            return id;
+        }
+        let new_id = NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed);
+        *id = Some(new_id);
+        new_id
+    })
 }
 
 /// A `tracing_subscriber::Layer` that writes JSONL trace files.
@@ -122,24 +150,11 @@ where
             }
         }
 
-        // trace_id: use thread ID as a stable per-thread trace identifier.
-        // ThreadId::as_u64() is unstable (tracking #67939), so we extract from
-        // the Debug format. On Linux this is "ThreadId(N)" where N is decimal.
-        // On macOS/Windows the format differs, so we hash the raw Debug output
-        // for a platform-independent u64.
-        let tid_debug = format!("{:?}", std::thread::current().id());
-        let tid: u64 = tid_debug
-            .trim_start_matches("ThreadId(")
-            .trim_end_matches(')')
-            .parse()
-            .unwrap_or_else(|_| {
-                // Fallback: hash the raw debug string for cross-platform safety
-                use std::hash::{Hash, Hasher};
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                tid_debug.hash(&mut hasher);
-                hasher.finish()
-            });
-        record["trace_id"] = json!(format!("{tid:016x}"));
+        // trace_id: use a stable, platform-independent thread ID.
+        // Previous implementation parsed ThreadId from Debug format which is
+        // platform-dependent (Linux: "ThreadId(42)", macOS/Windows differ).
+        // The atomic counter approach is OS-agnostic and allocation-free.
+        record["trace_id"] = json!(format!("{:016x}", current_thread_id()));
 
         // Single-pass field capture: extracts all fields AND the message
         // in one traversal, avoiding the double-visit antipattern.
