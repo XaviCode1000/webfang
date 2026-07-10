@@ -121,10 +121,9 @@ impl Component for Header {
 
     fn update(&mut self, action: Action) -> Result<Option<Action>> {
         match action {
-            Action::Tick | Action::Render => {},
-            _ => {},
+            Action::Tick | Action::Render => Ok(None),
+            _ => Ok(None),
         }
-        Ok(None)
     }
 
     fn draw(&mut self, frame: &mut Frame, area: Rect) -> Result<()> {
@@ -197,10 +196,9 @@ impl Component for StatusBar {
 
     fn update(&mut self, action: Action) -> Result<Option<Action>> {
         match action {
-            Action::Tick | Action::Render => {},
-            _ => {},
+            Action::Tick | Action::Render => Ok(None),
+            _ => Ok(None),
         }
-        Ok(None)
     }
 
     fn draw(&mut self, frame: &mut Frame, area: Rect) -> Result<()> {
