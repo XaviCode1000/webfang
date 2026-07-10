@@ -452,6 +452,12 @@ pub(crate) async fn download_assets_if_enabled(
             return Ok(Vec::new());
         }
 
+        // Deduplicate URLs to avoid downloading the same asset multiple times
+        // (e.g., same image referenced from multiple <img> tags).
+        use std::collections::HashSet;
+        let mut seen = HashSet::with_capacity(urls.len());
+        urls.retain(|url| seen.insert(url.clone()));
+
         tracing::info!(
             "📦 Downloading {} assets via adapters::Downloader",
             urls.len()

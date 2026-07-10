@@ -260,7 +260,8 @@ impl Downloader {
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| {
-                let transient = e.is_timeout() || e.is_connect();
+                let transient =
+                    e.is_timeout() || e.is_connect() || e.is_connection_reset();
                 ScraperError::Network(format!(
                     "{}{}",
                     if transient { "TRANSIENT:" } else { "" },
@@ -303,7 +304,26 @@ impl Downloader {
             mime_type.as_deref(),
             content_disposition_filename.as_deref(),
         );
-        let final_path = subdir_path.join(&filename);
+        let mut final_path = subdir_path.join(&filename);
+
+        // Slug/ContentDisposition naming can collide when different URLs produce
+        // the same filename. Append a short hash suffix to disambiguate.
+        if final_path.exists() {
+            let hash_suffix = &content_hash[..8];
+            let stem = final_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("file");
+            let ext = final_path
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            if ext.is_empty() {
+                final_path = subdir_path.join(format!("{stem}-{hash_suffix}"));
+            } else {
+                final_path = subdir_path.join(format!("{stem}-{hash_suffix}.{ext}"));
+            }
+        }
 
         // Atomic rename
         fs::rename(&temp_path, &final_path)
@@ -466,8 +486,10 @@ fn compute_backoff_delay(attempt: u32, base_ms: u64, max_ms: u64) -> Duration {
     use rand::Rng;
     use std::cmp::min;
 
-    // Exponential: base * 2^(attempt-1), clamped to max
-    let delay_ms = min(base_ms.saturating_mul(1u64 << (attempt - 1)), max_ms);
+    // Exponential: base * 2^(attempt-1), clamped to max. Shift is capped at 62
+    // to avoid panic from shifting u64 by >= 64 bits (attempt=1 is shift=0).
+    let shift = (attempt - 1).min(62);
+    let delay_ms = min(base_ms.saturating_mul(1u64 << shift), max_ms);
     // Add jitter: 75%-125% of delay, then clamp final result to max_ms
     let jitter = delay_ms / 4;
     let offset = rand::rng().random_range(0..=jitter.saturating_mul(2));
@@ -522,10 +544,15 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 /// Parse `filename=` from a Content-Disposition header value.
+///
+/// RFC 6266 / 5987: parameter names are case-insensitive. We lowercase
+/// the header value before matching to handle `Filename=`, `FILENAME=`, etc.
 fn parse_content_disposition_header(value: &str) -> Option<String> {
-    // Try filename*=UTF-8''encoded first (RFC 5987)
-    if let Some(start) = value.find("filename*=UTF-8''") {
-        let encoded = &value[start + "filename*=UTF-8''".len()..];
+    let lower = value.to_ascii_lowercase();
+
+    // Try filename*=utf-8''encoded first (RFC 5987)
+    if let Some(start) = lower.find("filename*=utf-8''") {
+        let encoded = &value[start + "filename*=utf-8''".len()..];
         let name: String = encoded
             .chars()
             .take_while(|c| *c != ';' && *c != ' ')
@@ -534,8 +561,8 @@ fn parse_content_disposition_header(value: &str) -> Option<String> {
         return Some(decoded);
     }
 
-    // Try filename="name" or filename=name
-    let after = value.find("filename=")?;
+    // Try filename="name" or filename=name (case-insensitive)
+    let after = lower.find("filename=")?;
     let rest = &value[after + "filename=".len()..];
     let name = if let Some(inner) = rest.strip_prefix('"') {
         // Quoted: filename="name.pdf"
