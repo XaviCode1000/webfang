@@ -221,14 +221,34 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let container = rt.block_on(Container::new(config)).unwrap();
 
-        let dl_config = crate::adapters::downloader::DownloadConfig::default();
+        let tmp = tempfile::tempdir().unwrap();
+        let dl_config = crate::adapters::downloader::DownloadConfig {
+            output_dir: tmp.path().to_path_buf(),
+            ..Default::default()
+        };
         let downloader =
             Arc::new(crate::adapters::downloader::Downloader::new(dl_config).unwrap());
+        let downloader_clone = downloader.clone();
 
         let state = McpState::new(container).with_downloader(downloader);
         assert!(
             state.downloader.is_some(),
             "McpState must hold the shared Downloader after with_downloader()"
+        );
+        assert!(
+            Arc::ptr_eq(state.downloader.as_ref().unwrap(), &downloader_clone),
+            "with_downloader must store the exact Arc (connection pool identity)"
+        );
+
+        // Clone preserves the shared pool
+        let state2 = state.clone();
+        assert!(state2.downloader.is_some(), "clone must preserve downloader");
+        assert!(
+            Arc::ptr_eq(
+                state.downloader.as_ref().unwrap(),
+                state2.downloader.as_ref().unwrap()
+            ),
+            "cloned McpState must share the same Downloader Arc"
         );
     }
 }
