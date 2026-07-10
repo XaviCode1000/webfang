@@ -209,6 +209,7 @@ impl ModelCache {
 
         // Check existence via spawn_blocking
         let exists = tokio::task::spawn_blocking(move || cache_dir.exists())
+            .in_current_span()
             .await
             .map_err(|e| {
                 SemanticError::ModelLoad(std::io::Error::other(format!(
