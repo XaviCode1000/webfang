@@ -7,7 +7,9 @@
 // Output Format
 // ============================================================================
 
+use crate::adapters::downloader::AssetNamingStrategy;
 use clap::ValueEnum;
+use wreq_util::Profile;
 
 /// Output format for scraped content.
 ///
@@ -81,6 +83,14 @@ pub struct ScraperConfig {
     pub max_pages: Option<usize>,
     /// CSS selector for content extraction (default: "body")
     pub selector: String,
+    /// H2/TLS profile for asset downloads
+    pub asset_h2_profile: Profile,
+    /// URL glob patterns to include for asset downloads (empty = allow all)
+    pub asset_include_patterns: Vec<String>,
+    /// URL glob patterns to exclude for asset downloads (always applied)
+    pub asset_exclude_patterns: Vec<String>,
+    /// Strategy for naming downloaded asset files
+    pub asset_naming: AssetNamingStrategy,
 }
 
 impl Default for ScraperConfig {
@@ -94,6 +104,10 @@ impl Default for ScraperConfig {
             scraper_concurrency: 3, // HDD-aware: nproc - 1 for 4C CPU
             max_pages: None,
             selector: "body".to_owned(),
+            asset_h2_profile: Profile::Chrome145,
+            asset_include_patterns: Vec::new(),
+            asset_exclude_patterns: Vec::new(),
+            asset_naming: AssetNamingStrategy::Hash,
         }
     }
 }
@@ -164,6 +178,34 @@ impl ScraperConfig {
     #[must_use]
     pub fn with_selector(mut self, selector: String) -> Self {
         self.selector = selector;
+        self
+    }
+
+    /// Set H2/TLS profile for asset downloads.
+    #[must_use]
+    pub fn with_asset_h2_profile(mut self, v: Profile) -> Self {
+        self.asset_h2_profile = v;
+        self
+    }
+
+    /// Set URL glob patterns to include for asset downloads.
+    #[must_use]
+    pub fn with_asset_include_patterns(mut self, v: Vec<String>) -> Self {
+        self.asset_include_patterns = v;
+        self
+    }
+
+    /// Set URL glob patterns to exclude for asset downloads.
+    #[must_use]
+    pub fn with_asset_exclude_patterns(mut self, v: Vec<String>) -> Self {
+        self.asset_exclude_patterns = v;
+        self
+    }
+
+    /// Set strategy for naming downloaded asset files.
+    #[must_use]
+    pub fn with_asset_naming(mut self, v: AssetNamingStrategy) -> Self {
+        self.asset_naming = v;
         self
     }
 }

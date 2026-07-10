@@ -261,6 +261,10 @@ pub struct Args {
     #[clap(next_help_heading = "Crawler Settings")]
     pub exclude_patterns: Vec<String>,
 
+    /// Estrategia de nombre de archivo para assets descargados: hash (default), slug, content-disposition
+    #[arg(long, default_value = "hash", value_parser = ["hash", "slug", "content-disposition"])]
+    pub asset_naming: String,
+
     // ========== HTTP Client Settings ==========
     /// Maximum number of retry attempts
     #[arg(long, default_value = "3", env = "RUST_SCRAPER_MAX_RETRIES")]
@@ -579,6 +583,7 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
                 batch_file: args.batch_file,
                 concurrency: args.batch_concurrency,
             },
+            asset_naming: args.asset_naming,
         }
     }
 }
@@ -729,6 +734,9 @@ mod tests {
             batch_file: Some(std::path::PathBuf::from("/tmp/urls.txt")),
             batch_concurrency: 8,
 
+            // Asset download
+            asset_naming: "slug".into(),
+
             ..Default::default()
         }
     }
@@ -824,6 +832,9 @@ mod tests {
             opts.pipeline_output_format,
             crate::cli::args::PipelineOutputFormat::None
         );
+
+        // ── Asset naming ─────────────────────────────────────────────────
+        assert_eq!(opts.asset_naming, "slug");
     }
 
     #[test]
@@ -883,6 +894,8 @@ mod tests {
             crate::cli::args::PipelineOutputFormat::Jsonl
         );
         assert!(!opts.crawl.autoscale_enabled);
+        // CLI default_value = "hash" (via #[arg(default_value)])
+        assert_eq!(opts.asset_naming, "hash");
     }
 
     #[test]

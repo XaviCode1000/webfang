@@ -93,6 +93,15 @@ pub async fn run(opts: CrawlOptions) -> CliExit {
         scraper_config = scraper_config.with_documents();
     }
 
+    // Wire asset download config from CLI args
+    scraper_config =
+        scraper_config.with_asset_h2_profile(parse_asset_h2_profile(&opts.network.h2_profile));
+    scraper_config =
+        scraper_config.with_asset_include_patterns(opts.crawl.include_patterns.clone());
+    scraper_config =
+        scraper_config.with_asset_exclude_patterns(opts.crawl.exclude_patterns.clone());
+    scraper_config = scraper_config.with_asset_naming(parse_asset_naming(&opts.asset_naming));
+
     // Initialize elastic ingestion if requested
     let elastic_ingestion: Option<
         std::sync::Arc<
@@ -353,6 +362,59 @@ fn plan_urls(
         vec![seed_url]
     } else {
         discovered_urls
+    }
+}
+
+/// Parse asset naming strategy from CLI string.
+fn parse_asset_naming(s: &str) -> crate::adapters::downloader::AssetNamingStrategy {
+    use crate::adapters::downloader::AssetNamingStrategy;
+    match s.to_lowercase().as_str() {
+        "slug" => AssetNamingStrategy::Slug,
+        "content-disposition" => AssetNamingStrategy::ContentDisposition,
+        _ => AssetNamingStrategy::Hash,
+    }
+}
+
+/// Parse H2/TLS profile from CLI string.
+///
+/// Resolves a profile name string to a `wreq_util::Profile` variant.
+///
+/// Tries exact match against known variants; defaults to `Chrome145` on
+/// unknown input.  This intentionally covers a subset of the ~100+
+/// variants — users who need edge/okhttp/safari profiles can configure
+/// the H2 profile via the HTTP client config directly.
+fn parse_asset_h2_profile(s: &str) -> wreq_util::Profile {
+    use wreq_util::Profile;
+
+    match s {
+        // Chrome
+        "Chrome100" => Profile::Chrome100,
+        "Chrome101" => Profile::Chrome101,
+        "Chrome104" => Profile::Chrome104,
+        "Chrome107" => Profile::Chrome107,
+        "Chrome110" => Profile::Chrome110,
+        "Chrome116" => Profile::Chrome116,
+        "Chrome120" => Profile::Chrome120,
+        "Chrome131" => Profile::Chrome131,
+        "Chrome145" => Profile::Chrome145,
+        // Firefox
+        "Firefox135" => Profile::Firefox135,
+        "FirefoxAndroid135" => Profile::FirefoxAndroid135,
+        // Safari
+        "Safari18" => Profile::Safari18,
+        "SafariIos18_1_1" => Profile::SafariIos18_1_1,
+        "SafariIPad18" => Profile::SafariIPad18,
+        // OkHttp
+        "OkHttp4_12" => Profile::OkHttp4_12,
+        "OkHttp5" => Profile::OkHttp5,
+        // Fallback
+        _ => {
+            tracing::warn!(
+                "Unknown asset H2 profile '{s}', falling back to Chrome145. \
+                 Run `cargo doc -p wreq-util` to see all available profiles."
+            );
+            Profile::Chrome145
+        },
     }
 }
 

@@ -196,18 +196,34 @@ impl Downloader {
             }
         }
 
-        Err(last_err
-            .unwrap_or_else(|| ScraperError::download("exhausted retries with no error captured")))
+        // Unreachable: loop always returns on last attempt, but required for type inference
+        Err(last_err.unwrap_or_else(|| ScraperError::download("exhausted retries with no error captured")))
     }
 
     /// Single download attempt (no retry).
     async fn download_once(&self, url: &str) -> Result<DownloadedAsset> {
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| ScraperError::Network(e.to_string()))?;
+        let response = self.client.get(url).send().await.map_err(|e| {
+            let transient = e.is_timeout() || e.is_connect() || e.is_connection_reset();
+            ScraperError::Network(format!(
+                "{}{}",
+                if transient { "TRANSIENT:" } else { "" },
+                e
+            ))
+        })?;
+
+        // Fail-fast on 4xx (client errors). 5xx (server errors) are transient and will be retried.
+        let status = response.status();
+        if status.is_client_error() {
+            return Err(ScraperError::Download(format!(
+                "HTTP {} al descargar {}",
+                status,
+                url
+            )));
+        }
+        if status.is_server_error() {
+            // Mark as transient so retry logic will retry on 5xx
+            return Err(ScraperError::Network(format!("TRANSIENT:HTTP {}", status)));
+        }
 
         let mime_type = response
             .headers()
@@ -243,7 +259,14 @@ impl Downloader {
         let mut hasher = Sha256::new();
 
         while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| ScraperError::Network(e.to_string()))?;
+            let chunk = chunk_result.map_err(|e| {
+                let transient = e.is_timeout() || e.is_connect();
+                ScraperError::Network(format!(
+                    "{}{}",
+                    if transient { "TRANSIENT:" } else { "" },
+                    e
+                ))
+            })?;
             if chunk.is_empty() {
                 continue;
             }
@@ -394,29 +417,48 @@ fn into_stream(response: Response) -> impl StreamExt<Item = wreq::Result<bytes::
 /// If `include_patterns` is empty, all URLs pass the include check.
 /// `exclude_patterns` are always applied (deny wins).
 fn url_matches_filters(url: &str, includes: &[String], excludes: &[String]) -> bool {
-    use crate::application::url_filter::{is_excluded, matches_pattern};
-
-    if is_excluded(url, excludes) {
+    if excludes.iter().any(|p| pattern_matches_asset(url, p)) {
         return false;
     }
-
     if includes.is_empty() {
         return true;
     }
+    includes.iter().any(|p| pattern_matches_asset(url, p))
+}
 
-    includes.iter().any(|pattern| matches_pattern(url, pattern))
+/// Match a URL against a pattern, supporting both extension globs (`*.pdf`)
+/// and the standard host/path glob from `domain::pattern_matching`.
+fn pattern_matches_asset(url: &str, pattern: &str) -> bool {
+    let p = pattern.trim();
+    // Extension glob: *.ext (but NOT host globs like *.example.com which contain a dot after the prefix)
+    if let Some(ext) = p.strip_prefix("*.") {
+        if !ext.is_empty() && !ext.contains('.') {
+            if let Ok(u) = url::Url::parse(url) {
+                let last = u.path().rsplit('/').next().unwrap_or("");
+                let low = last.to_ascii_lowercase();
+                let ext_low = ext.to_ascii_lowercase();
+                return low.ends_with(&format!(".{ext_low}"));
+            }
+        }
+    }
+    crate::domain::matches_pattern(url, pattern)
 }
 
 /// Check if an error is transient (worth retrying).
 fn is_transient_error(err: &ScraperError) -> bool {
-    matches!(
-        err,
-        ScraperError::Network(msg) if msg.contains("timeout")
+    if let ScraperError::Network(msg) = err {
+        msg.starts_with("TRANSIENT:")
+            || msg.to_ascii_lowercase().contains("timeout")
+            || msg.contains("timed out")
             || msg.contains("connection reset")
             || msg.contains("connection refused")
             || msg.contains("broken pipe")
             || msg.contains("connection closed")
-    )
+            || msg.contains("connection aborted")
+            || msg.contains("reset by peer")
+    } else {
+        false
+    }
 }
 
 /// Compute exponential backoff delay with jitter.
@@ -426,10 +468,11 @@ fn compute_backoff_delay(attempt: u32, base_ms: u64, max_ms: u64) -> Duration {
 
     // Exponential: base * 2^(attempt-1), clamped to max
     let delay_ms = min(base_ms.saturating_mul(1u64 << (attempt - 1)), max_ms);
-    // Add jitter: 75%-125% of delay
+    // Add jitter: 75%-125% of delay, then clamp final result to max_ms
     let jitter = delay_ms / 4;
     let offset = rand::rng().random_range(0..=jitter.saturating_mul(2));
-    Duration::from_millis(delay_ms.saturating_sub(jitter).saturating_add(offset))
+    let final_ms = min(delay_ms.saturating_sub(jitter).saturating_add(offset), max_ms);
+    Duration::from_millis(final_ms)
 }
 
 /// Derive a slug from the last path segment of a URL.
@@ -446,24 +489,26 @@ fn derive_slug_from_url(url: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Simple percent-decoding for Content-Disposition filenames.
-fn percent_decode_string(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let mut chars = input.chars();
+/// UTF-8 safe percent-decoding for Content-Disposition filenames.
+/// Invalid percent sequences are kept as-is; invalid UTF-8 is replaced with replacement char.
+fn percent_decode_utf8(input: &str) -> String {
+    let mut bytes = Vec::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '%' {
             let hex: String = chars.by_ref().take(2).collect();
             if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                result.push(byte as char);
-            } else {
-                result.push('%');
-                result.push_str(&hex);
+                bytes.push(byte);
+                continue;
             }
+            // Invalid percent encoding - keep as-is
+            bytes.extend(b"%");
+            bytes.extend(hex.as_bytes());
         } else {
-            result.push(c);
+            bytes.push(c as u8);
         }
     }
-    result
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Sanitize a filename: remove path separators and null bytes.
@@ -482,7 +527,7 @@ fn parse_content_disposition_header(value: &str) -> Option<String> {
             .chars()
             .take_while(|c| *c != ';' && *c != ' ')
             .collect();
-        let decoded = percent_decode_string(&name);
+        let decoded = percent_decode_utf8(&name);
         return Some(decoded);
     }
 
@@ -768,6 +813,21 @@ mod tests {
         ));
         assert!(!url_matches_filters(
             "https://example.com/file.jpg",
+            &includes,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn test_url_matches_filters_extension_glob() {
+        let includes = vec!["*.pdf".to_string()];
+        assert!(url_matches_filters(
+            "https://x.com/file.pdf",
+            &includes,
+            &[]
+        ));
+        assert!(!url_matches_filters(
+            "https://x.com/file.jpg",
             &includes,
             &[]
         ));

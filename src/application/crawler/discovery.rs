@@ -573,7 +573,7 @@ pub async fn scrape_single_url_for_tui(
         };
 
         let assets =
-            crate::application::scraper_service::download_assets_if_enabled("", url, config, None)
+            crate::application::scraper_service::download_assets_if_enabled("", url, config)
                 .await?;
 
         let content = if let Some(ref path) = saved_path {
@@ -626,10 +626,9 @@ pub async fn scrape_single_url_for_tui(
             #[cfg(feature = "otel-metrics")]
             CRAWLER_PAGES.add(1, &[opentelemetry::KeyValue::new("method", "readability")]);
 
-            let assets = crate::application::scraper_service::download_assets_if_enabled(
-                &html, url, config, None,
-            )
-            .await?;
+            let assets =
+                crate::application::scraper_service::download_assets_if_enabled(&html, url, config)
+                    .await?;
 
             Ok(ScrapedContent {
                 title: crate::application::resolve_title(&article.title, url),
@@ -664,10 +663,9 @@ pub async fn scrape_single_url_for_tui(
                 });
             }
 
-            let assets = crate::application::scraper_service::download_assets_if_enabled(
-                &html, url, config, None,
-            )
-            .await?;
+            let assets =
+                crate::application::scraper_service::download_assets_if_enabled(&html, url, config)
+                    .await?;
 
             #[cfg(feature = "otel-metrics")]
             CRAWLER_PAGES.add(1, &[opentelemetry::KeyValue::new("method", "fallback")]);

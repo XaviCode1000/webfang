@@ -259,7 +259,7 @@ pub async fn scrape_with_config(
     // Try Readability first, fallback to plain text extraction
     match crate::infrastructure::scraper::readability::parse(&extraction_html, Some(url.as_str())) {
         Ok(article) => {
-            let assets = download_assets_if_enabled(&html, url, config, None).await?;
+            let assets = download_assets_if_enabled(&html, url, config).await?;
 
             // SPA detection: check if extracted content is minimal
             if let Some(spa_info) = detect_spa_content(url.as_str(), &article.text_content, &html) {
@@ -297,7 +297,7 @@ pub async fn scrape_with_config(
             warn!("⚠️  Readability failed for {}: {}", url, e);
             let fallback_content =
                 crate::infrastructure::scraper::fallback::extract_text(&extraction_html);
-            let assets = download_assets_if_enabled(&html, url, config, None).await?;
+            let assets = download_assets_if_enabled(&html, url, config).await?;
 
             // SPA detection: check if fallback content is minimal
             if let Some(spa_info) = detect_spa_content(url.as_str(), &fallback_content, &html) {
@@ -415,7 +415,6 @@ pub(crate) async fn download_assets_if_enabled(
     _html: &str,
     _base_url: &url::Url,
     _config: &crate::ScraperConfig,
-    _downloader: Option<&crate::adapters::downloader::Downloader>,
 ) -> Result<Vec<DownloadedAsset>> {
     if !_config.has_downloads() {
         return Ok(Vec::new());
@@ -423,14 +422,17 @@ pub(crate) async fn download_assets_if_enabled(
 
     #[cfg(any(feature = "images", feature = "documents"))]
     {
-        let downloader = match _downloader {
-            Some(d) => d,
-            None => {
-                // Fallback: no injected Downloader — use quick_download path
-                // This path exists for backward compat; prefer injected Downloader.
-                return download_assets_fallback(_html, _base_url, _config).await;
-            },
+        let dl_config = crate::adapters::downloader::DownloadConfig {
+            output_dir: _config.output_dir.clone(),
+            timeout_secs: _config.download_timeout_secs,
+            max_file_size: _config.max_file_size.unwrap_or(50 * 1024 * 1024),
+            include_patterns: _config.asset_include_patterns.clone(),
+            exclude_patterns: _config.asset_exclude_patterns.clone(),
+            h2_profile: _config.asset_h2_profile,
+            asset_naming: _config.asset_naming,
+            ..Default::default()
         };
+        let downloader = crate::adapters::downloader::Downloader::new(dl_config)?;
 
         // Extract URLs from HTML
         let mut urls: Vec<String> = Vec::new();
@@ -488,68 +490,6 @@ pub(crate) async fn download_assets_if_enabled(
     {
         Ok(Vec::new())
     }
-}
-
-/// Fallback asset download (backward compat when no Downloader is injected).
-///
-/// Creates a temporary Downloader, downloads assets, and returns domain results.
-#[cfg(any(feature = "images", feature = "documents"))]
-async fn download_assets_fallback(
-    html: &str,
-    base_url: &url::Url,
-    config: &crate::ScraperConfig,
-) -> Result<Vec<DownloadedAsset>> {
-    let dl_config = crate::adapters::downloader::DownloadConfig {
-        output_dir: config.output_dir.clone(),
-        timeout_secs: config.download_timeout_secs,
-        max_file_size: config.max_file_size.unwrap_or(50 * 1024 * 1024),
-        ..Default::default()
-    };
-    let downloader = crate::adapters::downloader::Downloader::new(dl_config)?;
-
-    let mut urls: Vec<String> = Vec::new();
-    {
-        let document = scraper::Html::parse_document(html);
-        if config.download_images {
-            let images = crate::extractor::extract_images(&document, base_url);
-            urls.extend(images.into_iter().map(|a| a.url));
-        }
-        if config.download_documents {
-            let docs = crate::extractor::extract_documents(&document, base_url);
-            urls.extend(docs.into_iter().map(|a| a.url));
-        }
-    }
-
-    if urls.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let results = downloader.download_batch(&urls).await;
-
-    let mut assets = Vec::new();
-    for result in results {
-        match result {
-            Ok(asset) => {
-                let asset_type = crate::adapters::detector::detect_from_url(&asset.url);
-                let asset_type_str = match asset_type {
-                    crate::adapters::detector::AssetType::Image => "image",
-                    crate::adapters::detector::AssetType::Document => "document",
-                    crate::adapters::detector::AssetType::Unknown => "unknown",
-                };
-                assets.push(DownloadedAsset {
-                    url: asset.url,
-                    local_path: asset.local_path.to_string_lossy().into_owned(),
-                    asset_type: asset_type_str.to_string(),
-                    size: asset.size,
-                });
-            },
-            Err(e) => {
-                tracing::warn!("Failed to download asset: {}", e);
-            },
-        }
-    }
-
-    Ok(assets)
 }
 
 #[cfg(test)]

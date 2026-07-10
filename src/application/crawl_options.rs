@@ -44,6 +44,8 @@ pub struct CrawlOptions {
     pub pipeline_output_format: PipelineOutputFormat,
     /// Batch processing settings.
     pub batch: BatchOptions,
+    /// Asset naming strategy: "hash", "slug", or "content-disposition".
+    pub asset_naming: String,
 }
 
 /// Batch processing settings.
@@ -255,6 +257,7 @@ impl Default for CrawlOptions {
             pipeline_enabled: false,
             pipeline_output_format: PipelineOutputFormat::default(),
             batch: BatchOptions::default(),
+            asset_naming: "hash".to_string(),
         }
     }
 }
@@ -360,6 +363,7 @@ mod tests {
         assert_eq!(opts.url.as_str(), "https://example.com/");
         assert_eq!(opts.verbosity, 0);
         assert!(!opts.quiet);
+        assert_eq!(opts.asset_naming, "hash");
     }
 
     #[test]

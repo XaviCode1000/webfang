@@ -140,6 +140,7 @@ fn test_args_has_required_fields() {
         batch: false,
         batch_file: None,
         batch_concurrency: 5,
+        asset_naming: "hash".to_string(),
     };
 
     assert_eq!(args.url, Some("https://example.com".to_string()));
@@ -352,6 +353,7 @@ async fn test_download_images_from_website() {
         download_timeout_secs: 30,
         max_pages: None,
         selector: "body".to_string(),
+        ..Default::default()
     };
 
     // Act
@@ -423,6 +425,7 @@ async fn test_download_documents_from_website() {
         download_timeout_secs: 30,
         max_pages: None,
         selector: "body".to_string(),
+        ..Default::default()
     };
 
     // Act
