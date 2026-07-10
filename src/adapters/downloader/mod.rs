@@ -114,6 +114,14 @@ pub struct Downloader {
     config: DownloadConfig,
 }
 
+impl std::fmt::Debug for Downloader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Downloader")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Downloader {
     /// Create a new downloader with configuration.
     ///
@@ -514,25 +522,12 @@ fn derive_slug_from_url(url: &str) -> String {
 }
 
 /// UTF-8 safe percent-decoding for Content-Disposition filenames.
-/// Invalid percent sequences are kept as-is; invalid UTF-8 is replaced with replacement char.
+/// Uses the `percent-encoding` crate for correct handling of truncated
+/// sequences, multi-byte chars, and all edge cases in RFC 5987/3986.
 fn percent_decode_utf8(input: &str) -> String {
-    let mut bytes = Vec::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '%' {
-            let hex: String = chars.by_ref().take(2).collect();
-            if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                bytes.push(byte);
-                continue;
-            }
-            // Invalid percent encoding - keep as-is
-            bytes.extend(b"%");
-            bytes.extend(hex.as_bytes());
-        } else {
-            bytes.push(c as u8);
-        }
-    }
-    String::from_utf8_lossy(&bytes).into_owned()
+    percent_encoding::percent_decode_str(input)
+        .decode_utf8_lossy()
+        .into_owned()
 }
 
 /// Sanitize a filename: remove path separators and null bytes.

@@ -46,6 +46,8 @@ pub struct CrawlOptions {
     pub batch: BatchOptions,
     /// Asset naming strategy: "hash", "slug", or "content-disposition".
     pub asset_naming: String,
+    /// Maximum concurrent asset downloads per page.
+    pub download_concurrency: usize,
 }
 
 /// Batch processing settings.
@@ -258,6 +260,7 @@ impl Default for CrawlOptions {
             pipeline_output_format: PipelineOutputFormat::default(),
             batch: BatchOptions::default(),
             asset_naming: "hash".to_string(),
+            download_concurrency: 3,
         }
     }
 }

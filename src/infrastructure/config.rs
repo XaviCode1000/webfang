@@ -180,6 +180,24 @@ impl ScraperConfig {
         self.download_images || self.download_documents
     }
 
+    /// Build a `DownloadConfig` from this scraper configuration.
+    ///
+    /// This is the single source of truth for mapping ScraperConfig → DownloadConfig,
+    /// eliminating duplication between the orchestrator and fallback paths.
+    pub fn to_download_config(&self) -> crate::adapters::downloader::DownloadConfig {
+        crate::adapters::downloader::DownloadConfig {
+            output_dir: self.output_dir.clone(),
+            timeout_secs: self.download_timeout_secs,
+            max_file_size: self.max_file_size.unwrap_or(50 * 1024 * 1024),
+            concurrency_limit: self.download_concurrency,
+            include_patterns: self.asset_include_patterns.clone(),
+            exclude_patterns: self.asset_exclude_patterns.clone(),
+            h2_profile: self.asset_h2_profile,
+            asset_naming: self.asset_naming,
+            ..Default::default()
+        }
+    }
+
     /// Set maximum page limit.
     #[must_use]
     pub fn with_max_pages(mut self, pages: usize) -> Self {

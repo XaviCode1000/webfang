@@ -141,6 +141,7 @@ fn test_args_has_required_fields() {
         batch_file: None,
         batch_concurrency: 5,
         asset_naming: "hash".to_string(),
+        download_concurrency: 3,
     };
 
     assert_eq!(args.url, Some("https://example.com".to_string()));

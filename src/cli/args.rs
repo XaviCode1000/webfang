@@ -265,6 +265,10 @@ pub struct Args {
     #[arg(long, default_value = "hash", value_parser = ["hash", "slug", "content-disposition"])]
     pub asset_naming: String,
 
+    /// Maximum concurrent asset downloads per page (default: 3)
+    #[arg(long, default_value = "3", env = "RUST_SCRAPER_DOWNLOAD_CONCURRENCY")]
+    pub download_concurrency: usize,
+
     // ========== HTTP Client Settings ==========
     /// Maximum number of retry attempts
     #[arg(long, default_value = "3", env = "RUST_SCRAPER_MAX_RETRIES")]
@@ -584,6 +588,7 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
                 concurrency: args.batch_concurrency,
             },
             asset_naming: args.asset_naming,
+            download_concurrency: args.download_concurrency,
         }
     }
 }

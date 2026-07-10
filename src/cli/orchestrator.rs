@@ -101,22 +101,13 @@ pub async fn run(opts: CrawlOptions) -> CliExit {
     scraper_config =
         scraper_config.with_asset_exclude_patterns(opts.crawl.exclude_patterns.clone());
     scraper_config = scraper_config.with_asset_naming(parse_asset_naming(&opts.asset_naming));
+    scraper_config =
+        scraper_config.with_download_concurrency(opts.download_concurrency);
 
     // Create shared Downloader once for connection pooling across all page scrapes.
     // Propagates error on failure — the user must know if asset downloads can't start.
     let shared_downloader = if scraper_config.has_downloads() {
-        let dl_config = crate::adapters::downloader::DownloadConfig {
-            output_dir: scraper_config.output_dir.clone(),
-            timeout_secs: scraper_config.download_timeout_secs,
-            max_file_size: scraper_config.max_file_size.unwrap_or(50 * 1024 * 1024),
-            concurrency_limit: scraper_config.download_concurrency,
-            include_patterns: scraper_config.asset_include_patterns.clone(),
-            exclude_patterns: scraper_config.asset_exclude_patterns.clone(),
-            h2_profile: scraper_config.asset_h2_profile,
-            asset_naming: scraper_config.asset_naming,
-            ..Default::default()
-        };
-        match crate::adapters::downloader::Downloader::new(dl_config) {
+        match crate::adapters::downloader::Downloader::new(scraper_config.to_download_config()) {
             Ok(dl) => Some(std::sync::Arc::new(dl)),
             Err(e) => {
                 return CliExit::IoError(format!(
