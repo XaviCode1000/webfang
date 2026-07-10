@@ -32,6 +32,25 @@ pub fn build_mcp_router(state: McpState) -> Router {
 }
 
 /// Start the MCP server on the given address.
+///
+/// # Connection Pooling
+///
+/// For production use, create a shared `Downloader` and inject it via
+/// `McpState::with_downloader()`:
+///
+/// ```rust,ignore
+/// use std::sync::Arc;
+/// use crate::adapters::downloader::{Downloader, DownloadConfig};
+/// use crate::infrastructure::mcp_server::state::McpState;
+///
+/// let dl_config = DownloadConfig { /* ... */ };
+/// let downloader = Arc::new(Downloader::new(dl_config)?);
+/// let state = McpState::new(container).with_downloader(downloader);
+/// start_mcp_server(state, addr).await?;
+/// ```
+///
+/// Without a shared Downloader, each MCP tool call creates a fresh connection pool,
+/// defeating keep-alive and TLS session reuse.
 pub async fn start_mcp_server(state: McpState, addr: SocketAddr) -> anyhow::Result<()> {
     let app = build_mcp_router(state);
 
@@ -192,5 +211,24 @@ mod tests {
             crate::infrastructure::converter::wikilinks::convert_wiki_links(md, "example.com");
         // Wiki link conversion replaces same-domain URLs with [[page]] syntax
         assert!(!wikilinks.is_empty());
+    }
+
+    #[test]
+    fn test_mcp_state_with_downloader() {
+        use std::sync::Arc;
+
+        let config = Config::default();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let container = rt.block_on(Container::new(config)).unwrap();
+
+        let dl_config = crate::adapters::downloader::DownloadConfig::default();
+        let downloader =
+            Arc::new(crate::adapters::downloader::Downloader::new(dl_config).unwrap());
+
+        let state = McpState::new(container).with_downloader(downloader);
+        assert!(
+            state.downloader.is_some(),
+            "McpState must hold the shared Downloader after with_downloader()"
+        );
     }
 }
