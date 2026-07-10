@@ -79,6 +79,11 @@ pub struct ScraperConfig {
     pub download_timeout_secs: u64,
     /// Maximum concurrent scrapers (default: 3 for HDD-aware on 4C CPU)
     pub scraper_concurrency: usize,
+    /// Maximum concurrent asset downloads per page (default: 3)
+    ///
+    /// Separate from `scraper_concurrency` because asset downloads have a
+    /// different I/O profile (bandwidth + disk writes vs. network + parsing).
+    pub download_concurrency: usize,
     /// Maximum pages to scrape (None = unlimited)
     pub max_pages: Option<usize>,
     /// CSS selector for content extraction (default: "body")
@@ -102,6 +107,7 @@ impl Default for ScraperConfig {
             max_file_size: Some(50 * 1024 * 1024), // 50MB default
             download_timeout_secs: 30,
             scraper_concurrency: 3, // HDD-aware: nproc - 1 for 4C CPU
+            download_concurrency: 3, // Asset downloads: bandwidth + disk I/O
             max_pages: None,
             selector: "body".to_owned(),
             asset_h2_profile: Profile::Chrome145,
@@ -159,6 +165,13 @@ impl ScraperConfig {
     #[must_use]
     pub fn with_scraper_concurrency(mut self, concurrency: usize) -> Self {
         self.scraper_concurrency = concurrency;
+        self
+    }
+
+    /// Set download concurrency limit (assets per page).
+    #[must_use]
+    pub fn with_download_concurrency(mut self, concurrency: usize) -> Self {
+        self.download_concurrency = concurrency;
         self
     }
 

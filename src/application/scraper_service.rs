@@ -434,7 +434,7 @@ pub(crate) async fn download_assets_if_enabled(
                     output_dir: _config.output_dir.clone(),
                     timeout_secs: _config.download_timeout_secs,
                     max_file_size: _config.max_file_size.unwrap_or(50 * 1024 * 1024),
-                    concurrency_limit: _config.scraper_concurrency,
+                    concurrency_limit: _config.download_concurrency,
                     include_patterns: _config.asset_include_patterns.clone(),
                     exclude_patterns: _config.asset_exclude_patterns.clone(),
                     h2_profile: _config.asset_h2_profile,

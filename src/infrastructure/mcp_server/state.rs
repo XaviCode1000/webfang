@@ -7,6 +7,7 @@
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
+use crate::adapters::downloader::Downloader;
 use crate::di::Container;
 
 /// Per-category semaphore limits for backpressure.
@@ -58,6 +59,8 @@ pub struct McpState {
     pub limits: Arc<CategoryLimits>,
     /// Semaphores for each category
     pub semaphores: Arc<CategorySemaphores>,
+    /// Shared Downloader for connection pooling across MCP tool calls
+    pub downloader: Option<Arc<Downloader>>,
 }
 
 /// Semaphore instances for each tool category.
@@ -81,6 +84,7 @@ impl McpState {
             container: Arc::new(container),
             limits,
             semaphores,
+            downloader: None,
         }
     }
 
@@ -92,7 +96,15 @@ impl McpState {
             container: Arc::new(container),
             limits,
             semaphores,
+            downloader: None,
         }
+    }
+
+    /// Set a shared Downloader for connection pooling across tool calls.
+    #[must_use]
+    pub fn with_downloader(mut self, downloader: Arc<Downloader>) -> Self {
+        self.downloader = Some(downloader);
+        self
     }
 }
 

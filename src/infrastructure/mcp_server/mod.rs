@@ -373,7 +373,8 @@ impl McpHandler {
         }
 
         let client = self.state.container.http_client().client();
-        match crate::application::scraper_service::scrape_with_config(client, &url, &config, None)
+        let dl = self.state.downloader.as_deref();
+        match crate::application::scraper_service::scrape_with_config(client, &url, &config, dl)
             .await
         {
             Ok(results) => {
@@ -423,8 +424,9 @@ impl McpHandler {
         }
 
         let client = self.state.container.http_client().client();
+        let dl = self.state.downloader.as_deref();
         match crate::application::scraper_service::scrape_multiple_with_limit(
-            client, &urls, &config, None,
+            client, &urls, &config, dl,
         )
         .await
         {
