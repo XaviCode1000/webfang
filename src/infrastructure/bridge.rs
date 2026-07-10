@@ -83,8 +83,7 @@ impl CpuBridge {
         // The Instrumented wrapper attaches the current tracing span to the
         // blocking task. We intentionally drop it here because the task runs
         // fire-and-forget via a oneshot channel — the JoinHandle is not awaited.
-        #[allow(clippy::let_underscore_future)]
-        let _ = tokio::task::spawn_blocking(move || {
+        let handle = tokio::task::spawn_blocking(move || {
             let caught = catch_unwind(AssertUnwindSafe(move || pool.install(work)));
             let mapped: Result<R, ScraperError> = caught.map_err(|panic| {
                 let msg = panic_message(&*panic);
@@ -96,8 +95,12 @@ impl CpuBridge {
                     "canal CPU bridge descartado: tarea Tokio abortada antes de recibir el resultado"
                 );
             }
-        })
-        .in_current_span();
+        });
+        // Suppress clippy warning: this is fire-and-forget via oneshot channel.
+        // The span context is captured by in_current_span() before the handle
+        // is dropped — the spawned task still runs with the correct span.
+        #[allow(clippy::let_underscore_future)]
+        let _ = handle.in_current_span();
         rx
     }
 
