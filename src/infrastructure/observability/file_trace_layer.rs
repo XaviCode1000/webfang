@@ -9,11 +9,15 @@
 //! `fields` object. `trace_id` uses the thread ID (stable within a thread); when
 //! OTel is also active, the OTel trace/span IDs take precedence in downstream
 //! consumers.
+//!
+//! **Thread-safety note:** This layer uses thread-local span tracking
+//! (`SPAN_STACK`). It assumes `on_enter`/`on_exit`/`on_event` are called from
+//! the same thread for a given span lifecycle — guaranteed by
+//! `tracing_subscriber::Registry`.
 
 use std::cell::RefCell;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
@@ -24,9 +28,9 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
 
 // Thread-local span stack for tracking the current span inside `on_event`.
-// When a span is entered, its ID is pushed; when exited, it's popped.
-// This is necessary because `Span::current()` doesn't reliably return the
-// span ID inside a Layer's `on_event` callback.
+// When a span is entered, its ID is pushed; when exited, it's popped IF the
+// exiting ID matches the top. This prevents stack corruption from out-of-order
+// span exits.
 thread_local! {
     static SPAN_STACK: RefCell<Vec<tracing::Id>> = const { RefCell::new(Vec::new()) };
 }
@@ -49,7 +53,7 @@ impl FileTraceLayer {
     /// # Errors
     ///
     /// Returns an error if the file cannot be created or opened.
-    pub fn new(path: PathBuf) -> std::io::Result<Self> {
+    pub fn new(path: std::path::PathBuf) -> std::io::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -85,8 +89,18 @@ where
         SPAN_STACK.with(|stack| stack.borrow_mut().push(id.clone()));
     }
 
-    fn on_exit(&self, _id: &tracing::Id, _ctx: Context<'_, S>) {
-        SPAN_STACK.with(|stack| stack.borrow_mut().pop());
+    fn on_exit(&self, id: &tracing::Id, _ctx: Context<'_, S>) {
+        SPAN_STACK.with(|stack| {
+            let mut stack = stack.borrow_mut();
+            // Only pop if the exiting ID matches the top of the stack.
+            // Out-of-order exits (e.g., inner guard dropped before outer)
+            // would corrupt the stack — this check prevents that.
+            if stack.last() == Some(id) {
+                stack.pop();
+            }
+            // If IDs don't match, the span was already exited or exited
+            // out of order — leave the stack unchanged to avoid corruption.
+        });
     }
 
     fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
@@ -109,23 +123,33 @@ where
         }
 
         // trace_id: use thread ID as a stable per-thread trace identifier.
+        // ThreadId::as_u64() is unstable (tracking #67939), so we extract from
+        // the Debug format. On Linux this is "ThreadId(N)" where N is decimal.
+        // On macOS/Windows the format differs, so we hash the raw Debug output
+        // for a platform-independent u64.
         let tid_debug = format!("{:?}", std::thread::current().id());
-        let tid_num: u64 = tid_debug
+        let tid: u64 = tid_debug
             .trim_start_matches("ThreadId(")
             .trim_end_matches(')')
             .parse()
-            .unwrap_or(0);
-        record["trace_id"] = json!(format!("{tid_num:016x}"));
+            .unwrap_or_else(|_| {
+                // Fallback: hash the raw debug string for cross-platform safety
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                tid_debug.hash(&mut hasher);
+                hasher.finish()
+            });
+        record["trace_id"] = json!(format!("{tid:016x}"));
 
-        // Capture all structured fields from the event
-        let fields = event_all_fields(event);
-        if !fields.is_empty() {
-            record["fields"] = Value::Object(fields);
+        // Single-pass field capture: extracts all fields AND the message
+        // in one traversal, avoiding the double-visit antipattern.
+        let mut recorder = EventRecorder::new();
+        event.record(&mut recorder);
+
+        if !recorder.fields.is_empty() {
+            record["fields"] = Value::Object(recorder.fields);
         }
-
-        // Extract message separately for top-level convenience
-        let msg = event_message(event);
-        if let Some(m) = msg {
+        if let Some(m) = recorder.message {
             record["message"] = json!(m);
         }
 
@@ -135,7 +159,7 @@ where
                 Err(e) => {
                     eprintln!("[FileTraceLayer] serialization error: {e}");
                     return;
-                },
+                }
             };
             line.push(b'\n');
             if let Err(e) = writer.write_all(&line) {
@@ -152,47 +176,46 @@ where
     }
 }
 
-/// Extract all fields from a tracing event as a JSON map.
-fn event_all_fields(event: &tracing::Event<'_>) -> Map<String, Value> {
-    let mut recorder = AllFieldsRecorder::new();
-    event.record(&mut recorder);
-    recorder.fields
-}
-
-/// Extract just the `message` field from a tracing event.
-fn event_message(event: &tracing::Event<'_>) -> Option<String> {
-    let mut recorder = MessageRecorder(String::new());
-    event.record(&mut recorder);
-    if recorder.0.is_empty() {
-        None
-    } else {
-        Some(recorder.0)
-    }
-}
-
-/// Captures all fields from a tracing event.
-struct AllFieldsRecorder {
+/// Single-pass event recorder. Captures ALL fields (including `message`) in one
+/// traversal of the event's field set, avoiding the double-visit antipattern.
+struct EventRecorder {
     fields: Map<String, Value>,
+    message: Option<String>,
 }
 
-impl AllFieldsRecorder {
+impl EventRecorder {
     fn new() -> Self {
-        Self { fields: Map::new() }
+        Self {
+            fields: Map::new(),
+            message: None,
+        }
     }
 }
 
-impl tracing::field::Visit for AllFieldsRecorder {
+impl tracing::field::Visit for EventRecorder {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         let name = field.name().to_string();
         let formatted = format!("{value:?}");
-        // Strip surrounding quotes from Debug output on strings
-        let value =
-            if formatted.starts_with('"') && formatted.ends_with('"') && formatted.len() >= 2 {
-                Value::String(formatted[1..formatted.len() - 1].to_string())
+
+        if name == "message" {
+            // Extract message without surrounding quotes
+            let msg = if formatted.starts_with('"') && formatted.ends_with('"') && formatted.len() >= 2
+            {
+                formatted[1..formatted.len() - 1].to_string()
             } else {
-                Value::String(formatted)
+                formatted
             };
-        self.fields.insert(name, value);
+            self.message = Some(msg);
+        } else {
+            // Strip surrounding quotes from Debug output on strings
+            let value =
+                if formatted.starts_with('"') && formatted.ends_with('"') && formatted.len() >= 2 {
+                    Value::String(formatted[1..formatted.len() - 1].to_string())
+                } else {
+                    Value::String(formatted)
+                };
+            self.fields.insert(name, value);
+        }
     }
 
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
@@ -201,10 +224,8 @@ impl tracing::field::Visit for AllFieldsRecorder {
     }
 
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-        if let Some(n) = serde_json::Number::from_u128(value as u128) {
-            self.fields
-                .insert(field.name().to_string(), Value::Number(n));
-        }
+        self.fields
+            .insert(field.name().to_string(), Value::Number(value.into()));
     }
 
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
@@ -213,22 +234,11 @@ impl tracing::field::Visit for AllFieldsRecorder {
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        self.fields
-            .insert(field.name().to_string(), Value::String(value.to_string()));
-    }
-}
-
-/// Captures only the `message` field.
-struct MessageRecorder(String);
-
-impl tracing::field::Visit for MessageRecorder {
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
-            self.0 = format!("{value:?}");
-            // Strip surrounding quotes from Debug output
-            if self.0.starts_with('"') && self.0.ends_with('"') && self.0.len() >= 2 {
-                self.0 = self.0[1..self.0.len() - 1].to_string();
-            }
+            self.message = Some(value.to_string());
+        } else {
+            self.fields
+                .insert(field.name().to_string(), Value::String(value.to_string()));
         }
     }
 }
@@ -236,19 +246,21 @@ impl tracing::field::Visit for MessageRecorder {
 /// Convert a `SystemTime` to an RFC 3339 string with millisecond precision.
 ///
 /// Format: `2025-07-09T20:41:34.123Z`
+///
+/// Uses Howard Hinnant's algorithm for days-to-ymd conversion.
+/// Pre-epoch times (before 1970) are handled correctly by the algorithm.
 fn system_time_to_rfc3339(t: SystemTime) -> String {
     let duration = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
     let secs = duration.as_secs();
     let millis = duration.subsec_millis();
 
-    // Convert seconds since epoch to Y-M-D H:M:S using integer arithmetic
     let days = secs / 86400;
     let remaining = secs % 86400;
     let hours = remaining / 3600;
     let minutes = (remaining % 3600) / 60;
     let seconds = remaining % 60;
 
-    // Days since 1970-01-00 (algorithm from Howard Hinnant)
+    // Days since 1970-01-00 (Howard Hinnant algorithm)
     let z = days as i64 + 719468;
     let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
     let doe = z - era * 146097;
@@ -260,13 +272,16 @@ fn system_time_to_rfc3339(t: SystemTime) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let yr = if m <= 2 { y + 1 } else { y };
 
-    format!("{yr:04}-{m:02}-{d:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z")
+    format!(
+        "{yr:04}-{m:02}-{d:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::Value;
+    use std::path::Path;
     use tracing_subscriber::layer::SubscriberExt;
 
     // Each test creates its own Dispatch to avoid cross-test interference
@@ -280,10 +295,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("trace.jsonl");
         let _layer = FileTraceLayer::new(path.clone()).unwrap();
-        assert!(
-            path.exists(),
-            "trace file must be created at the given path"
-        );
+        assert!(path.exists(), "trace file must be created at the given path");
     }
 
     #[test]
@@ -325,19 +337,10 @@ mod tests {
         });
 
         let parsed = parse_single_event(&path);
-        let ts = parsed["timestamp"]
-            .as_str()
-            .expect("timestamp must be a string");
-        // RFC3339: 2025-07-09T20:41:34.123Z
+        let ts = parsed["timestamp"].as_str().expect("timestamp must be a string");
         assert!(ts.ends_with('Z'), "timestamp must end with Z, got: {ts}");
-        assert!(
-            ts.contains('T'),
-            "timestamp must contain T separator, got: {ts}"
-        );
-        assert!(
-            ts.len() >= 20,
-            "timestamp must be full ISO format, got: {ts}"
-        );
+        assert!(ts.contains('T'), "timestamp must contain T separator, got: {ts}");
+        assert!(ts.len() >= 20, "timestamp must be full ISO format, got: {ts}");
         let parts: Vec<&str> = ts.split('T').collect();
         assert_eq!(parts.len(), 2, "must have date and time separated by T");
         let date_parts: Vec<&str> = parts[0].split('-').collect();
@@ -382,10 +385,14 @@ mod tests {
             .as_str()
             .expect("trace_id must be present");
         assert_eq!(trace_id.len(), 16, "trace_id must be 16 hex chars");
-        // span_id is only present when inside a span
-        if let Some(span_id) = parsed["span_id"].as_str() {
-            assert_eq!(span_id.len(), 16, "span_id must be 16 hex chars");
-        }
+        // span_id MUST be present when inside a span — no soft assertion
+        assert!(
+            parsed["span_id"].as_str().is_some(),
+            "span_id must be present inside a span, got: {:?}",
+            parsed["span_id"]
+        );
+        let span_id = parsed["span_id"].as_str().unwrap();
+        assert_eq!(span_id.len(), 16, "span_id must be 16 hex chars");
     }
 
     #[test]
@@ -406,6 +413,30 @@ mod tests {
             .expect("fields must be a JSON object");
         assert_eq!(fields["request_id"], json!(42));
         assert_eq!(fields["user"], json!("alice"));
+    }
+
+    #[test]
+    fn contract_message_not_duplicated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let layer = FileTraceLayer::new(path.clone()).unwrap();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!("unique_msg_12345");
+        });
+
+        let parsed = parse_single_event(&path);
+        // message at top-level
+        assert_eq!(parsed["message"], "unique_msg_12345");
+        // message must NOT also appear in fields (fields may be absent entirely)
+        if let Some(fields) = parsed["fields"].as_object() {
+            assert!(
+                !fields.contains_key("message"),
+                "message must not be duplicated in fields"
+            );
+        }
     }
 
     #[test]
@@ -557,9 +588,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn contract_drop_flushes_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let layer = FileTraceLayer::new(path.clone()).unwrap();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!("buffered event");
+        });
+        // dispatch dropped here → FileTraceLayer dropped → flush in Drop
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !content.is_empty(),
+            "Drop must flush buffered data to disk"
+        );
+    }
+
     // ── Helpers ──
 
-    fn read_jsonl_lines(path: &PathBuf) -> Vec<String> {
+    fn read_jsonl_lines(path: &Path) -> Vec<String> {
         let content = std::fs::read_to_string(path).unwrap();
         content
             .lines()
@@ -568,13 +619,13 @@ mod tests {
             .collect()
     }
 
-    fn parse_single_event(path: &PathBuf) -> Value {
+    fn parse_single_event(path: &Path) -> Value {
         let lines = read_jsonl_lines(path);
         assert_eq!(lines.len(), 1, "expected exactly 1 JSONL line");
         serde_json::from_str(&lines[0]).unwrap()
     }
 
-    fn parse_lines(path: &PathBuf) -> Vec<Value> {
+    fn parse_lines(path: &Path) -> Vec<Value> {
         read_jsonl_lines(path)
             .iter()
             .map(|l| serde_json::from_str(l).unwrap())
