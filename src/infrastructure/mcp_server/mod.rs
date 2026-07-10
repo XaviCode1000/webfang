@@ -373,7 +373,10 @@ impl McpHandler {
         }
 
         let client = self.state.container.http_client().client();
-        match crate::application::scraper_service::scrape_with_config(client, &url, &config).await {
+        let dl = self.state.downloader.as_deref();
+        match crate::application::scraper_service::scrape_with_config(client, &url, &config, dl)
+            .await
+        {
             Ok(results) => {
                 let content = serde_json::to_string_pretty(&results)
                     .unwrap_or_else(|_| "failed to serialize".into());
@@ -421,8 +424,9 @@ impl McpHandler {
         }
 
         let client = self.state.container.http_client().client();
+        let dl = self.state.downloader.as_deref();
         match crate::application::scraper_service::scrape_multiple_with_limit(
-            client, &urls, &config,
+            client, &urls, &config, dl,
         )
         .await
         {
@@ -1399,9 +1403,12 @@ impl McpHandler {
         let download_images = params.images.unwrap_or(true);
         let download_documents = params.documents.unwrap_or(false);
 
-        // TODO: Wire up actual asset downloading from scraper_service
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Asset download queued: images={download_images}, documents={download_documents}, base={base_url}"
+        // TODO(#170): Wire up actual asset downloading via shared Downloader
+        // For now, return an explicit "not implemented" error instead of fake success
+        Ok(CallToolResult::error(vec![Content::text(format!(
+            "download_assets not yet implemented (see #170). \
+             Use scrape_url with download_images=true instead. \
+             Requested: images={download_images}, documents={download_documents}, base={base_url}"
         ))]))
     }
 }

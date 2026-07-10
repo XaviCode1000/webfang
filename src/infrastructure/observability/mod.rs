@@ -33,7 +33,7 @@ pub mod otel;
 #[cfg(feature = "otel-metrics")]
 pub mod metrics_instruments;
 
-#[cfg(feature = "otel-metrics")]
+#[cfg(feature = "otel")]
 pub mod trace_correlation;
 
 /// Initialize tokio-console for runtime debugging
@@ -65,5 +65,5 @@ pub use otel::{OtelConfig, OtelGuard};
 #[cfg(feature = "otel-metrics")]
 pub use otel::init_otel_metrics;
 
-#[cfg(feature = "otel-metrics")]
+#[cfg(feature = "otel")]
 pub use trace_correlation::trace_correlation_layer;

@@ -97,6 +97,7 @@ pub async fn scrape_urls(
     scraper_config: &ScraperConfig,
     opts: &CrawlOptions,
     progress_tx: Option<mpsc::Sender<ScrapeProgress>>,
+    downloader: Option<&crate::adapters::downloader::Downloader>,
 ) -> (Vec<ScrapedContent>, Vec<(String, String)>) {
     // Early return if --force-js-render is requested (Phase 2 feature)
     if opts.network.force_js_render {
@@ -194,7 +195,9 @@ pub async fn scrape_urls(
             }
         }
 
-        match scrape_single_url_for_tui(http_client.client(), &url, scraper_config).await {
+        match scrape_single_url_for_tui(http_client.client(), &url, scraper_config, downloader)
+            .await
+        {
             Ok(content) => {
                 let chars = content.content.chars().count();
                 results.push(content);

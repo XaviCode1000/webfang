@@ -171,7 +171,7 @@ pub async fn scrape_with_readability(
     client: &dyn HttpClientPort,
     url: &url::Url,
 ) -> Result<Vec<ScrapedContent>> {
-    scrape_with_config(client, url, &ScraperConfig::default()).await
+    scrape_with_config(client, url, &ScraperConfig::default(), None).await
 }
 
 /// Scrape a URL with asset downloading configuration
@@ -189,7 +189,7 @@ pub async fn scrape_with_readability(
 /// connection errors.
 #[instrument(
     name = "scrape_with_config",
-    skip(client, config),
+    skip(client, config, downloader),
     fields(
         url = %url,
         has_downloads = config.has_downloads()
@@ -199,6 +199,7 @@ pub async fn scrape_with_config(
     client: &dyn HttpClientPort,
     url: &url::Url,
     config: &ScraperConfig,
+    downloader: Option<&crate::adapters::downloader::Downloader>,
 ) -> Result<Vec<ScrapedContent>> {
     let mut results = Vec::new();
 
@@ -259,7 +260,7 @@ pub async fn scrape_with_config(
     // Try Readability first, fallback to plain text extraction
     match crate::infrastructure::scraper::readability::parse(&extraction_html, Some(url.as_str())) {
         Ok(article) => {
-            let assets = download_assets_if_enabled(&html, url, config).await?;
+            let assets = download_assets_if_enabled(&html, url, config, downloader).await?;
 
             // SPA detection: check if extracted content is minimal
             if let Some(spa_info) = detect_spa_content(url.as_str(), &article.text_content, &html) {
@@ -297,7 +298,7 @@ pub async fn scrape_with_config(
             warn!("⚠️  Readability failed for {}: {}", url, e);
             let fallback_content =
                 crate::infrastructure::scraper::fallback::extract_text(&extraction_html);
-            let assets = download_assets_if_enabled(&html, url, config).await?;
+            let assets = download_assets_if_enabled(&html, url, config, downloader).await?;
 
             // SPA detection: check if fallback content is minimal
             if let Some(spa_info) = detect_spa_content(url.as_str(), &fallback_content, &html) {
@@ -371,6 +372,7 @@ pub async fn scrape_multiple_with_limit(
     client: &dyn HttpClientPort,
     urls: &[url::Url],
     config: &ScraperConfig,
+    downloader: Option<&crate::adapters::downloader::Downloader>,
 ) -> Result<Vec<ScrapedContent>> {
     if urls.is_empty() {
         return Ok(Vec::new());
@@ -385,7 +387,7 @@ pub async fn scrape_multiple_with_limit(
     let results: Vec<Result<Vec<ScrapedContent>>> = stream::iter(urls.to_vec())
         .map(|url| {
             let config = config.clone();
-            async move { scrape_with_config(client, &url, &config).await }
+            async move { scrape_with_config(client, &url, &config, downloader).await }
         })
         .buffer_unordered(config.scraper_concurrency)
         .collect()
@@ -409,11 +411,13 @@ pub async fn scrape_multiple_with_limit(
 
 /// Helper: Download assets if config has downloads enabled
 ///
-/// Delegates to infrastructure layer for actual downloading.
+/// Uses the adapters `Downloader` (streaming, pooled client, ~8KB RAM).
+/// Falls back to no-op when feature gates are disabled.
 pub(crate) async fn download_assets_if_enabled(
     _html: &str,
     _base_url: &url::Url,
-    _config: &ScraperConfig,
+    _config: &crate::ScraperConfig,
+    shared_downloader: Option<&crate::adapters::downloader::Downloader>,
 ) -> Result<Vec<DownloadedAsset>> {
     if !_config.has_downloads() {
         return Ok(Vec::new());
@@ -421,8 +425,74 @@ pub(crate) async fn download_assets_if_enabled(
 
     #[cfg(any(feature = "images", feature = "documents"))]
     {
-        crate::infrastructure::scraper::asset_download::download_all(_html, _base_url, _config)
-            .await
+        // Use shared downloader when provided; create a fallback one otherwise
+        let owned_downloader;
+        let downloader = match shared_downloader {
+            Some(dl) => dl,
+            None => {
+                owned_downloader = crate::adapters::downloader::Downloader::new(
+                    _config.to_download_config(),
+                )?;
+                &owned_downloader
+            },
+        };
+
+        // Extract URLs from HTML
+        let mut urls: Vec<String> = Vec::new();
+        {
+            let document = scraper::Html::parse_document(_html);
+            if _config.download_images {
+                let images = crate::extractor::extract_images(&document, _base_url);
+                urls.extend(images.into_iter().map(|a| a.url));
+            }
+            if _config.download_documents {
+                let docs = crate::extractor::extract_documents(&document, _base_url);
+                urls.extend(docs.into_iter().map(|a| a.url));
+            }
+        }
+
+        if urls.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Deduplicate URLs to avoid downloading the same asset multiple times
+        // (e.g., same image referenced from multiple <img> tags).
+        use std::collections::HashSet;
+        let mut seen = HashSet::with_capacity(urls.len());
+        urls.retain(|url| seen.insert(url.clone()));
+
+        tracing::info!(
+            "📦 Downloading {} assets via adapters::Downloader",
+            urls.len()
+        );
+
+        let results = downloader.download_batch(&urls).await;
+
+        // Convert adapters::DownloadedAsset → domain::DownloadedAsset
+        let mut assets = Vec::new();
+        for result in results {
+            match result {
+                Ok(asset) => {
+                    let asset_type = crate::adapters::detector::detect_from_url(&asset.url);
+                    let asset_type_str = match asset_type {
+                        crate::adapters::detector::AssetType::Image => "image",
+                        crate::adapters::detector::AssetType::Document => "document",
+                        crate::adapters::detector::AssetType::Unknown => "unknown",
+                    };
+                    assets.push(DownloadedAsset {
+                        url: asset.url,
+                        local_path: asset.local_path.to_string_lossy().into_owned(),
+                        asset_type: asset_type_str.to_string(),
+                        size: asset.size,
+                    });
+                },
+                Err(e) => {
+                    tracing::warn!("Failed to download asset: {}", e);
+                },
+            }
+        }
+
+        Ok(assets)
     }
 
     #[cfg(not(any(feature = "images", feature = "documents")))]
@@ -446,7 +516,7 @@ mod tests {
             Err(HttpError::Connection("no route to host".into())),
         );
 
-        let result = scrape_with_config(&mock, &url, &config).await;
+        let result = scrape_with_config(&mock, &url, &config, None).await;
         assert!(result.is_err(), "connection error should propagate as Err");
     }
 
@@ -821,7 +891,7 @@ mod tests {
             );
 
         let config = ScraperConfig::default();
-        let result = scrape_multiple_with_limit(&mock, &[url1, url2], &config)
+        let result = scrape_multiple_with_limit(&mock, &[url1, url2], &config, None)
             .await
             .expect("scrape_multiple_with_limit should succeed");
 
@@ -832,7 +902,7 @@ mod tests {
     async fn test_scrape_multiple_with_limit_empty_urls() {
         let mock = MockHttpClient::new();
         let config = ScraperConfig::default();
-        let result = scrape_multiple_with_limit(&mock, &[], &config)
+        let result = scrape_multiple_with_limit(&mock, &[], &config, None)
             .await
             .expect("empty URL list should return Ok");
         assert!(result.is_empty());
@@ -967,7 +1037,7 @@ mod tests {
             .with_response(url_fail.as_str(), Err(HttpError::ClientError(404)));
 
         let config = ScraperConfig::default();
-        let result = scrape_multiple_with_limit(&mock, &[url_ok, url_fail], &config)
+        let result = scrape_multiple_with_limit(&mock, &[url_ok, url_fail], &config, None)
             .await
             .expect("should not fail overall even with partial URL failures");
 

@@ -1,6 +1,6 @@
 # CI/CD Pipeline for rust_scraper — Tiered Feedback
 #
-# Strategy: 4-tier pipeline with needs gates.
+# Strategy: Tiered pipeline with needs gates.
 # Each tier only runs if the previous tier PASSED.
 # Developer gets feedback in <30s (toolchain), <60s (fmt), <3min (clippy), <8min (full).
 #
@@ -71,44 +71,13 @@ jobs:
           fi
 
   # ============================================================================
-  # AUTOFIX: Auto-format and auto-fix clippy before gates run.
-  # Only on PRs — pushes to main/develop are trusted.
-  # If fixes are made, commits and pushes them, which re-triggers CI.
-  # ============================================================================
-  autofix:
-    name: Auto-fix fmt + clippy
-    needs: [toolchain]
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - name: Auto-format
-        run: cargo fmt --all
-      - name: Auto-fix clippy
-        run: cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged -- -D warnings
-      - name: Commit fixes if any
-        run: |
-          git diff --quiet && exit 0
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "style: auto-fix fmt + clippy"
-          git push
-
-  # ============================================================================
   # TIER 1: FORMAT GATE (30-60 seconds)
   # No compilation needed — instant feedback on style.
   # If this fails, NOTHING else runs.
   # ============================================================================
   fmt:
     name: Check formatting
-    needs: [autofix]
+    needs: [toolchain]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -129,11 +98,10 @@ jobs:
   # ============================================================================
   # TIER 2: CLIPPY GATE (2-3 minutes)
   # Compiles once + lints. If this fails, tests don't run.
-  # Uses sccache for artifact caching across runs.
   # ============================================================================
   clippy:
     name: Clippy (strict)
-    needs: [autofix, fmt]
+    needs: [fmt]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -163,7 +131,7 @@ jobs:
         run: cargo nextest run --test '*' --test-threads 4 --retries 2
 
   # ============================================================================
-  # TIER 3: TEST FULL (4-6 minutes)
+  # TIER 4: TEST FULL (4-6 minutes)
   # All features enabled. Gate: must pass before MCP + release.
   # ============================================================================
   test-full:
@@ -284,7 +252,7 @@ jobs:
   #   3. Matrix: tests split into parallel groups so ALL failures surface
   #      in ONE run instead of blocking on the first UB.
   #   4. Sysroot cache: cargo miri setup drops from ~15min to ~2s warm.
-  #   5. Tree Borrows: aliasing model that tolerates sound-en-practice patterns
+  #   5. Tree Borrows: aliasing model that tolerates sound-in-practice patterns
   #      (ahash, dashmap, smallvec) while still detecting real UB.
   #      If a specific test fails under Tree Borrows, isolate it with
   #      #[cfg(not(miri))] — never disable aliasing detection globally.

@@ -7,6 +7,7 @@
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
+use crate::adapters::downloader::Downloader;
 use crate::di::Container;
 
 /// Per-category semaphore limits for backpressure.
@@ -58,9 +59,12 @@ pub struct McpState {
     pub limits: Arc<CategoryLimits>,
     /// Semaphores for each category
     pub semaphores: Arc<CategorySemaphores>,
+    /// Shared Downloader for connection pooling across MCP tool calls
+    pub downloader: Option<Arc<Downloader>>,
 }
 
 /// Semaphore instances for each tool category.
+#[derive(Debug)]
 pub struct CategorySemaphores {
     pub ai: Arc<Semaphore>,
     pub scraping: Arc<Semaphore>,
@@ -81,6 +85,7 @@ impl McpState {
             container: Arc::new(container),
             limits,
             semaphores,
+            downloader: None,
         }
     }
 
@@ -92,21 +97,31 @@ impl McpState {
             container: Arc::new(container),
             limits,
             semaphores,
+            downloader: None,
         }
+    }
+
+    /// Set a shared Downloader for connection pooling across tool calls.
+    #[must_use]
+    pub fn with_downloader(mut self, downloader: Arc<Downloader>) -> Self {
+        self.downloader = Some(downloader);
+        self
     }
 }
 
 impl CategorySemaphores {
     fn from_limits(limits: &CategoryLimits) -> Self {
+        // Clamp to >= 1 to prevent deadlock from zero-permit semaphores
+        let clamp = |v: usize| v.max(1);
         Self {
-            ai: Arc::new(Semaphore::new(limits.ai)),
-            scraping: Arc::new(Semaphore::new(limits.scraping)),
-            export: Arc::new(Semaphore::new(limits.export)),
-            obsidian: Arc::new(Semaphore::new(limits.obsidian)),
-            content: Arc::new(Semaphore::new(limits.content)),
-            url_utils: Arc::new(Semaphore::new(limits.url_utils)),
-            security: Arc::new(Semaphore::new(limits.security)),
-            assets: Arc::new(Semaphore::new(limits.assets)),
+            ai: Arc::new(Semaphore::new(clamp(limits.ai))),
+            scraping: Arc::new(Semaphore::new(clamp(limits.scraping))),
+            export: Arc::new(Semaphore::new(clamp(limits.export))),
+            obsidian: Arc::new(Semaphore::new(clamp(limits.obsidian))),
+            content: Arc::new(Semaphore::new(clamp(limits.content))),
+            url_utils: Arc::new(Semaphore::new(clamp(limits.url_utils))),
+            security: Arc::new(Semaphore::new(clamp(limits.security))),
+            assets: Arc::new(Semaphore::new(clamp(limits.assets))),
         }
     }
 }

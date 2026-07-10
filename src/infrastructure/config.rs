@@ -7,7 +7,9 @@
 // Output Format
 // ============================================================================
 
+use crate::adapters::downloader::AssetNamingStrategy;
 use clap::ValueEnum;
+use wreq_util::Profile;
 
 /// Output format for scraped content.
 ///
@@ -77,10 +79,23 @@ pub struct ScraperConfig {
     pub download_timeout_secs: u64,
     /// Maximum concurrent scrapers (default: 3 for HDD-aware on 4C CPU)
     pub scraper_concurrency: usize,
+    /// Maximum concurrent asset downloads per page (default: 3)
+    ///
+    /// Separate from `scraper_concurrency` because asset downloads have a
+    /// different I/O profile (bandwidth + disk writes vs. network + parsing).
+    pub download_concurrency: usize,
     /// Maximum pages to scrape (None = unlimited)
     pub max_pages: Option<usize>,
     /// CSS selector for content extraction (default: "body")
     pub selector: String,
+    /// H2/TLS profile for asset downloads
+    pub asset_h2_profile: Profile,
+    /// URL glob patterns to include for asset downloads (empty = allow all)
+    pub asset_include_patterns: Vec<String>,
+    /// URL glob patterns to exclude for asset downloads (always applied)
+    pub asset_exclude_patterns: Vec<String>,
+    /// Strategy for naming downloaded asset files
+    pub asset_naming: AssetNamingStrategy,
 }
 
 impl Default for ScraperConfig {
@@ -92,8 +107,13 @@ impl Default for ScraperConfig {
             max_file_size: Some(50 * 1024 * 1024), // 50MB default
             download_timeout_secs: 30,
             scraper_concurrency: 3, // HDD-aware: nproc - 1 for 4C CPU
+            download_concurrency: 3, // Asset downloads: bandwidth + disk I/O
             max_pages: None,
             selector: "body".to_owned(),
+            asset_h2_profile: Profile::Chrome145,
+            asset_include_patterns: Vec::new(),
+            asset_exclude_patterns: Vec::new(),
+            asset_naming: AssetNamingStrategy::Hash,
         }
     }
 }
@@ -148,9 +168,34 @@ impl ScraperConfig {
         self
     }
 
+    /// Set download concurrency limit (assets per page).
+    #[must_use]
+    pub fn with_download_concurrency(mut self, concurrency: usize) -> Self {
+        self.download_concurrency = concurrency;
+        self
+    }
+
     /// Check if any download is enabled.
     pub fn has_downloads(&self) -> bool {
         self.download_images || self.download_documents
+    }
+
+    /// Build a `DownloadConfig` from this scraper configuration.
+    ///
+    /// This is the single source of truth for mapping ScraperConfig → DownloadConfig,
+    /// eliminating duplication between the orchestrator and fallback paths.
+    pub fn to_download_config(&self) -> crate::adapters::downloader::DownloadConfig {
+        crate::adapters::downloader::DownloadConfig {
+            output_dir: self.output_dir.clone(),
+            timeout_secs: self.download_timeout_secs,
+            max_file_size: self.max_file_size.unwrap_or(50 * 1024 * 1024),
+            concurrency_limit: self.download_concurrency,
+            include_patterns: self.asset_include_patterns.clone(),
+            exclude_patterns: self.asset_exclude_patterns.clone(),
+            h2_profile: self.asset_h2_profile,
+            asset_naming: self.asset_naming,
+            ..Default::default()
+        }
     }
 
     /// Set maximum page limit.
@@ -164,6 +209,34 @@ impl ScraperConfig {
     #[must_use]
     pub fn with_selector(mut self, selector: String) -> Self {
         self.selector = selector;
+        self
+    }
+
+    /// Set H2/TLS profile for asset downloads.
+    #[must_use]
+    pub fn with_asset_h2_profile(mut self, v: Profile) -> Self {
+        self.asset_h2_profile = v;
+        self
+    }
+
+    /// Set URL glob patterns to include for asset downloads.
+    #[must_use]
+    pub fn with_asset_include_patterns(mut self, v: Vec<String>) -> Self {
+        self.asset_include_patterns = v;
+        self
+    }
+
+    /// Set URL glob patterns to exclude for asset downloads.
+    #[must_use]
+    pub fn with_asset_exclude_patterns(mut self, v: Vec<String>) -> Self {
+        self.asset_exclude_patterns = v;
+        self
+    }
+
+    /// Set strategy for naming downloaded asset files.
+    #[must_use]
+    pub fn with_asset_naming(mut self, v: AssetNamingStrategy) -> Self {
+        self.asset_naming = v;
         self
     }
 }

@@ -142,29 +142,18 @@ pub fn init_logging_dual(
         .with_target(true)
         .pretty();
 
-    // OTel layer must be added directly on Registry, before EnvFilter
-    #[cfg(feature = "otel-metrics")]
-    {
-        use crate::infrastructure::observability::trace_correlation::trace_correlation_layer;
-        tracing_subscriber::registry()
-            .with(otel_layer)
-            .with(trace_correlation_layer())
-            .with(file_trace_layer)
-            .with(filter)
-            .with(fmt_layer)
-            .try_init()
-            .ok();
-    }
-    #[cfg(not(feature = "otel-metrics"))]
-    {
-        tracing_subscriber::registry()
-            .with(otel_layer)
-            .with(file_trace_layer)
-            .with(filter)
-            .with(fmt_layer)
-            .try_init()
-            .ok();
-    }
+    // OTel layer must be added directly on Registry, before EnvFilter.
+    // trace_correlation injects trace_id/span_id into JSON log events —
+    // available whenever otel is active (not just otel-metrics).
+    use crate::infrastructure::observability::trace_correlation::trace_correlation_layer;
+    tracing_subscriber::registry()
+        .with(otel_layer)
+        .with(trace_correlation_layer())
+        .with(file_trace_layer)
+        .with(filter)
+        .with(fmt_layer)
+        .try_init()
+        .ok();
 }
 
 #[cfg(test)]

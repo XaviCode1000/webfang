@@ -13,15 +13,31 @@
 //! - **Hash On-The-Fly**: SHA256 computed during streaming, no buffer needed
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::error::{Result, ScraperError};
-use futures::stream::{self, StreamExt};
+use futures::stream::StreamExt;
 use sha2::{Digest, Sha256};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 use wreq::{Client, Response};
-use wreq_util::Emulation;
+use wreq_util::Profile;
+
+/// Strategy for generating downloaded asset filenames.
+///
+/// # Variants
+///
+/// - `Hash` — SHA-256 hash of content (first 12 hex chars). Dedup-friendly.
+/// - `Slug` — Last path segment of the URL (e.g. `rust-book.pdf`).
+/// - `ContentDisposition` — `filename=` from `Content-Disposition` header, falls back to `Hash`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AssetNamingStrategy {
+    #[default]
+    Hash,
+    Slug,
+    ContentDisposition,
+}
 
 /// Result of a successful download
 #[derive(Debug)]
@@ -55,6 +71,20 @@ pub struct DownloadConfig {
     pub concurrency_limit: usize,
     /// User-Agent string for HTTP requests
     pub user_agent: String,
+    /// URL glob patterns to include (empty = allow all)
+    pub include_patterns: Vec<String>,
+    /// URL glob patterns to exclude (always applied)
+    pub exclude_patterns: Vec<String>,
+    /// TLS/HTTP2 fingerprint profile
+    pub h2_profile: Profile,
+    /// Strategy for naming downloaded asset files
+    pub asset_naming: AssetNamingStrategy,
+    /// Maximum number of retry attempts for transient network errors
+    pub max_retries: u32,
+    /// Base delay for exponential backoff in milliseconds
+    pub backoff_base_ms: u64,
+    /// Maximum delay for exponential backoff in milliseconds
+    pub backoff_max_ms: u64,
 }
 
 impl Default for DownloadConfig {
@@ -67,6 +97,13 @@ impl Default for DownloadConfig {
             timeout_secs: 30,
             concurrency_limit: 3,
             user_agent: format!("WebCrawlerStaticPages/{}", env!("CARGO_PKG_VERSION")),
+            include_patterns: Vec::new(),
+            exclude_patterns: Vec::new(),
+            h2_profile: Profile::Chrome145,
+            asset_naming: AssetNamingStrategy::default(),
+            max_retries: 3,
+            backoff_base_ms: 1000,
+            backoff_max_ms: 10_000,
         }
     }
 }
@@ -75,6 +112,14 @@ impl Default for DownloadConfig {
 pub struct Downloader {
     client: Client,
     config: DownloadConfig,
+}
+
+impl std::fmt::Debug for Downloader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Downloader")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Downloader {
@@ -104,8 +149,8 @@ impl Downloader {
         })?;
 
         let client = Client::builder()
-            .emulation(Emulation::Chrome145)
-            .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            .emulation(config.h2_profile)
+            .timeout(Duration::from_secs(config.timeout_secs))
             .user_agent(&config.user_agent)
             .build()
             .map_err(|e| ScraperError::Config(format!("failed to build http client: {e}")))?;
@@ -122,6 +167,7 @@ impl Downloader {
     /// - Computes hash on-the-fly
     /// - Atomic rename on success
     /// - Cleanup temp file on failure
+    /// - Retry with exponential backoff on transient network errors
     ///
     /// # Errors
     ///
@@ -129,18 +175,76 @@ impl Downloader {
     /// Returns `ScraperError::Io` if file operations fail.
     /// Returns `ScraperError::Download` if file exceeds size limit.
     pub async fn download(&self, url: &str) -> Result<DownloadedAsset> {
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| ScraperError::Network(e.to_string()))?;
+        let mut last_err = None;
+
+        for attempt in 0..=self.config.max_retries {
+            if attempt > 0 {
+                let delay = compute_backoff_delay(
+                    attempt,
+                    self.config.backoff_base_ms,
+                    self.config.backoff_max_ms,
+                );
+                tracing::debug!(
+                    "retry {attempt}/{} for {} after {}ms",
+                    self.config.max_retries,
+                    url,
+                    delay.as_millis()
+                );
+                tokio::time::sleep(delay).await;
+            }
+
+            match self.download_once(url).await {
+                Ok(asset) => return Ok(asset),
+                Err(e) => {
+                    if !is_transient_error(&e) || attempt == self.config.max_retries {
+                        return Err(e);
+                    }
+                    last_err = Some(e);
+                },
+            }
+        }
+
+        // Unreachable: loop always returns on last attempt, but required for type inference
+        Err(last_err
+            .unwrap_or_else(|| ScraperError::download("exhausted retries with no error captured")))
+    }
+
+    /// Single download attempt (no retry).
+    async fn download_once(&self, url: &str) -> Result<DownloadedAsset> {
+        let response = self.client.get(url).send().await.map_err(|e| {
+            let transient = e.is_timeout() || e.is_connect() || e.is_connection_reset();
+            ScraperError::Network(format!(
+                "{}{}",
+                if transient { "TRANSIENT:" } else { "" },
+                e
+            ))
+        })?;
+
+        // Fail-fast on 4xx (client errors). 5xx (server errors) are transient and will be retried.
+        let status = response.status();
+        if status.is_client_error() {
+            return Err(ScraperError::Download(format!(
+                "HTTP {} al descargar {}",
+                status, url
+            )));
+        }
+        if status.is_server_error() {
+            // Mark as transient so retry logic will retry on 5xx
+            return Err(ScraperError::Network(format!("TRANSIENT:HTTP {}", status)));
+        }
 
         let mime_type = response
             .headers()
             .get(wreq::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(String::from);
+
+        // Extract Content-Disposition filename before consuming response
+        let content_disposition_filename = response
+            .headers()
+            .get(wreq::header::CONTENT_DISPOSITION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_content_disposition_header);
 
         let asset_type = crate::adapters::detector::detect_from_url(url);
         let subdir = if asset_type.is_image() {
@@ -163,7 +267,14 @@ impl Downloader {
         let mut hasher = Sha256::new();
 
         while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| ScraperError::Network(e.to_string()))?;
+            let chunk = chunk_result.map_err(|e| {
+                let transient = e.is_timeout() || e.is_connect() || e.is_connection_reset();
+                ScraperError::Network(format!(
+                    "{}{}",
+                    if transient { "TRANSIENT:" } else { "" },
+                    e
+                ))
+            })?;
             if chunk.is_empty() {
                 continue;
             }
@@ -171,11 +282,11 @@ impl Downloader {
             let chunk_len = chunk.len() as u64;
             downloaded = downloaded
                 .checked_add(chunk_len)
-                .ok_or_else(|| ScraperError::download("Integer overflow in download size"))?;
+                .ok_or_else(|| ScraperError::download("integer overflow in download size"))?;
 
             // Check limit in real-time
             if downloaded > self.config.max_file_size {
-                // Cleanup temp file on failure (err-cleanup-on-fail)
+                // Cleanup temp file on failure
                 let _ = fs::remove_file(&temp_path).await;
                 return Err(ScraperError::download(format!(
                     "file too large: {} bytes (max: {} bytes)",
@@ -194,10 +305,34 @@ impl Downloader {
 
         // Calculate hash and generate final filename
         let content_hash = format!("{:x}", hasher.finalize());
-        let filename = self.generate_filename_from_hash(&content_hash, mime_type.as_deref());
-        let final_path = subdir_path.join(&filename);
+        let filename = self.generate_filename(
+            url,
+            &content_hash,
+            mime_type.as_deref(),
+            content_disposition_filename.as_deref(),
+        );
+        let mut final_path = subdir_path.join(&filename);
 
-        // Atomic rename (atomic-operations pattern)
+        // Slug/ContentDisposition naming can collide when different URLs produce
+        // the same filename. Append a short hash suffix to disambiguate.
+        if final_path.exists() {
+            let hash_suffix = &content_hash[..8];
+            let stem = final_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("file");
+            let ext = final_path
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            if ext.is_empty() {
+                final_path = subdir_path.join(format!("{stem}-{hash_suffix}"));
+            } else {
+                final_path = subdir_path.join(format!("{stem}-{hash_suffix}.{ext}"));
+            }
+        }
+
+        // Atomic rename
         fs::rename(&temp_path, &final_path)
             .await
             .map_err(ScraperError::Io)?;
@@ -214,37 +349,229 @@ impl Downloader {
     }
 
     /// Download multiple assets with configurable concurrency control.
+    ///
+    /// Filters URLs against `include_patterns` / `exclude_patterns` before downloading.
+    /// Returns partial results — individual failures don't abort the batch.
     pub async fn download_batch(&self, urls: &[String]) -> Vec<Result<DownloadedAsset>> {
         if urls.is_empty() {
             return Vec::new();
         }
 
-        let tasks = urls.iter().map(|url| {
-            let url = url.clone();
-            async move { self.download(&url).await }
-        });
+        let filtered: Vec<String> = urls
+            .iter()
+            .filter(|url| {
+                url_matches_filters(
+                    url,
+                    &self.config.include_patterns,
+                    &self.config.exclude_patterns,
+                )
+            })
+            .cloned()
+            .collect();
 
-        let results: Vec<Result<DownloadedAsset>> = stream::iter(tasks)
-            .buffer_unordered(self.config.concurrency_limit)
-            .collect()
-            .await;
+        if filtered.is_empty() {
+            return Vec::new();
+        }
 
+        let concurrency = self.config.concurrency_limit;
+        let mut results = Vec::with_capacity(filtered.len());
+        let mut futs = Vec::with_capacity(filtered.len());
+        for url in &filtered {
+            futs.push(self.download(url));
+        }
+        let stream = futures::stream::iter(futs).buffer_unordered(concurrency);
+        results.extend(stream.collect::<Vec<_>>().await);
         results
     }
 
-    /// Generate filename from content hash and MIME type.
-    fn generate_filename_from_hash(&self, content_hash: &str, mime_type: Option<&str>) -> String {
+    /// Generate filename according to the configured naming strategy.
+    fn generate_filename(
+        &self,
+        url: &str,
+        content_hash: &str,
+        mime_type: Option<&str>,
+        content_disposition_filename: Option<&str>,
+    ) -> String {
         let extension =
             mime_type_to_extension(mime_type.unwrap_or("")).unwrap_or_else(|| "bin".into());
 
-        // Use first 12 characters of hash (96 bits of entropy)
-        format!("{}.{}", &content_hash[..12], extension)
+        let base_name = match self.config.asset_naming {
+            AssetNamingStrategy::Hash => {
+                // Use first 12 characters of hash (96 bits of entropy)
+                format!("{}.{}", &content_hash[..12], extension)
+            },
+            AssetNamingStrategy::Slug => {
+                let slug = derive_slug_from_url(url);
+                let name = sanitize_filename(&slug);
+                if name.is_empty() {
+                    // Fallback to hash if slug is empty
+                    format!("{}.{}", &content_hash[..12], extension)
+                } else {
+                    // Preserve original extension from slug if present, otherwise use MIME
+                    let slug_ext = name.rsplit('.').next().unwrap_or("");
+                    if !slug_ext.is_empty() && slug_ext != name {
+                        sanitize_filename(&name)
+                    } else {
+                        format!("{}.{}", name, extension)
+                    }
+                }
+            },
+            AssetNamingStrategy::ContentDisposition => {
+                if let Some(name) = content_disposition_filename {
+                    let sanitized = sanitize_filename(name);
+                    if !sanitized.is_empty() {
+                        sanitized
+                    } else {
+                        format!("{}.{}", &content_hash[..12], extension)
+                    }
+                } else {
+                    format!("{}.{}", &content_hash[..12], extension)
+                }
+            },
+        };
+
+        base_name
     }
 }
 
 /// Convert a Response into a stream of bytes
 fn into_stream(response: Response) -> impl StreamExt<Item = wreq::Result<bytes::Bytes>> {
     response.bytes_stream()
+}
+
+/// Check if a URL matches include/exclude filters.
+///
+/// If `include_patterns` is empty, all URLs pass the include check.
+/// `exclude_patterns` are always applied (deny wins).
+fn url_matches_filters(url: &str, includes: &[String], excludes: &[String]) -> bool {
+    if excludes.iter().any(|p| pattern_matches_asset(url, p)) {
+        return false;
+    }
+    if includes.is_empty() {
+        return true;
+    }
+    includes.iter().any(|p| pattern_matches_asset(url, p))
+}
+
+/// Match a URL against a pattern, supporting both extension globs (`*.pdf`)
+/// and the standard host/path glob from `domain::pattern_matching`.
+fn pattern_matches_asset(url: &str, pattern: &str) -> bool {
+    let p = pattern.trim();
+    // Extension glob: *.ext (but NOT host globs like *.example.com which contain a dot after the prefix)
+    if let Some(ext) = p.strip_prefix("*.") {
+        if !ext.is_empty() && !ext.contains('.') {
+            if let Ok(u) = url::Url::parse(url) {
+                let last = u.path().rsplit('/').next().unwrap_or("");
+                let low = last.to_ascii_lowercase();
+                let ext_low = ext.to_ascii_lowercase();
+                return low.ends_with(&format!(".{ext_low}"));
+            }
+        }
+    }
+    crate::domain::matches_pattern(url, pattern)
+}
+
+/// Check if an error is transient (worth retrying).
+fn is_transient_error(err: &ScraperError) -> bool {
+    if let ScraperError::Network(msg) = err {
+        msg.starts_with("TRANSIENT:")
+            || msg.to_ascii_lowercase().contains("timeout")
+            || msg.contains("timed out")
+            || msg.contains("connection reset")
+            || msg.contains("connection refused")
+            || msg.contains("broken pipe")
+            || msg.contains("connection closed")
+            || msg.contains("connection aborted")
+            || msg.contains("reset by peer")
+    } else {
+        false
+    }
+}
+
+/// Compute exponential backoff delay with jitter.
+fn compute_backoff_delay(attempt: u32, base_ms: u64, max_ms: u64) -> Duration {
+    use rand::Rng;
+    use std::cmp::min;
+
+    // Exponential: base * 2^(attempt-1), clamped to max. Shift is capped at 62
+    // to avoid panic from shifting u64 by >= 64 bits (attempt=1 is shift=0).
+    let shift = (attempt - 1).min(62);
+    let delay_ms = min(base_ms.saturating_mul(1u64 << shift), max_ms);
+    // Add jitter: 75%-125% of delay, then clamp final result to max_ms
+    let jitter = delay_ms / 4;
+    let offset = rand::rng().random_range(0..=jitter.saturating_mul(2));
+    let final_ms = min(
+        delay_ms.saturating_sub(jitter).saturating_add(offset),
+        max_ms,
+    );
+    Duration::from_millis(final_ms)
+}
+
+/// Derive a slug from the last path segment of a URL.
+fn derive_slug_from_url(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| {
+            let path = u.path();
+            path.rsplit('/')
+                .next()
+                .filter(|s| !s.is_empty() && *s != "/")
+                .map(String::from)
+        })
+        .unwrap_or_default()
+}
+
+/// UTF-8 safe percent-decoding for Content-Disposition filenames.
+/// Uses the `percent-encoding` crate for correct handling of truncated
+/// sequences, multi-byte chars, and all edge cases in RFC 5987/3986.
+fn percent_decode_utf8(input: &str) -> String {
+    percent_encoding::percent_decode_str(input)
+        .decode_utf8_lossy()
+        .into_owned()
+}
+
+/// Sanitize a filename: remove path separators and null bytes.
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .filter(|c| *c != '/' && *c != '\\' && *c != '\0')
+        .collect()
+}
+
+/// Parse `filename=` from a Content-Disposition header value.
+///
+/// RFC 6266 / 5987: parameter names are case-insensitive. We lowercase
+/// the header value before matching to handle `Filename=`, `FILENAME=`, etc.
+fn parse_content_disposition_header(value: &str) -> Option<String> {
+    let lower = value.to_ascii_lowercase();
+
+    // Try filename*=utf-8''encoded first (RFC 5987)
+    if let Some(start) = lower.find("filename*=utf-8''") {
+        let encoded = &value[start + "filename*=utf-8''".len()..];
+        let name: String = encoded
+            .chars()
+            .take_while(|c| *c != ';' && *c != ' ')
+            .collect();
+        let decoded = percent_decode_utf8(&name);
+        return Some(decoded);
+    }
+
+    // Try filename="name" or filename=name (case-insensitive)
+    let after = lower.find("filename=")?;
+    let rest = &value[after + "filename=".len()..];
+    let name = if let Some(inner) = rest.strip_prefix('"') {
+        // Quoted: filename="name.pdf"
+        let end = inner.find('"')?;
+        &inner[..end]
+    } else {
+        // Unquoted: filename=name.pdf
+        rest.split(';').next().unwrap_or(rest).trim()
+    };
+
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
 }
 
 /// MIME type to file extension mapping
@@ -390,7 +717,7 @@ mod tests {
 
     #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
     #[test]
-    fn test_generate_filename_from_hash() {
+    fn test_generate_filename_hash_strategy() {
         let temp_dir = TempDir::new().unwrap();
         let config = DownloadConfig {
             output_dir: temp_dir.path().to_path_buf(),
@@ -398,7 +725,12 @@ mod tests {
         };
         let downloader = Downloader::new(config).unwrap();
 
-        let filename = downloader.generate_filename_from_hash("abc123def456789", Some("image/png"));
+        let filename = downloader.generate_filename(
+            "https://example.com/img.png",
+            "abc123def456789",
+            Some("image/png"),
+            None,
+        );
         assert!(
             filename.ends_with(".png"),
             "Expected .png but got: {}",
@@ -409,12 +741,159 @@ mod tests {
             "Filename should start with first 12 chars of hash"
         );
 
-        let filename = downloader.generate_filename_from_hash("xyz789abc123456", None);
+        let filename =
+            downloader.generate_filename("https://example.com/file", "xyz789abc123456", None, None);
         assert!(
             filename.ends_with(".bin"),
             "Expected .bin but got: {}",
             filename
         );
+    }
+
+    #[test]
+    fn test_generate_filename_slug_strategy() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = DownloadConfig {
+            output_dir: temp_dir.path().to_path_buf(),
+            asset_naming: AssetNamingStrategy::Slug,
+            ..Default::default()
+        };
+        let downloader = Downloader::new(config).unwrap();
+
+        let filename = downloader.generate_filename(
+            "https://example.com/docs/rust-book.pdf",
+            "abc123def456789",
+            Some("application/pdf"),
+            None,
+        );
+        assert_eq!(filename, "rust-book.pdf");
+    }
+
+    #[test]
+    fn test_generate_filename_content_disposition() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = DownloadConfig {
+            output_dir: temp_dir.path().to_path_buf(),
+            asset_naming: AssetNamingStrategy::ContentDisposition,
+            ..Default::default()
+        };
+        let downloader = Downloader::new(config).unwrap();
+
+        let filename = downloader.generate_filename(
+            "https://example.com/download",
+            "abc123def456789",
+            Some("application/pdf"),
+            Some("annual-report.pdf"),
+        );
+        assert_eq!(filename, "annual-report.pdf");
+    }
+
+    #[test]
+    fn test_generate_filename_content_disposition_fallback() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = DownloadConfig {
+            output_dir: temp_dir.path().to_path_buf(),
+            asset_naming: AssetNamingStrategy::ContentDisposition,
+            ..Default::default()
+        };
+        let downloader = Downloader::new(config).unwrap();
+
+        // No Content-Disposition → falls back to hash
+        let filename = downloader.generate_filename(
+            "https://example.com/download",
+            "abc123def456789",
+            Some("application/pdf"),
+            None,
+        );
+        assert!(filename.starts_with("abc123def456"));
+    }
+
+    #[test]
+    fn test_url_matches_filters_empty_includes() {
+        assert!(url_matches_filters(
+            "https://example.com/file.pdf",
+            &[],
+            &[]
+        ));
+    }
+
+    #[test]
+    fn test_url_matches_filters_exclude_wins() {
+        let excludes = vec!["/*.pdf".to_string()];
+        assert!(!url_matches_filters(
+            "https://example.com/file.pdf",
+            &[],
+            &excludes
+        ));
+    }
+
+    #[test]
+    fn test_url_matches_filters_include_only() {
+        let includes = vec!["/*.pdf".to_string()];
+        assert!(url_matches_filters(
+            "https://example.com/file.pdf",
+            &includes,
+            &[]
+        ));
+        assert!(!url_matches_filters(
+            "https://example.com/file.jpg",
+            &includes,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn test_url_matches_filters_extension_glob() {
+        let includes = vec!["*.pdf".to_string()];
+        assert!(url_matches_filters(
+            "https://x.com/file.pdf",
+            &includes,
+            &[]
+        ));
+        assert!(!url_matches_filters(
+            "https://x.com/file.jpg",
+            &includes,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn test_sanitize_filename() {
+        assert_eq!(sanitize_filename("hello/world"), "helloworld");
+        assert_eq!(sanitize_filename("file\0name"), "filename");
+        assert_eq!(sanitize_filename("normal-file.pdf"), "normal-file.pdf");
+    }
+
+    #[test]
+    fn test_parse_content_disposition_quoted() {
+        let val = r#"attachment; filename="report.pdf""#;
+        assert_eq!(
+            parse_content_disposition_header(val),
+            Some("report.pdf".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_content_disposition_unquoted() {
+        let val = "attachment; filename=report.pdf";
+        assert_eq!(
+            parse_content_disposition_header(val),
+            Some("report.pdf".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_content_disposition_missing() {
+        assert_eq!(parse_content_disposition_header("attachment"), None);
+    }
+
+    #[test]
+    fn test_derive_slug_from_url() {
+        assert_eq!(
+            derive_slug_from_url("https://example.com/docs/book.pdf"),
+            "book.pdf"
+        );
+        assert_eq!(derive_slug_from_url("https://example.com/"), "");
     }
 
     #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
