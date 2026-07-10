@@ -373,7 +373,9 @@ impl McpHandler {
         }
 
         let client = self.state.container.http_client().client();
-        match crate::application::scraper_service::scrape_with_config(client, &url, &config).await {
+        match crate::application::scraper_service::scrape_with_config(client, &url, &config, None)
+            .await
+        {
             Ok(results) => {
                 let content = serde_json::to_string_pretty(&results)
                     .unwrap_or_else(|_| "failed to serialize".into());
@@ -422,7 +424,7 @@ impl McpHandler {
 
         let client = self.state.container.http_client().client();
         match crate::application::scraper_service::scrape_multiple_with_limit(
-            client, &urls, &config,
+            client, &urls, &config, None,
         )
         .await
         {

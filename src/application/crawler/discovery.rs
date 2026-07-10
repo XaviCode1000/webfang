@@ -435,13 +435,13 @@ pub async fn discover_urls_for_tui(
 ///     Url::parse("https://example.com/2")?,
 /// ];
 /// let config = ScraperConfig::default();
-/// let results = scrape_urls_for_tui(&urls, &config).await?;
+/// let results = scrape_urls_for_tui(&urls, &config, None).await?;
 /// # Ok(())
 /// # }
 /// ```
 #[instrument(
     name = "scrape_urls_for_tui",
-    skip(urls, config),
+    skip(urls, config, downloader),
     fields(
         url_count = urls.len(),
         concurrency = config.scraper_concurrency,
@@ -451,6 +451,7 @@ pub async fn discover_urls_for_tui(
 pub async fn scrape_urls_for_tui(
     urls: &[Url],
     config: &ScraperConfig,
+    downloader: Option<&crate::adapters::downloader::Downloader>,
 ) -> ScraperResult<Vec<ScrapedContent>> {
     use futures::stream::{self, StreamExt};
 
@@ -464,7 +465,7 @@ pub async fn scrape_urls_for_tui(
     // Stream processing with concurrency control
     // Following async-no-lock-across-await: buffer_unordered handles concurrency
     let results = stream::iter(urls)
-        .map(|url| async { scrape_single_url_for_tui(&client, url, config).await })
+        .map(|url| async { scrape_single_url_for_tui(&client, url, config, downloader).await })
         .buffered(config.scraper_concurrency)
         .collect::<Vec<_>>()
         .await;
@@ -490,13 +491,14 @@ pub async fn scrape_urls_for_tui(
 /// * `Err(ScraperError)` - Error during scraping
 #[instrument(
     name = "scrape_single_url",
-    skip(client, config),
+    skip(client, config, downloader),
     fields(url = %url)
 )]
 pub async fn scrape_single_url_for_tui(
     client: &wreq::Client,
     url: &Url,
     config: &ScraperConfig,
+    downloader: Option<&crate::adapters::downloader::Downloader>,
 ) -> ScraperResult<ScrapedContent> {
     let span = span!(Level::DEBUG, "scrape_single", url = %url);
     let _guard = span.enter();
@@ -572,9 +574,10 @@ pub async fn scrape_single_url_for_tui(
             None
         };
 
-        let assets =
-            crate::application::scraper_service::download_assets_if_enabled("", url, config)
-                .await?;
+        let assets = crate::application::scraper_service::download_assets_if_enabled(
+            "", url, config, downloader,
+        )
+        .await?;
 
         let content = if let Some(ref path) = saved_path {
             format!("[Binary file saved: {}] {}", path.display(), url.as_str())
@@ -626,9 +629,10 @@ pub async fn scrape_single_url_for_tui(
             #[cfg(feature = "otel-metrics")]
             CRAWLER_PAGES.add(1, &[opentelemetry::KeyValue::new("method", "readability")]);
 
-            let assets =
-                crate::application::scraper_service::download_assets_if_enabled(&html, url, config)
-                    .await?;
+            let assets = crate::application::scraper_service::download_assets_if_enabled(
+                &html, url, config, downloader,
+            )
+            .await?;
 
             Ok(ScrapedContent {
                 title: crate::application::resolve_title(&article.title, url),
@@ -663,9 +667,10 @@ pub async fn scrape_single_url_for_tui(
                 });
             }
 
-            let assets =
-                crate::application::scraper_service::download_assets_if_enabled(&html, url, config)
-                    .await?;
+            let assets = crate::application::scraper_service::download_assets_if_enabled(
+                &html, url, config, downloader,
+            )
+            .await?;
 
             #[cfg(feature = "otel-metrics")]
             CRAWLER_PAGES.add(1, &[opentelemetry::KeyValue::new("method", "fallback")]);

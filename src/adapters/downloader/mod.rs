@@ -260,8 +260,7 @@ impl Downloader {
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| {
-                let transient =
-                    e.is_timeout() || e.is_connect() || e.is_connection_reset();
+                let transient = e.is_timeout() || e.is_connect() || e.is_connection_reset();
                 ScraperError::Network(format!(
                     "{}{}",
                     if transient { "TRANSIENT:" } else { "" },
