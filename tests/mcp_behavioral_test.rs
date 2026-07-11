@@ -7,6 +7,8 @@
 //!
 //! Run with: cargo nextest run --test mcp_behavioral_test
 
+#![cfg(feature = "mcp")]
+
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;

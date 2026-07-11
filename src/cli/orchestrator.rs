@@ -39,7 +39,7 @@ pub fn handle_completions(shell: Shell) -> CliExit {
 /// 1. URL discovery
 /// 2. Scraping with progress
 /// 3. Export results
-#[instrument(level = "info", skip_all)]
+#[instrument(level = "info", skip(opts), fields(url = %opts.url))]
 pub async fn run(opts: CrawlOptions) -> CliExit {
     // Dry-run mode: list planned URLs without any network requests
     if opts.export.dry_run {
@@ -231,7 +231,7 @@ pub async fn run(opts: CrawlOptions) -> CliExit {
         output_dir: opts.export.output_dir.clone(),
         format: opts.export.output_format,
         export_format: opts.export.export_format,
-        clean_ai: false, // TODO: wire from CrawlOptions when AI settings are added
+        clean_ai: opts.ai,
         quick_save: opts.export.quick_save,
         vault_path: opts.export.obsidian_vault.as_ref(),
         obsidian_options: obsidian_options.clone(),

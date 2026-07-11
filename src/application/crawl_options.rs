@@ -30,6 +30,8 @@ pub struct CrawlOptions {
     pub verbosity: u8,
     /// Quiet mode — suppress info/debug output.
     pub quiet: bool,
+    /// Enable AI-powered semantic cleaning (semantic_cleaner / ONNX, requires `ai` feature).
+    pub ai: bool,
     /// Crawl scope and discovery settings.
     pub crawl: CrawlLimits,
     /// HTTP and network settings.
@@ -252,6 +254,7 @@ impl Default for CrawlOptions {
             url,
             verbosity: 0,
             quiet: false,
+            ai: false,
             crawl: CrawlLimits::default(),
             network: NetworkOptions::default(),
             export: ExportOptions::default(),

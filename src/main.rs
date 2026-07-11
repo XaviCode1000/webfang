@@ -146,7 +146,7 @@ fn prompt_for_url() -> Result<String, CliExit> {
 }
 
 #[tokio::main]
-async fn main() -> CliExit {
+pub async fn main() -> CliExit {
     // Suppress OTel background thread panics during Tokio runtime shutdown.
     // The BatchSpanProcessor and PeriodicReader threads panic when the reactor
     // drops before they finish — this is a known SDK limitation, not our bug.

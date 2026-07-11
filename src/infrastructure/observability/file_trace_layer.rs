@@ -109,6 +109,21 @@ where
         });
     }
 
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        id: &tracing::Id,
+        ctx: Context<'_, S>,
+    ) {
+        // Capture the span's structured fields at creation time so they can be
+        // serialized into the JSONL later (S2 offline visibility).
+        let mut recorder = EventRecorder::new();
+        attrs.record(&mut recorder);
+        if let Some(span_ref) = ctx.span(id) {
+            span_ref.extensions_mut().insert(recorder);
+        }
+    }
+
     fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
         let meta = event.metadata();
 
@@ -125,6 +140,22 @@ where
             if let Some(span_ref) = ctx.span(id) {
                 record["span"] = json!(span_ref.name());
                 record["span_id"] = json!(format!("{:016x}", id.into_u64()));
+
+                // Capture span fields from the CURRENT span AND its parents (the
+                // scope), so the root span's fields (e.g. the seed URL) become
+                // visible offline without an external OTel collector (S2).
+                // Child fields take precedence on key collision.
+                let mut span_fields: Map<String, Value> = Map::new();
+                for ancestor in span_ref.scope() {
+                    if let Some(rec) = ancestor.extensions().get::<EventRecorder>() {
+                        for (k, v) in &rec.fields {
+                            span_fields.entry(k.clone()).or_insert(v.clone());
+                        }
+                    }
+                }
+                if !span_fields.is_empty() {
+                    record["span_fields"] = Value::Object(span_fields);
+                }
             }
         }
 
@@ -225,6 +256,7 @@ fn otel_trace_id() -> Option<String> {
 
 /// Single-pass event recorder. Captures ALL fields (including `message`) in one
 /// traversal of the event's field set, avoiding the double-visit antipattern.
+#[derive(Clone)]
 struct EventRecorder {
     fields: Map<String, Value>,
     message: Option<String>,
@@ -506,6 +538,40 @@ mod tests {
         assert!(
             parsed["span_id"].is_string(),
             "span_id must be present inside a span"
+        );
+    }
+
+    #[test]
+    fn contract_captures_span_fields_from_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let layer = FileTraceLayer::new(path.clone()).unwrap();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            // Root span carries the seed URL — the key field for offline
+            // telemetry (S2). A nested child adds its own field.
+            let root = tracing::info_span!("root_span", seed_url = "https://example.com");
+            let _rg = root.enter();
+            let child = tracing::info_span!("child_span", depth = 1);
+            let _cg = child.enter();
+            tracing::info!("inside child");
+        });
+
+        let parsed = parse_single_event(&path);
+        let span_fields = parsed["span_fields"]
+            .as_object()
+            .expect("span_fields must be present when a span has fields");
+        assert_eq!(
+            span_fields["seed_url"],
+            json!("https://example.com"),
+            "root span seed_url must be captured via the span scope"
+        );
+        assert_eq!(
+            span_fields["depth"],
+            json!(1),
+            "child span field must also be captured"
         );
     }
 

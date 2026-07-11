@@ -186,6 +186,11 @@ pub struct Args {
     #[clap(next_help_heading = "Behavior")]
     pub download_documents: bool,
 
+    /// Download all assets (images + documents) from the page
+    #[arg(long, default_value = "false", env = "RUST_SCRAPER_DOWNLOAD_ASSETS")]
+    #[clap(next_help_heading = "Behavior")]
+    pub download_assets: bool,
+
     /// Unified TUI mode: config form (collapsible sections) → URL selector → scraping
     #[arg(long, env = "RUST_SCRAPER_TUI")]
     #[clap(next_help_heading = "Behavior")]
@@ -203,7 +208,12 @@ pub struct Args {
 
     /// Use AI-powered semantic cleaning for better RAG output
     #[cfg(feature = "ai")]
-    #[arg(long, default_value = "false", env = "RUST_SCRAPER_CLEAN_AI")]
+    #[arg(
+        long,
+        default_value = "false",
+        visible_alias = "ai",
+        env = "RUST_SCRAPER_CLEAN_AI"
+    )]
     #[clap(next_help_heading = "Behavior")]
     pub clean_ai: bool,
 
@@ -213,6 +223,7 @@ pub struct Args {
         long,
         default_value = "false",
         hide = true,
+        visible_alias = "ai",
         env = "RUST_SCRAPER_CLEAN_AI"
     )]
     pub clean_ai: bool,
@@ -548,6 +559,7 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
             url,
             verbosity: args.verbose,
             quiet: args.quiet,
+            ai: args.clean_ai,
             crawl: CrawlLimits {
                 selector: args.selector,
                 max_depth: args.max_depth,
@@ -575,8 +587,8 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
                 max_retries: args.max_retries,
                 backoff_base_ms: args.backoff_base_ms,
                 backoff_max_ms: args.backoff_max_ms,
-                download_images: args.download_images,
-                download_documents: args.download_documents,
+                download_images: args.download_images || args.download_assets,
+                download_documents: args.download_documents || args.download_assets,
                 force_js_render: args.force_js_render,
                 h2_profile: args.h2_profile,
                 js_strategy: args.js_strategy,

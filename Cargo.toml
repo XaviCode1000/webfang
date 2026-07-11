@@ -11,6 +11,8 @@ documentation = "https://docs.rs/rust_scraper"
 keywords = ["scraper", "web", "crawler", "rag", "tui"]
 categories = ["command-line-utilities", "web-programming"]
 rust-version = "1.88"
+# Explicit binary targets only — avoids auto-discovery conflicts with src/bin/*
+autobins = false
 
 [package.metadata.cargo-machete]
 ignored = ["rustls-webpki", "time"]
@@ -53,6 +55,10 @@ otel-metrics = [
     "opentelemetry_sdk/rt-tokio",
     "opentelemetry-otlp/metrics",
 ]
+
+# MCP server (Model Context Protocol) — optional. Excluded from the lightweight
+# `rust_scraper_core` build to keep it small; enabled for the full binary.
+mcp = ["dep:rmcp", "dep:axum", "dep:tower-http", "dep:schemars"]
 
 [dependencies]
 # CLI - Argument parsing obligatorio
@@ -270,10 +276,10 @@ crc32fast = "1"             # Fast CRC32 checksums for content deduplication
 robotstxt = "0.3"           # robots.txt parsing and compliance
 
 # MCP Server (Model Context Protocol) — expose scraper tools to AI agents
-rmcp = { version = "1.7", features = ["server", "macros", "schemars", "transport-streamable-http-server"] }
-axum = "0.8"
-tower-http = { version = "0.6", features = ["trace"] }
-schemars = "1.0"
+rmcp = { version = "1.7", optional = true, features = ["server", "macros", "schemars", "transport-streamable-http-server"] }
+axum = { version = "0.8", optional = true }
+tower-http = { version = "0.6", optional = true, features = ["trace"] }
+schemars = { version = "1.0", optional = true }
 
 # Secrets protection (Phase 2: zeroize/secrecy)
 secrecy = { version = "0.8", features = ["serde"] }
@@ -322,6 +328,34 @@ harness = false
 [[bench]]
 name = "link_extraction"
 harness = false
+
+# MCP examples require the `mcp` feature (axum + mcp_server module).
+[[example]]
+name = "mcp_server"
+required-features = ["mcp"]
+
+[[example]]
+name = "mcp_server_stdio"
+required-features = ["mcp"]
+
+# ============================================================================
+# Dual build targets
+# ============================================================================
+# Full binary: includes the `ai` feature (ONNX semantic cleaning + SHA256
+# validated model). Build with:  cargo build --release --features ai
+#
+# Lightweight binary: default features ONLY (NO `ai`) for restricted/edge
+# environments. Built with the size-optimized `core` profile (opt-level="z",
+# lto=true) to stay under ~10 MB. Build with:
+#   cargo build --profile core --bin rust_scraper_core
+[[bin]]
+name = "rust_scraper"
+path = "src/main.rs"
+required-features = ["ai", "mcp"]
+
+[[bin]]
+name = "rust_scraper_core"
+path = "src/bin/rust_scraper_core.rs"
 
 [build-dependencies]
 built = { version = "0.7", features = ["git2", "chrono"] }
@@ -382,6 +416,17 @@ needless_pass_by_value = "allow"
 return_self_not_must_use = "allow"
 single_match_else = "allow"
 trivially_copy_pass_by_ref = "allow"
+
+# Size-optimized profile for the lightweight `rust_scraper_core` binary.
+# Inherits release settings but trades speed for minimum size
+# (opt-level="z" + full LTO) so the core artifact stays under ~10 MB.
+[profile.core]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
 
 
 

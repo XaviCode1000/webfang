@@ -6,6 +6,8 @@
 //! Run with: cargo nextest run --test-threads 2 mcp_proptest
 //! Run with AI: cargo nextest run --test-threads 2 --features ai mcp_proptest
 
+#![cfg(feature = "mcp")]
+
 use proptest::prelude::*;
 use url::Url;
 

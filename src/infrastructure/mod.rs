@@ -17,6 +17,7 @@ pub mod crawler;
 pub mod downloader;
 pub mod export;
 pub mod http;
+#[cfg(feature = "mcp")]
 pub mod mcp_server;
 pub mod network;
 pub mod observability;

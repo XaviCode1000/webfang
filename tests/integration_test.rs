@@ -74,6 +74,7 @@ fn test_args_has_required_fields() {
         max_pages: 5,
         download_images: false,
         download_documents: false,
+        download_assets: false,
         verbose: 2,
         concurrency: rust_scraper::ConcurrencyConfig::default(),
         use_sitemap: false,

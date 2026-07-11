@@ -5,6 +5,8 @@
 //!
 //! Run: cargo test --test mcp_lifecycle_test -- --nocapture
 
+#![cfg(feature = "mcp")]
+
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;

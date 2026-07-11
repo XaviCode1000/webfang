@@ -18,7 +18,7 @@ pub const DEFAULT_MODEL_FILE: &str = "model.onnx";
 
 /// Expected SHA256 for all-MiniLM-L6-v2 ONNX model
 pub const DEFAULT_MODEL_SHA256: &str =
-    "6d9d2f06f5e2e5e6f5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5";
+    "759c3cd2b7fe7e93933ad23c4c9181b7396442a2ed746ec7c1d46192c469c46e";
 
 /// Cache configuration
 ///

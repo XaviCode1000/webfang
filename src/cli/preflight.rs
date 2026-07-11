@@ -197,10 +197,9 @@ pub fn apply_tui_config(mut opts: CrawlOptions, config_values: &serde_json::Valu
         opts.export.quick_save = v;
     }
 
-    // AI: clean_ai (only applies when feature is enabled)
-    #[cfg(feature = "ai")]
-    if let Some(_v) = config_values.get("clean_ai").and_then(|v| v.as_bool()) {
-        // TODO: wire clean_ai into CrawlOptions when AI settings are added
+    // AI: clean_ai from config file → CrawlOptions.ai (wired to ExportConfig.clean_ai)
+    if let Some(v) = config_values.get("clean_ai").and_then(|v| v.as_bool()) {
+        opts.ai = v;
     }
 
     opts
