@@ -270,6 +270,8 @@ mod tests {
     use crate::infrastructure::cpu_pool::RayonCpuPool;
     use crate::infrastructure::crawler::resource_downloader::DownloadConfig;
     use std::collections::HashMap;
+    use std::future::Future;
+    use std::pin::Pin;
     use std::sync::{Arc, Mutex};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -293,61 +295,70 @@ mod tests {
     }
 
     impl VectorRepository for InMemoryRepo {
-        async fn save_resource(
-            &self,
-            url: &str,
-            title: &str,
-            content_hash: &str,
+        fn save_resource<'a>(
+            &'a self,
+            url: &'a str,
+            title: &'a str,
+            content_hash: &'a str,
             size_bytes: u64,
-        ) -> Result<String, ScraperError> {
-            let mut res = self.state.lock().expect("repo mutex poisoned");
-            if let Some((existing_url, _, _)) = res.resources.get(content_hash) {
-                return Ok(existing_url.clone());
-            }
-            res.resources.insert(
-                content_hash.to_string(),
-                (url.to_string(), title.to_string(), size_bytes),
-            );
-            Ok(url.to_string())
+        ) -> Pin<Box<dyn Future<Output = Result<String, ScraperError>> + Send + 'a>> {
+            Box::pin(async move {
+                let mut res = self.state.lock().expect("repo mutex poisoned");
+                if let Some((existing_url, _, _)) = res.resources.get(content_hash) {
+                    return Ok(existing_url.clone());
+                }
+                res.resources.insert(
+                    content_hash.to_string(),
+                    (url.to_string(), title.to_string(), size_bytes),
+                );
+                Ok(url.to_string())
+            })
         }
 
-        async fn save_chunk(
-            &self,
-            id: &str,
-            resource_url: &str,
+        fn save_chunk<'a>(
+            &'a self,
+            id: &'a str,
+            resource_url: &'a str,
             chunk_index: i64,
-            content: &str,
-            embedding: Option<&[f32]>,
-        ) -> Result<(), ScraperError> {
-            self.state
-                .lock()
-                .expect("repo mutex poisoned")
-                .chunks
-                .push((
-                    id.to_string(),
-                    resource_url.to_string(),
-                    chunk_index,
-                    content.to_string(),
-                    embedding.map(|e| e.to_vec()),
-                ));
-            Ok(())
+            content: &'a str,
+            embedding: Option<&'a [f32]>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), ScraperError>> + Send + 'a>> {
+            Box::pin(async move {
+                self.state
+                    .lock()
+                    .expect("repo mutex poisoned")
+                    .chunks
+                    .push((
+                        id.to_string(),
+                        resource_url.to_string(),
+                        chunk_index,
+                        content.to_string(),
+                        embedding.map(|e| e.to_vec()),
+                    ));
+                Ok(())
+            })
         }
 
-        async fn resource_exists_by_hash(
-            &self,
-            content_hash: &str,
-        ) -> Result<Option<String>, ScraperError> {
-            Ok(self
-                .state
-                .lock()
-                .expect("repo mutex poisoned")
-                .resources
-                .get(content_hash)
-                .map(|(u, _, _)| u.clone()))
+        fn resource_exists_by_hash<'a>(
+            &'a self,
+            content_hash: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Option<String>, ScraperError>> + Send + 'a>> {
+            Box::pin(async move {
+                Ok(self
+                    .state
+                    .lock()
+                    .expect("repo mutex poisoned")
+                    .resources
+                    .get(content_hash)
+                    .map(|(u, _, _)| u.clone()))
+            })
         }
 
-        async fn get_vector(&self, _chunk_id: &str) -> Result<Option<Vec<f32>>, ScraperError> {
-            Ok(None)
+        fn get_vector<'a>(
+            &'a self,
+            _chunk_id: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<f32>>, ScraperError>> + Send + 'a>> {
+            Box::pin(async move { Ok(None) })
         }
     }
 

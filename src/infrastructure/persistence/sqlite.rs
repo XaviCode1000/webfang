@@ -11,7 +11,9 @@
 //!   task's `idx_chunks_hash ON chunks(content_hash)` referenced a non-existent
 //!   column and would fail `setup_schema`.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 
 use deadpool_sqlite::{Config, Hook, HookError, Manager, Pool, Runtime};
 
@@ -230,134 +232,141 @@ fn bytes_to_f32_vec(b: &[u8]) -> Result<Vec<f32>, ScraperError> {
 // ============================================================================
 
 impl VectorRepository for SqliteVectorRepository {
-    async fn save_resource(
-        &self,
-        url: &str,
-        title: &str,
-        content_hash: &str,
+    fn save_resource<'a>(
+        &'a self,
+        url: &'a str,
+        title: &'a str,
+        content_hash: &'a str,
         size_bytes: u64,
-    ) -> Result<String, ScraperError> {
-        // Dedup short-circuit (frozen decision #3): if the content_hash already
-        // exists, return the existing URL and skip the INSERT (I/O saved).
-        if let Some(existing) = self.resource_exists_by_hash(content_hash).await? {
-            tracing::debug!(
-                content_hash,
-                existing_url = %existing,
-                "dedup: recurso ya persistido, omitiendo inserción"
-            );
-            return Ok(existing);
-        }
+    ) -> Pin<Box<dyn Future<Output = Result<String, ScraperError>> + Send + 'a>> {
+        Box::pin(async move {
+            // Dedup short-circuit (frozen decision #3): if the content_hash already
+            // exists, return the existing URL and skip the INSERT (I/O saved).
+            if let Some(existing) = self.resource_exists_by_hash(content_hash).await? {
+                tracing::debug!(
+                    content_hash,
+                    existing_url = %existing,
+                    "dedup: recurso ya persistido, omitiendo inserción"
+                );
+                return Ok(existing);
+            }
 
-        // Own all borrowed inputs: the `interact` closure must be `Send + 'static`
-        // and cannot borrow `&str` from this function's frame.
-        let url_owned = url.to_string();
-        let title_owned = title.to_string();
-        let hash_owned = content_hash.to_string();
-        let url_for_row = url_owned.clone();
+            // Own all borrowed inputs: the `interact` closure must be `Send + 'static`
+            // and cannot borrow `&str` from this function's frame.
+            let url_owned = url.to_string();
+            let title_owned = title.to_string();
+            let hash_owned = content_hash.to_string();
+            let url_for_row = url_owned.clone();
 
-        let conn =
-            self.pool.get().await.map_err(|e| {
+            let conn = self.pool.get().await.map_err(|e| {
                 ScraperError::persistence(format!("obtener conexión del pool: {e}"))
             })?;
-        conn.interact(move |c| {
-            c.execute(
-                "INSERT INTO resources \
-                 (url, title, content_hash, size_bytes, status, created_at, updated_at, metadata_json) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), datetime('now'), NULL)",
-                rusqlite::params![url_for_row, title_owned, hash_owned, size_bytes as i64, "active"],
-            )
+            conn.interact(move |c| {
+                c.execute(
+                    "INSERT INTO resources \
+                     (url, title, content_hash, size_bytes, status, created_at, updated_at, metadata_json) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), datetime('now'), NULL)",
+                    rusqlite::params![url_for_row, title_owned, hash_owned, size_bytes as i64, "active"],
+                )
+            })
+            .await
+            .map_err(|e| ScraperError::persistence(format!("save_resource (interact): {e}")))?
+            .map_err(|e| ScraperError::persistence(format!("save_resource: {e}")))?;
+            Ok(url_owned)
         })
-        .await
-        .map_err(|e| ScraperError::persistence(format!("save_resource (interact): {e}")))?
-        .map_err(|e| ScraperError::persistence(format!("save_resource: {e}")))?;
-        Ok(url_owned)
     }
 
-    async fn save_chunk(
-        &self,
-        id: &str,
-        resource_url: &str,
+    fn save_chunk<'a>(
+        &'a self,
+        id: &'a str,
+        resource_url: &'a str,
         chunk_index: i64,
-        content: &str,
-        embedding: Option<&[f32]>,
-    ) -> Result<(), ScraperError> {
-        // Pre-serialize the embedding to owned bytes: the `interact` closure must
-        // be `Send + 'static`, so it cannot borrow `&[f32]` from this frame.
-        let blob: Option<Vec<u8>> = embedding.map(f32_slice_to_bytes);
-        let id = id.to_string();
-        let resource_url = resource_url.to_string();
-        let content = content.to_string();
+        content: &'a str,
+        embedding: Option<&'a [f32]>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ScraperError>> + Send + 'a>> {
+        Box::pin(async move {
+            // Pre-serialize the embedding to owned bytes: the `interact` closure must
+            // be `Send + 'static`, so it cannot borrow `&[f32]` from this frame.
+            let blob: Option<Vec<u8>> = embedding.map(f32_slice_to_bytes);
+            let id = id.to_string();
+            let resource_url = resource_url.to_string();
+            let content = content.to_string();
 
-        let conn =
-            self.pool.get().await.map_err(|e| {
+            let conn = self.pool.get().await.map_err(|e| {
                 ScraperError::persistence(format!("obtener conexión del pool: {e}"))
             })?;
-        conn.interact(move |c| {
-            c.execute(
-                "INSERT INTO chunks \
-                 (id, resource_url, chunk_index, content, embedding_vector, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
-                rusqlite::params![id, resource_url, chunk_index, content, blob.as_deref()],
-            )
+            conn.interact(move |c| {
+                c.execute(
+                    "INSERT INTO chunks \
+                     (id, resource_url, chunk_index, content, embedding_vector, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
+                    rusqlite::params![id, resource_url, chunk_index, content, blob.as_deref()],
+                )
+            })
+            .await
+            .map_err(|e| ScraperError::persistence(format!("save_chunk (interact): {e}")))?
+            .map_err(|e| ScraperError::persistence(format!("save_chunk: {e}")))?;
+            Ok(())
         })
-        .await
-        .map_err(|e| ScraperError::persistence(format!("save_chunk (interact): {e}")))?
-        .map_err(|e| ScraperError::persistence(format!("save_chunk: {e}")))?;
-        Ok(())
     }
 
-    async fn resource_exists_by_hash(
-        &self,
-        content_hash: &str,
-    ) -> Result<Option<String>, ScraperError> {
-        let hash = content_hash.to_string();
-        let conn =
-            self.pool.get().await.map_err(|e| {
+    fn resource_exists_by_hash<'a>(
+        &'a self,
+        content_hash: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, ScraperError>> + Send + 'a>> {
+        Box::pin(async move {
+            let hash = content_hash.to_string();
+            let conn = self.pool.get().await.map_err(|e| {
                 ScraperError::persistence(format!("obtener conexión del pool: {e}"))
             })?;
-        let row: rusqlite::Result<String> = conn
-            .interact(move |c| {
-                c.query_row(
-                    "SELECT url FROM resources WHERE content_hash = ?1 LIMIT 1",
-                    rusqlite::params![hash],
-                    |row| row.get::<_, String>(0),
-                )
-            })
-            .await
-            .map_err(|e| {
-                ScraperError::persistence(format!("resource_exists_by_hash (interact): {e}"))
-            })?;
-        match row {
-            Ok(url) => Ok(Some(url)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(ScraperError::persistence(format!(
-                "resource_exists_by_hash: {e}"
-            ))),
-        }
+            let row: rusqlite::Result<String> = conn
+                .interact(move |c| {
+                    c.query_row(
+                        "SELECT url FROM resources WHERE content_hash = ?1 LIMIT 1",
+                        rusqlite::params![hash],
+                        |row| row.get::<_, String>(0),
+                    )
+                })
+                .await
+                .map_err(|e| {
+                    ScraperError::persistence(format!("resource_exists_by_hash (interact): {e}"))
+                })?;
+            match row {
+                Ok(url) => Ok(Some(url)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(ScraperError::persistence(format!(
+                    "resource_exists_by_hash: {e}"
+                ))),
+            }
+        })
     }
 
-    async fn get_vector(&self, chunk_id: &str) -> Result<Option<Vec<f32>>, ScraperError> {
-        let id = chunk_id.to_string();
-        let conn =
-            self.pool.get().await.map_err(|e| {
+    fn get_vector<'a>(
+        &'a self,
+        chunk_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<f32>>, ScraperError>> + Send + 'a>> {
+        Box::pin(async move {
+            let id = chunk_id.to_string();
+            let conn = self.pool.get().await.map_err(|e| {
                 ScraperError::persistence(format!("obtener conexión del pool: {e}"))
             })?;
-        let row: rusqlite::Result<Option<Vec<u8>>> = conn
-            .interact(move |c| {
-                c.query_row(
-                    "SELECT embedding_vector FROM chunks WHERE id = ?1 LIMIT 1",
-                    rusqlite::params![id],
-                    |row| row.get::<_, Option<Vec<u8>>>(0),
-                )
-            })
-            .await
-            .map_err(|e| ScraperError::persistence(format!("get_vector (interact): {e}")))?;
-        match row {
-            Ok(Some(bytes)) => Ok(Some(bytes_to_f32_vec(&bytes)?)),
-            Ok(None) => Ok(None),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(ScraperError::persistence(format!("get_vector: {e}"))),
-        }
+            let row: rusqlite::Result<Option<Vec<u8>>> = conn
+                .interact(move |c| {
+                    c.query_row(
+                        "SELECT embedding_vector FROM chunks WHERE id = ?1 LIMIT 1",
+                        rusqlite::params![id],
+                        |row| row.get::<_, Option<Vec<u8>>>(0),
+                    )
+                })
+                .await
+                .map_err(|e| ScraperError::persistence(format!("get_vector (interact): {e}")))?;
+            match row {
+                Ok(Some(bytes)) => Ok(Some(bytes_to_f32_vec(&bytes)?)),
+                Ok(None) => Ok(None),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(ScraperError::persistence(format!("get_vector: {e}"))),
+            }
+        })
     }
 }
 

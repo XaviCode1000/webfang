@@ -1,37 +1,24 @@
 //! Domain trait for vector persistence (dependency inversion).
 //!
-//! Defines the persistence contract used by the elastic ingestion pipeline
-//! (PR4+). The infrastructure layer
+//! Defines the persistence contract used by the elastic ingestion pipeline.
+//! The infrastructure layer
 //! ([`crate::infrastructure::persistence::sqlite::SqliteVectorRepository`])
-//! implements this trait; the application layer (PR5 orchestrator) depends on
-//! the trait — not the concrete repo — so SQLite can be swapped or mocked
-//! without touching orchestration logic.
+//! implements this trait; the application layer depends on the trait — not the
+//! concrete repo — so SQLite can be swapped or mocked without touching
+//! orchestration logic.
 //!
-//! Per frozen design decision #8 this lives in its own module (`repository`,
-//! singular), separate from the legacy [`crate::domain::repositories`]
-//! `CrawlResultRepository`. Consolidation is tracked as a future cleanup.
+//! # Dyn-compatibility (A1 desugar — core-slimming)
 //!
-//! # Async note (forward-looking caveat)
-//!
-//! This trait uses native `async fn` in traits (stable since Rust 1.75) instead
-//! of the `async_trait` proc-macro — the project does not depend on
-//! `async_trait` and adding a dependency requires maintainer approval.
-//! Consequently the per-method return futures are **not** `Send` by default and
-//! the trait is **not** `dyn`-compatible. PR4 tests await these methods on the
-//! owning task (no cross-thread send), which works. If PR5 needs to
-//! `tokio::spawn` a task that awaits these methods, or needs `dyn
-//! VectorRepository` dispatch, it must either (a) await on the spawning task,
-//! (b) add the `async_trait` crate with maintainer approval, or (c) desugar the
-//! methods to `Pin<Box<dyn Future + Send>>`. See PR4 apply-progress for the full
-//! tradeoff analysis.
+//! The four trait methods use manual `async fn` desugaring to
+//! `Pin<Box<dyn Future<Output = …> + Send + '_>>` (BoxFuture) instead of native
+//! `async fn` in traits. This makes the trait **dyn-compatible** so
+//! `Arc<dyn VectorRepository + Send + Sync>` can be used for runtime dispatch
+//! (spec S3.4), without adding the `async_trait` crate (frozen decision #1).
+//! A blanket impl for `Arc<T>` lets `ElasticIngestion<R: VectorRepository>`
+//! accept `Arc<dyn VectorRepository + Send + Sync>` as `R`.
 
-// `async_fn_in_trait` (a rustc lint, not clippy) warns that native `async fn` in
-// traits yields non-`Send` futures and is not `dyn`-compatible. Both are
-// intentional, frozen-decision consequences (decision #1: native async traits,
-// no `async_trait` dep without maintainer approval) — documented in the module
-// docs above and in PR4 apply-progress. Allow at module scope to cover all four
-// trait methods without per-method noise.
-#![allow(async_fn_in_trait)]
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::error::ScraperError;
 
@@ -44,6 +31,9 @@ use crate::error::ScraperError;
 /// All database failures surface as [`ScraperError::Persistence`] (frozen
 /// decision #4: no separate `StorageError` enum), matching the pattern
 /// established by PR1.
+///
+/// The methods are desugared to `Pin<Box<dyn Future<…> + Send + '_>>` so the
+/// trait is dyn-compatible (A1, spec S3.4) without the `async_trait` crate.
 pub trait VectorRepository: Send + Sync {
     /// Save a resource with its content hash. Returns the resource URL.
     ///
@@ -54,13 +44,13 @@ pub trait VectorRepository: Send + Sync {
     /// # Errors
     ///
     /// Returns [`ScraperError::Persistence`] on any database failure.
-    async fn save_resource(
-        &self,
-        url: &str,
-        title: &str,
-        content_hash: &str,
+    fn save_resource<'a>(
+        &'a self,
+        url: &'a str,
+        title: &'a str,
+        content_hash: &'a str,
         size_bytes: u64,
-    ) -> Result<String, ScraperError>;
+    ) -> Pin<Box<dyn Future<Output = Result<String, ScraperError>> + Send + 'a>>;
 
     /// Save a chunk, optionally with its embedding vector.
     ///
@@ -71,14 +61,14 @@ pub trait VectorRepository: Send + Sync {
     ///
     /// Returns [`ScraperError::Persistence`] on any database failure (e.g. a
     /// foreign-key violation if `resource_url` was never saved first).
-    async fn save_chunk(
-        &self,
-        id: &str,
-        resource_url: &str,
+    fn save_chunk<'a>(
+        &'a self,
+        id: &'a str,
+        resource_url: &'a str,
         chunk_index: i64,
-        content: &str,
-        embedding: Option<&[f32]>,
-    ) -> Result<(), ScraperError>;
+        content: &'a str,
+        embedding: Option<&'a [f32]>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ScraperError>> + Send + 'a>>;
 
     /// Check whether a resource with this `content_hash` already exists.
     ///
@@ -88,10 +78,10 @@ pub trait VectorRepository: Send + Sync {
     /// # Errors
     ///
     /// Returns [`ScraperError::Persistence`] on any database failure.
-    async fn resource_exists_by_hash(
-        &self,
-        content_hash: &str,
-    ) -> Result<Option<String>, ScraperError>;
+    fn resource_exists_by_hash<'a>(
+        &'a self,
+        content_hash: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, ScraperError>> + Send + 'a>>;
 
     /// Get the embedding vector for a chunk.
     ///
@@ -103,5 +93,54 @@ pub trait VectorRepository: Send + Sync {
     ///
     /// Returns [`ScraperError::Persistence`] on a corrupt BLOB or database
     /// failure.
-    async fn get_vector(&self, chunk_id: &str) -> Result<Option<Vec<f32>>, ScraperError>;
+    fn get_vector<'a>(
+        &'a self,
+        chunk_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<f32>>, ScraperError>> + Send + 'a>>;
+}
+
+/// Blanket impl so `Arc<dyn VectorRepository + Send + Sync>` satisfies
+/// `R: VectorRepository + Send + Sync` in
+/// [`crate::application::elastic_ingestion::ElasticIngestion<R>`] (spec S3.4).
+///
+/// Delegates each method through the `Arc` deref to the inner repository. This
+/// is the bridge that lets the Container store
+/// `Option<Arc<ElasticIngestion<Arc<dyn VectorRepository + Send + Sync>>>>`
+/// for runtime repo dispatch (SQLite when `persistence` is ON, StreamRepository
+/// when OFF).
+impl<T: VectorRepository + ?Sized> VectorRepository for std::sync::Arc<T> {
+    fn save_resource<'a>(
+        &'a self,
+        url: &'a str,
+        title: &'a str,
+        content_hash: &'a str,
+        size_bytes: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<String, ScraperError>> + Send + 'a>> {
+        (**self).save_resource(url, title, content_hash, size_bytes)
+    }
+
+    fn save_chunk<'a>(
+        &'a self,
+        id: &'a str,
+        resource_url: &'a str,
+        chunk_index: i64,
+        content: &'a str,
+        embedding: Option<&'a [f32]>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ScraperError>> + Send + 'a>> {
+        (**self).save_chunk(id, resource_url, chunk_index, content, embedding)
+    }
+
+    fn resource_exists_by_hash<'a>(
+        &'a self,
+        content_hash: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, ScraperError>> + Send + 'a>> {
+        (**self).resource_exists_by_hash(content_hash)
+    }
+
+    fn get_vector<'a>(
+        &'a self,
+        chunk_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<f32>>, ScraperError>> + Send + 'a>> {
+        (**self).get_vector(chunk_id)
+    }
 }
