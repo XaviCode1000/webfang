@@ -208,7 +208,12 @@ pub struct Args {
 
     /// Use AI-powered semantic cleaning for better RAG output
     #[cfg(feature = "ai")]
-    #[arg(long, default_value = "false", visible_alias = "ai", env = "RUST_SCRAPER_CLEAN_AI")]
+    #[arg(
+        long,
+        default_value = "false",
+        visible_alias = "ai",
+        env = "RUST_SCRAPER_CLEAN_AI"
+    )]
     #[clap(next_help_heading = "Behavior")]
     pub clean_ai: bool,
 
