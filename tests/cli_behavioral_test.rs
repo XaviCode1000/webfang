@@ -5,6 +5,13 @@
 //!
 //! Run with: cargo nextest run --test cli_behavioral_test
 
+// Gate the entire test file behind the default feature pair. These tests
+// invoke the full `rust_scraper` binary which requires `images` + `documents`
+// for --download-images/--download-documents. When building with
+// --no-default-features (headless/persistence-off CI matrix) the file is
+// skipped entirely instead of triggering a hard compile_error!.
+#![cfg(all(feature = "images", feature = "documents"))]
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::time::Duration;
@@ -1326,21 +1333,4 @@ async fn test_sitemap_url_scrapes_listed_urls() {
     );
 }
 
-// ============================================================================
-// 12. Default feature flags (Issue #126)
-// ============================================================================
-// These are COMPILE-TIME guards, not runtime tests. If someone removes
-// "images" or "documents" from default features, the build fails here
-// instead of silently breaking --download-images/--download-documents.
 
-#[cfg(not(feature = "images"))]
-compile_error!(
-    "images feature must be enabled by default (see Cargo.toml default features). \
-     Users expect --download-images to work out of the box."
-);
-
-#[cfg(not(feature = "documents"))]
-compile_error!(
-    "documents feature must be enabled by default (see Cargo.toml default features). \
-     Users expect --download-documents to work out of the box."
-);
