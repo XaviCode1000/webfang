@@ -25,6 +25,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Extensible Design:** Easy to add new validation rules and error variants
 - **Memory Safety:** Pure move semantics prevent accidental clones in hot paths
 
+## [1.1.1] - 2026-07-11
+
+### 🔧 Fixed / Observability Hardening (Blindaje de Fidelidad D1–D5)
+
+#### D4 — Error Source Integrity
+- `ScraperError::Download` / `Network` now carry `#[source] Box<dyn Error + Send + Sync>`.
+- `CrawlError::Download` and `DownloadError::Network` preserve `#[source]`.
+- `From<DownloadError> for CrawlError` keeps the full cause (`wreq::Error` → Connect/timeout) instead of `.to_string()`.
+- `scrape_flow` no longer flattens with `.to_string()`: `failures` retains the `ScraperError` and the orchestrator prints the `source()` chain (`← cause`).
+- `is_transient_error` inspects the boxed error `Display` (broadened keywords) → 5xx/connect/timeout retries preserved.
+
+#### D5 — Observable Connection Pooling
+- `client_id` (stable `{:p}` pointer of the shared `Arc<Client>`) recorded as a span field in `wreq_downloader::fetch` and `adapters::downloader::Downloader::download_once`, and as an event field on the download log.
+- Verified live: 15 asset downloads shared the same `client_id` → pool reuse confirmed (TLS handshake savings, socket-exhaustion protection).
+
+#### D1–D3 — Stability
+- D1: `--download-concurrency 0` rejected at CLI (`parse_download_concurrency`) and clamped to 1 in `with_download_concurrency` → no `buffer_unordered(0)` deadlock.
+- D2/D3: `FileTraceLayer` emits `parent_id` and a logical `trace_id` (W3C OTel / root-span / seed) → reconstructable trace tree.
+
+#### Maintenance
+- `fix(clippy)`: `parse_set_cookie` uses `?` instead of `match` (resolves `clippy::question_mark` on clippy 1.97 / CI).
+
+#### Verification
+- `cargo clippy --all-targets --all-features -- -D warnings` ✅ · unit+integration+behavioral tests ✅ · all-features tests ✅ · MCP handshake ✅ · CI `conclusion: success`.
+
 ## [1.1.0] - 2026-04-04
 
 ### 🎉 Added
