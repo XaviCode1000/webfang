@@ -17,7 +17,7 @@ fn version_contains_version_string() {
     cmd()
         .arg("--version")
         .assert()
-        .stdout(predicate::str::contains("1.1.0"));
+        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
 }
 
 // ---------------------------------------------------------------------------

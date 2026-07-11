@@ -13,8 +13,19 @@ use walkdir::WalkDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// Returns the binary name to test, based on active features.
+/// The full `rust_scraper` binary requires both `ai` and `mcp`; the
+/// `rust_scraper_core` binary is always built (default features).
+fn cli_bin() -> &'static str {
+    if cfg!(all(feature = "ai", feature = "mcp")) {
+        "rust_scraper"
+    } else {
+        "rust_scraper_core"
+    }
+}
+
 fn cmd() -> Command {
-    Command::cargo_bin("rust_scraper").expect("binary exists")
+    Command::cargo_bin(cli_bin()).expect("binary exists")
 }
 
 // ============================================================================
@@ -38,7 +49,7 @@ fn test_version_exits_zero() {
         .arg("--version")
         .assert()
         .code(0)
-        .stdout(predicate::str::contains("1.1.0"));
+        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
 }
 
 /// Missing --url (non-interactive, non-batch) exits with code 64.

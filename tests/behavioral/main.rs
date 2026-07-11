@@ -7,9 +7,20 @@ mod cli;
 
 use assert_cmd::Command;
 
+/// Returns the binary name to test, based on active features.
+/// The full `rust_scraper` binary requires both `ai` and `mcp`; the
+/// `rust_scraper_core` binary is always built (default features).
+fn cli_bin() -> &'static str {
+    if cfg!(all(feature = "ai", feature = "mcp")) {
+        "rust_scraper"
+    } else {
+        "rust_scraper_core"
+    }
+}
+
 /// Shared binary command builder for tests that don't need a mock server.
 pub(crate) fn cmd() -> Command {
-    Command::cargo_bin("rust_scraper").expect("binary exists")
+    Command::cargo_bin(cli_bin()).expect("binary exists")
 }
 
 /// Shared test harness: one mock server + one temp output directory.
@@ -30,7 +41,7 @@ impl BehavioralTest {
     /// Build a `Command` for the `rust_scraper` binary with `--url` and
     /// `--output` pre-filled to this harness's server and temp dir.
     pub fn scraper_cmd(&self) -> assert_cmd::Command {
-        let mut cmd = assert_cmd::Command::cargo_bin("rust_scraper").expect("binary exists");
+        let mut cmd = assert_cmd::Command::cargo_bin(cli_bin()).expect("binary exists");
         cmd.arg("--url")
             .arg(self.server.uri())
             .arg("--output")
