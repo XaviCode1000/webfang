@@ -122,7 +122,10 @@ pub async fn run(opts: CrawlOptions) -> CliExit {
     // Initialize elastic ingestion if requested (`--elastic` → SQLite, or
     // `--output-vectors` → headless JSONL stream). Both are erased to
     // `DynVectorRepository` so the field type is feature-independent.
-    let elastic_ingestion = build_elastic_ingestion(&opts).await;
+    let elastic_ingestion = match build_elastic_ingestion(&opts).await {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
 
     // Scraping phase
     let (results, failures): (
@@ -289,8 +292,13 @@ async fn run_elastic_ingestion(
 /// - otherwise → `None` (no ingestion).
 async fn build_elastic_ingestion(
     opts: &CrawlOptions,
-) -> Option<
-    std::sync::Arc<crate::application::elastic_ingestion::ElasticIngestion<DynVectorRepository>>,
+) -> Result<
+    Option<
+        std::sync::Arc<
+            crate::application::elastic_ingestion::ElasticIngestion<DynVectorRepository>,
+        >,
+    >,
+    CliExit,
 > {
     let container = match crate::application::container::Container::new(
         CrawlerConfig::new(opts.url.clone()),
@@ -300,8 +308,13 @@ async fn build_elastic_ingestion(
     {
         Ok(c) => c,
         Err(e) => {
+            if opts.elastic.enabled || opts.elastic.output_vectors.is_some() {
+                return Err(CliExit::IoError(format!(
+                    "no se pudo crear el contenedor para ingesta elástica: {e}"
+                )));
+            }
             warn!("no se pudo crear el contenedor para ingesta elástica: {e}");
-            return None;
+            return Ok(None);
         },
     };
 
@@ -327,11 +340,10 @@ async fn build_elastic_ingestion(
     };
 
     match built {
-        Ok(c) => c.elastic_ingestion,
-        Err(e) => {
-            warn!("no se pudo inicializar el pipeline elástico: {e}");
-            None
-        },
+        Ok(c) => Ok(c.elastic_ingestion),
+        Err(e) => Err(CliExit::IoError(format!(
+            "no se pudo inicializar la ingesta de vectores: {e}"
+        ))),
     }
 }
 
