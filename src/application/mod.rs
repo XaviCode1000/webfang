@@ -11,6 +11,7 @@ pub mod crawler;
 pub mod crawler_service;
 pub mod deduplicator;
 pub mod elastic_ingestion;
+pub mod error;
 pub mod export_factory;
 pub mod export_utils;
 pub mod http_client;

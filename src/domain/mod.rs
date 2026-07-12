@@ -47,7 +47,7 @@ pub use entities::{
     DocumentChunk, DocumentChunkExported, DocumentChunkUnvalidated, DocumentChunkValidated,
     DownloadedAsset, Draft, ExportState, Exported, ScrapedContent, Validated, ValidationError,
 };
-pub use error::CrawlError;
+pub use error::{CrawlError, DomainError};
 pub use exporter::{ExportResult, Exporter, ExporterConfig, ExporterError};
 pub use js_renderer::{JsRenderError, JsRenderer};
 pub use js_strategy::JsStrategy;

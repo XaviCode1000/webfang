@@ -359,6 +359,86 @@ impl From<WreqError> for ScraperError {
     }
 }
 
+// ============================================================================
+// Phase 2: Error Stratification — From impls for layer-specific errors
+// ============================================================================
+
+impl From<crate::domain::error::DomainError> for ScraperError {
+    fn from(e: crate::domain::error::DomainError) -> Self {
+        match e {
+            crate::domain::error::DomainError::InvalidUrl(msg) => ScraperError::InvalidUrl(msg),
+            crate::domain::error::DomainError::Readability(msg) => ScraperError::Readability(msg),
+            crate::domain::error::DomainError::Extraction(msg) => ScraperError::Extraction(msg),
+            crate::domain::error::DomainError::ExtractionFailed { url, reason } => {
+                ScraperError::ExtractionFailed { url, reason }
+            },
+            crate::domain::error::DomainError::Validation(msg) => ScraperError::Validation(msg),
+            crate::domain::error::DomainError::FeatureGated(msg) => ScraperError::FeatureGated(msg),
+            crate::domain::error::DomainError::Conversion(msg) => ScraperError::Conversion(msg),
+        }
+    }
+}
+
+impl From<crate::infrastructure::error::InfraError> for ScraperError {
+    fn from(e: crate::infrastructure::error::InfraError) -> Self {
+        match e {
+            crate::infrastructure::error::InfraError::Http { status, url } => {
+                ScraperError::Http { status, url }
+            },
+            crate::infrastructure::error::InfraError::Network(msg) => {
+                ScraperError::Network(Box::new(std::io::Error::other(msg)))
+            },
+            crate::infrastructure::error::InfraError::Middleware(msg) => {
+                ScraperError::Middleware(msg)
+            },
+            crate::infrastructure::error::InfraError::WafBlocked { url, provider } => {
+                ScraperError::WafBlocked { url, provider }
+            },
+            crate::infrastructure::error::InfraError::Download(msg) => ScraperError::Network(
+                Box::new(std::io::Error::other(format!("download failed: {msg}"))),
+            ),
+            crate::infrastructure::error::InfraError::GlobalTimeout => ScraperError::GlobalTimeout,
+            crate::infrastructure::error::InfraError::SlowlorisTimeout => {
+                ScraperError::SlowlorisTimeout
+            },
+            crate::infrastructure::error::InfraError::PayloadTooLarge => {
+                ScraperError::PayloadTooLarge
+            },
+            crate::infrastructure::error::InfraError::SemaphoreInanition => {
+                ScraperError::SemaphoreInanition
+            },
+            crate::infrastructure::error::InfraError::Persistence(msg) => {
+                ScraperError::Persistence(msg)
+            },
+            crate::infrastructure::error::InfraError::Ingestion(msg) => {
+                ScraperError::Ingestion(msg)
+            },
+            crate::infrastructure::error::InfraError::H2Config(msg) => ScraperError::H2Config(msg),
+            crate::infrastructure::error::InfraError::UrlParse(e) => ScraperError::UrlParse(e),
+            crate::infrastructure::error::InfraError::Io(e) => ScraperError::Io(e),
+        }
+    }
+}
+
+impl From<crate::application::error::AppError> for ScraperError {
+    fn from(e: crate::application::error::AppError) -> Self {
+        match e {
+            crate::application::error::AppError::Config(msg) => ScraperError::Config(msg),
+            crate::application::error::AppError::Export(msg) => ScraperError::Export(msg),
+            crate::application::error::AppError::ExportBatch(msg) => ScraperError::ExportBatch(msg),
+            crate::application::error::AppError::FeatureGated(msg) => {
+                ScraperError::FeatureGated(msg)
+            },
+            crate::application::error::AppError::GlobalTimeout => ScraperError::GlobalTimeout,
+            crate::application::error::AppError::SlowlorisTimeout => ScraperError::SlowlorisTimeout,
+            crate::application::error::AppError::PayloadTooLarge => ScraperError::PayloadTooLarge,
+            crate::application::error::AppError::SemaphoreInanition => {
+                ScraperError::SemaphoreInanition
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,5 +552,247 @@ mod tests {
         let err = ScraperError::H2Config("ALPN negotiation failed".to_string());
         assert!(err.to_string().contains("Error de configuración HTTP/2"));
         assert!(err.to_string().contains("ALPN negotiation failed"));
+    }
+
+    // ========================================================================
+    // Phase 2: Error Stratification — DomainError → ScraperError From tests
+    // ========================================================================
+
+    #[test]
+    fn test_domain_error_invalid_url_wraps_to_scraper() {
+        let domain_err = crate::domain::error::DomainError::InvalidUrl("bad url".to_string());
+        let scraper_err: ScraperError = domain_err.into();
+        assert_eq!(
+            scraper_err.to_string(),
+            "URL inválida: bad url",
+            "Spanish Display message must be preserved through From conversion"
+        );
+    }
+
+    #[test]
+    fn test_domain_error_readability_wraps_to_scraper() {
+        let domain_err = crate::domain::error::DomainError::Readability("parse failed".to_string());
+        let scraper_err: ScraperError = domain_err.into();
+        assert!(scraper_err.to_string().contains("parse failed"));
+        assert!(scraper_err.to_string().contains("legibilidad"));
+    }
+
+    #[test]
+    fn test_domain_error_extraction_wraps_to_scraper() {
+        let domain_err = crate::domain::error::DomainError::Extraction("no content".to_string());
+        let scraper_err: ScraperError = domain_err.into();
+        assert!(scraper_err.to_string().contains("no content"));
+        assert!(scraper_err.to_string().contains("extracción"));
+    }
+
+    #[test]
+    fn test_domain_error_extraction_failed_wraps_to_scraper() {
+        let domain_err = crate::domain::error::DomainError::ExtractionFailed {
+            url: "https://example.com".to_string(),
+            reason: "empty body".to_string(),
+        };
+        let scraper_err: ScraperError = domain_err.into();
+        assert!(scraper_err.to_string().contains("example.com"));
+        assert!(scraper_err.to_string().contains("empty body"));
+    }
+
+    #[test]
+    fn test_domain_error_validation_wraps_to_scraper() {
+        let domain_err = crate::domain::error::DomainError::Validation("bad pattern".to_string());
+        let scraper_err: ScraperError = domain_err.into();
+        assert!(scraper_err.to_string().contains("bad pattern"));
+        assert!(scraper_err.to_string().contains("Validación"));
+    }
+
+    #[test]
+    fn test_domain_error_feature_gated_wraps_to_scraper() {
+        let domain_err = crate::domain::error::DomainError::FeatureGated("AI module".to_string());
+        let scraper_err: ScraperError = domain_err.into();
+        assert!(scraper_err.to_string().contains("AI module"));
+        assert!(scraper_err
+            .to_string()
+            .contains("funcionalidad no disponible"));
+    }
+
+    #[test]
+    fn test_domain_error_conversion_wraps_to_scraper() {
+        let domain_err = crate::domain::error::DomainError::Conversion("YAML parse".to_string());
+        let scraper_err: ScraperError = domain_err.into();
+        assert!(scraper_err.to_string().contains("YAML parse"));
+        assert!(scraper_err.to_string().contains("conversión"));
+    }
+
+    #[test]
+    fn test_domain_error_question_mark_operator() {
+        fn inner() -> std::result::Result<(), crate::domain::error::DomainError> {
+            Err(crate::domain::error::DomainError::InvalidUrl(
+                "test".to_string(),
+            ))
+        }
+
+        fn outer() -> std::result::Result<(), ScraperError> {
+            inner().map_err(ScraperError::from)?;
+            Ok(())
+        }
+
+        let err = outer().unwrap_err();
+        assert!(err.to_string().contains("URL inválida"));
+    }
+
+    // ========================================================================
+    // Phase 2: Error Stratification — InfraError → ScraperError From tests
+    // ========================================================================
+
+    #[test]
+    fn test_infra_error_http_wraps_to_scraper() {
+        let infra_err = crate::infrastructure::error::InfraError::Http {
+            status: 500,
+            url: "https://example.com".to_string(),
+        };
+        let scraper_err: ScraperError = infra_err.into();
+        assert!(
+            scraper_err.to_string().contains("500"),
+            "Status code must be preserved"
+        );
+        assert!(
+            scraper_err.to_string().contains("example.com"),
+            "URL must be preserved"
+        );
+    }
+
+    #[test]
+    fn test_infra_error_network_wraps_to_scraper() {
+        let infra_err =
+            crate::infrastructure::error::InfraError::Network("connection refused".to_string());
+        let scraper_err: ScraperError = infra_err.into();
+        assert!(scraper_err.to_string().contains("connection refused"));
+        assert!(scraper_err.to_string().contains("red"));
+    }
+
+    #[test]
+    fn test_infra_error_waf_blocked_wraps_to_scraper() {
+        let infra_err = crate::infrastructure::error::InfraError::WafBlocked {
+            url: "https://example.com".to_string(),
+            provider: "Cloudflare".to_string(),
+        };
+        let scraper_err: ScraperError = infra_err.into();
+        assert!(scraper_err.to_string().contains("example.com"));
+        assert!(scraper_err.to_string().contains("Cloudflare"));
+    }
+
+    #[test]
+    fn test_infra_error_persistence_wraps_to_scraper() {
+        let infra_err =
+            crate::infrastructure::error::InfraError::Persistence("disk full".to_string());
+        let scraper_err: ScraperError = infra_err.into();
+        assert!(scraper_err.to_string().contains("disk full"));
+        assert!(scraper_err.to_string().contains("persistencia"));
+    }
+
+    #[test]
+    fn test_infra_error_ingestion_wraps_to_scraper() {
+        let infra_err =
+            crate::infrastructure::error::InfraError::Ingestion("pipeline failed".to_string());
+        let scraper_err: ScraperError = infra_err.into();
+        assert!(scraper_err.to_string().contains("pipeline failed"));
+        assert!(scraper_err.to_string().contains("ingestión"));
+    }
+
+    #[test]
+    fn test_infra_error_global_timeout_wraps_to_scraper() {
+        let infra_err = crate::infrastructure::error::InfraError::GlobalTimeout;
+        let scraper_err: ScraperError = infra_err.into();
+        assert!(scraper_err.to_string().contains("30 segundos"));
+    }
+
+    #[test]
+    fn test_infra_error_slowloris_timeout_wraps_to_scraper() {
+        let infra_err = crate::infrastructure::error::InfraError::SlowlorisTimeout;
+        let scraper_err: ScraperError = infra_err.into();
+        assert!(scraper_err.to_string().contains("5 segundos"));
+    }
+
+    #[test]
+    fn test_infra_error_payload_too_large_wraps_to_scraper() {
+        let infra_err = crate::infrastructure::error::InfraError::PayloadTooLarge;
+        let scraper_err: ScraperError = infra_err.into();
+        assert!(scraper_err.to_string().contains("25 MB"));
+    }
+
+    #[test]
+    fn test_infra_error_semaphore_inanition_wraps_to_scraper() {
+        let infra_err = crate::infrastructure::error::InfraError::SemaphoreInanition;
+        let scraper_err: ScraperError = infra_err.into();
+        assert!(scraper_err.to_string().contains("semáforo agotado"));
+    }
+
+    #[test]
+    fn test_infra_error_h2_config_wraps_to_scraper() {
+        let infra_err =
+            crate::infrastructure::error::InfraError::H2Config("ALPN failed".to_string());
+        let scraper_err: ScraperError = infra_err.into();
+        assert!(scraper_err.to_string().contains("ALPN failed"));
+        assert!(scraper_err.to_string().contains("HTTP/2"));
+    }
+
+    #[test]
+    fn test_infra_error_url_parse_wraps_to_scraper() {
+        let url_err = url::ParseError::EmptyHost;
+        let infra_err = crate::infrastructure::error::InfraError::UrlParse(url_err);
+        let scraper_err: ScraperError = infra_err.into();
+        assert!(scraper_err.to_string().contains("URL"));
+    }
+
+    // ========================================================================
+    // Phase 2: Error Stratification — AppError → ScraperError From tests
+    // ========================================================================
+
+    #[test]
+    fn test_app_error_config_wraps_to_scraper() {
+        let app_err = crate::application::error::AppError::Config("invalid port".to_string());
+        let scraper_err: ScraperError = app_err.into();
+        assert!(scraper_err.to_string().contains("invalid port"));
+        assert!(scraper_err.to_string().contains("configuración"));
+    }
+
+    #[test]
+    fn test_app_error_export_wraps_to_scraper() {
+        let app_err = crate::application::error::AppError::Export("write failed".to_string());
+        let scraper_err: ScraperError = app_err.into();
+        assert!(scraper_err.to_string().contains("write failed"));
+        assert!(scraper_err.to_string().contains("exportación"));
+    }
+
+    #[test]
+    fn test_app_error_export_batch_wraps_to_scraper() {
+        let app_err =
+            crate::application::error::AppError::ExportBatch("partial success".to_string());
+        let scraper_err: ScraperError = app_err.into();
+        assert!(scraper_err.to_string().contains("partial success"));
+        assert!(scraper_err.to_string().contains("batch"));
+    }
+
+    #[test]
+    fn test_app_error_feature_gated_wraps_to_scraper() {
+        let app_err = crate::application::error::AppError::FeatureGated("AI module".to_string());
+        let scraper_err: ScraperError = app_err.into();
+        assert!(scraper_err.to_string().contains("AI module"));
+    }
+
+    #[test]
+    fn test_app_error_question_mark_operator() {
+        fn inner() -> std::result::Result<(), crate::application::error::AppError> {
+            Err(crate::application::error::AppError::Config(
+                "test".to_string(),
+            ))
+        }
+
+        fn outer() -> std::result::Result<(), ScraperError> {
+            inner().map_err(ScraperError::from)?;
+            Ok(())
+        }
+
+        let err = outer().unwrap_err();
+        assert!(err.to_string().contains("configuración"));
     }
 }

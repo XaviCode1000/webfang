@@ -15,6 +15,7 @@ pub mod config;
 pub mod converter;
 pub mod crawler;
 pub mod downloader;
+pub mod error;
 pub mod export;
 pub mod http;
 #[cfg(feature = "mcp")]
