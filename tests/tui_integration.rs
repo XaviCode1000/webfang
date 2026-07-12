@@ -305,6 +305,28 @@ fn theme_darken_produces_different_color() {
     assert_ne!(light, dark);
 }
 
+// --- Non-Rgb colors must not panic (Issue #152) ---
+
+#[test]
+fn theme_lighten_does_not_panic_on_non_rgb() {
+    let reset = ratatui::style::Color::Reset;
+    let black = ratatui::style::Color::Black;
+    let dark_gray = ratatui::style::Color::DarkGray;
+    // Non-Rgb colors are returned unchanged (identity), never panicked.
+    assert_eq!(Theme::lighten(reset, 0.3), reset);
+    assert_eq!(Theme::lighten(black, 0.3), black);
+    assert_eq!(Theme::lighten(dark_gray, 0.3), dark_gray);
+}
+
+#[test]
+fn theme_darken_does_not_panic_on_non_rgb() {
+    let reset = ratatui::style::Color::Reset;
+    let black = ratatui::style::Color::Black;
+    // Non-Rgb colors are returned unchanged (identity), never panicked.
+    assert_eq!(Theme::darken(reset, 0.3), reset);
+    assert_eq!(Theme::darken(black, 0.3), black);
+}
+
 #[test]
 fn theme_lighten_channel_values_increase() {
     let dark = ratatui::style::Color::Rgb(0x1e, 0x1e, 0x2e);
