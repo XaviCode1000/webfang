@@ -145,7 +145,7 @@ impl ResourceDownloader {
     /// - Global timeout exceeded (`GlobalTimeout`)
     /// - Per-chunk timeout exceeded — Anti-Slowloris (`SlowlorisTimeout`)
     /// - `Content-Length` or accumulated size exceeds the limit (`PayloadTooLarge`)
-    /// - Network error occurs (`NetworkFailure`)
+    /// - Network error occurs (`Network`)
     /// - Semaphore acquisition fails (`SemaphoreInanition`)
     pub async fn download(&self, url: &str) -> Result<Vec<u8>, ScraperError> {
         // Global timeout wraps the request (headers). Permits are acquired only

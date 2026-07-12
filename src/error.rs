@@ -124,10 +124,6 @@ pub enum ScraperError {
     #[error("recurso superó límite de 25 MB")]
     PayloadTooLarge,
 
-    /// Network error (connection failed, timeout, etc.)
-    #[error("error de red: {0}")]
-    NetworkFailure(#[from] WreqError),
-
     /// Semaphore exhausted (backpressure)
     #[error("semáforo agotado: no hay permisos disponibles")]
     SemaphoreInanition,
@@ -351,6 +347,15 @@ impl ScraperError {
     #[must_use]
     pub fn ingestion(err: impl std::fmt::Display) -> Self {
         Self::Ingestion(err.to_string())
+    }
+}
+
+impl From<WreqError> for ScraperError {
+    /// Convert a `wreq::Error` into the single network variant, preserving the
+    /// underlying cause chain (D4). Consolidates the former duplicate
+    /// `NetworkFailure` variant (#153).
+    fn from(e: WreqError) -> Self {
+        ScraperError::Network(Box::new(e))
     }
 }
 
