@@ -17,12 +17,17 @@ use ratatui::style::Color;
 
 /// Convert a ratatui Color to palette Srgb.
 ///
-/// # Panics
-/// Panics if the color is not an Rgb variant.
-fn color_to_srgb(c: Color) -> Srgb {
+/// Returns `None` for any non-`Rgb` variant (e.g. `Reset`, `Black`,
+/// `AnsiValue`) instead of panicking, so callers can fall back to the
+/// original color.
+fn color_to_srgb(c: Color) -> Option<Srgb> {
     match c {
-        Color::Rgb(r, g, b) => Srgb::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0),
-        _ => panic!("color_to_srgb requires Rgb color, got {:?}", c),
+        Color::Rgb(r, g, b) => Some(Srgb::new(
+            r as f32 / 255.0,
+            g as f32 / 255.0,
+            b as f32 / 255.0,
+        )),
+        _ => None,
     }
 }
 
@@ -192,7 +197,9 @@ impl Theme {
             let ratio = contrast_ratio(color, bg);
             if ratio < 7.0 {
                 // Darken the color to increase contrast
-                let srgb: Srgb = color_to_srgb(color);
+                let Some(srgb) = color_to_srgb(color) else {
+                    continue;
+                };
                 let darker: Srgb = srgb.darken(0.1);
                 let new_color = srgb_to_color(darker);
                 let new_ratio = contrast_ratio(new_color, bg);
@@ -215,7 +222,9 @@ impl Theme {
     ///
     /// Uses palette's `Lighten` trait for perceptually correct lightening.
     pub fn lighten(color: Color, factor: f32) -> Color {
-        let srgb: Srgb = color_to_srgb(color);
+        let Some(srgb) = color_to_srgb(color) else {
+            return color;
+        };
         let lighter: Srgb = srgb.lighten(factor);
         srgb_to_color(lighter)
     }
@@ -224,7 +233,9 @@ impl Theme {
     ///
     /// Uses palette's `Darken` trait for perceptually correct darkening.
     pub fn darken(color: Color, factor: f32) -> Color {
-        let srgb: Srgb = color_to_srgb(color);
+        let Some(srgb) = color_to_srgb(color) else {
+            return color;
+        };
         let darker: Srgb = srgb.darken(factor);
         srgb_to_color(darker)
     }
@@ -451,9 +462,15 @@ mod tests {
     #[test]
     fn color_to_srgb_roundtrip() {
         let original = Color::Rgb(0x89, 0xb4, 0xfa);
-        let srgb = color_to_srgb(original);
+        let srgb = color_to_srgb(original).expect("Rgb color converts");
         let back = srgb_to_color(srgb);
         assert_eq!(original, back);
+    }
+
+    #[test]
+    fn color_to_srgb_non_rgb_is_none() {
+        assert!(color_to_srgb(Color::Reset).is_none());
+        assert!(color_to_srgb(Color::Black).is_none());
     }
 
     #[test]
