@@ -8,10 +8,9 @@ use std::path::PathBuf;
 
 use url::Url;
 
-use crate::cli::args::PipelineOutputFormat;
+use crate::domain::config::{ConcurrencyConfig, ExportFormat, OutputFormat, PipelineOutputFormat};
 use crate::domain::JsStrategy;
 use crate::infrastructure::autotuning::ElasticOverrides;
-use crate::{ConcurrencyConfig, ExportFormat, OutputFormat};
 
 // ============================================================================
 // Top-level options

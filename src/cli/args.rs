@@ -2,8 +2,8 @@
 //!
 //! Parsed using `clap` with derive macros.
 
+use crate::domain::config::{ConcurrencyConfig, ExportFormat, OutputFormat, PipelineOutputFormat};
 use crate::domain::JsStrategy;
-use crate::{ConcurrencyConfig, ExportFormat, OutputFormat};
 use clap::Parser;
 
 /// Validate `--download-concurrency`: must be >= 1. A value of 0 would make
@@ -474,16 +474,6 @@ pub struct Args {
     pub pipeline_output: PipelineOutputFormat,
 }
 
-/// Pipeline output format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, Default)]
-pub enum PipelineOutputFormat {
-    /// Write items as JSON Lines to a file (default).
-    #[default]
-    Jsonl,
-    /// No pipeline output — items are processed but not written.
-    None,
-}
-
 /// Subcommands.
 #[derive(Debug, clap::Subcommand)]
 pub enum Commands {
@@ -876,7 +866,7 @@ mod tests {
         assert!(opts.pipeline_enabled);
         assert_eq!(
             opts.pipeline_output_format,
-            crate::cli::args::PipelineOutputFormat::None
+            crate::domain::config::PipelineOutputFormat::None
         );
 
         // ── Asset naming ─────────────────────────────────────────────────
@@ -937,7 +927,7 @@ mod tests {
         assert!(!opts.pipeline_enabled);
         assert_eq!(
             opts.pipeline_output_format,
-            crate::cli::args::PipelineOutputFormat::Jsonl
+            crate::domain::config::PipelineOutputFormat::Jsonl
         );
         assert!(!opts.crawl.autoscale_enabled);
         // CLI default_value = "hash" (via #[arg(default_value)])

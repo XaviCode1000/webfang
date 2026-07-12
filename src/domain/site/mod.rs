@@ -2,6 +2,6 @@
 //!
 //! Configuration and builder for crawling a specific site.
 
-mod config;
+mod crawler_config;
 
-pub use config::{CrawlerConfig, CrawlerConfigBuilder};
+pub use crawler_config::{CrawlerConfig, CrawlerConfigBuilder};

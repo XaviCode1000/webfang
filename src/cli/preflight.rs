@@ -217,10 +217,8 @@ pub fn apply_tui_config(mut opts: CrawlOptions, config_values: &serde_json::Valu
 /// Handles all 39 fields from CollapsibleConfig.
 /// Only applies values that are present in the JSON (non-null, non-empty).
 pub fn apply_tui_config_args(mut args: Args, config_values: &serde_json::Value) -> Args {
-    use crate::cli::args::PipelineOutputFormat as P;
+    use crate::domain::config::{ExportFormat as E, OutputFormat as O, PipelineOutputFormat as P};
     use crate::domain::JsStrategy;
-    use crate::ExportFormat as E;
-    use crate::OutputFormat as O;
 
     // ========================================================================
     // Helper macros for type conversion

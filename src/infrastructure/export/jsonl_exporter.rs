@@ -121,7 +121,7 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    use crate::domain::entities::ExportFormat;
+    use crate::domain::config::ExportFormat;
     use crate::domain::exporter::Exporter;
 
     use super::*;

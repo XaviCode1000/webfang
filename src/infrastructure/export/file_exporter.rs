@@ -6,9 +6,9 @@
 use std::fs;
 use std::path::PathBuf;
 
+use crate::domain::config::OutputFormat;
 use crate::domain::entities::DocumentChunkValidated;
 use crate::domain::exporter::{ExportResult, Exporter, ExporterConfig, ExporterError};
-use crate::infrastructure::config::OutputFormat;
 
 /// File-based exporter implementing the Exporter trait
 ///

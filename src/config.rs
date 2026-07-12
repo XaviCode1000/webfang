@@ -3,7 +3,7 @@
 //! Provides a single entry point for all application configuration,
 //! with validation and feature gating.
 
-use crate::application::http_client::HttpClientConfig;
+use crate::domain::config::HttpClientConfig;
 use crate::domain::site::CrawlerConfig;
 use crate::infrastructure::config::ScraperConfig;
 use crate::infrastructure::output::file_saver::ObsidianOptions;

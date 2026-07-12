@@ -2,8 +2,8 @@
 //!
 //! Wraps `wreq::Client` with retry logic, UA rotation, and WAF detection.
 
-use super::config::HttpClientConfig;
 use super::error::{HttpError, HttpResult};
+use super::http_config::HttpClientConfig;
 use crate::error::ScraperError;
 use crate::infrastructure::http::waf_engine::WafInspector;
 use crate::infrastructure::user_agent::UserAgentCache;
@@ -520,7 +520,7 @@ pub fn get_random_user_agent_from_pool(pool: &[String]) -> String {
 #[cfg(not(miri))] // all tests create wreq::Client with boring-sys2 FFI (unsupported by Miri)
 mod tests {
     use super::*;
-    use crate::application::http_client::config::HttpClientConfig;
+    use crate::application::http_client::http_config::HttpClientConfig;
 
     #[test]
     fn test_http_client_creation_default() {
@@ -602,7 +602,7 @@ mod tests {
 #[cfg(not(miri))] // all tests create wreq::Client with boring-sys2 FFI (unsupported by Miri)
 mod wiremock_tests {
     use super::*;
-    use crate::application::http_client::config::HttpClientConfig;
+    use crate::application::http_client::http_config::HttpClientConfig;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -747,7 +747,7 @@ mod wiremock_tests {
 #[cfg(not(miri))] // all tests create wreq::Client with boring-sys2 FFI (unsupported by Miri)
 mod waf_detection_tests {
     use super::*;
-    use crate::application::http_client::config::HttpClientConfig;
+    use crate::application::http_client::http_config::HttpClientConfig;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

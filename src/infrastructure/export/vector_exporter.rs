@@ -281,7 +281,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::domain::entities::ExportFormat;
+    use crate::domain::config::ExportFormat;
 
     fn create_test_config_with_dir(dir: PathBuf) -> ExporterConfig {
         ExporterConfig::new(dir, ExportFormat::Vector, "test_export")
