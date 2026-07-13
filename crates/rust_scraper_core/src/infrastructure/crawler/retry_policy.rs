@@ -116,6 +116,7 @@ mod tests {
         assert_eq!(policy.max_attempts, 3);
     }
 
+    #[cfg_attr(miri, ignore)] // tokio time-driver does not advance under Miri (hangs on sleep)
     #[tokio::test]
     async fn test_execute_with_retry_success() {
         let policy = RetryPolicy::new();
@@ -140,6 +141,7 @@ mod tests {
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
+    #[cfg_attr(miri, ignore)] // tokio time-driver does not advance under Miri (hangs on sleep)
     #[tokio::test]
     async fn test_execute_with_retry_failure() {
         let policy = RetryPolicy::with_max_attempts(2);

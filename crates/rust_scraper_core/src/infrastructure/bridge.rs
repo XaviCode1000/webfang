@@ -324,6 +324,7 @@ mod tests {
 
     // ---- Trap 2: oneshot receiver dropped (Tokio task abort) ----
 
+    #[cfg_attr(miri, ignore)] // fire-and-forget spawn_blocking + tokio::time::sleep; runtime drop hangs under Miri
     #[tokio::test]
     async fn test_dispatch_channel_drop_pool_survives_and_no_panic() {
         let bridge = make_bridge(2);
