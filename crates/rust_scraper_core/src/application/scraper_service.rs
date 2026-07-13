@@ -1027,6 +1027,7 @@ mod tests {
     // scrape_multiple_with_limit partial failure
     // =====================================================================
 
+    #[cfg_attr(miri, ignore)] // lol_html/servo_arc Tree-Borrows UB via clean_html
     #[tokio::test]
     async fn test_scrape_multiple_partial_failure() {
         let html = r#"<!DOCTYPE html>
