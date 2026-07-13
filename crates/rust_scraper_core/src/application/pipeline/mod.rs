@@ -18,6 +18,7 @@ pub use crate::domain::pipeline_item::{PipelineStage, ScrapedItem, StageOutcome}
 mod integration_tests {
     use super::*;
 
+    #[cfg_attr(miri, ignore)] // runs CleanStage -> legible/servo_arc (Tree-Borrows UB), same as stages/clean.rs
     #[tokio::test]
     async fn test_validate_then_clean_pipeline() {
         let mut executor = PipelineExecutor::new();
