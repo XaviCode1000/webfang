@@ -247,6 +247,7 @@ mod tests {
         assert!(process_asset_src("#section", &base, None).is_none());
     }
 
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
     #[test]
     fn test_extract_images() {
         let html = r#"<html><body>
@@ -261,6 +262,7 @@ mod tests {
         assert_eq!(images.len(), 2);
     }
 
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
     #[test]
     fn test_extract_documents() {
         let html = r#"<html><body>
@@ -275,6 +277,7 @@ mod tests {
         assert_eq!(docs.len(), 2);
     }
 
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
     #[test]
     fn test_extract_all_assets_single_parse() {
         let html = r#"<html><body>

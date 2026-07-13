@@ -210,6 +210,7 @@ impl LinkExtractor for HtmlLinkExtractor {
 mod tests {
     use super::*;
 
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
     #[test]
     fn test_extract_links_basic() {
         let html = r#"
@@ -230,6 +231,7 @@ mod tests {
         assert_eq!(links.len(), 3);
     }
 
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
     #[test]
     fn test_extract_links_relative_paths() {
         let html = r#"
@@ -249,6 +251,7 @@ mod tests {
         assert!(links.contains(&"https://example.com/dir/sub/child".to_string()));
     }
 
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
     #[test]
     fn test_extract_links_no_duplicates() {
         let html = r#"
@@ -266,6 +269,7 @@ mod tests {
         assert_eq!(links[0], "https://example.com/page");
     }
 
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
     #[test]
     fn test_extract_links_empty() {
         let html = r#"<html><body>No links here</body></html>"#;
@@ -273,6 +277,7 @@ mod tests {
         assert!(links.is_empty());
     }
 
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
     #[test]
     fn test_extract_links_invalid_html() {
         let html = "This is not HTML at all";
@@ -361,6 +366,7 @@ mod tests {
     // Error path tests
     // ============================================================================
 
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
     #[test]
     fn test_extract_links_javascript_mailto_included() {
         // extract_links does NOT filter javascript:/mailto:/tel: schemes
@@ -386,6 +392,7 @@ mod tests {
         assert!(links.iter().any(|l| l.contains("tel")));
     }
 
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
     #[test]
     fn test_extract_links_empty_href() {
         let html = r#"
@@ -403,6 +410,7 @@ mod tests {
         assert!(links.contains(&"https://example.com/page".to_string()));
     }
 
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
     #[test]
     fn test_extract_links_with_query_params() {
         // Note: normalize_url keeps path but strips fragments for dedup
