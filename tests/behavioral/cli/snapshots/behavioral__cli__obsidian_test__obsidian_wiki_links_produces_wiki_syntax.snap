@@ -1,0 +1,12 @@
+---
+source: crates/rust_scraper_core/../../tests/behavioral/cli/obsidian_test.rs
+expression: redacted
+---
+---
+title: Wiki Links Test
+url: http://127.0.0.1:<PORT>/
+date: [DATE]
+excerpt: Check out this other page for more info. Also see the third page.
+---
+
+Check out [[other-page|this other page]] for more info. Also see [[third-page|the third page]].

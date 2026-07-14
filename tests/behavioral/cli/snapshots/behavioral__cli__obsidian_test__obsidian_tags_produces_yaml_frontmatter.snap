@@ -1,0 +1,14 @@
+---
+source: crates/rust_scraper_core/../../tests/behavioral/cli/obsidian_test.rs
+expression: redacted
+---
+---
+title: Tagged Page
+url: http://127.0.0.1:<PORT>/
+date: [DATE]
+excerpt: Content with obsidian tags for frontmatter testing.
+tags:
+- test
+---
+
+Content with obsidian tags for frontmatter testing.

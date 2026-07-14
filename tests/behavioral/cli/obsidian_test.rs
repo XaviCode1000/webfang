@@ -1,9 +1,33 @@
 //! Obsidian-specific behavior: wiki-links, tags, quick-save.
 
 use crate::BehavioralTest;
+use std::path::Path;
 use walkdir::WalkDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
+
+/// Snapshot Obsidian markdown output with deterministic redactions.
+///
+/// `crate::redact_nondeterministic` collapses the temp-dir path, ANSI codes,
+/// dynamic wiremock ports, and ISO-8601 `-Z` timestamps. The frontmatter
+/// `date:` field is a bare `YYYY-MM-DD` (no time) and `scrape_date:` is
+/// `YYYY-MM-DDThh:mm:ss+0000`; neither is caught by that helper. insta's
+/// `add_filter` applies a regex onto the final snapshot string (the correct
+/// insta-native mechanism for free-text snapshots — `redactions` uses path
+/// selectors and cannot match raw lines), collapsing those fields to stable
+/// markers before snapshotting.
+fn assert_obsidian_snapshot(name: &str, dir: &Path, content: &str) {
+    let redacted = crate::redact_nondeterministic(dir, content);
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(r"date: \d{4}-\d{2}-\d{2}", "date: [DATE]");
+    settings.add_filter(
+        r"scrape_date: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{4}",
+        "scrape_date: [SCRAPE_DATE]",
+    );
+    settings.bind(|| {
+        insta::assert_snapshot!(name, redacted);
+    });
+}
 
 const PAGE_WITH_LINKS: &str = r#"
 <html><head><title>Wiki Links Test</title></head>
@@ -47,11 +71,7 @@ async fn obsidian_wiki_links_produces_wiki_syntax() {
         .success();
 
     let content = t.read_md_content();
-    assert!(
-        content.contains("[["),
-        "output should contain [[wiki-link]] syntax: {}",
-        &content[..content.len().min(500)]
-    );
+    assert_obsidian_snapshot("obsidian_wiki_links_produces_wiki_syntax", t.out.path(), &content);
 }
 
 #[tokio::test]
@@ -75,21 +95,7 @@ async fn obsidian_wiki_links_removes_absolute_urls() {
         .success();
 
     let content = t.read_md_content();
-    // The frontmatter `url:` field always contains the full URL — that's expected.
-    // The wiki-link conversion affects only <a> tags in the body content.
-    // Split at the frontmatter end to check only the body.
-    let body = content.split_once("---\n").map(|x| x.1).unwrap_or(&content);
-    let body = body.split_once("---\n").map(|x| x.1).unwrap_or(body);
-    assert!(
-        !body.contains("<a href="),
-        "body should not contain raw <a> tags after wiki-link conversion: {}",
-        &body[..body.len().min(500)]
-    );
-    assert!(
-        body.contains("[["),
-        "body should contain [[wiki-link]] syntax: {}",
-        &body[..body.len().min(500)]
-    );
+    assert_obsidian_snapshot("obsidian_wiki_links_removes_absolute_urls", t.out.path(), &content);
 }
 
 // ---------------------------------------------------------------------------
@@ -118,15 +124,7 @@ async fn obsidian_tags_appear_in_frontmatter() {
         .success();
 
     let content = t.read_md_content();
-    assert!(
-        content.contains("tags:"),
-        "frontmatter should contain tags field"
-    );
-    assert!(
-        content.contains("scraped") && content.contains("web-dev") && content.contains("rust"),
-        "frontmatter should contain all specified tags: {}",
-        &content[..content.len().min(500)]
-    );
+    assert_obsidian_snapshot("obsidian_tags_appear_in_frontmatter", t.out.path(), &content);
 }
 
 #[tokio::test]
@@ -151,12 +149,7 @@ async fn obsidian_tags_produces_yaml_frontmatter() {
         .success();
 
     let content = t.read_md_content();
-    // YAML frontmatter starts with ---
-    assert!(
-        content.starts_with("---"),
-        "file should start with YAML frontmatter (---): {}",
-        &content[..content.len().min(300)]
-    );
+    assert_obsidian_snapshot("obsidian_tags_produces_yaml_frontmatter", t.out.path(), &content);
 }
 
 // ---------------------------------------------------------------------------
