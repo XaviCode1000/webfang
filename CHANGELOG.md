@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ⚠️ Breaking Changes
+
+#### Exit Code Fix for Empty Discovery (C1+C4)
+- **Exit code 2** now returned when sitemap discovery finds zero URLs (was exit 0). Scripts checking `$? == 0` must update to handle `$? == 2`.
+- **Exit code 69** now returned when sitemap fetch fails with timeout/network error (was silently swallowed as exit 0).
+- Named constants (`EXIT_SUCCESS`, `EXIT_EMPTY_DISCOVERY`, etc.) replace magic numbers in `CliExit` enum.
+
 ### 🏗️ Architecture Improvements
 
 #### Typestate Pattern Implementation
