@@ -516,24 +516,30 @@ mod tests {
     }
 
     // ============================================================================
-    // M5: Deterministic Rate Limiting Tests (tokio::time::pause)
+    // M5: Deterministic Rate Limiting Tests
+    //
+    // NOTE: governor uses QuantaClock (real time), so its `until_ready()`
+    // enforces delays against the wall clock, not tokio's mockable clock.
+    // `tokio::time::pause()` therefore freezes our measurement clock while
+    // governor may decide the wait has already elapsed in real time, making
+    // these assertions report 0ns and flake under load. We measure with
+    // `std::time::Instant` instead: governor guarantees it will not return
+    // before the real delay has elapsed, so this is deterministic.
     // ============================================================================
 
     #[tokio::test]
     async fn test_rate_limiting_precision() {
-        // M5 FIX: Use tokio::time::pause() for deterministic timing
-        tokio::time::pause();
         let config = RateLimiterConfig::new(500, 1);
         let limiter = RateLimiter::new(&config).await.unwrap();
 
         limiter.until_ready().await;
-        let start = tokio::time::Instant::now();
+        let start = std::time::Instant::now();
 
         limiter.until_ready().await;
 
         let elapsed = start.elapsed();
         assert!(
-            elapsed >= tokio::time::Duration::from_millis(500),
+            elapsed >= std::time::Duration::from_millis(500),
             "Rate limiter should enforce 500ms delay, got {:?}",
             elapsed
         );
@@ -541,8 +547,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_rate_limiting_burst_protection() {
-        // M5 FIX: Verify burst protection with multiple concurrent acquires
-        tokio::time::pause();
         let config = RateLimiterConfig::new(100, 2); // 100ms delay, burst=2
         let limiter = RateLimiter::new(&config).await.unwrap();
 
@@ -551,12 +555,12 @@ mod tests {
         limiter.until_ready().await;
 
         // Third should be delayed
-        let start = tokio::time::Instant::now();
+        let start = std::time::Instant::now();
         limiter.until_ready().await;
         let elapsed = start.elapsed();
 
         assert!(
-            elapsed >= tokio::time::Duration::from_millis(100),
+            elapsed >= std::time::Duration::from_millis(100),
             "Third request should be delayed by 100ms, got {:?}",
             elapsed
         );
