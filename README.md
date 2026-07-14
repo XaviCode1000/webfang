@@ -1,101 +1,129 @@
 # rust_scraper
 
-**Extrae contenido de cualquier sitio web y guárdalo en Markdown, JSON o directamente en tu Obsidian.**
+**Web scraper de alto rendimiento con arquitectura modular para datasets RAG, crawling inteligente y exportación multi-formato.**
 
-[![CI](https://github.com/XaviCode1000/rust-scraper/actions/workflows/ci.yml/badge.svg)](https://github.com/XaviCode1000/rust-scraper/actions)
+[![CI](https://github.com/XaviCode1000/rust_scraper/actions/workflows/ci.yml/badge.svg)](https://github.com/XaviCode1000/rust_scraper/actions)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.88+-orange)](https://rust-lang.org)
+[![Tests](https://img.shields.io/badge/tests-1%2C337+-green)](#testing)
+[![Miri](https://img.shields.io/badge/Miri-domain%2Bcore-passing-blue)](#memory-safety)
 
-[Quick Start](#-quick-start) · [Features](#-features) · [MCP Server](#-mcp-server) · [Docs](#-documentation) · [Contributing](#-contributing)
+[Quick Start](#-quick-start) · [Architecture](#-architecture) · [Features](#-features) · [CLI Reference](#cli-reference) · [MCP Server](#mcp-server) · [Developer Guide](#developer-guide)
 
 ---
 
 ## Quick Start
 
 ```bash
-# Instalar
-git clone https://github.com/XaviCode1000/rust-scraper.git
-cd rust-scraper
-cargo install --path .
+# Install
+git clone https://github.com/XaviCode1000/rust_scraper.git
+cd rust_scraper
+cargo install --path crates/rust_scraper_cli
 
-# Extraer una página
+# Scrape a single page
 rust_scraper --url https://example.com
 
-# Descubrir todo un sitio
+# Crawl an entire site
 rust_scraper --url https://example.com --use-sitemap --max-pages 50
+
+# Export for RAG pipelines
+rust_scraper --url https://example.com --export-format jsonl --clean-ai
 ```
 
-El contenido se guarda en `output/` como Markdown por defecto.
+Output is saved to `output/` as Markdown by default.
+
+---
+
+## Architecture
+
+Clean Architecture with enforced dependency direction across 5 workspace crates:
+
+```
+rust_scraper_cli ──→ rust_scraper_tui ──→ rust_scraper_core ←── rust_scraper_ai
+rust_scraper_cli ──→ rust_scraper_mcp ──→ rust_scraper_core
+rust_scraper_cli ──────────────────────→ rust_scraper_core
+```
+
+| Crate | Purpose | Key Dependencies |
+|-------|---------|-----------------|
+| `rust_scraper_core` | Domain, application, infrastructure | wreq, tokio, scraper, lol_html |
+| `rust_scraper_ai` | ONNX semantic cleaning | tract-onnx |
+| `rust_scraper_tui` | Terminal UI | ratatui |
+| `rust_scraper_mcp` | MCP server for AI agents | rmcp |
+| `rust_scraper_cli` | Binary entry point + CLI parsing | clap |
+
+**Dependency direction:** CLI → {TUI, MCP, AI} → Core. No circular dependencies.
 
 ---
 
 ## Features
 
-| Feature | Qué hace |
-|---------|----------|
-| **Limpieza de contenido** | Extrae solo el texto relevante (Readability) — ignora menús, ads, sidebar |
-| **Limpieza con IA** | Filtra contenido irrelevante con embeddings ONNX (feature `ai`) |
-| **Exportación múltiple** | Markdown, JSON, JSONL (RAG), Vector (embeddings) |
-| **Integración Obsidian** | Guarda directo en tu vault con wiki-links y metadatos |
-| **Detección de sitemaps** | Encuentra todas las páginas automáticamente |
-| **Descarga de assets** | Imágenes y documentos (PDF, DOCX, XLSX) |
-| **WAF detection** | Detecta Cloudflare, reCAPTCHA, hCaptcha, DataDome |
-| **MCP Server** | 34 herramientas para agentes AI |
-| **Rate limiting** | Configurable, respeta Retry-After |
-| **Reanudación** | Continúa crawls interrumpidos con `--resume` |
+| Feature | Description |
+|---------|-------------|
+| **Content extraction** | Readability-based extraction — strips menus, ads, sidebars |
+| **AI semantic cleaning** | ONNX embeddings filter irrelevant content (feature `ai`) |
+| **Multi-format export** | Markdown, JSON, JSONL (RAG), Vector (embeddings) |
+| **Obsidian integration** | Direct vault saves with wiki-links and metadata |
+| **Sitemap discovery** | Auto-discovers all pages via robots.txt + sitemap.xml |
+| **Asset download** | Images and documents (PDF, DOCX, XLSX) |
+| **WAF detection** | Detects Cloudflare, reCAPTCHA, hCaptcha, DataDome |
+| **MCP server** | 34+ tools for AI agent integration |
+| **Rate limiting** | Configurable with Retry-After respect |
+| **Resume** | Continues interrupted crawls with `--resume` |
+| **TLS fingerprinting** | wreq impersonates real browsers to bypass WAFs |
+| **TUI selector** | Interactive URL selection with ratatui |
 
 ---
 
-## Uso
+## CLI Reference
 
-### Modo básico
+### Basic usage
 
 ```bash
+# Single page
 rust_scraper --url https://example.com
+
+# With selector (CSS)
+rust_scraper --url https://example.com --selector "article h1"
+
+# Multi-page crawl
+rust_scraper --url https://example.com --max-pages 50 --concurrency 4
+
+# Sitemap-based crawl
+rust_scraper --url https://example.com --use-sitemap --sitemap-url https://example.com/sitemap.xml
 ```
 
-### Con sitemap
+### Output formats
 
 ```bash
-rust_scraper --url https://example.com --use-sitemap --max-pages 100
+rust_scraper --url https://example.com --format markdown    # Default
+rust_scraper --url https://example.com --format json
+rust_scraper --url https://example.com --export-format jsonl
+rust_scraper --url https://example.com --export-format vector
 ```
 
-### En Obsidian
-
-```bash
-rust_scraper --url https://example.com/articulo --obsidian-wiki-links --quick-save
-```
-
-### Con limpieza de IA
+### AI cleaning
 
 ```bash
 rust_scraper --url https://example.com --clean-ai --export-format jsonl
 ```
 
-### Opciones principales
+### Obsidian
 
 ```bash
-# Formato de salida
-rust_scraper --url https://example.com --format markdown  # (default)
-rust_scraper --url https://example.com --format json
-rust_scraper --url https://example.com --export-format jsonl
-rust_scraper --url https://example.com --export-format vector
+rust_scraper --url https://example.com --obsidian-wiki-links --quick-save
+```
 
-# Control de crawl
-rust_scraper --url https://example.com --max-pages 50 --delay-ms 1000
-rust_scraper --url https://example.com --concurrency 4
+### Control
 
-# Descarga de assets
+```bash
+rust_scraper --url https://example.com --max-pages 100 --delay-ms 1000 --timeout-secs 30
 rust_scraper --url https://example.com --download-images --download-documents
-
-# Previsualizar
 rust_scraper --url https://example.com --dry-run
-
-# Modo silencioso
 rust_scraper --url https://example.com --quiet
 ```
 
-### Referencia completa
+### Full reference
 
 ```bash
 rust_scraper --help
@@ -105,34 +133,30 @@ rust_scraper --help
 
 ## MCP Server
 
-rust_scraper incluye un servidor MCP con **34 herramientas** para agentes AI:
+The MCP server provides **34+ tools** for AI agent integration:
 
 ```bash
-# Servidor stdio (para OpenCode, Claude Desktop, Cursor, etc.)
-cargo run --example mcp_server_stdio --quiet
+# stdio mode (for OpenCode, Claude Desktop, Cursor)
+cargo run -p rust_scraper_mcp --example mcp_server --quiet
 
-# Servidor HTTP
-cargo run --example mcp_server
+# HTTP mode
+cargo run -p rust_scraper_mcp --example mcp_server
 ```
 
-**Herramientas disponibles:**
-
-| Categoría | Tools |
-|-----------|-------|
+| Category | Tools |
+|----------|-------|
 | Scraping | `scrape_url`, `scrape_batch`, `crawl_site`, `crawl_with_sitemap` |
-| Contenido | `clean_html`, `extract_links`, `convert_html_to_markdown` |
+| Content | `clean_html`, `extract_links`, `convert_html_to_markdown` |
 | WAF | `detect_waf`, `verify_waf_integrity`, `list_waf_providers` |
 | Export | `export_file`, `export_jsonl`, `export_vector` |
 | Obsidian | `detect_obsidian_vault`, `search_obsidian`, `build_obsidian_uri` |
 | URLs | `validate_url`, `normalize_url`, `is_internal_link` |
 
-Configuración para OpenCode — manejado globalmente en `~/.config/opencode/opencode.json`.
-
 ---
 
-## Configuración
+## Configuration
 
-Archivo: `~/.config/rust_scraper/config.toml`
+Config file: `~/.config/rust_scraper/config.toml`
 
 ```toml
 format = "markdown"
@@ -141,61 +165,108 @@ delay_ms = 500
 use_sitemap = true
 ```
 
-Los argumentos de línea de comandos tienen prioridad sobre este archivo.
+CLI arguments override config file values.
 
 ---
 
-## Features de compilación
+## Build Features
 
-| Feature | Qué activa | Instalación |
-|---------|-----------|-------------|
-| `ai` | Limpieza semántica con ONNX (~90MB modelo) | `cargo install --path . --features ai` |
-| `images` | Detección y descarga de imágenes | `cargo install --path . --features images` |
-| `documents` | Detección y descarga de documentos | `cargo install --path . --features documents` |
-| `full` | Todas las features | `cargo install --path . --features full` |
-| `console` | Tokio console (debugging) | `cargo install --path . --features console` |
+| Feature | Activates | Install |
+|---------|-----------|---------|
+| `default` | images + documents | `cargo install --path crates/rust_scraper_cli` |
+| `ai` | Semantic cleaning with ONNX (~90MB model) | `--features ai` |
+| `ui` | Interactive TUI with ratatui | `--features ui` |
+| `mcp` | MCP server for AI agents | `--features mcp` |
+| `persistence` | SQLite checkpoint store | `--features persistence` |
+| `otel` | OpenTelemetry observability | `--features otel` |
+| `console` | Tokio console (debugging) | `--features console` |
 
 ---
 
-## Para desarrolladores
+## Testing
 
 ```bash
-# Verificación rápida (fmt + clippy + tests)
-just test-ci
+# Run all tests
+cargo nextest run --workspace
 
-# Tests durante desarrollo
-just test-dev
+# Run with coverage
+cargo llvm-cov --all-features
 
-# Coverage
-just cov
-
-# Audit de seguridad
-just audit
+# Run Miri (memory safety verification)
+cargo +nightly miri test --lib
 ```
 
-**Stack:** Rust 1.88 · Tokio · wreq (TLS fingerprint) · ratatui (TUI) · scraper 0.27 · lol_html
+**Test suite:** 1,337 tests across unit, integration, and behavioral layers.
 
-**CI:** GitHub Actions ejecuta fmt, clippy, tests, Miri (UB detection), coverage, y security audit en cada push.
+**Miri status:** Domain + Core layers verified for Undefined Behavior. Infrastructure layer partially verified (servo_arc/btls FFI limitations documented).
 
 ---
 
-## Documentación
+## Developer Guide
 
-| Recurso | Qué cubre |
-|---------|-----------|
-| [AGENTS.md](AGENTS.md) | Instrucciones para agentes AI |
-| `rust_scraper --help` | Referencia CLI completa |
+### Workspace structure
+
+```
+rust_scraper/
+├── crates/
+│   ├── rust_scraper_core/     # Domain + application + infrastructure
+│   ├── rust_scraper_ai/       # AI/ONNX inference
+│   ├── rust_scraper_tui/      # Terminal UI
+│   ├── rust_scraper_mcp/      # MCP server
+│   └── rust_scraper_cli/      # Binary entry point
+├── Cargo.toml                 # Workspace manifest
+└── .github/workflows/ci.yml  # CI pipeline
+```
+
+### Development commands
+
+```bash
+# Quick verification (check + clippy + fmt)
+cargo check --workspace && cargo clippy --workspace -- -D warnings && cargo fmt --all -- --check
+
+# Run tests
+cargo nextest run --workspace
+
+# Build release
+cargo build --release -p rust_scraper_cli
+
+# Build with all features
+cargo build --release -p rust_scraper_cli --features full
+
+# Re-index GitNexus (code intelligence)
+gitnexus analyze --index-only --skip-agents-md
+```
+
+### Architecture rules
+
+- **Dependency direction:** CLI → {TUI, MCP, AI} → Core (never reverse)
+- **Port/Adapter pattern:** Domain defines traits, Infrastructure implements them
+- **Error types:** DomainError, InfraError, AppError → ScraperError (dual wrapping)
+- **User-facing errors:** Spanish. Internal logs: English.
+
+**Stack:** Rust 1.88 · Tokio · wreq (TLS fingerprint) · ratatui · scraper 0.27 · lol_html · tract-onnx
+
+---
+
+## Documentation
+
+| Resource | Covers |
+|----------|--------|
+| [AGENTS.md](AGENTS.md) | AI agent instructions, GitNexus integration |
+| [Wiki](https://github.com/XaviCode1000/rust_scraper/wiki) | Architecture, API reference, guides |
+| `rust_scraper --help` | Full CLI reference |
 
 ---
 
 ## Contributing
 
-1. Fork → branch `feature/nombre` → commit → PR
-2. Tests deben pasar: `just test-ci`
-3. Commits en formato Conventional Commits: `feat:`, `fix:`, `refactor:`, `ci:`, `docs:`
+1. Fork → branch `feature/name` → commit → PR
+2. Tests must pass: `cargo nextest run --workspace`
+3. Conventional Commits: `feat:`, `fix:`, `refactor:`, `ci:`, `docs:`
+4. Read [AGENTS.md](AGENTS.md) for architecture rules and GitNexus usage
 
 ---
 
-## Licencia
+## License
 
 MIT OR Apache-2.0
