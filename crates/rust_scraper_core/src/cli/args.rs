@@ -157,6 +157,8 @@ pub struct Args {
     pub concurrency: ConcurrencyConfig,
 
     /// Use sitemap for URL discovery
+    /// NOTE: HTTP redirects (301/302) are resolved at scrape-time, not parse-time.
+    /// This avoids redundant HEAD requests during sitemap parsing for better performance.
     #[arg(long, env = "RUST_SCRAPER_USE_SITEMAP")]
     #[clap(next_help_heading = "Discovery")]
     pub use_sitemap: bool,

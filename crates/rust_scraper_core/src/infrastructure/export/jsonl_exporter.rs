@@ -2,15 +2,70 @@
 //!
 //! Exports DocumentChunk to JSON Lines format (one JSON object per line).
 //! Optimized for streaming writes and large datasets.
+//!
+//! ## Metadata Schema (v2.0.0)
+//!
+//! Each JSONL line includes:
+//! - `url`: Source URL
+//! - `timestamp_utc`: ISO 8601 / RFC 3339 timestamp
+//! - `title`: Document title (optional)
+//! - `content`: Extracted text content
+//! - `checksum_sha256`: SHA-256 hash of content for deduplication
+//! - `metadata_version`: Schema version ("2.0.0")
+//! - `content_length`: Character count for quick filtering
 
 use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 use fs2::FileExt;
+use serde::Serialize;
 
 use crate::domain::entities::DocumentChunkValidated;
 use crate::domain::exporter::{ExportResult, ExporterConfig, ExporterError};
+
+/// Webfang JSONL metadata schema (v2.0.0)
+///
+/// Wraps DocumentChunkValidated with additional fields for
+/// RAG pipeline integration and content deduplication.
+#[derive(Serialize)]
+pub struct WebfangMetadata<'a> {
+    /// Source URL
+    pub url: &'a str,
+    /// ISO 8601 / RFC 3339 timestamp
+    pub timestamp_utc: String,
+    /// Document title (optional)
+    pub title: Option<&'a str>,
+    /// Extracted text content
+    pub content: &'a str,
+    /// SHA-256 hash of content for deduplication
+    pub checksum_sha256: String,
+    /// Schema version
+    pub metadata_version: &'static str,
+    /// Character count for quick filtering
+    pub content_length: usize,
+}
+
+impl<'a> WebfangMetadata<'a> {
+    /// Create from a DocumentChunkValidated
+    pub fn from_chunk(chunk: &'a DocumentChunkValidated) -> Self {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        hasher.update(chunk.content.as_bytes());
+        let checksum = format!("{:x}", hasher.finalize());
+
+        Self {
+            url: &chunk.url,
+            timestamp_utc: chunk.timestamp.to_rfc3339(),
+            title: Some(&chunk.title),
+            content: &chunk.content,
+            checksum_sha256: checksum,
+            metadata_version: "2.0.0",
+            content_length: chunk.content.chars().count(),
+        }
+    }
+}
 
 /// JSONL Exporter - writes one JSON object per line
 ///
@@ -86,9 +141,10 @@ impl JsonlExporter {
         Ok(BufWriter::new(file))
     }
 
-    /// Serialize a single document to JSON line
+    /// Serialize a single document to JSON line with WebfangMetadata
     fn serialize_line(&self, doc: &DocumentChunkValidated) -> ExportResult<String> {
-        serde_json::to_string(doc).map_err(ExporterError::Serialization)
+        let metadata = WebfangMetadata::from_chunk(doc);
+        serde_json::to_string(&metadata).map_err(ExporterError::Serialization)
     }
 }
 

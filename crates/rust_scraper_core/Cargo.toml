@@ -149,6 +149,15 @@ rayon = "1.10"
 [build-dependencies]
 built = { version = "0.7", features = ["git2", "chrono"] }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+tempfile = { workspace = true }
+wiremock = { workspace = true }
+proptest = { workspace = true }
+criterion = { version = "0.5", features = ["html_reports"] }
+
 [lints.clippy]
 doc_markdown = "allow"
 uninlined_format_args = "allow"
@@ -185,11 +194,3 @@ trivially_copy_pass_by_ref = "allow"
 
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("ai", "ui", "mcp"))'] }
-
-[dev-dependencies]
-assert_cmd = { workspace = true }
-predicates = { workspace = true }
-tempfile = { workspace = true }
-wiremock = { workspace = true }
-proptest = { workspace = true }
-criterion = { version = "0.5", features = ["html_reports"] }

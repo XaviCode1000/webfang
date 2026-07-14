@@ -514,4 +514,51 @@ mod tests {
         limiter.until_ready().await;
         assert!(limiter.health_check().await.is_ok());
     }
+
+    // ============================================================================
+    // M5: Deterministic Rate Limiting Tests (tokio::time::pause)
+    // ============================================================================
+
+    #[tokio::test]
+    async fn test_rate_limiting_precision() {
+        // M5 FIX: Use tokio::time::pause() for deterministic timing
+        tokio::time::pause();
+        let config = RateLimiterConfig::new(500, 1);
+        let limiter = RateLimiter::new(&config).await.unwrap();
+
+        limiter.until_ready().await;
+        let start = tokio::time::Instant::now();
+
+        limiter.until_ready().await;
+
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= tokio::time::Duration::from_millis(500),
+            "Rate limiter should enforce 500ms delay, got {:?}",
+            elapsed
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiting_burst_protection() {
+        // M5 FIX: Verify burst protection with multiple concurrent acquires
+        tokio::time::pause();
+        let config = RateLimiterConfig::new(100, 2); // 100ms delay, burst=2
+        let limiter = RateLimiter::new(&config).await.unwrap();
+
+        // First 2 should succeed immediately (burst=2)
+        limiter.until_ready().await;
+        limiter.until_ready().await;
+
+        // Third should be delayed
+        let start = tokio::time::Instant::now();
+        limiter.until_ready().await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed >= tokio::time::Duration::from_millis(100),
+            "Third request should be delayed by 100ms, got {:?}",
+            elapsed
+        );
+    }
 }
