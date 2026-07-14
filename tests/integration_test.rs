@@ -137,7 +137,7 @@ fn test_args_has_required_fields() {
         obscura_binary: "obscura".to_string(),
         // Item Pipeline
         pipeline: false,
-        pipeline_output: rust_scraper::cli::args::PipelineOutputFormat::Jsonl,
+        pipeline_output: rust_scraper::domain::config::PipelineOutputFormat::Jsonl,
         // Batch Processing
         batch: false,
         batch_file: None,

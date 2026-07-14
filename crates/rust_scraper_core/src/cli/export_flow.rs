@@ -1,0 +1,187 @@
+//! Export flow — handles result export (standard and AI-cleaned) and file saving.
+
+use std::path::{Path, PathBuf};
+#[allow(unused_imports)]
+use tracing::{info, warn};
+
+use crate::cli::error::CliExit;
+use crate::domain::ScrapedContent;
+use crate::infrastructure::export::state_store::StateStore;
+use crate::infrastructure::output::file_saver::ObsidianOptions;
+use crate::{
+    application::export_factory, infrastructure::output::file_saver::save_results, ExportFormat,
+    OutputFormat,
+};
+
+#[cfg(feature = "ai")]
+use crate::domain::semantic_cleaner::SemanticCleaner;
+
+// ============================================================================
+// Export Results (RAG pipeline)
+// ============================================================================
+
+/// Configuration for the export flow.
+#[allow(dead_code)]
+pub struct ExportConfig<'a> {
+    pub results: &'a [ScrapedContent],
+    pub output_dir: PathBuf,
+    pub format: OutputFormat,
+    pub export_format: ExportFormat,
+    pub clean_ai: bool,
+    pub quick_save: bool,
+    pub vault_path: Option<&'a PathBuf>,
+    pub obsidian_options: ObsidianOptions,
+    pub state_store: Option<&'a StateStore>,
+    pub resume: bool,
+    /// AI settings (only used when clean_ai is true and feature is enabled)
+    pub ai_threshold: f32,
+    pub ai_max_tokens: usize,
+    pub ai_offline: bool,
+}
+
+/// Run the export flow: AI-cleaned or standard export.
+///
+/// Returns the list of processed URLs on success.
+#[cfg(feature = "ai")]
+pub async fn run_export(
+    config: ExportConfig<'_>,
+    ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
+) -> Result<Vec<String>, CliExit> {
+    if config.clean_ai {
+        match ai_cleaner {
+            Some(cleaner) => run_ai_export(&config, cleaner).await,
+            None => Err(CliExit::UsageError(
+                "AI semantic cleaning requires the 'ai' feature. Recompile with --features ai"
+                    .into(),
+            )),
+        }
+    } else {
+        run_standard_export(&config)
+    }
+}
+
+/// Run the export flow (non-AI build).
+#[cfg(not(feature = "ai"))]
+pub async fn run_export(config: ExportConfig<'_>) -> Result<Vec<String>, CliExit> {
+    if config.clean_ai {
+        warn!("--clean-ai requires the 'ai' feature. Recompile with --features ai");
+        return Err(CliExit::UsageError(
+            "AI semantic cleaning requires --features ai. Recompile with: cargo run --features ai"
+                .into(),
+        ));
+    }
+    run_standard_export(&config)
+}
+
+/// Standard export path (backward compatible).
+fn run_standard_export(config: &ExportConfig<'_>) -> Result<Vec<String>, CliExit> {
+    match export_factory::process_results(
+        config.results,
+        config.output_dir.clone(),
+        config.export_format,
+        "export",
+        config.state_store,
+        config.resume,
+    ) {
+        Ok(urls) => Ok(urls),
+        Err(e) => {
+            warn!("Failed to export results: {}", e);
+            Err(CliExit::IoError(e.to_string()))
+        },
+    }
+}
+
+/// AI semantic cleaning export path.
+#[cfg(feature = "ai")]
+async fn run_ai_export(
+    config: &ExportConfig<'_>,
+    cleaner: std::sync::Arc<dyn SemanticCleaner>,
+) -> Result<Vec<String>, CliExit> {
+    use crate::domain::DocumentChunk;
+
+    info!(
+        "Starting AI cleaning for {} pages concurrently...",
+        config.results.len()
+    );
+
+    let cleaning_tasks: Vec<_> = config
+        .results
+        .iter()
+        .map(|result| {
+            let html_content = result
+                .html
+                .clone()
+                .unwrap_or_else(|| result.content.clone());
+            let url = result.url.clone();
+            let cleaner = std::sync::Arc::clone(&cleaner);
+            async move {
+                let chunks_result = cleaner.clean(&html_content).await;
+                (url, chunks_result, result.clone())
+            }
+        })
+        .collect();
+
+    let cleaning_results = futures::future::join_all(cleaning_tasks).await;
+
+    let mut cleaned_chunks: Vec<DocumentChunk> = Vec::with_capacity(config.results.len() * 2);
+    for (url, chunks_result, result) in cleaning_results {
+        match chunks_result {
+            Ok(chunks) => {
+                if chunks.is_empty() {
+                    warn!("AI cleaner produced 0 chunks for: {}", url);
+                    cleaned_chunks.push(DocumentChunk::from_scraped_content(&result));
+                } else {
+                    cleaned_chunks.extend(chunks);
+                }
+            },
+            Err(e) => {
+                warn!(
+                    "Failed to clean content for {}: {}. Using fallback.",
+                    url, e
+                );
+                cleaned_chunks.push(DocumentChunk::from_scraped_content(&result));
+            },
+        }
+    }
+
+    info!(
+        "AI cleaning complete: {} chunks from {} pages",
+        cleaned_chunks.len(),
+        config.results.len()
+    );
+
+    match export_factory::process_results_with_chunks(
+        &cleaned_chunks,
+        config.output_dir.clone(),
+        config.export_format,
+        "export",
+        config.state_store,
+        config.resume,
+    ) {
+        Ok(urls) => Ok(urls),
+        Err(e) => {
+            warn!("Failed to export cleaned results: {}", e);
+            Err(CliExit::IoError(e.to_string()))
+        },
+    }
+}
+
+// ============================================================================
+// Save Individual Files (Markdown/Text/JSON)
+// ============================================================================
+
+/// Save individual output files with Obsidian support.
+///
+/// This is non-fatal — a failure here doesn't abort the pipeline since
+/// RAG export (JSONL) already succeeded.
+pub fn save_files(
+    results: &[ScrapedContent],
+    output_dir: &Path,
+    format: &OutputFormat,
+    obsidian_options: &ObsidianOptions,
+) {
+    if let Err(e) = save_results(results, output_dir, format, obsidian_options) {
+        warn!("Failed to save individual files: {}", e);
+        // Continue — file save is non-fatal, RAG export succeeded
+    }
+}

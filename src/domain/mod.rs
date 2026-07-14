@@ -13,6 +13,7 @@
 
 use url::Url;
 
+pub mod config;
 pub mod crawl_job;
 pub mod crawler_entities;
 pub mod credentials;
@@ -24,6 +25,7 @@ pub mod js_strategy;
 pub mod link_extractor;
 pub mod pattern_matching;
 pub mod pipeline_item;
+pub mod ports;
 pub mod repositories;
 pub mod repository;
 pub mod result;
@@ -36,6 +38,7 @@ pub mod value_objects;
 pub mod semantic_cleaner;
 
 // Re-exports for backward compatibility (crate::domain::X)
+pub use config::{ConcurrencyConfig, ExportFormat, OutputFormat, PipelineOutputFormat};
 pub use crawl_job::{ContentType, DiscoveredUrl};
 pub use credentials::{
     AccessToken, ApiKey, CredentialError, CredentialStore, SecretCredential, SensitiveString,
@@ -43,10 +46,9 @@ pub use credentials::{
 
 pub use entities::{
     DocumentChunk, DocumentChunkExported, DocumentChunkUnvalidated, DocumentChunkValidated,
-    DownloadedAsset, Draft, ExportFormat, ExportState, Exported, ScrapedContent, Validated,
-    ValidationError,
+    DownloadedAsset, Draft, ExportState, Exported, ScrapedContent, Validated, ValidationError,
 };
-pub use error::CrawlError;
+pub use error::{CrawlError, DomainError};
 pub use exporter::{ExportResult, Exporter, ExporterConfig, ExporterError};
 pub use js_renderer::{JsRenderError, JsRenderer};
 pub use js_strategy::JsStrategy;

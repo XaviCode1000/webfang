@@ -1,388 +1,160 @@
-[package]
-name = "rust_scraper"
+[workspace]
+resolver = "2"
+members = [
+    "crates/rust_scraper_core",
+    "crates/rust_scraper_ai",
+    "crates/rust_scraper_tui",
+    "crates/rust_scraper_mcp",
+    "crates/rust_scraper_cli",
+]
+
+[workspace.package]
 version = "1.1.1"
 edition = "2021"
-description = "Production-ready web scraper with Clean Architecture, TUI selector, and sitemap support"
-authors = ["GazaDev"]
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
+authors = ["GazaDev"]
 repository = "https://github.com/XaviCode1000/rust-scraper"
 homepage = "https://github.com/XaviCode1000/rust-scraper"
-documentation = "https://docs.rs/rust_scraper"
-keywords = ["scraper", "web", "crawler", "rag", "tui"]
-categories = ["command-line-utilities", "web-programming"]
-rust-version = "1.88"
-# Explicit binary targets only — avoids auto-discovery conflicts with src/bin/*
-autobins = false
 
-[package.metadata.cargo-machete]
-ignored = ["rustls-webpki", "time"]
+[workspace.dependencies]
+# Internal crates
+rust_scraper_core = { path = "crates/rust_scraper_core" }
+rust_scraper_ai = { path = "crates/rust_scraper_ai" }
+rust_scraper_tui = { path = "crates/rust_scraper_tui" }
+rust_scraper_mcp = { path = "crates/rust_scraper_mcp" }
+rust_scraper_cli = { path = "crates/rust_scraper_cli" }
 
-[package.metadata.cargo-udeps]
-ignore = ["rustls-webpki"]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
 
-[features]
-default = ["images", "documents"]
-images = ["dep:mimetype-detector"]
-documents = ["dep:mimetype-detector"]
-# Full-featured build: all optional layers (TUI + future persistence).
-full = ["images", "documents", "ui"]
-# TUI (ratatui + crossterm + ratatui-form + inquire) — optional.
-# When OFF, `rust_scraper_core` builds without any TUI deps, producing a
-# lightweight headless binary (< 10 MB). Spec R2 / S2.1.
-ui = ["dep:ratatui", "dep:crossterm", "dep:ratatui-form", "dep:inquire"]
-# AI-powered semantic cleaning (Module 3 + 4 + 5 + 7)
-ai = [
-    "dep:tokenizers",
-    "dep:unicode-segmentation",
-    "dep:smallvec",
-    "dep:wide",
-    "dep:tract-onnx",
-    "dep:hf-hub",
-]
-# Tokio console for runtime observability (task-starvation debugging)
-# Requires: RUSTFLAGS="--cfg tokio_unstable" at compile time
-console = ["dep:console-subscriber"]
-# Hierarchical span tree rendering for local dev debugging
-# Activates tracing-tree HierarchicalLayer — terminal-friendly tree output
-dev-tracing = ["dep:tracing-tree"]
-# OpenTelemetry distributed tracing (OTLP HTTP/protobuf export)
-otel = [
-    "dep:opentelemetry",
-    "dep:opentelemetry_sdk",
-    "dep:opentelemetry-otlp",
-    "dep:tracing-opentelemetry",
-]
-# OpenTelemetry metrics (extends otel with metrics API + OTLP metric export)
-otel-metrics = [
-    "otel",
-    "opentelemetry/metrics",
-    "opentelemetry_sdk/metrics",
-    "opentelemetry_sdk/rt-tokio",
-    "opentelemetry-otlp/metrics",
-]
-
-# MCP server (Model Context Protocol) — optional. Excluded from the lightweight
-# `rust_scraper_core` build to keep it small; enabled for the full binary.
-mcp = ["dep:rmcp", "dep:axum", "dep:tower-http", "dep:schemars"]
-
-# SQLite persistence (resources/chunks + WAL pool + RAM autotuning).
-# Optional — OFF by default so the lightweight `rust_scraper_core` binary ships
-# without any SQLite/bundled-libsqlite3 dependency (spec R2 / S2.1). When OFF,
-# vector output can be emitted via the dependency-free `StreamRepository` JSONL sink (flag `--output-vectors`).
-persistence = ["dep:rusqlite", "dep:deadpool-sqlite", "dep:sys-info"]
-
-[dependencies]
-# CLI - Argument parsing obligatorio
-clap = { version = "4", features = ["derive", "env"] }
-
-# HTTP & Networking - wreq with TLS fingerprint impersonation (Layer 2 WAF Evasion)
-# wreq 6.0.0-rc.28+ is required for prefix-symbols feature (avoids openssl-sys conflicts on Linux)
-# wreq 5.3.0 lacks prefix-symbols, which is mandatory per design decision #2
+# HTTP & Networking
 wreq = { version = "6.0.0-rc.28", features = ["gzip", "brotli", "stream", "json", "cookies", "prefix-symbols"] }
-
-# TLS fingerprint emulation presets (Chrome 131, Firefox 133, etc.); rc.13 exposes Profile presets.
 wreq-util = { version = "3.0.0-rc.10", features = ["emulation"] }
-
-# Bytes type for streaming
 bytes = "1"
 
-# Content Extraction - Readability algorithm (Firefox Reader mode)
+# Content Extraction
 legible = "0.4"
 htmd = "0.5"
 
-# Serialization for JSON output
+# Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# HTML Parsing for CSS selectors
-# scraper 0.27 uses selectors 0.38. html-cleaning/dom_query removed.
-# Down from 3 versions (0.26, 0.33, 0.35) to 2 (0.35, 0.38).
+# HTML Parsing
 scraper = "0.27"
-
-# Streaming HTML rewriter with CSS selector API (Cloudflare)
-# Used for HTML boilerplate removal — no selectors dependency
 lol_html = "2"
 
-# Async runtime
-# NOTE: "full" includes "unstable" for tokio-console support
-tokio = { version = "1", features = ["full"] }
-
-# tokio-console instrumentation (runtime tracing for task-starvation debugging)
-# Only enabled via RUSTFLAGS="--cfg tokio_unstable" + --features console
-# See src/infrastructure/observability/mod.rs for integration
-console-subscriber = { version = "0.4", optional = true }
-
-# Error handling - anyhow for applications
+# Error handling
 anyhow = "1"
+thiserror = "2"
 
-# Logging estructurado
+# Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 tracing-appender = "0.2"
-tracing-tree = { version = "0.4", optional = true }
-
-# OpenTelemetry (feature-gated: --features otel)
-opentelemetry = { version = "0.32", optional = true }
-opentelemetry_sdk = { version = "0.32", optional = true, features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.32", optional = true, features = ["http-proto", "reqwest-blocking-client"] }
-tracing-opentelemetry = { version = "0.33", optional = true }
 
 # Utilities
 url = { version = "2", features = ["serde"] }
 percent-encoding = "2"
 globset = "0.4"
 futures = "0.3"
-# Use rustls (default TLS) for OTel export — avoids OpenSSL system dependency.
-# rustls-platform-verifier handles system certs (Grafana Cloud, etc.).
-reqwest = { version = "0.13", optional = true, default-features = false, features = ["blocking", "rustls"] }
+regex = "1"
+heck = "0.5"
+sha2 = "0.10"
+rand = "0.9"
+dirs = "5"
+num_cpus = "1"
+once_cell = "1"
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
 
-# HTML to Markdown conversion (preserves headings, code blocks, lists)
-# Pinned to <2.21 to avoid edition2024 requirement (needs Rust 1.85+)
+# HTML to Markdown
 html-to-markdown-rs = ">=2.3, <2.21"
-
-
-# Syntax highlighting for code blocks
 syntect = "5"
-
-# YAML frontmatter
 serde_yaml = "0.9"
-
-# Date/time for frontmatter
 chrono = { version = "0.4", features = ["serde"] }
 
-# Regex for parsing code blocks
-regex = "1"
-
-# Case conversion for URL slug generation (wiki-links)
-heck = "0.5"
-
-# SHA256 for content hashing
-sha2 = "0.10"
-
-# Error handling
-thiserror = "2"
-
-# Random for user agent rotation (TASK-05)
-rand = "0.9"
-
-# Cache directory management (TASK-001: User-Agent lazy update)
-dirs = "5"
-
-# File locking for concurrent state access (SRE hotfix: Vector 2)
-fs2 = "0.4"
-
-# Walking directory for tests
-walkdir = "2"
-
-# MIME type detection (optional - for image/document detection)
-mimetype-detector = { version = "0.3", optional = true }
-
-# Rate limiting (hardware-aware para HDD) - FASE 1 Web Crawler
-# NOTE: governor depends on dashmap 5.x — we use dashmap 6.x directly below.
-# Both versions coexist because governor hasn't upgraded. Do NOT try to unify.
-governor = "0.6"
-
-# Concurrent data structures - FASE 1 Web Crawler
-# NOTE: dashmap 6.x is used directly by url_queue.rs (DashSet).
-# governor pulls in dashmap 5.x. Both are needed. Do NOT remove either.
-dashmap = "6"
-
-# Hasher for u64-keyed URL deduplication (DashSet<u64, ahash::RandomState>).
-# Per-process randomized seed (FR-3 HashDoS resistance). Direct dep — previously
-# only transitive under the `ai` feature. Default `std` feature for hash_one().
-ahash = { version = "0.8", features = ["std"] }
-
-# TUI (optional, gated behind `ui` feature) - FASE 1 Web Crawler
-# When `ui` is OFF, the core binary excludes ratatui/crossterm entirely (spec R2).
-ratatui = { version = "0.29", features = ["palette", "serde"], optional = true }
-ratatui-form = { version = "0.1.1", optional = true }
-crossterm = { version = "0.28", features = ["event-stream"], optional = true }
-
-# XML parsing (preparar para Fase 3) - FASE 1 Web Crawler
-# NOTE: quick-xml 0.41 fixes RUSTSEC-2026-0194/0195 (quadratic + OOM).
-# syntect→plist pulls in 0.39 — both are needed. Do NOT try to unify.
+# XML
 quick-xml = "0.41"
 
-# CPU detection for hardware-aware concurrency
-num_cpus = "1"
+# Rate limiting
+governor = "0.6"
+dashmap = "6"
+ahash = { version = "0.8", features = ["std"] }
 
-# ============================================================================
-# Elastic Ingestion (Issue #51) — autotuning + SQLite persistence + CPU pool
-# ============================================================================
-# SQLite embedded persistence (bundled libsqlite3; chrono/uuid feature gates).
-# Gated behind the `persistence` feature so the core binary has zero SQLite deps.
-rusqlite = { version = "0.31", features = ["bundled", "chrono", "uuid"], optional = true }
-# Async SQLite connection pool (WAL-friendly, pooled blocking calls off Tokio)
-# NOTE: task pinned "0.15" (nonexistent); 0.13 needs rusqlite 0.38 (conflicts
-# with proposal-pinned rusqlite 0.31). Frozen design.md pins no version.
-# Resolver-selected max version compatible with rusqlite 0.31 is 0.8.1.
-# Gated behind `persistence`.
-deadpool-sqlite = { version = "0.8", optional = true }
-# Total RAM detection for hardware autotuning (CPU uses num_cpus above)
-# NOTE: task pinned "0.10" but that version does not exist on crates.io
-# (candidates: 0.9.1, 0.9.0). proposal.md specifies "0.9" — using that.
-# Gated behind `persistence` (only used by the SQLite path's RAM detection).
-sys-info = { version = "0.9", optional = true }
-# Promoted from transitive to direct: explicit isolated Rayon thread pool (PR3)
-rayon = "1.10"
-
-# Progress bars
+# Observability
 indicatif = { version = "0.17", features = ["improved_unicode"] }
 
-# Interactive wizard for guided prompting (Phase 1)
-# Gated behind `ui` — only used by --interactive TUI prompt (design A5 / Q2).
-inquire = { version = "0.9", optional = true }
-
-# Shell completions
-clap_complete = "4"
-
-# Config file parsing
-toml = "0.8"
-
-# Cross-platform relative path calculation
-pathdiff = "0.2"
-
-# Aho-Corasick for efficient WAF signature matching (O(N) vs O(N*M))
-# Used by WafInspector for detecting 50+ WAF signatures in parallel
-aho-corasick = "1"
-
-# Lazy statics for WAF signature automaton
-once_cell = "1"
-
-# Markdown parsing for wiki-link conversion (event-based)
-# Replaces regex-based approach that couldn't handle GFM tables, footnotes, etc.
-pulldown-cmark = "0.13"
-
-# UUID for temp file generation (production-ready streaming)
-uuid = { version = "1", features = ["v4", "v7", "serde"] }
-async-compression = { version = "0.4.41", features = ["tokio", "gzip", "deflate", "brotli", "zstd"] }
-
-# Language detection for Obsidian rich metadata
-whatlang = "0.18"
-
-# ONNX runtime for model inference (tract-onnx - 100% Rust)
-tract-onnx = { version = "0.21", optional = true }
-# Tokenizer for sentence-transformers
-tokenizers = { version = "0.21", optional = true }
-# HuggingFace Hub for model downloads
-# CRITICAL: Use rustls-tls to avoid OpenSSL native linking
-# Also disable default-tls to prevent pulling native-tls
-hf-hub = { version = "0.5", default-features = false, features = ["tokio", "rustls-tls"], optional = true }
-
-# ============================================================================
-# Semantic Chunking Dependencies (feature-gated: --features ai)
-# ============================================================================
-# Unicode-aware sentence segmentation
-unicode-segmentation = { version = "1.12", optional = true }
-# Small vector optimization for small collections (mem-smallvec)
-smallvec = { version = "1.13", optional = true }
-# SIMD operations for cosine similarity (opt-simd-portable)
-wide = { version = "0.7", optional = true }
-
-# System resource monitoring for ResourceGovernor (RAM-based instance gating)
-sysinfo = "0.30"
-
-# Security updates - force secure versions to address vulnerabilities
+# Security
 rustls-webpki = ">=0.103.12"
 time = ">=0.3.47"
 
-# Competitive Features Phase 1 — Foundation
-jzon-rs-serde = "0.3"       # SIMD-accelerated JSON serialization, serde-compatible drop-in
-crc32fast = "1"             # Fast CRC32 checksums for content deduplication
-robotstxt = "0.3"           # robots.txt parsing and compliance
+# tokio-console
+console-subscriber = "0.4"
 
-# MCP Server (Model Context Protocol) — expose scraper tools to AI agents
-rmcp = { version = "1.7", optional = true, features = ["server", "macros", "schemars", "transport-streamable-http-server"] }
-axum = { version = "0.8", optional = true }
-tower-http = { version = "0.6", optional = true, features = ["trace"] }
-schemars = { version = "1.0", optional = true }
+# SQLite persistence
+rusqlite = { version = "0.31", features = ["bundled", "chrono", "uuid"] }
+deadpool-sqlite = "0.8"
+sys-info = "0.9"
 
-# Secrets protection (Phase 2: zeroize/secrecy)
+# Observability
+tracing-tree = "0.4"
+opentelemetry = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.32", features = ["http-proto", "reqwest-blocking-client"] }
+tracing-opentelemetry = "0.33"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
+
+# MIME detection
+mimetype-detector = "0.3"
+
+# AI features
+tokenizers = "0.21"
+unicode-segmentation = "1.12"
+smallvec = "1.13"
+wide = "0.7"
+tract-onnx = "0.21"
+hf-hub = { version = "0.5", default-features = false, features = ["tokio", "rustls-tls"] }
+
+# TUI features
+ratatui = { version = "0.29", features = ["palette", "serde"] }
+ratatui-form = "0.1.1"
+crossterm = { version = "0.28", features = ["event-stream"] }
+inquire = "0.9"
+
+# MCP features
+rmcp = { version = "1.7", features = ["server", "macros", "schemars", "transport-streamable-http-server"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["trace"] }
+schemars = "1.0"
+
+# Competitive Features
+jzon-rs-serde = "0.3"
+crc32fast = "1"
+robotstxt = "0.3"
 secrecy = { version = "0.8", features = ["serde"] }
 url-normalize = "0.1.1"
 
-[dev-dependencies]
+# Misc
+sysinfo = "0.30"
+aho-corasick = "1"
+pulldown-cmark = "0.13"
+whatlang = "0.18"
+walkdir = "2"
+fs2 = "0.4"
+async-compression = { version = "0.4.41", features = ["tokio", "gzip", "deflate", "brotli", "zstd"] }
+
+# Dev dependencies
 assert_cmd = "2"
 predicates = "3"
-
-criterion = { version = "0.5", features = ["html_reports"] }
-
 tempfile = "3"
-walkdir = "2"
 wiremock = "0.6"
 proptest = "1.6"
 
-[[bench]]
-name = "waf_detection"
-harness = false
-
-[[bench]]
-name = "cosine_similarity"
-harness = false
-required-features = ["ai"]
-
-[[bench]]
-name = "url_parsing"
-harness = false
-
-[[bench]]
-name = "sitemap_parsing"
-harness = false
-
-[[bench]]
-name = "html_conversion"
-harness = false
-
-[[bench]]
-name = "readability"
-harness = false
-
-[[bench]]
-name = "export"
-harness = false
-
-[[bench]]
-name = "link_extraction"
-harness = false
-
-# MCP examples require the `mcp` feature (axum + mcp_server module).
-[[example]]
-name = "mcp_server"
-required-features = ["mcp"]
-
-[[example]]
-name = "mcp_server_stdio"
-required-features = ["mcp"]
-
-# ============================================================================
-# Dual build targets
-# ============================================================================
-# Full binary: includes the `ai` feature (ONNX semantic cleaning + SHA256
-# validated model). Build with:  cargo build --release --features ai
-#
-# Lightweight binary: default features ONLY (NO `ui`/`persistence`/`ai`) for
-# restricted/edge environments. Built with the size-optimized `core` profile
-# (opt-level="z", lto=true). Verified size after core-slimming (PR1 #155 + PR2
-# #156): ~11.1 MB (baseline 12.47 MB). Re-scoped acceptance target: <12 MB.
-# Build with:  cargo build --profile core --bin rust_scraper_core
-[[bin]]
-name = "rust_scraper"
-path = "src/main.rs"
-required-features = ["ai", "mcp", "ui"]
-
-[[bin]]
-name = "rust_scraper_core"
-path = "src/bin/rust_scraper_core.rs"
-
-[build-dependencies]
-built = { version = "0.7", features = ["git2", "chrono"] }
-
 [profile.dev]
-# Compilación rápida para desarrollo - máximo speed
 opt-level = 0
 debug = true
 
-# Siempre optimizar dependencies en dev (mejora perf sin costo extra)
 [profile.dev.package."*"]
 opt-level = 3
 
@@ -398,51 +170,6 @@ inherits = "release"
 debug = true
 strip = false
 
-# Temporary clippy allows to unblock refactoring pipeline
-# These are pedantic lints that are too noisy for a codebase in active refactoring
-[lints.clippy]
-doc_markdown = "allow"
-uninlined_format_args = "allow"
-needless_raw_string_hashes = "allow"
-missing_errors_doc = "allow"
-must_use_candidate = "allow"
-redundant_closure = "allow"
-match_same_arms = "allow"
-items_after_statements = "allow"
-missing_panics_doc = "allow"
-module_name_repetitions = "allow"
-too_many_lines = "allow"
-too_many_arguments = "allow"
-struct_excessive_bools = "allow"
-struct_field_names = "allow"
-similar_names = "allow"
-cast_precision_loss = "allow"
-cast_possible_truncation = "allow"
-cast_sign_loss = "allow"
-default_trait_access = "allow"
-doc_link_with_quotes = "allow"
-wildcard_imports = "allow"
-enum_glob_use = "allow"
-explicit_iter_loop = "allow"
-explicit_into_iter_loop = "allow"
-map_unwrap_or = "allow"
-if_not_else = "allow"
-manual_let_else = "allow"
-needless_continue = "allow"
-needless_pass_by_value = "allow"
-return_self_not_must_use = "allow"
-single_match_else = "allow"
-trivially_copy_pass_by_ref = "allow"
-
-# Silence `unexpected_cfgs` for the new optional feature flags so CI stays clean.
-# `persistence` is declared here preemptively (PR2 will define the feature).
-[lints.rust]
-unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("ui", "persistence"))'] }
-
-# Size-optimized profile for the lightweight `rust_scraper_core` binary.
-# Inherits release settings but trades speed for minimum size
-# (opt-level="z" + full LTO). Verified artifact: ~11.1 MB (baseline 12.47 MB,
-# before the `ui`/`persistence` feature gates). Re-scoped acceptance: <12 MB.
 [profile.core]
 inherits = "release"
 opt-level = "z"
@@ -450,6 +177,3 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
-
-
-

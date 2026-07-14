@@ -262,6 +262,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    env:
+      # rust-toolchain.toml pins 1.88.0 and would override the nightly toolchain
+      # for `cargo miri` (miri is nightly-only). RUSTUP_TOOLCHAIN (env var) has
+      # higher precedence than rust-toolchain.toml, so every cargo invocation in
+      # this job uses nightly. `override: true` on dtolnay/rust-toolchain is NOT
+      # enough because rust-toolchain.toml beats rustup directory overrides.
+      RUSTUP_TOOLCHAIN: nightly
     strategy:
       fail-fast: false
       matrix:
@@ -272,7 +279,12 @@ jobs:
           - group: domain
             filter: "-- domain::"
           - group: infra
-            filter: "-- infrastructure::"
+            # Skip FFI-heavy and slow modules under Miri (100x slowdown):
+            # - persistence: SQLite FFI (can't execute under Miri)
+            # - wikilinks: 29 regex-heavy tests (compilation 100x slower)
+            # - observability: otel/tracing init overhead, 0 unsafe code
+            # - syntax_highlight: syntect/onig-sys FFI (can't execute under Miri)
+            filter: "-- infrastructure:: --skip persistence --skip wikilinks --skip syntax_highlight --skip observability"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly

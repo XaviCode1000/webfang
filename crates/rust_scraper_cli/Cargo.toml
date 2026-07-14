@@ -1,0 +1,71 @@
+[package]
+name = "rust_scraper_cli"
+description = "CLI entry point for rust_scraper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = ["images", "documents"]
+images = ["rust_scraper_core/images"]
+documents = ["rust_scraper_core/documents"]
+ui = ["dep:rust_scraper_tui", "dep:inquire", "rust_scraper_core/ui"]
+ai = ["dep:rust_scraper_ai", "rust_scraper_core/ai"]
+mcp = ["dep:rust_scraper_mcp", "rust_scraper_core/mcp"]
+persistence = ["rust_scraper_core/persistence"]
+console = ["rust_scraper_core/console"]
+dev-tracing = ["rust_scraper_core/dev-tracing"]
+otel = ["rust_scraper_core/otel"]
+otel-metrics = ["rust_scraper_core/otel-metrics"]
+
+[[bin]]
+name = "rust_scraper"
+path = "src/main.rs"
+
+[dependencies]
+rust_scraper_core = { workspace = true }
+rust_scraper_tui = { workspace = true, optional = true }
+rust_scraper_ai = { workspace = true, optional = true }
+rust_scraper_mcp = { workspace = true, optional = true }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
+
+# Async
+tokio = { workspace = true }
+
+# TUI deps (needed for main.rs)
+inquire = { workspace = true, optional = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Config
+dirs = { workspace = true }
+toml = "0.8"
+
+# Logging
+tracing = { workspace = true }
+
+# URL
+url = { workspace = true }
+
+# Serialization
+serde_json = { workspace = true }
+
+# Observability
+tracing-tree = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+
+[lints.clippy]
+doc_markdown = "allow"
+uninlined_format_args = "allow"

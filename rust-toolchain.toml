@@ -1,0 +1,7 @@
+# Pin the Rust toolchain so CI and local use the SAME compiler/rustfmt.
+# Without this, CI uses rolling `stable` (newer rustfmt) and fails `cargo fmt --all -- --check`
+# on code formatted by the locally-installed 1.88 rustfmt.
+# Matches rust-version in Cargo.toml (1.88) and AGENTS.md ("Rust 1.88").
+[toolchain]
+channel = "1.88.0"
+components = ["rustfmt", "clippy"]

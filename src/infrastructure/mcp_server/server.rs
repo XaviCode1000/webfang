@@ -76,12 +76,12 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::di::Container;
+    use crate::di::{Container, ContainerExt};
 
     /// Build a test McpHandler with DI container.
     async fn test_handler() -> McpHandler {
         let config = Config::default();
-        let container = Container::new(config).await.unwrap();
+        let container = Container::from_config(config).await.unwrap();
         let state = McpState::new(container);
         McpHandler::new(state)
     }

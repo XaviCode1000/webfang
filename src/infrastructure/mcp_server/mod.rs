@@ -10,6 +10,7 @@
 //! to prevent resource exhaustion on constrained hardware.
 
 pub mod handlers;
+pub mod params;
 pub mod server;
 pub mod state;
 
@@ -25,10 +26,11 @@ use rmcp::{
     model::{CallToolResult, Content},
     ErrorData as McpError,
 };
-use schemars::JsonSchema;
-use serde::Deserialize;
-pub use state::McpState;
 use tracing::instrument;
+
+pub use state::McpState;
+
+use params::*;
 
 /// Main MCP handler struct.
 ///
@@ -54,244 +56,7 @@ impl McpHandler {
 }
 
 // ============================================================================
-// Request parameter structs (shared across tools)
-// ============================================================================
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct ScrapeUrlParams {
-    /// URL to scrape (must start with http:// or https://)
-    url: String,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct ScrapeWithOptionsParams {
-    /// URL to scrape
-    url: String,
-    /// Maximum pages to crawl (default: 1)
-    max_pages: Option<u32>,
-    /// Download images if found (default: false)
-    download_images: Option<bool>,
-    /// Download documents if found (default: false)
-    download_documents: Option<bool>,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct ScrapeBatchParams {
-    /// List of URLs to scrape
-    urls: Vec<String>,
-    /// Concurrency limit (default: 4)
-    concurrency: Option<usize>,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct CrawlSiteParams {
-    /// Base URL to crawl
-    url: String,
-    /// Maximum crawl depth (default: 3)
-    max_depth: Option<u8>,
-    /// Maximum pages to crawl (default: 100)
-    max_pages: Option<u32>,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct CrawlWithSitemapParams {
-    /// Base URL of the website
-    url: String,
-    /// Optional explicit sitemap URL
-    sitemap_url: Option<String>,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct DiscoverUrlsParams {
-    /// URL to extract links from
-    url: String,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct DetectSpaParams {
-    /// URL to check for SPA content
-    url: String,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct CleanHtmlParams {
-    /// Raw HTML to clean
-    html: String,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct HtmlToMarkdownParams {
-    /// HTML to convert
-    html: String,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct ExtractLinksParams {
-    /// HTML to extract links from
-    html: String,
-    /// Base URL for resolving relative links
-    base_url: String,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct HighlightCodeParams {
-    /// Markdown with code blocks
-    markdown: String,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct ConvertWikiLinksParams {
-    /// Markdown content
-    markdown: String,
-    /// Base domain for link conversion
-    base_domain: String,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct ValidateUrlParams {
-    /// URL to validate
-    url: String,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct ExtractDomainParams {
-    /// URL to extract domain from
-    url: String,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct NormalizeUrlParams {
-    /// URL to normalize
-    url: String,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct MatchUrlPatternParams {
-    /// URL to check
-    url: String,
-    /// Glob pattern to match against
-    pattern: String,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct IsInternalLinkParams {
-    /// URL to check
-    url: String,
-    /// Seed domain to compare against
-    seed_domain: String,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct DetectWafParams {
-    /// HTML body to scan for WAF signatures
-    html: String,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct ExportFileParams {
-    /// Output directory path
-    output_dir: String,
-    /// Filename (without extension)
-    filename: String,
-    /// Export format: markdown, text, json, jsonl, vector
-    format: String,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct DetectVaultParams {
-    /// Explicit vault path (optional)
-    vault_path: Option<String>,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct BuildObsidianUriParams {
-    /// Vault name
-    vault_name: String,
-    /// File path within vault
-    file_path: String,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize, JsonSchema, Debug)]
-struct SearchObsidianParams {
-    /// Search query
-    query: String,
-    /// Optional vault path to search in
-    vault_path: Option<String>,
-    /// Maximum results (default: 10)
-    limit: Option<usize>,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize, JsonSchema, Debug)]
-struct DownloadAssetsParams {
-    /// HTML containing asset references
-    html: String,
-    /// Base URL for resolving relative asset paths
-    base_url: String,
-    /// Download images (default: true)
-    images: Option<bool>,
-    /// Download documents (default: false)
-    documents: Option<bool>,
-}
-
-// Params for tools that accept free-form JSON input
-#[allow(dead_code)]
-#[derive(Deserialize, JsonSchema, Debug)]
-struct GenerateFrontmatterParams {
-    /// Document title
-    title: Option<String>,
-    /// Source URL
-    url: Option<String>,
-    /// Author name
-    author: Option<String>,
-    /// Excerpt or summary
-    excerpt: Option<String>,
-    /// Tags
-    tags: Option<Vec<String>>,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize, JsonSchema, Debug)]
-struct GenerateRichMetadataParams {
-    /// Document content for analysis
-    content: Option<String>,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize, JsonSchema, Debug)]
-struct ExportJsonlParams {
-    /// Output directory path
-    output_dir: Option<String>,
-    /// Filename (without extension)
-    filename: Option<String>,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize, JsonSchema, Debug)]
-struct ExportVectorParams {
-    /// Output directory path
-    output_dir: Option<String>,
-    /// Filename (without extension)
-    filename: Option<String>,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize, JsonSchema, Debug)]
-struct ProcessExportPipelineParams {
-    /// URL to scrape and export
-    url: Option<String>,
-    /// Export format
-    format: Option<String>,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize, JsonSchema, Debug)]
-struct VerifyWafIntegrityParams {
-    /// HTML body to inspect
-    html: Option<String>,
-}
-
+// Tool implementations — organized by category
 // ============================================================================
 // Tool implementations — organized by category
 // ============================================================================
@@ -326,7 +91,7 @@ impl McpHandler {
             )
         })?;
 
-        let client = self.state.container.http_client().client();
+        let client = self.state.container.http_client().as_ref();
         match crate::application::scraper_service::scrape_with_readability(client, &url).await {
             Ok(results) => {
                 let content = serde_json::to_string_pretty(&results)
@@ -372,7 +137,7 @@ impl McpHandler {
             config.download_documents = true;
         }
 
-        let client = self.state.container.http_client().client();
+        let client = self.state.container.http_client().as_ref();
         let dl = self.state.downloader.as_deref();
         match crate::application::scraper_service::scrape_with_config(client, &url, &config, dl)
             .await
@@ -423,7 +188,7 @@ impl McpHandler {
             config.scraper_concurrency = c;
         }
 
-        let client = self.state.container.http_client().client();
+        let client = self.state.container.http_client().as_ref();
         let dl = self.state.downloader.as_deref();
         match crate::application::scraper_service::scrape_multiple_with_limit(
             client, &urls, &config, dl,
@@ -557,7 +322,7 @@ impl McpHandler {
             .await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
 
-        let client = self.state.container.http_client().client();
+        let client = self.state.container.wreq_client();
         match client.get(&params.url).send().await {
             Ok(resp) => match resp.text().await {
                 Ok(html) => {
@@ -625,7 +390,7 @@ impl McpHandler {
             .await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
 
-        let client = self.state.container.http_client().client();
+        let client = self.state.container.wreq_client();
         match client.get(&params.url).send().await {
             Ok(resp) => match resp.text().await {
                 Ok(html) => {

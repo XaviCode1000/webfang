@@ -72,7 +72,7 @@ pub mod infrastructure;
 // Domain layer
 pub use domain::{
     ContentType, CrawlError, CrawlResult, CrawlerConfig, CrawlerConfigBuilder, DiscoveredUrl,
-    DownloadedAsset, ExportFormat, JsRenderError, JsRenderer, ScrapedContent, ValidUrl,
+    DownloadedAsset, JsRenderError, JsRenderer, ScrapedContent, ValidUrl,
 };
 #[cfg(feature = "ai")]
 pub use error::SemanticError;
@@ -119,9 +119,8 @@ pub use cli::{
 pub use infrastructure::observability::LogGuard;
 
 // Config types
-pub use infrastructure::config::{
-    AutotuningConfig, ConcurrencyConfig, OutputFormat, ScraperConfig,
-};
+pub use domain::config::{ConcurrencyConfig, ExportFormat, OutputFormat, PipelineOutputFormat};
+pub use infrastructure::config::{AutotuningConfig, ScraperConfig};
 
 // Error and result types
 pub use clap::{Parser, ValueEnum};

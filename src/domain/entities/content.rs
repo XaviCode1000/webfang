@@ -1,7 +1,4 @@
-//! Domain entities — Core business types
-//!
-//! These are the fundamental data structures used throughout the application.
-//! They are serializable for persistence but contain no business logic.
+//! Core content entities — DocumentChunk and ScrapedContent
 
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -11,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::domain::{CorrelationId, ValidUrl};
+
+use super::download::DownloadedAsset;
 
 // ============================================================================
 // Validation Errors
@@ -124,21 +123,6 @@ impl DocumentChunk<Draft> {
     }
 }
 
-/// Represents a downloaded asset (image or document)
-///
-/// Contains metadata about the original URL and local storage location.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DownloadedAsset {
-    /// Original URL of the asset
-    pub url: String,
-    /// Local path where asset was saved
-    pub local_path: String,
-    /// Asset type: "image" or "document"
-    pub asset_type: String,
-    /// File size in bytes
-    pub size: u64,
-}
-
 /// Represents scraped content from a web page
 ///
 /// This is the main output type of the scraper, containing:
@@ -178,65 +162,6 @@ impl std::fmt::Display for ScrapedContent {
             self.title.as_str()
         };
         write!(f, "{title} — {}", self.url)
-    }
-}
-
-/// Export format variants for RAG pipeline
-///
-/// Defines the supported output formats when exporting scraped content
-/// for use in retrieval-augmented generation systems.
-///
-/// These formats are designed for RAG/embedding pipelines, NOT for
-/// individual file output (see OutputFormat for that).
-///
-/// | Format | Extension | Use Case |
-/// |--------|-----------|----------|
-/// | Jsonl | .jsonl | One JSON object per line, optimal for RAG |
-/// | Auto | .auto | Auto-detect from existing files |
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum, Default,
-)]
-pub enum ExportFormat {
-    /// JSONL format (JSON Lines - one JSON object per line)
-    /// Optimal for RAG pipelines and vector database ingestion
-    #[default]
-    Jsonl,
-    /// Vector format (JSON with metadata header)
-    /// Supports embeddings and cosine similarity
-    Vector,
-    /// Auto-detect format from existing export files
-    Auto,
-}
-
-impl ExportFormat {
-    /// Parse from string (case-insensitive).
-    /// Note: Named `parse_str` to avoid confusion with `FromStr::from_str`.
-    pub fn parse_str(s: &str) -> Result<Self, &'static str> {
-        match s.to_lowercase().as_str() {
-            "jsonl" => Ok(ExportFormat::Jsonl),
-            "vector" => Ok(ExportFormat::Vector),
-            "auto" => Ok(ExportFormat::Auto),
-            _ => Err("Invalid export format. Use 'jsonl', 'vector', or 'auto'"),
-        }
-    }
-    /// Returns the file extension for this format
-    #[must_use]
-    pub fn extension(&self) -> &'static str {
-        match self {
-            Self::Jsonl => "jsonl",
-            Self::Vector => "json",
-            Self::Auto => "auto",
-        }
-    }
-
-    /// Returns a human-readable name for this format
-    #[must_use]
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Jsonl => "JSONL",
-            Self::Vector => "Vector",
-            Self::Auto => "Auto",
-        }
     }
 }
 
@@ -497,70 +422,22 @@ impl DocumentChunk<Validated> {
     }
 }
 
-/// Metadata for the export state file
-///
-/// Stored at ~/.cache/rust_scraper/state/<domain>.json
-/// Tracks which URLs have been processed for a given domain
-/// to support incremental exports and resume capability.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ExportState {
-    /// Domain this state belongs to (e.g., "example.com")
-    pub domain: String,
-    /// URLs that have been successfully exported
-    pub processed_urls: Vec<String>,
-    /// Last export timestamp
-    pub last_export: Option<DateTime<Utc>>,
-    /// Total documents exported
-    pub total_exported: u64,
-}
-
-impl ExportState {
-    /// Create a new ExportState for a domain
-    #[must_use]
-    pub fn new(domain: impl Into<String>) -> Self {
-        Self {
-            domain: domain.into(),
-            processed_urls: Vec::new(),
-            last_export: None,
-            total_exported: 0,
-        }
-    }
-
-    /// Mark a URL as processed
-    pub fn mark_processed(&mut self, url: &str) {
-        if !self.processed_urls.contains(&url.to_string()) {
-            self.processed_urls.push(url.to_string());
-            self.total_exported += 1;
-        }
-    }
-
-    /// Check if a URL has been processed
-    #[must_use]
-    pub fn is_processed(&self, url: &str) -> bool {
-        self.processed_urls.contains(&url.to_string())
-    }
-
-    /// Update last export timestamp
-    pub fn update_timestamp(&mut self) {
-        self.last_export = Some(Utc::now());
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_downloaded_asset_creation() {
-        let asset = DownloadedAsset {
-            url: "https://example.com/image.png".to_string(),
-            local_path: "/tmp/image.png".to_string(),
-            asset_type: "image".to_string(),
-            size: 1024,
-        };
-
-        assert_eq!(asset.url, "https://example.com/image.png");
-        assert_eq!(asset.size, 1024);
+    fn make_scraped(title: &str, url: &str) -> ScrapedContent {
+        ScrapedContent {
+            title: title.to_string(),
+            content: "body".to_string(),
+            url: ValidUrl::parse(url).unwrap(),
+            excerpt: None,
+            author: None,
+            date: None,
+            html: None,
+            assets: Vec::new(),
+            correlation_id: None,
+        }
     }
 
     #[test]
@@ -607,32 +484,6 @@ mod tests {
     }
 
     #[test]
-    fn test_export_format_vector_extension() {
-        assert_eq!(ExportFormat::Vector.extension(), "json");
-    }
-
-    #[test]
-    fn test_export_format_vector_name() {
-        assert_eq!(ExportFormat::Vector.name(), "Vector");
-    }
-
-    // -- ScrapedContent Display tests --
-
-    fn make_scraped(title: &str, url: &str) -> ScrapedContent {
-        ScrapedContent {
-            title: title.to_string(),
-            content: "body".to_string(),
-            url: ValidUrl::parse(url).unwrap(),
-            excerpt: None,
-            author: None,
-            date: None,
-            html: None,
-            assets: Vec::new(),
-            correlation_id: None,
-        }
-    }
-
-    #[test]
     fn scraped_content_display_shows_title_and_url() {
         let s = make_scraped("My Article", "https://example.com/post");
         let output = format!("{s}");
@@ -646,8 +497,6 @@ mod tests {
         let output = format!("{s}");
         assert!(output.contains("(untitled)"));
     }
-
-    // -- ScrapedContent PartialEq tests --
 
     #[test]
     fn scraped_content_equal_when_identical() {
@@ -728,8 +577,6 @@ mod tests {
         ));
     }
 
-    // -- ScrapedContent Debug test --
-
     #[test]
     fn scraped_content_debug_contains_key_fields() {
         let s = make_scraped("Debug Test", "https://example.com");
@@ -738,32 +585,6 @@ mod tests {
         assert!(dbg.contains("example.com"));
         assert!(dbg.contains("ScrapedContent"));
     }
-
-    // -- ExportFormat::parse_str mutation-killing tests --
-
-    #[test]
-    fn test_export_format_parse_str_all_variants() {
-        assert_eq!(ExportFormat::parse_str("jsonl"), Ok(ExportFormat::Jsonl));
-        assert_eq!(ExportFormat::parse_str("vector"), Ok(ExportFormat::Vector));
-        assert_eq!(ExportFormat::parse_str("auto"), Ok(ExportFormat::Auto));
-    }
-
-    #[test]
-    fn test_export_format_parse_str_case_insensitive() {
-        assert_eq!(ExportFormat::parse_str("JSONL"), Ok(ExportFormat::Jsonl));
-        assert_eq!(ExportFormat::parse_str("Vector"), Ok(ExportFormat::Vector));
-        assert_eq!(ExportFormat::parse_str("AUTO"), Ok(ExportFormat::Auto));
-    }
-
-    #[test]
-    fn test_export_format_parse_str_invalid_returns_error() {
-        assert!(ExportFormat::parse_str("bogus").is_err());
-        assert!(ExportFormat::parse_str("json").is_err());
-        assert!(ExportFormat::parse_str("markdown").is_err());
-        assert!(ExportFormat::parse_str("").is_err());
-    }
-
-    // -- DocumentChunk accessor mutation-killing tests --
 
     #[test]
     fn test_document_chunk_has_embeddings_true() {
@@ -805,56 +626,6 @@ mod tests {
             DocumentChunk::test_new(uuid::Uuid::new_v4(), "https://example.com", "Title", "");
         assert_eq!(chunk.text_length(), 0);
     }
-
-    // -- ExportState side-effect mutation-killing tests --
-
-    #[test]
-    fn test_export_state_mark_processed_increments_counter() {
-        let mut state = ExportState::new("example.com");
-        assert_eq!(state.total_exported, 0);
-
-        state.mark_processed("https://example.com/page1");
-        assert_eq!(state.total_exported, 1);
-        assert_eq!(state.processed_urls.len(), 1);
-    }
-
-    #[test]
-    fn test_export_state_mark_processed_no_duplicate() {
-        let mut state = ExportState::new("example.com");
-        state.mark_processed("https://example.com/page1");
-        state.mark_processed("https://example.com/page1");
-        assert_eq!(state.total_exported, 1);
-        assert_eq!(state.processed_urls.len(), 1);
-    }
-
-    #[test]
-    fn test_export_state_mark_processed_multiple_urls() {
-        let mut state = ExportState::new("example.com");
-        state.mark_processed("https://example.com/page1");
-        state.mark_processed("https://example.com/page2");
-        state.mark_processed("https://example.com/page3");
-        assert_eq!(state.total_exported, 3);
-        assert!(state.is_processed("https://example.com/page1"));
-        assert!(state.is_processed("https://example.com/page2"));
-        assert!(!state.is_processed("https://example.com/other"));
-    }
-
-    #[test]
-    fn test_export_state_update_timestamp() {
-        let mut state = ExportState::new("example.com");
-        assert!(state.last_export.is_none());
-
-        state.update_timestamp();
-        assert!(state.last_export.is_some());
-
-        let ts1 = state.last_export.unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        state.update_timestamp();
-        let ts2 = state.last_export.unwrap();
-        assert!(ts2 >= ts1);
-    }
-
-    // -- DocumentChunk constructors --
 
     #[test]
     fn test_document_chunk_with_metadata() {
@@ -949,8 +720,6 @@ mod tests {
         assert_eq!(chunk.metadata["domain"], "blog.example.com");
     }
 
-    // -- DocumentChunk validate success path --
-
     #[test]
     fn test_document_chunk_validate_success() {
         let chunk = DocumentChunk::new(
@@ -1029,8 +798,6 @@ mod tests {
         assert_eq!(validated.metadata["author"], "Test");
     }
 
-    // -- DocumentChunk serde roundtrip --
-
     #[test]
     fn test_document_chunk_serde_roundtrip() {
         let chunk = DocumentChunk::new(
@@ -1060,8 +827,6 @@ mod tests {
         let deserialized: DocumentChunk<Draft> = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.embeddings, Some(vec![0.1, 0.2, 0.3]));
     }
-
-    // -- ScrapedContent serde roundtrip --
 
     #[test]
     fn test_scraped_content_serde_roundtrip() {
@@ -1123,96 +888,6 @@ mod tests {
         assert!(json.contains("html"));
     }
 
-    // -- ExportState serde roundtrip --
-
-    #[test]
-    fn test_export_state_serde_roundtrip() {
-        let mut state = ExportState::new("example.com");
-        state.mark_processed("https://example.com/page1");
-        state.update_timestamp();
-
-        let json = serde_json::to_string(&state).unwrap();
-        let deserialized: ExportState = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.domain, "example.com");
-        assert_eq!(deserialized.total_exported, 1);
-        assert!(deserialized.is_processed("https://example.com/page1"));
-        assert!(deserialized.last_export.is_some());
-    }
-
-    #[test]
-    fn test_export_state_default() {
-        let state = ExportState::default();
-        assert!(state.domain.is_empty());
-        assert!(state.processed_urls.is_empty());
-        assert!(state.last_export.is_none());
-        assert_eq!(state.total_exported, 0);
-    }
-
-    // -- DownloadedAsset serde roundtrip --
-
-    #[test]
-    fn test_downloaded_asset_serde_roundtrip() {
-        let asset = DownloadedAsset {
-            url: "https://example.com/img.png".to_string(),
-            local_path: "/tmp/img.png".to_string(),
-            asset_type: "image".to_string(),
-            size: 2048,
-        };
-        let json = serde_json::to_string(&asset).unwrap();
-        let deserialized: DownloadedAsset = serde_json::from_str(&json).unwrap();
-        assert_eq!(asset, deserialized);
-    }
-
-    // -- ExportFormat serde roundtrip --
-
-    #[test]
-    fn test_export_format_serde_roundtrip() {
-        for fmt in [
-            ExportFormat::Jsonl,
-            ExportFormat::Vector,
-            ExportFormat::Auto,
-        ] {
-            let json = serde_json::to_string(&fmt).unwrap();
-            let deserialized: ExportFormat = serde_json::from_str(&json).unwrap();
-            assert_eq!(fmt, deserialized);
-        }
-    }
-
-    // -- ExportFormat all methods --
-
-    #[test]
-    fn test_export_format_jsonl_extension_and_name() {
-        assert_eq!(ExportFormat::Jsonl.extension(), "jsonl");
-        assert_eq!(ExportFormat::Jsonl.name(), "JSONL");
-    }
-
-    #[test]
-    fn test_export_format_auto_extension_and_name() {
-        assert_eq!(ExportFormat::Auto.extension(), "auto");
-        assert_eq!(ExportFormat::Auto.name(), "Auto");
-    }
-
-    #[test]
-    fn test_export_format_default_is_jsonl() {
-        assert_eq!(ExportFormat::default(), ExportFormat::Jsonl);
-    }
-
-    // -- ValidationError Display --
-
-    #[test]
-    fn test_validation_error_display() {
-        assert_eq!(ValidationError::EmptyContent.to_string(), "empty_content");
-        assert_eq!(ValidationError::EmptyTitle.to_string(), "empty_title");
-        assert!(ValidationError::InvalidUrl("bad".to_string())
-            .to_string()
-            .contains("bad"));
-        assert!(ValidationError::InvalidMetadata("reason".to_string())
-            .to_string()
-            .contains("reason"));
-    }
-
-    // -- DocumentChunk from ScrapedContent with all optional fields --
-
     #[test]
     fn test_document_chunk_from_scraped_content_no_optional_fields() {
         let scraped = ScrapedContent {
@@ -1231,8 +906,6 @@ mod tests {
         assert!(chunk.metadata.contains_key("domain"));
     }
 
-    // -- DocumentChunk with_embeddings --
-
     #[test]
     fn test_document_chunk_with_embeddings_chain() {
         let chunk = DocumentChunk::test_new(
@@ -1247,8 +920,6 @@ mod tests {
         assert_eq!(chunk.embeddings.unwrap(), vec![1.0, 2.0]);
     }
 
-    // -- ScrapedContent Clone --
-
     #[test]
     fn test_scraped_content_clone() {
         let content = make_scraped("Clone Test", "https://example.com");
@@ -1256,23 +927,15 @@ mod tests {
         assert_eq!(content, cloned);
     }
 
-    // -- ExportState edge cases --
-
     #[test]
-    fn test_export_state_is_processed_empty() {
-        let state = ExportState::new("test.com");
-        assert!(!state.is_processed("https://test.com/anything"));
-    }
-
-    #[test]
-    fn test_export_state_mark_many_urls() {
-        let mut state = ExportState::new("example.com");
-        for i in 0..100 {
-            state.mark_processed(&format!("https://example.com/page{i}"));
-        }
-        assert_eq!(state.total_exported, 100);
-        assert_eq!(state.processed_urls.len(), 100);
-        assert!(state.is_processed("https://example.com/page0"));
-        assert!(state.is_processed("https://example.com/page99"));
+    fn test_validation_error_display() {
+        assert_eq!(ValidationError::EmptyContent.to_string(), "empty_content");
+        assert_eq!(ValidationError::EmptyTitle.to_string(), "empty_title");
+        assert!(ValidationError::InvalidUrl("bad".to_string())
+            .to_string()
+            .contains("bad"));
+        assert!(ValidationError::InvalidMetadata("reason".to_string())
+            .to_string()
+            .contains("reason"));
     }
 }
