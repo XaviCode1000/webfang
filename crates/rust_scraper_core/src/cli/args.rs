@@ -41,8 +41,11 @@ fn parse_download_concurrency(s: &str) -> Result<usize, String> {
 /// assert_eq!(args.url, "https://example.com");
 /// ```
 #[derive(Parser, Debug, Default)]
-#[command(name = "rust_scraper", version)]
-#[command(about = "Production-ready web scraper with Clean Architecture", long_about = None)]
+#[command(name = "rust-scraper", version)]
+#[command(
+    about = "Scraper web industrial con Clean Architecture y evasión de WAF",
+    after_help = "CÓDIGOS DE SALIDA:\n  0    Éxito\n  2    Sin URLs descubiertas\n  69   Bloqueo por WAF o error de red\n  74   Error de E/S\n  76   Error de protocolo\n  78   Error de configuración\n\nEJEMPLOS:\n  rust-scraper -u https://example.com\n  rust-scraper -u https://example.com --ai\n  rust-scraper -u https://example.com -f jsonl\n  rust-scraper -u https://example.com -v\n  rust-scraper -u https://example.com -vv  # DEBUG\n  rust-scraper --url-list urls.txt --resume"
+)]
 #[command(args_conflicts_with_subcommands = true)]
 pub struct Args {
     /// Subcommands
@@ -67,6 +70,7 @@ pub struct Args {
     pub output: std::path::PathBuf,
 
     /// Output format for individual files (markdown, text, json)
+    /// NOTE: For RAG pipeline export, use --export-format instead
     #[arg(
         short = 'f',
         long,
@@ -78,8 +82,10 @@ pub struct Args {
     pub format: OutputFormat,
 
     /// Export format for RAG pipeline (jsonl, vector, auto)
+    /// NOTE: Use --format for output file format (markdown, text, json)
     #[arg(
-        long,
+        long = "export-format",
+        alias = "export",
         default_value = "jsonl",
         value_enum,
         env = "RUST_SCRAPER_EXPORT_FORMAT"
@@ -234,7 +240,7 @@ pub struct Args {
     pub force_js_render: bool,
 
     // ========== Display ==========
-    /// Verbosity level (-v, -vv, -vvv)
+    /// Verbosity level: -v (INFO), -vv (DEBUG), -vvv (TRACE)
     #[arg(short, long, action = clap::ArgAction::Count, env = "RUST_SCRAPER_VERBOSE")]
     #[clap(next_help_heading = "Display")]
     pub verbose: u8,

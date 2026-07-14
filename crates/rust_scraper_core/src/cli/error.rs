@@ -34,20 +34,20 @@ pub const EXIT_CONFIG: u8 = 78;
 /// Categorized CLI errors with user-friendly suggestions.
 #[derive(Error, Debug)]
 pub enum CliError {
-    #[error("Configuration: {msg}\n  Suggestion: {suggestion}")]
+    #[error("Configuración: {msg}\n  Sugerencia: {suggestion}")]
     ConfigFile { msg: String, suggestion: String },
 
-    #[error("Network: {msg}\n  Suggestion: {suggestion}")]
+    #[error("Red: {msg}\n  Sugerencia: {suggestion}")]
     NetworkError { msg: String, suggestion: String },
 
-    #[error("Partial Success: {success} succeeded, {failed} failed\n  Suggestion: {suggestion}")]
+    #[error("Éxito parcial: {success} exitosos, {failed} fallidos\n  Sugerencia: {suggestion}")]
     PartialSuccess {
         success: u32,
         failed: u32,
         suggestion: String,
     },
 
-    #[error("Preflight Check Failed: {msg}\n  Suggestion: {suggestion}")]
+    #[error("Verificación previa fallida: {msg}\n  Sugerencia: {suggestion}")]
     PreflightFailed { msg: String, suggestion: String },
 }
 
@@ -55,10 +55,10 @@ impl CliError {
     /// Get the human-readable category name for this error.
     pub fn category(&self) -> &'static str {
         match self {
-            CliError::ConfigFile { .. } => "Configuration",
-            CliError::NetworkError { .. } => "Network",
-            CliError::PartialSuccess { .. } => "Partial Success",
-            CliError::PreflightFailed { .. } => "Preflight Check Failed",
+            CliError::ConfigFile { .. } => "Configuración",
+            CliError::NetworkError { .. } => "Red",
+            CliError::PartialSuccess { .. } => "Éxito parcial",
+            CliError::PreflightFailed { .. } => "Verificación previa",
         }
     }
 
@@ -82,12 +82,12 @@ pub fn format_cli_error(err: &CliError, no_color: bool) -> String {
         CliError::NetworkError { msg, .. } => msg,
         CliError::PartialSuccess {
             success, failed, ..
-        } => &format!("{success} succeeded, {failed} failed"),
+        } => &format!("{success} exitosos, {failed} fallidos"),
         CliError::PreflightFailed { msg, .. } => msg,
     };
     let suggestion = err.suggestion();
 
-    format!("{prefix} {category}\n  {msg}\n  Suggestion: {suggestion}")
+    format!("{prefix} {category}\n  {msg}\n  Sugerencia: {suggestion}")
 }
 
 // ============================================================================
