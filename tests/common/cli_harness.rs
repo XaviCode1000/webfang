@@ -138,12 +138,20 @@ pub(crate) fn redact_temp_path(dir: &Path, text: &str) -> String {
 }
 
 /// Redact common non-deterministic output so snapshots are stable run-to-run:
-/// the temp dir, ISO-8601 log timestamps, dynamic wiremock ports, and ANSI
-/// color escape sequences.
+/// the temp dir, ISO-8601 log timestamps, dynamic wiremock ports, ANSI color
+/// escape sequences, and environment-specific error suffixes (CI mode,
+/// headless build notices) that differ between local and CI environments.
 pub(crate) fn redact_nondeterministic(dir: &Path, text: &str) -> String {
     let text = redact_temp_path(dir, text);
     let ansi = Regex::new(r"\x1b\[[0-9;]*m").unwrap();
     let text = ansi.replace_all(&text, "").into_owned();
+    // Normalize environment-specific error suffixes so snapshots are identical
+    // across local and CI environments. The CLI appends "(CI mode)" when
+    // is_ci() is true and "(interactive prompt requires --features ui)" in
+    // headless builds — neither is deterministic across environments.
+    let env_suffix =
+        Regex::new(r" \(CI mode\)| \(interactive prompt requires --features ui\)").unwrap();
+    let text = env_suffix.replace_all(&text, "").into_owned();
     let ts =
         Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}:?\d{2}|Z)").unwrap();
     let text = ts.replace_all(&text, "<TIMESTAMP>").into_owned();

@@ -1066,8 +1066,12 @@ async fn test_selector_h3_extracts_only_h3() {
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
         .collect();
-    assert!(!files.is_empty(), "output should contain at least one file");
+    assert!(
+        !files.is_empty(),
+        "output should contain at least one .md file"
+    );
 
     let content = std::fs::read_to_string(files[0].path()).unwrap();
     assert_content_snapshot("selector_h3_extracts_only_h3", output.path(), &content);
@@ -1109,8 +1113,12 @@ async fn test_selector_table_extracts_table() {
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
         .collect();
-    assert!(!files.is_empty(), "output should contain at least one file");
+    assert!(
+        !files.is_empty(),
+        "output should contain at least one .md file"
+    );
 
     let content = std::fs::read_to_string(files[0].path()).unwrap();
     assert_content_snapshot("selector_table_extracts_table", output.path(), &content);
@@ -1148,8 +1156,12 @@ async fn test_no_selector_extracts_full_page() {
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
         .collect();
-    assert!(!files.is_empty(), "output should contain at least one file");
+    assert!(
+        !files.is_empty(),
+        "output should contain at least one .md file"
+    );
 
     let content = std::fs::read_to_string(files[0].path()).unwrap();
     assert_content_snapshot("no_selector_extracts_full_page", output.path(), &content);

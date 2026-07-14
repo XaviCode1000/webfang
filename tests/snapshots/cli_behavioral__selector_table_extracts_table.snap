@@ -2,4 +2,12 @@
 source: crates/rust_scraper_core/../../tests/cli_behavioral_test.rs
 expression: redacted
 ---
-{"url":"http://127.0.0.1:<PORT>/","timestamp_utc":"<TIMESTAMP>","title":"Document: [127.0.0.1]","content":"Row1Col1Row1Col2","checksum_sha256":"d4a2504d1cc6f4fc1941f8c5a73e633ca2f0e9f90f421fda13aaa2bc6e9f73fa","metadata_version":"2.0.0","content_length":16}
+---
+title: 'Document: [127.0.0.1]'
+url: http://127.0.0.1:<PORT>/
+date: [DATE]
+---
+
+Row1Col1
+
+Row1Col2

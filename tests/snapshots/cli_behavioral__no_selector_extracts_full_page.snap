@@ -2,4 +2,13 @@
 source: crates/rust_scraper_core/../../tests/cli_behavioral_test.rs
 expression: redacted
 ---
-{"url":"http://127.0.0.1:<PORT>/","timestamp_utc":"<TIMESTAMP>","title":"Document: [127.0.0.1]","content":"Full Page TestAll content should appear when no selector is specified.","checksum_sha256":"c3127d513a7f04b5833552f437cd4763e3a8dc9137f74fb23dbf21f72c2a317d","metadata_version":"2.0.0","content_length":70}
+---
+title: 'Document: [127.0.0.1]'
+url: http://127.0.0.1:<PORT>/
+date: [DATE]
+excerpt: All content should appear when no selector is specified.
+---
+
+## Full Page Test
+
+All content should appear when no selector is specified.
