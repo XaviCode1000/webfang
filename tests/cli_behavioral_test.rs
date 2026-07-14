@@ -1,12 +1,12 @@
 //! CLI adapter behavioral tests
 //!
-//! End-to-end tests that invoke the actual `rust_scraper` binary via `assert_cmd`.
+//! End-to-end tests that invoke the actual `webfang` binary via `assert_cmd`.
 //! Mock HTTP servers (wiremock) simulate target websites; TempDir captures output.
 //!
 //! Run with: cargo nextest run --test cli_behavioral_test
 
 // Gate the entire test file behind the default feature pair. These tests
-// invoke the full `rust_scraper` binary which requires `images` + `documents`
+// invoke the full `webfang` binary which requires `images` + `documents`
 // for --download-images/--download-documents. When building with
 // --no-default-features (headless/persistence-off CI matrix) the file is
 // skipped entirely instead of triggering a hard compile_error!.
@@ -21,11 +21,11 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Returns the binary name to test, based on active features.
-/// The full `rust_scraper` binary requires both `ai` and `mcp`; the
+/// The full `webfang` binary requires both `ai` and `mcp`; the
 /// `rust_scraper_core` binary is always built (default features).
 fn cli_bin() -> &'static str {
     if cfg!(all(feature = "ai", feature = "mcp")) {
-        "rust_scraper"
+        "webfang"
     } else {
         "rust_scraper_core"
     }

@@ -19,7 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **--export-format alias**: `--export` as shorthand for `--export-format`
 - **Exit codes documented** in `--help` output
 - **Error messages in Spanish**: User-facing errors now display in Spanish
-- **Binary renamed**: `rust_scraper` → `rust-scraper` (kebab-case convention)
+- **Product renamed**: `rust_scraper` → `webfang` (short, professional, no language reference)
+- **Binary renamed**: `rust_scraper` → `webfang` (kebab-case convention)
+- **Version bump**: v1.1.1 → v2.0.0 (breaking changes: exit codes, binary name)
 
 ### 🏗️ Architecture Improvements
 

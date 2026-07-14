@@ -1003,160 +1003,160 @@ fn apply_tui_config_all_fields_at_once() {
 
 #[test]
 fn args_tui_flag_parsed() {
-    let args = Args::try_parse_from(["rust_scraper", "--tui"]).expect("--tui must parse");
+    let args = Args::try_parse_from(["webfang", "--tui"]).expect("--tui must parse");
     assert!(args.tui);
 }
 
 #[test]
 fn args_tui_flag_default_false() {
-    let args = Args::try_parse_from(["rust_scraper"]).expect("minimal parse");
+    let args = Args::try_parse_from(["webfang"]).expect("minimal parse");
     assert!(!args.tui);
 }
 
 #[test]
 fn args_interactive_flag_hidden_but_parseable() {
     let args =
-        Args::try_parse_from(["rust_scraper", "--interactive"]).expect("--interactive must parse");
+        Args::try_parse_from(["webfang", "--interactive"]).expect("--interactive must parse");
     assert!(args.interactive);
 }
 
 #[test]
 fn args_config_tui_flag_hidden_but_parseable() {
     let args =
-        Args::try_parse_from(["rust_scraper", "--config-tui"]).expect("--config-tui must parse");
+        Args::try_parse_from(["webfang", "--config-tui"]).expect("--config-tui must parse");
     assert!(args.config_tui);
 }
 
 #[test]
 fn args_selector_default_is_body() {
-    let args = Args::try_parse_from(["rust_scraper"]).expect("minimal parse");
+    let args = Args::try_parse_from(["webfang"]).expect("minimal parse");
     assert_eq!(args.selector, "body");
 }
 
 #[test]
 fn args_selector_custom() {
-    let args = Args::try_parse_from(["rust_scraper", "--selector", "article"])
+    let args = Args::try_parse_from(["webfang", "--selector", "article"])
         .expect("--selector must parse");
     assert_eq!(args.selector, "article");
 }
 
 #[test]
 fn args_format_markdown_default() {
-    let args = Args::try_parse_from(["rust_scraper"]).expect("minimal parse");
+    let args = Args::try_parse_from(["webfang"]).expect("minimal parse");
     assert_eq!(args.format, OutputFormat::Markdown);
 }
 
 #[test]
 fn args_format_json() {
     let args =
-        Args::try_parse_from(["rust_scraper", "--format", "json"]).expect("--format must parse");
+        Args::try_parse_from(["webfang", "--format", "json"]).expect("--format must parse");
     assert_eq!(args.format, OutputFormat::Json);
 }
 
 #[test]
 fn args_export_format_jsonl_default() {
-    let args = Args::try_parse_from(["rust_scraper"]).expect("minimal parse");
+    let args = Args::try_parse_from(["webfang"]).expect("minimal parse");
     assert_eq!(args.export_format, ExportFormat::Jsonl);
 }
 
 #[test]
 fn args_export_format_vector() {
-    let args = Args::try_parse_from(["rust_scraper", "--export-format", "vector"])
+    let args = Args::try_parse_from(["webfang", "--export-format", "vector"])
         .expect("--export-format must parse");
     assert_eq!(args.export_format, ExportFormat::Vector);
 }
 
 #[test]
 fn args_js_strategy_static_default() {
-    let args = Args::try_parse_from(["rust_scraper"]).expect("minimal parse");
+    let args = Args::try_parse_from(["webfang"]).expect("minimal parse");
     assert_eq!(args.js_strategy, JsStrategy::Static);
 }
 
 #[test]
 fn args_js_strategy_hybrid() {
-    let args = Args::try_parse_from(["rust_scraper", "--js-strategy", "hybrid"])
+    let args = Args::try_parse_from(["webfang", "--js-strategy", "hybrid"])
         .expect("--js-strategy must parse");
     assert_eq!(args.js_strategy, JsStrategy::Hybrid);
 }
 
 #[test]
 fn args_max_pages_default() {
-    let args = Args::try_parse_from(["rust_scraper"]).expect("minimal parse");
+    let args = Args::try_parse_from(["webfang"]).expect("minimal parse");
     assert_eq!(args.max_pages, 10);
 }
 
 #[test]
 fn args_max_pages_custom() {
-    let args = Args::try_parse_from(["rust_scraper", "--max-pages", "50"])
+    let args = Args::try_parse_from(["webfang", "--max-pages", "50"])
         .expect("--max-pages must parse");
     assert_eq!(args.max_pages, 50);
 }
 
 #[test]
 fn args_timeout_secs_default() {
-    let args = Args::try_parse_from(["rust_scraper"]).expect("minimal parse");
+    let args = Args::try_parse_from(["webfang"]).expect("minimal parse");
     assert_eq!(args.timeout_secs, 30);
 }
 
 #[test]
 fn args_max_depth_default() {
-    let args = Args::try_parse_from(["rust_scraper"]).expect("minimal parse");
+    let args = Args::try_parse_from(["webfang"]).expect("minimal parse");
     assert_eq!(args.max_depth, 2);
 }
 
 #[test]
 fn args_verbose_count() {
-    let args = Args::try_parse_from(["rust_scraper", "-vv"]).expect("-vv must parse");
+    let args = Args::try_parse_from(["webfang", "-vv"]).expect("-vv must parse");
     assert_eq!(args.verbose, 2);
 }
 
 #[test]
 fn args_quiet_flag() {
-    let args = Args::try_parse_from(["rust_scraper", "--quiet"]).expect("--quiet must parse");
+    let args = Args::try_parse_from(["webfang", "--quiet"]).expect("--quiet must parse");
     assert!(args.quiet);
 }
 
 #[test]
 fn args_dry_run_flag() {
-    let args = Args::try_parse_from(["rust_scraper", "--dry-run"]).expect("--dry-run must parse");
+    let args = Args::try_parse_from(["webfang", "--dry-run"]).expect("--dry-run must parse");
     assert!(args.dry_run);
 }
 
 #[test]
 fn args_obsidian_wiki_links_flag() {
-    let args = Args::try_parse_from(["rust_scraper", "--obsidian-wiki-links"])
+    let args = Args::try_parse_from(["webfang", "--obsidian-wiki-links"])
         .expect("--obsidian-wiki-links must parse");
     assert!(args.obsidian_wiki_links);
 }
 
 #[test]
 fn args_elastic_flag() {
-    let args = Args::try_parse_from(["rust_scraper", "--elastic"]).expect("--elastic must parse");
+    let args = Args::try_parse_from(["webfang", "--elastic"]).expect("--elastic must parse");
     assert!(args.elastic);
 }
 
 #[test]
 fn args_pipeline_flag() {
-    let args = Args::try_parse_from(["rust_scraper", "--pipeline"]).expect("--pipeline must parse");
+    let args = Args::try_parse_from(["webfang", "--pipeline"]).expect("--pipeline must parse");
     assert!(args.pipeline);
 }
 
 #[test]
 fn args_use_sitemap_flag() {
     let args =
-        Args::try_parse_from(["rust_scraper", "--use-sitemap"]).expect("--use-sitemap must parse");
+        Args::try_parse_from(["webfang", "--use-sitemap"]).expect("--use-sitemap must parse");
     assert!(args.use_sitemap);
 }
 
 #[test]
 fn args_concurrency_default_auto() {
-    let args = Args::try_parse_from(["rust_scraper"]).expect("minimal parse");
+    let args = Args::try_parse_from(["webfang"]).expect("minimal parse");
     assert!(args.concurrency.is_auto());
 }
 
 #[test]
 fn args_concurrency_fixed() {
-    let args = Args::try_parse_from(["rust_scraper", "--concurrency", "8"])
+    let args = Args::try_parse_from(["webfang", "--concurrency", "8"])
         .expect("--concurrency must parse");
     assert!(!args.concurrency.is_auto());
     assert_eq!(args.concurrency.get(), Some(8));
@@ -1164,14 +1164,14 @@ fn args_concurrency_fixed() {
 
 #[test]
 fn args_download_images_flag() {
-    let args = Args::try_parse_from(["rust_scraper", "--download-images"])
+    let args = Args::try_parse_from(["webfang", "--download-images"])
         .expect("--download-images must parse");
     assert!(args.download_images);
 }
 
 #[test]
 fn args_download_documents_flag() {
-    let args = Args::try_parse_from(["rust_scraper", "--download-documents"])
+    let args = Args::try_parse_from(["webfang", "--download-documents"])
         .expect("--download-documents must parse");
     assert!(args.download_documents);
 }
@@ -1179,20 +1179,20 @@ fn args_download_documents_flag() {
 #[test]
 fn args_quick_save_flag() {
     let args =
-        Args::try_parse_from(["rust_scraper", "--quick-save"]).expect("--quick-save must parse");
+        Args::try_parse_from(["webfang", "--quick-save"]).expect("--quick-save must parse");
     assert!(args.quick_save);
 }
 
 #[test]
 fn args_autoscale_flag() {
     let args =
-        Args::try_parse_from(["rust_scraper", "--autoscale"]).expect("--autoscale must parse");
+        Args::try_parse_from(["webfang", "--autoscale"]).expect("--autoscale must parse");
     assert!(args.autoscale);
 }
 
 #[test]
 fn args_obsidian_tags_comma_separated() {
-    let args = Args::try_parse_from(["rust_scraper", "--obsidian-tags", "ai,scraping,web"])
+    let args = Args::try_parse_from(["webfang", "--obsidian-tags", "ai,scraping,web"])
         .expect("--obsidian-tags must parse");
     let tags = args.obsidian_tags.unwrap();
     assert_eq!(tags, vec!["ai", "scraping", "web"]);
@@ -1200,28 +1200,28 @@ fn args_obsidian_tags_comma_separated() {
 
 #[test]
 fn args_vault_path() {
-    let args = Args::try_parse_from(["rust_scraper", "--vault", "/home/user/MyVault"])
+    let args = Args::try_parse_from(["webfang", "--vault", "/home/user/MyVault"])
         .expect("--vault must parse");
     assert_eq!(args.vault, Some(PathBuf::from("/home/user/MyVault")));
 }
 
 #[test]
 fn args_include_patterns_comma_separated() {
-    let args = Args::try_parse_from(["rust_scraper", "--include-pattern", "*/blog/*,*/docs/*"])
+    let args = Args::try_parse_from(["webfang", "--include-pattern", "*/blog/*,*/docs/*"])
         .expect("--include-pattern must parse");
     assert_eq!(args.include_patterns, vec!["*/blog/*", "*/docs/*"]);
 }
 
 #[test]
 fn args_exclude_patterns_comma_separated() {
-    let args = Args::try_parse_from(["rust_scraper", "--exclude-pattern", "*/admin/*"])
+    let args = Args::try_parse_from(["webfang", "--exclude-pattern", "*/admin/*"])
         .expect("--exclude-pattern must parse");
     assert_eq!(args.exclude_patterns, vec!["*/admin/*"]);
 }
 
 #[test]
 fn args_force_js_render_flag() {
-    let args = Args::try_parse_from(["rust_scraper", "--force-js-render"])
+    let args = Args::try_parse_from(["webfang", "--force-js-render"])
         .expect("--force-js-render must parse");
     assert!(args.force_js_render);
 }

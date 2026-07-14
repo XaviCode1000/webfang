@@ -287,12 +287,12 @@ pub async fn scrape_with_config(
             if let Some(spa_info) = detect_spa_content(url.as_str(), &article.text_content, &html) {
                 if spa_info.has_spa_markers {
                     warn!(
-                        "{} returned minimal content ({} chars) with SPA markers detected. This site may require JavaScript rendering. This feature is not yet implemented. Track: https://github.com/XaviCode1000/rust-scraper/issues/16",
+                        "{} returned minimal content ({} chars) with SPA markers detected. This site may require JavaScript rendering. This feature is not yet implemented. Track: https://github.com/XaviCode1000/webfang/issues/16",
                         spa_info.url, spa_info.char_count
                     );
                 } else {
                     warn!(
-                        "{} returned minimal content ({} chars). This site may require JavaScript rendering. This feature is not yet implemented. Track: https://github.com/XaviCode1000/rust-scraper/issues/16",
+                        "{} returned minimal content ({} chars). This site may require JavaScript rendering. This feature is not yet implemented. Track: https://github.com/XaviCode1000/webfang/issues/16",
                         spa_info.url, spa_info.char_count
                     );
                 }
@@ -336,12 +336,12 @@ pub async fn scrape_with_config(
             if let Some(spa_info) = detect_spa_content(url.as_str(), &fallback_content, &html) {
                 if spa_info.has_spa_markers {
                     warn!(
-                        "{} returned minimal content ({} chars) with SPA markers detected. This site may require JavaScript rendering. This feature is not yet implemented. Track: https://github.com/XaviCode1000/rust-scraper/issues/16",
+                        "{} returned minimal content ({} chars) with SPA markers detected. This site may require JavaScript rendering. This feature is not yet implemented. Track: https://github.com/XaviCode1000/webfang/issues/16",
                         spa_info.url, spa_info.char_count
                     );
                 } else {
                     warn!(
-                        "{} returned minimal content ({} chars). This site may require JavaScript rendering. This feature is not yet implemented. Track: https://github.com/XaviCode1000/rust-scraper/issues/16",
+                        "{} returned minimal content ({} chars). This site may require JavaScript rendering. This feature is not yet implemented. Track: https://github.com/XaviCode1000/webfang/issues/16",
                         spa_info.url, spa_info.char_count
                     );
                 }

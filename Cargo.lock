@@ -4317,7 +4317,7 @@ dependencies = [
 
 [[package]]
 name = "rust_scraper_ai"
-version = "1.1.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
@@ -4343,7 +4343,7 @@ dependencies = [
 
 [[package]]
 name = "rust_scraper_cli"
-version = "1.1.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4369,7 +4369,7 @@ dependencies = [
 
 [[package]]
 name = "rust_scraper_core"
-version = "1.1.1"
+version = "2.0.0"
 dependencies = [
  "ahash",
  "aho-corasick",
@@ -4447,7 +4447,7 @@ dependencies = [
 
 [[package]]
 name = "rust_scraper_mcp"
-version = "1.1.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -4469,7 +4469,7 @@ dependencies = [
 
 [[package]]
 name = "rust_scraper_tui"
-version = "1.1.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "chrono",

@@ -142,11 +142,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          name: "Rust Scraper ${{ github.event.inputs.tag || github.ref_name }}"
+          name: "WebFang ${{ github.event.inputs.tag || github.ref_name }}"
           body: |
             ## What's Changed
 
-            See [CHANGELOG](https://github.com/XaviCode1000/rust-scraper/blob/main/CHANGELOG.md) for details.
+            See [CHANGELOG](https://github.com/XaviCode1000/webfang/blob/main/CHANGELOG.md) for details.
 
             ## Installation
 
@@ -155,13 +155,13 @@ jobs:
 
             ### Cargo
             ```bash
-            cargo install rust_scraper --version ${{ github.event.inputs.tag || github.ref_name }}
+            cargo install webfang --version ${{ github.event.inputs.tag || github.ref_name }}
             ```
 
             ### From source
             ```bash
-            git clone https://github.com/XaviCode1000/rust-scraper
-            cd rust-scraper
+            git clone https://github.com/XaviCode1000/webfang
+            cd webfang
             cargo build --release --features "ai mcp ui"
             ```
 
@@ -171,7 +171,7 @@ jobs:
             sha256sum -c SHA256SUMS.txt --ignore-missing
             ```
           files: |
-            artifacts/rust_scraper-*
+            artifacts/webfang-*
             artifacts/SHA256SUMS.txt
           draft: false
           prerelease: false

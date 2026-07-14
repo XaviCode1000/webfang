@@ -48,7 +48,7 @@ pub fn create_rate_limited_client(delay_ms: u64) -> Result<Client> {
         .connect_timeout(Duration::from_secs(10))
         .gzip(true)
         .brotli(true)
-        .user_agent("rust_scraper/0.3.0 (Web Crawler)")
+        .user_agent("webfang/2.0.0 (High-Performance Extraction)")
         .build()?;
 
     debug!(

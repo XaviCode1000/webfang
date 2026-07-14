@@ -1,4 +1,4 @@
-//! Lightweight binary: the full `rust_scraper` pipeline WITHOUT the `ai` feature.
+//! Lightweight binary: the full `webfang` pipeline WITHOUT the `ai` feature.
 //!
 //! This target reuses the exact same entry point as the main binary
 //! (`src/main.rs`) but is compiled with default features only, so the ONNX
