@@ -337,9 +337,11 @@ async fn __main() -> CliExit {
     // 7. Initialize logging (stderr-only, respects quiet + NO_COLOR)
     // =========================================================================
     let no_color = is_no_color();
+    // L3 FIX: Map verbose count to tracing levels (0=WARN, 1=INFO, 2=DEBUG, 3+=TRACE)
     let log_level = match opts.verbosity {
-        0 => "info",
-        1 => "debug",
+        0 => "warn",
+        1 => "info",
+        2 => "debug",
         _ => "trace",
     };
 

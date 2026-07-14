@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Exit code 69** now returned when sitemap fetch fails with timeout/network error (was silently swallowed as exit 0).
 - Named constants (`EXIT_SUCCESS`, `EXIT_EMPTY_DISCOVERY`, etc.) replace magic numbers in `CliExit` enum.
 
+#### UX Improvements (Batch 4)
+- **--verbose flag**: `-v` (INFO), `-vv` (DEBUG), `-vvv` (TRACE) — default is WARN
+- **--export-format alias**: `--export` as shorthand for `--export-format`
+- **Exit codes documented** in `--help` output
+- **Error messages in Spanish**: User-facing errors now display in Spanish
+- **Binary renamed**: `rust_scraper` → `rust-scraper` (kebab-case convention)
+
 ### 🏗️ Architecture Improvements
 
 #### Checkpoint Documentation (H5)
