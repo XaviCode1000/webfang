@@ -49,8 +49,15 @@ impl JsonlExporter {
 
         // Acquire exclusive file lock to prevent concurrent writes
         let lock_path = path.with_extension("jsonl.lock");
-        let lock_file = fs::File::create(&lock_path)
+        // M1 FIX: Write PID metadata to lock file for debugging
+        let mut lock_file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&lock_path)
             .map_err(|e| ExporterError::WriteError(format!("{}: {}", lock_path.display(), e)))?;
+        use std::io::Write;
+        let _ = writeln!(lock_file, "pid={} op=exclusive_write", std::process::id());
         // allow: fs2::FileExt::lock_exclusive, clippy misidentifies as std::io::FileExt (1.89+)
         #[allow(clippy::incompatible_msrv)]
         lock_file

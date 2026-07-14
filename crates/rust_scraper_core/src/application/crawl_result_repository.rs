@@ -216,6 +216,15 @@ impl BackgroundWriter {
     async fn run(mut self) {
         use std::io::Write;
 
+        // H6 FIX: Create parent directory before opening log file
+        if let Some(parent) = self.log_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::error!("no se pudo crear directorio para log: {e}");
+                self.write_error.store(true, Ordering::Relaxed);
+                return;
+            }
+        }
+
         let mut file = match std::fs::OpenOptions::new()
             .create(true)
             .append(true)

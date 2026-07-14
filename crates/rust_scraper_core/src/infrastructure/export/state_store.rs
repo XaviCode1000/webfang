@@ -128,7 +128,14 @@ impl StateStore {
 
         // Acquire shared lock to prevent reading during concurrent write
         let lock_path = path.with_extension("json.lock");
-        let lock_file = fs::File::create(&lock_path).map_err(ScraperError::Io)?;
+        // M1 FIX: Write PID metadata to lock file for debugging
+        let mut lock_file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&lock_path)
+            .map_err(ScraperError::Io)?;
+        let _ = writeln!(lock_file, "pid={} op=shared_read", std::process::id());
         fs2::FileExt::lock_shared(&lock_file).map_err(|e| {
             ScraperError::Io(std::io::Error::other(format!(
                 "failed to acquire state read lock: {e}"
@@ -186,7 +193,14 @@ impl StateStore {
 
         // Acquire exclusive file lock to prevent concurrent writes
         let lock_path = path.with_extension("json.lock");
-        let lock_file = fs::File::create(&lock_path).map_err(ScraperError::Io)?;
+        // M1 FIX: Write PID metadata to lock file for debugging
+        let mut lock_file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&lock_path)
+            .map_err(ScraperError::Io)?;
+        let _ = writeln!(lock_file, "pid={} op=exclusive_write", std::process::id());
         lock_file.lock_exclusive().map_err(|e| {
             ScraperError::Io(std::io::Error::other(format!(
                 "failed to acquire state lock: {e}"

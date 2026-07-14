@@ -246,10 +246,11 @@ fn save_as_text(
             },
         };
 
+        // H7 FIX: Match markdown handler's path stripping to prevent double output/
         let full_path = output_dir.join(
             output_path
                 .to_full_path()
-                .trim_start_matches("./")
+                .trim_start_matches("./output/")
                 .replace(".md", ".txt"),
         );
         if let Some(parent) = full_path.parent() {
