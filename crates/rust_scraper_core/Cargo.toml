@@ -36,6 +36,9 @@ ai = []
 ui = []
 mcp = []
 
+# Adaptive Selectors — LLM-powered DOM resilience
+adaptive-selectors = ["ai", "dep:rig-core"]
+
 [dependencies]
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -45,6 +48,10 @@ pathdiff = "0.2"
 
 # Async runtime
 tokio = { workspace = true }
+async-trait = "0.1"
+
+# LLM Integration (feature-gated)
+rig-core = { workspace = true, optional = true }
 
 # HTTP & Networking
 wreq = { workspace = true }

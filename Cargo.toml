@@ -77,6 +77,9 @@ chrono = { version = "0.4", features = ["serde"] }
 # XML
 quick-xml = "0.41"
 
+# LLM Integration
+rig-core = "0.40.0"
+
 # Rate limiting
 governor = "0.6"
 dashmap = "6"

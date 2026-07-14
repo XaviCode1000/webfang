@@ -3,6 +3,8 @@
 //! This layer contains the business logic that orchestrates the domain objects
 //! using infrastructure services. It depends on both domain and infrastructure.
 
+#[cfg(feature = "adaptive-selectors")]
+pub mod adaptive_selector_service;
 pub mod batch;
 pub mod container;
 pub mod crawl_options;
@@ -22,6 +24,8 @@ pub mod scraper_service;
 pub mod title_resolver;
 pub mod url_filter;
 
+#[cfg(feature = "adaptive-selectors")]
+pub use adaptive_selector_service::{AdaptiveError, AdaptiveSelectorPort, AdaptiveSelectorService};
 pub use batch::{
     BatchJob, BatchManager, BatchManagerSummary, BatchProcessor, BatchProgress, BatchResult,
 };
