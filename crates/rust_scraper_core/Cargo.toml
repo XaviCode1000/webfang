@@ -150,13 +150,33 @@ rayon = "1.10"
 built = { version = "0.7", features = ["git2", "chrono"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }
 wiremock = { workspace = true }
 proptest = { workspace = true }
 criterion = { version = "0.5", features = ["html_reports"] }
+
+# ---------------------------------------------------------------------------
+# Wiring for the previously-orphaned root `tests/` suite.
+#
+# These `[[test]]` targets point at the root `tests/` tree (outside this
+# crate's directory) so the CLI behavioral / integration tests become
+# runnable as part of the `rust_scraper_core` test build. They are owned by
+# `rust_scraper_core` for dependency purposes; the binaries they exercise
+# (`webfang`) live in the `rust_scraper_cli` crate.
+# ---------------------------------------------------------------------------
+[[test]]
+name = "behavioral"
+path = "../../tests/behavioral/main.rs"
+
+[[test]]
+name = "cli_binary"
+path = "../../tests/cli_binary_test.rs"
+
+[[test]]
+name = "cli_behavioral"
+path = "../../tests/cli_behavioral_test.rs"
 
 [lints.clippy]
 doc_markdown = "allow"
