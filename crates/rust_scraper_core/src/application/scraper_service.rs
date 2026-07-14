@@ -61,7 +61,9 @@ const MIN_CONTENT_CHARS: usize = 50;
 pub(crate) async fn extract_with_selector(
     html: &str,
     selector: &str,
-    #[cfg(feature = "adaptive-selectors")] adaptive: Option<&dyn crate::application::adaptive_selector_service::AdaptiveSelectorPort>,
+    #[cfg(feature = "adaptive-selectors")] adaptive: Option<
+        &dyn crate::application::adaptive_selector_service::AdaptiveSelectorPort,
+    >,
     #[cfg(feature = "adaptive-selectors")] domain: &str,
 ) -> String {
     if selector == "body" {
@@ -91,7 +93,8 @@ pub(crate) async fn extract_with_selector(
                 .await
             {
                 if let Ok(new_sel) = scraper::Selector::parse(&repaired_selector) {
-                    let new_matched: Vec<String> = document.select(&new_sel).map(|el| el.html()).collect();
+                    let new_matched: Vec<String> =
+                        document.select(&new_sel).map(|el| el.html()).collect();
                     if !new_matched.is_empty() {
                         info!(
                             target: "adaptive_selector",
@@ -1014,7 +1017,15 @@ mod tests {
     #[tokio::test]
     async fn test_extract_with_selector_body_passthrough() {
         let html = "<html><body><p>Hello</p></body></html>";
-        let result = extract_with_selector(html, "body", #[cfg(feature = "adaptive-selectors")] None, #[cfg(feature = "adaptive-selectors")] "").await;
+        let result = extract_with_selector(
+            html,
+            "body",
+            #[cfg(feature = "adaptive-selectors")]
+            None,
+            #[cfg(feature = "adaptive-selectors")]
+            "",
+        )
+        .await;
         assert_eq!(
             result, html,
             "selector 'body' should return original HTML unchanged"
@@ -1028,7 +1039,15 @@ mod tests {
             <div class="main"><p>Main content</p></div>
             <div class="sidebar"><p>Sidebar</p></div>
         </body></html>"#;
-        let result = extract_with_selector(html, "div.main", #[cfg(feature = "adaptive-selectors")] None, #[cfg(feature = "adaptive-selectors")] "").await;
+        let result = extract_with_selector(
+            html,
+            "div.main",
+            #[cfg(feature = "adaptive-selectors")]
+            None,
+            #[cfg(feature = "adaptive-selectors")]
+            "",
+        )
+        .await;
         assert!(
             result.contains("Main content"),
             "should contain matched element content"
@@ -1047,7 +1066,15 @@ mod tests {
     #[tokio::test]
     async fn test_extract_with_selector_no_matches_falls_back() {
         let html = "<html><body><p>Hello</p></body></html>";
-        let result = extract_with_selector(html, "article", #[cfg(feature = "adaptive-selectors")] None, #[cfg(feature = "adaptive-selectors")] "").await;
+        let result = extract_with_selector(
+            html,
+            "article",
+            #[cfg(feature = "adaptive-selectors")]
+            None,
+            #[cfg(feature = "adaptive-selectors")]
+            "",
+        )
+        .await;
         assert_eq!(result, html, "no matches should fall back to original HTML");
     }
 
@@ -1055,7 +1082,15 @@ mod tests {
     #[tokio::test]
     async fn test_extract_with_selector_invalid_syntax_falls_back() {
         let html = "<html><body><p>Hello</p></body></html>";
-        let result = extract_with_selector(html, ">>>invalid", #[cfg(feature = "adaptive-selectors")] None, #[cfg(feature = "adaptive-selectors")] "").await;
+        let result = extract_with_selector(
+            html,
+            ">>>invalid",
+            #[cfg(feature = "adaptive-selectors")]
+            None,
+            #[cfg(feature = "adaptive-selectors")]
+            "",
+        )
+        .await;
         assert_eq!(
             result, html,
             "invalid selector syntax should fall back to original HTML"
@@ -1070,7 +1105,15 @@ mod tests {
             <li>Item 2</li>
             <li>Item 3</li>
         </body></html>"#;
-        let result = extract_with_selector(html, "li", #[cfg(feature = "adaptive-selectors")] None, #[cfg(feature = "adaptive-selectors")] "").await;
+        let result = extract_with_selector(
+            html,
+            "li",
+            #[cfg(feature = "adaptive-selectors")]
+            None,
+            #[cfg(feature = "adaptive-selectors")]
+            "",
+        )
+        .await;
         assert!(result.contains("Item 1"));
         assert!(result.contains("Item 2"));
         assert!(result.contains("Item 3"));
@@ -1083,7 +1126,15 @@ mod tests {
             <div id="target"><p>Targeted</p></div>
             <div id="other"><p>Other</p></div>
         </body></html>"#;
-        let result = extract_with_selector(html, "#target", #[cfg(feature = "adaptive-selectors")] None, #[cfg(feature = "adaptive-selectors")] "").await;
+        let result = extract_with_selector(
+            html,
+            "#target",
+            #[cfg(feature = "adaptive-selectors")]
+            None,
+            #[cfg(feature = "adaptive-selectors")]
+            "",
+        )
+        .await;
         assert!(result.contains("Targeted"));
         assert!(!result.contains("Other"));
     }

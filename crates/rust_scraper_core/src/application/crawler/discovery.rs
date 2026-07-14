@@ -385,16 +385,15 @@ pub async fn scrape_single_url_for_tui(
 
     // Apply CSS selector extraction if a non-default selector is configured.
     // TODO: Inject adaptive selector service when available
-    let extraction_html =
-        crate::application::scraper_service::extract_with_selector(
-            &cleaned_html,
-            &config.selector,
-            #[cfg(feature = "adaptive-selectors")]
-            None,
-            #[cfg(feature = "adaptive-selectors")]
-            "",
-        )
-        .await;
+    let extraction_html = crate::application::scraper_service::extract_with_selector(
+        &cleaned_html,
+        &config.selector,
+        #[cfg(feature = "adaptive-selectors")]
+        None,
+        #[cfg(feature = "adaptive-selectors")]
+        "",
+    )
+    .await;
 
     // Try Readability first, fallback to plain text extraction
     match readability::parse(&extraction_html, Some(url.as_str())) {

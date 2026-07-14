@@ -85,7 +85,9 @@ mod adaptive_selector_tests {
         let call_count = mock.call_count.clone();
 
         // First call
-        let result1 = mock.repair_selector("<div>test</div>", ".old", "example.com").await;
+        let result1 = mock
+            .repair_selector("<div>test</div>", ".old", "example.com")
+            .await;
         assert_eq!(result1, Some(".repaired-selector".into()));
         assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 1);
 
@@ -102,7 +104,9 @@ mod adaptive_selector_tests {
         let scorer = Arc::new(FailingScorer);
         let mock = MockSelectorWithScorer { scorer };
 
-        let result = mock.repair_selector("<div>test</div>", ".old", "example.com").await;
+        let result = mock
+            .repair_selector("<div>test</div>", ".old", "example.com")
+            .await;
         assert_eq!(result, None, "Failing scorer should return None");
     }
 
@@ -111,7 +115,9 @@ mod adaptive_selector_tests {
         let scorer = Arc::new(EmptyScorer);
         let mock = MockSelectorWithScorer { scorer };
 
-        let result = mock.repair_selector("<div>test</div>", ".old", "example.com").await;
+        let result = mock
+            .repair_selector("<div>test</div>", ".old", "example.com")
+            .await;
         assert_eq!(result, None, "Empty candidates should return None");
     }
 
@@ -184,9 +190,18 @@ mod adaptive_selector_tests {
 
     #[async_trait::async_trait]
     impl AdaptiveSelectorPort for MockSelectorWithScorer {
-        async fn repair_selector(&self, html: &str, selector: &str, _domain: &str) -> Option<String> {
+        async fn repair_selector(
+            &self,
+            html: &str,
+            selector: &str,
+            _domain: &str,
+        ) -> Option<String> {
             // Simulate the full cascade: scorer → (would call LLM)
-            let candidates = self.scorer.get_top_k_candidates(html, selector, 5).await.ok()?;
+            let candidates = self
+                .scorer
+                .get_top_k_candidates(html, selector, 5)
+                .await
+                .ok()?;
 
             if candidates.is_empty() {
                 return None;
