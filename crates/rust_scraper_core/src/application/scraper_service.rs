@@ -55,7 +55,15 @@ const MIN_CONTENT_CHARS: usize = 50;
 /// matching the selector. Returns the outer HTML of matched elements wrapped
 /// in a `<div>` for Readability processing. If no elements match, returns
 /// the original HTML unchanged.
-pub(crate) fn extract_with_selector(html: &str, selector: &str) -> String {
+///
+/// When `adaptive` is provided and the selector matches nothing, the service
+/// attempts to repair the selector using LLM-powered semantic recovery.
+pub(crate) async fn extract_with_selector(
+    html: &str,
+    selector: &str,
+    #[cfg(feature = "adaptive-selectors")] adaptive: Option<&dyn crate::application::adaptive_selector_service::AdaptiveSelectorPort>,
+    #[cfg(feature = "adaptive-selectors")] domain: &str,
+) -> String {
     if selector == "body" {
         return html.to_owned();
     }
@@ -75,6 +83,32 @@ pub(crate) fn extract_with_selector(html: &str, selector: &str) -> String {
     let matched: Vec<String> = document.select(&sel).map(|el| el.html()).collect();
 
     if matched.is_empty() {
+        // Adaptive recovery: try to repair the selector using LLM
+        #[cfg(feature = "adaptive-selectors")]
+        if let Some(adaptive_service) = adaptive {
+            if let Some(repaired_selector) = adaptive_service
+                .repair_selector(html, selector, domain)
+                .await
+            {
+                if let Ok(new_sel) = scraper::Selector::parse(&repaired_selector) {
+                    let new_matched: Vec<String> = document.select(&new_sel).map(|el| el.html()).collect();
+                    if !new_matched.is_empty() {
+                        info!(
+                            target: "adaptive_selector",
+                            "Selector repaired successfully: {} -> {} ({} elements)",
+                            selector,
+                            repaired_selector,
+                            new_matched.len()
+                        );
+                        return format!(
+                            "<div id=\"selector-extracted\">{}</div>",
+                            new_matched.join("\n")
+                        );
+                    }
+                }
+            }
+        }
+
         warn!(
             "CSS selector '{}' matched 0 elements, falling back to full HTML",
             selector
@@ -276,7 +310,16 @@ pub async fn scrape_with_config(
     );
 
     // Apply CSS selector extraction if a non-default selector is configured.
-    let extraction_html = extract_with_selector(&cleaned_html, &config.selector);
+    // TODO: Inject adaptive selector service when available
+    let extraction_html = extract_with_selector(
+        &cleaned_html,
+        &config.selector,
+        #[cfg(feature = "adaptive-selectors")]
+        None,
+        #[cfg(feature = "adaptive-selectors")]
+        "",
+    )
+    .await;
 
     // Try Readability first, fallback to plain text extraction
     match crate::infrastructure::scraper::readability::parse(&extraction_html, Some(url.as_str())) {
@@ -968,10 +1011,10 @@ mod tests {
     // extract_with_selector tests (pure function, no I/O)
     // =====================================================================
 
-    #[test]
-    fn test_extract_with_selector_body_passthrough() {
+    #[tokio::test]
+    async fn test_extract_with_selector_body_passthrough() {
         let html = "<html><body><p>Hello</p></body></html>";
-        let result = extract_with_selector(html, "body");
+        let result = extract_with_selector(html, "body", #[cfg(feature = "adaptive-selectors")] None, #[cfg(feature = "adaptive-selectors")] "").await;
         assert_eq!(
             result, html,
             "selector 'body' should return original HTML unchanged"
@@ -979,13 +1022,13 @@ mod tests {
     }
 
     #[cfg_attr(miri, ignore)] // scraper::Selector drop triggers servo_arc Tree-Borrows UB under Miri
-    #[test]
-    fn test_extract_with_selector_extracts_matching_elements() {
+    #[tokio::test]
+    async fn test_extract_with_selector_extracts_matching_elements() {
         let html = r#"<html><body>
             <div class="main"><p>Main content</p></div>
             <div class="sidebar"><p>Sidebar</p></div>
         </body></html>"#;
-        let result = extract_with_selector(html, "div.main");
+        let result = extract_with_selector(html, "div.main", #[cfg(feature = "adaptive-selectors")] None, #[cfg(feature = "adaptive-selectors")] "").await;
         assert!(
             result.contains("Main content"),
             "should contain matched element content"
@@ -1001,18 +1044,18 @@ mod tests {
     }
 
     #[cfg_attr(miri, ignore)] // scraper::Selector drop triggers servo_arc Tree-Borrows UB under Miri
-    #[test]
-    fn test_extract_with_selector_no_matches_falls_back() {
+    #[tokio::test]
+    async fn test_extract_with_selector_no_matches_falls_back() {
         let html = "<html><body><p>Hello</p></body></html>";
-        let result = extract_with_selector(html, "article");
+        let result = extract_with_selector(html, "article", #[cfg(feature = "adaptive-selectors")] None, #[cfg(feature = "adaptive-selectors")] "").await;
         assert_eq!(result, html, "no matches should fall back to original HTML");
     }
 
     #[cfg_attr(miri, ignore)] // scraper::Selector drop triggers servo_arc Tree-Borrows UB under Miri
-    #[test]
-    fn test_extract_with_selector_invalid_syntax_falls_back() {
+    #[tokio::test]
+    async fn test_extract_with_selector_invalid_syntax_falls_back() {
         let html = "<html><body><p>Hello</p></body></html>";
-        let result = extract_with_selector(html, ">>>invalid");
+        let result = extract_with_selector(html, ">>>invalid", #[cfg(feature = "adaptive-selectors")] None, #[cfg(feature = "adaptive-selectors")] "").await;
         assert_eq!(
             result, html,
             "invalid selector syntax should fall back to original HTML"
@@ -1020,27 +1063,27 @@ mod tests {
     }
 
     #[cfg_attr(miri, ignore)] // scraper::Selector drop triggers servo_arc Tree-Borrows UB under Miri
-    #[test]
-    fn test_extract_with_selector_multiple_matches_joined() {
+    #[tokio::test]
+    async fn test_extract_with_selector_multiple_matches_joined() {
         let html = r#"<html><body>
             <li>Item 1</li>
             <li>Item 2</li>
             <li>Item 3</li>
         </body></html>"#;
-        let result = extract_with_selector(html, "li");
+        let result = extract_with_selector(html, "li", #[cfg(feature = "adaptive-selectors")] None, #[cfg(feature = "adaptive-selectors")] "").await;
         assert!(result.contains("Item 1"));
         assert!(result.contains("Item 2"));
         assert!(result.contains("Item 3"));
     }
 
     #[cfg_attr(miri, ignore)] // scraper::Selector drop triggers servo_arc Tree-Borrows UB under Miri
-    #[test]
-    fn test_extract_with_selector_id_selector() {
+    #[tokio::test]
+    async fn test_extract_with_selector_id_selector() {
         let html = r#"<html><body>
             <div id="target"><p>Targeted</p></div>
             <div id="other"><p>Other</p></div>
         </body></html>"#;
-        let result = extract_with_selector(html, "#target");
+        let result = extract_with_selector(html, "#target", #[cfg(feature = "adaptive-selectors")] None, #[cfg(feature = "adaptive-selectors")] "").await;
         assert!(result.contains("Targeted"));
         assert!(!result.contains("Other"));
     }
