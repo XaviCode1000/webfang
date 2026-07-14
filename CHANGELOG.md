@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🏗️ Architecture Improvements
 
+#### Checkpoint Documentation (H5)
+- **Clarified checkpoint scope:** `--checkpoint-interval` and `--no-checkpoint` flags are for programmatic use (Engine API) only
+- **CLI --resume uses StateStore:** The `--resume` flag works correctly via StateStore (JSON persistence), not via Engine checkpoints
+- **No behavior change:** This is a documentation fix; existing functionality is preserved
+
 #### Typestate Pattern Implementation
 - **Zero-Cost Type Safety:** Implemented typestate pattern for `DocumentChunk` with `Draft`/`Validated`/`Exported` states
 - **Compile-Time Guarantees:** Invalid states (exporting unvalidated chunks) now physically impossible

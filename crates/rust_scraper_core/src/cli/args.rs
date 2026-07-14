@@ -397,11 +397,15 @@ pub struct Args {
 
     // ========== Competitive Features Phase 1 ==========
     /// Pages between automatic checkpoint saves (0 = disabled)
+    /// NOTE: Checkpoint is for programmatic use (Engine API) only.
+    /// CLI --resume uses StateStore instead of checkpoints.
     #[arg(long, default_value = "100", env = "RUST_SCRAPER_CHECKPOINT_INTERVAL")]
     #[clap(next_help_heading = "Competitive Features")]
     pub checkpoint_interval: u64,
 
     /// Disable checkpoint persistence entirely
+    /// NOTE: Checkpoint is for programmatic use (Engine API) only.
+    /// CLI --resume uses StateStore instead of checkpoints.
     #[arg(long, default_value = "false", env = "RUST_SCRAPER_NO_CHECKPOINT")]
     #[clap(next_help_heading = "Competitive Features")]
     pub no_checkpoint: bool,
