@@ -231,13 +231,13 @@ jobs:
         run: cargo build --release --locked --features "ai mcp ui"
       - name: Strip binary
         run: |
-          strip target/release/rust_scraper
-          ls -lh target/release/rust_scraper
+          strip target/release/webfang
+          ls -lh target/release/webfang
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rust_scraper-linux-x86_64
-          path: target/release/rust_scraper
+          name: webfang-linux-x86_64
+          path: target/release/webfang
           retention-days: 7
 
   # ============================================================================
