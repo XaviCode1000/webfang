@@ -78,11 +78,15 @@ pub async fn run(
         let crawler_config = crawler_config.build();
 
         // URL discovery phase
-        let discovered_urls: Vec<url::Url> = discover_urls(&crawler_config, &opts).await;
-        if discovered_urls.is_empty() {
-            info!("No URLs discovered");
-            return CliExit::Success;
-        }
+        let discovered_urls = match discover_urls(&crawler_config, &opts).await {
+            Err(e) => {
+                return CliExit::NetworkError(format!("URL discovery failed: {e}"));
+            },
+            Ok(urls) if urls.is_empty() => {
+                return CliExit::EmptyDiscovery("No URLs discovered from sitemaps".into());
+            },
+            Ok(urls) => urls,
+        };
 
         plan_urls(false, opts.url.clone(), discovered_urls)
     };
@@ -164,6 +168,14 @@ pub async fn run(
             src = cause.source();
         }
         eprintln!("Failed to scrape {url}: {chain}");
+    }
+
+    // Partial failure: some succeeded, some failed → exit 69 (H4 fix)
+    if !failures.is_empty() && !results.is_empty() {
+        return CliExit::PartialSuccess {
+            success: results.len(),
+            failed: failures.len(),
+        };
     }
 
     if results.is_empty() {

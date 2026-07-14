@@ -1,7 +1,7 @@
 //! URL discovery logic extracted from orchestrator.
 
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use tracing::{info, warn};
+use tracing::info;
 use url::Url;
 
 use crate::application::crawl_options::CrawlOptions;
@@ -10,7 +10,12 @@ use crate::cli::SelectedUrls;
 use crate::CrawlerConfig;
 
 /// Discover URLs with progress bar.
-pub async fn discover_urls(crawler_config: &CrawlerConfig, opts: &CrawlOptions) -> Vec<Url> {
+///
+/// Returns `Err` on network/timeout errors instead of silently swallowing them.
+pub async fn discover_urls(
+    crawler_config: &CrawlerConfig,
+    opts: &CrawlOptions,
+) -> anyhow::Result<Vec<Url>> {
     let discovery_pb = if !opts.export.quiet {
         let pb = ProgressBar::new_spinner();
         pb.set_draw_target(ProgressDrawTarget::stderr());
@@ -29,11 +34,20 @@ pub async fn discover_urls(crawler_config: &CrawlerConfig, opts: &CrawlOptions) 
     let discovered_urls = match discover_urls_for_tui(opts.url.as_str(), crawler_config).await {
         Ok(urls) => urls,
         Err(e) => {
-            if let Some(pb) = discovery_pb.as_ref() {
-                pb.finish_with_message("Discovery failed");
+            // Treat "no URLs found" as empty discovery (technical success),
+            // not as a network error. Only propagate real errors (timeouts, etc.).
+            let msg = e.to_string();
+            if msg.contains("no URLs found") {
+                if let Some(pb) = discovery_pb.as_ref() {
+                    pb.finish_with_message("No URLs found");
+                }
+                Vec::new()
+            } else {
+                if let Some(pb) = discovery_pb.as_ref() {
+                    pb.finish_with_message("Discovery failed");
+                }
+                return Err(e);
             }
-            warn!("URL discovery failed: {}", e);
-            Vec::new()
         },
     };
 
@@ -41,7 +55,7 @@ pub async fn discover_urls(crawler_config: &CrawlerConfig, opts: &CrawlOptions) 
         pb.finish_with_message(format!("Found {} URLs", discovered_urls.len()).to_owned());
     }
 
-    discovered_urls
+    Ok(discovered_urls)
 }
 
 /// Select URLs via TUI, quick-save, or headless mode.
@@ -82,5 +96,25 @@ pub async fn select_urls(
             discovered_urls.len()
         );
         SelectedUrls::Urls(discovered_urls.to_vec())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // T-2.1: discover_urls returns Result (compile-time + runtime verification)
+    #[tokio::test]
+    async fn discover_urls_returns_result_type() {
+        let seed_url = url::Url::parse("https://localhost:1").unwrap();
+        let config = CrawlerConfig::builder(seed_url).build();
+        let opts = CrawlOptions {
+            url: url::Url::parse("https://localhost:1").unwrap(),
+            ..Default::default()
+        };
+
+        let result = discover_urls(&config, &opts).await;
+        // Should return Err for unreachable host, proving Result return type
+        assert!(result.is_err(), "Expected Err for unreachable host");
     }
 }

@@ -14,6 +14,7 @@ use crate::infrastructure::crawler::binary_utils::derive_filename_from_response;
 use crate::infrastructure::crawler::{
     extract_links, is_internal_link, normalize_url, SitemapConfig, SitemapParser,
 };
+use crate::infrastructure::http::waf_engine::WafInspector;
 use crate::infrastructure::scraper::{fallback, readability};
 use crate::ScraperConfig;
 
@@ -359,6 +360,15 @@ pub async fn scrape_single_url_for_tui(
         .text()
         .await
         .map_err(|e| ScraperError::Network(Box::new(e)))?;
+
+    // Detect WAF/CAPTCHA challenges disguised as HTTP 200 (H3 fix)
+    if let Some(provider) = WafInspector::detect_body(&html) {
+        warn!("WAF challenge detected from {}: {}", url, provider);
+        return Err(ScraperError::WafBlocked {
+            url: url.to_string(),
+            provider: provider.to_string(),
+        });
+    }
 
     #[cfg(feature = "otel-metrics")]
     {

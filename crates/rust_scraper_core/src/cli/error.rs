@@ -7,6 +7,27 @@ use std::process::ExitCode;
 use thiserror::Error;
 
 // ============================================================================
+// Exit code constants
+// ============================================================================
+
+/// Exit 0 — Operation completed successfully.
+pub const EXIT_SUCCESS: u8 = 0;
+/// Exit 2 — Technical success, no URLs found (empty discovery).
+pub const EXIT_EMPTY_DISCOVERY: u8 = 2;
+/// Exit 3 — All scrapers failed on discovered URLs.
+pub const EXIT_SCRAPER_FAILURE: u8 = 3;
+/// Exit 64 — Bad CLI arguments (sysexits EX_USAGE).
+pub const EXIT_USAGE_ERROR: u8 = 64;
+/// Exit 69 — Infrastructure/network failure (sysexits EX_UNAVAILABLE).
+pub const EXIT_UNAVAILABLE: u8 = 69;
+/// Exit 74 — File I/O error (sysexits EX_IOERR).
+pub const EXIT_IO_ERROR: u8 = 74;
+/// Exit 76 — Protocol error (sysexits EX_PROTOCOL).
+pub const EXIT_PROTOCOL: u8 = 76;
+/// Exit 78 — Configuration error (sysexits EX_CONFIG).
+pub const EXIT_CONFIG: u8 = 78;
+
+// ============================================================================
 // T-050: CliError enum
 // ============================================================================
 
@@ -90,6 +111,8 @@ pub enum CliExit {
     ProtocolError(String),
     /// Exit 78 — configuration error
     ConfigError(String),
+    /// Exit 2 — no URLs discovered from sitemaps (technical success, null result)
+    EmptyDiscovery(String),
     /// Exit 69 — some URLs succeeded, some failed
     PartialSuccess { success: usize, failed: usize },
 }
@@ -97,28 +120,32 @@ pub enum CliExit {
 impl std::process::Termination for CliExit {
     fn report(self) -> ExitCode {
         match self {
-            CliExit::Success => ExitCode::from(0),
+            CliExit::Success => ExitCode::from(EXIT_SUCCESS),
             CliExit::UsageError(msg) => {
                 eprintln!("Error: {msg}");
-                ExitCode::from(64)
+                ExitCode::from(EXIT_USAGE_ERROR)
             },
             CliExit::NetworkError(msg) => {
                 eprintln!("Error: {msg}");
-                ExitCode::from(69)
+                ExitCode::from(EXIT_UNAVAILABLE)
             },
             CliExit::IoError(msg) => {
                 eprintln!("Error: {msg}");
-                ExitCode::from(74)
+                ExitCode::from(EXIT_IO_ERROR)
             },
             CliExit::ProtocolError(msg) => {
                 eprintln!("Error: {msg}");
-                ExitCode::from(76)
+                ExitCode::from(EXIT_PROTOCOL)
             },
             CliExit::ConfigError(msg) => {
                 eprintln!("Error: {msg}");
-                ExitCode::from(78)
+                ExitCode::from(EXIT_CONFIG)
             },
-            CliExit::PartialSuccess { .. } => ExitCode::from(69),
+            CliExit::EmptyDiscovery(msg) => {
+                eprintln!("Warning: {msg}");
+                ExitCode::from(EXIT_EMPTY_DISCOVERY)
+            },
+            CliExit::PartialSuccess { .. } => ExitCode::from(EXIT_UNAVAILABLE),
         }
     }
 }
@@ -198,5 +225,56 @@ mod tests {
         let exit = CliExit::NetworkError("timeout".into());
         let code = exit.report();
         assert_eq!(code, ExitCode::from(69));
+    }
+
+    // T-1.1: Named constants are accessible and correct
+    #[test]
+    fn test_exit_code_constants_values() {
+        assert_eq!(EXIT_SUCCESS, 0);
+        assert_eq!(EXIT_EMPTY_DISCOVERY, 2);
+        assert_eq!(EXIT_SCRAPER_FAILURE, 3);
+        assert_eq!(EXIT_USAGE_ERROR, 64);
+        assert_eq!(EXIT_UNAVAILABLE, 69);
+        assert_eq!(EXIT_IO_ERROR, 74);
+        assert_eq!(EXIT_PROTOCOL, 76);
+        assert_eq!(EXIT_CONFIG, 78);
+    }
+
+    // T-1.3: EmptyDiscovery variant maps to exit 2
+    #[test]
+    fn test_cli_exit_empty_discovery_exit_code() {
+        let exit = CliExit::EmptyDiscovery("No URLs found".into());
+        let code = exit.report();
+        assert_eq!(code, ExitCode::from(EXIT_EMPTY_DISCOVERY));
+    }
+
+    // T-1.4: All variants map to their named constants (exhaustive)
+    #[test]
+    fn test_all_variants_map_to_named_constants() {
+        let cases: Vec<(CliExit, u8)> = vec![
+            (CliExit::Success, EXIT_SUCCESS),
+            (CliExit::UsageError("test".into()), EXIT_USAGE_ERROR),
+            (CliExit::NetworkError("test".into()), EXIT_UNAVAILABLE),
+            (CliExit::IoError("test".into()), EXIT_IO_ERROR),
+            (CliExit::ProtocolError("test".into()), EXIT_PROTOCOL),
+            (CliExit::ConfigError("test".into()), EXIT_CONFIG),
+            (CliExit::EmptyDiscovery("test".into()), EXIT_EMPTY_DISCOVERY),
+            (
+                CliExit::PartialSuccess {
+                    success: 1,
+                    failed: 1,
+                },
+                EXIT_UNAVAILABLE,
+            ),
+        ];
+        for (exit, expected_code) in cases {
+            let code = exit.report();
+            assert_eq!(
+                code,
+                ExitCode::from(expected_code),
+                "Expected exit code {}",
+                expected_code
+            );
+        }
     }
 }
