@@ -19,7 +19,7 @@
 //! Application:  ScraperService selects renderer based on content detection
 //! ```
 //!
-//! See: <https://github.com/XaviCode1000/rust-scraper/issues/16>
+//! See: <https://github.com/XaviCode1000/webfang/issues/16>
 
 use thiserror::Error;
 

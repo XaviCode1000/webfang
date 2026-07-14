@@ -1,4 +1,4 @@
-//! Integration tests for rust_scraper
+//! Integration tests for webfang
 //!
 //! These tests verify end-to-end functionality of the scraper.
 //!

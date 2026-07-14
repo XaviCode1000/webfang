@@ -1,6 +1,6 @@
 [package]
 name = "rust_scraper_cli"
-description = "CLI entry point for rust_scraper"
+description = "CLI entry point for webfang"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -23,7 +23,7 @@ otel = ["rust_scraper_core/otel"]
 otel-metrics = ["rust_scraper_core/otel-metrics"]
 
 [[bin]]
-name = "rust_scraper"
+name = "webfang"
 path = "src/main.rs"
 
 [dependencies]

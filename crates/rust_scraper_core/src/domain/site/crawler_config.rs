@@ -57,7 +57,7 @@ impl CrawlerConfig {
             exclude_patterns: Vec::new(),
             concurrency: 3, // Hardware-aware: nproc - 1 for 4C CPU
             delay_ms: 500,  // Hardware-aware: 500ms for HDD
-            user_agent: "rust_scraper/0.3.0 (Web Crawler)".to_string(),
+            user_agent: "webfang/2.0.0 (High-Performance Extraction)".to_string(),
             timeout_secs: 30,
             use_sitemap: false,
             sitemap_url: None,
@@ -118,7 +118,7 @@ impl CrawlerConfigBuilder {
             exclude_patterns: Vec::new(),
             concurrency: 3,
             delay_ms: 500,
-            user_agent: "rust_scraper/0.3.0 (Web Crawler)".to_string(),
+            user_agent: "webfang/2.0.0 (High-Performance Extraction)".to_string(),
             timeout_secs: 30,
             use_sitemap: false,
             sitemap_url: None,
@@ -258,7 +258,10 @@ mod tests {
         assert_eq!(config.max_pages, 100);
         assert_eq!(config.concurrency, 3);
         assert_eq!(config.delay_ms, 500);
-        assert_eq!(config.user_agent, "rust_scraper/0.3.0 (Web Crawler)");
+        assert_eq!(
+            config.user_agent,
+            "webfang/2.0.0 (High-Performance Extraction)"
+        );
         assert_eq!(config.timeout_secs, 30);
         assert!(!config.use_sitemap);
         assert!(config.sitemap_url.is_none());

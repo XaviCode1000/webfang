@@ -1,4 +1,4 @@
-//! Adapter-layer behavioral tests for the `rust_scraper` binary.
+//! Adapter-layer behavioral tests for the `webfang` binary.
 //!
 //! Every test uses wiremock (no real network) and TempDir (auto-cleanup).
 //! Run with: `cargo nextest run --test behavioral`
@@ -8,11 +8,11 @@ mod cli;
 use assert_cmd::Command;
 
 /// Returns the binary name to test, based on active features.
-/// The full `rust_scraper` binary requires both `ai` and `mcp`; the
+/// The full `webfang` binary requires both `ai` and `mcp`; the
 /// `rust_scraper_core` binary is always built (default features).
 fn cli_bin() -> &'static str {
     if cfg!(all(feature = "ai", feature = "mcp")) {
-        "rust_scraper"
+        "webfang"
     } else {
         "rust_scraper_core"
     }
@@ -38,7 +38,7 @@ impl BehavioralTest {
         }
     }
 
-    /// Build a `Command` for the `rust_scraper` binary with `--url` and
+    /// Build a `Command` for the `webfang` binary with `--url` and
     /// `--output` pre-filled to this harness's server and temp dir.
     pub fn scraper_cmd(&self) -> assert_cmd::Command {
         let mut cmd = assert_cmd::Command::cargo_bin(cli_bin()).expect("binary exists");
