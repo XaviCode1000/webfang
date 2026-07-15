@@ -2,7 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughpu
 
 // Only compile with ai feature
 #[cfg(feature = "ai")]
-use rust_scraper::infrastructure::ai::embedding_ops::cosine_similarity;
+use webfang::infrastructure::ai::embedding_ops::cosine_similarity;
 
 #[cfg(feature = "ai")]
 fn bench_cosine_similarity(c: &mut Criterion) {

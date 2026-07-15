@@ -19,8 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **--export-format alias**: `--export` as shorthand for `--export-format`
 - **Exit codes documented** in `--help` output
 - **Error messages in Spanish**: User-facing errors now display in Spanish
-- **Product renamed**: `rust_scraper` → `webfang` (short, professional, no language reference)
-- **Binary renamed**: `rust_scraper` → `webfang` (kebab-case convention)
+- **Product renamed**: `webfang` → `webfang` (short, professional, no language reference)
+- **Binary renamed**: `webfang` → `webfang` (kebab-case convention)
 - **Version bump**: v1.1.1 → v2.0.0 (breaking changes: exit codes, binary name)
 
 ### 🏗️ Architecture Improvements
@@ -84,13 +84,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **New modules:** `src/infrastructure/converter/obsidian.rs`, `src/infrastructure/obsidian/` (vault_detector, metadata, uri)
 - **New dependencies:** `pathdiff 0.2`, `whatlang 0.18`, `urlencoding 2.1`, `slug 0.1`
 - **361 tests passing** (36 new for Obsidian features)
-- **PR:** [#24](https://github.com/XaviCode1000/rust-scraper/pull/24)
+- **PR:** [#24](https://github.com/XaviCode1000/webfang/pull/24)
 
 #### CLI UX Improvement
 - **`CliExit` return type** — `main()` now returns `CliExit` with proper `Termination` trait implementation
 - **Sysexits exit codes** — 0 (success), 64 (usage), 69 (network/partial), 74 (IO), 76 (protocol), 78 (config)
 - **Shell completions** — `completions` subcommand for bash, fish, zsh, elvish, powershell
-- **Config file loading** — `~/.config/rust_scraper/config.toml` with TOML defaults and CLI merge
+- **Config file loading** — `~/.config/webfang/config.toml` with TOML defaults and CLI merge
 - **Pre-flight HEAD check** — Fail fast on DNS/connection errors before starting discovery
 - **Progress bars** — `indicatif` spinner for URL discovery, bounded bar for per-URL scraping
 - **Dry-run mode** — `--dry-run` prints discovered URLs to stdout and exits without scraping
@@ -124,7 +124,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### RAG Export Pipeline (Issue #1, PR #10)
 - JSONL export format for RAG ingestion
 - Resume system with `--resume` flag
-- State persistence in `~/.cache/rust_scraper/state/`
+- State persistence in `~/.cache/webfang/state/`
 - Domain extraction and URL filtering
 
 #### Performance & Hardware Awareness
@@ -254,7 +254,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Corrected artifact paths for release upload
 - Added target to rust-toolchain for cross-platform builds
 
-[GitHub Release v1.0.4](https://github.com/XaviCode1000/rust-scraper/releases/tag/v1.0.4)
+[GitHub Release v1.0.4](https://github.com/XaviCode1000/webfang/releases/tag/v1.0.4)
 
 ---
 
@@ -331,7 +331,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Auto-release on tag
 - Rust 2021 edition
 
-[GitHub Release v1.0.0](https://github.com/XaviCode1000/rust-scraper/releases/tag/v1.0.0)
+[GitHub Release v1.0.0](https://github.com/XaviCode1000/webfang/releases/tag/v1.0.0)
 
 ---
 
@@ -433,7 +433,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive test suite added
 - Real asset download integration tests
 
-[PR #3](https://github.com/XaviCode1000/rust-scraper/pull/3) — Asset download support
+[PR #3](https://github.com/XaviCode1000/webfang/pull/3) — Asset download support
 
 ---
 
@@ -463,7 +463,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-03-05
 
-**Release Commit:** `a70b17c` — chore: initialize rust_scraper project structure
+**Release Commit:** `a70b17c` — chore: initialize webfang project structure
 
 ### Added
 
@@ -527,8 +527,8 @@ git log --oneline v1.0.4..HEAD
 
 ## Links
 
-- [GitHub Repository](https://github.com/XaviCode1000/rust-scraper)
-- [Releases](https://github.com/XaviCode1000/rust-scraper/releases)
-- [Issues](https://github.com/XaviCode1000/rust-scraper/issues)
+- [GitHub Repository](https://github.com/XaviCode1000/webfang)
+- [Releases](https://github.com/XaviCode1000/webfang/releases)
+- [Issues](https://github.com/XaviCode1000/webfang/issues)
 - [Keep a Changelog Format](https://keepachangelog.com/en/1.0.0/)
 - [Semantic Versioning](https://semver.org/spec/v2.0.0.html)

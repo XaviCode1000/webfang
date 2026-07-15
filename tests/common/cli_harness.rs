@@ -31,8 +31,8 @@ use std::path::Path;
 
 /// Resolve the path to the `webfang` binary.
 ///
-/// `webfang` is built by the `rust_scraper_cli` crate (a workspace sibling),
-/// so `assert_cmd::cargo_bin` cannot locate it from `rust_scraper_core` tests
+/// `webfang` is built by the `webfang_cli` crate (a workspace sibling),
+/// so `assert_cmd::cargo_bin` cannot locate it from `webfang_core` tests
 /// — `CARGO_BIN_EXE_webfang` is only set for the crate that owns the binary.
 /// We fall back to the workspace `target/` dir and, if missing, build it.
 pub(crate) fn webfang_path() -> std::path::PathBuf {
@@ -40,7 +40,7 @@ pub(crate) fn webfang_path() -> std::path::PathBuf {
         return std::path::PathBuf::from(p);
     }
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // crates/rust_scraper_core -> workspace root (two levels up)
+    // crates/webfang_core -> workspace root (two levels up)
     let workspace_root = manifest_dir
         .parent()
         .and_then(|p| p.parent())
@@ -56,14 +56,7 @@ pub(crate) fn webfang_path() -> std::path::PathBuf {
     }
     let cargo = option_env!("CARGO").unwrap_or("cargo");
     let status = std::process::Command::new(cargo)
-        .args([
-            "build",
-            "-p",
-            "rust_scraper_cli",
-            "--bin",
-            "webfang",
-            "--quiet",
-        ])
+        .args(["build", "-p", "webfang_cli", "--bin", "webfang", "--quiet"])
         .status()
         .expect("spawn cargo to build webfang");
     assert!(status.success(), "cargo build --bin webfang failed");

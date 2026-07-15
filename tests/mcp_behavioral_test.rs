@@ -14,10 +14,10 @@ use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use wreq::Client;
 
-use rust_scraper::config::Config;
-use rust_scraper::di::Container;
-use rust_scraper::infrastructure::mcp_server::server::build_mcp_router;
-use rust_scraper::infrastructure::mcp_server::state::McpState;
+use webfang::config::Config;
+use webfang::di::Container;
+use webfang::infrastructure::mcp_server::server::build_mcp_router;
+use webfang::infrastructure::mcp_server::state::McpState;
 
 /// Start a test MCP server on a random port and return the base URL.
 async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {

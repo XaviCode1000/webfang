@@ -25,7 +25,7 @@ use crate::error::SemanticError;
 /// Sealed trait to prevent external implementations
 ///
 /// Following `api-sealed-trait` rust-skill: This module is sealed so that
-/// only crates within rust_scraper can implement `SemanticCleaner`.
+/// only crates within webfang can implement `SemanticCleaner`.
 /// This prevents users from creating invalid implementations that could
 /// violate memory safety or caching invariants.
 pub(crate) mod private {
@@ -43,7 +43,7 @@ pub(crate) mod private {
 /// # Examples
 ///
 /// ```no_run
-/// # use rust_scraper::domain::semantic_cleaner::SemanticCleaner;
+/// # use webfang::domain::semantic_cleaner::SemanticCleaner;
 /// # async fn example(cleaner: &dyn SemanticCleaner) -> Result<(), Box<dyn std::error::Error>> {
 /// let html = "<html><body><p>Hello World</p></body></html>";
 /// let chunks = cleaner.clean(html).await?;
@@ -95,7 +95,7 @@ pub trait SemanticCleaner: private::Sealed + Send + Sync {
     /// # Examples
     ///
     /// ```no_run
-    /// # use rust_scraper::domain::semantic_cleaner::SemanticCleaner;
+    /// # use webfang::domain::semantic_cleaner::SemanticCleaner;
     /// # async fn example(cleaner: &dyn SemanticCleaner) -> Result<(), Box<dyn std::error::Error>> {
     /// let html = "<article><h1>Title</h1><p>Content here...</p></article>";
     /// let chunks = cleaner.clean(html).await?;
@@ -136,7 +136,7 @@ pub trait SemanticCleaner: private::Sealed + Send + Sync {
     /// # Examples
     ///
     /// ```no_run
-    /// # use rust_scraper::domain::semantic_cleaner::SemanticCleaner;
+    /// # use webfang::domain::semantic_cleaner::SemanticCleaner;
     /// fn example(cleaner: &dyn SemanticCleaner) {
     ///     let max_tokens = cleaner.max_tokens();
     ///     println!("Model accepts up to {} tokens per chunk", max_tokens);
@@ -159,7 +159,7 @@ pub trait SemanticCleaner: private::Sealed + Send + Sync {
     /// # Examples
     ///
     /// ```no_run
-    /// # use rust_scraper::domain::semantic_cleaner::SemanticCleaner;
+    /// # use webfang::domain::semantic_cleaner::SemanticCleaner;
     /// fn example(cleaner: &dyn SemanticCleaner) {
     ///     if cleaner.is_ready() {
     ///         println!("Model ready for inference");

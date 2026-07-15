@@ -49,7 +49,7 @@ use crate::infrastructure::observability::metrics_instruments::{
 /// # Examples
 ///
 /// ```no_run
-/// use rust_scraper::{application::discover_urls_for_tui, domain::CrawlerConfig};
+/// use webfang::{application::discover_urls_for_tui, domain::CrawlerConfig};
 /// use url::Url;
 ///
 /// # #[tokio::main]
@@ -179,7 +179,7 @@ pub async fn discover_urls_for_tui(
 /// # Examples
 ///
 /// ```no_run
-/// use rust_scraper::{application::scrape_urls_for_tui, ScraperConfig};
+/// use webfang::{application::scrape_urls_for_tui, ScraperConfig};
 /// use url::Url;
 ///
 /// # #[tokio::main]
@@ -471,8 +471,8 @@ pub async fn scrape_single_url_for_tui(
 /// # Examples
 ///
 /// ```no_run
-/// use rust_scraper::application::crawl_with_sitemap;
-/// use rust_scraper::domain::CrawlerConfig;
+/// use webfang::application::crawl_with_sitemap;
+/// use webfang::domain::CrawlerConfig;
 /// use url::Url;
 ///
 /// # #[tokio::main]

@@ -12,8 +12,8 @@
 
 use std::sync::Arc;
 
-use rust_scraper::domain::repository::VectorRepository;
-use rust_scraper::infrastructure::stream::{StreamRepository, VectorRecord};
+use webfang::domain::repository::VectorRepository;
+use webfang::infrastructure::stream::{StreamRepository, VectorRecord};
 use tempfile::NamedTempFile;
 
 #[tokio::test]

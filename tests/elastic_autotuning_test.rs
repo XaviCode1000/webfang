@@ -8,13 +8,13 @@
 
 mod common;
 
-use rust_scraper::domain::VectorRepository;
-use rust_scraper::infrastructure::autotuning::{
+use webfang::domain::VectorRepository;
+use webfang::infrastructure::autotuning::{
     ElasticConfig, ElasticOverrides, DEFAULT_MAX_RESOURCE_BYTES, MIN_DB_POOL_SIZE,
 };
-use rust_scraper::infrastructure::config::AutotuningConfig;
-use rust_scraper::infrastructure::persistence::setup_schema;
-use rust_scraper::infrastructure::persistence::sqlite::SqliteVectorRepository;
+use webfang::infrastructure::config::AutotuningConfig;
+use webfang::infrastructure::persistence::setup_schema;
+use webfang::infrastructure::persistence::sqlite::SqliteVectorRepository;
 
 /// Test 1: CLI override takes precedence over ENV and auto-detect.
 ///
@@ -134,10 +134,10 @@ async fn ram_budget_cascades_to_semaphore_permits() {
 async fn memory_db_elastic_pipeline_roundtrip() {
     use std::sync::Arc;
 
-    use rust_scraper::application::elastic_ingestion::ElasticIngestion;
-    use rust_scraper::infrastructure::bridge::CpuBridge;
-    use rust_scraper::infrastructure::cpu_pool::RayonCpuPool;
-    use rust_scraper::infrastructure::crawler::resource_downloader::{
+    use webfang::application::elastic_ingestion::ElasticIngestion;
+    use webfang::infrastructure::bridge::CpuBridge;
+    use webfang::infrastructure::cpu_pool::RayonCpuPool;
+    use webfang::infrastructure::crawler::resource_downloader::{
         DownloadConfig, ResourceDownloader,
     };
     use wiremock::matchers::{method, path};
@@ -211,10 +211,10 @@ async fn memory_db_elastic_pipeline_roundtrip() {
 async fn ram_budget_cascade_to_elastic_ingestion() {
     use std::sync::Arc;
 
-    use rust_scraper::application::elastic_ingestion::ElasticIngestion;
-    use rust_scraper::infrastructure::bridge::CpuBridge;
-    use rust_scraper::infrastructure::cpu_pool::RayonCpuPool;
-    use rust_scraper::infrastructure::crawler::resource_downloader::{
+    use webfang::application::elastic_ingestion::ElasticIngestion;
+    use webfang::infrastructure::bridge::CpuBridge;
+    use webfang::infrastructure::cpu_pool::RayonCpuPool;
+    use webfang::infrastructure::crawler::resource_downloader::{
         DownloadConfig, ResourceDownloader,
     };
 

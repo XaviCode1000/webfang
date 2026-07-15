@@ -5,7 +5,7 @@
 //! Run with: cargo nextest run --test-threads 2 property_tests
 
 use proptest::prelude::*;
-use rust_scraper::{is_internal_link, matches_pattern};
+use webfang::{is_internal_link, matches_pattern};
 use url::Url;
 
 // ============================================================================

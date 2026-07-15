@@ -150,11 +150,11 @@ pub fn fixtures_dir() -> std::path::PathBuf {
 }
 
 /// Create a minimal ScrapedContent for testing.
-pub fn mock_scraped_content(url: &str, title: &str, content: &str) -> rust_scraper::ScrapedContent {
-    rust_scraper::ScrapedContent {
+pub fn mock_scraped_content(url: &str, title: &str, content: &str) -> webfang::ScrapedContent {
+    webfang::ScrapedContent {
         title: title.to_string(),
         content: content.to_string(),
-        url: rust_scraper::ValidUrl::parse(url).expect("valid test URL"),
+        url: webfang::ValidUrl::parse(url).expect("valid test URL"),
         excerpt: None,
         author: None,
         date: None,
@@ -171,11 +171,11 @@ pub fn mock_scraped_content_with_html(
     title: &str,
     content: &str,
     html: &str,
-) -> rust_scraper::ScrapedContent {
-    rust_scraper::ScrapedContent {
+) -> webfang::ScrapedContent {
+    webfang::ScrapedContent {
         title: title.to_string(),
         content: content.to_string(),
-        url: rust_scraper::ValidUrl::parse(url).expect("valid test URL"),
+        url: webfang::ValidUrl::parse(url).expect("valid test URL"),
         excerpt: None,
         author: None,
         date: None,
@@ -300,7 +300,7 @@ pub struct MemoryDb {
 impl MemoryDb {
     /// Create a new in-memory SQLite database with a single-connection pool.
     pub fn new() -> Self {
-        let pool = rust_scraper::infrastructure::persistence::create_memory_pool()
+        let pool = webfang::infrastructure::persistence::create_memory_pool()
             .expect("create_memory_pool must succeed in tests");
         Self { pool }
     }

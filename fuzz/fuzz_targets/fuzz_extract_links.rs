@@ -12,7 +12,7 @@ fuzz_target!(|data: &[u8]| {
     ) {
         // Only fuzz with valid base URLs to focus on HTML parsing
         if url::Url::parse(base).is_ok() {
-            let _ = rust_scraper::infrastructure::crawler::link_extractor::extract_links(html, base);
+            let _ = webfang::infrastructure::crawler::link_extractor::extract_links(html, base);
         }
     }
 });

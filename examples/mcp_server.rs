@@ -3,9 +3,9 @@
 //! Run: cargo run --example mcp_server
 //! Then: curl -X POST http://127.0.0.1:8080/mcp -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}},"id":1}'
 
-use rust_scraper::config::Config;
-use rust_scraper::di::Container;
-use rust_scraper::infrastructure::mcp_server::{server::build_mcp_router, McpState};
+use webfang::config::Config;
+use webfang::di::Container;
+use webfang::infrastructure::mcp_server::{server::build_mcp_router, McpState};
 use std::net::SocketAddr;
 
 #[tokio::main]

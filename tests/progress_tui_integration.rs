@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use rust_scraper::application::progress_types::{ProgressState, ScrapeError, ScrapeProgress};
+use webfang::application::progress_types::{ProgressState, ScrapeError, ScrapeProgress};
 use tokio::sync::mpsc;
 
 /// Test that progress events are processed within 200ms.
@@ -191,7 +191,7 @@ async fn test_concurrent_progress_updates() {
     let in_progress = state
         .urls
         .iter()
-        .filter(|u| u.status == rust_scraper::application::progress_types::ScrapeStatus::Fetching)
+        .filter(|u| u.status == webfang::application::progress_types::ScrapeStatus::Fetching)
         .count();
     assert_eq!(in_progress, 5);
 }

@@ -14,7 +14,7 @@ use super::embedding_ops::cosine_similarity;
 /// ```
 /// # #[cfg(feature = "ai")]
 /// # fn example() {
-/// use rust_scraper::infrastructure::ai::RelevanceScorer;
+/// use webfang::infrastructure::ai::RelevanceScorer;
 ///
 /// let scorer = RelevanceScorer::new(0.3);
 /// assert_eq!(scorer.threshold(), 0.3);
@@ -240,8 +240,8 @@ impl RelevanceScorer {
     /// Vector of relevant chunks (embeddings are discarded)
     ///
     /// # fn example() -> anyhow::Result<()> {
-    /// use rust_scraper::infrastructure::ai::RelevanceScorer;
-    /// use rust_scraper::domain::DocumentChunk;
+    /// use webfang::infrastructure::ai::RelevanceScorer;
+    /// use webfang::domain::DocumentChunk;
     ///
     /// let scorer = RelevanceScorer::new(0.3);
     /// let reference = vec![0.1f32; 384]; // all-MiniLM-L6-v2 dimension

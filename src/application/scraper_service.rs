@@ -159,7 +159,7 @@ pub fn detect_spa_content(
 /// # Examples
 ///
 /// ```no_run
-/// use rust_scraper::application::{create_http_client, scrape_with_readability};
+/// use webfang::application::{create_http_client, scrape_with_readability};
 ///
 /// # #[tokio::main]
 /// # async fn main() -> anyhow::Result<()> {

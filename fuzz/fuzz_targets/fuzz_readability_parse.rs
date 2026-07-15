@@ -6,6 +6,6 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| {
     if let Ok(html) = std::str::from_utf8(data) {
         // parse() returns Result, so errors are expected and fine
-        let _ = rust_scraper::infrastructure::scraper::readability::parse(html, Some("https://example.com/page"));
+        let _ = webfang::infrastructure::scraper::readability::parse(html, Some("https://example.com/page"));
     }
 });

@@ -22,7 +22,7 @@ use uuid::Uuid;
 /// # Examples
 ///
 /// ```
-/// use rust_scraper::domain::value_objects::CorrelationId;
+/// use webfang::domain::value_objects::CorrelationId;
 ///
 /// let correlation_id = CorrelationId::new();
 /// let traceparent = correlation_id.to_traceparent();
@@ -42,7 +42,7 @@ impl CorrelationId {
     /// # Examples
     ///
     /// ```
-    /// use rust_scraper::domain::value_objects::CorrelationId;
+    /// use webfang::domain::value_objects::CorrelationId;
     ///
     /// let corr = CorrelationId::new();
     /// let traceparent = corr.to_traceparent();
@@ -90,9 +90,9 @@ impl CorrelationId {
 
     /// Generate W3C tracestate header value
     ///
-    /// Returns `rust_scraper=v1:{trace_id}` vendor entry format.
+    /// Returns `webfang=v1:{trace_id}` vendor entry format.
     pub fn to_tracestate(&self) -> String {
-        format!("rust_scraper=v1:{:032x}", self.trace_id.as_u128())
+        format!("webfang=v1:{:032x}", self.trace_id.as_u128())
     }
 
     /// Convert to OpenTelemetry TraceId.
@@ -153,7 +153,7 @@ impl std::fmt::Display for CorrelationId {
 /// # Examples
 ///
 /// ```
-/// use rust_scraper::domain::ValidUrl;
+/// use webfang::domain::ValidUrl;
 ///
 /// // Create from parsed URL
 /// let url = url::Url::parse("https://example.com").unwrap();
@@ -182,7 +182,7 @@ impl ValidUrl {
     /// # Examples
     ///
     /// ```
-    /// use rust_scraper::domain::ValidUrl;
+    /// use webfang::domain::ValidUrl;
     ///
     /// let url = ValidUrl::parse("https://example.com").unwrap();
     /// assert_eq!(url.host_str(), Some("example.com"));
@@ -368,11 +368,11 @@ mod tests {
         let corr = CorrelationId::new();
         let tracestate = corr.to_tracestate();
 
-        // Format: rust_scraper=v1:{32 hex trace_id}
-        // rust_scraper=v1: = 16 chars
+        // Format: webfang=v1:{32 hex trace_id}
+        // webfang=v1: = 16 chars
         // trace_id = 32 chars
         // Total = 48 chars
-        assert!(tracestate.starts_with("rust_scraper=v1:"));
+        assert!(tracestate.starts_with("webfang=v1:"));
         assert!(tracestate.contains('='));
         assert_eq!(tracestate.len(), 48);
     }

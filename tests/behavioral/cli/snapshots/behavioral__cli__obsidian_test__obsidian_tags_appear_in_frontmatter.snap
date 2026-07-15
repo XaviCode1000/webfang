@@ -1,5 +1,5 @@
 ---
-source: crates/rust_scraper_core/../../tests/behavioral/cli/obsidian_test.rs
+source: crates/webfang_core/../../tests/behavioral/cli/obsidian_test.rs
 expression: redacted
 ---
 ---

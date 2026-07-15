@@ -20,7 +20,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use rust_scraper::{scrape_with_readability, ScraperConfig};
+//! use webfang::{scrape_with_readability, ScraperConfig};
 //!
 //! # #[tokio::main]
 //! # async fn main() -> anyhow::Result<()> {

@@ -1,4 +1,4 @@
-//! Error handling module for rust_scraper.
+//! Error handling module for webfang.
 //!
 //! Uses thiserror for library error types (err-thiserror-lib).
 //! This provides type-safe, structured error handling instead of anyhow.
@@ -163,7 +163,7 @@ pub enum ScraperError {
 /// ```
 /// # #[cfg(feature = "ai")]
 /// # fn example() {
-/// use rust_scraper::SemanticError;
+/// use webfang::SemanticError;
 /// use std::io;
 ///
 /// let io_err = io::Error::new(io::ErrorKind::NotFound, "model file missing");

@@ -16,7 +16,7 @@
 //! ## Example Integration
 //!
 //! ```no_run
-//! use rust_scraper::adapters::tui::{App, AppMode, Header, ProgressWidget};
+//! use webfang::adapters::tui::{App, AppMode, Header, ProgressWidget};
 //! use url::Url;
 //!
 //! # async fn example() -> anyhow::Result<()> {

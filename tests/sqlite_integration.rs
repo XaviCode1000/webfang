@@ -5,8 +5,8 @@
 
 #![cfg(feature = "persistence")]
 
-use rust_scraper::domain::VectorRepository;
-use rust_scraper::infrastructure::persistence::sqlite::{
+use webfang::domain::VectorRepository;
+use webfang::infrastructure::persistence::sqlite::{
     create_memory_pool, create_pool, setup_schema, SqliteVectorRepository,
 };
 use tempfile::TempDir;

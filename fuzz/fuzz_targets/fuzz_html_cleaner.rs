@@ -6,7 +6,7 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| {
     if let Ok(html) = std::str::from_utf8(data) {
         // clean_html must NEVER panic on any input.
-        let cleaned = rust_scraper::infrastructure::converter::html_cleaner::clean_html(html);
+        let cleaned = webfang::infrastructure::converter::html_cleaner::clean_html(html);
 
         // Sanity: output should be valid UTF-8 (it returns String, so guaranteed)
         // but check that it doesn't silently produce empty output for non-empty input

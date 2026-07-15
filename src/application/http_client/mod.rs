@@ -13,7 +13,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use rust_scraper::application::http_client::{HttpClient, HttpClientConfig};
+//! use webfang::application::http_client::{HttpClient, HttpClientConfig};
 //! use wreq_util::Profile;
 //!
 //! let config = HttpClientConfig {

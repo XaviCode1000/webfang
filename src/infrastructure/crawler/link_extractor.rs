@@ -32,7 +32,7 @@ use crate::domain::LinkExtractor;
 /// # Examples
 ///
 /// ```
-/// use rust_scraper::infrastructure::crawler::extract_links;
+/// use webfang::infrastructure::crawler::extract_links;
 ///
 /// let html = r#"<html><body><a href="/page1">Link 1</a><a href="https://other.com/page2">Link 2</a></body></html>"#;
 /// let links = extract_links(html, "https://example.com").unwrap();
@@ -91,7 +91,7 @@ pub fn extract_links(html: &str, base_url: &str) -> Result<Vec<String>, crate::d
 /// # Examples
 ///
 /// ```
-/// use rust_scraper::infrastructure::crawler::is_internal_link;
+/// use webfang::infrastructure::crawler::is_internal_link;
 ///
 /// assert!(is_internal_link("https://example.com/page", "example.com"));
 /// assert!(is_internal_link("https://www.example.com/page", "example.com"));
@@ -130,7 +130,7 @@ pub fn is_internal_link(url: &str, domain: &str) -> bool {
 /// # Examples
 ///
 /// ```
-/// use rust_scraper::infrastructure::crawler::normalize_url;
+/// use webfang::infrastructure::crawler::normalize_url;
 ///
 /// assert_eq!(
 ///     normalize_url("https://example.com/page#section"),

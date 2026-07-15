@@ -13,7 +13,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use rust_scraper::adapters::tui;
+//! use webfang::adapters::tui;
 //! use url::Url;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {

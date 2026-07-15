@@ -1,6 +1,6 @@
 ---
-source: crates/rust_scraper_core/../../tests/cli_binary_test.rs
-expression: "redact(Path::new(\"__no_temp__\"), &stderr)"
+source: crates/webfang_core/../../tests/cli_binary_test.rs
+expression: "redact_nondeterministic(Path::new(\"__no_temp__\"), &stderr)"
 ---
 Error: --url is required for scraping
 Error: --url is required

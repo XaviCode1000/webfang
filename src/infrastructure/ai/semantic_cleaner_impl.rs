@@ -37,8 +37,8 @@
 //! ```no_run
 //! # #[cfg(feature = "ai")]
 //! # async fn example() -> anyhow::Result<()> {
-//! use rust_scraper::infrastructure::ai::{SemanticCleanerImpl, ModelConfig};
-//! use rust_scraper::SemanticCleaner;
+//! use webfang::infrastructure::ai::{SemanticCleanerImpl, ModelConfig};
+//! use webfang::SemanticCleaner;
 //!
 //! let config = ModelConfig::default();
 //! let cleaner = SemanticCleanerImpl::new(config).await?;
@@ -81,7 +81,7 @@ use crate::infrastructure::ai::{
 /// Following `api-builder-pattern`, use builder methods for configuration:
 ///
 /// ```
-/// # use rust_scraper::infrastructure::ai::ModelConfig;
+/// # use webfang::infrastructure::ai::ModelConfig;
 /// let config = ModelConfig::new()
 ///     .with_repo("sentence-transformers/all-MiniLM-L6-v2")
 ///     .with_offline_mode(true)
@@ -257,7 +257,7 @@ impl SemanticCleanerImpl {
     ///
     /// ```no_run
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// use rust_scraper::infrastructure::ai::{SemanticCleanerImpl, ModelConfig};
+    /// use webfang::infrastructure::ai::{SemanticCleanerImpl, ModelConfig};
     ///
     /// let config = ModelConfig::default();
     /// let cleaner = SemanticCleanerImpl::new(config).await?;
@@ -573,7 +573,7 @@ impl SemanticCleanerImpl {
     /// ```no_run
     /// # #[cfg(feature = "ai")]
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// use rust_scraper::infrastructure::ai::{SemanticCleaner, SemanticCleanerImpl, ModelConfig};
+    /// use webfang::infrastructure::ai::{SemanticCleaner, SemanticCleanerImpl, ModelConfig};
     ///
     /// // Create semantic cleaner (requires --features ai)
     /// let config = ModelConfig::default();
@@ -667,8 +667,8 @@ impl SemanticCleanerImpl {
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use rust_scraper::infrastructure::ai::{SemanticCleanerImpl, ModelConfig};
-/// use rust_scraper::SemanticCleaner;
+/// use webfang::infrastructure::ai::{SemanticCleanerImpl, ModelConfig};
+/// use webfang::SemanticCleaner;
 ///
 /// let config = ModelConfig::default();
 /// let cleaner = SemanticCleanerImpl::new(config).await?;

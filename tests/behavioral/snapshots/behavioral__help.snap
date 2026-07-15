@@ -1,14 +1,14 @@
 ---
-source: crates/rust_scraper_core/../../tests/behavioral/main.rs
+source: crates/webfang_core/../../tests/behavioral/main.rs
 expression: value.into()
 ---
-CLI Arguments for the rust_scraper binary.
+CLI Arguments for the webfang binary.
 
 # Examples
 
-```no_run use rust_scraper::Args; use clap::Parser;
+```no_run use webfang::Args; use clap::Parser;
 
-let args = Args::parse_from([ "rust_scraper", "--url", "https://example.com", "--output", "./output", "--export-format", "jsonl", "--resume", ]);
+let args = Args::parse_from([ "webfang", "--url", "https://example.com", "--output", "./output", "--export-format", "jsonl", "--resume", ]);
 
 assert_eq!(args.url, "https://example.com"); ```
 
@@ -23,18 +23,18 @@ Options:
   -u, --url <URL>
           URL to scrape (required unless using a subcommand)
           
-          [env: RUST_SCRAPER_URL=]
+          [env: WEBFANG_URL=]
 
   -s, --selector <SELECTOR>
           CSS selector for content extraction
           
-          [env: RUST_SCRAPER_SELECTOR=]
+          [env: WEBFANG_SELECTOR=]
           [default: body]
 
   -o, --output <OUTPUT>
           Output directory for scraped content
           
-          [env: RUST_SCRAPER_OUTPUT=]
+          [env: WEBFANG_OUTPUT=]
           [default: output]
 
   -f, --format <FORMAT>
@@ -45,7 +45,7 @@ Options:
           - json:     Structured JSON with metadata
           - text:     Plain text without formatting
           
-          [env: RUST_SCRAPER_FORMAT=]
+          [env: WEBFANG_FORMAT=]
           [default: markdown]
 
       --export-format <EXPORT_FORMAT>
@@ -56,148 +56,148 @@ Options:
           - vector: Vector format (JSON with metadata header) Supports embeddings and cosine similarity
           - auto:   Auto-detect format from existing export files
           
-          [env: RUST_SCRAPER_EXPORT_FORMAT=]
+          [env: WEBFANG_EXPORT_FORMAT=]
           [default: jsonl]
 
       --obsidian-wiki-links
           Convert same-domain links to Obsidian [[wiki-link]] syntax
           
-          [env: RUST_SCRAPER_OBSIDIAN_WIKI_LINKS=]
+          [env: WEBFANG_OBSIDIAN_WIKI_LINKS=]
 
       --obsidian-tags <OBSIDIAN_TAGS>
           Tags to include in YAML frontmatter (comma-separated)
           
-          [env: RUST_SCRAPER_OBSIDIAN_TAGS=]
+          [env: WEBFANG_OBSIDIAN_TAGS=]
 
       --obsidian-relative-assets
           Rewrite downloaded asset paths as relative to the .md file
           
-          [env: RUST_SCRAPER_OBSIDIAN_RELATIVE_ASSETS=]
+          [env: WEBFANG_OBSIDIAN_RELATIVE_ASSETS=]
 
       --vault <VAULT>
           Path to Obsidian vault (auto-detects if not provided)
           
-          [env: RUST_SCRAPER_OBSIDIAN_VAULT=]
+          [env: WEBFANG_OBSIDIAN_VAULT=]
 
       --quick-save
           Quick-save mode: save directly to vault _inbox folder
           
-          [env: RUST_SCRAPER_OBSIDIAN_QUICK_SAVE=]
+          [env: WEBFANG_OBSIDIAN_QUICK_SAVE=]
 
       --obsidian-rich-metadata
           Add rich metadata to frontmatter
           
-          [env: RUST_SCRAPER_OBSIDIAN_RICH_METADATA=]
+          [env: WEBFANG_OBSIDIAN_RICH_METADATA=]
 
       --delay-ms <DELAY_MS>
           Delay between requests in milliseconds
           
-          [env: RUST_SCRAPER_DELAY_MS=]
+          [env: WEBFANG_DELAY_MS=]
           [default: 1000]
 
       --max-pages <MAX_PAGES>
           Maximum pages to scrape
           
-          [env: RUST_SCRAPER_MAX_PAGES=]
+          [env: WEBFANG_MAX_PAGES=]
           [default: 10]
 
       --concurrency <CONCURRENCY>
           Concurrency level (auto or number)
           
-          [env: RUST_SCRAPER_CONCURRENCY=]
+          [env: WEBFANG_CONCURRENCY=]
           [default: auto]
 
       --use-sitemap
           Use sitemap for URL discovery NOTE: HTTP redirects (301/302) are resolved at scrape-time, not parse-time. This avoids redundant HEAD requests during sitemap parsing for better performance
           
-          [env: RUST_SCRAPER_USE_SITEMAP=]
+          [env: WEBFANG_USE_SITEMAP=]
 
       --sitemap-url <SITEMAP_URL>
           Explicit sitemap URL
           
-          [env: RUST_SCRAPER_SITEMAP_URL=]
+          [env: WEBFANG_SITEMAP_URL=]
 
       --single-page
           Scrape only the seed URL without discovery or crawling
           
-          [env: RUST_SCRAPER_SINGLE_PAGE=]
+          [env: WEBFANG_SINGLE_PAGE=]
 
       --resume
           Resume mode - skip URLs already processed
           
-          [env: RUST_SCRAPER_RESUME=]
+          [env: WEBFANG_RESUME=]
 
       --state-dir <STATE_DIR>
           Custom state directory for resume mode
           
-          [env: RUST_SCRAPER_STATE_DIR=]
+          [env: WEBFANG_STATE_DIR=]
 
       --download-images
           Download images from the page
           
-          [env: RUST_SCRAPER_DOWNLOAD_IMAGES=]
+          [env: WEBFANG_DOWNLOAD_IMAGES=]
 
       --download-documents
           Download documents from the page
           
-          [env: RUST_SCRAPER_DOWNLOAD_DOCUMENTS=]
+          [env: WEBFANG_DOWNLOAD_DOCUMENTS=]
 
       --download-assets
           Download all assets (images + documents) from the page
           
-          [env: RUST_SCRAPER_DOWNLOAD_ASSETS=]
+          [env: WEBFANG_DOWNLOAD_ASSETS=]
 
       --tui
           Unified TUI mode: config form (collapsible sections) → URL selector → scraping
           
-          [env: RUST_SCRAPER_TUI=]
+          [env: WEBFANG_TUI=]
 
       --force-js-render
           Force JavaScript rendering for SPA sites (not yet implemented)
           
-          [env: RUST_SCRAPER_FORCE_JS_RENDER=]
+          [env: WEBFANG_FORCE_JS_RENDER=]
 
   -v, --verbose...
           Verbosity level: -v (INFO), -vv (DEBUG), -vvv (TRACE)
           
-          [env: RUST_SCRAPER_VERBOSE=]
+          [env: WEBFANG_VERBOSE=]
 
   -q, --quiet
           Quiet mode — suppress info/debug output
           
-          [env: RUST_SCRAPER_QUIET=]
+          [env: WEBFANG_QUIET=]
 
   -n, --dry-run
           Dry-run mode — discover URLs and print without scraping
           
-          [env: RUST_SCRAPER_DRY_RUN=]
+          [env: WEBFANG_DRY_RUN=]
 
       --trace-file <TRACE_FILE>
           Path to write OTel spans as JSONL for offline debugging
           
-          [env: RUST_SCRAPER_TRACE_FILE=]
+          [env: WEBFANG_TRACE_FILE=]
 
       --max-depth <MAX_DEPTH>
           Maximum depth to crawl (0 = only seed URL)
           
-          [env: RUST_SCRAPER_MAX_DEPTH=]
+          [env: WEBFANG_MAX_DEPTH=]
           [default: 2]
 
       --timeout-secs <TIMEOUT_SECS>
           Request timeout in seconds
           
-          [env: RUST_SCRAPER_TIMEOUT_SECS=]
+          [env: WEBFANG_TIMEOUT_SECS=]
           [default: 30]
 
       --include-pattern <INCLUDE_PATTERNS>
           URL patterns to include (glob-style)
           
-          [env: RUST_SCRAPER_INCLUDE=]
+          [env: WEBFANG_INCLUDE=]
 
       --exclude-pattern <EXCLUDE_PATTERNS>
           URL patterns to exclude (glob-style)
           
-          [env: RUST_SCRAPER_EXCLUDE=]
+          [env: WEBFANG_EXCLUDE=]
 
       --asset-naming <ASSET_NAMING>
           Estrategia de nombre de archivo para assets descargados: hash (default), slug, content-disposition
@@ -208,111 +208,111 @@ Options:
       --download-concurrency <DOWNLOAD_CONCURRENCY>
           Máximo de descargas de assets concurrentes por página (mínimo 1)
           
-          [env: RUST_SCRAPER_DOWNLOAD_CONCURRENCY=]
+          [env: WEBFANG_DOWNLOAD_CONCURRENCY=]
           [default: 3]
 
       --max-retries <MAX_RETRIES>
           Maximum number of retry attempts
           
-          [env: RUST_SCRAPER_MAX_RETRIES=]
+          [env: WEBFANG_MAX_RETRIES=]
           [default: 3]
 
       --backoff-base-ms <BACKOFF_BASE_MS>
           Base delay for exponential backoff (ms)
           
-          [env: RUST_SCRAPER_BACKOFF_BASE_MS=]
+          [env: WEBFANG_BACKOFF_BASE_MS=]
           [default: 1000]
 
       --backoff-max-ms <BACKOFF_MAX_MS>
           Maximum delay for exponential backoff (ms)
           
-          [env: RUST_SCRAPER_BACKOFF_MAX_MS=]
+          [env: WEBFANG_BACKOFF_MAX_MS=]
           [default: 10000]
 
       --accept-language <ACCEPT_LANGUAGE>
           Accept-Language header value
           
-          [env: RUST_SCRAPER_ACCEPT_LANGUAGE=]
+          [env: WEBFANG_ACCEPT_LANGUAGE=]
           [default: en-US,en;q=0.9]
 
       --user-agent <USER_AGENT>
           Custom User-Agent header value (overrides Chrome 145 default)
           
-          [env: RUST_SCRAPER_USER_AGENT=]
+          [env: WEBFANG_USER_AGENT=]
 
       --max-file-size <MAX_FILE_SIZE>
           Maximum file size to download in bytes (default: 50MB)
           
-          [env: RUST_SCRAPER_MAX_FILE_SIZE=]
+          [env: WEBFANG_MAX_FILE_SIZE=]
           [default: 52428800]
 
       --download-timeout <DOWNLOAD_TIMEOUT>
           Timeout for individual asset downloads in seconds
           
-          [env: RUST_SCRAPER_DOWNLOAD_TIMEOUT=]
+          [env: WEBFANG_DOWNLOAD_TIMEOUT=]
           [default: 30]
 
       --sitemap-depth <SITEMAP_DEPTH>
           Maximum recursion depth for sitemap indexes
           
-          [env: RUST_SCRAPER_SITEMAP_DEPTH=]
+          [env: WEBFANG_SITEMAP_DEPTH=]
           [default: 3]
 
       --cpu-cores <CPU_CORES>
           CPU core override for the elastic ingestion Rayon pool (else auto-detect)
           
-          [env: RUST_SCRAPER_CPU_CORES=]
+          [env: WEBFANG_CPU_CORES=]
 
       --ram-budget <RAM_BUDGET>
           RAM budget override for the byte-weighted semaphore (`8GB`, `2048MB`, or bytes)
           
-          [env: RUST_SCRAPER_RAM_BUDGET=]
+          [env: WEBFANG_RAM_BUDGET=]
 
       --db-path <DB_PATH>
           SQLite database path override for persisted resources/chunks
           
-          [env: RUST_SCRAPER_DB_PATH=]
+          [env: WEBFANG_DB_PATH=]
 
       --elastic
           Enable elastic ingestion pipeline (streaming, SQLite dedup, Rayon CPU bridge)
           
-          [env: RUST_SCRAPER_ELASTIC=]
+          [env: WEBFANG_ELASTIC=]
 
       --output-vectors <OUTPUT_VECTORS>
           Write extracted vectors to a JSONL file for RAG pipelines. Use `-` for stdout. No SQLite dependency — available in every build (core binary too)
           
-          [env: RUST_SCRAPER_OUTPUT_VECTORS=]
+          [env: WEBFANG_OUTPUT_VECTORS=]
 
       --checkpoint-interval <CHECKPOINT_INTERVAL>
           Pages between automatic checkpoint saves (0 = disabled) NOTE: Checkpoint is for programmatic use (Engine API) only. CLI --resume uses StateStore instead of checkpoints
           
-          [env: RUST_SCRAPER_CHECKPOINT_INTERVAL=]
+          [env: WEBFANG_CHECKPOINT_INTERVAL=]
           [default: 100]
 
       --no-checkpoint
           Disable checkpoint persistence entirely NOTE: Checkpoint is for programmatic use (Engine API) only. CLI --resume uses StateStore instead of checkpoints
           
-          [env: RUST_SCRAPER_NO_CHECKPOINT=]
+          [env: WEBFANG_NO_CHECKPOINT=]
 
       --ignore-robots
           Skip robots.txt enforcement
           
-          [env: RUST_SCRAPER_IGNORE_ROBOTS=]
+          [env: WEBFANG_IGNORE_ROBOTS=]
 
       --autoscale
           Enable autoscaled concurrency — dynamically adjusts task concurrency based on RAM usage
           
-          [env: RUST_SCRAPER_AUTOSCALE=]
+          [env: WEBFANG_AUTOSCALE=]
 
       --no-session-health
           Disable session pool health checks
           
-          [env: RUST_SCRAPER_NO_SESSION_HEALTH=]
+          [env: WEBFANG_NO_SESSION_HEALTH=]
 
       --h2-profile <H2_PROFILE>
           TLS/HTTP2 profile name (default: Chrome145)
           
-          [env: RUST_SCRAPER_H2_PROFILE=]
+          [env: WEBFANG_H2_PROFILE=]
           [default: Chrome145]
 
       --js-strategy <JS_STRATEGY>
@@ -323,35 +323,35 @@ Options:
           - hybrid: Hybrid 3-layer: wreq → Obscura → Chromiumoxide
           - full:   Full JS rendering only (Chromiumoxide). Slowest, handles all SPAs
           
-          [env: RUST_SCRAPER_JS_STRATEGY=]
+          [env: WEBFANG_JS_STRATEGY=]
           [default: static]
 
       --obscura-binary <OBSCURA_BINARY>
           Path to the obscura binary (default: "obscura")
           
-          [env: RUST_SCRAPER_OBSCURA_BINARY=]
+          [env: WEBFANG_OBSCURA_BINARY=]
           [default: obscura]
 
       --batch
           Enable batch mode — read URLs from stdin (one per line)
           
-          [env: RUST_SCRAPER_BATCH=]
+          [env: WEBFANG_BATCH=]
 
       --batch-file <BATCH_FILE>
           Path to a file containing URLs to crawl (one per line)
           
-          [env: RUST_SCRAPER_BATCH_FILE=]
+          [env: WEBFANG_BATCH_FILE=]
 
       --batch-concurrency <BATCH_CONCURRENCY>
           Maximum concurrent URLs in batch mode
           
-          [env: RUST_SCRAPER_BATCH_CONCURRENCY=]
+          [env: WEBFANG_BATCH_CONCURRENCY=]
           [default: 5]
 
       --pipeline
           Enable item pipeline processing (validate → clean → output)
           
-          [env: RUST_SCRAPER_PIPELINE=]
+          [env: WEBFANG_PIPELINE=]
 
       --pipeline-output <PIPELINE_OUTPUT>
           Pipeline output format: jsonl (default), none
@@ -360,7 +360,7 @@ Options:
           - jsonl: Write items as JSON Lines to a file (default)
           - none:  No pipeline output — items are processed but not written
           
-          [env: RUST_SCRAPER_PIPELINE_OUTPUT=]
+          [env: WEBFANG_PIPELINE_OUTPUT=]
           [default: jsonl]
 
   -h, --help

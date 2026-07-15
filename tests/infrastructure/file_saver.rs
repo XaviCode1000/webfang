@@ -1,9 +1,9 @@
 //! Integration tests for file_saver — directory creation, markdown writing,
 //! overwrite behavior, and content verification.
 
-use rust_scraper::domain::{ScrapedContent, ValidUrl};
-use rust_scraper::infrastructure::output::file_saver::{save_results, ObsidianOptions};
-use rust_scraper::OutputFormat;
+use webfang::domain::{ScrapedContent, ValidUrl};
+use webfang::infrastructure::output::file_saver::{save_results, ObsidianOptions};
+use webfang::OutputFormat;
 use std::fs;
 use tempfile::TempDir;
 use walkdir::WalkDir;

@@ -33,7 +33,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! rust_scraper = { version = "1.0", features = ["ai"] }
+//! webfang = { version = "1.0", features = ["ai"] }
 //! ```
 //!
 //! # Model Information
@@ -42,7 +42,7 @@
 //! - **Format**: ONNX (optimized for inference)
 //! - **Size**: ~90MB
 //! - **Max Tokens**: 512 per chunk
-//! - **Cache Location**: `~/.cache/rust_scraper/ai_models/`
+//! - **Cache Location**: `~/.cache/webfang/ai_models/`
 //!
 //! # Rust-Skills Applied
 //!
@@ -57,7 +57,7 @@
 //! ```no_run
 //! # #[cfg(feature = "ai")]
 //! # async fn example() -> anyhow::Result<()> {
-//! use rust_scraper::infrastructure::ai::{SemanticCleanerImpl, ModelConfig};
+//! use webfang::infrastructure::ai::{SemanticCleanerImpl, ModelConfig};
 //!
 //! let config = ModelConfig::default();
 //! let cleaner = SemanticCleanerImpl::new(config).await?;

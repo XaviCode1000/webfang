@@ -1,11 +1,11 @@
 ---
-source: crates/rust_scraper_core/../../tests/behavioral/main.rs
+source: crates/webfang_core/../../tests/behavioral/main.rs
 expression: redacted
 ---
 ---
 title: Single Page Test
 url: http://127.0.0.1:<PORT>/
-date: 2026-07-14
+date: 2026-07-15
 excerpt: This is meaningful content for the extractor to process.
 ---
 

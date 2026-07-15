@@ -1,8 +1,8 @@
 //! Integration tests for BincodeCheckpoint — save/load roundtrip, corrupt files,
 //! atomic writes, banned domains, and large checkpoints.
 
-use rust_scraper::infrastructure::checkpoint::store::{BannedDomain, CheckpointPath};
-use rust_scraper::BincodeCheckpoint;
+use webfang::infrastructure::checkpoint::store::{BannedDomain, CheckpointPath};
+use webfang::BincodeCheckpoint;
 use std::collections::HashSet;
 use std::fs;
 use tempfile::TempDir;

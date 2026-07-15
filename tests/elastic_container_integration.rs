@@ -5,10 +5,10 @@
 
 #![cfg(feature = "persistence")]
 
-use rust_scraper::application::container::Container;
-use rust_scraper::domain::CrawlerConfig;
-use rust_scraper::infrastructure::autotuning::ElasticOverrides;
-use rust_scraper::infrastructure::config::ScraperConfig;
+use webfang::application::container::Container;
+use webfang::domain::CrawlerConfig;
+use webfang::infrastructure::autotuning::ElasticOverrides;
+use webfang::infrastructure::config::ScraperConfig;
 use tempfile::TempDir;
 
 #[tokio::test]
@@ -27,8 +27,8 @@ async fn container_with_elastic_builds_pipeline() {
         db_path: Some(dir.path().join("elastic.db")),
         ..Default::default()
     };
-    let opts = rust_scraper::application::crawl_options::CrawlOptions {
-        elastic: rust_scraper::application::crawl_options::IngestionTuning::from(overrides),
+    let opts = webfang::application::crawl_options::CrawlOptions {
+        elastic: webfang::application::crawl_options::IngestionTuning::from(overrides),
         ..Default::default()
     };
 
@@ -70,15 +70,15 @@ async fn container_without_elastic_is_none() {
 async fn elastic_pipeline_returns_error_on_bad_url() {
     use std::sync::Arc;
 
-    use rust_scraper::application::elastic_ingestion::ElasticIngestion;
-    use rust_scraper::infrastructure::autotuning::ElasticConfig;
-    use rust_scraper::infrastructure::bridge::CpuBridge;
-    use rust_scraper::infrastructure::config::AutotuningConfig;
-    use rust_scraper::infrastructure::cpu_pool::RayonCpuPool;
-    use rust_scraper::infrastructure::crawler::resource_downloader::{
+    use webfang::application::elastic_ingestion::ElasticIngestion;
+    use webfang::infrastructure::autotuning::ElasticConfig;
+    use webfang::infrastructure::bridge::CpuBridge;
+    use webfang::infrastructure::config::AutotuningConfig;
+    use webfang::infrastructure::cpu_pool::RayonCpuPool;
+    use webfang::infrastructure::crawler::resource_downloader::{
         DownloadConfig, ResourceDownloader,
     };
-    use rust_scraper::infrastructure::persistence::sqlite::{self, setup_schema};
+    use webfang::infrastructure::persistence::sqlite::{self, setup_schema};
 
     let dir = TempDir::new().expect("directorio temporal");
     let db_path = dir.path().join("elastic_test.db");

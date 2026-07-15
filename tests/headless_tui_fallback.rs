@@ -12,18 +12,18 @@ use assert_cmd::Command;
 /// Expected Spanish message (spec S2.2 exact wording).
 const EXPECTED_MSG: &str = "TUI no disponible: compilar con --features ui";
 
-fn rust_scraper_core() -> Command {
-    Command::cargo_bin("rust_scraper_core")
-        .expect("rust_scraper_core binary must be built for this test")
+fn webfang_core() -> Command {
+    Command::cargo_bin("webfang_core")
+        .expect("webfang_core binary must be built for this test")
 }
 
 #[test]
 fn tui_flag_prints_spanish_message_when_ui_off() {
-    let output = rust_scraper_core()
+    let output = webfang_core()
         .arg("--tui")
         .timeout(std::time::Duration::from_secs(10))
         .output()
-        .expect("failed to execute rust_scraper_core");
+        .expect("failed to execute webfang_core");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -42,11 +42,11 @@ fn tui_flag_prints_spanish_message_when_ui_off() {
 
 #[test]
 fn config_tui_flag_prints_spanish_message_when_ui_off() {
-    let output = rust_scraper_core()
+    let output = webfang_core()
         .arg("--config-tui")
         .timeout(std::time::Duration::from_secs(10))
         .output()
-        .expect("failed to execute rust_scraper_core");
+        .expect("failed to execute webfang_core");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -65,11 +65,11 @@ fn config_tui_flag_prints_spanish_message_when_ui_off() {
 
 #[test]
 fn interactive_flag_prints_spanish_message_when_ui_off() {
-    let output = rust_scraper_core()
+    let output = webfang_core()
         .arg("--interactive")
         .timeout(std::time::Duration::from_secs(10))
         .output()
-        .expect("failed to execute rust_scraper_core");
+        .expect("failed to execute webfang_core");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);

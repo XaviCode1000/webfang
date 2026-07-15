@@ -3,7 +3,7 @@
 //! Tests use wiremock for deterministic HTTP responses.
 //! Run with: cargo test --ignored (for network tests) or cargo test (for mock tests)
 
-use rust_scraper::application::http_client::{HttpClient, HttpClientConfig};
+use webfang::application::http_client::{HttpClient, HttpClientConfig};
 use std::time::Duration;
 use wiremock::{
     matchers::{method, path},

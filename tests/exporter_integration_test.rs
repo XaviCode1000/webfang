@@ -6,19 +6,19 @@
 use std::env::temp_dir;
 use std::fs;
 
-use rust_scraper::domain::entities::ExportFormat;
-use rust_scraper::domain::exporter::ExporterConfig;
-use rust_scraper::domain::DocumentChunkUnvalidated;
-use rust_scraper::domain::DocumentChunkValidated;
-use rust_scraper::domain::Exporter;
-use rust_scraper::domain::ScrapedContent;
-use rust_scraper::domain::ValidUrl;
-use rust_scraper::domain::ValidationError;
-use rust_scraper::infrastructure::export::file_exporter::FileExporter;
+use webfang::domain::entities::ExportFormat;
+use webfang::domain::exporter::ExporterConfig;
+use webfang::domain::DocumentChunkUnvalidated;
+use webfang::domain::DocumentChunkValidated;
+use webfang::domain::Exporter;
+use webfang::domain::ScrapedContent;
+use webfang::domain::ValidUrl;
+use webfang::domain::ValidationError;
+use webfang::infrastructure::export::file_exporter::FileExporter;
 
 /// Test helper: create and validate a DocumentChunk
 fn make_chunk(url: &str, title: &str, content: &str) -> DocumentChunkValidated {
-    use rust_scraper::domain::{ScrapedContent, ValidUrl};
+    use webfang::domain::{ScrapedContent, ValidUrl};
 
     // Create a ScrapedContent first, then convert to DocumentChunk
     let scraped = ScrapedContent {
@@ -34,7 +34,7 @@ fn make_chunk(url: &str, title: &str, content: &str) -> DocumentChunkValidated {
     };
 
     // Convert to Draft state, then validate
-    let unvalidated: rust_scraper::domain::DocumentChunkUnvalidated = scraped.into();
+    let unvalidated: webfang::domain::DocumentChunkUnvalidated = scraped.into();
     unvalidated.validate().expect("valid document")
 }
 
@@ -237,7 +237,7 @@ fn test_scraped_content_conversion() {
     };
 
     // Conversion from ScrapedContent creates Draft state, then validate
-    let unvalidated: rust_scraper::domain::DocumentChunk<rust_scraper::domain::Draft> =
+    let unvalidated: webfang::domain::DocumentChunk<webfang::domain::Draft> =
         scraped.into();
     let chunk = unvalidated.validate().expect("should be valid");
 

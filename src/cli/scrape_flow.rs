@@ -31,7 +31,7 @@ pub async fn apply_resume_mode(
                         .unwrap_or_else(|| PathBuf::from("."))
                         .join(".cache")
                 });
-            cache_base.join("rust_scraper").join("state")
+            cache_base.join("webfang").join("state")
         });
 
         let domain = export_factory::domain_from_url(target_url);

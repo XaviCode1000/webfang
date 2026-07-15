@@ -2,14 +2,14 @@
 //!
 //! Uses tempfile for real I/O verification of JSONL output.
 
-use rust_scraper::domain::entities::ExportFormat;
-use rust_scraper::domain::exporter::{Exporter, ExporterConfig};
-use rust_scraper::domain::{DocumentChunkUnvalidated, ScrapedContent, ValidUrl};
-use rust_scraper::infrastructure::export::JsonlExporter;
+use webfang::domain::entities::ExportFormat;
+use webfang::domain::exporter::{Exporter, ExporterConfig};
+use webfang::domain::{DocumentChunkUnvalidated, ScrapedContent, ValidUrl};
+use webfang::infrastructure::export::JsonlExporter;
 use std::fs;
 use tempfile::TempDir;
 
-fn make_chunk(title: &str) -> rust_scraper::domain::DocumentChunkValidated {
+fn make_chunk(title: &str) -> webfang::domain::DocumentChunkValidated {
     let scraped = ScrapedContent {
         title: title.to_string(),
         content: format!("Content for {title}"),

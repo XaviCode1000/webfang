@@ -1,5 +1,5 @@
 ---
-source: crates/rust_scraper_core/../../tests/cli_binary_test.rs
-expression: "redact(Path::new(\"__no_temp__\"), &stdout)"
+source: crates/webfang_core/../../tests/cli_binary_test.rs
+expression: "redact_nondeterministic(Path::new(\"__no_temp__\"), &stdout)"
 ---
 webfang 2.0.0

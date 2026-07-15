@@ -8,8 +8,8 @@
 //! - CSS injection via style tags
 //! - Attribute stripping (only href, src, alt, id, class, dir, code preserved)
 
-use rust_scraper::infrastructure::converter::html_cleaner::clean_html;
-use rust_scraper::infrastructure::converter::html_to_markdown::convert_to_markdown;
+use webfang::infrastructure::converter::html_cleaner::clean_html;
+use webfang::infrastructure::converter::html_to_markdown::convert_to_markdown;
 
 // ============================================================================
 // Script tag injection

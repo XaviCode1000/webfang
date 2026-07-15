@@ -6,7 +6,7 @@
 //! Run with: `cargo test --test crawler_integration -- --ignored`
 //! (Tests are ignored by default to avoid network calls in CI)
 
-use rust_scraper::{
+use webfang::{
     crawl_site, discover_urls_for_tui, is_allowed, is_excluded, is_internal_link, matches_pattern,
     CrawlerConfig,
 };
@@ -139,7 +139,7 @@ async fn test_discover_urls() {
 #[tokio::test]
 #[ignore = "requires network"]
 async fn test_crawl_with_sitemap() {
-    use rust_scraper::crawl_with_sitemap;
+    use webfang::crawl_with_sitemap;
 
     // Try with a site known to have a sitemap
     let seed = Url::parse("https://example.com").unwrap();

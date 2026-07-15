@@ -2,13 +2,13 @@
 
 - **Status:** Accepted
 - **Date:** 2026-07-10
-- **Deciders:** Project Architect, `rust_scraper` maintainers
+- **Deciders:** Project Architect, `webfang` maintainers
 - **Related issues:** #142 (timeout hardcoded), #143 (`--h2-profile` ignored), #144 (`--include-pattern` not applied to assets), #145 (asset naming = hash only)
 - **Supersedes:** —
 
 ## Context
 
-`rust_scraper` has accumulated **three parallel ways to download bytes**, and the one used in
+`webfang` has accumulated **three parallel ways to download bytes**, and the one used in
 production for assets is the weakest:
 
 | Location | Kind | Role | Wired into production asset path? |

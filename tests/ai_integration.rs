@@ -15,14 +15,14 @@
 
 #![cfg(feature = "ai")]
 
-use rust_scraper::domain::DocumentChunk;
-use rust_scraper::infrastructure::ai::model_downloader::ModelDownloader;
-use rust_scraper::infrastructure::ai::{
+use webfang::domain::DocumentChunk;
+use webfang::infrastructure::ai::model_downloader::ModelDownloader;
+use webfang::infrastructure::ai::{
     default_cache_dir, CacheConfig, ModelCache, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO,
 };
-use rust_scraper::infrastructure::ai::{InferenceEngine, ModelConfig, SemanticCleanerImpl};
-use rust_scraper::SemanticCleaner;
-use rust_scraper::SemanticError;
+use webfang::infrastructure::ai::{InferenceEngine, ModelConfig, SemanticCleanerImpl};
+use webfang::SemanticCleaner;
+use webfang::SemanticError;
 use std::path::PathBuf;
 
 // ============================================================================
@@ -154,8 +154,8 @@ fn test_default_cache_dir() {
     // Should end with ai_models
     assert!(cache_dir.to_string_lossy().ends_with("ai_models"));
 
-    // Should contain rust_scraper
-    assert!(cache_dir.to_string_lossy().contains("rust_scraper"));
+    // Should contain webfang
+    assert!(cache_dir.to_string_lossy().contains("webfang"));
 }
 
 /// Test that ModelCache can check if a model is cached
@@ -196,7 +196,7 @@ fn test_model_cache_model_path() {
 /// Test that DownloadProgress calculations work correctly
 #[test]
 fn test_download_progress_calculations() {
-    use rust_scraper::infrastructure::ai::DownloadProgress;
+    use webfang::infrastructure::ai::DownloadProgress;
 
     // Test percentage calculation
     let progress = DownloadProgress {
@@ -277,7 +277,7 @@ fn test_semantic_error_variants() {
 /// Test that ScraperError can be created from SemanticError
 #[test]
 fn test_scraper_error_from_semantic_error() {
-    use rust_scraper::ScraperError;
+    use webfang::ScraperError;
 
     let semantic_err = SemanticError::ModelLoad(std::io::Error::new(
         std::io::ErrorKind::NotFound,
@@ -323,7 +323,7 @@ fn test_inference_engine_is_clone() {
 /// Verifies the token batch structure for batch inference.
 #[test]
 fn test_token_batch_creation() {
-    use rust_scraper::infrastructure::ai::tokenizer::TokenBatch;
+    use webfang::infrastructure::ai::tokenizer::TokenBatch;
 
     let batch = TokenBatch::new(
         vec![vec![1, 2, 3], vec![4, 5, 6]],
@@ -341,7 +341,7 @@ fn test_token_batch_creation() {
 /// Verifies that MiniLmTokenizer has the correct Send/Sync properties.
 #[test]
 fn test_tokenizer_type_traits() {
-    use rust_scraper::infrastructure::ai::tokenizer::MiniLmTokenizer;
+    use webfang::infrastructure::ai::tokenizer::MiniLmTokenizer;
 
     fn assert_send<T: Send>() {}
 
@@ -358,7 +358,7 @@ fn test_tokenizer_type_traits() {
 /// Test ChunkId creation and display
 #[test]
 fn test_chunk_id_display() {
-    use rust_scraper::infrastructure::ai::ChunkId;
+    use webfang::infrastructure::ai::ChunkId;
 
     let id = ChunkId(42);
     assert_eq!(format!("{}", id), "chunk-42");
@@ -367,7 +367,7 @@ fn test_chunk_id_display() {
 /// Test ChunkId inner value access
 #[test]
 fn test_chunk_id_inner() {
-    use rust_scraper::infrastructure::ai::ChunkId;
+    use webfang::infrastructure::ai::ChunkId;
 
     let id = ChunkId::new(123);
     assert_eq!(id.inner(), 123);
@@ -376,7 +376,7 @@ fn test_chunk_id_inner() {
 /// Test ChunkId equality
 #[test]
 fn test_chunk_id_equality() {
-    use rust_scraper::infrastructure::ai::ChunkId;
+    use webfang::infrastructure::ai::ChunkId;
 
     let id1 = ChunkId(42);
     let id2 = ChunkId(42);
@@ -389,7 +389,7 @@ fn test_chunk_id_equality() {
 /// Test that SentenceSplitter type exists
 #[test]
 fn test_sentence_splitter_basic() {
-    use rust_scraper::infrastructure::ai::SentenceSplitter;
+    use webfang::infrastructure::ai::SentenceSplitter;
 
     let splitter = SentenceSplitter;
     let sentences = splitter.split("Hello world. How are you?");
@@ -399,7 +399,7 @@ fn test_sentence_splitter_basic() {
 /// Test sentence splitter count
 #[test]
 fn test_sentence_splitter_count() {
-    use rust_scraper::infrastructure::ai::SentenceSplitter;
+    use webfang::infrastructure::ai::SentenceSplitter;
 
     let splitter = SentenceSplitter;
     let count = splitter.count("One. Two. Three.");
@@ -409,7 +409,7 @@ fn test_sentence_splitter_count() {
 /// Test sentence splitter trimmed output
 #[test]
 fn test_sentence_splitter_trimmed() {
-    use rust_scraper::infrastructure::ai::SentenceSplitter;
+    use webfang::infrastructure::ai::SentenceSplitter;
 
     let splitter = SentenceSplitter;
     let sentences = splitter.split_trimmed("  First.  Second.  Third.  ");
@@ -421,7 +421,7 @@ fn test_sentence_splitter_trimmed() {
 /// Test chunker creation with defaults
 #[test]
 fn test_chunker_creation() {
-    use rust_scraper::infrastructure::ai::HtmlChunker;
+    use webfang::infrastructure::ai::HtmlChunker;
 
     let chunker = HtmlChunker::new();
     assert!(chunker.min_chunk_size() > 0);
@@ -433,7 +433,7 @@ fn test_chunker_creation() {
 /// Test chunker builder pattern
 #[test]
 fn test_chunker_builder_pattern() {
-    use rust_scraper::infrastructure::ai::HtmlChunker;
+    use webfang::infrastructure::ai::HtmlChunker;
 
     let chunker = HtmlChunker::new()
         .with_min_chunk_size(80)
@@ -448,7 +448,7 @@ fn test_chunker_builder_pattern() {
 /// Test chunker with custom config
 #[test]
 fn test_chunker_with_config() {
-    use rust_scraper::infrastructure::ai::HtmlChunker;
+    use webfang::infrastructure::ai::HtmlChunker;
 
     let chunker = HtmlChunker::with_config(50, 300, 0.7);
     assert_eq!(chunker.min_chunk_size(), 50);
@@ -459,7 +459,7 @@ fn test_chunker_with_config() {
 /// Test chunker basic HTML processing
 #[test]
 fn test_chunker_basic_html() {
-    use rust_scraper::infrastructure::ai::HtmlChunker;
+    use webfang::infrastructure::ai::HtmlChunker;
 
     let chunker = HtmlChunker::new();
     let html = "<p>This is a paragraph with enough text to meet the minimum chunk size requirement for testing purposes.</p>";
@@ -470,7 +470,7 @@ fn test_chunker_basic_html() {
 /// Test chunker empty HTML
 #[test]
 fn test_chunker_empty_html() {
-    use rust_scraper::infrastructure::ai::HtmlChunker;
+    use webfang::infrastructure::ai::HtmlChunker;
 
     let chunker = HtmlChunker::new();
     let html = "";
@@ -486,7 +486,7 @@ fn test_chunker_empty_html() {
 /// Test cosine similarity with identical vectors
 #[test]
 fn test_cosine_similarity_identical() {
-    use rust_scraper::infrastructure::ai::embedding_ops::cosine_similarity;
+    use webfang::infrastructure::ai::embedding_ops::cosine_similarity;
 
     // Use a normalized vector (magnitude = 1.0)
     // 1/sqrt(8) ≈ 0.3536 for 8-dimensional unit vector
@@ -499,7 +499,7 @@ fn test_cosine_similarity_identical() {
 /// Test cosine similarity with orthogonal vectors
 #[test]
 fn test_cosine_similarity_orthogonal() {
-    use rust_scraper::infrastructure::ai::embedding_ops::cosine_similarity;
+    use webfang::infrastructure::ai::embedding_ops::cosine_similarity;
 
     let a = vec![1.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     let b = vec![0.0f32, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
@@ -510,7 +510,7 @@ fn test_cosine_similarity_orthogonal() {
 /// Test cosine similarity with opposite vectors
 #[test]
 fn test_cosine_similarity_opposite() {
-    use rust_scraper::infrastructure::ai::embedding_ops::cosine_similarity;
+    use webfang::infrastructure::ai::embedding_ops::cosine_similarity;
 
     let a = vec![1.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     let b = vec![-1.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
@@ -521,7 +521,7 @@ fn test_cosine_similarity_opposite() {
 /// Test cosine similarity with empty vectors
 #[test]
 fn test_cosine_similarity_empty() {
-    use rust_scraper::infrastructure::ai::embedding_ops::cosine_similarity;
+    use webfang::infrastructure::ai::embedding_ops::cosine_similarity;
 
     let a: Vec<f32> = vec![];
     let b: Vec<f32> = vec![];
@@ -532,7 +532,7 @@ fn test_cosine_similarity_empty() {
 /// Test dot product scalar fallback
 #[test]
 fn test_dot_product_scalar() {
-    use rust_scraper::infrastructure::ai::embedding_ops::dot_product_scalar;
+    use webfang::infrastructure::ai::embedding_ops::dot_product_scalar;
 
     let a = vec![1.0f32, 2.0, 3.0];
     let b = vec![4.0f32, 5.0, 6.0];
@@ -543,7 +543,7 @@ fn test_dot_product_scalar() {
 /// Test vector normalization
 #[test]
 fn test_normalize() {
-    use rust_scraper::infrastructure::ai::embedding_ops::normalize;
+    use webfang::infrastructure::ai::embedding_ops::normalize;
 
     let v = vec![3.0f32, 4.0];
     let normalized = normalize(&v);
@@ -554,7 +554,7 @@ fn test_normalize() {
 /// Test Euclidean distance
 #[test]
 fn test_euclidean_distance() {
-    use rust_scraper::infrastructure::ai::embedding_ops::euclidean_distance;
+    use webfang::infrastructure::ai::embedding_ops::euclidean_distance;
 
     let a = vec![0.0f32, 0.0];
     let b = vec![3.0f32, 4.0];
@@ -565,7 +565,7 @@ fn test_euclidean_distance() {
 #[test]
 /// Test relevance scorer creation
 fn test_relevance_scorer_creation() {
-    use rust_scraper::infrastructure::ai::RelevanceScorer;
+    use webfang::infrastructure::ai::RelevanceScorer;
 
     let scorer = RelevanceScorer::new(0.3);
     assert_eq!(scorer.threshold(), 0.3);
@@ -574,7 +574,7 @@ fn test_relevance_scorer_creation() {
 /// Test relevance scorer with reference
 #[test]
 fn test_relevance_scorer_with_reference() {
-    use rust_scraper::infrastructure::ai::RelevanceScorer;
+    use webfang::infrastructure::ai::RelevanceScorer;
 
     let reference = vec![0.5f32; 8];
     let scorer = RelevanceScorer::with_reference(0.5, reference.clone());
@@ -586,7 +586,7 @@ fn test_relevance_scorer_with_reference() {
 #[test]
 #[should_panic(expected = "Threshold must be between")]
 fn test_relevance_scorer_invalid_threshold() {
-    use rust_scraper::infrastructure::ai::RelevanceScorer;
+    use webfang::infrastructure::ai::RelevanceScorer;
 
     let _ = RelevanceScorer::new(1.5);
 }
@@ -594,7 +594,7 @@ fn test_relevance_scorer_invalid_threshold() {
 /// Test relevance scorer meets_threshold
 #[test]
 fn test_relevance_scorer_meets_threshold() {
-    use rust_scraper::infrastructure::ai::RelevanceScorer;
+    use webfang::infrastructure::ai::RelevanceScorer;
 
     let scorer = RelevanceScorer::new(0.5);
     assert!(scorer.meets_threshold(0.6));
@@ -605,7 +605,7 @@ fn test_relevance_scorer_meets_threshold() {
 #[test]
 /// Test threshold config default values
 fn test_threshold_config_defaults() {
-    use rust_scraper::infrastructure::ai::ThresholdConfig;
+    use webfang::infrastructure::ai::ThresholdConfig;
 
     let config = ThresholdConfig::new();
     assert_eq!(config.min_threshold(), 0.0);
@@ -616,7 +616,7 @@ fn test_threshold_config_defaults() {
 /// Test threshold config builder pattern
 #[test]
 fn test_threshold_config_builder() {
-    use rust_scraper::infrastructure::ai::ThresholdConfig;
+    use webfang::infrastructure::ai::ThresholdConfig;
 
     let config = ThresholdConfig::new()
         .with_min_threshold(0.2)
@@ -632,7 +632,7 @@ fn test_threshold_config_builder() {
 /// Test threshold config is_valid
 #[test]
 fn test_threshold_config_is_valid() {
-    use rust_scraper::infrastructure::ai::ThresholdConfig;
+    use webfang::infrastructure::ai::ThresholdConfig;
 
     let config = ThresholdConfig::new()
         .with_min_threshold(0.2)
@@ -646,7 +646,7 @@ fn test_threshold_config_is_valid() {
 /// Test threshold config clamp
 #[test]
 fn test_threshold_config_clamp() {
-    use rust_scraper::infrastructure::ai::ThresholdConfig;
+    use webfang::infrastructure::ai::ThresholdConfig;
 
     let config = ThresholdConfig::new()
         .with_min_threshold(0.2)
@@ -661,7 +661,7 @@ fn test_threshold_config_clamp() {
 /// Test threshold config strict preset
 #[test]
 fn test_threshold_config_strict() {
-    use rust_scraper::infrastructure::ai::ThresholdConfig;
+    use webfang::infrastructure::ai::ThresholdConfig;
 
     let config = ThresholdConfig::strict();
     assert_eq!(config.min_threshold(), 0.5);
@@ -672,7 +672,7 @@ fn test_threshold_config_strict() {
 /// Test threshold config lenient preset
 #[test]
 fn test_threshold_config_lenient() {
-    use rust_scraper::infrastructure::ai::ThresholdConfig;
+    use webfang::infrastructure::ai::ThresholdConfig;
 
     let config = ThresholdConfig::lenient();
     assert_eq!(config.min_threshold(), 0.0);
@@ -683,7 +683,7 @@ fn test_threshold_config_lenient() {
 /// Test threshold config balanced preset
 #[test]
 fn test_threshold_config_balanced() {
-    use rust_scraper::infrastructure::ai::ThresholdConfig;
+    use webfang::infrastructure::ai::ThresholdConfig;
 
     let config = ThresholdConfig::balanced();
     assert_eq!(config.min_threshold(), 0.1);
@@ -868,7 +868,7 @@ async fn test_concurrent_embeddings() {
 /// Verifies that chunks are filtered by relevance threshold.
 #[test]
 fn test_relevance_filtering() {
-    use rust_scraper::infrastructure::ai::RelevanceScorer;
+    use webfang::infrastructure::ai::RelevanceScorer;
 
     let scorer = RelevanceScorer::new(0.3);
 
@@ -946,7 +946,7 @@ async fn test_error_chunk_too_large() {
 #[tokio::test]
 async fn test_offline_mode_error() {
     let temp_cache_dir = PathBuf::from(format!(
-        "/tmp/rust_scraper_test_cache_{}",
+        "/tmp/webfang_test_cache_{}",
         std::process::id()
     ));
 

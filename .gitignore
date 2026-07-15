@@ -137,8 +137,8 @@ rag_dataset/
 output/
 
 # Keep the legitimate source module (referenced by crate code; not runtime output)
-!crates/rust_scraper_core/src/infrastructure/output/
-!crates/rust_scraper_core/src/infrastructure/output/**
+!crates/webfang_core/src/infrastructure/output/
+!crates/webfang_core/src/infrastructure/output/**
 
 # Temporales / generados
 *.tmp

@@ -21,7 +21,7 @@
 //! # Usage
 //!
 //! ```no_run
-//! use rust_scraper::adapters::tui::run_progress_view;
+//! use webfang::adapters::tui::run_progress_view;
 //! use url::Url;
 //! use tokio::sync::mpsc;
 //!

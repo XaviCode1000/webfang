@@ -9,12 +9,12 @@
 //! |----------|---------|-------------|
 //! | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | OTLP HTTP collector endpoint |
 //! | `OTEL_EXPORTER_OTLP_HEADERS` | `""` | Extra headers (`k1=v1,k2=v2`) — e.g. Grafana Cloud auth |
-//! | `OTEL_SERVICE_NAME` | `rust_scraper` | Service name in OTel resource |
+//! | `OTEL_SERVICE_NAME` | `webfang` | Service name in OTel resource |
 //!
 //! # Usage
 //!
 //! ```rust,ignore
-//! use rust_scraper::infrastructure::observability::otel::{OtelConfig, init_otel_tracing};
+//! use webfang::infrastructure::observability::otel::{OtelConfig, init_otel_tracing};
 //!
 //! let config = OtelConfig::from_env();
 //! let (guard, layer) = init_otel_tracing(config)?;
@@ -45,7 +45,7 @@ use std::time::Duration;
 pub struct OtelConfig {
     /// OTLP HTTP endpoint (default: `http://localhost:4318`)
     pub endpoint: String,
-    /// Service name for resource attributes (default: `rust_scraper`)
+    /// Service name for resource attributes (default: `webfang`)
     pub service_name: String,
 }
 
@@ -53,13 +53,13 @@ impl OtelConfig {
     /// Create config from environment variables with defaults.
     ///
     /// Reads `OTEL_EXPORTER_OTLP_ENDPOINT` (default: `http://localhost:4318`) and
-    /// `OTEL_SERVICE_NAME` (default: `rust_scraper`).
+    /// `OTEL_SERVICE_NAME` (default: `webfang`).
     pub fn from_env() -> Self {
         Self {
             endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
                 .unwrap_or_else(|_| "http://localhost:4318".to_string()),
             service_name: env::var("OTEL_SERVICE_NAME")
-                .unwrap_or_else(|_| "rust_scraper".to_string()),
+                .unwrap_or_else(|_| "webfang".to_string()),
         }
     }
 
@@ -200,7 +200,7 @@ fn build_tracer_provider(
 
     let provider = builder.build();
 
-    let tracer = provider.tracer("rust_scraper");
+    let tracer = provider.tracer("webfang");
 
     global::set_tracer_provider(provider.clone());
 
@@ -294,7 +294,7 @@ mod tests {
 
         let config = OtelConfig::from_env();
         assert_eq!(config.endpoint, "http://localhost:4318");
-        assert_eq!(config.service_name, "rust_scraper");
+        assert_eq!(config.service_name, "webfang");
     }
 
     #[test]

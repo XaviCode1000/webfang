@@ -3,7 +3,7 @@
 //! Exercises the public download surface end-to-end against a wiremock
 //! `MockServer`, including a shared-semaphore concurrency scenario.
 
-use rust_scraper::infrastructure::crawler::{DownloadConfig, ResourceDownloader};
+use webfang::infrastructure::crawler::{DownloadConfig, ResourceDownloader};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use wiremock::matchers::{method, path};

@@ -1,6 +1,6 @@
 # 📊 Reporte de Daños y Fidelidad de Trazas — v0.5.0
 
-**Proyecto:** `rust_scraper` (v1.1.0) · **Fecha:** 2026-07-10 · **Rol:** Senior Systems Auditor & Observability Lead
+**Proyecto:** `webfang` (v1.1.0) · **Fecha:** 2026-07-10 · **Rol:** Senior Systems Auditor & Observability Lead
 **Entradas:** `test_lab/MAPA_FIDELIDAD_TRACES.md` + trazas JSONL (`/tmp/audit_{nodl,dl,dl0,err}.jsonl`)
 **Método:** `jaq 3.1.0` sobre los JSONL (slurp `-s`); conteo/validez RFC3339/presencia de campos por cruce de `trace_id`/`span_id`/`parent_id`. Build de prueba: **default (sin `--features otel`)**, binario debug recompilado.
 
@@ -43,7 +43,7 @@ El diseño es correcto: `Arc<wreq::Client>` único compartido (`wreq_downloader.
 ### 2.1 D1 — CRITICO: Deadlock silencioso (`--download-concurrency 0`)
 Hot-path usa `buffer_unordered(concurrency)` (`adapters/downloader/mod.rs:382`). Con `0`, el loop nunca encola futures → `poll_next` retorna `Pending` infinito. RUN3b: `EXIT=124` (timeout 120s), 0 assets. El JSONL se congela y **no emite error/warning**:
 ```json
-{"level":"INFO","message":"📦 Downloading 45 assets via adapters::Downloader","span":"scrape_single_url","span_id":"0008000000000001","target":"rust_scraper::application::scraper_service","timestamp":"2026-07-10T21:43:59.153Z","trace_id":"0000000000000001"}
+{"level":"INFO","message":"📦 Downloading 45 assets via adapters::Downloader","span":"scrape_single_url","span_id":"0008000000000001","target":"webfang::application::scraper_service","timestamp":"2026-07-10T21:43:59.153Z","trace_id":"0000000000000001"}
 ```
 Dano: el programa **cuelga sin senal de telemetria** (violacion de "Zero Silent Loss", ver §3).
 
@@ -56,7 +56,7 @@ Dano: el programa **cuelga sin senal de telemetria** (violacion de "Zero Silent 
 ### 2.4 D4 — ALTO: Cadena de causa aplanada (429/500)
 RUN4 (DNS) produjo un `String` plano sin `source()`:
 ```json
-{"level":"WARN","message":"URL discovery failed: HTTP error: error sending request for uri (http://nonexistent-domain-xyz-12345.invalid/): client error (Connect)","target":"rust_scraper::cli::url_discovery","timestamp":"2026-07-10T21:39:21.153Z","trace_id":"0000000000000001"}
+{"level":"WARN","message":"URL discovery failed: HTTP error: error sending request for uri (http://nonexistent-domain-xyz-12345.invalid/): client error (Connect)","target":"webfang::cli::url_discovery","timestamp":"2026-07-10T21:39:21.153Z","trace_id":"0000000000000001"}
 ```
 Path HTTP (429/500): `DownloadError::Http { status, message }` (`wreq_downloader.rs:208`) conserva el **status** en la variante, PERO `DownloadError → CrawlError` hace `CrawlError::Download(Box::new(err))` (`infra/downloader/mod.rs:137`) → **preserva la causa como `#[source]`** (status HTTP sigue en `DownloadError::Http`). `ScraperError::Http { status, url }` conserva status y `ScraperError::Download`/`Network` ahora llevan `#[source] Box<dyn Error + Send + Sync>` (`error.rs:44,71`); `Error::source()` ya NO es `None` para esas variantes. Unico que preservaba cadena antes: `NetworkFailure(#[from] WreqError)` (path elastico) — ahora acompañado por `Download`/`Network`. **Veredicto (actualizado v0.5.1):** ✅ LIQUIDADO. `DownloadError::Network` ahora lleva `#[source]`, `CrawlError::Download` preserva la causa con `#[source] Box<dyn Error>`, y `ScraperError::Download`/`Network` llevan `#[source] Box<dyn Error + Send + Sync>`. El status 429/500 sigue preservado y la cadena "causado por → IO → timeout" ya es navegable via `Error::source()`; `scrape_flow.rs`/`orchestrator.rs` imprimen la cadena completa.
 

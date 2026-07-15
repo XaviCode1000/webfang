@@ -1,7 +1,7 @@
-# 🏭 Reporte de Auditoría de Calidad Industrial — rust_scraper v0.5.0 / v1.1.1
+# 🏭 Reporte de Auditoría de Calidad Industrial — webfang v0.5.0 / v1.1.1
 
 **Rol:** Senior Systems Reliability Engineer & Rust Architect
-**Fecha:** 2026-07-11 · **Binario:** `target/debug/rust_scraper` (build local v1.1.1, `cargo 1.88.0`)
+**Fecha:** 2026-07-11 · **Binario:** `target/debug/webfang` (build local v1.1.1, `cargo 1.88.0`)
 **Metodología:** Caja negra (ejecución contra 15 URLs reales) + caja blanca (lectura/edición de `args.rs`, `crawl_options.rs`, `orchestrator.rs`, `preflight.rs`, `file_trace_layer.rs`)
 **Tooling:** `jaq 3.1.0` (jq ausente) · `cargo-deny 0.19.9` · red externa ✅
 
@@ -45,7 +45,7 @@ Todos los cambios son **modulares, sin nuevas dependencias, sin churn de API pú
 
 ### 2.1 Stress de Red (OK)
 ```bash
-rust_scraper --url https://webscraper.io/test-sites --max-pages 10 --download-assets --download-concurrency 5 --trace-file /tmp/final_audit_stress.jsonl
+webfang --url https://webscraper.io/test-sites --max-pages 10 --download-assets --download-concurrency 5 --trace-file /tmp/final_audit_stress.jsonl
 ```
 - EXIT=0, 8 documentos. Trace: **55 eventos**.
 - `client_id` único `0x558779369290` → **pooling real confirmado** (D5). ✅
@@ -53,17 +53,17 @@ rust_scraper --url https://webscraper.io/test-sites --max-pages 10 --download-as
 
 ### 2.2 Audit de Causa D4 (MECANISMO OK, 429 NO REPRODUCIBLE)
 ```bash
-rust_scraper --url https://web-scraping.dev/rate-limited --max-pages 3 --trace-file /tmp/final_audit_d4.jsonl
+webfang --url https://web-scraping.dev/rate-limited --max-pages 3 --trace-file /tmp/final_audit_d4.jsonl
 ```
 - EXIT=0 pero **"Discovered 0 URLs" → early exit** tras **una sola** petición 200. El flujo discovery-first hace 1 fetch y sale; el rate-limiter (que exige 2+ requests) **nunca se alcanza**.
 - La cadena `ScraperError ← wreq::Error ← <status>` SÍ está preservada en código (`#[source]`) y se observó con **404** (`web-scraping.dev/api/graphql` → `http error 404 al acceder a ...`). El escenario **429 específico no es ejercitable** contra ese endpoint en el flujo actual. → Hallazgo de trazabilidad (Sec. 3 REGRESIÓN-menor).
 
 ### 2.3 Audit de IA (COMPLETADO con `--features ai`)
 ```bash
-rust_scraper --url https://web-scraping.dev/ai-content-obfuscation --ai --export-format vector --trace-file /tmp/final_audit_ai.jsonl
+webfang --url https://web-scraping.dev/ai-content-obfuscation --ai --export-format vector --trace-file /tmp/final_audit_ai.jsonl
 ```
 - `--ai` parsea y cablea `clean_ai:true` → `run_ai_export` → `SemanticCleanerImpl` → ONNX load. ✅ (flag ya no es silent loss).
-- Rebuild `cargo build --features ai` (46s) + modelo ONNX descargado a `~/.cache/rust_scraper/ai_models/model.onnx` (90 MB) y `tokenizer.json`.
+- Rebuild `cargo build --features ai` (46s) + modelo ONNX descargado a `~/.cache/webfang/ai_models/model.onnx` (90 MB) y `tokenizer.json`.
 - EXIT=0: `✅ AI-cleaned export completed: 24 chunks processed` (vector export). **ONNX ejecutó de verdad.**
 - **Herencia de parent_id confirmada:** `inference_engine.rs:305` corre ONNX en `spawn_blocking(...).in_current_span().await`. La traza muestra TODOS los eventos AI/ONNX bajo `span:"run"` (`span_id: 0000000000000001`, `parent_id: null` = root). El trabajo ONNX **hereda el contexto del span del scraper** y NO se fragmenta a un span de thread-id (D3 sostenido). No hay span `inference_engine` nombrado (no es `#[instrument]`), pero la anidación bajo `run` es la garantía estructural pedida.
 - ⚠️ Hallazgo menor: log `Model validation failed: SHA256 inválido` — `DEFAULT_MODEL_SHA256` (`cache_config.rs`) es un **placeholder** que no coincide con el modelo real. No bloquea (carga igual), pero emite WARN en cada arranque. Ver S4.

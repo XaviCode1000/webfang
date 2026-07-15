@@ -3,7 +3,7 @@
 //! Uses SessionManager trait: acquire, report_success, report_failure,
 //! evict_stale, domain_count, total_domains.
 
-use rust_scraper::infrastructure::network::session_pool::{
+use webfang::infrastructure::network::session_pool::{
     DomainSessionPool, SessionId, SessionManager, SessionPoolConfig,
 };
 use std::thread;

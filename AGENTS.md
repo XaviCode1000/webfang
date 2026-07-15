@@ -25,11 +25,11 @@ You are the **Orchestrator-Engineer**. You decide WHAT to do and WHERE to delega
 ### Step 1 — Orient (always first)
 
 ```
-gitnexus_query({query: "<describe the change>", repo: "rust_scraper"})
-READ gitnexus://repo/rust_scraper/context      # stats + staleness + tool guide
+gitnexus_query({query: "<describe the change>", repo: "webfang"})
+READ gitnexus://repo/webfang/context      # stats + staleness + tool guide
 ```
 
-- If `gitnexus://repo/rust_scraper/context` says **"Index is stale"** → STOP. Tell the user to run `gitnexus analyze --index-only --skip-agents-md`.
+- If `gitnexus://repo/webfang/context` says **"Index is stale"** → STOP. Tell the user to run `gitnexus analyze --index-only --skip-agents-md`.
 - If no repo is indexed → tell the user to run `gitnexus analyze` from the project root.
 - 2+ repos indexed → `repo` parameter is REQUIRED on every tool call. With one repo it is optional.
 
@@ -46,12 +46,12 @@ READ gitnexus://repo/rust_scraper/context      # stats + staleness + tool guide
 | Circular import detection | `gitnexus_check({cycles: true})` | Directed cycle paths |
 | Cross-file semantic search | `gitnexus_query` | Ranked execution flows |
 
-**Rule of thumb:** exact symbol name → `context`. Concept/unknown → `query`. Structured/graph query → `cypher` (read `gitnexus://repo/rust_scraper/schema` first). "How does A reach B?" → `trace`.
+**Rule of thumb:** exact symbol name → `context`. Concept/unknown → `query`. Structured/graph query → `cypher` (read `gitnexus://repo/webfang/schema` first). "How does A reach B?" → `trace`.
 
 ### Step 3 — Impact analysis (BEFORE modifying any symbol)
 
 ```
-gitnexus_impact({target: "symbolName", direction: "upstream", repo: "rust_scraper"})
+gitnexus_impact({target: "symbolName", direction: "upstream", repo: "webfang"})
 gitnexus_context({name: "symbolName"})  # 360° view if needed
 ```
 
@@ -93,9 +93,9 @@ Anchored only (file path or symbol). A repo without `--pdg` returns a clear "no 
 
 ```
 gitnexus_query({query: "concept"})
-READ gitnexus://repo/rust_scraper/process/FlowName    # step-by-step execution trace
-READ gitnexus://repo/rust_scraper/processes           # all execution flows
-READ gitnexus://repo/rust_scraper/clusters            # all functional areas
+READ gitnexus://repo/webfang/process/FlowName    # step-by-step execution trace
+READ gitnexus://repo/webfang/processes           # all execution flows
+READ gitnexus://repo/webfang/clusters            # all functional areas
 ```
 
 ### Step 7 — GitNexus CLI discovery (sub-agents)
@@ -143,7 +143,7 @@ Route tasks to specialized skills. **Load the matching skill BEFORE executing.**
 
 Every sub-agent that reads/writes code MUST:
 
-1. `gitnexus_query` + READ `gitnexus://repo/rust_scraper/context` as FIRST orientation
+1. `gitnexus_query` + READ `gitnexus://repo/webfang/context` as FIRST orientation
 2. `gitnexus_context({name})` before writing any symbol
 3. `gitnexus_impact({direction:"upstream"})` BEFORE editing any symbol
 4. Apply `rust-skills` category (see table below)
@@ -235,7 +235,7 @@ gitnexus status                                          # Freshness check
 - `scraper` 0.27 → selectors 0.35, `legible` → dom_query → selectors 0.38 — both needed
 
 **AI feature (`--features ai`):**
-- ~90MB ONNX model (all-MiniLM-L6-v2), cached in `~/.cache/rust_scraper/models/`
+- ~90MB ONNX model (all-MiniLM-L6-v2), cached in `~/.cache/webfang/models/`
 - `cleaner.clean(html)` → `Vec<DocumentChunk>` with embeddings
 
 **Build requirement:** `cmake` is mandatory — `wreq` → `boring2` → `boring-sys2` needs it for BoringSSL.
@@ -300,7 +300,7 @@ gitnexus status                                          # Freshness check
 ## 🧪 Testing — Snapshots, Harness & Conventions
 
 ### Integration test structure
-Root `tests/` integration tests are wired into `rust_scraper_core` via explicit `[[test]]` entries in `crates/rust_scraper_core/Cargo.toml`. The workspace root `Cargo.toml` is virtual (no `[package]`), so root `tests/` files need explicit `[[test]]` wiring — they are **never auto-discovered**.
+Root `tests/` integration tests are wired into `webfang_core` via explicit `[[test]]` entries in `crates/webfang_core/Cargo.toml`. The workspace root `Cargo.toml` is virtual (no `[package]`), so root `tests/` files need explicit `[[test]]` wiring — they are **never auto-discovered**.
 
 Test harness lives in `tests/common/cli_harness.rs`:
 - `BehavioralTest` — wiremock `MockServer` + `tempfile::TempDir`, `scraper_cmd()`, `find_files()`, `read_md_content()`
@@ -340,18 +340,18 @@ Golden-master snapshots are enabled via `insta` (`features = ["redactions", "fil
 If a test leaks additional non-deterministic fields (e.g. Obsidian YAML frontmatter dates), use `insta::with_settings!({ add_filter(r"...", "[REPLACEMENT]") }, { insta::assert_snapshot!(...) })`.
 
 ### Binary resolution: `webfang_path()`
-**NEVER use `assert_cmd::cargo_bin(...)` in integration tests.** The `CARGO_BIN_EXE_*` env var is only set for the owning crate. In this virtual workspace, `webfang` is built by `rust_scraper_cli` — a sibling crate. Tests running under `rust_scraper_core` cannot resolve it via `cargo_bin`.
+**NEVER use `assert_cmd::cargo_bin(...)` in integration tests.** The `CARGO_BIN_EXE_*` env var is only set for the owning crate. In this virtual workspace, `webfang` is built by `webfang_cli` — a sibling crate. Tests running under `webfang_core` cannot resolve it via `cargo_bin`.
 
 Always use `webfang_path()` from `tests/common/cli_harness.rs`, which:
 1. Tries `CARGO_BIN_EXE_webfang` (CI fallback)
 2. Searches `target/{debug,release}/webfang`
-3. Falls back to `cargo build -p rust_scraper_cli --bin webfang` on demand
+3. Falls back to `cargo build -p webfang_cli --bin webfang` on demand
 
 **Golden rule for new tests:** `Command::new(webfang_path())`, never `Command::cargo_bin(...)`.
 
 ### Creating a new root integration test
 1. Create the test file in `tests/` (e.g. `tests/my_new_test.rs`)
-2. Add a `[[test]]` entry in `crates/rust_scraper_core/Cargo.toml`:
+2. Add a `[[test]]` entry in `crates/webfang_core/Cargo.toml`:
    ```toml
    [[test]]
    name = "my_new_test"
@@ -367,7 +367,7 @@ Always use `webfang_path()` from `tests/common/cli_harness.rs`, which:
 
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **rust_scraper** (4402 nodes, 10140 edges, 300 execution flows). GitNexus is the single source of truth for code intelligence here — it replaces grep, ripgrep, and structural search for source code.
+This project is indexed by GitNexus as **webfang** (4402 nodes, 10140 edges, 300 execution flows). GitNexus is the single source of truth for code intelligence here — it replaces grep, ripgrep, and structural search for source code.
 
 > Index stale? Run `gitnexus analyze --index-only --skip-agents-md` from the project root. For taint + control/data dependence, run `gitnexus analyze --pdg --index-only --skip-agents-md`.
 
@@ -397,12 +397,12 @@ This project is indexed by GitNexus as **rust_scraper** (4402 nodes, 10140 edges
 | Resource | Use for |
 |:---------|:--------|
 | `gitnexus://repos` | List all indexed repos (read first) |
-| `gitnexus://repo/rust_scraper/context` | Stats, staleness, available tools |
-| `gitnexus://repo/rust_scraper/clusters` | All functional areas with cohesion scores |
-| `gitnexus://repo/rust_scraper/cluster/{name}` | Cluster members + file paths |
-| `gitnexus://repo/rust_scraper/processes` | All execution flows |
-| `gitnexus://repo/rust_scraper/process/{name}` | Step-by-step trace |
-| `gitnexus://repo/rust_scraper/schema` | Graph schema — read before writing Cypher |
+| `gitnexus://repo/webfang/context` | Stats, staleness, available tools |
+| `gitnexus://repo/webfang/clusters` | All functional areas with cohesion scores |
+| `gitnexus://repo/webfang/cluster/{name}` | Cluster members + file paths |
+| `gitnexus://repo/webfang/processes` | All execution flows |
+| `gitnexus://repo/webfang/process/{name}` | Step-by-step trace |
+| `gitnexus://repo/webfang/schema` | Graph schema — read before writing Cypher |
 
 ## MCP Prompts
 

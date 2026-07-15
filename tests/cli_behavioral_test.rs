@@ -50,7 +50,7 @@ fn test_help_exits_zero() {
         .arg("--help")
         .assert()
         .code(0)
-        .stdout(predicate::str::contains("rust_scraper binary"));
+        .stdout(predicate::str::contains("webfang binary"));
 }
 
 /// --version prints version and exits with code 0.

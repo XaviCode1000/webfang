@@ -1,4 +1,4 @@
-# justfile — rust_scraper
+# justfile — webfang
 # Complementa a bacon (inner loop). Esto es para tareas manuales (outer loop).
 
 # -- Verificación --

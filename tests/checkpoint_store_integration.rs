@@ -3,7 +3,7 @@
 //! Exercises save/load roundtrip, resume from checkpoint, corrupt file
 //! handling, and TempDir cleanup per R-INT-01.
 
-use rust_scraper::BincodeCheckpoint;
+use webfang::BincodeCheckpoint;
 use std::collections::HashSet;
 use std::fs;
 use tempfile::TempDir;
@@ -133,7 +133,7 @@ async fn test_save_replaces_existing_file() {
 /// Banned domains roundtrip through save/load.
 #[tokio::test]
 async fn test_banned_domains_roundtrip() {
-    use rust_scraper::infrastructure::checkpoint::store::BannedDomain;
+    use webfang::infrastructure::checkpoint::store::BannedDomain;
 
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("banned.json");

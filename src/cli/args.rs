@@ -1,4 +1,4 @@
-//! CLI Arguments for the rust_scraper binary.
+//! CLI Arguments for the webfang binary.
 //!
 //! Parsed using `clap` with derive macros.
 
@@ -22,16 +22,16 @@ fn parse_download_concurrency(s: &str) -> Result<usize, String> {
     Ok(v)
 }
 
-/// CLI Arguments for the rust_scraper binary.
+/// CLI Arguments for the webfang binary.
 ///
 /// # Examples
 ///
 /// ```no_run
-/// use rust_scraper::Args;
+/// use webfang::Args;
 /// use clap::Parser;
 ///
 /// let args = Args::parse_from([
-///     "rust_scraper",
+///     "webfang",
 ///     "--url", "https://example.com",
 ///     "--output", "./output",
 ///     "--export-format", "jsonl",
@@ -41,7 +41,7 @@ fn parse_download_concurrency(s: &str) -> Result<usize, String> {
 /// assert_eq!(args.url, "https://example.com");
 /// ```
 #[derive(Parser, Debug, Default)]
-#[command(name = "rust_scraper", version)]
+#[command(name = "webfang", version)]
 #[command(about = "Production-ready web scraper with Clean Architecture", long_about = None)]
 #[command(args_conflicts_with_subcommands = true)]
 pub struct Args {
@@ -51,18 +51,18 @@ pub struct Args {
 
     // ========== Target ==========
     /// URL to scrape (required unless using a subcommand)
-    #[arg(short, long, env = "RUST_SCRAPER_URL")]
+    #[arg(short, long, env = "WEBFANG_URL")]
     #[clap(next_help_heading = "Target")]
     pub url: Option<String>,
 
     /// CSS selector for content extraction
-    #[arg(short, long, default_value = "body", env = "RUST_SCRAPER_SELECTOR")]
+    #[arg(short, long, default_value = "body", env = "WEBFANG_SELECTOR")]
     #[clap(next_help_heading = "Target")]
     pub selector: String,
 
     // ========== Output ==========
     /// Output directory for scraped content
-    #[arg(short, long, default_value = "output", env = "RUST_SCRAPER_OUTPUT")]
+    #[arg(short, long, default_value = "output", env = "WEBFANG_OUTPUT")]
     #[clap(next_help_heading = "Output")]
     pub output: std::path::PathBuf,
 
@@ -72,7 +72,7 @@ pub struct Args {
         long,
         default_value = "markdown",
         value_enum,
-        env = "RUST_SCRAPER_FORMAT"
+        env = "WEBFANG_FORMAT"
     )]
     #[clap(next_help_heading = "Output")]
     pub format: OutputFormat,
@@ -82,7 +82,7 @@ pub struct Args {
         long,
         default_value = "jsonl",
         value_enum,
-        env = "RUST_SCRAPER_EXPORT_FORMAT"
+        env = "WEBFANG_EXPORT_FORMAT"
     )]
     #[clap(next_help_heading = "Output")]
     pub export_format: ExportFormat,
@@ -92,13 +92,13 @@ pub struct Args {
     #[arg(
         long,
         default_value = "false",
-        env = "RUST_SCRAPER_OBSIDIAN_WIKI_LINKS"
+        env = "WEBFANG_OBSIDIAN_WIKI_LINKS"
     )]
     #[clap(next_help_heading = "Obsidian")]
     pub obsidian_wiki_links: bool,
 
     /// Tags to include in YAML frontmatter (comma-separated)
-    #[arg(long, env = "RUST_SCRAPER_OBSIDIAN_TAGS", value_delimiter = ',')]
+    #[arg(long, env = "WEBFANG_OBSIDIAN_TAGS", value_delimiter = ',')]
     #[clap(next_help_heading = "Obsidian")]
     pub obsidian_tags: Option<Vec<String>>,
 
@@ -106,13 +106,13 @@ pub struct Args {
     #[arg(
         long,
         default_value = "false",
-        env = "RUST_SCRAPER_OBSIDIAN_RELATIVE_ASSETS"
+        env = "WEBFANG_OBSIDIAN_RELATIVE_ASSETS"
     )]
     #[clap(next_help_heading = "Obsidian")]
     pub obsidian_relative_assets: bool,
 
     /// Path to Obsidian vault (auto-detects if not provided)
-    #[arg(long, env = "RUST_SCRAPER_OBSIDIAN_VAULT")]
+    #[arg(long, env = "WEBFANG_OBSIDIAN_VAULT")]
     #[clap(next_help_heading = "Obsidian")]
     pub vault: Option<std::path::PathBuf>,
 
@@ -120,7 +120,7 @@ pub struct Args {
     #[arg(
         long,
         default_value = "false",
-        env = "RUST_SCRAPER_OBSIDIAN_QUICK_SAVE"
+        env = "WEBFANG_OBSIDIAN_QUICK_SAVE"
     )]
     #[clap(next_help_heading = "Obsidian")]
     pub quick_save: bool,
@@ -129,80 +129,80 @@ pub struct Args {
     #[arg(
         long,
         default_value = "false",
-        env = "RUST_SCRAPER_OBSIDIAN_RICH_METADATA"
+        env = "WEBFANG_OBSIDIAN_RICH_METADATA"
     )]
     #[clap(next_help_heading = "Obsidian")]
     pub obsidian_rich_metadata: bool,
 
     // ========== Discovery ==========
     /// Delay between requests in milliseconds
-    #[arg(long, default_value = "1000", env = "RUST_SCRAPER_DELAY_MS")]
+    #[arg(long, default_value = "1000", env = "WEBFANG_DELAY_MS")]
     #[clap(next_help_heading = "Discovery")]
     pub delay_ms: u64,
 
     /// Maximum pages to scrape
-    #[arg(long, default_value = "10", env = "RUST_SCRAPER_MAX_PAGES")]
+    #[arg(long, default_value = "10", env = "WEBFANG_MAX_PAGES")]
     #[clap(next_help_heading = "Discovery")]
     pub max_pages: usize,
 
     /// Concurrency level (auto or number)
-    #[arg(long, default_value_t = ConcurrencyConfig::default(), env = "RUST_SCRAPER_CONCURRENCY")]
+    #[arg(long, default_value_t = ConcurrencyConfig::default(), env = "WEBFANG_CONCURRENCY")]
     #[clap(next_help_heading = "Discovery")]
     pub concurrency: ConcurrencyConfig,
 
     /// Use sitemap for URL discovery
-    #[arg(long, env = "RUST_SCRAPER_USE_SITEMAP")]
+    #[arg(long, env = "WEBFANG_USE_SITEMAP")]
     #[clap(next_help_heading = "Discovery")]
     pub use_sitemap: bool,
 
     /// Explicit sitemap URL
-    #[arg(long, requires = "use_sitemap", env = "RUST_SCRAPER_SITEMAP_URL")]
+    #[arg(long, requires = "use_sitemap", env = "WEBFANG_SITEMAP_URL")]
     #[clap(next_help_heading = "Discovery")]
     pub sitemap_url: Option<String>,
 
     // ========== Behavior ==========
     /// Scrape only the seed URL without discovery or crawling
-    #[arg(long, default_value = "false", env = "RUST_SCRAPER_SINGLE_PAGE")]
+    #[arg(long, default_value = "false", env = "WEBFANG_SINGLE_PAGE")]
     #[clap(next_help_heading = "Behavior")]
     pub single_page: bool,
 
     /// Resume mode - skip URLs already processed
-    #[arg(long, env = "RUST_SCRAPER_RESUME")]
+    #[arg(long, env = "WEBFANG_RESUME")]
     #[clap(next_help_heading = "Behavior")]
     pub resume: bool,
 
     /// Custom state directory for resume mode
-    #[arg(long, env = "RUST_SCRAPER_STATE_DIR")]
+    #[arg(long, env = "WEBFANG_STATE_DIR")]
     #[clap(next_help_heading = "Behavior")]
     pub state_dir: Option<std::path::PathBuf>,
 
     /// Download images from the page
-    #[arg(long, default_value = "false", env = "RUST_SCRAPER_DOWNLOAD_IMAGES")]
+    #[arg(long, default_value = "false", env = "WEBFANG_DOWNLOAD_IMAGES")]
     #[clap(next_help_heading = "Behavior")]
     pub download_images: bool,
 
     /// Download documents from the page
-    #[arg(long, default_value = "false", env = "RUST_SCRAPER_DOWNLOAD_DOCUMENTS")]
+    #[arg(long, default_value = "false", env = "WEBFANG_DOWNLOAD_DOCUMENTS")]
     #[clap(next_help_heading = "Behavior")]
     pub download_documents: bool,
 
     /// Download all assets (images + documents) from the page
-    #[arg(long, default_value = "false", env = "RUST_SCRAPER_DOWNLOAD_ASSETS")]
+    #[arg(long, default_value = "false", env = "WEBFANG_DOWNLOAD_ASSETS")]
     #[clap(next_help_heading = "Behavior")]
     pub download_assets: bool,
 
     /// Unified TUI mode: config form (collapsible sections) → URL selector → scraping
-    #[arg(long, env = "RUST_SCRAPER_TUI")]
+    #[arg(long, env = "WEBFANG_TUI")]
     #[clap(next_help_heading = "Behavior")]
     pub tui: bool,
 
     /// [DEPRECATED] Use --tui instead. Interactive mode with TUI URL selector
-    #[arg(long, env = "RUST_SCRAPER_INTERACTIVE", hide = true)]
+    #[arg(long, env = "WEBFANG_INTERACTIVE", hide = true)]
     #[clap(next_help_heading = "Behavior")]
     pub interactive: bool,
 
     /// [DEPRECATED] Use --tui instead. Open configuration TUI
-    #[arg(long, env = "RUST_SCRAPER_CONFIG_TUI", hide = true)]
+    #[arg(long, env = "WEBFANG_CONFIG_TUI", hide = true)]
     #[clap(next_help_heading = "Behavior")]
     pub config_tui: bool,
 
@@ -212,7 +212,7 @@ pub struct Args {
         long,
         default_value = "false",
         visible_alias = "ai",
-        env = "RUST_SCRAPER_CLEAN_AI"
+        env = "WEBFANG_CLEAN_AI"
     )]
     #[clap(next_help_heading = "Behavior")]
     pub clean_ai: bool,
@@ -224,23 +224,23 @@ pub struct Args {
         default_value = "false",
         hide = true,
         visible_alias = "ai",
-        env = "RUST_SCRAPER_CLEAN_AI"
+        env = "WEBFANG_CLEAN_AI"
     )]
     pub clean_ai: bool,
 
     /// Force JavaScript rendering for SPA sites (not yet implemented)
-    #[arg(long, default_value = "false", env = "RUST_SCRAPER_FORCE_JS_RENDER")]
+    #[arg(long, default_value = "false", env = "WEBFANG_FORCE_JS_RENDER")]
     #[clap(next_help_heading = "Behavior")]
     pub force_js_render: bool,
 
     // ========== Display ==========
     /// Verbosity level (-v, -vv, -vvv)
-    #[arg(short, long, action = clap::ArgAction::Count, env = "RUST_SCRAPER_VERBOSE")]
+    #[arg(short, long, action = clap::ArgAction::Count, env = "WEBFANG_VERBOSE")]
     #[clap(next_help_heading = "Display")]
     pub verbose: u8,
 
     /// Quiet mode — suppress info/debug output
-    #[arg(short = 'q', long, default_value = "false", env = "RUST_SCRAPER_QUIET")]
+    #[arg(short = 'q', long, default_value = "false", env = "WEBFANG_QUIET")]
     #[clap(next_help_heading = "Display")]
     pub quiet: bool,
 
@@ -249,31 +249,31 @@ pub struct Args {
         short = 'n',
         long,
         default_value = "false",
-        env = "RUST_SCRAPER_DRY_RUN"
+        env = "WEBFANG_DRY_RUN"
     )]
     #[clap(next_help_heading = "Display")]
     pub dry_run: bool,
 
     /// Path to write OTel spans as JSONL for offline debugging
-    #[arg(long, env = "RUST_SCRAPER_TRACE_FILE")]
+    #[arg(long, env = "WEBFANG_TRACE_FILE")]
     #[clap(next_help_heading = "Display")]
     pub trace_file: Option<std::path::PathBuf>,
 
     // ========== Crawler Settings ==========
     /// Maximum depth to crawl (0 = only seed URL)
-    #[arg(long, default_value = "2", env = "RUST_SCRAPER_MAX_DEPTH")]
+    #[arg(long, default_value = "2", env = "WEBFANG_MAX_DEPTH")]
     #[clap(next_help_heading = "Crawler Settings")]
     pub max_depth: u8,
 
     /// Request timeout in seconds
-    #[arg(long, default_value = "30", env = "RUST_SCRAPER_TIMEOUT_SECS")]
+    #[arg(long, default_value = "30", env = "WEBFANG_TIMEOUT_SECS")]
     #[clap(next_help_heading = "Crawler Settings")]
     pub timeout_secs: u64,
 
     /// URL patterns to include (glob-style)
     #[arg(
         long = "include-pattern",
-        env = "RUST_SCRAPER_INCLUDE",
+        env = "WEBFANG_INCLUDE",
         value_delimiter = ','
     )]
     #[clap(next_help_heading = "Crawler Settings")]
@@ -282,7 +282,7 @@ pub struct Args {
     /// URL patterns to exclude (glob-style)
     #[arg(
         long = "exclude-pattern",
-        env = "RUST_SCRAPER_EXCLUDE",
+        env = "WEBFANG_EXCLUDE",
         value_delimiter = ','
     )]
     #[clap(next_help_heading = "Crawler Settings")]
@@ -296,7 +296,7 @@ pub struct Args {
     #[arg(
         long,
         default_value = "3",
-        env = "RUST_SCRAPER_DOWNLOAD_CONCURRENCY",
+        env = "WEBFANG_DOWNLOAD_CONCURRENCY",
         value_parser = parse_download_concurrency,
         help = "Máximo de descargas de assets concurrentes por página (mínimo 1)"
     )]
@@ -304,17 +304,17 @@ pub struct Args {
 
     // ========== HTTP Client Settings ==========
     /// Maximum number of retry attempts
-    #[arg(long, default_value = "3", env = "RUST_SCRAPER_MAX_RETRIES")]
+    #[arg(long, default_value = "3", env = "WEBFANG_MAX_RETRIES")]
     #[clap(next_help_heading = "HTTP Client Settings")]
     pub max_retries: u32,
 
     /// Base delay for exponential backoff (ms)
-    #[arg(long, default_value = "1000", env = "RUST_SCRAPER_BACKOFF_BASE_MS")]
+    #[arg(long, default_value = "1000", env = "WEBFANG_BACKOFF_BASE_MS")]
     #[clap(next_help_heading = "HTTP Client Settings")]
     pub backoff_base_ms: u64,
 
     /// Maximum delay for exponential backoff (ms)
-    #[arg(long, default_value = "10000", env = "RUST_SCRAPER_BACKOFF_MAX_MS")]
+    #[arg(long, default_value = "10000", env = "WEBFANG_BACKOFF_MAX_MS")]
     #[clap(next_help_heading = "HTTP Client Settings")]
     pub backoff_max_ms: u64,
 
@@ -322,107 +322,107 @@ pub struct Args {
     #[arg(
         long,
         default_value = "en-US,en;q=0.9",
-        env = "RUST_SCRAPER_ACCEPT_LANGUAGE"
+        env = "WEBFANG_ACCEPT_LANGUAGE"
     )]
     #[clap(next_help_heading = "HTTP Client Settings")]
     pub accept_language: String,
 
     /// Custom User-Agent header value (overrides Chrome 145 default)
-    #[arg(long, env = "RUST_SCRAPER_USER_AGENT")]
+    #[arg(long, env = "WEBFANG_USER_AGENT")]
     #[clap(next_help_heading = "HTTP Client Settings")]
     pub user_agent: Option<String>,
 
     // ========== Download Settings ==========
     /// Maximum file size to download in bytes (default: 50MB)
-    #[arg(long, default_value = "52428800", env = "RUST_SCRAPER_MAX_FILE_SIZE")]
+    #[arg(long, default_value = "52428800", env = "WEBFANG_MAX_FILE_SIZE")]
     #[clap(next_help_heading = "Download Settings")]
     pub max_file_size: u64,
 
     /// Timeout for individual asset downloads in seconds
-    #[arg(long, default_value = "30", env = "RUST_SCRAPER_DOWNLOAD_TIMEOUT")]
+    #[arg(long, default_value = "30", env = "WEBFANG_DOWNLOAD_TIMEOUT")]
     #[clap(next_help_heading = "Download Settings")]
     pub download_timeout: u64,
 
     // ========== AI Settings (feature-gated) ==========
     /// Relevance threshold for AI semantic filtering (0.0-1.0)
     #[cfg(feature = "ai")]
-    #[arg(long, default_value = "0.3", env = "RUST_SCRAPER_THRESHOLD")]
+    #[arg(long, default_value = "0.3", env = "WEBFANG_THRESHOLD")]
     #[clap(next_help_heading = "AI Settings")]
     pub threshold: f32,
 
     /// Maximum tokens per chunk for AI processing
     #[cfg(feature = "ai")]
-    #[arg(long, default_value = "512", env = "RUST_SCRAPER_MAX_TOKENS")]
+    #[arg(long, default_value = "512", env = "WEBFANG_MAX_TOKENS")]
     #[clap(next_help_heading = "AI Settings")]
     pub max_tokens: usize,
 
     /// Run AI model in offline mode
     #[cfg(feature = "ai")]
-    #[arg(long, default_value = "false", env = "RUST_SCRAPER_OFFLINE", action = clap::ArgAction::SetTrue)]
+    #[arg(long, default_value = "false", env = "WEBFANG_OFFLINE", action = clap::ArgAction::SetTrue)]
     #[clap(next_help_heading = "AI Settings")]
     pub offline: bool,
 
     // ========== Sitemap Settings ==========
     /// Maximum recursion depth for sitemap indexes
-    #[arg(long, default_value = "3", env = "RUST_SCRAPER_SITEMAP_DEPTH")]
+    #[arg(long, default_value = "3", env = "WEBFANG_SITEMAP_DEPTH")]
     #[clap(next_help_heading = "Sitemap Settings")]
     pub sitemap_depth: u8,
 
     // ========== Elastic Ingestion (Issue #51, PR5) ==========
     /// CPU core override for the elastic ingestion Rayon pool (else auto-detect)
-    #[arg(long, env = "RUST_SCRAPER_CPU_CORES")]
+    #[arg(long, env = "WEBFANG_CPU_CORES")]
     #[clap(next_help_heading = "Elastic Ingestion")]
     pub cpu_cores: Option<usize>,
 
     /// RAM budget override for the byte-weighted semaphore (`8GB`, `2048MB`, or bytes)
-    #[arg(long, env = "RUST_SCRAPER_RAM_BUDGET")]
+    #[arg(long, env = "WEBFANG_RAM_BUDGET")]
     #[clap(next_help_heading = "Elastic Ingestion")]
     pub ram_budget: Option<String>,
 
     /// SQLite database path override for persisted resources/chunks
-    #[arg(long, env = "RUST_SCRAPER_DB_PATH")]
+    #[arg(long, env = "WEBFANG_DB_PATH")]
     #[clap(next_help_heading = "Elastic Ingestion")]
     pub db_path: Option<std::path::PathBuf>,
 
     /// Enable elastic ingestion pipeline (streaming, SQLite dedup, Rayon CPU bridge)
-    #[arg(long, default_value = "false", env = "RUST_SCRAPER_ELASTIC")]
+    #[arg(long, default_value = "false", env = "WEBFANG_ELASTIC")]
     #[clap(next_help_heading = "Elastic Ingestion")]
     pub elastic: bool,
 
     /// Write extracted vectors to a JSONL file for RAG pipelines. Use `-` for
     /// stdout. No SQLite dependency — available in every build (core binary too).
-    #[arg(long, env = "RUST_SCRAPER_OUTPUT_VECTORS")]
+    #[arg(long, env = "WEBFANG_OUTPUT_VECTORS")]
     #[clap(next_help_heading = "Elastic Ingestion")]
     pub output_vectors: Option<String>,
 
     // ========== Competitive Features Phase 1 ==========
     /// Pages between automatic checkpoint saves (0 = disabled)
-    #[arg(long, default_value = "100", env = "RUST_SCRAPER_CHECKPOINT_INTERVAL")]
+    #[arg(long, default_value = "100", env = "WEBFANG_CHECKPOINT_INTERVAL")]
     #[clap(next_help_heading = "Competitive Features")]
     pub checkpoint_interval: u64,
 
     /// Disable checkpoint persistence entirely
-    #[arg(long, default_value = "false", env = "RUST_SCRAPER_NO_CHECKPOINT")]
+    #[arg(long, default_value = "false", env = "WEBFANG_NO_CHECKPOINT")]
     #[clap(next_help_heading = "Competitive Features")]
     pub no_checkpoint: bool,
 
     /// Skip robots.txt enforcement
-    #[arg(long, default_value = "false", env = "RUST_SCRAPER_IGNORE_ROBOTS")]
+    #[arg(long, default_value = "false", env = "WEBFANG_IGNORE_ROBOTS")]
     #[clap(next_help_heading = "Competitive Features")]
     pub ignore_robots: bool,
 
     /// Enable autoscaled concurrency — dynamically adjusts task concurrency based on RAM usage
-    #[arg(long, default_value = "false", env = "RUST_SCRAPER_AUTOSCALE")]
+    #[arg(long, default_value = "false", env = "WEBFANG_AUTOSCALE")]
     #[clap(next_help_heading = "Competitive Features")]
     pub autoscale: bool,
 
     /// Disable session pool health checks
-    #[arg(long, default_value = "false", env = "RUST_SCRAPER_NO_SESSION_HEALTH")]
+    #[arg(long, default_value = "false", env = "WEBFANG_NO_SESSION_HEALTH")]
     #[clap(next_help_heading = "Competitive Features")]
     pub no_session_health: bool,
 
     /// TLS/HTTP2 profile name (default: Chrome145)
-    #[arg(long, default_value = "Chrome145", env = "RUST_SCRAPER_H2_PROFILE")]
+    #[arg(long, default_value = "Chrome145", env = "WEBFANG_H2_PROFILE")]
     #[clap(next_help_heading = "Competitive Features")]
     pub h2_profile: String,
 
@@ -431,35 +431,35 @@ pub struct Args {
         long,
         default_value = "static",
         value_enum,
-        env = "RUST_SCRAPER_JS_STRATEGY"
+        env = "WEBFANG_JS_STRATEGY"
     )]
     #[clap(next_help_heading = "JS Rendering")]
     pub js_strategy: JsStrategy,
 
     /// Path to the obscura binary (default: "obscura")
-    #[arg(long, default_value = "obscura", env = "RUST_SCRAPER_OBSCURA_BINARY")]
+    #[arg(long, default_value = "obscura", env = "WEBFANG_OBSCURA_BINARY")]
     #[clap(next_help_heading = "JS Rendering")]
     pub obscura_binary: String,
 
     // ========== Batch Processing ==========
     /// Enable batch mode — read URLs from stdin (one per line)
-    #[arg(long, default_value = "false", env = "RUST_SCRAPER_BATCH")]
+    #[arg(long, default_value = "false", env = "WEBFANG_BATCH")]
     #[clap(next_help_heading = "Batch Processing")]
     pub batch: bool,
 
     /// Path to a file containing URLs to crawl (one per line)
-    #[arg(long, env = "RUST_SCRAPER_BATCH_FILE")]
+    #[arg(long, env = "WEBFANG_BATCH_FILE")]
     #[clap(next_help_heading = "Batch Processing")]
     pub batch_file: Option<std::path::PathBuf>,
 
     /// Maximum concurrent URLs in batch mode
-    #[arg(long, default_value = "5", env = "RUST_SCRAPER_BATCH_CONCURRENCY")]
+    #[arg(long, default_value = "5", env = "WEBFANG_BATCH_CONCURRENCY")]
     #[clap(next_help_heading = "Batch Processing")]
     pub batch_concurrency: usize,
 
     // ========== Item Pipeline ==========
     /// Enable item pipeline processing (validate → clean → output)
-    #[arg(long, default_value = "false", env = "RUST_SCRAPER_PIPELINE")]
+    #[arg(long, default_value = "false", env = "WEBFANG_PIPELINE")]
     #[clap(next_help_heading = "Item Pipeline")]
     pub pipeline: bool,
 
@@ -468,7 +468,7 @@ pub struct Args {
         long,
         default_value = "jsonl",
         value_enum,
-        env = "RUST_SCRAPER_PIPELINE_OUTPUT"
+        env = "WEBFANG_PIPELINE_OUTPUT"
     )]
     #[clap(next_help_heading = "Item Pipeline")]
     pub pipeline_output: PipelineOutputFormat,
@@ -634,7 +634,7 @@ mod tests {
     #[test]
     fn test_elastic_flags_parsed_from_cli() {
         let args = Args::try_parse_from([
-            "rust_scraper",
+            "webfang",
             "--cpu-cores",
             "4",
             "--ram-budget",
@@ -655,7 +655,7 @@ mod tests {
 
     #[test]
     fn test_elastic_flags_default_to_none() {
-        let args = Args::try_parse_from(["rust_scraper"]).expect("minimal parse must succeed");
+        let args = Args::try_parse_from(["webfang"]).expect("minimal parse must succeed");
         assert_eq!(args.cpu_cores, None);
         assert_eq!(args.ram_budget, None);
         assert_eq!(args.db_path, None);
@@ -665,7 +665,7 @@ mod tests {
 
     #[test]
     fn test_ram_budget_accepts_plain_bytes_and_suffixes() {
-        let args = Args::try_parse_from(["rust_scraper", "--ram-budget", "2048MB"])
+        let args = Args::try_parse_from(["webfang", "--ram-budget", "2048MB"])
             .expect("suffixed ram-budget must parse");
         assert_eq!(
             args.elastic_overrides().ram_budget_bytes,
@@ -875,7 +875,7 @@ mod tests {
 
     #[test]
     fn test_args_to_crawl_options_defaults() {
-        let args = Args::try_parse_from(["rust_scraper"]).expect("minimal parse must succeed");
+        let args = Args::try_parse_from(["webfang"]).expect("minimal parse must succeed");
         let opts = crate::application::crawl_options::CrawlOptions::from(args);
 
         // url defaults to example.com when None

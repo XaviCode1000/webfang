@@ -114,7 +114,7 @@ impl TokenBatch {
 ///
 /// ```no_run
 /// # async fn example() -> anyhow::Result<()> {
-/// use rust_scraper::infrastructure::ai::MiniLmTokenizer;
+/// use webfang::infrastructure::ai::MiniLmTokenizer;
 ///
 /// let tokenizer = MiniLmTokenizer::load_default().await?;
 /// let input = tokenizer.tokenize("Hello world")?;

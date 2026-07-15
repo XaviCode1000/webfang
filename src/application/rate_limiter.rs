@@ -69,7 +69,7 @@ impl Default for RateLimiterConfig {
             concurrency: 5,
             backend: RateLimiterBackend::InMemory,
             redis_url: None,
-            redis_key_prefix: Some("rust_scraper:rate_limit".to_string()),
+            redis_key_prefix: Some("webfang:rate_limit".to_string()),
         }
     }
 }
@@ -90,7 +90,7 @@ impl RateLimiterConfig {
             concurrency,
             backend: RateLimiterBackend::InMemory,
             redis_url: None,
-            redis_key_prefix: Some("rust_scraper:rate_limit".to_string()),
+            redis_key_prefix: Some("webfang:rate_limit".to_string()),
         }
     }
 
@@ -101,7 +101,7 @@ impl RateLimiterConfig {
             concurrency,
             backend,
             redis_url: None,
-            redis_key_prefix: Some("rust_scraper:rate_limit".to_string()),
+            redis_key_prefix: Some("webfang:rate_limit".to_string()),
         }
     }
 }
@@ -503,7 +503,7 @@ mod tests {
         let config = RateLimiterConfig::new(100, 5);
         assert_eq!(
             config.redis_key_prefix.as_deref(),
-            Some("rust_scraper:rate_limit")
+            Some("webfang:rate_limit")
         );
     }
 

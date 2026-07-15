@@ -46,7 +46,7 @@ impl StateStore {
     /// # Examples
     ///
     /// ```
-    /// use rust_scraper::infrastructure::export::StateStore;
+    /// use webfang::infrastructure::export::StateStore;
     ///
     /// let store = StateStore::new("example.com");
     /// ```
@@ -55,7 +55,7 @@ impl StateStore {
         // Get cache directory using dirs crate
         // Following **mem-with-capacity**: Pre-allocate path buffer
         let mut cache_dir = cache_dir().unwrap_or_else(|| PathBuf::from(".cache"));
-        cache_dir.push("rust_scraper");
+        cache_dir.push("webfang");
         cache_dir.push("state");
 
         Self {
@@ -82,7 +82,7 @@ impl StateStore {
     /// # Examples
     ///
     /// ```
-    /// use rust_scraper::infrastructure::export::StateStore;
+    /// use webfang::infrastructure::export::StateStore;
     ///
     /// let store = StateStore::new("example.com");
     /// let path = store.get_state_path();
@@ -104,7 +104,7 @@ impl StateStore {
     /// # Examples
     ///
     /// ```
-    /// use rust_scraper::infrastructure::export::StateStore;
+    /// use webfang::infrastructure::export::StateStore;
     ///
     /// let store = StateStore::new("example.com");
     /// match store.load() {
@@ -165,8 +165,8 @@ impl StateStore {
     /// # Examples
     ///
     /// ```
-    /// use rust_scraper::infrastructure::export::StateStore;
-    /// use rust_scraper::domain::ExportState;
+    /// use webfang::infrastructure::export::StateStore;
+    /// use webfang::domain::ExportState;
     ///
     /// # fn main() -> anyhow::Result<()> {
     /// let store = StateStore::new("example.com");
@@ -228,8 +228,8 @@ impl StateStore {
     /// # Examples
     ///
     /// ```
-    /// use rust_scraper::infrastructure::export::StateStore;
-    /// use rust_scraper::domain::ExportState;
+    /// use webfang::infrastructure::export::StateStore;
+    /// use webfang::domain::ExportState;
     ///
     /// let store = StateStore::new("example.com");
     /// let mut state = ExportState::new("example.com");
@@ -254,8 +254,8 @@ impl StateStore {
     /// # Examples
     ///
     /// ```
-    /// use rust_scraper::infrastructure::export::StateStore;
-    /// use rust_scraper::domain::ExportState;
+    /// use webfang::infrastructure::export::StateStore;
+    /// use webfang::domain::ExportState;
     ///
     /// let store = StateStore::new("example.com");
     /// let mut state = ExportState::new("example.com");
@@ -278,7 +278,7 @@ impl StateStore {
     /// # Examples
     ///
     /// ```
-    /// use rust_scraper::infrastructure::export::StateStore;
+    /// use webfang::infrastructure::export::StateStore;
     ///
     /// let store = StateStore::new("example.com");
     /// let state = store.load_or_default().unwrap();
@@ -329,7 +329,7 @@ mod tests {
 
         // Verify path structure
         let path_str = path.to_string_lossy();
-        assert!(path_str.contains("rust_scraper/state/test.domain.json"));
+        assert!(path_str.contains("webfang/state/test.domain.json"));
     }
 
     #[test]
@@ -345,7 +345,7 @@ mod tests {
     fn test_save_and_load_state() {
         let dir = tempdir().unwrap();
         let mut cache_dir = dir.path().to_path_buf();
-        cache_dir.push("rust_scraper/state");
+        cache_dir.push("webfang/state");
 
         // Create a store with custom cache dir
         let mut store = StateStore::new("test.com");
@@ -389,7 +389,7 @@ mod tests {
     fn test_load_or_default_existing() {
         let dir = tempdir().unwrap();
         let mut cache_dir = dir.path().to_path_buf();
-        cache_dir.push("rust_scraper/state");
+        cache_dir.push("webfang/state");
         fs::create_dir_all(&cache_dir).unwrap();
 
         // Create a test state file
@@ -431,7 +431,7 @@ mod tests {
     fn test_atomic_save() {
         let dir = tempdir().unwrap();
         let mut cache_dir = dir.path().to_path_buf();
-        cache_dir.push("rust_scraper/state");
+        cache_dir.push("webfang/state");
 
         let mut store = StateStore::new("atomic.com");
         store.cache_dir = cache_dir.clone();

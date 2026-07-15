@@ -20,7 +20,7 @@
 //!
 //! **Golden Rule:** Application layer NEVER imports ratatui/crossterm/indicatif.
 
-use rust_scraper::cli::orchestrator;
+use webfang::cli::orchestrator;
 
 use std::env;
 use std::io::{self, IsTerminal};
@@ -30,14 +30,14 @@ use clap::Parser;
 #[cfg(feature = "ui")]
 use inquire::Text;
 #[cfg(feature = "ui")]
-use rust_scraper::adapters::tui::modal::HelpModal;
+use webfang::adapters::tui::modal::HelpModal;
 #[cfg(feature = "ui")]
-use rust_scraper::adapters::tui::{App, AppMode, AppResult, CollapsibleConfig, Header, StatusBar};
-use rust_scraper::application::crawl_options::CrawlOptions;
-use rust_scraper::cli::config::ConfigDefaults;
-use rust_scraper::cli::error::CliExit;
-use rust_scraper::cli::preflight;
-use rust_scraper::{init_logging_dual, is_no_color, Args, Commands};
+use webfang::adapters::tui::{App, AppMode, AppResult, CollapsibleConfig, Header, StatusBar};
+use webfang::application::crawl_options::CrawlOptions;
+use webfang::cli::config::ConfigDefaults;
+use webfang::cli::error::CliExit;
+use webfang::cli::preflight;
+use webfang::{init_logging_dual, is_no_color, Args, Commands};
 
 /// Check if running in CI environment.
 fn is_ci() -> bool {
@@ -303,7 +303,7 @@ async fn __main() -> CliExit {
     // =========================================================================
     let config_path = dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("rust_scraper")
+        .join("webfang")
         .join("config.toml");
     let config_defaults = ConfigDefaults::load(&config_path);
 
@@ -339,7 +339,7 @@ async fn __main() -> CliExit {
 
     // Create FileTraceLayer when --trace-file is present (always available, no feature gate)
     let file_trace_layer = trace_file.and_then(|path| {
-        match rust_scraper::infrastructure::observability::FileTraceLayer::new(path) {
+        match webfang::infrastructure::observability::FileTraceLayer::new(path) {
             Ok(layer) => Some(layer),
             Err(e) => {
                 eprintln!("Error: no se pudo crear archivo de trazas: {e}");
@@ -351,8 +351,8 @@ async fn __main() -> CliExit {
     // OpenTelemetry tracing + metrics (feature-gated)
     #[cfg(feature = "otel-metrics")]
     let _otel_guard = {
-        let config = rust_scraper::infrastructure::observability::otel::OtelConfig::from_env();
-        match rust_scraper::infrastructure::observability::otel::init_otel_metrics(config) {
+        let config = webfang::infrastructure::observability::otel::OtelConfig::from_env();
+        match webfang::infrastructure::observability::otel::init_otel_metrics(config) {
             Ok((_meter, guard, layer)) => {
                 init_logging_dual(
                     log_level,
@@ -378,8 +378,8 @@ async fn __main() -> CliExit {
     };
     #[cfg(all(feature = "otel", not(feature = "otel-metrics")))]
     let _otel_guard = {
-        let config = rust_scraper::infrastructure::observability::otel::OtelConfig::from_env();
-        match rust_scraper::infrastructure::observability::otel::init_otel_tracing(config) {
+        let config = webfang::infrastructure::observability::otel::OtelConfig::from_env();
+        match webfang::infrastructure::observability::otel::init_otel_tracing(config) {
             Ok((guard, layer)) => {
                 init_logging_dual(
                     log_level,

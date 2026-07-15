@@ -12,9 +12,9 @@
 //! corrupt the protocol and cause "Connection closed" errors.
 
 use rmcp::service::ServiceExt;
-use rust_scraper::config::Config;
-use rust_scraper::di::Container;
-use rust_scraper::infrastructure::mcp_server::{McpHandler, McpState};
+use webfang::config::Config;
+use webfang::di::Container;
+use webfang::infrastructure::mcp_server::{McpHandler, McpState};
 
 #[tokio::main]
 async fn main() {

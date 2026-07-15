@@ -1,8 +1,8 @@
 //! Integration tests for CookieBridge — domain matching, path matching,
 //! upsert behavior, CDP conversion, and cookie filtering.
 
-use rust_scraper::infrastructure::downloader::cookie_bridge::{CdpCookie, CookieBridge};
-use rust_scraper::infrastructure::downloader::{Cookie, FetchedPage};
+use webfang::infrastructure::downloader::cookie_bridge::{CdpCookie, CookieBridge};
+use webfang::infrastructure::downloader::{Cookie, FetchedPage};
 use url::Url;
 
 fn make_cookie(name: &str, domain: &str, path: &str) -> Cookie {

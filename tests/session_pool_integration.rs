@@ -3,7 +3,7 @@
 //! Exercises acquire/report_success/report_failure lifecycle across multiple
 //! async tasks, verifying rate limiting, health tracking, and cooldown behavior.
 
-use rust_scraper::DomainSessionPool;
+use webfang::DomainSessionPool;
 use std::sync::Arc;
 use std::time::Duration;
 

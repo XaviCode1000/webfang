@@ -3,7 +3,7 @@
 //! Exercises `parse_from_url` end-to-end against a wiremock `MockServer`,
 //! covering happy paths, edge cases, and error conditions per R-INT-02.
 
-use rust_scraper::infrastructure::crawler::{SitemapError, SitemapParser};
+use webfang::infrastructure::crawler::{SitemapError, SitemapParser};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

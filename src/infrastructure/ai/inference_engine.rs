@@ -19,7 +19,7 @@
 //!
 //! ```no_run
 //! # async fn example() -> anyhow::Result<()> {
-//! use rust_scraper::infrastructure::ai::{InferenceEngine, ModelInput};
+//! use webfang::infrastructure::ai::{InferenceEngine, ModelInput};
 //!
 //! let engine = InferenceEngine::load_from_file("path/to/model.onnx").await?;
 //! let input = ModelInput::new(
@@ -59,7 +59,7 @@ pub type InferenceSession = Arc<TypedSimplePlan<TypedModel>>;
 /// # Examples
 ///
 /// ```
-/// use rust_scraper::infrastructure::ai::ModelInput;
+/// use webfang::infrastructure::ai::ModelInput;
 ///
 /// let input = ModelInput::new(
 ///     vec![101i64, 2054, 2003, 102], // [CLS] hello world [SEP]
@@ -156,7 +156,7 @@ impl ModelInput {
 ///
 /// ```no_run
 /// # async fn example() -> anyhow::Result<()> {
-/// use rust_scraper::infrastructure::ai::{InferenceEngine, ModelInput};
+/// use webfang::infrastructure::ai::{InferenceEngine, ModelInput};
 ///
 /// let engine = InferenceEngine::load_from_file("path/to/model.onnx").await?;
 ///
@@ -206,7 +206,7 @@ impl InferenceEngine {
     ///
     /// ```no_run
     /// # async fn example() -> anyhow::Result<()> {
-    /// use rust_scraper::infrastructure::ai::InferenceEngine;
+    /// use webfang::infrastructure::ai::InferenceEngine;
     ///
     /// let engine = InferenceEngine::load_from_file("model.onnx").await?;
     /// # Ok(())
@@ -285,7 +285,7 @@ impl InferenceEngine {
     ///
     /// ```no_run
     /// # async fn example() -> anyhow::Result<()> {
-    /// use rust_scraper::infrastructure::ai::{InferenceEngine, ModelInput};
+    /// use webfang::infrastructure::ai::{InferenceEngine, ModelInput};
     ///
     /// let engine = InferenceEngine::load_from_file("model.onnx").await?;
     /// let input = ModelInput::from_tokens(vec![101i64, 2054, 2003, 102]);

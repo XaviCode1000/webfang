@@ -5,7 +5,7 @@ use libfuzzer_sys::fuzz_target;
 // This is the safety net for malformed content. Panic = DoS.
 fuzz_target!(|data: &[u8]| {
     if let Ok(html) = std::str::from_utf8(data) {
-        let text = rust_scraper::infrastructure::scraper::fallback::extract_text(html);
+        let text = webfang::infrastructure::scraper::fallback::extract_text(html);
 
         // Sanity: non-empty HTML should produce some text
         if !html.is_empty() && text.is_empty() {

@@ -7,8 +7,8 @@
 
 mod common;
 
-use rust_scraper::domain::VectorRepository;
-use rust_scraper::infrastructure::persistence::{
+use webfang::domain::VectorRepository;
+use webfang::infrastructure::persistence::{
     create_memory_pool, setup_schema, SqliteVectorRepository,
 };
 
