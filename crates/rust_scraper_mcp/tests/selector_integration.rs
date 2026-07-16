@@ -165,3 +165,37 @@ fn test_scrape_zero_match_no_inspector() {
         "diagnostic must be null without inspector"
     );
 }
+
+// ── Test 6: Empty HTML page → EmptyDocument diagnostic ──────────
+
+#[test]
+fn test_scrape_with_empty_page() {
+    // Simulate an empty HTML page (server returns empty body).
+    // extract_with_selector would produce EmptyDocument (not ZeroMatches)
+    // because html.trim().is_empty() triggers the early return.
+    let html = "";
+    let selector = "article".to_owned();
+    let diagnostic = build_real_diagnostic(html, &selector, SelectorErrorKind::EmptyDocument);
+    let extract_result = ExtractResult::Fallback {
+        html: html.to_owned(),
+        diagnostic: Some(diagnostic),
+    };
+    let results = vec![make_content("Empty Page")];
+
+    let json = build_scrape_response(results, &extract_result, &Some(selector));
+
+    assert_eq!(
+        json["selector_applied"], true,
+        "selector_applied must be true when a selector is provided"
+    );
+    assert_eq!(
+        json["selector_matched"], false,
+        "selector_matched must be false for an empty page"
+    );
+    assert_eq!(
+        json["diagnostic"]["error_kind"], "EmptyDocument",
+        "error_kind must be EmptyDocument for empty HTML"
+    );
+
+    insta::assert_snapshot!("empty_page", pretty(json));
+}
