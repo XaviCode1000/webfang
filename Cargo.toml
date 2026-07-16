@@ -36,6 +36,7 @@ bytes = "1"
 # Content Extraction
 legible = "0.4"
 htmd = "0.5"
+strsim = "0.11"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
