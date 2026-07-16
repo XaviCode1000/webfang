@@ -54,6 +54,7 @@ bytes = { workspace = true }
 # Content Extraction
 legible = { workspace = true }
 htmd = { workspace = true }
+strsim = { workspace = true }
 
 # Serialization
 serde = { workspace = true }

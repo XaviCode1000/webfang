@@ -4451,6 +4451,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "strsim",
  "syntect",
  "sys-info",
  "sysinfo",
