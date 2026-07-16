@@ -221,7 +221,29 @@ pub async fn scrape_with_readability(
     client: &dyn HttpClientPort,
     url: &url::Url,
 ) -> Result<Vec<ScrapedContent>> {
-    scrape_with_config(client, url, &ScraperConfig::default(), None).await
+    let outcome = scrape_with_config(client, url, &ScraperConfig::default(), None, None).await?;
+    Ok(outcome.results)
+}
+
+/// Outcome of a scrape operation, including selector extraction metadata.
+///
+/// Contains both the scraped content results and the [`ExtractResult`] from
+/// CSS selector extraction, allowing callers (e.g. the MCP handler) to
+/// inspect whether the selector matched and access diagnostics.
+#[derive(Debug)]
+pub struct ScrapeOutcome {
+    /// Scraped content results.
+    pub results: Vec<ScrapedContent>,
+    /// CSS selector extraction result (`Matched` or `Fallback` with optional diagnostic).
+    pub extract_result: ExtractResult,
+}
+
+impl ScrapeOutcome {
+    /// Get the scraped content results as a slice.
+    #[must_use]
+    pub fn as_results(&self) -> &[ScrapedContent] {
+        &self.results
+    }
 }
 
 /// Scrape a URL with asset downloading configuration
@@ -230,16 +252,18 @@ pub async fn scrape_with_readability(
 /// * `client` - HTTP client
 /// * `url` - URL to scrape
 /// * `config` - Scraper configuration with download options
+/// * `downloader` - Optional asset downloader
+/// * `inspector` - Optional DOM inspector for selector diagnostics (None for non-MCP paths)
 ///
 /// # Returns
-/// * `Vec<ScrapedContent>` - Scraped content with downloaded assets
+/// * `ScrapeOutcome` - Scraped content results + CSS selector extraction result
 ///
 /// # Errors
 /// Returns `ScraperError::Http` for HTTP errors, `ScraperError::Network` for
 /// connection errors.
 #[instrument(
     name = "scrape_with_config",
-    skip(client, config, downloader),
+    skip(client, config, downloader, inspector),
     fields(
         url = %url,
         has_downloads = config.has_downloads()
@@ -250,7 +274,8 @@ pub async fn scrape_with_config(
     url: &url::Url,
     config: &ScraperConfig,
     downloader: Option<&crate::adapters::downloader::Downloader>,
-) -> Result<Vec<ScrapedContent>> {
+    inspector: Option<&dyn DomInspectorPort>,
+) -> Result<ScrapeOutcome> {
     let mut results = Vec::new();
 
     info!("🌐 Fetching: {}", url);
@@ -324,9 +349,8 @@ pub async fn scrape_with_config(
     );
 
     // Apply CSS selector extraction if a non-default selector is configured.
-    let extraction_html = extract_with_selector(&cleaned_html, &config.selector, None)
-        .as_html()
-        .to_owned();
+    let extract_result = extract_with_selector(&cleaned_html, &config.selector, inspector);
+    let extraction_html = extract_result.as_html().to_owned();
 
     // Try Readability first, fallback to plain text extraction
     match crate::infrastructure::scraper::readability::parse(&extraction_html, Some(url.as_str())) {
@@ -435,7 +459,10 @@ pub async fn scrape_with_config(
         results.first().map(|r| r.assets.len()).unwrap_or(0)
     );
 
-    Ok(results)
+    Ok(ScrapeOutcome {
+        results,
+        extract_result,
+    })
 }
 
 /// Scrape multiple URLs with concurrency control
@@ -474,10 +501,10 @@ pub async fn scrape_multiple_with_limit(
         config.scraper_concurrency
     );
 
-    let results: Vec<Result<Vec<ScrapedContent>>> = stream::iter(urls.to_vec())
+    let results: Vec<Result<ScrapeOutcome>> = stream::iter(urls.to_vec())
         .map(|url| {
             let config = config.clone();
-            async move { scrape_with_config(client, &url, &config, downloader).await }
+            async move { scrape_with_config(client, &url, &config, downloader, None).await }
         })
         .buffer_unordered(config.scraper_concurrency)
         .collect()
@@ -486,7 +513,7 @@ pub async fn scrape_multiple_with_limit(
     let mut all_content = Vec::new();
     for result in results {
         match result {
-            Ok(contents) => all_content.extend(contents),
+            Ok(outcome) => all_content.extend(outcome.results),
             Err(e) => warn!("⚠️  Failed to scrape URL: {}", e),
         }
     }
@@ -605,8 +632,43 @@ mod tests {
             Err(HttpError::Connection("no route to host".into())),
         );
 
-        let result = scrape_with_config(&mock, &url, &config, None).await;
+        let result = scrape_with_config(&mock, &url, &config, None, None).await;
         assert!(result.is_err(), "connection error should propagate as Err");
+    }
+
+    #[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
+    #[tokio::test]
+    async fn test_scrape_with_config_returns_outcome() {
+        let html = r#"<!DOCTYPE html>
+<html>
+<head><title>Test Page</title></head>
+<body>
+<article>
+<h1>Main Heading</h1>
+<p>This is the content of the article. It has enough text to be extracted by Readability.</p>
+</article>
+</body>
+</html>"#;
+
+        let url = url::Url::parse("https://example.com").unwrap();
+        let mock = MockHttpClient::new().with_ok_response(url.as_str(), html);
+        let config = ScraperConfig::default();
+
+        let outcome = scrape_with_config(&mock, &url, &config, None, None)
+            .await
+            .expect("mock HTML should succeed");
+        assert!(
+            !outcome.results.is_empty(),
+            "should have at least one scraped result"
+        );
+        assert!(
+            outcome.extract_result.is_matched(),
+            "default 'body' selector should produce Matched extract_result"
+        );
+        assert!(
+            !outcome.results[0].content.is_empty(),
+            "scraped content should not be empty"
+        );
     }
 
     #[test]

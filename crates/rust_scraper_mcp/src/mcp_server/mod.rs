@@ -142,12 +142,12 @@ impl McpHandler {
         let client = self.state.container.http_client().as_ref();
         let dl = self.state.downloader.as_deref();
         match rust_scraper_core::application::scraper_service::scrape_with_config(
-            client, &url, &config, dl,
+            client, &url, &config, dl, None,
         )
         .await
         {
-            Ok(results) => {
-                let content = serde_json::to_string_pretty(&results)
+            Ok(outcome) => {
+                let content = serde_json::to_string_pretty(&outcome.results)
                     .unwrap_or_else(|_| "failed to serialize".into());
                 Ok(CallToolResult::success(vec![Content::text(content)]))
             },
