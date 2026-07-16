@@ -17,6 +17,7 @@ pub mod config;
 pub mod crawl_job;
 pub mod crawler_entities;
 pub mod credentials;
+pub mod dom_inspector;
 pub mod entities;
 pub mod error;
 pub mod exporter;
@@ -44,6 +45,10 @@ pub use config::{ConcurrencyConfig, ExportFormat, OutputFormat, PipelineOutputFo
 pub use crawl_job::{ContentType, DiscoveredUrl};
 pub use credentials::{
     AccessToken, ApiKey, CredentialError, CredentialStore, SecretCredential, SensitiveString,
+};
+pub use dom_inspector::{
+    DomInspectorPort, DomStructureReport, ExtractResult, SelectorDiagnostic, SelectorErrorKind,
+    SelectorSuggestion,
 };
 
 pub use entities::{
