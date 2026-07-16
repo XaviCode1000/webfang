@@ -139,16 +139,26 @@ impl McpHandler {
         if params.download_documents == Some(true) {
             config.download_documents = true;
         }
+        // Wire CSS selector (defaults to "body" when not provided)
+        if let Some(ref sel) = params.selector {
+            config.selector = sel.clone();
+        }
 
         let client = self.state.container.http_client().as_ref();
         let dl = self.state.downloader.as_deref();
+        let inspector = self.state.inspector.as_deref();
         match rust_scraper_core::application::scraper_service::scrape_with_config(
-            client, &url, &config, dl, None,
+            client, &url, &config, dl, inspector,
         )
         .await
         {
             Ok(outcome) => {
-                let content = serde_json::to_string_pretty(&outcome.results)
+                let response = selector_service::build_scrape_response(
+                    outcome.results,
+                    &outcome.extract_result,
+                    &params.selector,
+                );
+                let content = serde_json::to_string_pretty(&response)
                     .unwrap_or_else(|_| "failed to serialize".into());
                 Ok(CallToolResult::success(vec![Content::text(content)]))
             },
