@@ -115,7 +115,7 @@ async fn elastic_pipeline_returns_error_on_bad_url() {
     );
 
     let autotune = AutotuningConfig::from_elastic(&config);
-    let ingestion = ElasticIngestion::new(downloader, bridge, repo, autotune);
+    let ingestion = ElasticIngestion::new(downloader, bridge, Arc::new(repo), autotune);
 
     // URL pointing to nowhere — should return an error, not panic
     let result = ingestion.run("http://127.0.0.1:1/nonexistent").await;

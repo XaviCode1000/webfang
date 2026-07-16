@@ -73,7 +73,7 @@ async fn elastic_ingestion_persists_cleaned_content_to_sqlite() {
         cpu_cores: 2,
         ram_budget_bytes: 1 << 20,
     };
-    let orc = ElasticIngestion::new(downloader, bridge, repo, config);
+    let orc = ElasticIngestion::new(downloader, bridge, Arc::new(repo), config);
 
     // ---- Arrange: wiremock serving boilerplate-laden HTML ----
     let body = "<nav>site navigation menu</nav>\
@@ -169,7 +169,7 @@ async fn elastic_ingestion_dedup_prevents_duplicate_rows() {
     let orc = ElasticIngestion::new(
         downloader,
         bridge,
-        repo,
+        Arc::new(repo),
         AutotuningConfig {
             cpu_cores: 2,
             ram_budget_bytes: 1 << 20,

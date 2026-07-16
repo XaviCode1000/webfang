@@ -246,7 +246,10 @@ impl Container {
         // 5. Assemble pipeline — ElasticIngestion erased to DynVectorRepository
         let autotune = crate::infrastructure::config::AutotuningConfig::from_elastic(config);
         Ok(ElasticIngestion::new(
-            downloader, bridge, repository, autotune,
+            downloader,
+            bridge,
+            Arc::new(repository),
+            autotune,
         ))
     }
 

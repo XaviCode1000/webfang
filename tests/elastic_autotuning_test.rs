@@ -182,7 +182,7 @@ async fn memory_db_elastic_pipeline_roundtrip() {
     );
 
     // 4. Build and run the pipeline
-    let ingestion = ElasticIngestion::new(downloader, bridge, repo.clone(), config);
+    let ingestion = ElasticIngestion::new(downloader, bridge, Arc::new(repo.clone()), config);
     let url = format!("{}/test", server.uri());
 
     ingestion
@@ -258,7 +258,7 @@ async fn ram_budget_cascade_to_elastic_ingestion() {
     );
 
     // 5. Build the pipeline and verify it was constructed correctly
-    let _ingestion = ElasticIngestion::new(downloader, bridge, repo, config);
+    let _ingestion = ElasticIngestion::new(downloader, bridge, Arc::new(repo), config);
 
     // The pipeline is constructed successfully with the correct semaphore permits
     // We can't directly inspect the semaphore from outside, but we can verify
