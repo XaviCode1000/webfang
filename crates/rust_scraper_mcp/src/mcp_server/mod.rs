@@ -11,6 +11,7 @@
 
 pub mod handlers;
 pub mod params;
+pub mod selector_service;
 pub mod server;
 pub mod state;
 
