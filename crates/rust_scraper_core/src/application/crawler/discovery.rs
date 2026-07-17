@@ -543,9 +543,8 @@ async fn crawl_with_sitemap_internal(
                     tracing::info!("Discovered sitemap URL: {}", url);
                     url
                 },
-                Err(CrawlError::SitemapNotFound(_)) => {
-                    tracing::warn!("no sitemap found, switching to standard crawling");
-                    return Ok(Vec::new());
+                Err(CrawlError::SitemapNotFound(url)) => {
+                    return Err(CrawlError::SitemapNotFound(url));
                 },
                 Err(e) => return Err(e),
             }
