@@ -6,7 +6,7 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| {
     if let Ok(path) = std::str::from_utf8(data) {
         // slug_from_url returns String, handles percent-encoding
-        let slug = rust_scraper::infrastructure::converter::wikilinks::slug_from_url(path);
+        let slug = webfang::infrastructure::converter::wikilinks::slug_from_url(path);
 
         // Sanity: slug should not contain path separators (would create subdirs)
         assert!(!slug.contains('/'), "slug contains path separator: {}", slug);

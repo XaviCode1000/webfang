@@ -1,4 +1,4 @@
-# CI/CD Pipeline for rust_scraper — Tiered Feedback
+# CI/CD Pipeline for webfang — Tiered Feedback
 #
 # Strategy: Tiered pipeline with needs gates.
 # Each tier only runs if the previous tier PASSED.

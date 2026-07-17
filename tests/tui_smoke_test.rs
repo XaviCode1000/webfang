@@ -6,10 +6,10 @@
 // TUI smoke tests require the `ui` feature (ratatui types).
 #![cfg(feature = "ui")]
 
-use rust_scraper::adapters::tui::action::Action;
-use rust_scraper::adapters::tui::component::Component;
-use rust_scraper::adapters::tui::modal::HelpModal;
-use rust_scraper::adapters::tui::{
+use webfang::adapters::tui::action::Action;
+use webfang::adapters::tui::component::Component;
+use webfang::adapters::tui::modal::HelpModal;
+use webfang::adapters::tui::{
     AppMode, ConfigFormState, ErrorLogWidget, ProgressWidget, UrlSelectorState,
 };
 use url::Url;

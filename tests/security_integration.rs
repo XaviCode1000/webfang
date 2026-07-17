@@ -8,7 +8,7 @@
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use rust_scraper::infrastructure::http::waf_engine::WafInspector;
+use webfang::infrastructure::http::waf_engine::WafInspector;
 use wreq::header::HeaderMap;
 
 // ============================================================================
@@ -293,7 +293,7 @@ async fn test_waf_inspector_cloudflare_detection() {
     let result = WafInspector::verify_integrity(&headers, html);
 
     assert!(result.is_err());
-    if let Err(rust_scraper::error::ScraperError::WafBlocked { provider, .. }) = result {
+    if let Err(webfang::error::ScraperError::WafBlocked { provider, .. }) = result {
         assert!(provider.contains("Cloudflare"));
     } else {
         panic!("Expected WafBlocked error");
@@ -310,7 +310,7 @@ async fn test_waf_inspector_datadome_header_detection() {
     let result = WafInspector::verify_integrity(&headers, html);
 
     assert!(result.is_err());
-    if let Err(rust_scraper::error::ScraperError::WafBlocked { provider, .. }) = result {
+    if let Err(webfang::error::ScraperError::WafBlocked { provider, .. }) = result {
         assert!(provider.contains("DataDome"));
     } else {
         panic!("Expected WafBlocked error");
@@ -335,7 +335,7 @@ async fn test_waf_inspector_silent_challenge_detection() {
     let result = WafInspector::verify_integrity(&headers, html);
 
     assert!(result.is_err());
-    if let Err(rust_scraper::error::ScraperError::WafBlocked { provider, .. }) = result {
+    if let Err(webfang::error::ScraperError::WafBlocked { provider, .. }) = result {
         assert!(provider.contains("Silent Challenge"));
     } else {
         panic!("Expected WafBlocked error");

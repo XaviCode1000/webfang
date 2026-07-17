@@ -1,7 +1,7 @@
 //! Integration tests for vault_detector — Obsidian vault detection via
 //! .obsidian marker, explicit paths, env vars, and config paths.
 
-use rust_scraper::infrastructure::obsidian::vault_detector::detect_vault;
+use webfang::infrastructure::obsidian::vault_detector::detect_vault;
 use tempfile::TempDir;
 
 /// Create a temp directory that looks like an Obsidian vault (contains .obsidian/).
@@ -95,7 +95,7 @@ fn detect_vault_invalid_config_path_returns_none() {
 fn detect_vault_via_env_var() {
     let tmp = TempDir::new().unwrap();
     let vault = make_vault(&tmp, "env_vault");
-    let env_name = "RUST_SCRAPER_VAULT_TEST_DETECT";
+    let env_name = "WEBFANG_VAULT_TEST_DETECT";
 
     std::env::set_var(env_name, vault.to_str().unwrap());
     let result = detect_vault(None, Some(env_name), None);
@@ -109,7 +109,7 @@ fn detect_vault_env_var_with_invalid_path() {
     let tmp = TempDir::new().unwrap();
     let non_vault = tmp.path().join("env_bad");
     std::fs::create_dir_all(&non_vault).unwrap();
-    let env_name = "RUST_SCRAPER_VAULT_TEST_INVALID";
+    let env_name = "WEBFANG_VAULT_TEST_INVALID";
 
     std::env::set_var(env_name, non_vault.to_str().unwrap());
     let result = detect_vault(None, Some(env_name), None);
@@ -124,7 +124,7 @@ fn cli_path_takes_priority_over_env_var() {
     let tmp = TempDir::new().unwrap();
     let cli_vault = make_vault(&tmp, "cli_vault");
     let env_vault = make_vault(&tmp, "env_vault");
-    let env_name = "RUST_SCRAPER_VAULT_TEST_PRIORITY";
+    let env_name = "WEBFANG_VAULT_TEST_PRIORITY";
 
     std::env::set_var(env_name, env_vault.to_str().unwrap());
     let result = detect_vault(Some(&cli_vault), Some(env_name), None);
@@ -138,7 +138,7 @@ fn env_var_takes_priority_over_config() {
     let tmp = TempDir::new().unwrap();
     let env_vault = make_vault(&tmp, "env_vault");
     let config_vault = make_vault(&tmp, "config_vault");
-    let env_name = "RUST_SCRAPER_VAULT_TEST_ENV_PRIORITY";
+    let env_name = "WEBFANG_VAULT_TEST_ENV_PRIORITY";
 
     std::env::set_var(env_name, env_vault.to_str().unwrap());
     let result = detect_vault(None, Some(env_name), Some(config_vault.to_str().unwrap()));

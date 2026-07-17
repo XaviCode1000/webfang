@@ -3,8 +3,8 @@
 //! Parses real XML fixtures from tests/fixtures/sitemap/ and exercises
 //! SitemapParser + SitemapConfig against wiremock MockServer.
 
-use rust_scraper::infrastructure::crawler::SitemapConfig;
-use rust_scraper::infrastructure::crawler::{resolve_url, SitemapError, SitemapParser};
+use webfang::infrastructure::crawler::SitemapConfig;
+use webfang::infrastructure::crawler::{resolve_url, SitemapError, SitemapParser};
 use url::Url;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

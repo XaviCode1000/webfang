@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use rust_scraper::validate_and_parse_url;
+use webfang::validate_and_parse_url;
 use url::Url;
 
 fn bench_url_parse(c: &mut Criterion) {

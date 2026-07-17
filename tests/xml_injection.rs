@@ -19,7 +19,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn resolve(base: &str, input: &str) -> Option<Url> {
     let base_url = Url::parse(base).unwrap();
-    rust_scraper::infrastructure::crawler::sitemap_parser::resolve_url(&base_url, input)
+    webfang::infrastructure::crawler::sitemap_parser::resolve_url(&base_url, input)
 }
 
 #[test]
@@ -124,7 +124,7 @@ async fn parse_sitemap_with_path_traversal_locs() {
         .mount(&mock_server)
         .await;
 
-    let parser = rust_scraper::infrastructure::crawler::sitemap_parser::SitemapParser::new();
+    let parser = webfang::infrastructure::crawler::sitemap_parser::SitemapParser::new();
     let result = parser
         .parse_from_url(&format!("{}/sitemap.xml", mock_server.uri()))
         .await;
@@ -162,7 +162,7 @@ async fn parse_sitemap_with_xxe_attempt() {
         .mount(&mock_server)
         .await;
 
-    let parser = rust_scraper::infrastructure::crawler::sitemap_parser::SitemapParser::new();
+    let parser = webfang::infrastructure::crawler::sitemap_parser::SitemapParser::new();
     let result = parser
         .parse_from_url(&format!("{}/sitemap.xml", mock_server.uri()))
         .await;
@@ -202,7 +202,7 @@ async fn parse_sitemap_billion_laughs_no_oom() {
         .mount(&mock_server)
         .await;
 
-    let parser = rust_scraper::infrastructure::crawler::sitemap_parser::SitemapParser::new();
+    let parser = webfang::infrastructure::crawler::sitemap_parser::SitemapParser::new();
     let result = parser
         .parse_from_url(&format!("{}/sitemap.xml", mock_server.uri()))
         .await;
@@ -234,7 +234,7 @@ async fn parse_sitemap_empty_xml_errors() {
         .mount(&mock_server)
         .await;
 
-    let parser = rust_scraper::infrastructure::crawler::sitemap_parser::SitemapParser::new();
+    let parser = webfang::infrastructure::crawler::sitemap_parser::SitemapParser::new();
     let result = parser
         .parse_from_url(&format!("{}/sitemap.xml", mock_server.uri()))
         .await;
@@ -258,7 +258,7 @@ async fn parse_sitemap_malformed_xml_no_panic() {
         .mount(&mock_server)
         .await;
 
-    let parser = rust_scraper::infrastructure::crawler::sitemap_parser::SitemapParser::new();
+    let parser = webfang::infrastructure::crawler::sitemap_parser::SitemapParser::new();
     let result = parser
         .parse_from_url(&format!("{}/sitemap.xml", mock_server.uri()))
         .await;
@@ -284,7 +284,7 @@ async fn parse_sitemap_non_xml_content_type_with_xml_url() {
         .mount(&mock_server)
         .await;
 
-    let parser = rust_scraper::infrastructure::crawler::sitemap_parser::SitemapParser::new();
+    let parser = webfang::infrastructure::crawler::sitemap_parser::SitemapParser::new();
     let result = parser
         .parse_from_url(&format!("{}/sitemap.xml", mock_server.uri()))
         .await;
@@ -312,7 +312,7 @@ async fn parse_sitemap_non_xml_content_type_with_non_xml_url() {
         .mount(&mock_server)
         .await;
 
-    let parser = rust_scraper::infrastructure::crawler::sitemap_parser::SitemapParser::new();
+    let parser = webfang::infrastructure::crawler::sitemap_parser::SitemapParser::new();
     let result = parser
         .parse_from_url(&format!("{}/sitemap", mock_server.uri()))
         .await;
@@ -320,7 +320,7 @@ async fn parse_sitemap_non_xml_content_type_with_non_xml_url() {
     assert!(
         matches!(
             result,
-            Err(rust_scraper::infrastructure::crawler::sitemap_parser::SitemapError::InvalidContentType(_))
+            Err(webfang::infrastructure::crawler::sitemap_parser::SitemapError::InvalidContentType(_))
         ),
         "Non-XML content type with non-.xml URL should be rejected"
     );
@@ -332,7 +332,7 @@ async fn parse_sitemap_non_xml_content_type_with_non_xml_url() {
 
 #[tokio::test]
 async fn max_depth_zero_returns_error() {
-    use rust_scraper::infrastructure::crawler::sitemap_config::SitemapConfig;
+    use webfang::infrastructure::crawler::sitemap_config::SitemapConfig;
 
     let mock_server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -349,13 +349,13 @@ async fn max_depth_zero_returns_error() {
     assert_eq!(config.max_depth, 0);
 
     let parser =
-        rust_scraper::infrastructure::crawler::sitemap_parser::SitemapParser::with_config(config);
+        webfang::infrastructure::crawler::sitemap_parser::SitemapParser::with_config(config);
     let result = parser
         .parse_from_url(&format!("{}/sitemap.xml", mock_server.uri()))
         .await;
     assert!(matches!(
         result,
-        Err(rust_scraper::infrastructure::crawler::sitemap_parser::SitemapError::MaxDepthExceeded)
+        Err(webfang::infrastructure::crawler::sitemap_parser::SitemapError::MaxDepthExceeded)
     ));
 }
 
@@ -369,7 +369,7 @@ fn path_traversal_in_filename_flat_no_risk() {
     // The path `/download/../../etc/passwd` becomes `download-..-..-etc-passwd.md`.
     // This is safe because the output is a flat filename (no directory separators),
     // so there's no actual filesystem traversal risk.
-    use rust_scraper::adapters::url_path::UrlPath;
+    use webfang::adapters::url_path::UrlPath;
 
     let path = UrlPath::from_url_path("/download/../../etc/passwd");
     let filename = path.to_safe_filename();
@@ -381,7 +381,7 @@ fn path_traversal_in_filename_flat_no_risk() {
 
 #[test]
 fn null_byte_in_filename_sanitized() {
-    use rust_scraper::adapters::url_path::UrlPath;
+    use webfang::adapters::url_path::UrlPath;
 
     let path = UrlPath::from_url_path("/download/file%00.pdf");
     let filename = path.to_safe_filename();
@@ -393,7 +393,7 @@ fn null_byte_in_filename_sanitized() {
 
 #[test]
 fn very_long_filename_no_panic() {
-    use rust_scraper::adapters::url_path::UrlPath;
+    use webfang::adapters::url_path::UrlPath;
 
     let long_name = "a".repeat(1000);
     let path = UrlPath::from_url_path(&format!("/{long_name}"));
@@ -403,7 +403,7 @@ fn very_long_filename_no_panic() {
 
 #[test]
 fn windows_reserved_names_in_filename() {
-    use rust_scraper::adapters::url_path::UrlPath;
+    use webfang::adapters::url_path::UrlPath;
 
     for reserved in &["CON", "PRN", "AUX", "NUL", "COM1", "LPT1"] {
         let path = UrlPath::from_url_path(&format!("/{reserved}"));
@@ -417,7 +417,7 @@ fn windows_reserved_names_in_filename() {
 
 #[test]
 fn special_chars_in_filename_sanitized() {
-    use rust_scraper::adapters::url_path::UrlPath;
+    use webfang::adapters::url_path::UrlPath;
 
     let path = UrlPath::from_url_path("/docs/page<with>special|chars");
     let filename = path.to_safe_filename();

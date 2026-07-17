@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use rust_scraper::application::crawler::parse_sitemap;
+use webfang::application::crawler::parse_sitemap;
 use url::Url;
 
 fn generate_sitemap_xml(url_count: usize) -> String {

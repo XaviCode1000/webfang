@@ -5,7 +5,7 @@
 //! Run with: cargo test --test integration
 //! Run with features: cargo test --test integration --features images,documents
 
-use rust_scraper::{
+use webfang::{
     create_http_client, save_results, scrape_with_readability, DownloadedAsset, ScrapedContent,
     ValidUrl,
 };
@@ -44,7 +44,7 @@ async fn test_scraper_can_fetch_simple_page() {
 #[test]
 fn test_output_format_display() {
     // Test that OutputFormat variants can be displayed
-    use rust_scraper::OutputFormat;
+    use webfang::OutputFormat;
 
     let markdown = OutputFormat::Markdown;
     let text = OutputFormat::Text;
@@ -59,9 +59,9 @@ fn test_output_format_display() {
 #[test]
 fn test_args_has_required_fields() {
     // Test that Args struct has the expected fields (without Default)
-    use rust_scraper::Args;
-    use rust_scraper::ExportFormat;
-    use rust_scraper::OutputFormat;
+    use webfang::Args;
+    use webfang::ExportFormat;
+    use webfang::OutputFormat;
 
     // Create Args with all required fields
     let args = Args {
@@ -76,7 +76,7 @@ fn test_args_has_required_fields() {
         download_documents: false,
         download_assets: false,
         verbose: 2,
-        concurrency: rust_scraper::ConcurrencyConfig::default(),
+        concurrency: webfang::ConcurrencyConfig::default(),
         use_sitemap: false,
         sitemap_url: None,
         interactive: false,
@@ -133,11 +133,11 @@ fn test_args_has_required_fields() {
         no_session_health: false,
         autoscale: false,
         h2_profile: "Chrome145".to_string(),
-        js_strategy: rust_scraper::domain::JsStrategy::Static,
+        js_strategy: webfang::domain::JsStrategy::Static,
         obscura_binary: "obscura".to_string(),
         // Item Pipeline
         pipeline: false,
-        pipeline_output: rust_scraper::domain::config::PipelineOutputFormat::Jsonl,
+        pipeline_output: webfang::domain::config::PipelineOutputFormat::Jsonl,
         // Batch Processing
         batch: false,
         batch_file: None,
@@ -221,11 +221,11 @@ fn test_save_results_to_nested_directory() {
     }];
 
     // Act
-    let obsidian = rust_scraper::ObsidianOptions::default();
+    let obsidian = webfang::ObsidianOptions::default();
     let result = save_results(
         &results,
         &output_dir,
-        &rust_scraper::OutputFormat::Text,
+        &webfang::OutputFormat::Text,
         &obsidian,
     );
 
@@ -266,11 +266,11 @@ fn test_save_results_json_with_special_characters() {
     }];
 
     // Act
-    let obsidian = rust_scraper::ObsidianOptions::default();
+    let obsidian = webfang::ObsidianOptions::default();
     let result = save_results(
         &results,
         &output_dir,
-        &rust_scraper::OutputFormat::Json,
+        &webfang::OutputFormat::Json,
         &obsidian,
     );
 
@@ -304,11 +304,11 @@ fn test_save_results_markdown_with_markdown_syntax() {
     }];
 
     // Act
-    let obsidian = rust_scraper::ObsidianOptions::default();
+    let obsidian = webfang::ObsidianOptions::default();
     let result = save_results(
         &results,
         &output_dir,
-        &rust_scraper::OutputFormat::Markdown,
+        &webfang::OutputFormat::Markdown,
         &obsidian,
     );
 
@@ -337,7 +337,7 @@ fn test_save_results_markdown_with_markdown_syntax() {
 #[cfg(feature = "images")]
 #[tokio::test]
 async fn test_download_images_from_website() {
-    use rust_scraper::scrape_with_config;
+    use webfang::scrape_with_config;
     use walkdir::WalkDir;
 
     // Arrange - Use webscraper.io test site (free, no auth required)
@@ -347,7 +347,7 @@ async fn test_download_images_from_website() {
     let url = url::Url::parse("https://webscraper.io/test-sites").expect("Valid URL");
     let client = create_http_client().expect("HTTP client");
 
-    let config = rust_scraper::ScraperConfig {
+    let config = webfang::ScraperConfig {
         download_images: true,
         download_documents: false,
         output_dir: output_dir.clone(),
@@ -408,7 +408,7 @@ async fn test_download_images_from_website() {
 #[cfg(feature = "documents")]
 #[tokio::test]
 async fn test_download_documents_from_website() {
-    use rust_scraper::scrape_with_config;
+    use webfang::scrape_with_config;
 
     // Arrange - Use a test site with documents if available
     // Note: Most test sites don't have documents, so this tests the extraction logic
@@ -419,7 +419,7 @@ async fn test_download_documents_from_website() {
     let url = url::Url::parse("https://toscrape.com").expect("Valid URL");
     let client = create_http_client().expect("HTTP client");
 
-    let config = rust_scraper::ScraperConfig {
+    let config = webfang::ScraperConfig {
         download_images: false,
         download_documents: true,
         output_dir: output_dir.clone(),
@@ -483,8 +483,8 @@ async fn test_ai_embedding_preservation() {
     // Test original bug: embeddings were being discarded during filtering
     // This test verifies the fix works: embeddings shouldn't be None after cleaning
 
-    use rust_scraper::infrastructure::ai::{ModelConfig, SemanticCleanerImpl};
-    use rust_scraper::SemanticCleaner;
+    use webfang::infrastructure::ai::{ModelConfig, SemanticCleanerImpl};
+    use webfang::SemanticCleaner;
 
     // Arrange - Use substantial HTML content that will generate multiple chunks
     // Each paragraph needs enough text to be considered a meaningful chunk
@@ -513,8 +513,8 @@ async fn test_ai_embedding_preservation() {
         .await
         .expect("Failed to create semantic cleaner");
     let chunks_result: Result<
-        Vec<rust_scraper::domain::DocumentChunk>,
-        rust_scraper::SemanticError,
+        Vec<webfang::domain::DocumentChunk>,
+        webfang::SemanticError,
     > = cleaner.clean(html).await;
 
     // Assert - Should succeed and have chunks with embeddings

@@ -102,10 +102,10 @@ component) that the helper cannot catch, so `assert_content_snapshot` applies an
 ## Lint
 
 ```bash
-cargo clippy -p rust_scraper_core --test behavioral --test cli_binary --test cli_behavioral -- -D warnings
+cargo clippy -p webfang_core --test behavioral --test cli_binary --test cli_behavioral -- -D warnings
 ```
 
-Gate clippy on the specific test crates (not `--tests`): `rust_scraper_core`'s own lib
+Gate clippy on the specific test crates (not `--tests`): `webfang_core`'s own lib
 tests have a pre-existing `tokio::time::pause` failure that requires the `test-util`
 feature and is out of scope for E2E changes.
 

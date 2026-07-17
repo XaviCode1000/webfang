@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/rust_scraper_core",
-    "crates/rust_scraper_ai",
-    "crates/rust_scraper_tui",
-    "crates/rust_scraper_mcp",
-    "crates/rust_scraper_cli",
+    "crates/webfang_core",
+    "crates/webfang_ai",
+    "crates/webfang_tui",
+    "crates/webfang_mcp",
+    "crates/webfang_cli",
 ]
 
 [workspace.package]
@@ -19,11 +19,11 @@ homepage = "https://github.com/XaviCode1000/webfang"
 
 [workspace.dependencies]
 # Internal crates
-rust_scraper_core = { path = "crates/rust_scraper_core" }
-rust_scraper_ai = { path = "crates/rust_scraper_ai" }
-rust_scraper_tui = { path = "crates/rust_scraper_tui" }
-rust_scraper_mcp = { path = "crates/rust_scraper_mcp" }
-rust_scraper_cli = { path = "crates/rust_scraper_cli" }
+webfang_core = { path = "crates/webfang_core" }
+webfang_ai = { path = "crates/webfang_ai" }
+webfang_tui = { path = "crates/webfang_tui" }
+webfang_mcp = { path = "crates/webfang_mcp" }
+webfang_cli = { path = "crates/webfang_cli" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

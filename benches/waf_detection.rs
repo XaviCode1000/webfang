@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use rust_scraper::infrastructure::http::waf_engine::WafInspector;
+use webfang::infrastructure::http::waf_engine::WafInspector;
 use wreq::header::HeaderMap;
 
 fn bench_waf_verify_integrity(c: &mut Criterion) {

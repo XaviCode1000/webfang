@@ -1,0 +1,71 @@
+[package]
+name = "webfang_cli"
+description = "CLI entry point for webfang"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = ["images", "documents"]
+images = ["webfang_core/images"]
+documents = ["webfang_core/documents"]
+ui = ["dep:webfang_tui", "dep:inquire", "webfang_core/ui"]
+ai = ["dep:webfang_ai", "webfang_core/ai"]
+mcp = ["dep:webfang_mcp", "webfang_core/mcp"]
+persistence = ["webfang_core/persistence"]
+console = ["webfang_core/console"]
+dev-tracing = ["webfang_core/dev-tracing"]
+otel = ["webfang_core/otel"]
+otel-metrics = ["webfang_core/otel-metrics"]
+
+[[bin]]
+name = "webfang"
+path = "src/main.rs"
+
+[dependencies]
+webfang_core = { workspace = true }
+webfang_tui = { workspace = true, optional = true }
+webfang_ai = { workspace = true, optional = true }
+webfang_mcp = { workspace = true, optional = true }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
+
+# Async
+tokio = { workspace = true }
+
+# TUI deps (needed for main.rs)
+inquire = { workspace = true, optional = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Config
+dirs = { workspace = true }
+toml = "0.8"
+
+# Logging
+tracing = { workspace = true }
+
+# URL
+url = { workspace = true }
+
+# Serialization
+serde_json = { workspace = true }
+
+# Observability
+tracing-tree = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+
+[lints.clippy]
+doc_markdown = "allow"
+uninlined_format_args = "allow"

@@ -1,5 +1,5 @@
 ---
-source: crates/rust_scraper_core/../../tests/cli_behavioral_test.rs
+source: crates/webfang_core/../../tests/cli_behavioral_test.rs
 expression: redacted
 ---
 ---

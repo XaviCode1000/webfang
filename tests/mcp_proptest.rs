@@ -201,7 +201,7 @@ proptest! {
     ) {
         let url = format!("https://{}{}#{}", domain, path, fragment);
         prop_assert!(
-            rust_scraper::is_internal_link(&url, &domain),
+            webfang::is_internal_link(&url, &domain),
             "Fragment should not affect internal check: {}", url
         );
     }
@@ -215,7 +215,7 @@ proptest! {
     ) {
         let url = format!("https://{}?{}={}", domain, key, value);
         prop_assert!(
-            rust_scraper::is_internal_link(&url, &domain),
+            webfang::is_internal_link(&url, &domain),
             "Query params should not affect internal check: {}", url
         );
     }
@@ -228,7 +228,7 @@ proptest! {
     ) {
         let url = format!("https://{}:{}", domain, port);
         prop_assert!(
-            rust_scraper::is_internal_link(&url, &domain),
+            webfang::is_internal_link(&url, &domain),
             "Port should not affect internal check: {}", url
         );
     }
@@ -247,7 +247,7 @@ proptest! {
     ) {
         let url = format!("{}://{}", scheme, domain);
         prop_assert!(
-            rust_scraper::matches_pattern(&url, ""),
+            webfang::matches_pattern(&url, ""),
             "Empty pattern should match: {}", url
         );
     }
@@ -260,7 +260,7 @@ proptest! {
     ) {
         let url = format!("https://{}{}", domain, path);
         prop_assert!(
-            rust_scraper::matches_pattern(&url, &domain),
+            webfang::matches_pattern(&url, &domain),
             "URL containing '{}' should match pattern '{}'", url, domain
         );
     }
@@ -276,8 +276,8 @@ proptest! {
 #[test]
 fn test_ai_module_returns_empty_router_without_feature() {
     use rmcp::handler::server::tool::ToolRouter;
-    use rust_scraper::infrastructure::mcp_server::handlers::ai::build_router as ai_build_router;
-    use rust_scraper::infrastructure::mcp_server::McpHandler;
+    use webfang::infrastructure::mcp_server::handlers::ai::build_router as ai_build_router;
+    use webfang::infrastructure::mcp_server::McpHandler;
 
     let router: ToolRouter<McpHandler> = ai_build_router();
     // Empty router has no registered tools — verifies AI tools are absent
@@ -296,8 +296,8 @@ fn test_ai_module_returns_empty_router_without_feature() {
 #[test]
 fn test_ai_module_compiles_with_feature() {
     use rmcp::handler::server::tool::ToolRouter;
-    use rust_scraper::infrastructure::mcp_server::handlers::ai::build_router as ai_build_router;
-    use rust_scraper::infrastructure::mcp_server::McpHandler;
+    use webfang::infrastructure::mcp_server::handlers::ai::build_router as ai_build_router;
+    use webfang::infrastructure::mcp_server::McpHandler;
 
     // This test verifies the AI module compiles with --features ai
     // and returns a valid ToolRouter (even if currently empty stub)
@@ -317,10 +317,10 @@ fn test_ai_module_compiles_with_feature() {
 #[cfg(not(feature = "ai"))]
 #[tokio::test]
 async fn test_mcp_handler_construction_without_ai() {
-    use rust_scraper::config::Config;
-    use rust_scraper::di::Container;
-    use rust_scraper::infrastructure::mcp_server::state::McpState;
-    use rust_scraper::infrastructure::mcp_server::McpHandler;
+    use webfang::config::Config;
+    use webfang::di::Container;
+    use webfang::infrastructure::mcp_server::state::McpState;
+    use webfang::infrastructure::mcp_server::McpHandler;
 
     let config = Config::default();
     let container = Container::new(config)
@@ -335,10 +335,10 @@ async fn test_mcp_handler_construction_without_ai() {
 #[cfg(feature = "ai")]
 #[tokio::test]
 async fn test_mcp_handler_construction_with_ai() {
-    use rust_scraper::config::Config;
-    use rust_scraper::di::Container;
-    use rust_scraper::infrastructure::mcp_server::state::McpState;
-    use rust_scraper::infrastructure::mcp_server::McpHandler;
+    use webfang::config::Config;
+    use webfang::di::Container;
+    use webfang::infrastructure::mcp_server::state::McpState;
+    use webfang::infrastructure::mcp_server::McpHandler;
 
     let config = Config::default();
     let container = Container::new(config)
@@ -352,10 +352,10 @@ async fn test_mcp_handler_construction_with_ai() {
 /// Verify all non-AI tool categories are registered regardless of feature flag
 #[tokio::test]
 async fn test_non_ai_tool_categories_registered() {
-    use rust_scraper::config::Config;
-    use rust_scraper::di::Container;
-    use rust_scraper::infrastructure::mcp_server::state::McpState;
-    use rust_scraper::infrastructure::mcp_server::McpHandler;
+    use webfang::config::Config;
+    use webfang::di::Container;
+    use webfang::infrastructure::mcp_server::state::McpState;
+    use webfang::infrastructure::mcp_server::McpHandler;
 
     let config = Config::default();
     let container = Container::new(config)

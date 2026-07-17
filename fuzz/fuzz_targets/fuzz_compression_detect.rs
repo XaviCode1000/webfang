@@ -6,7 +6,7 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| {
     if let Ok(url) = url::Url::parse("https://example.com/data") {
         // detect_compression returns Vec<CompressionType> — empty means unknown
-        let _ = rust_scraper::infrastructure::crawler::compression_handler::CompressionHandler::detect_compression(
+        let _ = webfang::infrastructure::crawler::compression_handler::CompressionHandler::detect_compression(
             data, url.as_str(),
         );
     }

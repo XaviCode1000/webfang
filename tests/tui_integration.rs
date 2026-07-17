@@ -10,12 +10,12 @@
 #![cfg(feature = "ui")]
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use rust_scraper::adapters::tui::collapsible_config::CollapsibleConfig;
-use rust_scraper::adapters::tui::component::Component;
-use rust_scraper::adapters::tui::theme::{Theme, ThemeMode};
-use rust_scraper::cli::preflight::apply_tui_config_args;
-use rust_scraper::domain::JsStrategy;
-use rust_scraper::{Args, ExportFormat, OutputFormat, Parser};
+use webfang::adapters::tui::collapsible_config::CollapsibleConfig;
+use webfang::adapters::tui::component::Component;
+use webfang::adapters::tui::theme::{Theme, ThemeMode};
+use webfang::cli::preflight::apply_tui_config_args;
+use webfang::domain::JsStrategy;
+use webfang::{Args, ExportFormat, OutputFormat, Parser};
 use std::path::PathBuf;
 
 // ============================================================================
@@ -73,7 +73,7 @@ fn collapsible_config_q_cancels() {
     assert!(config.cancelled);
     assert!(matches!(
         action,
-        Some(rust_scraper::adapters::tui::action::Action::ConfigCancelled)
+        Some(webfang::adapters::tui::action::Action::ConfigCancelled)
     ));
 }
 
@@ -84,7 +84,7 @@ fn collapsible_config_uppercase_q_cancels() {
     assert!(config.cancelled);
     assert!(matches!(
         action,
-        Some(rust_scraper::adapters::tui::action::Action::ConfigCancelled)
+        Some(webfang::adapters::tui::action::Action::ConfigCancelled)
     ));
 }
 
@@ -97,7 +97,7 @@ fn collapsible_config_ctrl_s_submits() {
     assert!(config.submitted);
     assert!(matches!(
         action,
-        Some(rust_scraper::adapters::tui::action::Action::ConfigDone(_))
+        Some(webfang::adapters::tui::action::Action::ConfigDone(_))
     ));
 }
 
@@ -107,7 +107,7 @@ fn collapsible_config_question_mark_toggles_help() {
     let action = config.handle_key_event(key(KeyCode::Char('?'))).unwrap();
     assert!(matches!(
         action,
-        Some(rust_scraper::adapters::tui::action::Action::ToggleHelp)
+        Some(webfang::adapters::tui::action::Action::ToggleHelp)
     ));
 }
 
@@ -186,7 +186,7 @@ fn collapsible_config_ctrl_s_returns_config_done_with_json() {
         .handle_key_event(key_ctrl(KeyCode::Char('s')))
         .unwrap();
     match action {
-        Some(rust_scraper::adapters::tui::action::Action::ConfigDone(Some(value))) => {
+        Some(webfang::adapters::tui::action::Action::ConfigDone(Some(value))) => {
             assert!(value.is_object());
             let obj = value.as_object().unwrap();
             assert!(obj.contains_key("url"));

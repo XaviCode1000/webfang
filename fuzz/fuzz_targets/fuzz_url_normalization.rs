@@ -11,6 +11,6 @@ use libfuzzer_sys::fuzz_target;
 // Our goal: normalize_url must NEVER panic on any input.
 fuzz_target!(|data: &[u8]| {
     if let Ok(s) = std::str::from_utf8(data) {
-        let _ = rust_scraper::infrastructure::crawler::link_extractor::normalize_url(s);
+        let _ = webfang::infrastructure::crawler::link_extractor::normalize_url(s);
     }
 });

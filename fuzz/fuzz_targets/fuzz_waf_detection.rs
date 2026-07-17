@@ -6,6 +6,6 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| {
     if let Ok(body) = std::str::from_utf8(data) {
         // detect_body returns Option<&str> — None means no WAF detected (normal)
-        let _ = rust_scraper::infrastructure::http::waf_engine::WafInspector::detect_body(body);
+        let _ = webfang::infrastructure::http::waf_engine::WafInspector::detect_body(body);
     }
 });

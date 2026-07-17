@@ -1,6 +1,6 @@
 //! CLI binary integration tests
 //!
-//! Tests the actual `rust_scraper` binary using `assert_cmd`.
+//! Tests the actual `webfang` binary using `assert_cmd`.
 //! These tests verify the binary behaves correctly for edge cases
 //! without requiring network access.
 //!

@@ -56,7 +56,7 @@ You are the **Orchestrator-Engineer**. You decide WHAT to do and WHERE to delega
 - Before editing any symbol → GitNexus `impact({direction:"upstream"})`. NEVER edit blind. (CodeDB `callers` is faster for a quick check, but GitNexus gives depth + risk level.)
 - Before renaming → GitNexus MCP `rename` with `dry_run:true` first. NEVER find-and-replace. (CodeDB has no rename tool.)
 - Before commit → GitNexus `detect_changes()`. Before regression review → `detect_changes({scope:"compare", base_ref:"main"})`.
-- Index stale (`gitnexus://repo/rust_scraper/context`) → STOP. Run `gitnexus analyze --index-only --skip-agents-md` (always `--skip-agents-md` so this file isn't overwritten).
+- Index stale (`gitnexus://repo/webfang/context`) → STOP. Run `gitnexus analyze --index-only --skip-agents-md` (always `--skip-agents-md` so this file isn't overwritten).
 
 **Legitimate `grep`/`rg` exceptions:** logs, CI output, `.env`/config text, files outside the index — never for source code.
 
@@ -83,7 +83,7 @@ Route tasks to specialized skills. **Load the matching skill BEFORE executing.**
 
 Every sub-agent that reads/writes code MUST:
 
-1. Load the `codedb` skill → `codedb_context` for fast task orientation (1 call). Load the `gitnexus` skill → `gitnexus status` + READ `gitnexus://repo/rust_scraper/context` for index freshness.
+1. Load the `codedb` skill → `codedb_context` for fast task orientation (1 call). Load the `gitnexus` skill → `gitnexus status` + READ `gitnexus://repo/webfang/context` for index freshness.
 2. `gitnexus_context({name})` before writing any symbol.
 3. `gitnexus_impact({direction:"upstream"})` BEFORE editing any symbol.
 4. Apply `rust-skills` category (see table below).
@@ -149,13 +149,13 @@ gh workflow run ci.yml --ref $(git branch --show-current) && gh run watch
 ### Workspace structure (5 crates)
 
 ```
-rust_scraper/                          # virtual workspace root (no [package])
+webfang/                          # virtual workspace root (no [package])
 ├── crates/
-│   ├── rust_scraper_core/             # domain + application + infrastructure
-│   ├── rust_scraper_ai/               # ONNX embeddings, semantic cleaning
-│   ├── rust_scraper_tui/              # ratatui TUI selector
-│   ├── rust_scraper_mcp/              # MCP server (34 tools)
-│   └── rust_scraper_cli/              # CLI binary (webfang)
+│   ├── webfang_core/             # domain + application + infrastructure
+│   ├── webfang_ai/               # ONNX embeddings, semantic cleaning
+│   ├── webfang_tui/              # ratatui TUI selector
+│   ├── webfang_mcp/              # MCP server (34 tools)
+│   └── webfang_cli/              # CLI binary (webfang)
 ```
 
 **Inter-crate dependency direction (ENFORCED):**
@@ -184,7 +184,7 @@ Dual wrapping pattern: infra errors wrap into domain errors via `From` impls.
 
 ### MCP server — canonical location
 
-**`crates/rust_scraper_mcp/src/mcp_server/`** is the ONLY canonical location.
+**`crates/webfang_mcp/src/mcp_server/`** is the ONLY canonical location.
 The root `src/` was deleted (PR #163 cleanup). Never create code in `src/`.
 
 MCP tools: 34 tools across 8 categories (scraping, content, export, URL utils, security, Obsidian, assets, AI).
@@ -209,7 +209,7 @@ Transport: Streamable HTTP (`rmcp`) at `127.0.0.1:8080/mcp`, also stdio via `mcp
 
 ### AI feature (`--features ai`)
 
-- ~90MB ONNX model (all-MiniLM-L6-v2), cached in `~/.cache/rust_scraper/models/`
+- ~90MB ONNX model (all-MiniLM-L6-v2), cached in `~/.cache/webfang/models/`
 - `cleaner.clean(html)` → `Vec<DocumentChunk>` with embeddings
 
 ### Build requirement
@@ -238,8 +238,8 @@ Worktrees live as **siblings** of the repo, never inside it:
 
 ```
 ~/Projects/
-├── rust_scraper/                     # main repo (always on main)
-├── rust_scraper-worktrees/           # worktree siblings (gitignored globally)
+├── webfang/                     # main repo (always on main)
+├── webfang-worktrees/           # worktree siblings (gitignored globally)
 │   ├── feat-auth/                    # branch: feat/auth (dir: feat-auth)
 │   ├── fix-crawler-timeout/          # branch: fix/crawler-timeout
 │   └── refactor-ai-cleaner/          # branch: refactor/ai-cleaner
@@ -264,18 +264,18 @@ The global pre-commit hook validates this: branch `feat/auth` → normalized `fe
 **Create (from main repo):**
 ```bash
 # Syntax: git worktree add <path> -b <type>/<description>
-git worktree add ~/Projects/rust_scraper-worktrees/feat-auth -b feat/auth
-cd ~/Projects/rust_scraper-worktrees/feat-auth
+git worktree add ~/Projects/webfang-worktrees/feat-auth -b feat/auth
+cd ~/Projects/webfang-worktrees/feat-auth
 
 # Per-worktree bootstrap (these are NOT shared):
 cargo build                              # target/ is per-worktree (~3-5 min first build: BoringSSL)
-cp ~/Projects/rust_scraper/.env .         # .env is gitignored, must be copied manually
+cp ~/Projects/webfang/.env .         # .env is gitignored, must be copied manually
 gitnexus analyze --index-only --skip-agents-md  # GitNexus index is per-worktree
 ```
 
 **Cross-branch read access (NO checkout):**
 ```bash
-git show main:crates/rust_scraper_core/src/main.rs  # read a file from another branch
+git show main:crates/webfang_core/src/main.rs  # read a file from another branch
 git diff main..HEAD -- crates/                       # compare with main
 git log main --oneline -10                           # inspect history
 ```
@@ -283,8 +283,8 @@ These are safe — they read the shared `.git` object store without modifying th
 
 **Cleanup (after merge):**
 ```bash
-cd ~/Projects/rust_scraper                 # return to main repo
-git worktree remove ~/Projects/rust_scraper-worktrees/feat-auth
+cd ~/Projects/webfang                 # return to main repo
+git worktree remove ~/Projects/webfang-worktrees/feat-auth
 git branch -d feat/auth
 git worktree prune                          # remove stale worktree metadata
 ```
@@ -392,10 +392,10 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 
 | What | Copy from | Location |
 |:-----|:----------|:---------|
-| New service/trait | `crawler_service.rs` | `crates/rust_scraper_core/src/application/` — trait → impl with DI, `async_trait`, `#[instrument]`, typed errors |
-| New domain entity | `entities.rs` | `crates/rust_scraper_core/src/domain/` — struct + constructor + `TryFrom` validation, `Display`+`Debug`+`PartialEq` |
-| New adapter | `crawler/` | `crates/rust_scraper_core/src/infrastructure/` — domain trait → impl, module with `mod.rs` |
-| New error type | `error.rs` | `crates/rust_scraper_core/src/cli/` — `thiserror::Error` + `From` impls, Spanish user-facing |
+| New service/trait | `crawler_service.rs` | `crates/webfang_core/src/application/` — trait → impl with DI, `async_trait`, `#[instrument]`, typed errors |
+| New domain entity | `entities.rs` | `crates/webfang_core/src/domain/` — struct + constructor + `TryFrom` validation, `Display`+`Debug`+`PartialEq` |
+| New adapter | `crawler/` | `crates/webfang_core/src/infrastructure/` — domain trait → impl, module with `mod.rs` |
+| New error type | `error.rs` | `crates/webfang_core/src/cli/` — `thiserror::Error` + `From` impls, Spanish user-facing |
 | New behavioral test | `cli_harness.rs` | `tests/common/` — `BehavioralTest` + wiremock + TempDir + insta snapshots |
 
 **Avoid:** `adapters/tui/progress_widget.rs` (551 lines), `infrastructure/mcp_server/mod.rs` (1404 lines) — keep new components focused.
@@ -403,7 +403,7 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 ## 🧪 Testing — Snapshots, Harness & Conventions
 
 ### Integration test structure
-Root `tests/` integration tests are wired into `rust_scraper_core` via explicit `[[test]]` entries in `crates/rust_scraper_core/Cargo.toml`. The workspace root `Cargo.toml` is virtual (no `[package]`), so root `tests/` files need explicit `[[test]]` wiring — they are **never auto-discovered**.
+Root `tests/` integration tests are wired into `webfang_core` via explicit `[[test]]` entries in `crates/webfang_core/Cargo.toml`. The workspace root `Cargo.toml` is virtual (no `[package]`), so root `tests/` files need explicit `[[test]]` wiring — they are **never auto-discovered**.
 
 Test harness lives in `tests/common/cli_harness.rs`:
 - `BehavioralTest` — wiremock `MockServer` + `tempfile::TempDir`, `scraper_cmd()`, `find_files()`, `read_md_content()`
@@ -443,18 +443,18 @@ Golden-master snapshots are enabled via `insta` (`features = ["redactions", "fil
 If a test leaks additional non-deterministic fields (e.g. Obsidian YAML frontmatter dates), use `insta::with_settings!({ add_filter(r"...", "[REPLACEMENT]") }, { insta::assert_snapshot!(...) })`.
 
 ### Binary resolution: `webfang_path()`
-**NEVER use `assert_cmd::cargo_bin(...)` in integration tests.** The `CARGO_BIN_EXE_*` env var is only set for the owning crate. In this virtual workspace, `webfang` is built by `rust_scraper_cli` — a sibling crate. Tests running under `rust_scraper_core` cannot resolve it via `cargo_bin`.
+**NEVER use `assert_cmd::cargo_bin(...)` in integration tests.** The `CARGO_BIN_EXE_*` env var is only set for the owning crate. In this virtual workspace, `webfang` is built by `webfang_cli` — a sibling crate. Tests running under `webfang_core` cannot resolve it via `cargo_bin`.
 
 Always use `webfang_path()` from `tests/common/cli_harness.rs`, which:
 1. Tries `CARGO_BIN_EXE_webfang` (CI fallback)
 2. Searches `target/{debug,release}/webfang`
-3. Falls back to `cargo build -p rust_scraper_cli --bin webfang` on demand
+3. Falls back to `cargo build -p webfang_cli --bin webfang` on demand
 
 **Golden rule for new tests:** `Command::new(webfang_path())`, never `Command::cargo_bin(...)`.
 
 ### Creating a new root integration test
 1. Create the test file in `tests/` (e.g. `tests/my_new_test.rs`)
-2. Add a `[[test]]` entry in `crates/rust_scraper_core/Cargo.toml`:
+2. Add a `[[test]]` entry in `crates/webfang_core/Cargo.toml`:
    ```toml
    [[test]]
    name = "my_new_test"

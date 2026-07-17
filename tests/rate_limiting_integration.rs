@@ -10,8 +10,8 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use rust_scraper::application::http_client::{HttpClient, HttpClientConfig, HttpError};
-use rust_scraper::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
+use webfang::application::http_client::{HttpClient, HttpClientConfig, HttpError};
+use webfang::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use tokio::time::Instant;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

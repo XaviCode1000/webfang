@@ -5,7 +5,7 @@
 //!
 //! Run with: cargo test --test integration_wikilinks
 
-use rust_scraper::infrastructure::converter::wikilinks::convert_wiki_links;
+use webfang::infrastructure::converter::wikilinks::convert_wiki_links;
 
 /// Simulate the real pipeline: HTML → htmd → convert_wiki_links
 /// This is the critical path the guard rail protects.

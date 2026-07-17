@@ -20,14 +20,14 @@
 
 use std::sync::Arc;
 
-use rust_scraper::application::elastic_ingestion::ElasticIngestion;
-use rust_scraper::infrastructure::bridge::CpuBridge;
-use rust_scraper::infrastructure::config::AutotuningConfig;
-use rust_scraper::infrastructure::cpu_pool::RayonCpuPool;
-use rust_scraper::infrastructure::crawler::resource_downloader::{
+use webfang::application::elastic_ingestion::ElasticIngestion;
+use webfang::infrastructure::bridge::CpuBridge;
+use webfang::infrastructure::config::AutotuningConfig;
+use webfang::infrastructure::cpu_pool::RayonCpuPool;
+use webfang::infrastructure::crawler::resource_downloader::{
     DownloadConfig, ResourceDownloader,
 };
-use rust_scraper::infrastructure::persistence::sqlite::{
+use webfang::infrastructure::persistence::sqlite::{
     create_pool, setup_schema, SqliteVectorRepository,
 };
 use tempfile::TempDir;

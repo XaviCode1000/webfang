@@ -1,8 +1,8 @@
-# rust_scraper
+# webfang
 
 **Web scraper de alto rendimiento con arquitectura modular para datasets RAG, crawling inteligente y exportación multi-formato.**
 
-[![CI](https://github.com/XaviCode1000/rust_scraper/actions/workflows/ci.yml/badge.svg)](https://github.com/XaviCode1000/rust_scraper/actions)
+[![CI](https://github.com/XaviCode1000/webfang/actions/workflows/ci.yml/badge.svg)](https://github.com/XaviCode1000/webfang/actions)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.88+-orange)](https://rust-lang.org)
 [![Tests](https://img.shields.io/badge/tests-1%2C337+-green)](#testing)
@@ -16,18 +16,18 @@
 
 ```bash
 # Install
-git clone https://github.com/XaviCode1000/rust_scraper.git
-cd rust_scraper
-cargo install --path crates/rust_scraper_cli
+git clone https://github.com/XaviCode1000/webfang.git
+cd webfang
+cargo install --path crates/webfang_cli
 
 # Scrape a single page
-rust_scraper --url https://example.com
+webfang --url https://example.com
 
 # Crawl an entire site
-rust_scraper --url https://example.com --use-sitemap --max-pages 50
+webfang --url https://example.com --use-sitemap --max-pages 50
 
 # Export for RAG pipelines
-rust_scraper --url https://example.com --export-format jsonl --clean-ai
+webfang --url https://example.com --export-format jsonl --clean-ai
 ```
 
 Output is saved to `output/` as Markdown by default.
@@ -39,18 +39,18 @@ Output is saved to `output/` as Markdown by default.
 Clean Architecture with enforced dependency direction across 5 workspace crates:
 
 ```
-rust_scraper_cli ──→ rust_scraper_tui ──→ rust_scraper_core ←── rust_scraper_ai
-rust_scraper_cli ──→ rust_scraper_mcp ──→ rust_scraper_core
-rust_scraper_cli ──────────────────────→ rust_scraper_core
+webfang_cli ──→ webfang_tui ──→ webfang_core ←── webfang_ai
+webfang_cli ──→ webfang_mcp ──→ webfang_core
+webfang_cli ──────────────────────→ webfang_core
 ```
 
 | Crate | Purpose | Key Dependencies |
 |-------|---------|-----------------|
-| `rust_scraper_core` | Domain, application, infrastructure | wreq, tokio, scraper, lol_html |
-| `rust_scraper_ai` | ONNX semantic cleaning | tract-onnx |
-| `rust_scraper_tui` | Terminal UI | ratatui |
-| `rust_scraper_mcp` | MCP server for AI agents | rmcp |
-| `rust_scraper_cli` | Binary entry point + CLI parsing | clap |
+| `webfang_core` | Domain, application, infrastructure | wreq, tokio, scraper, lol_html |
+| `webfang_ai` | ONNX semantic cleaning | tract-onnx |
+| `webfang_tui` | Terminal UI | ratatui |
+| `webfang_mcp` | MCP server for AI agents | rmcp |
+| `webfang_cli` | Binary entry point + CLI parsing | clap |
 
 **Dependency direction:** CLI → {TUI, MCP, AI} → Core. No circular dependencies.
 
@@ -81,52 +81,52 @@ rust_scraper_cli ─────────────────────
 
 ```bash
 # Single page
-rust_scraper --url https://example.com
+webfang --url https://example.com
 
 # With selector (CSS)
-rust_scraper --url https://example.com --selector "article h1"
+webfang --url https://example.com --selector "article h1"
 
 # Multi-page crawl
-rust_scraper --url https://example.com --max-pages 50 --concurrency 4
+webfang --url https://example.com --max-pages 50 --concurrency 4
 
 # Sitemap-based crawl
-rust_scraper --url https://example.com --use-sitemap --sitemap-url https://example.com/sitemap.xml
+webfang --url https://example.com --use-sitemap --sitemap-url https://example.com/sitemap.xml
 ```
 
 ### Output formats
 
 ```bash
-rust_scraper --url https://example.com --format markdown    # Default
-rust_scraper --url https://example.com --format json
-rust_scraper --url https://example.com --export-format jsonl
-rust_scraper --url https://example.com --export-format vector
+webfang --url https://example.com --format markdown    # Default
+webfang --url https://example.com --format json
+webfang --url https://example.com --export-format jsonl
+webfang --url https://example.com --export-format vector
 ```
 
 ### AI cleaning
 
 ```bash
-rust_scraper --url https://example.com --clean-ai --export-format jsonl
+webfang --url https://example.com --clean-ai --export-format jsonl
 ```
 
 ### Obsidian
 
 ```bash
-rust_scraper --url https://example.com --obsidian-wiki-links --quick-save
+webfang --url https://example.com --obsidian-wiki-links --quick-save
 ```
 
 ### Control
 
 ```bash
-rust_scraper --url https://example.com --max-pages 100 --delay-ms 1000 --timeout-secs 30
-rust_scraper --url https://example.com --download-images --download-documents
-rust_scraper --url https://example.com --dry-run
-rust_scraper --url https://example.com --quiet
+webfang --url https://example.com --max-pages 100 --delay-ms 1000 --timeout-secs 30
+webfang --url https://example.com --download-images --download-documents
+webfang --url https://example.com --dry-run
+webfang --url https://example.com --quiet
 ```
 
 ### Full reference
 
 ```bash
-rust_scraper --help
+webfang --help
 ```
 
 ---
@@ -137,10 +137,10 @@ The MCP server provides **34+ tools** for AI agent integration:
 
 ```bash
 # stdio mode (for OpenCode, Claude Desktop, Cursor)
-cargo run -p rust_scraper_mcp --example mcp_server --quiet
+cargo run -p webfang_mcp --example mcp_server --quiet
 
 # HTTP mode
-cargo run -p rust_scraper_mcp --example mcp_server
+cargo run -p webfang_mcp --example mcp_server
 ```
 
 | Category | Tools |
@@ -156,7 +156,7 @@ cargo run -p rust_scraper_mcp --example mcp_server
 
 ## Configuration
 
-Config file: `~/.config/rust_scraper/config.toml`
+Config file: `~/.config/webfang/config.toml`
 
 ```toml
 format = "markdown"
@@ -173,7 +173,7 @@ CLI arguments override config file values.
 
 | Feature | Activates | Install |
 |---------|-----------|---------|
-| `default` | images + documents | `cargo install --path crates/rust_scraper_cli` |
+| `default` | images + documents | `cargo install --path crates/webfang_cli` |
 | `ai` | Semantic cleaning with ONNX (~90MB model) | `--features ai` |
 | `ui` | Interactive TUI with ratatui | `--features ui` |
 | `mcp` | MCP server for AI agents | `--features mcp` |
@@ -207,13 +207,13 @@ cargo +nightly miri test --lib
 ### Workspace structure
 
 ```
-rust_scraper/
+webfang/
 ├── crates/
-│   ├── rust_scraper_core/     # Domain + application + infrastructure
-│   ├── rust_scraper_ai/       # AI/ONNX inference
-│   ├── rust_scraper_tui/      # Terminal UI
-│   ├── rust_scraper_mcp/      # MCP server
-│   └── rust_scraper_cli/      # Binary entry point
+│   ├── webfang_core/     # Domain + application + infrastructure
+│   ├── webfang_ai/       # AI/ONNX inference
+│   ├── webfang_tui/      # Terminal UI
+│   ├── webfang_mcp/      # MCP server
+│   └── webfang_cli/      # Binary entry point
 ├── Cargo.toml                 # Workspace manifest
 └── .github/workflows/ci.yml  # CI pipeline
 ```
@@ -228,10 +228,10 @@ cargo check --workspace && cargo clippy --workspace -- -D warnings && cargo fmt 
 cargo nextest run --workspace
 
 # Build release
-cargo build --release -p rust_scraper_cli
+cargo build --release -p webfang_cli
 
 # Build with all features
-cargo build --release -p rust_scraper_cli --features full
+cargo build --release -p webfang_cli --features full
 
 # Re-index GitNexus (code intelligence)
 gitnexus analyze --index-only --skip-agents-md
@@ -253,8 +253,8 @@ gitnexus analyze --index-only --skip-agents-md
 | Resource | Covers |
 |----------|--------|
 | [AGENTS.md](AGENTS.md) | AI agent instructions, GitNexus integration |
-| [Wiki](https://github.com/XaviCode1000/rust_scraper/wiki) | Architecture, API reference, guides |
-| `rust_scraper --help` | Full CLI reference |
+| [Wiki](https://github.com/XaviCode1000/webfang/wiki) | Architecture, API reference, guides |
+| `webfang --help` | Full CLI reference |
 
 ---
 

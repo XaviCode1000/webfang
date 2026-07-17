@@ -1,6 +1,6 @@
 # 🔬 Mapa de Fidelidad de Trazas — Auditoría Dinámica de Flags y Flujo de Telemetría
 
-**Proyecto:** `rust_scraper` (v1.1.0) · **Fecha:** 2026-07-10 · **Auditor:** Senior Rust Observability Engineer
+**Proyecto:** `webfang` (v1.1.0) · **Fecha:** 2026-07-10 · **Auditor:** Senior Rust Observability Engineer
 **Alcance:** Mapeo CLI flags → App State (`CrawlOptions`/`ScraperConfig`) → Telemetría (`FileTraceLayer` / OTel)
 **Método:** Inspección estática de código + 5 ejecuciones dinámicas reales contra `en.wikipedia.org` (red disponible, binario debug recompilado tras detectar stale).
 

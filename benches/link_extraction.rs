@@ -9,7 +9,7 @@
 //! - `own-slice-over-accept`: Accept &str not &String
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use rust_scraper::infrastructure::crawler::{extract_links, normalize_url};
+use webfang::infrastructure::crawler::{extract_links, normalize_url};
 
 /// Generate HTML with n links for benchmarking
 fn generate_html_with_links(n: usize) -> String {

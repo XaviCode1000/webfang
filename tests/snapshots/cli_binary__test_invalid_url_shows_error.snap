@@ -1,5 +1,5 @@
 ---
-source: crates/rust_scraper_core/../../tests/cli_binary_test.rs
-expression: "redact(Path::new(\"__no_temp__\"), &stderr)"
+source: crates/webfang_core/../../tests/cli_binary_test.rs
+expression: "redact_nondeterministic(Path::new(\"__no_temp__\"), &stderr)"
 ---
 Error: Invalid URL: not-a-url

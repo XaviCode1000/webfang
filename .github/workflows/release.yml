@@ -75,25 +75,25 @@ jobs:
       - name: Strip binary (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
-          strip target/${{ matrix.target }}/release/rust_scraper
+          strip target/${{ matrix.target }}/release/webfang
 
       - name: Compress (Unix)
         if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../rust_scraper-${{ matrix.target }}.tar.gz rust_scraper
+          tar czf ../../../webfang-${{ matrix.target }}.tar.gz webfang
 
       - name: Compress (Windows)
         if: runner.os == 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          7z a ../../../rust_scraper-${{ matrix.target }}.zip rust_scraper.exe
+          7z a ../../../webfang-${{ matrix.target }}.zip webfang.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rust_scraper-${{ matrix.target }}
-          path: rust_scraper-${{ matrix.target }}.*
+          name: webfang-${{ matrix.target }}
+          path: webfang-${{ matrix.target }}.*
 
   # ============================================================================
   # CHECKSUMS: Generate SHA256 for all binaries
@@ -107,13 +107,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: rust_scraper-*
+          pattern: webfang-*
           merge-multiple: true
 
       - name: Generate SHA256 checksums
         run: |
           cd artifacts
-          sha256sum rust_scraper-* > SHA256SUMS.txt
+          sha256sum webfang-* > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Upload checksums

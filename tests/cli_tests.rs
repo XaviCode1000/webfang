@@ -5,7 +5,7 @@
 //! Run with: cargo nextest run --test-threads 2 cli_tests
 
 use clap::Parser;
-use rust_scraper::{Args, Commands, ExportFormat, OutputFormat, Shell};
+use webfang::{Args, Commands, ExportFormat, OutputFormat, Shell};
 use std::sync::{Mutex, OnceLock};
 
 fn single_page_env_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -21,18 +21,18 @@ where
     S: Into<std::ffi::OsString> + Clone,
 {
     let _guard = single_page_env_lock();
-    let previous = std::env::var_os("RUST_SCRAPER_SINGLE_PAGE");
+    let previous = std::env::var_os("WEBFANG_SINGLE_PAGE");
 
     match value {
-        Some(value) => std::env::set_var("RUST_SCRAPER_SINGLE_PAGE", value),
-        None => std::env::remove_var("RUST_SCRAPER_SINGLE_PAGE"),
+        Some(value) => std::env::set_var("WEBFANG_SINGLE_PAGE", value),
+        None => std::env::remove_var("WEBFANG_SINGLE_PAGE"),
     }
 
     let parsed = Args::parse_from(args);
 
     match previous {
-        Some(previous) => std::env::set_var("RUST_SCRAPER_SINGLE_PAGE", previous),
-        None => std::env::remove_var("RUST_SCRAPER_SINGLE_PAGE"),
+        Some(previous) => std::env::set_var("WEBFANG_SINGLE_PAGE", previous),
+        None => std::env::remove_var("WEBFANG_SINGLE_PAGE"),
     }
 
     parsed

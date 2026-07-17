@@ -4,9 +4,9 @@
 //!
 //! Run with: `cargo test --test integration_engine_tests`
 
-use rust_scraper::application::crawler::engine::EngineOptions;
-use rust_scraper::domain::JsStrategy;
-use rust_scraper::{crawl_site_with_options, CrawlerConfig};
+use webfang::application::crawler::engine::EngineOptions;
+use webfang::domain::JsStrategy;
+use webfang::{crawl_site_with_options, CrawlerConfig};
 use tempfile::TempDir;
 use url::Url;
 use wiremock::matchers::{method, path};
@@ -162,7 +162,7 @@ async fn test_engine_resume_from_checkpoint() {
     std::fs::create_dir_all(&checkpoint_dir).unwrap();
 
     // Pre-create a checkpoint that marks the seed as already visited
-    use rust_scraper::BincodeCheckpoint;
+    use webfang::BincodeCheckpoint;
     let seed_url = format!("{}/index.html", server.uri());
     let mut visited = std::collections::HashSet::new();
     visited.insert(seed_url);

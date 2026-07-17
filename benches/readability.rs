@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use rust_scraper::infrastructure::converter::html_cleaner::clean_html;
-use rust_scraper::infrastructure::scraper::readability;
+use webfang::infrastructure::converter::html_cleaner::clean_html;
+use webfang::infrastructure::scraper::readability;
 
 fn realistic_html() -> String {
     r##"<!DOCTYPE html>
@@ -255,7 +255,7 @@ fn bench_readability(c: &mut Criterion) {
         b.iter(|| {
             let result = readability::parse(
                 black_box(&complex_html),
-                black_box(Some("https://blog.example.com/rust-scraper")),
+                black_box(Some("https://blog.example.com/webfang")),
             );
             assert!(result.is_ok());
             black_box(result)

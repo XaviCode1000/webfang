@@ -15,12 +15,12 @@ use url::Url;
 // Domain URL validator (pure logic, no network)
 // ============================================================================
 
-fn validate_url_domain(url: &str) -> rust_scraper::domain::ValidationResult {
+fn validate_url_domain(url: &str) -> webfang::domain::ValidationResult {
     let parsed = match Url::parse(url) {
         Ok(u) => u,
-        Err(_) => return rust_scraper::domain::ValidationResult::Invalid("parse error".into()),
+        Err(_) => return webfang::domain::ValidationResult::Invalid("parse error".into()),
     };
-    rust_scraper::domain::url_validator::UrlValidator::filter_invalid_patterns(&parsed)
+    webfang::domain::url_validator::UrlValidator::filter_invalid_patterns(&parsed)
 }
 
 // ============================================================================
@@ -31,7 +31,7 @@ fn validate_url_domain(url: &str) -> rust_scraper::domain::ValidationResult {
 fn reject_file_scheme() {
     assert!(matches!(
         validate_url_domain("file:///etc/passwd"),
-        rust_scraper::domain::ValidationResult::Invalid(_)
+        webfang::domain::ValidationResult::Invalid(_)
     ));
 }
 
@@ -39,7 +39,7 @@ fn reject_file_scheme() {
 fn reject_javascript_scheme() {
     assert!(matches!(
         validate_url_domain("javascript:alert(1)"),
-        rust_scraper::domain::ValidationResult::Invalid(_)
+        webfang::domain::ValidationResult::Invalid(_)
     ));
 }
 
@@ -47,7 +47,7 @@ fn reject_javascript_scheme() {
 fn reject_ftp_scheme() {
     assert!(matches!(
         validate_url_domain("ftp://example.com/file"),
-        rust_scraper::domain::ValidationResult::Invalid(_)
+        webfang::domain::ValidationResult::Invalid(_)
     ));
 }
 
@@ -55,7 +55,7 @@ fn reject_ftp_scheme() {
 fn reject_data_uri() {
     assert!(matches!(
         validate_url_domain("data:text/html,<script>alert(1)</script>"),
-        rust_scraper::domain::ValidationResult::Invalid(_)
+        webfang::domain::ValidationResult::Invalid(_)
     ));
 }
 
@@ -63,7 +63,7 @@ fn reject_data_uri() {
 fn reject_mailto_scheme() {
     assert!(matches!(
         validate_url_domain("mailto:user@example.com"),
-        rust_scraper::domain::ValidationResult::Invalid(_)
+        webfang::domain::ValidationResult::Invalid(_)
     ));
 }
 
@@ -71,7 +71,7 @@ fn reject_mailto_scheme() {
 fn reject_dict_scheme() {
     assert!(matches!(
         validate_url_domain("dict://example.com:word"),
-        rust_scraper::domain::ValidationResult::Invalid(_)
+        webfang::domain::ValidationResult::Invalid(_)
     ));
 }
 
@@ -79,7 +79,7 @@ fn reject_dict_scheme() {
 fn accept_http_scheme() {
     assert!(matches!(
         validate_url_domain("http://example.com/page"),
-        rust_scraper::domain::ValidationResult::Valid
+        webfang::domain::ValidationResult::Valid
     ));
 }
 
@@ -87,7 +87,7 @@ fn accept_http_scheme() {
 fn accept_https_scheme() {
     assert!(matches!(
         validate_url_domain("https://example.com/page"),
-        rust_scraper::domain::ValidationResult::Valid
+        webfang::domain::ValidationResult::Valid
     ));
 }
 
@@ -100,7 +100,7 @@ fn aws_metadata_endpoint_accepted_by_scheme_check() {
     let result = validate_url_domain("http://169.254.169.254/latest/meta-data/");
     assert!(matches!(
         result,
-        rust_scraper::domain::ValidationResult::Valid
+        webfang::domain::ValidationResult::Valid
     ));
 }
 
@@ -110,7 +110,7 @@ fn azure_metadata_endpoint_accepted_by_scheme_check() {
         validate_url_domain("http://169.254.169.254/metadata/instance?api-version=2021-02-01");
     assert!(matches!(
         result,
-        rust_scraper::domain::ValidationResult::Valid
+        webfang::domain::ValidationResult::Valid
     ));
 }
 
@@ -119,7 +119,7 @@ fn gcp_metadata_endpoint_accepted_by_scheme_check() {
     let result = validate_url_domain("http://metadata.google.internal/computeMetadata/v1/");
     assert!(matches!(
         result,
-        rust_scraper::domain::ValidationResult::Valid
+        webfang::domain::ValidationResult::Valid
     ));
 }
 
@@ -277,34 +277,34 @@ fn bidi_override_attack_no_panic() {
 
 #[test]
 fn infrastructure_validator_filters_ftp() {
-    let validator = rust_scraper::infrastructure::crawler::url_validator::UrlValidator::new();
+    let validator = webfang::infrastructure::crawler::url_validator::UrlValidator::new();
     let url = Url::parse("ftp://example.com/file").unwrap();
     let result = validator.filter_invalid_patterns(&url);
     assert!(matches!(
         result,
-        rust_scraper::domain::ValidationResult::Invalid(_)
+        webfang::domain::ValidationResult::Invalid(_)
     ));
 }
 
 #[test]
 fn infrastructure_validator_filters_file() {
-    let validator = rust_scraper::infrastructure::crawler::url_validator::UrlValidator::new();
+    let validator = webfang::infrastructure::crawler::url_validator::UrlValidator::new();
     let url = Url::parse("file:///etc/passwd").unwrap();
     let result = validator.filter_invalid_patterns(&url);
     assert!(matches!(
         result,
-        rust_scraper::domain::ValidationResult::Invalid(_)
+        webfang::domain::ValidationResult::Invalid(_)
     ));
 }
 
 #[test]
 fn infrastructure_validator_accepts_https() {
-    let validator = rust_scraper::infrastructure::crawler::url_validator::UrlValidator::new();
+    let validator = webfang::infrastructure::crawler::url_validator::UrlValidator::new();
     let url = Url::parse("https://example.com/page").unwrap();
     let result = validator.filter_invalid_patterns(&url);
     assert!(matches!(
         result,
-        rust_scraper::domain::ValidationResult::Valid
+        webfang::domain::ValidationResult::Valid
     ));
 }
 
@@ -315,40 +315,40 @@ fn infrastructure_validator_accepts_https() {
 #[test]
 fn reject_invalid_node_version_v100() {
     let url = Url::parse("https://nodejs.org/blog/release/v100.0.0").unwrap();
-    let result = rust_scraper::domain::url_validator::UrlValidator::filter_invalid_patterns(&url);
+    let result = webfang::domain::url_validator::UrlValidator::filter_invalid_patterns(&url);
     assert!(matches!(
         result,
-        rust_scraper::domain::ValidationResult::Invalid(_)
+        webfang::domain::ValidationResult::Invalid(_)
     ));
 }
 
 #[test]
 fn accept_valid_node_version_v20() {
     let url = Url::parse("https://nodejs.org/blog/release/v20.11.1").unwrap();
-    let result = rust_scraper::domain::url_validator::UrlValidator::filter_invalid_patterns(&url);
+    let result = webfang::domain::url_validator::UrlValidator::filter_invalid_patterns(&url);
     assert!(matches!(
         result,
-        rust_scraper::domain::ValidationResult::Valid
+        webfang::domain::ValidationResult::Valid
     ));
 }
 
 #[test]
 fn node_version_with_query_params() {
     let url = Url::parse("https://nodejs.org/blog/release/v200.0?foo=bar").unwrap();
-    let result = rust_scraper::domain::url_validator::UrlValidator::filter_invalid_patterns(&url);
+    let result = webfang::domain::url_validator::UrlValidator::filter_invalid_patterns(&url);
     assert!(matches!(
         result,
-        rust_scraper::domain::ValidationResult::Invalid(_)
+        webfang::domain::ValidationResult::Invalid(_)
     ));
 }
 
 #[test]
 fn node_version_with_fragment() {
     let url = Url::parse("https://nodejs.org/blog/release/v200.0#section").unwrap();
-    let result = rust_scraper::domain::url_validator::UrlValidator::filter_invalid_patterns(&url);
+    let result = webfang::domain::url_validator::UrlValidator::filter_invalid_patterns(&url);
     assert!(matches!(
         result,
-        rust_scraper::domain::ValidationResult::Invalid(_)
+        webfang::domain::ValidationResult::Invalid(_)
     ));
 }
 

@@ -15,7 +15,7 @@ use std::time::Duration;
 /// MCP initialize handshake — required before any tool call.
 /// Per the MCP spec, the first message MUST be `initialize`, then
 /// the client sends a `notifications/initialized` notification.
-const MCP_INIT: &str = r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"rust_scraper_test","version":"1.0"}}}"#;
+const MCP_INIT: &str = r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"webfang_test","version":"1.0"}}}"#;
 const MCP_INITIALIZED: &str = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
 
 /// Helper: send a JSON-RPC request and return parsed response.

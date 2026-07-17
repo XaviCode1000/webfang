@@ -1,12 +1,12 @@
 ---
-source: crates/rust_scraper_core/../../tests/behavioral/main.rs
+source: crates/webfang_core/../../tests/behavioral/main.rs
 expression: redacted
 ---
-  <TIMESTAMP>  WARN rust_scraper_core::infrastructure::crawler::robots_utils: Failed to fetch robots.txt for 127.0.0.1: error sending request for uri (https://127.0.0.1/robots.txt): client error (Connect)
-    at crates/rust_scraper_core/src/infrastructure/crawler/robots_utils.rs:125
+  <TIMESTAMP>  WARN webfang_core::infrastructure::crawler::robots_utils: Failed to fetch robots.txt for 127.0.0.1: error sending request for uri (https://127.0.0.1/robots.txt): client error (Connect)
+    at crates/webfang_core/src/infrastructure/crawler/robots_utils.rs:125
 
-  <TIMESTAMP>  WARN rust_scraper_core::cli::scrape_flow: Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: error sending request for uri (http://127.0.0.1:<PORT>/slow): operation timed out
-    at crates/rust_scraper_core/src/cli/scrape_flow.rs:229
+  <TIMESTAMP>  WARN webfang_core::cli::scrape_flow: Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: error sending request for uri (http://127.0.0.1:<PORT>/slow): operation timed out
+    at crates/webfang_core/src/cli/scrape_flow.rs:229
 
 Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: error sending request for uri (http://127.0.0.1:<PORT>/slow): operation timed out  ← error sending request for uri (http://127.0.0.1:<PORT>/slow): operation timed out  ← operation timed out
 No pages were successfully scraped

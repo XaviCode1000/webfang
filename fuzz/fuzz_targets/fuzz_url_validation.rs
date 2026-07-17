@@ -6,6 +6,6 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| {
     if let Ok(s) = std::str::from_utf8(data) {
         // validate_and_parse_url returns Result — errors are expected for invalid URLs
-        let _ = rust_scraper::domain::url_validation::validate_and_parse_url(s);
+        let _ = webfang::domain::url_validation::validate_and_parse_url(s);
     }
 });
