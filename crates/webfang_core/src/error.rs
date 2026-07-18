@@ -204,16 +204,14 @@ pub enum SemanticError {
     /// Content chunk exceeds model's token limit
     ///
     /// This occurs when a single chunk of content has more tokens than
-    /// the model can handle (512 tokens for all-MiniLM-L6-v2).
+    /// the model can handle (32768 tokens for Granite-97M).
     ///
     /// # Fields
     ///
     /// * `chunk_id` - Identifier of the problematic chunk
     /// * `tokens` - Actual token count
     /// * `max` - Maximum allowed tokens
-    #[error(
-        "Chunk {chunk_id} excede límite de tokens: {tokens} > {max} (modelo: all-MiniLM-L6-v2)"
-    )]
+    #[error("Chunk {chunk_id} excede límite de tokens: {tokens} > {max} (modelo: IBM Granite)")]
     ChunkTooLarge {
         /// Identifier of the chunk (UUID or index)
         chunk_id: String,

@@ -113,7 +113,7 @@ impl Default for ModelConfig {
             cache_dir: default_cache_dir(),
             auto_download: true,
             offline_mode: false,
-            max_tokens: 512,          // all-MiniLM-L6-v2 limit
+            max_tokens: 32768,        // Granite-97M context window (32K tokens)
             relevance_threshold: 0.3, // Moderate relevance threshold
         }
     }
@@ -697,7 +697,7 @@ mod tests {
         assert_eq!(config.model_file, DEFAULT_MODEL_FILE);
         assert!(config.auto_download);
         assert!(!config.offline_mode);
-        assert_eq!(config.max_tokens, 512);
+        assert_eq!(config.max_tokens, 32768);
         assert_eq!(config.relevance_threshold, 0.3);
     }
 

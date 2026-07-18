@@ -87,7 +87,7 @@ pub trait SemanticCleaner: private::Sealed + Send + Sync {
     /// # Errors
     ///
     /// Returns [`SemanticError::ChunkTooLarge`] if any chunk exceeds the model's
-    /// token limit (512 tokens for all-MiniLM-L6-v2).
+    /// token limit (32768 tokens for IBM Granite-97M).
     ///
     /// Returns [`SemanticError::Tokenize`] if the input contains invalid UTF-8
     /// or special characters that break tokenization.

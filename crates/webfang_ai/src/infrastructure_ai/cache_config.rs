@@ -10,15 +10,15 @@ use std::path::PathBuf;
 const CACHE_DIR_NAME: &str = "webfang";
 const AI_MODELS_SUBDIR: &str = "ai_models";
 
-/// Default model repository (Xenova's ONNX-converted version)
-pub const DEFAULT_MODEL_REPO: &str = "Xenova/all-MiniLM-L6-v2";
+/// Default model repository (IBM Granite ONNX-converted version)
+pub const DEFAULT_MODEL_REPO: &str = "ibm-granite/granite-embedding-97m-multilingual-r2";
 
-/// Default model file name (in onnx/ subdirectory)
-pub const DEFAULT_MODEL_FILE: &str = "model.onnx";
+/// Default model file name (in onnx/ subdirectory on HuggingFace)
+pub const DEFAULT_MODEL_FILE: &str = "onnx/model.onnx";
 
-/// Expected SHA256 for all-MiniLM-L6-v2 ONNX model
+/// Expected SHA256 for Granite-97M ONNX model
 pub const DEFAULT_MODEL_SHA256: &str =
-    "759c3cd2b7fe7e93933ad23c4c9181b7396442a2ed746ec7c1d46192c469c46e";
+    "68e592b160673d30250824c1116bc6ab33f70efb22b97c9e1d7ce1e69c1c9d70";
 
 /// Cache configuration
 ///

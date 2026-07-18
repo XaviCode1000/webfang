@@ -90,7 +90,7 @@ fn test_model_config_defaults() {
     assert_eq!(config.model_file, DEFAULT_MODEL_FILE);
     assert!(config.auto_download);
     assert!(!config.offline_mode);
-    assert_eq!(config.max_tokens, 512);
+    assert_eq!(config.max_tokens, 32768);
 
     // Verify cache_dir ends with ai_models
     assert!(config.cache_dir.to_string_lossy().contains("ai_models"));
