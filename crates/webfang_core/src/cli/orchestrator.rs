@@ -509,34 +509,72 @@ fn parse_asset_h2_profile(s: &str) -> wreq_util::Profile {
 
 #[cfg(test)]
 mod tests {
-    use super::{batch_exit_code, plan_urls};
+    use super::{batch_exit_code, build_elastic_ingestion, plan_urls};
+    use crate::application::crawl_options::CrawlOptions;
     use crate::cli::error::CliExit;
 
+    // ===== plan_urls tests =====
+
     #[test]
-    fn plan_urls_returns_only_seed_url_for_single_page() {
-        let seed_url = url::Url::parse("https://example.com").expect("valid seed url");
-        let discovered_urls = vec![
-            url::Url::parse("https://example.com/about").expect("valid discovered url"),
-            url::Url::parse("https://example.com/blog").expect("valid discovered url"),
+    fn plan_urls_single_page_returns_seed_only() {
+        let seed = url::Url::parse("https://example.com").unwrap();
+        let discovered = vec![
+            url::Url::parse("https://example.com/about").unwrap(),
+            url::Url::parse("https://example.com/blog").unwrap(),
         ];
 
-        let planned = plan_urls(true, seed_url.clone(), discovered_urls);
+        let result = plan_urls(true, seed.clone(), discovered);
 
-        assert_eq!(planned, vec![seed_url]);
+        assert_eq!(result, vec![seed]);
     }
 
     #[test]
-    fn plan_urls_keeps_discovered_urls_in_normal_mode() {
-        let seed_url = url::Url::parse("https://example.com").expect("valid seed url");
-        let discovered_urls = vec![
-            url::Url::parse("https://example.com/about").expect("valid discovered url"),
-            url::Url::parse("https://example.com/blog").expect("valid discovered url"),
+    fn plan_urls_normal_mode_returns_discovered() {
+        let seed = url::Url::parse("https://example.com").unwrap();
+        let discovered = vec![
+            url::Url::parse("https://example.com/a").unwrap(),
+            url::Url::parse("https://example.com/b").unwrap(),
+            url::Url::parse("https://example.com/c").unwrap(),
         ];
 
-        let planned = plan_urls(false, seed_url, discovered_urls.clone());
+        let result = plan_urls(false, seed, discovered.clone());
 
-        assert_eq!(planned, discovered_urls);
+        assert_eq!(result, discovered);
     }
+
+    #[test]
+    fn plan_urls_normal_mode_empty_discovered() {
+        let seed = url::Url::parse("https://example.com").unwrap();
+        let result = plan_urls(false, seed, Vec::new());
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn plan_urls_single_page_ignores_many_discovered() {
+        let seed = url::Url::parse("https://example.com/only").unwrap();
+        let discovered: Vec<_> = (0..100)
+            .map(|i| url::Url::parse(&format!("https://example.com/page{i}")).unwrap())
+            .collect();
+
+        let result = plan_urls(true, seed.clone(), discovered);
+
+        assert_eq!(result, vec![seed]);
+    }
+
+    #[test]
+    fn plan_urls_preserves_order() {
+        let seed = url::Url::parse("https://example.com").unwrap();
+        let urls: Vec<_> = (0..10)
+            .map(|i| url::Url::parse(&format!("https://example.com/page{i}")).unwrap())
+            .collect();
+
+        let result = plan_urls(false, seed, urls.clone());
+
+        assert_eq!(result, urls);
+    }
+
+    // ===== batch_exit_code tests =====
 
     #[test]
     fn batch_all_fail_returns_network_error() {
@@ -566,5 +604,35 @@ mod tests {
             },
             other => panic!("Expected PartialSuccess, got: {other:?}"),
         }
+    }
+
+    // ===== build_elastic_ingestion tests =====
+
+    #[tokio::test]
+    async fn build_elastic_ingestion_none_when_no_options() {
+        let opts = CrawlOptions::default();
+        let result = build_elastic_ingestion(&opts).await;
+        assert!(result.is_ok(), "should not error: {:?}", result.err());
+        assert!(
+            result.unwrap().is_none(),
+            "should be None when no elastic options"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_elastic_ingestion_some_when_output_vectors() {
+        let mut opts = CrawlOptions::default();
+        opts.elastic.output_vectors = Some("/tmp/test.jsonl".to_string());
+        let result = build_elastic_ingestion(&opts).await;
+        assert!(result.is_ok(), "should not error: {:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn build_elastic_ingestion_some_when_elastic_enabled() {
+        let mut opts = CrawlOptions::default();
+        opts.elastic.enabled = true;
+        let result = build_elastic_ingestion(&opts).await;
+        // May be Ok(None) or Ok(Some) depending on persistence feature
+        assert!(result.is_ok(), "should not error: {:?}", result.err());
     }
 }

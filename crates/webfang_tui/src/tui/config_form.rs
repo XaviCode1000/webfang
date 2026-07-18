@@ -191,3 +191,90 @@ impl Component for ConfigFormState {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    fn key(code: KeyCode) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn config_form_new_default_not_done() {
+        let form = ConfigFormState::new_default();
+        assert!(!form.submitted);
+        assert!(!form.cancelled);
+        assert!(!form.is_done());
+    }
+
+    #[test]
+    fn config_form_data_returns_object() {
+        let form = ConfigFormState::new_default();
+        let data = form.data();
+        assert!(data.is_object(), "form data should be a JSON object");
+    }
+
+    #[test]
+    fn config_form_q_cancels() {
+        let mut form = ConfigFormState::new_default();
+        let action = form
+            .handle_key_event(key(KeyCode::Char('q')))
+            .expect("handle_key_event");
+        assert!(form.cancelled);
+        assert!(form.is_done());
+        assert!(matches!(action, Some(Action::ConfigCancelled)));
+    }
+
+    #[test]
+    fn config_form_uppercase_q_cancels() {
+        let mut form = ConfigFormState::new_default();
+        let action = form
+            .handle_key_event(key(KeyCode::Char('Q')))
+            .expect("handle_key_event");
+        assert!(form.cancelled);
+        assert!(matches!(action, Some(Action::ConfigCancelled)));
+    }
+
+    #[test]
+    fn config_form_question_mark_toggles_help() {
+        let mut form = ConfigFormState::new_default();
+        let action = form
+            .handle_key_event(key(KeyCode::Char('?')))
+            .expect("handle_key_event");
+        assert!(matches!(action, Some(Action::ToggleHelp)));
+    }
+
+    #[test]
+    fn config_form_unrelated_key_is_active() {
+        let mut form = ConfigFormState::new_default();
+        let action = form
+            .handle_key_event(key(KeyCode::Char('x')))
+            .expect("handle_key_event");
+        assert!(action.is_none());
+        assert!(!form.is_done());
+    }
+
+    #[test]
+    fn config_form_mark_submitted_and_cancelled() {
+        let mut form = ConfigFormState::new_default();
+        form.mark_submitted();
+        assert!(form.is_done());
+        assert!(!form.cancelled);
+
+        let mut form2 = ConfigFormState::new_default();
+        form2.mark_cancelled();
+        assert!(form2.is_done());
+        assert!(!form2.submitted);
+    }
+
+    #[test]
+    fn config_form_handle_input_does_not_panic() {
+        let mut form = ConfigFormState::new_default();
+        form.handle_input(key(KeyCode::Down));
+        form.handle_input(key(KeyCode::Up));
+        form.handle_input(key(KeyCode::Enter));
+        form.handle_input(key(KeyCode::Esc));
+    }
+}

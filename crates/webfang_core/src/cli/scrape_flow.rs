@@ -278,8 +278,14 @@ fn build_http_client_config(opts: &CrawlOptions) -> HttpClientConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_http_client_config, is_allowed_by_robots, new_robots_cache};
+    use super::{
+        apply_resume_mode, build_http_client_config, is_allowed_by_robots, new_robots_cache,
+    };
     use crate::application::crawl_options::CrawlOptions;
+    use tempfile::TempDir;
+    use url::Url;
+
+    // ===== build_http_client_config tests =====
 
     #[test]
     fn build_http_client_config_uses_opts_timeout_secs() {
@@ -304,6 +310,8 @@ mod tests {
         assert_eq!(config.timeout_secs, 30);
     }
 
+    // ===== robots tests =====
+
     #[cfg_attr(miri, ignore)] // btls/wreq FFI (BoringSSL TLS_method) not supported by Miri
     #[tokio::test]
     async fn robots_cache_allows_public_urls() {
@@ -316,5 +324,139 @@ mod tests {
     fn ignore_robots_flag_defaults_to_false() {
         let opts = CrawlOptions::default();
         assert!(!opts.crawl.ignore_robots);
+    }
+
+    // ===== apply_resume_mode tests =====
+
+    #[tokio::test]
+    async fn apply_resume_mode_disabled_returns_all_urls() {
+        let urls = vec![
+            Url::parse("https://example.com/a").unwrap(),
+            Url::parse("https://example.com/b").unwrap(),
+        ];
+        let opts = CrawlOptions {
+            crawl: crate::application::crawl_options::CrawlLimits {
+                resume: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let (filtered, state_store) =
+            apply_resume_mode(urls.clone(), &opts, "https://example.com").await;
+
+        assert_eq!(filtered.len(), 2);
+        assert!(state_store.is_none());
+    }
+
+    #[tokio::test]
+    async fn apply_resume_mode_skips_previously_scraped_urls() {
+        let tmp = TempDir::new().unwrap();
+        let state_dir = tmp.path().to_path_buf();
+
+        // Pre-populate state with one processed URL
+        let state_file = state_dir.join("example.com.json");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(
+            &state_file,
+            r#"{"domain":"example.com","processed_urls":["https://example.com/a"],"last_export":null,"total_exported":1}"#,
+        ).unwrap();
+
+        let urls = vec![
+            Url::parse("https://example.com/a").unwrap(),
+            Url::parse("https://example.com/b").unwrap(),
+            Url::parse("https://example.com/c").unwrap(),
+        ];
+        let opts = CrawlOptions {
+            crawl: crate::application::crawl_options::CrawlLimits {
+                resume: true,
+                state_dir: Some(state_dir),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let (filtered, state_store) = apply_resume_mode(urls, &opts, "https://example.com").await;
+
+        // URL "a" was already processed, should be skipped
+        assert_eq!(filtered.len(), 2, "should skip 1 already-processed URL");
+        assert!(
+            !filtered
+                .iter()
+                .any(|u| u.as_str() == "https://example.com/a"),
+            "processed URL should be filtered out"
+        );
+        assert!(
+            state_store.is_some(),
+            "should create state store when resume enabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_resume_mode_with_corrupted_state_returns_all_urls() {
+        let tmp = TempDir::new().unwrap();
+        let state_dir = tmp.path().to_path_buf();
+
+        // Write corrupted state file
+        let state_file = state_dir.join("example.com.json");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(&state_file, "not valid json!!!").unwrap();
+
+        let urls = vec![
+            Url::parse("https://example.com/a").unwrap(),
+            Url::parse("https://example.com/b").unwrap(),
+        ];
+        let opts = CrawlOptions {
+            crawl: crate::application::crawl_options::CrawlLimits {
+                resume: true,
+                state_dir: Some(state_dir),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let (filtered, state_store) =
+            apply_resume_mode(urls.clone(), &opts, "https://example.com").await;
+
+        // Corrupted state → fallback to all URLs (graceful degradation)
+        assert_eq!(
+            filtered.len(),
+            2,
+            "should return all URLs on corrupted state"
+        );
+        assert!(state_store.is_some());
+    }
+
+    #[tokio::test]
+    async fn apply_resume_mode_with_custom_state_dir() {
+        let tmp = TempDir::new().unwrap();
+        let state_dir = tmp.path().join("custom_state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+
+        let urls = vec![Url::parse("https://example.com/a").unwrap()];
+        let opts = CrawlOptions {
+            crawl: crate::application::crawl_options::CrawlLimits {
+                resume: true,
+                state_dir: Some(state_dir.clone()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let (filtered, state_store) = apply_resume_mode(urls, &opts, "https://example.com").await;
+
+        assert_eq!(filtered.len(), 1);
+        assert!(
+            state_store.is_some(),
+            "should create state store with custom dir"
+        );
+        // Verify state store uses custom dir
+        let store = state_store.unwrap();
+        let state_path = store.get_state_path();
+        assert!(
+            state_path.starts_with(&state_dir),
+            "state path should be under custom state_dir: {:?}",
+            state_path
+        );
     }
 }

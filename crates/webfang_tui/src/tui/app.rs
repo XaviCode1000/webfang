@@ -390,3 +390,55 @@ impl App {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::Header;
+
+    #[test]
+    fn app_new_selector_mode() {
+        let app = App::new(AppMode::Selector).expect("App::new should not fail");
+        assert_eq!(app.mode, AppMode::Selector);
+        assert!(!app.should_quit);
+        assert!(!app.should_show_modal);
+        assert!(app.components.is_empty());
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn app_new_progress_mode() {
+        let app = App::new(AppMode::Progress).expect("App::new should not fail");
+        assert_eq!(app.mode, AppMode::Progress);
+    }
+
+    #[test]
+    fn app_new_config_mode() {
+        let app = App::new(AppMode::Config).expect("App::new should not fail");
+        assert_eq!(app.mode, AppMode::Config);
+    }
+
+    #[test]
+    fn app_result_starts_none() {
+        let app = App::new(AppMode::Selector).expect("App::new should not fail");
+        assert!(matches!(app.result, AppResult::None));
+    }
+
+    #[test]
+    fn app_with_component_increments_count() {
+        let app = App::new(AppMode::Selector)
+            .expect("App::new should not fail")
+            .with_component(Header::new(AppMode::Selector));
+        assert_eq!(app.components.len(), 1);
+    }
+
+    #[test]
+    fn app_with_component_and_modal() {
+        let app = App::new(AppMode::Selector)
+            .expect("App::new should not fail")
+            .with_component(Header::new(AppMode::Selector))
+            .with_modal(crate::tui::modal::HelpModal::new("Help".into(), vec![]));
+        assert_eq!(app.components.len(), 1);
+        assert!(app.modal.is_some());
+    }
+}

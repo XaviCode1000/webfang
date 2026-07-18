@@ -28,6 +28,8 @@
 use assert_cmd::Command;
 use regex::Regex;
 use std::path::Path;
+use wiremock::matchers::{method, path as wm_path};
+use wiremock::{Mock, ResponseTemplate};
 
 /// Resolve the path to the `webfang` binary.
 ///
@@ -120,6 +122,64 @@ impl BehavioralTest {
         );
         std::fs::read_to_string(&md_files[0]).expect("read .md file")
     }
+
+    /// Build a `Command` with `--elastic` flag, `--url`, and a fresh SQLite
+    /// temp directory for the elastic output path.
+    pub fn elastic_cmd(&self) -> assert_cmd::Command {
+        let mut cmd = Command::new(webfang_path());
+        cmd.arg("--elastic")
+            .arg("--url")
+            .arg(self.server.uri())
+            .arg("--output")
+            .arg(self.out.path());
+        cmd
+    }
+
+    /// Build a `Command` with `--resume` flag, `--url`, and the existing
+    /// output directory (resume reads from a prior crawl state).
+    pub fn resume_cmd(&self) -> assert_cmd::Command {
+        let mut cmd = Command::new(webfang_path());
+        cmd.arg("--resume")
+            .arg("--url")
+            .arg(self.server.uri())
+            .arg("--output")
+            .arg(self.out.path());
+        cmd
+    }
+}
+
+/// Register a wiremock mock that responds to GET on the given relative path
+/// with an XML sitemap body and `200 OK`.
+///
+/// The `url` should be the full mock-server URI (e.g. `server.uri()`), and
+/// `xml_body` is the raw XML string to return.
+pub(crate) async fn mock_sitemap(server: &wiremock::MockServer, url: &str, xml_body: &str) {
+    // Extract the path portion from the URL (everything after the host:port)
+    let path_part = url.splitn(4, '/').nth(3).unwrap_or("sitemap.xml");
+
+    Mock::given(method("GET"))
+        .and(wm_path(format!("/{path_part}")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(xml_body)
+                .insert_header("Content-Type", "application/xml"),
+        )
+        .mount(server)
+        .await;
+}
+
+/// Register a wiremock mock that responds to GET on `/robots.txt` with the
+/// given body and `200 OK`.
+pub(crate) async fn mock_robots(server: &wiremock::MockServer, robots_body: &str) {
+    Mock::given(method("GET"))
+        .and(wm_path("/robots.txt"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(robots_body)
+                .insert_header("Content-Type", "text/plain"),
+        )
+        .mount(server)
+        .await;
 }
 
 /// Redact the per-run temp-dir path so snapshots stay stable across machines.
