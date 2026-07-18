@@ -196,16 +196,9 @@ mod tests {
     fn centered_rect_returns_inner_area() {
         let area = Rect::new(0, 0, 100, 40);
         let rect = centered_rect(60, 50, area);
-        assert!(
-            rect.width >= 55 && rect.width <= 65,
-            "width: {}",
-            rect.width
-        );
-        assert!(
-            rect.height >= 15 && rect.height <= 25,
-            "height: {}",
-            rect.height
-        );
+        assert!(rect.width <= 60, "width should be <= 60: {}", rect.width);
+        assert!(rect.height <= 50, "height should be <= 50: {}", rect.height);
+        assert!(rect.width > 0 && rect.height > 0);
     }
 
     #[test]

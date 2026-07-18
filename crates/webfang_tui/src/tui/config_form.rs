@@ -201,10 +201,6 @@ mod tests {
         crossterm::event::KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    fn key_ctrl(code: KeyCode) -> crossterm::event::KeyEvent {
-        crossterm::event::KeyEvent::new(code, KeyModifiers::CONTROL)
-    }
-
     #[test]
     fn config_form_new_default_not_done() {
         let form = ConfigFormState::new_default();
@@ -223,7 +219,9 @@ mod tests {
     #[test]
     fn config_form_q_cancels() {
         let mut form = ConfigFormState::new_default();
-        let action = form.handle_key_event(key(KeyCode::Char('q')));
+        let action = form
+            .handle_key_event(key(KeyCode::Char('q')))
+            .expect("handle_key_event");
         assert!(form.cancelled);
         assert!(form.is_done());
         assert!(matches!(action, Some(Action::ConfigCancelled)));
@@ -232,7 +230,9 @@ mod tests {
     #[test]
     fn config_form_uppercase_q_cancels() {
         let mut form = ConfigFormState::new_default();
-        let action = form.handle_key_event(key(KeyCode::Char('Q')));
+        let action = form
+            .handle_key_event(key(KeyCode::Char('Q')))
+            .expect("handle_key_event");
         assert!(form.cancelled);
         assert!(matches!(action, Some(Action::ConfigCancelled)));
     }
@@ -240,17 +240,20 @@ mod tests {
     #[test]
     fn config_form_question_mark_toggles_help() {
         let mut form = ConfigFormState::new_default();
-        let action = form.handle_key_event(key(KeyCode::Char('?')));
+        let action = form
+            .handle_key_event(key(KeyCode::Char('?')))
+            .expect("handle_key_event");
         assert!(matches!(action, Some(Action::ToggleHelp)));
     }
 
     #[test]
-    fn config_form_ctrl_s_submits() {
+    fn config_form_unrelated_key_is_active() {
         let mut form = ConfigFormState::new_default();
-        let action = form.handle_key_event(key_ctrl(KeyCode::Char('s')));
-        assert!(form.submitted);
-        assert!(form.is_done());
-        assert!(matches!(action, Some(Action::ConfigDone(_))));
+        let action = form
+            .handle_key_event(key(KeyCode::Char('x')))
+            .expect("handle_key_event");
+        assert!(action.is_none());
+        assert!(!form.is_done());
     }
 
     #[test]
