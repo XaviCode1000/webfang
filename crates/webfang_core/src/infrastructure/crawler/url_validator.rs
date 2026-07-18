@@ -2,9 +2,12 @@
 //!
 //! Validates and filters URLs during sitemap processing.
 //! Performs pattern filtering, HTTP status validation, and canonical URL enforcement.
+//!
+//! This module implements the domain `UrlValidatorTrait` for HTTP-aware validation.
 
-use crate::domain::ValidationResult;
 use url::Url;
+
+use crate::domain::{DomainError, UrlValidatorTrait, ValidationResult};
 
 /// Errors that can occur during URL validation
 #[derive(Debug, thiserror::Error)]
@@ -18,7 +21,17 @@ pub enum ValidationError {
 /// Result type for validation operations
 pub type Result<T> = std::result::Result<T, ValidationError>;
 
+impl From<ValidationError> for DomainError {
+    fn from(err: ValidationError) -> Self {
+        DomainError::Validation(err.to_string())
+    }
+}
+
 /// Handles URL validation and filtering
+///
+/// HTTP-aware implementation of `UrlValidatorTrait`.
+/// Delegates pattern filtering to the domain's `StaticUrlValidator`
+/// and adds HTTP status validation.
 pub struct UrlValidator {
     client: wreq::Client,
     #[allow(dead_code)]
@@ -46,43 +59,12 @@ impl UrlValidator {
         }
     }
 
-    /// Filter URLs with invalid patterns
-    pub fn filter_invalid_patterns(&self, url: &Url) -> ValidationResult {
-        let path = url.path();
-
-        // Filter Node.js release URLs with invalid version patterns
-        if path.contains("/blog/release/v") {
-            if let Some(version_part) = path.split("/blog/release/v").nth(1) {
-                let version = version_part
-                    .split(&['?', '#'][..])
-                    .next()
-                    .unwrap_or(version_part);
-
-                if let Some(major_str) = version.split('.').next() {
-                    if let Ok(major) = major_str.parse::<u32>() {
-                        if major > 99 {
-                            return ValidationResult::Invalid(format!(
-                                "Invalid Node.js version pattern: v{version}"
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Filter non-HTTP schemes
-        match url.scheme() {
-            "http" | "https" => {},
-            scheme => {
-                return ValidationResult::Invalid(format!("Unsupported scheme: {scheme}"));
-            },
-        }
-
-        ValidationResult::Valid
-    }
-
     /// Validate URL by checking HTTP status code
-    pub async fn validate_http_status(&self, url: &Url) -> Result<ValidationResult> {
+    ///
+    /// This is the infra-specific method that makes actual HTTP calls.
+    /// The `UrlValidatorTrait::validate_http_status` default returns `Ok(Valid)`;
+    /// this impl overrides it with real HTTP behavior.
+    async fn validate_http_status_inner(&self, url: &Url) -> Result<ValidationResult> {
         let response = self
             .client
             .head(url.as_str())
@@ -121,6 +103,23 @@ impl Default for UrlValidator {
     }
 }
 
+impl UrlValidatorTrait for UrlValidator {
+    /// Delegates pattern filtering to the domain's pure logic
+    fn filter_invalid_patterns(&self, url: &Url) -> ValidationResult {
+        crate::domain::StaticUrlValidator::filter_invalid_patterns(url)
+    }
+
+    /// Real HTTP status validation via `wreq`
+    async fn validate_http_status(
+        &self,
+        url: &Url,
+    ) -> std::result::Result<ValidationResult, DomainError> {
+        self.validate_http_status_inner(url)
+            .await
+            .map_err(DomainError::from)
+    }
+}
+
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
@@ -137,7 +136,8 @@ mod tests {
         let validator = UrlValidator::new();
         let url = Url::parse("https://example.com/page").unwrap();
 
-        let result = validator.filter_invalid_patterns(&url);
+        // Uses trait method
+        let result = <UrlValidator as UrlValidatorTrait>::filter_invalid_patterns(&validator, &url);
         assert!(matches!(result, ValidationResult::Valid));
     }
 
@@ -146,7 +146,7 @@ mod tests {
         let validator = UrlValidator::new();
         let url = Url::parse("https://nodejs.org/blog/release/v106.0").unwrap();
 
-        let result = validator.filter_invalid_patterns(&url);
+        let result = <UrlValidator as UrlValidatorTrait>::filter_invalid_patterns(&validator, &url);
         assert!(matches!(result, ValidationResult::Invalid(_)));
     }
 
@@ -155,7 +155,7 @@ mod tests {
         let validator = UrlValidator::new();
         let url = Url::parse("ftp://example.com/file").unwrap();
 
-        let result = validator.filter_invalid_patterns(&url);
+        let result = <UrlValidator as UrlValidatorTrait>::filter_invalid_patterns(&validator, &url);
         assert!(matches!(result, ValidationResult::Invalid(_)));
     }
 
@@ -164,8 +164,18 @@ mod tests {
         let validator = UrlValidator::new();
         let url = Url::parse("https://nodejs.org/blog/release/v18.12.0").unwrap();
 
-        let result = validator.filter_invalid_patterns(&url);
+        let result = <UrlValidator as UrlValidatorTrait>::filter_invalid_patterns(&validator, &url);
         assert!(matches!(result, ValidationResult::Valid));
+    }
+
+    #[test]
+    fn test_filter_invalid_patterns_delegates_to_domain() {
+        let validator = UrlValidator::new();
+        let url = Url::parse("https://example.com/page").unwrap();
+
+        let from_infra = validator.filter_invalid_patterns(&url);
+        let from_domain = crate::domain::StaticUrlValidator::filter_invalid_patterns(&url);
+        assert_eq!(from_infra, from_domain);
     }
 
     #[tokio::test]
@@ -174,7 +184,7 @@ mod tests {
         let validator = UrlValidator::new();
         let url = Url::parse("https://httpbin.org/status/200").unwrap();
 
-        let result = validator.validate_http_status(&url).await;
+        let result = validator.validate_http_status_inner(&url).await;
         assert!(matches!(result, Ok(ValidationResult::Valid)));
     }
 
@@ -184,7 +194,7 @@ mod tests {
         let validator = UrlValidator::new();
         let url = Url::parse("https://httpbin.org/status/404").unwrap();
 
-        let result = validator.validate_http_status(&url).await;
+        let result = validator.validate_http_status_inner(&url).await;
         assert!(matches!(result, Ok(ValidationResult::Invalid(_))));
     }
 
@@ -194,7 +204,7 @@ mod tests {
         let validator = UrlValidator::new();
         let url = Url::parse("https://httpbin.org/status/500").unwrap();
 
-        let result = validator.validate_http_status(&url).await;
+        let result = validator.validate_http_status_inner(&url).await;
         assert!(matches!(result, Ok(ValidationResult::Invalid(_))));
     }
 }

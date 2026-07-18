@@ -31,6 +31,7 @@ use super::memory_manager::MemoryManager;
 use super::retry_policy::RetryPolicy;
 use super::sitemap_config::SitemapConfig;
 use super::url_validator::UrlValidator;
+use crate::domain::UrlValidatorTrait;
 #[allow(unused_imports)]
 use async_compression::tokio::bufread::GzipDecoder;
 use quick_xml::events::Event;
