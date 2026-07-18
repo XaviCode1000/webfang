@@ -6,15 +6,13 @@
 //!
 //! All tests run without a real terminal — they test state transitions only.
 
-#![cfg(feature = "ui")]
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use webfang::adapters::tui::action::Action;
-use webfang::adapters::tui::app::{App, AppResult};
-use webfang::adapters::tui::component::{AppMode, Component, Header};
-use webfang::adapters::tui::config_form::ConfigFormState;
-use webfang::adapters::tui::modal::{centered_rect, HelpModal};
-use webfang::adapters::tui::tui_terminal::Tui;
+use webfang_tui::tui::action::Action;
+use webfang_tui::tui::app::{App, AppResult};
+use webfang_tui::tui::component::{AppMode, Component, Header};
+use webfang_tui::tui::config_form::ConfigFormState;
+use webfang_tui::tui::modal::{centered_rect, HelpModal};
+use webfang_tui::tui::tui_terminal::Tui;
 
 // ---------------------------------------------------------------------------
 // Helpers
