@@ -181,6 +181,18 @@ path = "../../tests/cli_binary_test.rs"
 name = "cli_behavioral"
 path = "../../tests/cli_behavioral_test.rs"
 
+[[test]]
+name = "orchestrator_unit_tests"
+path = "../../tests/orchestrator_unit_tests.rs"
+
+[[test]]
+name = "resume_mode_tests"
+path = "../../tests/resume_mode_tests.rs"
+
+[[test]]
+name = "sitemap_behavioral"
+path = "../../tests/sitemap_behavioral.rs"
+
 [lints.clippy]
 doc_markdown = "allow"
 uninlined_format_args = "allow"
