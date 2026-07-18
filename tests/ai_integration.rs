@@ -1027,3 +1027,116 @@ async fn test_pipeline_html_only() {
         eprintln!("SKIP: cleaner creation failed");
     }
 }
+
+// ============================================================================
+// PR 2: Two-Tier Model Tests
+// ============================================================================
+
+/// Test that AiModel::Granite97M is the default
+#[test]
+fn test_ai_model_default_is_granite_97m() {
+    use webfang::infrastructure::ai::AiModel;
+    assert_eq!(AiModel::default(), AiModel::Granite97M);
+}
+
+/// Test that AiModel::Granite97M has repo_id matching expected
+#[test]
+fn test_ai_model_granite_97m_repo_id() {
+    use webfang::infrastructure::ai::AiModel;
+    assert_eq!(
+        AiModel::Granite97M.repo_id(),
+        "ibm-granite/granite-embedding-97m-multilingual-r2"
+    );
+}
+
+/// Test that AiModel::Granite311M has repo_id matching expected
+#[test]
+fn test_ai_model_granite_311m_repo_id() {
+    use webfang::infrastructure::ai::AiModel;
+    assert_eq!(
+        AiModel::Granite311M.repo_id(),
+        "ibm-granite/granite-embedding-311m-multilingual-r2"
+    );
+}
+
+/// Test AiModel embedding dimensions
+#[test]
+fn test_ai_model_embedding_dims() {
+    use webfang::infrastructure::ai::AiModel;
+    assert_eq!(AiModel::Granite97M.embedding_dim(), 384);
+    assert_eq!(AiModel::Granite311M.embedding_dim(), 768);
+    // Both produce 384d output (unified storage)
+    assert_eq!(AiModel::Granite97M.output_dim(), 384);
+    assert_eq!(AiModel::Granite311M.output_dim(), 384);
+}
+
+/// Test AiModel::parse with valid and invalid values
+#[test]
+fn test_ai_model_parse() {
+    use webfang::infrastructure::ai::AiModel;
+
+    assert_eq!(AiModel::parse("granite-97m"), Some(AiModel::Granite97M));
+    assert_eq!(
+        AiModel::parse("granite-311m"),
+        Some(AiModel::Granite311M)
+    );
+    assert_eq!(AiModel::parse("GRANITE-97M"), Some(AiModel::Granite97M));
+    assert_eq!(AiModel::parse("unknown"), None);
+    assert_eq!(AiModel::parse(""), None);
+}
+
+/// Test AiModel::FromStr trait impl for error messages
+#[test]
+fn test_ai_model_from_str() {
+    use std::str::FromStr;
+    use webfang::infrastructure::ai::AiModel;
+
+    let ok: AiModel = "granite-97m".parse().unwrap();
+    assert_eq!(ok, AiModel::Granite97M);
+
+    let err: Result<AiModel, _> = "unknown-model".parse();
+    assert!(err.is_err());
+    let msg = err.unwrap_err();
+    assert!(msg.contains("Unknown AI model"));
+    assert!(msg.contains("granite-97m"));
+    assert!(msg.contains("granite-311m"));
+}
+
+/// Test Matryoshka truncation: 768d → 384d
+#[test]
+fn test_matryoshka_truncation_768_to_384() {
+    use webfang::infrastructure::ai::embedding_ops::{l2_normalize_safe, mean_pool};
+
+    // Simulate 768d native output from Granite-311M
+    let embedding_flat_768: Vec<f32> = (0..768).map(|i| (i as f32 + 1.0) / 768.0).collect();
+    let attention_mask: Vec<i64> = vec![1i64]; // seq_len=1
+
+    let pooled = mean_pool(&embedding_flat_768, 1, 768, &attention_mask);
+    let truncated: Vec<f32> = pooled.iter().take(384).copied().collect();
+    let normalized = l2_normalize_safe(&truncated);
+
+    assert_eq!(normalized.len(), 384);
+
+    // Verify unit length
+    let norm: f32 = normalized.iter().map(|x| x * x).sum::<f32>().sqrt();
+    assert!((norm - 1.0).abs() < 1e-5);
+}
+
+/// Test that 97M 384d output passes through without truncation (identity)
+#[test]
+fn test_matryoshka_identity_for_384d() {
+    use webfang::infrastructure::ai::embedding_ops::{l2_normalize_safe, mean_pool};
+
+    // Simulate native 384d output from Granite-97M
+    let embedding_flat_384: Vec<f32> = (0..384).map(|i| (i as f32 + 1.0) / 384.0).collect();
+    let attention_mask: Vec<i64> = vec![1i64];
+
+    let pooled = mean_pool(&embedding_flat_384, 1, 384, &attention_mask);
+    // No Matryoshka needed — native 384d
+    let truncated: Vec<f32> = pooled.iter().take(384).copied().collect();
+    let normalized = l2_normalize_safe(&truncated);
+
+    assert_eq!(normalized.len(), 384);
+    let norm: f32 = normalized.iter().map(|x| x * x).sum::<f32>().sqrt();
+    assert!((norm - 1.0).abs() < 1e-5);
+}
