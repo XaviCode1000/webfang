@@ -439,7 +439,7 @@ async fn __main() -> CliExit {
                 ModelConfig::default()
                     .with_model_variant(model_variant)
                     .with_relevance_threshold(0.3)
-                    .with_max_tokens(512)
+                    .with_max_tokens(32768)
                     .with_offline_mode(false),
             )
             .await

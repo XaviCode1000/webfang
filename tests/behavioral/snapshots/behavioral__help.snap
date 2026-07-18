@@ -268,7 +268,7 @@ Options:
           Maximum tokens per chunk for AI processing
           
           [env: WEBFANG_MAX_TOKENS=]
-          [default: 512]
+          [default: 32768]
 
       --offline
           Run AI model in offline mode

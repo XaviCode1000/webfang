@@ -234,7 +234,7 @@ pub async fn run(
         state_store: None, // TODO: Add state store
         resume: opts.crawl.resume,
         ai_threshold: 0.3, // TODO: Add AI settings from CrawlOptions
-        ai_max_tokens: 512,
+        ai_max_tokens: 32768,
         ai_offline: false,
     };
 

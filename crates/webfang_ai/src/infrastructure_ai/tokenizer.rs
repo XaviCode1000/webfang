@@ -35,8 +35,8 @@ pub mod special_tokens {
     pub const UNK: u32 = 100;
 }
 
-/// Default maximum sequence length for all-MiniLM-L6-v2
-pub const DEFAULT_MAX_LENGTH: usize = 384;
+/// Default maximum sequence length for IBM Granite embedding models
+pub const DEFAULT_MAX_LENGTH: usize = 32768;
 
 /// Token batch for efficient batch processing
 #[derive(Debug, Clone)]

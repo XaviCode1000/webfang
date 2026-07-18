@@ -343,7 +343,7 @@ pub struct Args {
 
     /// Maximum tokens per chunk for AI processing
     #[cfg(feature = "ai")]
-    #[arg(long, default_value = "512", env = "WEBFANG_MAX_TOKENS")]
+    #[arg(long, default_value = "32768", env = "WEBFANG_MAX_TOKENS")]
     #[clap(next_help_heading = "AI Settings")]
     pub max_tokens: usize,
 
