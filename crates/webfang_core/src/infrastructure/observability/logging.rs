@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Ignored: tracing global subscriber may already be set in test context
+    #[ignore = "tracing global subscriber may already be set in test context"]
     fn test_init_json_logging_with_temp_dir() {
         let temp_dir = std::env::temp_dir();
         // Note: tracing subscriber may already be initialized in test context

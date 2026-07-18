@@ -297,37 +297,40 @@ fn format_time(timestamp: SystemTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::SystemTime;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Fixed timestamp for deterministic tests (avoids SystemTime::now() non-determinism).
+    const TEST_TIMESTAMP: SystemTime = UNIX_EPOCH;
 
     #[expect(dead_code)]
     fn sample_errors() -> Vec<ErrorEntry> {
         vec![
             ErrorEntry {
-                timestamp: SystemTime::now(),
+                timestamp: TEST_TIMESTAMP,
                 url: "https://example.com/page1".to_string(),
                 error_type: ErrorType::WafBlocked("Cloudflare".to_string()),
                 message: "WAF blocked (Cloudflare)".to_string(),
             },
             ErrorEntry {
-                timestamp: SystemTime::now(),
+                timestamp: TEST_TIMESTAMP,
                 url: "https://example.com/page2".to_string(),
                 error_type: ErrorType::Network,
                 message: "Connection refused".to_string(),
             },
             ErrorEntry {
-                timestamp: SystemTime::now(),
+                timestamp: TEST_TIMESTAMP,
                 url: "https://example.com/page3".to_string(),
                 error_type: ErrorType::Http(404),
                 message: "404 Not Found".to_string(),
             },
             ErrorEntry {
-                timestamp: SystemTime::now(),
+                timestamp: TEST_TIMESTAMP,
                 url: "https://example.com/page4".to_string(),
                 error_type: ErrorType::Timeout,
                 message: "Request timeout".to_string(),
             },
             ErrorEntry {
-                timestamp: SystemTime::now(),
+                timestamp: TEST_TIMESTAMP,
                 url: "https://example.com/page5".to_string(),
                 error_type: ErrorType::Other,
                 message: "Unknown error".to_string(),
@@ -357,7 +360,7 @@ mod tests {
     #[test]
     fn test_style_error_entry_waf_blocked() {
         let entry = ErrorEntry {
-            timestamp: SystemTime::now(),
+            timestamp: TEST_TIMESTAMP,
             url: "https://example.com".to_string(),
             error_type: ErrorType::WafBlocked("Cloudflare".to_string()),
             message: "Blocked".to_string(),
@@ -370,7 +373,7 @@ mod tests {
     #[test]
     fn test_style_error_entry_network() {
         let entry = ErrorEntry {
-            timestamp: SystemTime::now(),
+            timestamp: TEST_TIMESTAMP,
             url: "https://example.com".to_string(),
             error_type: ErrorType::Network,
             message: "Connection refused".to_string(),
@@ -383,7 +386,7 @@ mod tests {
     #[test]
     fn test_style_error_entry_http() {
         let entry = ErrorEntry {
-            timestamp: SystemTime::now(),
+            timestamp: TEST_TIMESTAMP,
             url: "https://example.com".to_string(),
             error_type: ErrorType::Http(500),
             message: "Internal Server Error".to_string(),
@@ -395,8 +398,7 @@ mod tests {
 
     #[test]
     fn test_format_time() {
-        let now = SystemTime::now();
-        let result = format_time(now);
+        let result = format_time(TEST_TIMESTAMP);
         assert!(result.len() >= 6);
     }
 

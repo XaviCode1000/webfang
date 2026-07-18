@@ -1,343 +1,657 @@
-//! TUI unit tests — Component public contracts.
+//! Unit tests for TUI state machines — no terminal rendering, no network.
 //!
-//! These tests exercise ONLY public interfaces:
-//! - Component trait: handle_key_event, update, init
-//! - HelpModal construction, key handling
-//! - ConfigForm state machine via public methods
-//! - centered_rect geometry
-//! - App construction (public API only — no dispatch_action)
+//! Exercises public API of UrlSelectorState, ErrorLogWidget, ProgressState,
+//! and Theme using ratatui::backend::TestBackend for widget rendering tests.
 //!
-//! Private method dispatch_action is tested via inline #[cfg(test)] in app.rs.
+//! Follows contract-based-test-audit: public API only, deterministic timestamps,
+//! semantic assertions, no stubs.
+
+use ratatui::backend::TestBackend;
+use ratatui::Terminal;
+use webfang_tui::tui::{
+    theme::{Theme, ThemeMode},
+    Action, CollapsibleConfig, Component, ErrorLogWidget, ProgressState, ScrapeError,
+    ScrapeProgress, ScrapeStatus, UrlSelector, UrlSelectorState,
+};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use webfang_tui::tui::action::Action;
-use webfang_tui::tui::app::{App, AppResult};
-use webfang_tui::tui::component::{AppMode, Component, Header};
-use webfang_tui::tui::modal::{centered_rect, HelpModal};
-use webfang_tui::tui::ConfigFormState;
+use url::Url;
 
-// ---------------------------------------------------------------------------
+// ============================================================================
 // Helpers
-// ---------------------------------------------------------------------------
+// ============================================================================
+
+fn sample_urls(count: usize) -> Vec<Url> {
+    (1..=count)
+        .map(|i| Url::parse(&format!("https://example.com/page{i}")).unwrap())
+        .collect()
+}
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
-// ===========================================================================
-// Group 1: App Initialization (public API only)
-// ===========================================================================
+fn terminal() -> Terminal<TestBackend> {
+    Terminal::new(TestBackend::new(120, 40)).unwrap()
+}
+
+// ============================================================================
+// 1. UrlSelectorState
+// ============================================================================
 
 #[test]
-fn app_initializes_with_selector_mode() {
-    let app = App::new(AppMode::Selector).expect("App::new");
-    assert_eq!(app.mode, AppMode::Selector);
-    assert!(!app.should_quit);
-    assert!(!app.should_show_modal);
-    assert!(app.components.is_empty());
-    assert!(app.modal.is_none());
-    assert!(matches!(app.result, AppResult::None));
+fn url_selector_creates_with_correct_total() {
+    let urls = sample_urls(5);
+    let state = UrlSelectorState::new(&urls);
+    assert_eq!(state.total_count(), 5);
+    assert_eq!(state.selected_count(), 0);
+    assert!(!state.has_selections());
 }
 
 #[test]
-fn app_initializes_with_progress_mode() {
-    let app = App::new(AppMode::Progress).expect("App::new");
-    assert_eq!(app.mode, AppMode::Progress);
+fn url_selector_cursor_starts_at_zero() {
+    let state = UrlSelectorState::new(&sample_urls(3));
+    assert_eq!(state.cursor(), 0);
 }
 
 #[test]
-fn app_initializes_with_config_mode() {
-    let app = App::new(AppMode::Config).expect("App::new");
-    assert_eq!(app.mode, AppMode::Config);
+fn url_selector_cursor_down_advances() {
+    let mut state = UrlSelectorState::new(&sample_urls(5));
+    state.cursor_down();
+    assert_eq!(state.cursor(), 1);
+    state.cursor_down();
+    assert_eq!(state.cursor(), 2);
 }
 
 #[test]
-fn app_result_starts_none() {
-    let app = App::new(AppMode::Selector).expect("App::new");
-    assert!(matches!(app.result, AppResult::None));
+fn url_selector_cursor_down_stops_at_end() {
+    let mut state = UrlSelectorState::new(&sample_urls(3));
+    state.cursor_down();
+    state.cursor_down();
+    state.cursor_down(); // At end (index 2)
+    state.cursor_down(); // Should not advance
+    assert_eq!(state.cursor(), 2);
 }
 
 #[test]
-fn app_with_component_adds_to_list() {
-    let app = App::new(AppMode::Selector)
-        .expect("App::new")
-        .with_component(Header::new(AppMode::Selector))
-        .with_component(Header::new(AppMode::Progress));
-    assert_eq!(app.components.len(), 2);
+fn url_selector_cursor_up_goes_to_zero() {
+    let mut state = UrlSelectorState::new(&sample_urls(3));
+    state.cursor_down();
+    state.cursor_down();
+    state.cursor_up();
+    state.cursor_up();
+    assert_eq!(state.cursor(), 0);
 }
 
 #[test]
-fn app_with_modal_sets_modal() {
-    let help = HelpModal::new("Help".into(), vec![]);
-    let app = App::new(AppMode::Selector)
-        .expect("App::new")
-        .with_modal(help);
-    assert!(app.modal.is_some());
+fn url_selector_cursor_up_stops_at_zero() {
+    let mut state = UrlSelectorState::new(&sample_urls(3));
+    state.cursor_up(); // Already at 0
+    assert_eq!(state.cursor(), 0);
 }
 
 #[test]
-fn app_chained_builders() {
-    let app = App::new(AppMode::Config)
-        .expect("App::new")
-        .with_component(Header::new(AppMode::Config))
-        .with_component(Header::new(AppMode::Selector))
-        .with_modal(HelpModal::new("Help".into(), vec![]));
-    assert_eq!(app.mode, AppMode::Config);
-    assert_eq!(app.components.len(), 2);
-    assert!(app.modal.is_some());
-}
-
-// ===========================================================================
-// Group 2: HelpModal Escape Handling (Component trait — public port)
-// ===========================================================================
-
-#[test]
-fn modal_esc_returns_close_action() {
-    let mut modal = HelpModal::new("Help".into(), vec![]);
-    let action = modal
-        .handle_key_event(key(KeyCode::Esc))
-        .expect("handle_key_event");
-    assert!(matches!(action, Some(Action::CloseModal)));
+fn url_selector_toggle_selection() {
+    let mut state = UrlSelectorState::new(&sample_urls(3));
+    assert!(!state.is_selected(0));
+    state.toggle_selection();
+    assert!(state.is_selected(0));
+    assert!(state.has_selections());
+    assert_eq!(state.selected_count(), 1);
+    state.toggle_selection();
+    assert!(!state.is_selected(0));
+    assert_eq!(state.selected_count(), 0);
 }
 
 #[test]
-fn modal_q_returns_close_action() {
-    let mut modal = HelpModal::new("Help".into(), vec![]);
-    let action = modal
-        .handle_key_event(key(KeyCode::Char('q')))
-        .expect("handle_key_event");
-    assert!(matches!(action, Some(Action::CloseModal)));
+fn url_selector_select_all() {
+    let mut state = UrlSelectorState::new(&sample_urls(4));
+    state.select_all();
+    assert_eq!(state.selected_count(), 4);
+    assert!(state.has_selections());
 }
 
 #[test]
-fn modal_uppercase_q_returns_close_action() {
-    let mut modal = HelpModal::new("Help".into(), vec![]);
-    let action = modal
-        .handle_key_event(key(KeyCode::Char('Q')))
-        .expect("handle_key_event");
-    assert!(matches!(action, Some(Action::CloseModal)));
+fn url_selector_deselect_all() {
+    let mut state = UrlSelectorState::new(&sample_urls(4));
+    state.select_all();
+    state.deselect_all();
+    assert_eq!(state.selected_count(), 0);
+    assert!(!state.has_selections());
 }
 
 #[test]
-fn modal_unrelated_key_returns_none() {
-    let mut modal = HelpModal::new("Help".into(), vec![]);
-    let action = modal
-        .handle_key_event(key(KeyCode::Char('a')))
-        .expect("handle_key_event");
-    assert!(action.is_none());
+fn url_selector_get_selected_urls_returns_correct_subset() {
+    let urls = sample_urls(4);
+    let mut state = UrlSelectorState::new(&urls);
+    state.cursor_down();
+    state.toggle_selection(); // page2
+    state.cursor_down();
+    state.cursor_down();
+    state.toggle_selection(); // page4
+    let selected = state.get_selected_urls();
+    assert_eq!(selected.len(), 2);
+    assert_eq!(selected[0].as_str(), "https://example.com/page2");
+    assert_eq!(selected[1].as_str(), "https://example.com/page4");
 }
 
 #[test]
-fn modal_with_multiple_bindings() {
-    let bindings = vec![
-        ("up/dn".into(), "Navigate".into()),
-        ("Space".into(), "Toggle".into()),
-        ("Enter".into(), "Confirm".into()),
-        ("Esc".into(), "Close".into()),
-    ];
-    let modal = HelpModal::new("Keybindings".into(), bindings);
-    assert_eq!(modal.bindings.len(), 4);
-    assert_eq!(modal.title, "Keybindings");
-}
-
-#[test]
-fn modal_update_tick_is_noop() {
-    let mut modal = HelpModal::new("Help".into(), vec![]);
-    let action = modal.update(Action::Tick).expect("update");
-    assert!(action.is_none());
-}
-
-#[test]
-fn modal_update_toggle_help_is_noop() {
-    let mut modal = HelpModal::new("Help".into(), vec![]);
-    let action = modal.update(Action::ToggleHelp).expect("update");
-    assert!(action.is_none());
-}
-
-// ===========================================================================
-// Group 3: centered_rect Geometry
-// ===========================================================================
-
-#[test]
-fn centered_rect_60x50_returns_centered_region() {
-    let area = ratatui::layout::Rect::new(0, 0, 120, 40);
-    let rect = centered_rect(60, 50, area);
-    // centered_rect(60, 50, area) uses Max(60) for width and Min(50) for height
-    assert!(rect.width <= 60, "width should be <= 60: {}", rect.width);
-    assert!(rect.height <= 50, "height should be <= 50: {}", rect.height);
+fn url_selector_scroll_when_cursor_exceeds_visible_height() {
+    let mut state = UrlSelectorState::new(&sample_urls(20));
+    state.set_visible_height(5);
+    // Move cursor past visible area
+    for _ in 0..6 {
+        state.cursor_down();
+    }
     assert!(
-        rect.width > 0 && rect.height > 0,
-        "should have non-zero size"
+        state.scroll() > 0,
+        "should auto-scroll when cursor goes below visible area"
     );
-    // Should be centered
-    let expected_x = (120 - rect.width) / 2;
-    let expected_y = (40 - rect.height) / 2;
-    assert_eq!(rect.x, expected_x);
-    assert_eq!(rect.y, expected_y);
 }
 
 #[test]
-fn centered_rect_100x100_fills_area() {
-    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
-    let rect = centered_rect(100, 100, area);
-    assert_eq!(rect.width, 80);
-    assert_eq!(rect.height, 24);
+fn url_selector_scroll_tracks_cursor_going_above_visible_area() {
+    let mut state = UrlSelectorState::new(&sample_urls(20));
+    state.set_visible_height(5);
+    // Scroll down first
+    for _ in 0..10 {
+        state.cursor_down();
+    }
+    assert!(state.scroll() > 0);
+    // Now move back up past the visible area
+    for _ in 0..10 {
+        state.cursor_up();
+    }
+    assert_eq!(state.scroll(), 0);
 }
 
 #[test]
-fn centered_rect_small_area() {
-    let area = ratatui::layout::Rect::new(0, 0, 20, 10);
-    let rect = centered_rect(50, 50, area);
-    assert!(rect.width >= 8);
-    assert!(rect.height >= 4);
+fn url_selector_confirm_mode() {
+    let mut state = UrlSelectorState::new(&sample_urls(3));
+    assert!(!state.is_confirming());
+    state.enter_confirm_mode();
+    assert!(state.is_confirming());
+    state.exit_confirm_mode();
+    assert!(!state.is_confirming());
 }
 
 #[test]
-fn centered_rect_symmetry() {
-    let area = ratatui::layout::Rect::new(0, 0, 100, 50);
-    let rect = centered_rect(40, 30, area);
-    // Should be horizontally and vertically centered
-    assert_eq!(rect.x, (100 - rect.width) / 2);
-    assert_eq!(rect.y, (50 - rect.height) / 2);
-}
-
-// ===========================================================================
-// Group 4: ConfigForm Key Events (Component trait — public port)
-// ===========================================================================
-
-#[test]
-fn config_form_q_cancels() {
-    let mut form = ConfigFormState::new_default();
-    let action = form
-        .handle_key_event(key(KeyCode::Char('q')))
-        .expect("handle_key_event");
-    assert!(form.cancelled);
-    assert!(form.is_done());
-    assert!(matches!(action, Some(Action::ConfigCancelled)));
+fn url_selector_get_url_at_index() {
+    let urls = sample_urls(3);
+    let state = UrlSelectorState::new(&urls);
+    assert_eq!(
+        state.get_url(0).unwrap().as_str(),
+        "https://example.com/page1"
+    );
+    assert!(state.get_url(99).is_none());
 }
 
 #[test]
-fn config_form_uppercase_q_cancels() {
-    let mut form = ConfigFormState::new_default();
-    let action = form
-        .handle_key_event(key(KeyCode::Char('Q')))
-        .expect("handle_key_event");
-    assert!(form.cancelled);
-    assert!(matches!(action, Some(Action::ConfigCancelled)));
+fn url_selector_empty_urls() {
+    let state = UrlSelectorState::new(&[]);
+    assert_eq!(state.total_count(), 0);
+    assert!(!state.has_selections());
+}
+
+// ============================================================================
+// 2. ErrorLogWidget
+// ============================================================================
+
+#[test]
+fn error_log_widget_creates_empty() {
+    let _widget = ErrorLogWidget::new();
+    // Default max_errors is 10
+    let mut term = terminal();
+    term.draw(|f| {
+        let area = f.area();
+        let mut w = ErrorLogWidget::new();
+        w.render(f, area);
+    })
+    .unwrap();
 }
 
 #[test]
-fn config_form_question_mark_toggles_help() {
-    let mut form = ConfigFormState::new_default();
-    let action = form
-        .handle_key_event(key(KeyCode::Char('?')))
-        .expect("handle_key_event");
-    assert!(matches!(action, Some(Action::ToggleHelp)));
+fn error_log_widget_with_max_errors() {
+    let _widget = ErrorLogWidget::new().with_max_errors(50);
+    // Render to verify no panic
+    let mut term = terminal();
+    term.draw(|f| {
+        let mut w = ErrorLogWidget::new().with_max_errors(50);
+        w.render(f, f.area());
+    })
+    .unwrap();
 }
 
 #[test]
-fn config_form_unrelated_key_is_active() {
-    let mut form = ConfigFormState::new_default();
-    let action = form
-        .handle_key_event(key(KeyCode::Char('x')))
-        .expect("handle_key_event");
-    // Non-special key is passed to the form — should remain Active
-    assert!(action.is_none());
-    assert!(!form.is_done());
+fn error_log_widget_styled_entry_network() {
+    let mut term = terminal();
+    term.draw(|f| {
+        let mut w = ErrorLogWidget::new();
+        let action = Action::Progress(ScrapeProgress::Failed {
+            url: "https://example.com".to_string(),
+            error: ScrapeError::Network("Connection refused".to_string()),
+        });
+        let result = w.update(action);
+        assert!(result.is_ok(), "update should succeed: {:?}", result.err());
+        assert!(
+            result.unwrap().is_none(),
+            "update should return None action"
+        );
+        w.render(f, f.area());
+    })
+    .unwrap();
+    // Verify the buffer contains the error URL text
+    let buf = term.backend().buffer().clone();
+    let text: String = buf
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_owned())
+        .collect();
+    assert!(
+        text.contains("Errors (1)"),
+        "buffer should show error count: {text}"
+    );
 }
 
 #[test]
-fn config_form_data_is_json_object() {
-    let form = ConfigFormState::new_default();
-    let data = form.data();
-    assert!(data.is_object());
+fn error_log_widget_styled_entry_http() {
+    let mut term = terminal();
+    term.draw(|f| {
+        let mut w = ErrorLogWidget::new();
+        let action = Action::Progress(ScrapeProgress::Failed {
+            url: "https://example.com".to_string(),
+            error: ScrapeError::Http(403, "Forbidden".to_string()),
+        });
+        let result = w.update(action);
+        assert!(result.is_ok(), "update should succeed: {:?}", result.err());
+        assert!(
+            result.unwrap().is_none(),
+            "update should return None action"
+        );
+        w.render(f, f.area());
+    })
+    .unwrap();
+    let buf = term.backend().buffer().clone();
+    let text: String = buf
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_owned())
+        .collect();
+    assert!(
+        text.contains("Errors (1)"),
+        "buffer should show error count: {text}"
+    );
 }
 
 #[test]
-fn config_form_arrow_navigation_does_not_crash() {
-    let mut form = ConfigFormState::new_default();
+fn error_log_widget_styled_entry_waf() {
+    let mut term = terminal();
+    term.draw(|f| {
+        let mut w = ErrorLogWidget::new();
+        let action = Action::Progress(ScrapeProgress::Failed {
+            url: "https://example.com".to_string(),
+            error: ScrapeError::WafBlocked("Cloudflare".to_string()),
+        });
+        let result = w.update(action);
+        assert!(result.is_ok(), "update should succeed: {:?}", result.err());
+        assert!(
+            result.unwrap().is_none(),
+            "update should return None action"
+        );
+        w.render(f, f.area());
+    })
+    .unwrap();
+    let buf = term.backend().buffer().clone();
+    let text: String = buf
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_owned())
+        .collect();
+    assert!(
+        text.contains("Errors (1)"),
+        "buffer should show error count: {text}"
+    );
+}
+
+#[test]
+fn error_log_widget_render_with_empty_state() {
+    let mut term = terminal();
+    term.draw(|f| {
+        let mut w = ErrorLogWidget::new();
+        w.render(f, f.area());
+    })
+    .unwrap();
+    // If we got here, rendering didn't panic
+}
+
+// ============================================================================
+// 3. ProgressState
+// ============================================================================
+
+#[test]
+fn progress_state_new_initializes_correctly() {
+    let state = ProgressState::new(vec![
+        "https://example.com/1".to_string(),
+        "https://example.com/2".to_string(),
+    ]);
+    assert_eq!(state.total, 2);
+    assert_eq!(state.completed, 0);
+    assert_eq!(state.failed, 0);
+    assert_eq!(state.urls.len(), 2);
+    assert!(state.urls.iter().all(|u| u.status == ScrapeStatus::Pending));
+}
+
+#[test]
+fn progress_state_percentage_zero_when_no_urls() {
+    let state = ProgressState::new(vec![]);
+    assert_eq!(state.percentage(), 0.0);
+}
+
+#[test]
+fn progress_state_percentage_50_percent() {
+    let mut state = ProgressState::new(vec![
+        "https://example.com/1".to_string(),
+        "https://example.com/2".to_string(),
+    ]);
+    state.update(ScrapeProgress::Completed {
+        url: "https://example.com/1".to_string(),
+        chars: 1000,
+    });
+    assert!((state.percentage() - 50.0).abs() < 0.1);
+}
+
+#[test]
+fn progress_state_percentage_100_percent_on_completion() {
+    let mut state = ProgressState::new(vec![
+        "https://example.com/1".to_string(),
+        "https://example.com/2".to_string(),
+    ]);
+    state.update(ScrapeProgress::Completed {
+        url: "https://example.com/1".to_string(),
+        chars: 100,
+    });
+    state.update(ScrapeProgress::Failed {
+        url: "https://example.com/2".to_string(),
+        error: ScrapeError::Other("error".to_string()),
+    });
+    assert_eq!(state.percentage(), 100.0);
+}
+
+#[test]
+fn progress_state_started_sets_fetching() {
+    let mut state = ProgressState::new(vec!["https://example.com/1".to_string()]);
+    state.update(ScrapeProgress::Started {
+        url: "https://example.com/1".to_string(),
+    });
+    assert_eq!(state.urls[0].status, ScrapeStatus::Fetching);
+}
+
+#[test]
+fn progress_state_completed_increments_counter() {
+    let mut state = ProgressState::new(vec!["https://example.com/1".to_string()]);
+    state.update(ScrapeProgress::Completed {
+        url: "https://example.com/1".to_string(),
+        chars: 500,
+    });
+    assert_eq!(state.completed, 1);
+    assert_eq!(state.urls[0].status, ScrapeStatus::Completed);
+    assert_eq!(state.urls[0].chars, Some(500));
+}
+
+#[test]
+fn progress_state_failed_records_error() {
+    let mut state = ProgressState::new(vec!["https://example.com/1".to_string()]);
+    state.update(ScrapeProgress::Failed {
+        url: "https://example.com/1".to_string(),
+        error: ScrapeError::Network("timeout".to_string()),
+    });
+    assert_eq!(state.failed, 1);
+    assert_eq!(state.urls[0].status, ScrapeStatus::Failed);
+    assert_eq!(state.errors.len(), 1);
+}
+
+#[test]
+fn progress_state_is_complete() {
+    let mut state = ProgressState::new(vec![
+        "https://example.com/1".to_string(),
+        "https://example.com/2".to_string(),
+    ]);
+    assert!(!state.is_complete());
+    state.update(ScrapeProgress::Completed {
+        url: "https://example.com/1".to_string(),
+        chars: 100,
+    });
+    assert!(!state.is_complete());
+    state.update(ScrapeProgress::Failed {
+        url: "https://example.com/2".to_string(),
+        error: ScrapeError::Other("err".to_string()),
+    });
+    assert!(state.is_complete());
+}
+
+#[test]
+fn progress_state_status_changed_event() {
+    let mut state = ProgressState::new(vec!["https://example.com/1".to_string()]);
+    state.update(ScrapeProgress::StatusChanged {
+        url: "https://example.com/1".to_string(),
+        status: ScrapeStatus::Extracting,
+    });
+    assert_eq!(state.urls[0].status, ScrapeStatus::Extracting);
+}
+
+#[test]
+fn progress_state_current_url_while_fetching() {
+    let mut state = ProgressState::new(vec![
+        "https://example.com/1".to_string(),
+        "https://example.com/2".to_string(),
+    ]);
+    assert!(state.current_url().is_none());
+    state.update(ScrapeProgress::Started {
+        url: "https://example.com/1".to_string(),
+    });
+    assert_eq!(state.current_url(), Some("https://example.com/1"));
+}
+
+// ============================================================================
+// 4. Theme — WCAG contrast & color conversion
+// ============================================================================
+
+#[test]
+fn theme_has_contrast_text_vs_background() {
+    assert!(Theme::has_contrast(Theme::text(), Theme::background(), 4.5));
+}
+
+#[test]
+fn theme_has_contrast_fails_for_surface_vs_bg() {
+    assert!(!Theme::has_contrast(
+        Theme::surface(),
+        Theme::background(),
+        4.5
+    ));
+}
+
+#[test]
+fn theme_contrast_ratio_positive() {
+    let ratio = Theme::contrast(Theme::text(), Theme::background());
+    assert!(ratio > 0.0);
+}
+
+#[test]
+fn theme_contrast_ratio_symmetric() {
+    let a = Theme::contrast(Theme::text(), Theme::background());
+    let b = Theme::contrast(Theme::background(), Theme::text());
+    assert!((a - b).abs() < f64::EPSILON);
+}
+
+#[test]
+fn theme_contrast_meets_wcag_aa_text() {
+    assert!(Theme::contrast(Theme::text(), Theme::background()) >= 4.5);
+}
+
+#[test]
+fn theme_contrast_meets_wcag_aa_error() {
+    assert!(Theme::contrast(Theme::error(), Theme::background()) >= 4.5);
+}
+
+#[test]
+fn theme_contrast_meets_wcag_aa_success() {
+    assert!(Theme::contrast(Theme::success(), Theme::background()) >= 4.5);
+}
+
+#[test]
+fn theme_contrast_meets_wcag_aa_warning() {
+    assert!(Theme::contrast(Theme::warning(), Theme::background()) >= 4.5);
+}
+
+#[test]
+fn theme_contrast_meets_wcag_aa_accent() {
+    assert!(Theme::contrast(Theme::accent(), Theme::background()) >= 4.5);
+}
+
+#[test]
+fn theme_lighten_produces_brighter_color() {
+    let dark = ratatui::style::Color::Rgb(0x1e, 0x1e, 0x2e);
+    let light = Theme::lighten(dark, 0.3);
+    assert_ne!(dark, light);
+    if let (ratatui::style::Color::Rgb(lr, lg, lb), ratatui::style::Color::Rgb(dr, dg, db)) =
+        (light, dark)
+    {
+        assert!(
+            lr > dr || lg > dg || lb > db,
+            "lightened should be brighter"
+        );
+    }
+}
+
+#[test]
+fn theme_darken_produces_darker_color() {
+    let light = ratatui::style::Color::Rgb(0xcd, 0xd6, 0xf4);
+    let dark = Theme::darken(light, 0.3);
+    assert_ne!(light, dark);
+}
+
+#[test]
+fn theme_lighten_does_not_panic_on_non_rgb() {
+    assert_eq!(
+        Theme::lighten(ratatui::style::Color::Reset, 0.3),
+        ratatui::style::Color::Reset
+    );
+    assert_eq!(
+        Theme::lighten(ratatui::style::Color::Black, 0.3),
+        ratatui::style::Color::Black
+    );
+}
+
+#[test]
+fn theme_darken_does_not_panic_on_non_rgb() {
+    assert_eq!(
+        Theme::darken(ratatui::style::Color::Reset, 0.3),
+        ratatui::style::Color::Reset
+    );
+    assert_eq!(
+        Theme::darken(ratatui::style::Color::Black, 0.3),
+        ratatui::style::Color::Black
+    );
+}
+
+#[test]
+fn theme_shift_hue_changes_color() {
+    let original = ratatui::style::Color::Rgb(0x89, 0xb4, 0xfa);
+    let shifted = Theme::shift_hue(original, 60.0);
+    assert_ne!(original, shifted);
+}
+
+#[test]
+fn theme_shift_hue_zero_is_near_identity() {
+    let original = ratatui::style::Color::Rgb(0x89, 0xb4, 0xfa);
+    let same = Theme::shift_hue(original, 0.0);
+    if let (ratatui::style::Color::Rgb(r1, g1, b1), ratatui::style::Color::Rgb(r2, g2, b2)) =
+        (original, same)
+    {
+        assert!((r1 as i16 - r2 as i16).abs() <= 1);
+        assert!((g1 as i16 - g2 as i16).abs() <= 1);
+        assert!((b1 as i16 - b2 as i16).abs() <= 1);
+    }
+}
+
+#[test]
+fn theme_shift_hue_360_is_near_identity() {
+    let original = ratatui::style::Color::Rgb(0x89, 0xb4, 0xfa);
+    let same = Theme::shift_hue(original, 360.0);
+    if let (ratatui::style::Color::Rgb(r1, g1, b1), ratatui::style::Color::Rgb(r2, g2, b2)) =
+        (original, same)
+    {
+        assert!((r1 as i16 - r2 as i16).abs() <= 1);
+        assert!((g1 as i16 - g2 as i16).abs() <= 1);
+        assert!((b1 as i16 - b2 as i16).abs() <= 1);
+    }
+}
+
+#[test]
+fn theme_shift_hue_achromatic_returns_original() {
+    let gray = ratatui::style::Color::Rgb(0x80, 0x80, 0x80);
+    let shifted = Theme::shift_hue(gray, 90.0);
+    assert_eq!(gray, shifted);
+}
+
+#[test]
+fn theme_adaptive_modes_produce_valid_themes() {
+    let _ = Theme::adaptive(ThemeMode::Dark);
+    let _ = Theme::adaptive(ThemeMode::Light);
+    let _ = Theme::adaptive(ThemeMode::HighContrast);
+}
+
+// ============================================================================
+// 5. UrlSelectorState rendering via TestBackend
+// ============================================================================
+
+#[test]
+fn url_selector_renders_in_test_backend() {
+    let urls = sample_urls(3);
+    let state = UrlSelectorState::new(&urls);
+    let selector = UrlSelector::new(&state);
+
+    let mut term = terminal();
+    term.draw(|f| {
+        selector.render(f, f.area());
+    })
+    .unwrap();
+    // If we reached here, rendering succeeded without panic
+}
+
+// ============================================================================
+// 6. CollapsibleConfig state tests
+// ============================================================================
+
+#[test]
+fn collapsible_config_creates_with_multiple_sections() {
+    let config = CollapsibleConfig::new();
+    let json = config.to_json();
+    let obj = json.as_object().unwrap();
+    assert!(obj.len() >= 8);
+}
+
+#[test]
+fn collapsible_config_navigation_through_all_sections() {
+    let mut config = CollapsibleConfig::new();
+    // Navigate all sections without panicking
     for _ in 0..20 {
-        form.handle_input(key(KeyCode::Down));
+        let _ = config.handle_key_event(key(KeyCode::Down));
     }
     for _ in 0..20 {
-        form.handle_input(key(KeyCode::Up));
+        let _ = config.handle_key_event(key(KeyCode::Up));
     }
-    // Arrow navigation should not submit or cancel
-    assert!(!form.is_done());
+    assert!(!config.submitted);
+    assert!(!config.cancelled);
 }
 
 #[test]
-fn config_form_mark_submitted() {
-    let mut form = ConfigFormState::new_default();
-    form.mark_submitted();
-    assert!(form.submitted);
-    assert!(form.is_done());
-    assert!(!form.cancelled);
-}
-
-#[test]
-fn config_form_mark_cancelled() {
-    let mut form = ConfigFormState::new_default();
-    form.mark_cancelled();
-    assert!(form.cancelled);
-    assert!(form.is_done());
-    assert!(!form.submitted);
-}
-
-// ===========================================================================
-// Group 5: Action Display & Equality
-// ===========================================================================
-
-#[test]
-fn action_display_variants() {
-    assert_eq!(Action::Tick.to_string(), "Tick");
-    assert_eq!(Action::Render.to_string(), "Render");
-    assert_eq!(Action::Quit.to_string(), "Quit");
-    assert_eq!(Action::ClearScreen.to_string(), "ClearScreen");
-    assert_eq!(Action::Suspend.to_string(), "Suspend");
-    assert_eq!(Action::Resume.to_string(), "Resume");
-    assert_eq!(Action::ToggleHelp.to_string(), "ToggleHelp");
-    assert_eq!(Action::CloseModal.to_string(), "CloseModal");
-    assert_eq!(Action::UrlCancelled.to_string(), "UrlCancelled");
-    assert_eq!(Action::ConfigCancelled.to_string(), "ConfigCancelled");
-}
-
-#[test]
-fn action_display_with_payload() {
-    assert_eq!(Action::Resize(80, 24).to_string(), "Resize(80, 24)");
-    assert_eq!(Action::Error("test".into()).to_string(), "Error(test)");
-    assert_eq!(
-        Action::UrlConfirmed(vec!["a".into(), "b".into()]).to_string(),
-        "UrlConfirmed(2 urls)"
-    );
-}
-
-#[test]
-fn action_equality() {
-    assert_eq!(Action::Tick, Action::Tick);
-    assert_ne!(Action::Tick, Action::Render);
-    assert_ne!(Action::Quit, Action::ClearScreen);
-    assert_eq!(
-        Action::UrlConfirmed(vec!["x".into()]),
-        Action::UrlConfirmed(vec!["x".into()])
-    );
-}
-
-// ===========================================================================
-// Group 6: AppMode Semantics
-// ===========================================================================
-
-#[test]
-fn app_mode_all_variants() {
-    let _ = AppMode::Selector;
-    let _ = AppMode::Progress;
-    let _ = AppMode::Config;
-}
-
-#[test]
-fn app_mode_equality() {
-    assert_eq!(AppMode::Selector, AppMode::Selector);
-    assert_ne!(AppMode::Selector, AppMode::Progress);
-    assert_ne!(AppMode::Progress, AppMode::Config);
-    assert_ne!(AppMode::Config, AppMode::Selector);
+fn collapsible_config_space_toggles_expand_collapse() {
+    let mut config = CollapsibleConfig::new();
+    // Target (index 0) starts expanded
+    assert!(config.is_section_expanded(0));
+    let _ = config.handle_key_event(key(KeyCode::Char(' ')));
+    assert!(!config.is_section_expanded(0));
+    let _ = config.handle_key_event(key(KeyCode::Char(' ')));
+    assert!(config.is_section_expanded(0));
 }

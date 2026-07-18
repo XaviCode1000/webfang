@@ -466,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // SIMD precision varies across CPU architectures (CI runner vs local)
+    #[ignore = "SIMD precision varies across CPU architectures, CI runner vs local"]
     fn test_mean_pool_excludes_padding() {
         // 2 real tokens + 2 padding (seq_len=4, embedding_dim=2)
         let data = vec![1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0];

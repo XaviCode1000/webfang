@@ -1,6 +1,6 @@
 //! MCP Server — Model Context Protocol bridge for AI agents
 //!
-//! Exposes 37 scraper tools across 8 categories via Streamable HTTP.
+//! Exposes 34 scraper tools across 8 categories via Streamable HTTP.
 //! Architecture:
 //! - `state.rs` — McpState with embedded Container + per-category semaphores
 //! - `server.rs` — Axum router + StreamableHttpService setup
@@ -36,7 +36,7 @@ use params::*;
 /// Main MCP handler struct.
 ///
 /// Holds the application state and combined tool router.
-/// All 37 tools are registered via `#[tool_router]` macros
+/// All 34 tools are registered via `#[tool_router]` macros
 /// in the handler submodules.
 #[derive(Clone)]
 pub struct McpHandler {

@@ -182,8 +182,8 @@ name = "cli_behavioral"
 path = "../../tests/cli_behavioral_test.rs"
 
 [[test]]
-name = "orchestrator_unit_tests"
-path = "../../tests/orchestrator_unit_tests.rs"
+name = "sitemap_integration"
+path = "../../tests/sitemap_integration.rs"
 
 [[test]]
 name = "resume_mode_tests"

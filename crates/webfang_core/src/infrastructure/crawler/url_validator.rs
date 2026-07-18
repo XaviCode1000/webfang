@@ -168,9 +168,8 @@ mod tests {
         assert!(matches!(result, ValidationResult::Valid));
     }
 
-    // Ignored: depends on external httpbin.org service, flaky in CI/CD
     #[tokio::test]
-    #[ignore]
+    #[ignore = "depends on external httpbin.org service, flaky in CI/CD"]
     async fn test_validate_http_status_200() {
         let validator = UrlValidator::new();
         let url = Url::parse("https://httpbin.org/status/200").unwrap();
@@ -179,9 +178,8 @@ mod tests {
         assert!(matches!(result, Ok(ValidationResult::Valid)));
     }
 
-    // Ignored: depends on external httpbin.org service, flaky in CI/CD
     #[tokio::test]
-    #[ignore]
+    #[ignore = "depends on external httpbin.org service, flaky in CI/CD"]
     async fn test_validate_http_status_404() {
         let validator = UrlValidator::new();
         let url = Url::parse("https://httpbin.org/status/404").unwrap();
@@ -190,9 +188,8 @@ mod tests {
         assert!(matches!(result, Ok(ValidationResult::Invalid(_))));
     }
 
-    // Ignored: depends on external httpbin.org service, flaky in CI/CD
     #[tokio::test]
-    #[ignore]
+    #[ignore = "depends on external httpbin.org service, flaky in CI/CD"]
     async fn test_validate_http_status_500() {
         let validator = UrlValidator::new();
         let url = Url::parse("https://httpbin.org/status/500").unwrap();

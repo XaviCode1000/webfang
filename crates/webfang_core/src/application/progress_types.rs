@@ -572,7 +572,7 @@ mod tests {
     #[test]
     fn test_error_entry_creation() {
         let entry = ErrorEntry {
-            timestamp: SystemTime::now(),
+            timestamp: SystemTime::UNIX_EPOCH,
             url: "https://example.com/404".to_string(),
             error_type: ErrorType::Http(404),
             message: "Not found".to_string(),

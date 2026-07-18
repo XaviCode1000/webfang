@@ -477,7 +477,7 @@ async fn test_download_documents_from_website() {
 ///    Sample content: <html><body><h1>Title 1</h1><p>This is parag...
 /// ```
 #[cfg(feature = "ai")]
-#[ignore] // Requires ONNX model cached locally — not available on CI
+#[ignore = "requires ONNX model cached locally, not available on CI"]
 #[tokio::test]
 async fn test_ai_embedding_preservation() {
     // Test original bug: embeddings were being discarded during filtering

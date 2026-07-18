@@ -3,7 +3,7 @@
 //! Each module provides a `build_router()` function that returns a partial
 //! `ToolRouter<McpHandler>`. All routers are combined with the `+` operator.
 //!
-//! Note: All 37 tools are defined in the parent mod.rs #[tool_router] block.
+//! Note: All 34 tools are defined in the parent mod.rs #[tool_router] block.
 //! These submodules exist for future modularization but currently return
 //! empty routers.
 
