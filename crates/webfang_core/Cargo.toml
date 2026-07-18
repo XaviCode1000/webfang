@@ -181,6 +181,10 @@ path = "../../tests/cli_binary_test.rs"
 name = "cli_behavioral"
 path = "../../tests/cli_behavioral_test.rs"
 
+[[test]]
+name = "tui_unit_tests"
+path = "../../tests/tui_unit_tests.rs"
+
 [lints.clippy]
 doc_markdown = "allow"
 uninlined_format_args = "allow"
