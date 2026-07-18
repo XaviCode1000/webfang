@@ -98,7 +98,8 @@ pub mod content_pruner;
 
 // Re-exports for convenience (Modules 1-2)
 pub use cache_config::{
-    default_cache_dir, CacheConfig, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO, DEFAULT_MODEL_SHA256,
+    default_cache_dir, AiModel, CacheConfig, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO,
+    DEFAULT_MODEL_SHA256, MODEL_SELECTION_ENV,
 };
 
 pub use model_cache::ModelCache;
