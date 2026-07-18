@@ -187,3 +187,104 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 
     horizontal[1]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn centered_rect_returns_inner_area() {
+        let area = Rect::new(0, 0, 100, 40);
+        let rect = centered_rect(60, 50, area);
+        assert!(rect.width >= 55 && rect.width <= 65, "width: {}", rect.width);
+        assert!(rect.height >= 15 && rect.height <= 25, "height: {}", rect.height);
+    }
+
+    #[test]
+    fn centered_rect_is_centered() {
+        let area = Rect::new(0, 0, 100, 40);
+        let rect = centered_rect(60, 50, area);
+        let expected_x = (100 - rect.width) / 2;
+        let expected_y = (40 - rect.height) / 2;
+        assert_eq!(rect.x, expected_x);
+        assert_eq!(rect.y, expected_y);
+    }
+
+    #[test]
+    fn centered_rect_100_percent_fills_area() {
+        let area = Rect::new(0, 0, 80, 24);
+        let rect = centered_rect(100, 100, area);
+        assert_eq!(rect.width, 80);
+        assert_eq!(rect.height, 24);
+    }
+
+    #[test]
+    fn help_modal_new_initializes_correctly() {
+        let modal = HelpModal::new(
+            "Help".into(),
+            vec![("q".into(), "Quit".into())],
+        );
+        assert_eq!(modal.title, "Help");
+        assert_eq!(modal.bindings.len(), 1);
+        assert!(modal.action_tx.is_none());
+    }
+
+    #[test]
+    fn help_modal_esc_returns_close_modal() {
+        let mut modal = HelpModal::new("Help".into(), vec![]);
+        let action = modal
+            .handle_key_event(KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE))
+            .expect("handle_key_event");
+        assert!(matches!(action, Some(Action::CloseModal)));
+    }
+
+    #[test]
+    fn help_modal_q_returns_close_modal() {
+        let mut modal = HelpModal::new("Help".into(), vec![]);
+        let action = modal
+            .handle_key_event(KeyEvent::new(
+                KeyCode::Char('q'),
+                crossterm::event::KeyModifiers::NONE,
+            ))
+            .expect("handle_key_event");
+        assert!(matches!(action, Some(Action::CloseModal)));
+    }
+
+    #[test]
+    fn help_modal_uppercase_q_returns_close_modal() {
+        let mut modal = HelpModal::new("Help".into(), vec![]);
+        let action = modal
+            .handle_key_event(KeyEvent::new(
+                KeyCode::Char('Q'),
+                crossterm::event::KeyModifiers::NONE,
+            ))
+            .expect("handle_key_event");
+        assert!(matches!(action, Some(Action::CloseModal)));
+    }
+
+    #[test]
+    fn help_modal_unrelated_key_returns_none() {
+        let mut modal = HelpModal::new("Help".into(), vec![]);
+        let action = modal
+            .handle_key_event(KeyEvent::new(
+                KeyCode::Char('a'),
+                crossterm::event::KeyModifiers::NONE,
+            ))
+            .expect("handle_key_event");
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn help_modal_update_tick_is_noop() {
+        let mut modal = HelpModal::new("Help".into(), vec![]);
+        let action = modal.update(Action::Tick).expect("update");
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn help_modal_update_toggle_help_is_noop() {
+        let mut modal = HelpModal::new("Help".into(), vec![]);
+        let action = modal.update(Action::ToggleHelp).expect("update");
+        assert!(action.is_none());
+    }
+}

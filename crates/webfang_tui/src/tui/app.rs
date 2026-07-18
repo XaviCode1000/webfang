@@ -390,3 +390,129 @@ impl App {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_new_selector_mode() {
+        let app = App::new(AppMode::Selector).expect("App::new should not fail");
+        assert_eq!(app.mode, AppMode::Selector);
+        assert!(!app.should_quit);
+        assert!(!app.should_show_modal);
+        assert!(app.components.is_empty());
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn app_new_progress_mode() {
+        let app = App::new(AppMode::Progress).expect("App::new should not fail");
+        assert_eq!(app.mode, AppMode::Progress);
+    }
+
+    #[test]
+    fn app_new_config_mode() {
+        let app = App::new(AppMode::Config).expect("App::new should not fail");
+        assert_eq!(app.mode, AppMode::Config);
+    }
+
+    #[test]
+    fn app_result_starts_none() {
+        let app = App::new(AppMode::Selector).expect("App::new should not fail");
+        assert!(matches!(app.result, AppResult::None));
+    }
+
+    #[test]
+    fn app_with_component_increments_count() {
+        let app = App::new(AppMode::Selector)
+            .expect("App::new should not fail")
+            .with_component(Header::new(AppMode::Selector));
+        assert_eq!(app.components.len(), 1);
+    }
+
+    #[test]
+    fn app_dispatch_quit_sets_should_quit() {
+        let mut app = App::new(AppMode::Selector).expect("App::new should not fail");
+        let mut tui = Tui::new().expect("Tui::new");
+        tui.enter().expect("tui.enter");
+        app.dispatch_action(Action::Quit, &mut tui).expect("dispatch");
+        assert!(app.should_quit);
+        let _ = tui.exit();
+    }
+
+    #[test]
+    fn app_dispatch_toggle_help_toggles_modal() {
+        let mut app = App::new(AppMode::Selector).expect("App::new should not fail");
+        let mut tui = Tui::new().expect("Tui::new");
+        tui.enter().expect("tui.enter");
+        assert!(!app.should_show_modal);
+        app.dispatch_action(Action::ToggleHelp, &mut tui).expect("dispatch");
+        assert!(app.should_show_modal);
+        app.dispatch_action(Action::CloseModal, &mut tui).expect("dispatch");
+        assert!(!app.should_show_modal);
+        let _ = tui.exit();
+    }
+
+    #[test]
+    fn app_dispatch_url_confirmed_sets_result_and_quits() {
+        let mut app = App::new(AppMode::Selector).expect("App::new should not fail");
+        let mut tui = Tui::new().expect("Tui::new");
+        tui.enter().expect("tui.enter");
+        let urls = vec!["https://a.com".into(), "https://b.com".into()];
+        app.dispatch_action(Action::UrlConfirmed(urls.clone()), &mut tui)
+            .expect("dispatch");
+        assert!(app.should_quit);
+        match &app.result {
+            AppResult::Urls(v) => assert_eq!(v, &urls),
+            other => panic!("Expected Urls, got {:?}", other),
+        }
+        let _ = tui.exit();
+    }
+
+    #[test]
+    fn app_dispatch_url_cancelled_sets_empty() {
+        let mut app = App::new(AppMode::Selector).expect("App::new should not fail");
+        let mut tui = Tui::new().expect("Tui::new");
+        tui.enter().expect("tui.enter");
+        app.dispatch_action(Action::UrlCancelled, &mut tui)
+            .expect("dispatch");
+        assert!(app.should_quit);
+        match &app.result {
+            AppResult::Urls(v) => assert!(v.is_empty()),
+            other => panic!("Expected empty Urls, got {:?}", other),
+        }
+        let _ = tui.exit();
+    }
+
+    #[test]
+    fn app_dispatch_config_done_sets_config() {
+        let mut app = App::new(AppMode::Config).expect("App::new should not fail");
+        let mut tui = Tui::new().expect("Tui::new");
+        tui.enter().expect("tui.enter");
+        let value = serde_json::json!({"key": "value"});
+        app.dispatch_action(
+            Action::ConfigDone(Some(value.clone())),
+            &mut tui,
+        )
+        .expect("dispatch");
+        assert!(app.should_quit);
+        match &app.result {
+            AppResult::Config(Some(v)) => assert_eq!(v, &value),
+            other => panic!("Expected Config(Some), got {:?}", other),
+        }
+        let _ = tui.exit();
+    }
+
+    #[test]
+    fn app_dispatch_config_cancelled_sets_none() {
+        let mut app = App::new(AppMode::Config).expect("App::new should not fail");
+        let mut tui = Tui::new().expect("Tui::new");
+        tui.enter().expect("tui.enter");
+        app.dispatch_action(Action::ConfigCancelled, &mut tui)
+            .expect("dispatch");
+        assert!(app.should_quit);
+        assert!(matches!(app.result, AppResult::Config(None)));
+        let _ = tui.exit();
+    }
+}
