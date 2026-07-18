@@ -436,7 +436,8 @@ mod tests {
         let mut app = App::new(AppMode::Selector).expect("App::new should not fail");
         let mut tui = Tui::new().expect("Tui::new");
         tui.enter().expect("tui.enter");
-        app.dispatch_action(Action::Quit, &mut tui).expect("dispatch");
+        app.dispatch_action(Action::Quit, &mut tui)
+            .expect("dispatch");
         assert!(app.should_quit);
         let _ = tui.exit();
     }
@@ -447,9 +448,11 @@ mod tests {
         let mut tui = Tui::new().expect("Tui::new");
         tui.enter().expect("tui.enter");
         assert!(!app.should_show_modal);
-        app.dispatch_action(Action::ToggleHelp, &mut tui).expect("dispatch");
+        app.dispatch_action(Action::ToggleHelp, &mut tui)
+            .expect("dispatch");
         assert!(app.should_show_modal);
-        app.dispatch_action(Action::CloseModal, &mut tui).expect("dispatch");
+        app.dispatch_action(Action::CloseModal, &mut tui)
+            .expect("dispatch");
         assert!(!app.should_show_modal);
         let _ = tui.exit();
     }
@@ -491,11 +494,8 @@ mod tests {
         let mut tui = Tui::new().expect("Tui::new");
         tui.enter().expect("tui.enter");
         let value = serde_json::json!({"key": "value"});
-        app.dispatch_action(
-            Action::ConfigDone(Some(value.clone())),
-            &mut tui,
-        )
-        .expect("dispatch");
+        app.dispatch_action(Action::ConfigDone(Some(value.clone())), &mut tui)
+            .expect("dispatch");
         assert!(app.should_quit);
         match &app.result {
             AppResult::Config(Some(v)) => assert_eq!(v, &value),

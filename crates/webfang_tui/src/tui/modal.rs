@@ -196,8 +196,16 @@ mod tests {
     fn centered_rect_returns_inner_area() {
         let area = Rect::new(0, 0, 100, 40);
         let rect = centered_rect(60, 50, area);
-        assert!(rect.width >= 55 && rect.width <= 65, "width: {}", rect.width);
-        assert!(rect.height >= 15 && rect.height <= 25, "height: {}", rect.height);
+        assert!(
+            rect.width >= 55 && rect.width <= 65,
+            "width: {}",
+            rect.width
+        );
+        assert!(
+            rect.height >= 15 && rect.height <= 25,
+            "height: {}",
+            rect.height
+        );
     }
 
     #[test]
@@ -220,10 +228,7 @@ mod tests {
 
     #[test]
     fn help_modal_new_initializes_correctly() {
-        let modal = HelpModal::new(
-            "Help".into(),
-            vec![("q".into(), "Quit".into())],
-        );
+        let modal = HelpModal::new("Help".into(), vec![("q".into(), "Quit".into())]);
         assert_eq!(modal.title, "Help");
         assert_eq!(modal.bindings.len(), 1);
         assert!(modal.action_tx.is_none());
@@ -233,7 +238,10 @@ mod tests {
     fn help_modal_esc_returns_close_modal() {
         let mut modal = HelpModal::new("Help".into(), vec![]);
         let action = modal
-            .handle_key_event(KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE))
+            .handle_key_event(KeyEvent::new(
+                KeyCode::Esc,
+                crossterm::event::KeyModifiers::NONE,
+            ))
             .expect("handle_key_event");
         assert!(matches!(action, Some(Action::CloseModal)));
     }

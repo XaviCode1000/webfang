@@ -155,10 +155,7 @@ impl BehavioralTest {
 /// `xml_body` is the raw XML string to return.
 pub(crate) async fn mock_sitemap(server: &wiremock::MockServer, url: &str, xml_body: &str) {
     // Extract the path portion from the URL (everything after the host:port)
-    let path_part = url
-        .splitn(4, '/')
-        .nth(3)
-        .unwrap_or("sitemap.xml");
+    let path_part = url.splitn(4, '/').nth(3).unwrap_or("sitemap.xml");
 
     Mock::given(method("GET"))
         .and(wm_path(format!("/{path_part}")))

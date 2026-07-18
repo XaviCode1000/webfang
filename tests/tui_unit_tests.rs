@@ -82,7 +82,8 @@ fn app_dispatch_quit_sets_should_quit() {
     let mut app = App::new(AppMode::Selector).expect("App::new");
     let mut tui = Tui::new().expect("Tui::new");
     tui.enter().expect("tui.enter");
-    app.dispatch_action(Action::Quit, &mut tui).expect("dispatch");
+    app.dispatch_action(Action::Quit, &mut tui)
+        .expect("dispatch");
     assert!(app.should_quit);
     let _ = tui.exit();
 }
@@ -151,11 +152,8 @@ fn app_dispatch_config_done_sets_value() {
     let mut tui = Tui::new().expect("Tui::new");
     tui.enter().expect("tui.enter");
     let value = serde_json::json!({"key": "value"});
-    app.dispatch_action(
-        Action::ConfigDone(Some(value.clone())),
-        &mut tui,
-    )
-    .expect("dispatch");
+    app.dispatch_action(Action::ConfigDone(Some(value.clone())), &mut tui)
+        .expect("dispatch");
     assert!(app.should_quit);
     match &app.result {
         AppResult::Config(Some(v)) => assert_eq!(v, &value),
@@ -181,7 +179,8 @@ fn app_dispatch_tick_does_not_quit() {
     let mut app = App::new(AppMode::Selector).expect("App::new");
     let mut tui = Tui::new().expect("Tui::new");
     tui.enter().expect("tui.enter");
-    app.dispatch_action(Action::Tick, &mut tui).expect("dispatch");
+    app.dispatch_action(Action::Tick, &mut tui)
+        .expect("dispatch");
     assert!(!app.should_quit);
     let _ = tui.exit();
 }
@@ -191,7 +190,8 @@ fn app_dispatch_render_does_not_quit() {
     let mut app = App::new(AppMode::Selector).expect("App::new");
     let mut tui = Tui::new().expect("Tui::new");
     tui.enter().expect("tui.enter");
-    app.dispatch_action(Action::Render, &mut tui).expect("dispatch");
+    app.dispatch_action(Action::Render, &mut tui)
+        .expect("dispatch");
     assert!(!app.should_quit);
     let _ = tui.exit();
 }
@@ -203,28 +203,36 @@ fn app_dispatch_render_does_not_quit() {
 #[test]
 fn modal_esc_returns_close_action() {
     let mut modal = HelpModal::new("Help".into(), vec![]);
-    let action = modal.handle_key_event(key(KeyCode::Esc)).expect("handle_key_event");
+    let action = modal
+        .handle_key_event(key(KeyCode::Esc))
+        .expect("handle_key_event");
     assert!(matches!(action, Some(Action::CloseModal)));
 }
 
 #[test]
 fn modal_q_returns_close_action() {
     let mut modal = HelpModal::new("Help".into(), vec![]);
-    let action = modal.handle_key_event(key(KeyCode::Char('q'))).expect("handle_key_event");
+    let action = modal
+        .handle_key_event(key(KeyCode::Char('q')))
+        .expect("handle_key_event");
     assert!(matches!(action, Some(Action::CloseModal)));
 }
 
 #[test]
 fn modal_uppercase_q_returns_close_action() {
     let mut modal = HelpModal::new("Help".into(), vec![]);
-    let action = modal.handle_key_event(key(KeyCode::Char('Q'))).expect("handle_key_event");
+    let action = modal
+        .handle_key_event(key(KeyCode::Char('Q')))
+        .expect("handle_key_event");
     assert!(matches!(action, Some(Action::CloseModal)));
 }
 
 #[test]
 fn modal_unrelated_key_returns_none() {
     let mut modal = HelpModal::new("Help".into(), vec![]);
-    let action = modal.handle_key_event(key(KeyCode::Char('a'))).expect("handle_key_event");
+    let action = modal
+        .handle_key_event(key(KeyCode::Char('a')))
+        .expect("handle_key_event");
     assert!(action.is_none());
 }
 
@@ -250,9 +258,17 @@ fn centered_rect_60x50_returns_centered_region() {
     let area = ratatui::layout::Rect::new(0, 0, 120, 40);
     let rect = centered_rect(60, 50, area);
     // Width ≈ 60% of 120 = 72
-    assert!(rect.width >= 65 && rect.width <= 80, "width: {}", rect.width);
+    assert!(
+        rect.width >= 65 && rect.width <= 80,
+        "width: {}",
+        rect.width
+    );
     // Height ≈ 50% of 40 = 20
-    assert!(rect.height >= 15 && rect.height <= 25, "height: {}", rect.height);
+    assert!(
+        rect.height >= 15 && rect.height <= 25,
+        "height: {}",
+        rect.height
+    );
     // Should be centered
     let expected_x = (120 - rect.width) / 2;
     let expected_y = (40 - rect.height) / 2;
