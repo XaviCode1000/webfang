@@ -15,15 +15,15 @@
 
 #![cfg(feature = "ai")]
 
-use webfang::domain::DocumentChunk;
-use webfang::infrastructure::ai::model_downloader::ModelDownloader;
-use webfang::infrastructure::ai::{
+use std::path::PathBuf;
+use webfang_ai::infrastructure_ai::model_downloader::ModelDownloader;
+use webfang_ai::infrastructure_ai::{
     default_cache_dir, CacheConfig, ModelCache, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO,
 };
-use webfang::infrastructure::ai::{InferenceEngine, ModelConfig, SemanticCleanerImpl};
-use webfang::SemanticCleaner;
-use webfang::SemanticError;
-use std::path::PathBuf;
+use webfang_ai::infrastructure_ai::{InferenceEngine, ModelConfig, SemanticCleanerImpl};
+use webfang_ai::SemanticCleaner;
+use webfang_ai::SemanticError;
+use webfang_core::domain::DocumentChunk;
 
 // ============================================================================
 // Existing Tests (unchanged - see original file for full content)
@@ -54,6 +54,7 @@ async fn test_model_cache_directory_created() {
 
 /// Test that the model download structure is correct
 #[tokio::test]
+#[ignore = "requires network access to HuggingFace"]
 async fn test_model_download_structure() {
     // Test that ModelDownloader can be constructed with the right API
     let downloader = ModelDownloader::new()
@@ -196,7 +197,7 @@ fn test_model_cache_model_path() {
 /// Test that DownloadProgress calculations work correctly
 #[test]
 fn test_download_progress_calculations() {
-    use webfang::infrastructure::ai::DownloadProgress;
+    use webfang_ai::infrastructure_ai::DownloadProgress;
 
     // Test percentage calculation
     let progress = DownloadProgress {
@@ -277,7 +278,7 @@ fn test_semantic_error_variants() {
 /// Test that ScraperError can be created from SemanticError
 #[test]
 fn test_scraper_error_from_semantic_error() {
-    use webfang::ScraperError;
+    use webfang_core::ScraperError;
 
     let semantic_err = SemanticError::ModelLoad(std::io::Error::new(
         std::io::ErrorKind::NotFound,
@@ -323,7 +324,7 @@ fn test_inference_engine_is_clone() {
 /// Verifies the token batch structure for batch inference.
 #[test]
 fn test_token_batch_creation() {
-    use webfang::infrastructure::ai::tokenizer::TokenBatch;
+    use webfang_ai::infrastructure_ai::tokenizer::TokenBatch;
 
     let batch = TokenBatch::new(
         vec![vec![1, 2, 3], vec![4, 5, 6]],
@@ -341,7 +342,7 @@ fn test_token_batch_creation() {
 /// Verifies that MiniLmTokenizer has the correct Send/Sync properties.
 #[test]
 fn test_tokenizer_type_traits() {
-    use webfang::infrastructure::ai::tokenizer::MiniLmTokenizer;
+    use webfang_ai::infrastructure_ai::tokenizer::MiniLmTokenizer;
 
     fn assert_send<T: Send>() {}
 
@@ -358,7 +359,7 @@ fn test_tokenizer_type_traits() {
 /// Test ChunkId creation and display
 #[test]
 fn test_chunk_id_display() {
-    use webfang::infrastructure::ai::ChunkId;
+    use webfang_ai::infrastructure_ai::ChunkId;
 
     let id = ChunkId(42);
     assert_eq!(format!("{}", id), "chunk-42");
@@ -367,7 +368,7 @@ fn test_chunk_id_display() {
 /// Test ChunkId inner value access
 #[test]
 fn test_chunk_id_inner() {
-    use webfang::infrastructure::ai::ChunkId;
+    use webfang_ai::infrastructure_ai::ChunkId;
 
     let id = ChunkId::new(123);
     assert_eq!(id.inner(), 123);
@@ -376,7 +377,7 @@ fn test_chunk_id_inner() {
 /// Test ChunkId equality
 #[test]
 fn test_chunk_id_equality() {
-    use webfang::infrastructure::ai::ChunkId;
+    use webfang_ai::infrastructure_ai::ChunkId;
 
     let id1 = ChunkId(42);
     let id2 = ChunkId(42);
@@ -389,7 +390,7 @@ fn test_chunk_id_equality() {
 /// Test that SentenceSplitter type exists
 #[test]
 fn test_sentence_splitter_basic() {
-    use webfang::infrastructure::ai::SentenceSplitter;
+    use webfang_ai::infrastructure_ai::SentenceSplitter;
 
     let splitter = SentenceSplitter;
     let sentences = splitter.split("Hello world. How are you?");
@@ -399,7 +400,7 @@ fn test_sentence_splitter_basic() {
 /// Test sentence splitter count
 #[test]
 fn test_sentence_splitter_count() {
-    use webfang::infrastructure::ai::SentenceSplitter;
+    use webfang_ai::infrastructure_ai::SentenceSplitter;
 
     let splitter = SentenceSplitter;
     let count = splitter.count("One. Two. Three.");
@@ -409,7 +410,7 @@ fn test_sentence_splitter_count() {
 /// Test sentence splitter trimmed output
 #[test]
 fn test_sentence_splitter_trimmed() {
-    use webfang::infrastructure::ai::SentenceSplitter;
+    use webfang_ai::infrastructure_ai::SentenceSplitter;
 
     let splitter = SentenceSplitter;
     let sentences = splitter.split_trimmed("  First.  Second.  Third.  ");
@@ -421,7 +422,7 @@ fn test_sentence_splitter_trimmed() {
 /// Test chunker creation with defaults
 #[test]
 fn test_chunker_creation() {
-    use webfang::infrastructure::ai::HtmlChunker;
+    use webfang_ai::infrastructure_ai::HtmlChunker;
 
     let chunker = HtmlChunker::new();
     assert!(chunker.min_chunk_size() > 0);
@@ -433,7 +434,7 @@ fn test_chunker_creation() {
 /// Test chunker builder pattern
 #[test]
 fn test_chunker_builder_pattern() {
-    use webfang::infrastructure::ai::HtmlChunker;
+    use webfang_ai::infrastructure_ai::HtmlChunker;
 
     let chunker = HtmlChunker::new()
         .with_min_chunk_size(80)
@@ -448,7 +449,7 @@ fn test_chunker_builder_pattern() {
 /// Test chunker with custom config
 #[test]
 fn test_chunker_with_config() {
-    use webfang::infrastructure::ai::HtmlChunker;
+    use webfang_ai::infrastructure_ai::HtmlChunker;
 
     let chunker = HtmlChunker::with_config(50, 300, 0.7);
     assert_eq!(chunker.min_chunk_size(), 50);
@@ -459,7 +460,7 @@ fn test_chunker_with_config() {
 /// Test chunker basic HTML processing
 #[test]
 fn test_chunker_basic_html() {
-    use webfang::infrastructure::ai::HtmlChunker;
+    use webfang_ai::infrastructure_ai::HtmlChunker;
 
     let chunker = HtmlChunker::new();
     let html = "<p>This is a paragraph with enough text to meet the minimum chunk size requirement for testing purposes.</p>";
@@ -470,7 +471,7 @@ fn test_chunker_basic_html() {
 /// Test chunker empty HTML
 #[test]
 fn test_chunker_empty_html() {
-    use webfang::infrastructure::ai::HtmlChunker;
+    use webfang_ai::infrastructure_ai::HtmlChunker;
 
     let chunker = HtmlChunker::new();
     let html = "";
@@ -486,7 +487,7 @@ fn test_chunker_empty_html() {
 /// Test cosine similarity with identical vectors
 #[test]
 fn test_cosine_similarity_identical() {
-    use webfang::infrastructure::ai::embedding_ops::cosine_similarity;
+    use webfang_ai::infrastructure_ai::embedding_ops::cosine_similarity;
 
     // Use a normalized vector (magnitude = 1.0)
     // 1/sqrt(8) ≈ 0.3536 for 8-dimensional unit vector
@@ -499,7 +500,7 @@ fn test_cosine_similarity_identical() {
 /// Test cosine similarity with orthogonal vectors
 #[test]
 fn test_cosine_similarity_orthogonal() {
-    use webfang::infrastructure::ai::embedding_ops::cosine_similarity;
+    use webfang_ai::infrastructure_ai::embedding_ops::cosine_similarity;
 
     let a = vec![1.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     let b = vec![0.0f32, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
@@ -510,7 +511,7 @@ fn test_cosine_similarity_orthogonal() {
 /// Test cosine similarity with opposite vectors
 #[test]
 fn test_cosine_similarity_opposite() {
-    use webfang::infrastructure::ai::embedding_ops::cosine_similarity;
+    use webfang_ai::infrastructure_ai::embedding_ops::cosine_similarity;
 
     let a = vec![1.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     let b = vec![-1.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
@@ -521,7 +522,7 @@ fn test_cosine_similarity_opposite() {
 /// Test cosine similarity with empty vectors
 #[test]
 fn test_cosine_similarity_empty() {
-    use webfang::infrastructure::ai::embedding_ops::cosine_similarity;
+    use webfang_ai::infrastructure_ai::embedding_ops::cosine_similarity;
 
     let a: Vec<f32> = vec![];
     let b: Vec<f32> = vec![];
@@ -532,7 +533,7 @@ fn test_cosine_similarity_empty() {
 /// Test dot product scalar fallback
 #[test]
 fn test_dot_product_scalar() {
-    use webfang::infrastructure::ai::embedding_ops::dot_product_scalar;
+    use webfang_ai::infrastructure_ai::embedding_ops::dot_product_scalar;
 
     let a = vec![1.0f32, 2.0, 3.0];
     let b = vec![4.0f32, 5.0, 6.0];
@@ -543,7 +544,7 @@ fn test_dot_product_scalar() {
 /// Test vector normalization
 #[test]
 fn test_normalize() {
-    use webfang::infrastructure::ai::embedding_ops::normalize;
+    use webfang_ai::infrastructure_ai::embedding_ops::normalize;
 
     let v = vec![3.0f32, 4.0];
     let normalized = normalize(&v);
@@ -554,7 +555,7 @@ fn test_normalize() {
 /// Test Euclidean distance
 #[test]
 fn test_euclidean_distance() {
-    use webfang::infrastructure::ai::embedding_ops::euclidean_distance;
+    use webfang_ai::infrastructure_ai::embedding_ops::euclidean_distance;
 
     let a = vec![0.0f32, 0.0];
     let b = vec![3.0f32, 4.0];
@@ -565,7 +566,7 @@ fn test_euclidean_distance() {
 #[test]
 /// Test relevance scorer creation
 fn test_relevance_scorer_creation() {
-    use webfang::infrastructure::ai::RelevanceScorer;
+    use webfang_ai::infrastructure_ai::RelevanceScorer;
 
     let scorer = RelevanceScorer::new(0.3);
     assert_eq!(scorer.threshold(), 0.3);
@@ -574,7 +575,7 @@ fn test_relevance_scorer_creation() {
 /// Test relevance scorer with reference
 #[test]
 fn test_relevance_scorer_with_reference() {
-    use webfang::infrastructure::ai::RelevanceScorer;
+    use webfang_ai::infrastructure_ai::RelevanceScorer;
 
     let reference = vec![0.5f32; 8];
     let scorer = RelevanceScorer::with_reference(0.5, reference.clone());
@@ -586,7 +587,7 @@ fn test_relevance_scorer_with_reference() {
 #[test]
 #[should_panic(expected = "Threshold must be between")]
 fn test_relevance_scorer_invalid_threshold() {
-    use webfang::infrastructure::ai::RelevanceScorer;
+    use webfang_ai::infrastructure_ai::RelevanceScorer;
 
     let _ = RelevanceScorer::new(1.5);
 }
@@ -594,7 +595,7 @@ fn test_relevance_scorer_invalid_threshold() {
 /// Test relevance scorer meets_threshold
 #[test]
 fn test_relevance_scorer_meets_threshold() {
-    use webfang::infrastructure::ai::RelevanceScorer;
+    use webfang_ai::infrastructure_ai::RelevanceScorer;
 
     let scorer = RelevanceScorer::new(0.5);
     assert!(scorer.meets_threshold(0.6));
@@ -605,7 +606,7 @@ fn test_relevance_scorer_meets_threshold() {
 #[test]
 /// Test threshold config default values
 fn test_threshold_config_defaults() {
-    use webfang::infrastructure::ai::ThresholdConfig;
+    use webfang_ai::infrastructure_ai::ThresholdConfig;
 
     let config = ThresholdConfig::new();
     assert_eq!(config.min_threshold(), 0.0);
@@ -616,7 +617,7 @@ fn test_threshold_config_defaults() {
 /// Test threshold config builder pattern
 #[test]
 fn test_threshold_config_builder() {
-    use webfang::infrastructure::ai::ThresholdConfig;
+    use webfang_ai::infrastructure_ai::ThresholdConfig;
 
     let config = ThresholdConfig::new()
         .with_min_threshold(0.2)
@@ -632,7 +633,7 @@ fn test_threshold_config_builder() {
 /// Test threshold config is_valid
 #[test]
 fn test_threshold_config_is_valid() {
-    use webfang::infrastructure::ai::ThresholdConfig;
+    use webfang_ai::infrastructure_ai::ThresholdConfig;
 
     let config = ThresholdConfig::new()
         .with_min_threshold(0.2)
@@ -646,7 +647,7 @@ fn test_threshold_config_is_valid() {
 /// Test threshold config clamp
 #[test]
 fn test_threshold_config_clamp() {
-    use webfang::infrastructure::ai::ThresholdConfig;
+    use webfang_ai::infrastructure_ai::ThresholdConfig;
 
     let config = ThresholdConfig::new()
         .with_min_threshold(0.2)
@@ -661,7 +662,7 @@ fn test_threshold_config_clamp() {
 /// Test threshold config strict preset
 #[test]
 fn test_threshold_config_strict() {
-    use webfang::infrastructure::ai::ThresholdConfig;
+    use webfang_ai::infrastructure_ai::ThresholdConfig;
 
     let config = ThresholdConfig::strict();
     assert_eq!(config.min_threshold(), 0.5);
@@ -672,7 +673,7 @@ fn test_threshold_config_strict() {
 /// Test threshold config lenient preset
 #[test]
 fn test_threshold_config_lenient() {
-    use webfang::infrastructure::ai::ThresholdConfig;
+    use webfang_ai::infrastructure_ai::ThresholdConfig;
 
     let config = ThresholdConfig::lenient();
     assert_eq!(config.min_threshold(), 0.0);
@@ -683,7 +684,7 @@ fn test_threshold_config_lenient() {
 /// Test threshold config balanced preset
 #[test]
 fn test_threshold_config_balanced() {
-    use webfang::infrastructure::ai::ThresholdConfig;
+    use webfang_ai::infrastructure_ai::ThresholdConfig;
 
     let config = ThresholdConfig::balanced();
     assert_eq!(config.min_threshold(), 0.1);
@@ -868,7 +869,7 @@ async fn test_concurrent_embeddings() {
 /// Verifies that chunks are filtered by relevance threshold.
 #[test]
 fn test_relevance_filtering() {
-    use webfang::infrastructure::ai::RelevanceScorer;
+    use webfang_ai::infrastructure_ai::RelevanceScorer;
 
     let scorer = RelevanceScorer::new(0.3);
 
@@ -945,10 +946,7 @@ async fn test_error_chunk_too_large() {
 /// Test offline mode error
 #[tokio::test]
 async fn test_offline_mode_error() {
-    let temp_cache_dir = PathBuf::from(format!(
-        "/tmp/webfang_test_cache_{}",
-        std::process::id()
-    ));
+    let temp_cache_dir = PathBuf::from(format!("/tmp/webfang_test_cache_{}", std::process::id()));
 
     let config = ModelConfig::new()
         .with_cache_dir(temp_cache_dir)
@@ -1026,4 +1024,113 @@ async fn test_pipeline_html_only() {
     } else {
         eprintln!("SKIP: cleaner creation failed");
     }
+}
+
+// ============================================================================
+// PR 2: Two-Tier Model Tests
+// ============================================================================
+
+/// Test that AiModel::Granite97M is the default
+#[test]
+fn test_ai_model_default_is_granite_97m() {
+    use webfang_ai::infrastructure_ai::AiModel;
+    assert_eq!(AiModel::default(), AiModel::Granite97M);
+}
+
+/// Test that AiModel::Granite97M has repo_id matching expected
+#[test]
+fn test_ai_model_granite_97m_repo_id() {
+    use webfang_ai::infrastructure_ai::AiModel;
+    assert_eq!(
+        AiModel::Granite97M.repo_id(),
+        "ibm-granite/granite-embedding-97m-multilingual-r2"
+    );
+}
+
+/// Test that AiModel::Granite311M has repo_id matching expected
+#[test]
+fn test_ai_model_granite_311m_repo_id() {
+    use webfang_ai::infrastructure_ai::AiModel;
+    assert_eq!(
+        AiModel::Granite311M.repo_id(),
+        "ibm-granite/granite-embedding-311m-multilingual-r2"
+    );
+}
+
+/// Test AiModel embedding dimensions
+#[test]
+fn test_ai_model_embedding_dims() {
+    use webfang_ai::infrastructure_ai::AiModel;
+    assert_eq!(AiModel::Granite97M.embedding_dim(), 384);
+    assert_eq!(AiModel::Granite311M.embedding_dim(), 768);
+    // Both produce 384d output (unified storage)
+    assert_eq!(AiModel::Granite97M.output_dim(), 384);
+    assert_eq!(AiModel::Granite311M.output_dim(), 384);
+}
+
+/// Test AiModel::parse with valid and invalid values
+#[test]
+fn test_ai_model_parse() {
+    use webfang_ai::infrastructure_ai::AiModel;
+
+    assert_eq!(AiModel::parse("granite-97m"), Some(AiModel::Granite97M));
+    assert_eq!(AiModel::parse("granite-311m"), Some(AiModel::Granite311M));
+    assert_eq!(AiModel::parse("GRANITE-97M"), Some(AiModel::Granite97M));
+    assert_eq!(AiModel::parse("unknown"), None);
+    assert_eq!(AiModel::parse(""), None);
+}
+
+/// Test AiModel::FromStr trait impl for error messages
+#[test]
+fn test_ai_model_from_str() {
+    use webfang_ai::infrastructure_ai::AiModel;
+
+    let ok: AiModel = "granite-97m".parse().unwrap();
+    assert_eq!(ok, AiModel::Granite97M);
+
+    let err: Result<AiModel, _> = "unknown-model".parse();
+    assert!(err.is_err());
+    let msg = err.unwrap_err();
+    assert!(msg.contains("Unknown AI model"));
+    assert!(msg.contains("granite-97m"));
+    assert!(msg.contains("granite-311m"));
+}
+
+/// Test Matryoshka truncation: 768d → 384d
+#[test]
+fn test_matryoshka_truncation_768_to_384() {
+    use webfang_ai::infrastructure_ai::embedding_ops::{l2_normalize_safe, mean_pool};
+
+    // Simulate 768d native output from Granite-311M
+    let embedding_flat_768: Vec<f32> = (0..768).map(|i| (i as f32 + 1.0) / 768.0).collect();
+    let attention_mask: Vec<i64> = vec![1i64]; // seq_len=1
+
+    let pooled = mean_pool(&embedding_flat_768, 1, 768, &attention_mask);
+    let truncated: Vec<f32> = pooled.iter().take(384).copied().collect();
+    let normalized = l2_normalize_safe(&truncated);
+
+    assert_eq!(normalized.len(), 384);
+
+    // Verify unit length
+    let norm: f32 = normalized.iter().map(|x| x * x).sum::<f32>().sqrt();
+    assert!((norm - 1.0).abs() < 1e-5);
+}
+
+/// Test that 97M 384d output passes through without truncation (identity)
+#[test]
+fn test_matryoshka_identity_for_384d() {
+    use webfang_ai::infrastructure_ai::embedding_ops::{l2_normalize_safe, mean_pool};
+
+    // Simulate native 384d output from Granite-97M
+    let embedding_flat_384: Vec<f32> = (0..384).map(|i| (i as f32 + 1.0) / 384.0).collect();
+    let attention_mask: Vec<i64> = vec![1i64];
+
+    let pooled = mean_pool(&embedding_flat_384, 1, 384, &attention_mask);
+    // No Matryoshka needed — native 384d
+    let truncated: Vec<f32> = pooled.iter().take(384).copied().collect();
+    let normalized = l2_normalize_safe(&truncated);
+
+    assert_eq!(normalized.len(), 384);
+    let norm: f32 = normalized.iter().map(|x| x * x).sum::<f32>().sqrt();
+    assert!((norm - 1.0).abs() < 1e-5);
 }

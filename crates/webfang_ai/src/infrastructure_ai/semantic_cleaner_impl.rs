@@ -60,9 +60,7 @@ use futures::future::try_join_all;
 use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 
-use crate::infrastructure_ai::cache_config::{
-    default_cache_dir, CacheConfig, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO,
-};
+use crate::infrastructure_ai::cache_config::{default_cache_dir, AiModel, CacheConfig};
 use crate::infrastructure_ai::model_cache::ModelCache;
 use crate::infrastructure_ai::{
     ContentPruner, HtmlChunker, InferenceEngine, LegibleContentPruner, MiniLmTokenizer,
@@ -81,9 +79,9 @@ use webfang_core::error::SemanticError;
 /// Following `api-builder-pattern`, use builder methods for configuration:
 ///
 /// ```
-/// # use webfang::infrastructure::ai::ModelConfig;
+/// use webfang_ai::infrastructure_ai::ModelConfig;
 /// let config = ModelConfig::new()
-///     .with_repo("sentence-transformers/all-MiniLM-L6-v2")
+///     .with_repo("ibm-granite/granite-embedding-97m-multilingual-r2")
 ///     .with_offline_mode(true)
 ///     .with_max_tokens(512);
 /// ```
@@ -103,18 +101,22 @@ pub struct ModelConfig {
     pub max_tokens: usize,
     /// Relevance threshold for filtering (0.0-1.0)
     pub relevance_threshold: f32,
+    /// AI model variant to use (Granite-97M or Granite-311M)
+    pub model_variant: AiModel,
 }
 
 impl Default for ModelConfig {
     fn default() -> Self {
+        let model_variant = AiModel::from_env_or_default();
         Self {
-            repo: DEFAULT_MODEL_REPO.to_string(),
-            model_file: DEFAULT_MODEL_FILE.to_string(),
+            repo: model_variant.repo_id().to_string(),
+            model_file: model_variant.model_file().to_string(),
             cache_dir: default_cache_dir(),
             auto_download: true,
             offline_mode: false,
             max_tokens: 32768,        // Granite-97M context window (32K tokens)
             relevance_threshold: 0.3, // Moderate relevance threshold
+            model_variant,
         }
     }
 }
@@ -178,6 +180,17 @@ impl ModelConfig {
             threshold
         );
         self.relevance_threshold = threshold;
+        self
+    }
+
+    /// Set AI model variant
+    ///
+    /// Updates repo, model_file, and model_variant atomically.
+    #[must_use]
+    pub fn with_model_variant(mut self, variant: AiModel) -> Self {
+        self.repo = variant.repo_id().to_string();
+        self.model_file = variant.model_file().to_string();
+        self.model_variant = variant;
         self
     }
 }
@@ -332,8 +345,9 @@ impl SemanticCleanerImpl {
 
         // Load inference engine
         let model_path = cache.model_path(&config.model_file);
+        let model_variant = config.model_variant;
         let inference_engine = Arc::new(
-            InferenceEngine::load_from_file(&model_path)
+            InferenceEngine::load_from_file(&model_path, model_variant)
                 .await
                 .map_err(|e| {
                     SemanticError::ModelLoad(std::io::Error::other(format!(
@@ -693,8 +707,8 @@ mod tests {
     #[test]
     fn test_model_config_default() {
         let config = ModelConfig::default();
-        assert_eq!(config.repo, DEFAULT_MODEL_REPO);
-        assert_eq!(config.model_file, DEFAULT_MODEL_FILE);
+        assert_eq!(config.repo, AiModel::default().repo_id());
+        assert_eq!(config.model_file, AiModel::default().model_file());
         assert!(config.auto_download);
         assert!(!config.offline_mode);
         assert_eq!(config.max_tokens, 32768);

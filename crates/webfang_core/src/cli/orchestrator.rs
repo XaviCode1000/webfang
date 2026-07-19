@@ -137,6 +137,16 @@ pub async fn run(
         Err(e) => return e,
     };
 
+    // Warn if --output-vectors is specified but AI feature is unavailable
+    #[cfg(not(feature = "ai"))]
+    if opts.elastic.output_vectors.is_some() && opts.ai {
+        warn!(
+            "--output-vectors specified with --clean-ai but AI feature is not compiled in. \
+             The output file will be created but no embedding vectors will be written. \
+             Rebuild with --features ai to generate embeddings."
+        );
+    }
+
     // Scraping phase
     let (results, failures): (
         Vec<domain::ScrapedContent>,
@@ -224,7 +234,7 @@ pub async fn run(
         state_store: None, // TODO: Add state store
         resume: opts.crawl.resume,
         ai_threshold: 0.3, // TODO: Add AI settings from CrawlOptions
-        ai_max_tokens: 512,
+        ai_max_tokens: 32768,
         ai_offline: false,
     };
 

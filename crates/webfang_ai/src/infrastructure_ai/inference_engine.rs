@@ -24,6 +24,7 @@ use std::sync::Arc;
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use tracing::{debug, instrument};
 
+use crate::infrastructure_ai::cache_config::AiModel;
 use webfang_core::error::SemanticError;
 
 /// Input data for ONNX model inference
@@ -112,6 +113,7 @@ impl ModelInput {
 #[derive(Debug, Clone)]
 pub struct InferenceEngine {
     model_bytes: Arc<Vec<u8>>,
+    model_variant: AiModel,
 }
 
 impl InferenceEngine {
@@ -124,6 +126,7 @@ impl InferenceEngine {
     /// # Arguments
     ///
     /// * `model_path` - Path to the ONNX model file
+    /// * `model_variant` - Which AI model is being loaded (for dimension handling)
     ///
     /// # Returns
     ///
@@ -135,7 +138,10 @@ impl InferenceEngine {
     /// Returns error if:
     /// - File doesn't exist or can't be read
     /// - File is empty
-    pub async fn load_from_file<P: AsRef<Path>>(model_path: P) -> Result<Self, SemanticError> {
+    pub async fn load_from_file<P: AsRef<Path>>(
+        model_path: P,
+        model_variant: AiModel,
+    ) -> Result<Self, SemanticError> {
         let model_path = model_path.as_ref();
 
         debug!(path = ?model_path, "Loading ONNX model bytes");
@@ -157,9 +163,16 @@ impl InferenceEngine {
 
         let model_bytes = Arc::new(model_data);
 
-        debug!(bytes = model_bytes.len(), "Model bytes loaded successfully");
+        debug!(
+            bytes = model_bytes.len(),
+            ?model_variant,
+            "Model bytes loaded successfully"
+        );
 
-        Ok(Self { model_bytes })
+        Ok(Self {
+            model_bytes,
+            model_variant,
+        })
     }
 
     /// Run inference on token inputs
@@ -182,6 +195,8 @@ impl InferenceEngine {
         // Clone Arc before await to avoid holding references across suspension
         let model_bytes = Arc::clone(&self.model_bytes);
         let input = input.clone();
+        let model_native_dim = self.model_variant.embedding_dim();
+        let model_output_dim = self.model_variant.output_dim();
 
         let result = tokio::task::spawn_blocking(move || {
             let seq_len = input.seq_len();
@@ -266,10 +281,22 @@ impl InferenceEngine {
             // Convert to Vec<f32>
             let embedding_flat: Vec<f32> = raw_data.to_vec();
 
-            // Apply Mean Pooling + L2 Normalization (sentence-transformers standard)
+            // Apply Mean Pooling on the native embedding dimension
+            // For Granite-97M: 384d → mean_pool(384) → l2_normalize
+            // For Granite-311M: 768d → mean_pool(768) → Matryoshka truncate to 384 → l2_normalize
             use crate::infrastructure_ai::embedding_ops::{l2_normalize_safe, mean_pool};
-            let pooled = mean_pool(&embedding_flat, seq_len, 384, &input.attention_mask);
-            let embedding = l2_normalize_safe(&pooled);
+            let pooled = mean_pool(
+                &embedding_flat,
+                seq_len,
+                model_native_dim,
+                &input.attention_mask,
+            );
+
+            // Matryoshka truncation: for 311M, slice native 768d down to first 384 elements
+            // For 97M, model_native_dim == model_output_dim (both 384) → no-op
+            let truncated: Vec<f32> = pooled.iter().take(model_output_dim).copied().collect();
+
+            let embedding = l2_normalize_safe(&truncated);
 
             Ok(embedding)
         })
@@ -285,7 +312,13 @@ impl InferenceEngine {
     /// uses Matryoshka truncation to 384d.
     #[must_use]
     pub fn embedding_dim(&self) -> usize {
-        384
+        self.model_variant.output_dim()
+    }
+
+    /// Get the AI model variant loaded in this engine
+    #[must_use]
+    pub fn model_variant(&self) -> AiModel {
+        self.model_variant
     }
 
     /// Check if engine is ready for inference
@@ -300,6 +333,7 @@ impl InferenceEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure_ai::cache_config::AiModel;
 
     /// Test that InferenceEngine type exists and compiles
     #[test]
@@ -331,7 +365,11 @@ mod tests {
     /// RED → GREEN: load_from_file with missing file → ModelLoad error
     #[tokio::test]
     async fn test_load_from_file_missing_file_returns_model_load_error() {
-        let result = InferenceEngine::load_from_file("/tmp/nonexistent_model_xyz123.onnx").await;
+        let result = InferenceEngine::load_from_file(
+            "/tmp/nonexistent_model_xyz123.onnx",
+            AiModel::Granite97M,
+        )
+        .await;
 
         assert!(result.is_err());
 
@@ -352,7 +390,7 @@ mod tests {
         // Write an empty file
         std::fs::write(&model_path, b"").expect("Failed to create empty file");
 
-        let result = InferenceEngine::load_from_file(&model_path).await;
+        let result = InferenceEngine::load_from_file(&model_path, AiModel::Granite97M).await;
 
         assert!(result.is_err());
 
@@ -364,30 +402,62 @@ mod tests {
         }
     }
 
-    /// RED → GREEN: engine created from valid bytes has embedding_dim() == 384
+    /// RED → GREEN: engine created from valid bytes has correct model variant
     #[tokio::test]
-    async fn test_embedding_dim_returns_384() {
-        // Create a minimal valid ONNX file
-        // A minimal valid ONNX file is a protobuf with a valid ModelProto header.
-        // For a pure unit test without a real model, we verify the constant.
-        // The real inference test will use a downloaded model.
-
-        // For now, we test that the constant is correct.
-        // We create an engine with any bytes (even invalid) — load_from_file
-        // doesn't validate ONNX structure, only reads bytes.
+    async fn test_engine_model_variant_is_preserved() {
         let dir = tempfile::tempdir().expect("Failed to create temp dir");
         let model_path = dir.path().join("minimal.onnx");
 
-        // Write a real minimal ONNX model (valid protobuf for a tiny model)
-        // For the unit test, we'll just use any non-empty bytes to test bytes are stored.
         std::fs::write(&model_path, b"not a real onnx model").expect("Failed to write file");
 
-        let engine = InferenceEngine::load_from_file(&model_path)
+        let engine = InferenceEngine::load_from_file(&model_path, AiModel::Granite311M)
             .await
-            .expect("Should load bytes even if not valid ONNX");
+            .expect("Should load bytes");
 
-        assert_eq!(engine.embedding_dim(), 384);
-        assert!(engine.is_ready());
+        assert_eq!(engine.model_variant(), AiModel::Granite311M);
+        assert_eq!(engine.embedding_dim(), 384); // unified output dim
+    }
+
+    /// Test that embedding_dim returns 384 for both model variants
+    #[tokio::test]
+    async fn test_embedding_dim_is_always_384() {
+        let dir = tempfile::tempdir().expect("Failed to create temp dir");
+
+        // Granite-97M
+        let path_97m = dir.path().join("model_97m.onnx");
+        std::fs::write(&path_97m, b"bytes").expect("Failed to write file");
+        let engine_97m = InferenceEngine::load_from_file(&path_97m, AiModel::Granite97M)
+            .await
+            .expect("Should load");
+        assert_eq!(engine_97m.embedding_dim(), 384);
+
+        // Granite-311M
+        let path_311m = dir.path().join("model_311m.onnx");
+        std::fs::write(&path_311m, b"bytes").expect("Failed to write file");
+        let engine_311m = InferenceEngine::load_from_file(&path_311m, AiModel::Granite311M)
+            .await
+            .expect("Should load");
+        assert_eq!(engine_311m.embedding_dim(), 384);
+    }
+
+    /// Test that native dim is correct per model
+    #[tokio::test]
+    async fn test_native_embedding_dim_per_model() {
+        let dir = tempfile::tempdir().expect("Failed to create temp dir");
+
+        let path_97m = dir.path().join("model_97m.onnx");
+        std::fs::write(&path_97m, b"bytes").expect("Failed to write file");
+        let engine_97m = InferenceEngine::load_from_file(&path_97m, AiModel::Granite97M)
+            .await
+            .expect("Should load");
+        assert_eq!(engine_97m.model_variant.embedding_dim(), 384);
+
+        let path_311m = dir.path().join("model_311m.onnx");
+        std::fs::write(&path_311m, b"bytes").expect("Failed to write file");
+        let engine_311m = InferenceEngine::load_from_file(&path_311m, AiModel::Granite311M)
+            .await
+            .expect("Should load");
+        assert_eq!(engine_311m.model_variant.embedding_dim(), 768);
     }
 
     /// Test that load_from_file with valid non-empty bytes succeeds
@@ -398,7 +468,7 @@ mod tests {
 
         std::fs::write(&model_path, b"some model bytes").expect("Failed to write file");
 
-        let engine = InferenceEngine::load_from_file(&model_path)
+        let engine = InferenceEngine::load_from_file(&model_path, AiModel::Granite97M)
             .await
             .expect("Should succeed with non-empty model file");
 
@@ -434,5 +504,40 @@ mod tests {
     fn test_model_input_is_clone() {
         fn assert_clone<T: Clone>() {}
         assert_clone::<ModelInput>();
+    }
+
+    /// Test Matryoshka truncation: verify that a 768d vector gets truncated to 384d
+    #[test]
+    fn test_matryoshka_truncation_slices_to_384() {
+        use crate::infrastructure_ai::embedding_ops::{l2_normalize_safe, mean_pool};
+
+        // Simulate 768d native output from Granite-311M
+        // The hidden state is (1, seq_len, 768) where seq_len=1
+        let embedding_flat_768: Vec<f32> = (0..768).map(|i| (i as f32 + 1.0) / 768.0).collect();
+        let attention_mask: Vec<i64> = vec![1i64]; // seq_len=1
+
+        // Mean pool on native 768d (1 token, so mean_pool is just the vector itself)
+        let pooled = mean_pool(&embedding_flat_768, 1, 768, &attention_mask);
+
+        // Matryoshka truncation: take first 384 elements
+        let truncated: Vec<f32> = pooled.iter().take(384).copied().collect();
+
+        // L2 normalize the truncated result
+        let normalized = l2_normalize_safe(&truncated);
+
+        // Must be exactly 384d
+        assert_eq!(
+            normalized.len(),
+            384,
+            "Matryoshka truncation must produce 384d output"
+        );
+
+        // Verify unit length
+        let norm: f32 = normalized.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!(
+            (norm - 1.0).abs() < 1e-5,
+            "L2 norm should be 1.0, got {}",
+            norm
+        );
     }
 }
