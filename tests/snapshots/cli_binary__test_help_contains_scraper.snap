@@ -152,12 +152,6 @@ Options:
           
           [env: WEBFANG_TUI=]
 
-      --clean-ai
-          Use AI-powered semantic cleaning for better RAG output
-          
-          [env: WEBFANG_CLEAN_AI=]
-          [aliases: --ai]
-
       --force-js-render
           Force JavaScript rendering for SPA sites (not yet implemented)
           
@@ -257,29 +251,6 @@ Options:
           
           [env: WEBFANG_DOWNLOAD_TIMEOUT=]
           [default: 30]
-
-      --threshold <THRESHOLD>
-          Relevance threshold for AI semantic filtering (0.0-1.0)
-          
-          [env: WEBFANG_THRESHOLD=]
-          [default: 0.3]
-
-      --max-tokens <MAX_TOKENS>
-          Maximum tokens per chunk for AI processing
-          
-          [env: WEBFANG_MAX_TOKENS=]
-          [default: 32768]
-
-      --offline
-          Run AI model in offline mode
-          
-          [env: WEBFANG_OFFLINE=]
-
-      --ai-model <AI_MODEL>
-          AI model to use: granite-97m (default, fast) or granite-311m (higher quality)
-          
-          [env: AI_MODEL_ID=]
-          [possible values: granite-97m, granite-311m]
 
       --sitemap-depth <SITEMAP_DEPTH>
           Maximum recursion depth for sitemap indexes
