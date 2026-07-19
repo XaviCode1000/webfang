@@ -204,7 +204,7 @@ impl SitemapParser {
                         .emulation(wreq_util::Emulation::Chrome145)
                         .timeout(std::time::Duration::from_secs(10))
                         .build()
-                        .expect("BUG: failed to build HTTP client");
+                        .map_err(|e| std::io::Error::other(e.to_string()))?;
                     client
                         .get(&url)
                         .send()
