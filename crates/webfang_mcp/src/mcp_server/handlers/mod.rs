@@ -1,13 +1,11 @@
 //! MCP Handler modules — tool implementations organized by category
 //!
-//! Each module provides a `build_router()` function that returns a partial
-//! `ToolRouter<McpHandler>`. All routers are combined with the `+` operator.
-//!
-//! Note: All 34 tools are defined in the parent mod.rs #[tool_router] block.
-//! These submodules exist for future modularization but currently return
-//! empty routers.
+//! Each module provides a `#[tool_router]` impl block with tools and a
+//! `build_router()` function that returns a partial `ToolRouter<McpHandler>`.
+//! All routers are combined with the `+` operator in `build_tool_router()`.
 
-use super::McpHandler;
+pub use super::McpHandler;
+
 use rmcp::handler::server::tool::ToolRouter;
 
 pub mod ai;
