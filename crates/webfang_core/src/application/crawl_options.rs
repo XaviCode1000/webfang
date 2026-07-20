@@ -16,6 +16,33 @@ use crate::infrastructure::autotuning::ElasticOverrides;
 // Top-level options
 // ============================================================================
 
+/// AI semantic-cleaning configuration, grouped from the four AI CLI flags.
+///
+/// Source is CLI ONLY this phase (`preflight.rs`/TUI untouched). `model` is
+/// plumbed through even though `ExportConfig` does not yet consume it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AiConfig {
+    /// Relevance threshold for AI semantic filtering (0.0-1.0).
+    pub threshold: f32,
+    /// Maximum tokens per chunk for AI processing.
+    pub max_tokens: usize,
+    /// Run AI model in offline mode.
+    pub offline: bool,
+    /// AI model identifier (empty = default).
+    pub model: String,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            threshold: 0.3,
+            max_tokens: 32768,
+            offline: false,
+            model: String::new(),
+        }
+    }
+}
+
 /// Complete crawl configuration extracted from CLI arguments.
 ///
 /// This is the single source of truth for all scraper settings. Services
@@ -49,6 +76,8 @@ pub struct CrawlOptions {
     pub asset_naming: String,
     /// Maximum concurrent asset downloads per page.
     pub download_concurrency: usize,
+    /// AI semantic-cleaning settings (from CLI AI flags).
+    pub ai_config: AiConfig,
 }
 
 /// Batch processing settings.
@@ -267,6 +296,7 @@ impl Default for CrawlOptions {
             batch: BatchOptions::default(),
             asset_naming: "hash".to_string(),
             download_concurrency: 3,
+            ai_config: AiConfig::default(),
         }
     }
 }
@@ -401,5 +431,50 @@ mod tests {
         assert!(tuning.ram_budget_bytes.is_none());
         assert!(tuning.max_resource_bytes.is_none());
         assert!(tuning.db_path.is_none());
+    }
+
+    #[test]
+    fn test_ai_config_defaults() {
+        let config = AiConfig::default();
+        assert_eq!(config.threshold, 0.3);
+        assert_eq!(config.max_tokens, 32768);
+        assert!(!config.offline);
+        assert_eq!(config.model, "");
+    }
+
+    #[test]
+    fn test_ai_config_custom_values() {
+        let config = AiConfig {
+            threshold: 0.7,
+            max_tokens: 2048,
+            offline: true,
+            model: "granite-311m".to_string(),
+        };
+        assert_eq!(config.threshold, 0.7);
+        assert_eq!(config.max_tokens, 2048);
+        assert!(config.offline);
+        assert_eq!(config.model, "granite-311m");
+    }
+
+    #[test]
+    fn test_crawl_options_has_ai_config_field() {
+        let opts = CrawlOptions::default();
+        let ai = opts.ai_config;
+        assert_eq!(ai.threshold, 0.3);
+        assert_eq!(ai.max_tokens, 32768);
+        assert!(!ai.offline);
+        assert_eq!(ai.model, "");
+    }
+
+    #[test]
+    fn test_ai_config_is_clone() {
+        let config = AiConfig {
+            threshold: 0.5,
+            max_tokens: 1024,
+            offline: true,
+            model: "test".to_string(),
+        };
+        let cloned = config.clone();
+        assert_eq!(config, cloned);
     }
 }

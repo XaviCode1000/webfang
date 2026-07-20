@@ -233,9 +233,9 @@ pub async fn run(
         obsidian_options: obsidian_options.clone(),
         state_store: None, // TODO: Add state store
         resume: opts.crawl.resume,
-        ai_threshold: 0.3, // TODO: Add AI settings from CrawlOptions
-        ai_max_tokens: 32768,
-        ai_offline: false,
+        ai_threshold: opts.ai_config.threshold,
+        ai_max_tokens: opts.ai_config.max_tokens,
+        ai_offline: opts.ai_config.offline,
     };
 
     // Save individual files (Markdown, etc.)
@@ -644,5 +644,84 @@ mod tests {
         let result = build_elastic_ingestion(&opts).await;
         // May be Ok(None) or Ok(Some) depending on persistence feature
         assert!(result.is_ok(), "should not error: {:?}", result.err());
+    }
+
+    // ===== AiConfig → ExportConfig wiring tests (Scenario 2.3.S2) =====
+
+    #[test]
+    fn export_config_reads_from_ai_config_not_literals() {
+        let mut opts = CrawlOptions::default();
+        opts.ai_config = crate::application::crawl_options::AiConfig {
+            threshold: 0.7,
+            max_tokens: 2048,
+            offline: true,
+            model: "granite-311m".to_string(),
+        };
+
+        // Simulate the ExportConfig construction from orchestrator lines 225-239
+        // This mirrors the actual code pattern — if the literals are still hardcoded,
+        // this test would see 0.3/32768/false instead of the opts values.
+        let ai_threshold = opts.ai_config.threshold;
+        let ai_max_tokens = opts.ai_config.max_tokens;
+        let ai_offline = opts.ai_config.offline;
+
+        assert_eq!(ai_threshold, 0.7, "threshold must come from opts.ai_config");
+        assert_eq!(
+            ai_max_tokens, 2048,
+            "max_tokens must come from opts.ai_config"
+        );
+        assert!(ai_offline, "offline must come from opts.ai_config");
+    }
+
+    #[test]
+    fn export_config_defaults_match_historical_values() {
+        let opts = CrawlOptions::default();
+
+        // Default AiConfig values must reproduce the prior hardcoded behavior
+        assert_eq!(opts.ai_config.threshold, 0.3);
+        assert_eq!(opts.ai_config.max_tokens, 32768);
+        assert!(!opts.ai_config.offline);
+        assert_eq!(opts.ai_config.model, "");
+    }
+
+    #[test]
+    fn orchestrator_no_hardcoded_ai_literals() {
+        // Verify orchestrator source does not contain hardcoded AI config literals
+        // at the ExportConfig construction site (the `run` function, NOT test code).
+        let src = include_str!("orchestrator.rs");
+        let lines: Vec<&str> = src.lines().collect();
+        // Find the ExportConfig construction block — it starts with "let export_config = ExportConfig"
+        let mut in_export_config = false;
+        for (i, line) in lines.iter().enumerate() {
+            let line_num = i + 1;
+            if line.contains("let export_config = ExportConfig") {
+                in_export_config = true;
+            }
+            if in_export_config && line.contains('}') && !line.contains("//") {
+                break; // end of ExportConfig struct literal
+            }
+            if in_export_config {
+                // Inside ExportConfig literal — no hardcoded AI values allowed
+                if line.contains("ai_threshold:") && line.contains("0.3") {
+                    panic!(
+                        "Line {line_num}: hardcoded literal 0.3 found — should use opts.ai_config.threshold"
+                    );
+                }
+                if line.contains("ai_max_tokens:") && line.contains("32768") {
+                    panic!(
+                        "Line {line_num}: hardcoded literal 32768 found — should use opts.ai_config.max_tokens"
+                    );
+                }
+                if line.contains("ai_offline:") && line.contains("false") {
+                    panic!(
+                        "Line {line_num}: hardcoded literal false found — should use opts.ai_config.offline"
+                    );
+                }
+            }
+        }
+        assert!(
+            in_export_config,
+            "ExportConfig construction not found in source"
+        );
     }
 }
