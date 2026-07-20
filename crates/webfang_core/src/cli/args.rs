@@ -790,6 +790,7 @@ mod tests {
 
             // Asset download
             asset_naming: "slug".into(),
+            download_concurrency: 5,
 
             ..Default::default()
         }
@@ -889,6 +890,7 @@ mod tests {
 
         // ── Asset naming ─────────────────────────────────────────────────
         assert_eq!(opts.asset_naming, "slug");
+        assert_eq!(opts.download_concurrency, 5);
 
         // ── AiConfig (defaults when AI flags not set) ─────────────────────
         // When feature="ai" is OFF, ai_config should be Default (0.3/32768/false/"")
