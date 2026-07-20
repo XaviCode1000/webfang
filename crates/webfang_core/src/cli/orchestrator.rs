@@ -650,12 +650,14 @@ mod tests {
 
     #[test]
     fn export_config_reads_from_ai_config_not_literals() {
-        let mut opts = CrawlOptions::default();
-        opts.ai_config = crate::application::crawl_options::AiConfig {
-            threshold: 0.7,
-            max_tokens: 2048,
-            offline: true,
-            model: "granite-311m".to_string(),
+        let opts = CrawlOptions {
+            ai_config: crate::application::crawl_options::AiConfig {
+                threshold: 0.7,
+                max_tokens: 2048,
+                offline: true,
+                model: "granite-311m".to_string(),
+            },
+            ..Default::default()
         };
 
         // Simulate the ExportConfig construction from orchestrator lines 225-239
