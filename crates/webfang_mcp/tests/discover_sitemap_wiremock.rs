@@ -75,7 +75,11 @@ async fn discover_sitemap_returns_urls_from_fake_sitemap() {
     let json = serde_json::to_string_pretty(&urls).expect("serialization should succeed");
     let parsed: Vec<String> =
         serde_json::from_str(&json).expect("deserialization should produce Vec<String>");
-    assert_eq!(parsed.len(), 2, "JSON round-trip should preserve 2-element array");
+    assert_eq!(
+        parsed.len(),
+        2,
+        "JSON round-trip should preserve 2-element array"
+    );
     assert_eq!(parsed, urls, "JSON round-trip should preserve URL values");
 }
 
