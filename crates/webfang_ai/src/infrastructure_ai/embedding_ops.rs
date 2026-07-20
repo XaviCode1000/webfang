@@ -137,20 +137,16 @@ pub fn dot_product_scalar(a: &[f32], b: &[f32]) -> f32 {
 ///
 /// # Returns
 ///
-/// Normalized vector (unit length)
-///
-/// # Panics
-///
-/// Panics if the vector has zero magnitude
+/// `Some(normalized vector)` if magnitude >= epsilon, `None` for zero-magnitude vectors
 #[must_use]
-pub fn normalize(vector: &[f32]) -> Vec<f32> {
+pub fn normalize(vector: &[f32]) -> Option<Vec<f32>> {
     let magnitude = vector.iter().map(|&x| x * x).sum::<f32>().sqrt();
 
     if magnitude < f32::EPSILON {
-        panic!("Cannot normalize zero-magnitude vector");
+        return None;
     }
 
-    vector.iter().map(|&x| x / magnitude).collect()
+    Some(vector.iter().map(|&x| x / magnitude).collect())
 }
 
 /// Compute Euclidean distance between two vectors
@@ -393,7 +389,7 @@ mod tests {
     #[test]
     fn test_normalize() {
         let v = vec![3.0f32, 4.0];
-        let normalized = normalize(&v);
+        let normalized = normalize(&v).expect("non-zero vector should normalize");
         let magnitude: f32 = normalized.iter().map(|&x| x * x).sum::<f32>().sqrt();
         assert!((magnitude - 1.0).abs() < 0.001);
     }
@@ -441,10 +437,9 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_panic() {
+    fn test_normalize_zero_returns_none() {
         let v = vec![0.0f32, 0.0, 0.0];
-        let result = std::panic::catch_unwind(|| normalize(&v));
-        assert!(result.is_err());
+        assert!(normalize(&v).is_none());
     }
 
     #[test]

@@ -541,7 +541,7 @@ fn test_normalize() {
     use webfang_ai::infrastructure_ai::embedding_ops::normalize;
 
     let v = vec![3.0f32, 4.0];
-    let normalized = normalize(&v);
+    let normalized = normalize(&v).expect("non-zero vector should normalize");
     let magnitude: f32 = normalized.iter().map(|&x| x * x).sum::<f32>().sqrt();
     assert!((magnitude - 1.0).abs() < 0.001);
 }
