@@ -109,6 +109,7 @@ pub use model_downloader::{DownloadProgress, ModelDownloader};
 pub use semantic_cleaner_impl::{ModelConfig, SemanticCleanerImpl};
 
 pub use inference_engine::InferenceEngine;
+pub use inference_engine::InferencePool;
 
 pub use tokenizer::{MiniLmTokenizer, TokenBatch, DEFAULT_MAX_LENGTH};
 

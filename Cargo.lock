@@ -5935,6 +5935,7 @@ name = "webfang_ai"
 version = "2.0.0"
 dependencies = [
  "anyhow",
+ "crossbeam-channel",
  "dirs 5.0.1",
  "futures",
  "hf-hub",
