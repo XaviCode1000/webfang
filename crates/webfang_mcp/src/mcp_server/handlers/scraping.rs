@@ -304,7 +304,6 @@ impl McpHandler {
     }
 
     /// Auto-discover sitemap URL from robots.txt or common locations
-    #[allow(deprecated)]
     #[tool(
         description = "Auto-discover a website's sitemap URL by checking robots.txt and common locations (/sitemap.xml, /sitemap_index.xml, etc.)."
     )]
@@ -321,8 +320,23 @@ impl McpHandler {
             .await
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
 
-        match webfang_core::application::crawler_service::fetch_sitemap(&params.url).await {
-            Ok(urls) => {
+        let seed = url::Url::parse(&params.url).map_err(|e| {
+            McpError::invalid_params(
+                format!("invalid URL: {e}"),
+                Some(serde_json::Value::String("url".to_string())),
+            )
+        })?;
+        let crawler_config = webfang_core::domain::CrawlerConfig::new(seed);
+
+        match webfang_core::application::crawler::crawl_with_sitemap(
+            &params.url,
+            None,
+            &crawler_config,
+        )
+        .await
+        {
+            Ok(discovered) => {
+                let urls: Vec<String> = discovered.into_iter().map(|d| d.url.to_string()).collect();
                 let content = serde_json::to_string_pretty(&urls)
                     .unwrap_or_else(|_| "failed to serialize".into());
                 Ok(CallToolResult::success(vec![Content::text(content)]))

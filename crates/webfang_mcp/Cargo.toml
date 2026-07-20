@@ -43,6 +43,11 @@ tokio = { workspace = true, features = ["test-util"] }
 schemars = { workspace = true }
 insta = { workspace = true }
 scraper = { workspace = true }
+wiremock = { workspace = true }
+
+[[test]]
+name = "discover_sitemap_wiremock"
+path = "tests/discover_sitemap_wiremock.rs"
 
 [lints.clippy]
 doc_markdown = "allow"

@@ -6079,6 +6079,7 @@ dependencies = [
  "url",
  "url-normalize",
  "webfang_core",
+ "wiremock",
  "wreq",
 ]
 
