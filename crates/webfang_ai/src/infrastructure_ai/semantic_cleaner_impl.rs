@@ -12,7 +12,7 @@
 //!     ↓
 //! [Tokenizer] Convert each chunk to token IDs
 //!     ↓
-//! [InferenceEngine] Generate embeddings (spawn_blocking, concurrent)
+//! [InferencePool] Generate embeddings (dedicated worker threads)
 //!     ↓
 //! [RelevanceScorer] Filter by threshold (SIMD cosine similarity)
 //!     ↓
@@ -24,7 +24,7 @@
 //! - [`async-join-parallel`](crate::rust_skills::async_join_parallel): Use `try_join_all` for concurrent embeddings
 //! - [`mem-reuse-collections`](crate::rust_skills::mem_reuse_collections): Pre-allocate `Vec::with_capacity`, reuse buffers
 //! - [`own-borrow-over-clone`](crate::rust_skills::own_borrow_over_clone): Borrow `&chunks`, `&embeddings` - don't clone
-//! - [`async-spawn-blocking`](crate::rust_skills::async_spawn_blocking): InferenceEngine uses spawn_blocking internally
+//! - [`async-spawn-blocking`](crate::rust_skills::async_spawn_blocking): InferencePool uses dedicated worker threads
 //! - [`err-context-chain`](crate::rust_skills::err_context_chain): Add `.context()` to errors
 //! - [`anti-unwrap-abuse`](crate::rust_skills::anti_unwrap_abuse): Use `?` operator, NO `.unwrap()` in prod
 //! - [`anti-lock-across-await`](crate::rust_skills::anti_lock_across_await): Don't hold MutexGuard across `.await`
@@ -57,13 +57,12 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::future::try_join_all;
-use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 
 use crate::infrastructure_ai::cache_config::{default_cache_dir, AiModel, CacheConfig};
 use crate::infrastructure_ai::model_cache::ModelCache;
 use crate::infrastructure_ai::{
-    ContentPruner, HtmlChunker, InferenceEngine, LegibleContentPruner, MiniLmTokenizer,
+    ContentPruner, HtmlChunker, InferencePool, LegibleContentPruner, MiniLmTokenizer,
     RelevanceScorer,
 };
 use webfang_core::domain::semantic_cleaner::{private, SemanticCleaner};
@@ -201,7 +200,7 @@ impl ModelConfig {
 /// It integrates all Phase 2 and Phase 3 modules:
 /// - [`HtmlChunker`]: Semantic chunking with arena allocator
 /// - [`MiniLmTokenizer`]: HuggingFace tokenization
-/// - [`InferenceEngine`]: ONNX model execution with spawn_blocking
+/// - [`InferencePool`]: ONNX model execution with dedicated worker threads
 /// - [`RelevanceScorer`]: SIMD-accelerated cosine similarity filtering
 ///
 /// # Thread Safety
@@ -217,8 +216,8 @@ impl ModelConfig {
 /// - **Concurrency**: Embeddings generated concurrently with `try_join_all`
 pub struct SemanticCleanerImpl {
     // Phase 2: Core inference
-    /// ONNX inference engine (shared via Arc)
-    inference_engine: Arc<InferenceEngine>,
+    /// ONNX inference pool (dedicated worker threads with persistent sessions)
+    inference_pool: Arc<InferencePool>,
     /// HuggingFace tokenizer
     tokenizer: MiniLmTokenizer,
 
@@ -235,9 +234,6 @@ pub struct SemanticCleanerImpl {
     // Config
     /// Model and pipeline configuration
     config: ModelConfig,
-
-    /// Semaphore to limit concurrent inference blocking tasks (avoids thread thrashing on 4-core CPUs)
-    semaphore: Arc<Semaphore>,
 }
 
 impl SemanticCleanerImpl {
@@ -343,19 +339,25 @@ impl SemanticCleanerImpl {
                 });
         }
 
-        // Load inference engine
+        // Load inference pool
         let model_path = cache.model_path(&config.model_file);
         let model_variant = config.model_variant;
-        let inference_engine = Arc::new(
-            InferenceEngine::load_from_file(&model_path, model_variant)
-                .await
-                .map_err(|e| {
-                    SemanticError::ModelLoad(std::io::Error::other(format!(
-                        "Failed to load inference engine: {}",
-                        e
-                    )))
-                })?,
-        );
+        let model_data = tokio::fs::read(&model_path).await.map_err(|e| {
+            SemanticError::ModelLoad(std::io::Error::other(format!(
+                "Failed to read model file '{}': {}",
+                model_path.display(),
+                e
+            )))
+        })?;
+        let model_bytes = Arc::new(model_data);
+        let inference_pool = Arc::new(InferencePool::new(model_bytes, model_variant).map_err(
+            |e| {
+                SemanticError::ModelLoad(std::io::Error::other(format!(
+                    "Failed to create inference pool: {}",
+                    e
+                )))
+            },
+        )?);
 
         // Load tokenizer
         let tokenizer_path = config.cache_dir.join("tokenizer.json");
@@ -377,20 +379,19 @@ impl SemanticCleanerImpl {
 
         info!("Semantic cleaner initialized successfully");
         debug!(
-            embedding_dim = inference_engine.embedding_dim(),
+            embedding_dim = inference_pool.embedding_dim(),
             max_tokens = config.max_tokens,
             relevance_threshold = config.relevance_threshold,
             "Pipeline components loaded"
         );
 
         Ok(Self {
-            inference_engine,
+            inference_pool,
             tokenizer,
             chunker,
             scorer,
             pruner: LegibleContentPruner::standard(),
             config,
-            semaphore: Arc::new(Semaphore::new(num_cpus::get().max(1))),
         })
     }
 
@@ -497,15 +498,12 @@ impl SemanticCleaner for SemanticCleanerImpl {
 
             // Step 3: Generate embeddings CONCURRENTLY (async-join-parallel)
             // Following `async-join-parallel`: use try_join_all for concurrent independent operations
-            // Following `async-spawn-blocking`: InferenceEngine already uses spawn_blocking internally
+            // InferencePool dispatches to dedicated worker threads with persistent sessions
             // Following `anti-lock-across-await`: No locks held across await points
-            let semaphore = Arc::clone(&self.semaphore);
             let embeddings = try_join_all(token_buffers.iter().map(|input| {
-                let sem = Arc::clone(&semaphore);
-                let engine = &self.inference_engine;
+                let pool = &self.inference_pool;
                 async move {
-                    let _permit = sem.acquire_owned().await.expect("semaphore no fue cerrado");
-                    engine.run_inference(input).await
+                    pool.infer(input).await
                 }
             }))
             .await
@@ -542,8 +540,7 @@ impl SemanticCleaner for SemanticCleanerImpl {
     }
 
     fn is_ready(&self) -> bool {
-        // Model is ready if inference engine is ready
-        self.inference_engine.is_ready()
+        self.inference_pool.is_ready()
     }
 }
 

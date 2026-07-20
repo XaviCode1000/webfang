@@ -85,7 +85,7 @@ impl TokenBatch {
     /// Convert batch to Vec<ModelInput> for inference
     ///
     /// This converts each sequence in the batch to a ModelInput
-    /// suitable for passing to InferenceEngine::run_inference.
+    /// suitable for passing to InferencePool::infer.
     ///
     /// # Returns
     ///

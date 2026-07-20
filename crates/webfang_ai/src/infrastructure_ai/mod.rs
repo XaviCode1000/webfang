@@ -20,7 +20,7 @@
 //!     ↓
 //! [Tokenizer] Convert each chunk to token IDs
 //!     ↓
-//! [InferenceEngine] Generate embeddings (spawn_blocking, concurrent)
+//! [InferencePool] Generate embeddings (dedicated worker threads)
 //!     ↓
 //! [RelevanceScorer] Filter by threshold (SIMD cosine similarity)
 //!     ↓
@@ -108,7 +108,6 @@ pub use model_downloader::{DownloadProgress, ModelDownloader};
 
 pub use semantic_cleaner_impl::{ModelConfig, SemanticCleanerImpl};
 
-pub use inference_engine::InferenceEngine;
 pub use inference_engine::InferencePool;
 
 pub use tokenizer::{MiniLmTokenizer, TokenBatch, DEFAULT_MAX_LENGTH};

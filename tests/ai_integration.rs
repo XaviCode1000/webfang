@@ -20,7 +20,7 @@ use webfang_ai::infrastructure_ai::model_downloader::ModelDownloader;
 use webfang_ai::infrastructure_ai::{
     default_cache_dir, CacheConfig, ModelCache, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO,
 };
-use webfang_ai::infrastructure_ai::{InferenceEngine, ModelConfig, SemanticCleanerImpl};
+use webfang_ai::infrastructure_ai::{InferencePool, ModelConfig, SemanticCleanerImpl};
 use webfang_ai::SemanticCleaner;
 use webfang_ai::SemanticError;
 use webfang_core::domain::DocumentChunk;
@@ -290,33 +290,27 @@ fn test_scraper_error_from_semantic_error() {
 }
 
 // ============================================================================
-// InferenceEngine Tests (Phase 2)
+// InferencePool Tests (Phase 2)
 // ============================================================================
 
-/// Test that InferenceEngine is Send + Sync (thread-safe)
+/// Test that InferencePool is Send + Sync (thread-safe)
 ///
-/// This is critical for using InferenceEngine in async contexts
+/// This is critical for using InferencePool in async contexts
 /// with tokio::spawn and across thread boundaries.
-///
-/// Following `own-arc-shared` and `async-spawn-blocking` rules,
-/// InferenceEngine must be Send + Sync to work with Arc and spawn_blocking.
 #[test]
-fn test_inference_engine_is_send_sync() {
+fn test_inference_pool_is_send_sync() {
     fn assert_send<T: Send>() {}
     fn assert_sync<T: Sync>() {}
 
-    assert_send::<InferenceEngine>();
-    assert_sync::<InferenceEngine>();
+    assert_send::<InferencePool>();
+    assert_sync::<InferencePool>();
 }
 
-/// Test that InferenceEngine is Clone (cheap Arc clone)
-///
-/// InferenceEngine wraps Arc<RunnableModel>, so cloning is cheap
-/// (just increments atomic counter) and safe for concurrent use.
+/// Test that InferencePool is Clone (cheap clone)
 #[test]
-fn test_inference_engine_is_clone() {
+fn test_inference_pool_is_clone() {
     fn assert_clone<T: Clone>() {}
-    assert_clone::<InferenceEngine>();
+    assert_clone::<InferencePool>();
 }
 
 /// Test that TokenBatch can be created
@@ -839,11 +833,11 @@ async fn test_semantic_cleaner_long_content() {
 /// Test concurrent embedding generation
 ///
 /// Verifies that try_join_all works correctly for concurrent inference.
-/// This test may need a mock InferenceEngine for comprehensive testing.
+/// This test may need a mock InferencePool for comprehensive testing.
 #[tokio::test]
 async fn test_concurrent_embeddings() {
     // This test verifies the concurrent embedding pattern
-    // In production, this would use real InferenceEngine
+    // In production, this would use real InferencePool
 
     use futures::future::try_join_all;
 
