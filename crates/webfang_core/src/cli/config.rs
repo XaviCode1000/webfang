@@ -4,6 +4,8 @@
 
 use std::path::Path;
 
+use tracing::warn;
+
 /// Default configuration values that can be overridden by a TOML file.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
@@ -43,11 +45,7 @@ impl ConfigDefaults {
             return Self::default();
         };
         toml::from_str(&content).unwrap_or_else(|e| {
-            eprintln!(
-                "Warning: Failed to parse config {}: {}, using defaults",
-                path.display(),
-                e
-            );
+            warn!(path = %path.display(), error = %e, "Failed to parse config, using defaults");
             Self::default()
         })
     }

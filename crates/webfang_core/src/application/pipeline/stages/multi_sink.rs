@@ -53,7 +53,7 @@ impl OutputStage for MultiSinkOutput {
                 match sink.write(item).await {
                     Ok(()) => any_ok = true,
                     Err(e) => {
-                        eprintln!("[multi_sink] sink '{}' failed: {}", sink.name(), e);
+                        tracing::error!(sink = %sink.name(), error = %e, "sink failed");
                         #[cfg(feature = "otel-metrics")]
                         {
                             let sink_name = sink.name().to_owned();

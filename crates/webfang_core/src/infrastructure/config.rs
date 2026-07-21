@@ -365,7 +365,7 @@ impl From<&str> for ConcurrencyConfig {
             Self::default()
         } else {
             s.parse().map(ConcurrencyConfig::new).unwrap_or_else(|_| {
-                eprintln!("Warning: Invalid concurrency '{s}', using auto-detect");
+                tracing::warn!("Invalid concurrency '{s}', using auto-detect");
                 Self::default()
             })
         }

@@ -3,7 +3,7 @@
 //! Orchestrates URL discovery, scraping, and export phases.
 
 use tokio::task::JoinSet;
-use tracing::{info, instrument, warn};
+use tracing::{error, info, instrument, warn};
 
 use crate::application::crawl_options::CrawlOptions;
 use crate::cli::completions::generate_completions;
@@ -257,7 +257,7 @@ pub async fn run(
             CliExit::Success
         },
         Err(e) => {
-            eprintln!("Export failed: {e:?}");
+            error!(error = ?e, "Export failed");
             e
         },
     }
@@ -408,13 +408,13 @@ async fn run_batch(opts: CrawlOptions) -> CliExit {
     let manager = match manager_result {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("Failed to read URLs: {e}");
+            error!(error = %e, "Failed to read URLs");
             return CliExit::NetworkError(format!("Failed to read URLs: {e}"));
         },
     };
 
     if manager.job_count() == 0 {
-        eprintln!("No URLs provided for batch processing");
+        error!("No URLs provided for batch processing");
         return CliExit::UsageError("No URLs provided".into());
     }
 
@@ -432,7 +432,7 @@ async fn run_batch(opts: CrawlOptions) -> CliExit {
     );
 
     for (url, err) in &summary.errors {
-        eprintln!("  Failed: {url} — {err}");
+        error!(%url, error = %err, "Batch URL failed");
     }
 
     batch_exit_code(summary.succeeded, summary.failed)
