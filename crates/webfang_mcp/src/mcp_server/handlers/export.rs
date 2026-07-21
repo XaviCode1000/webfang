@@ -36,7 +36,7 @@ impl McpHandler {
             .unwrap_or(webfang_core::domain::entities::ExportFormat::Jsonl);
 
         let output_dir = PathBuf::from(&params.output_dir);
-        match std::fs::create_dir_all(&output_dir) {
+        match tokio::fs::create_dir_all(&output_dir).await {
             Ok(_) => {
                 let path = output_dir.join(format!("{}.{}", params.filename, format.extension()));
                 Ok(CallToolResult::success(vec![Content::text(format!(

@@ -61,9 +61,20 @@ impl McpHandler {
             .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
 
         let html = params.html.as_deref().unwrap_or("");
-        let headers = wreq::header::HeaderMap::new();
+        let mut header_map = wreq::header::HeaderMap::new();
+        if let Some(ref hdrs) = params.headers {
+            for (key, value) in hdrs {
+                if let (Ok(name), Ok(val)) = (
+                    wreq::header::HeaderName::from_bytes(key.as_bytes()),
+                    wreq::header::HeaderValue::from_str(value),
+                ) {
+                    header_map.insert(name, val);
+                }
+            }
+        }
         match webfang_core::infrastructure::http::waf_engine::WafInspector::verify_integrity(
-            &headers, html,
+            &header_map,
+            html,
         ) {
             Ok(_) => Ok(CallToolResult::success(vec![Content::text(
                 "WAF integrity check passed",

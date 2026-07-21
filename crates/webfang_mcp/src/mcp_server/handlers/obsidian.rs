@@ -91,7 +91,7 @@ impl McpHandler {
             &params.vault_name,
             &params.file_path,
         );
-        match std::process::Command::new("open").arg(&uri).spawn() {
+        match tokio::process::Command::new("open").arg(&uri).spawn() {
             Ok(_) => Ok(CallToolResult::success(vec![Content::text(format!(
                 "Opened in Obsidian: {uri}"
             ))])),

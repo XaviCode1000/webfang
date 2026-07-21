@@ -165,7 +165,11 @@ impl McpHandler {
             url::Url::parse(&params.url),
             url::Url::parse(&params.seed_domain),
         ) {
-            (Ok(u), Ok(s)) => u.host_str() == s.host_str(),
+            (Ok(u), Ok(s)) => {
+                let url_host = u.host_str().unwrap_or("");
+                let seed_host = s.host_str().unwrap_or("");
+                url_host == seed_host || url_host.ends_with(&format!(".{seed_host}"))
+            },
             _ => false,
         };
         Ok(CallToolResult::success(vec![Content::text(

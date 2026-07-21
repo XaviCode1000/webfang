@@ -245,4 +245,6 @@ pub(crate) struct ProcessExportPipelineParams {
 pub(crate) struct VerifyWafIntegrityParams {
     /// HTML body to inspect
     pub html: Option<String>,
+    /// Optional JSON object of HTTP headers to check (e.g. {"server": "cloudflare"})
+    pub headers: Option<std::collections::HashMap<String, String>>,
 }
