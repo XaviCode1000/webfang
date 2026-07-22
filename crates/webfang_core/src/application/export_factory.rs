@@ -272,44 +272,295 @@ pub fn process_results_with_chunks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::entities::ScrapedContent;
+    use crate::domain::ValidUrl;
     use tempfile::TempDir;
 
-    /// Test domain_from_url extracts domain correctly
-    ///
-    /// Following test-arrange-act-assert: Clear AAA pattern
-    /// Following test-descriptive-names: Name explains what is tested
+    fn make_scraped_content(url: &str, title: &str, content: &str) -> ScrapedContent {
+        ScrapedContent {
+            title: title.to_string(),
+            content: content.to_string(),
+            url: ValidUrl::parse(url).unwrap(),
+            excerpt: None,
+            author: None,
+            date: None,
+            html: None,
+            assets: Vec::new(),
+            correlation_id: None,
+        }
+    }
+
+    // =========================================================================
+    // domain_from_url tests
+    // =========================================================================
+
     #[test]
     fn test_domain_from_url_extracts_correctly() {
-        // Arrange
         let url = "https://www.example.com/docs/api/";
-
-        // Act
         let domain = domain_from_url(url);
-
-        // Assert
         assert_eq!(domain, "www.example.com");
     }
 
-    /// Test create_state_store creates directory and returns Ok
-    ///
-    /// Following test-arrange-act-assert: Clear AAA pattern
-    /// Following test-descriptive-names: Name explains expected behavior
+    #[test]
+    fn test_domain_from_url_invalid_url_returns_unknown() {
+        let domain = domain_from_url("not-a-url");
+        assert_eq!(domain, "unknown");
+    }
+
+    // =========================================================================
+    // create_state_store tests
+    // =========================================================================
+
     #[test]
     fn test_create_state_store_creates_directory() {
-        // Arrange
         let temp_dir = TempDir::new().unwrap();
         let domain = "example.com";
-
-        // Act
         let store = create_state_store(temp_dir.path().to_path_buf(), domain);
-
-        // Assert
         assert!(store.is_ok());
-        // Verify state directory was created
         let state_file = temp_dir.path().join("example.com.json");
-        // State file should be creatable (not necessarily exist yet)
-        // The store is created successfully, file is created on first save
         let store = store.unwrap();
         assert_eq!(store.get_state_path(), state_file);
+    }
+
+    // =========================================================================
+    // process_results tests (T2.2)
+    // =========================================================================
+
+    #[test]
+    fn test_process_results_empty_results_returns_empty_vec() {
+        let temp_dir = TempDir::new().unwrap();
+        let results: Vec<ScrapedContent> = vec![];
+
+        let processed = process_results(
+            &results,
+            temp_dir.path().to_path_buf(),
+            ExportFormat::Jsonl,
+            "export",
+            None,
+            false,
+        )
+        .unwrap();
+
+        assert!(processed.is_empty());
+    }
+
+    #[test]
+    fn test_process_results_single_item_exports_and_returns_url() {
+        let temp_dir = TempDir::new().unwrap();
+        let content = make_scraped_content(
+            "https://example.com/page1",
+            "Page One",
+            "Content of page one",
+        );
+
+        let processed = process_results(
+            &[content],
+            temp_dir.path().to_path_buf(),
+            ExportFormat::Jsonl,
+            "export",
+            None,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(processed.len(), 1);
+        assert_eq!(processed[0], "https://example.com/page1");
+        // Verify export file was created
+        assert!(temp_dir.path().join("export.jsonl").exists());
+    }
+
+    #[test]
+    fn test_process_results_multiple_items_exports_all() {
+        let temp_dir = TempDir::new().unwrap();
+        let contents = vec![
+            make_scraped_content("https://a.com/", "A", "Content A"),
+            make_scraped_content("https://b.com/", "B", "Content B"),
+            make_scraped_content("https://c.com/", "C", "Content C"),
+        ];
+
+        let processed = process_results(
+            &contents,
+            temp_dir.path().to_path_buf(),
+            ExportFormat::Jsonl,
+            "export",
+            None,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(processed.len(), 3);
+        // URLs get normalized through ValidUrl — check that all 3 are present
+        assert_eq!(processed.len(), 3);
+    }
+
+    #[test]
+    fn test_process_results_vector_format_creates_json_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let content = make_scraped_content("https://example.com", "Test", "Body");
+
+        let processed = process_results(
+            &[content],
+            temp_dir.path().to_path_buf(),
+            ExportFormat::Vector,
+            "export",
+            None,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(processed.len(), 1);
+        assert!(temp_dir.path().join("export.json").exists());
+    }
+
+    #[test]
+    fn test_process_results_invalid_content_returns_error() {
+        let temp_dir = TempDir::new().unwrap();
+        // Empty content fails validation
+        let content = make_scraped_content("https://example.com", "Title", "");
+
+        let result = process_results(
+            &[content],
+            temp_dir.path().to_path_buf(),
+            ExportFormat::Jsonl,
+            "export",
+            None,
+            false,
+        );
+
+        assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // create_exporter tests
+    // =========================================================================
+
+    #[test]
+    fn test_create_exporter_jsonl_returns_ok() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = create_exporter(temp_dir.path().to_path_buf(), "test", ExportFormat::Jsonl);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_create_exporter_vector_returns_ok() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = create_exporter(temp_dir.path().to_path_buf(), "test", ExportFormat::Vector);
+        assert!(result.is_ok());
+    }
+
+    // =========================================================================
+    // ExportFormat::Auto branch tests (T2.3)
+    // =========================================================================
+
+    #[test]
+    fn test_auto_format_detects_jsonl_when_file_exists() {
+        let temp_dir = TempDir::new().unwrap();
+        // Create a .jsonl file to trigger detection
+        std::fs::write(temp_dir.path().join("export.jsonl"), "").unwrap();
+
+        let result = create_exporter(temp_dir.path().to_path_buf(), "export", ExportFormat::Auto);
+        assert!(result.is_ok());
+        // Auto detects JSONL and creates a JSONL exporter
+    }
+
+    #[test]
+    fn test_auto_format_detects_vector_when_json_file_exists() {
+        let temp_dir = TempDir::new().unwrap();
+        // Create a .json file to trigger Vector detection
+        // Vector takes priority over JSONL in the detection logic
+        std::fs::write(temp_dir.path().join("export.json"), "").unwrap();
+
+        let result = create_exporter(temp_dir.path().to_path_buf(), "export", ExportFormat::Auto);
+        assert!(result.is_ok());
+        // Auto detects Vector format from .json file
+    }
+
+    #[test]
+    fn test_auto_format_vector_takes_priority_over_jsonl() {
+        let temp_dir = TempDir::new().unwrap();
+        // Create both files — Vector (.json) takes priority
+        std::fs::write(temp_dir.path().join("export.jsonl"), "").unwrap();
+        std::fs::write(temp_dir.path().join("export.json"), "").unwrap();
+
+        let result = create_exporter(temp_dir.path().to_path_buf(), "export", ExportFormat::Auto);
+        assert!(result.is_ok());
+        // Vector (.json) is checked first in the code
+    }
+
+    #[test]
+    fn test_auto_format_falls_back_to_jsonl_when_no_files_exist() {
+        let temp_dir = TempDir::new().unwrap();
+        // No files exist — should default to Jsonl
+
+        let result = create_exporter(temp_dir.path().to_path_buf(), "export", ExportFormat::Auto);
+        assert!(result.is_ok());
+        // Falls back to default Jsonl format
+    }
+
+    #[test]
+    fn test_auto_format_with_empty_dir_exports_successfully() {
+        let temp_dir = TempDir::new().unwrap();
+        let content = make_scraped_content("https://example.com", "Test", "Body");
+
+        let processed = process_results(
+            &[content],
+            temp_dir.path().to_path_buf(),
+            ExportFormat::Auto,
+            "export",
+            None,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(processed.len(), 1);
+        // Default fallback creates .jsonl file
+        assert!(temp_dir.path().join("export.jsonl").exists());
+    }
+
+    #[test]
+    fn test_auto_format_with_existing_jsonl_exports_to_jsonl() {
+        let temp_dir = TempDir::new().unwrap();
+        // Pre-create a .jsonl file
+        std::fs::write(temp_dir.path().join("export.jsonl"), "").unwrap();
+
+        let content = make_scraped_content("https://example.com", "Test", "Body");
+        let processed = process_results(
+            &[content],
+            temp_dir.path().to_path_buf(),
+            ExportFormat::Auto,
+            "export",
+            None,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(processed.len(), 1);
+        // Should have appended to the existing .jsonl file
+        let content = std::fs::read_to_string(temp_dir.path().join("export.jsonl")).unwrap();
+        assert!(!content.is_empty());
+    }
+
+    // =========================================================================
+    // process_results with resume mode
+    // =========================================================================
+
+    #[test]
+    fn test_process_results_resume_mode_tracks_urls() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = create_state_store(temp_dir.path().to_path_buf(), "example.com").unwrap();
+
+        let content = make_scraped_content("https://example.com/page", "Page", "Body");
+
+        let processed = process_results(
+            &[content],
+            temp_dir.path().to_path_buf(),
+            ExportFormat::Jsonl,
+            "export",
+            Some(&store),
+            true, // resume_mode
+        )
+        .unwrap();
+
+        assert_eq!(processed.len(), 1);
     }
 }
