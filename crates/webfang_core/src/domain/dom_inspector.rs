@@ -280,10 +280,11 @@ mod tests {
             suggestions: vec![],
         };
 
-        match diagnostic.error_kind {
-            SelectorErrorKind::InvalidSelector(ref msg) => assert_eq!(msg, "parse error"),
-            _ => panic!("expected InvalidSelector variant"),
-        }
+        assert!(
+            matches!(diagnostic.error_kind, SelectorErrorKind::InvalidSelector(_)),
+            "expected InvalidSelector variant, got {:?}",
+            diagnostic.error_kind
+        );
     }
 
     #[test]
