@@ -26,14 +26,18 @@ use tracing::{debug, info, instrument, warn};
 fn scraper_error_from_http(err: HttpError, url: &str) -> ScraperError {
     use crate::domain::error::CrawlError;
     let crawl_err: CrawlError = match err {
-        HttpError::ClientError(code) | HttpError::ServerError(code) => {
-            CrawlError::Http(format!("HTTP {code} at {url}"))
+        HttpError::ClientError(code) | HttpError::ServerError(code) => CrawlError::Http {
+            status: code,
+            url: url.to_string(),
         },
-        HttpError::Forbidden => CrawlError::Http(format!("403 Forbidden at {url}")),
+        HttpError::Forbidden => CrawlError::Http {
+            status: 403,
+            url: url.to_string(),
+        },
         HttpError::RateLimited(retry_after) => CrawlError::RateLimited(retry_after),
         HttpError::Timeout => CrawlError::Timeout,
         HttpError::Connection(msg) => CrawlError::Connection(msg),
-        HttpError::Request(msg) => CrawlError::Http(msg),
+        HttpError::Request(msg) => CrawlError::Internal(msg),
         HttpError::WafChallenge(provider) => CrawlError::WafChallenge {
             provider,
             kind: crate::domain::error::WafDetectionKind::BodySignature,

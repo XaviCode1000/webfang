@@ -54,9 +54,14 @@ pub enum CrawlError {
         status_code: Option<u16>,
     },
 
-    /// HTTP error (status code or request failure)
-    #[error("HTTP error: {0}")]
-    Http(String),
+    /// HTTP error with structured status code and URL
+    #[error("HTTP error {status} at {url}")]
+    Http {
+        /// HTTP status code (e.g. 403, 429, 500)
+        status: u16,
+        /// URL that triggered the error
+        url: String,
+    },
 
     /// URL parsing error
     #[error("invalid URL: {0}")]
@@ -171,13 +176,22 @@ impl From<crate::domain::http_error::HttpError> for CrawlError {
     fn from(e: crate::domain::http_error::HttpError) -> Self {
         use crate::domain::http_error::HttpError;
         match e {
-            HttpError::Forbidden => CrawlError::Http("403 Forbidden".to_string()),
+            HttpError::Forbidden => CrawlError::Http {
+                status: 403,
+                url: String::new(),
+            },
             HttpError::RateLimited(retry_after) => CrawlError::RateLimited(retry_after),
-            HttpError::ClientError(code) => CrawlError::Http(format!("client error {code}")),
-            HttpError::ServerError(code) => CrawlError::Http(format!("server error {code}")),
+            HttpError::ClientError(code) => CrawlError::Http {
+                status: code,
+                url: String::new(),
+            },
+            HttpError::ServerError(code) => CrawlError::Http {
+                status: code,
+                url: String::new(),
+            },
             HttpError::Timeout => CrawlError::Timeout,
             HttpError::Connection(msg) => CrawlError::Connection(msg),
-            HttpError::Request(msg) => CrawlError::Http(msg),
+            HttpError::Request(msg) => CrawlError::Internal(msg),
             HttpError::WafChallenge(provider) => CrawlError::WafChallenge {
                 provider,
                 kind: WafDetectionKind::BodySignature,
@@ -387,7 +401,10 @@ mod tests {
     fn test_http_error_to_crawl_error_conversion() {
         let http_err = crate::domain::http_error::HttpError::Forbidden;
         let crawl_err: CrawlError = http_err.into();
-        assert!(crawl_err.to_string().contains("403"));
+        assert!(matches!(
+            crawl_err,
+            CrawlError::Http { status: 403, .. }
+        ));
     }
 
     #[test]

@@ -411,39 +411,25 @@ impl ScraperError {
 /// but some wreq errors may also be transient.
 fn is_transient_network(e: &(dyn std::error::Error + 'static)) -> bool {
     if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
-        matches!(
+        return matches!(
             io_err.kind(),
             std::io::ErrorKind::ConnectionReset
                 | std::io::ErrorKind::ConnectionAborted
                 | std::io::ErrorKind::TimedOut
                 | std::io::ErrorKind::Interrupted
-        )
-    } else {
-        false
+                | std::io::ErrorKind::BrokenPipe
+        );
     }
-}
-
-/// Parse an HTTP status code from a CrawlError::Http message string.
-/// Returns `(status_code, remaining_url)` if found, `None` otherwise.
-fn parse_http_status_from_msg(msg: &str) -> Option<(u16, &str)> {
-    // Patterns: "HTTP 500 at url", "403 Forbidden at url", "client error 404"
-    if let Some(rest) = msg.strip_prefix("HTTP ") {
-        // "HTTP 500 at url"
-        let code_end = rest.find(' ')?;
-        let code: u16 = rest[..code_end].parse().ok()?;
-        let rest = rest[code_end..].strip_prefix(" at ")?;
-        Some((code, rest))
-    } else if let Some(rest) = msg.strip_prefix("403 Forbidden at ") {
-        Some((403, rest))
-    } else if let Some(rest) = msg.strip_prefix("client error ") {
-        let code: u16 = rest.parse().ok()?;
-        Some((code, ""))
-    } else if let Some(rest) = msg.strip_prefix("server error ") {
-        let code: u16 = rest.parse().ok()?;
-        Some((code, ""))
-    } else {
-        None
+    if e.downcast_ref::<WreqError>().is_some() {
+        let msg = e.to_string().to_ascii_lowercase();
+        return msg.contains("timeout")
+            || msg.contains("timed out")
+            || msg.contains("connection refused")
+            || msg.contains("connection reset")
+            || msg.contains("broken pipe")
+            || msg.contains("connection aborted");
     }
+    false
 }
 
 /// Operational classification of errors for observability and retry logic.
@@ -491,16 +477,7 @@ impl From<crate::domain::error::CrawlError> for ScraperError {
                     ScraperError::Internal(format!("network: {message}"))
                 }
             },
-            CrawlError::Http(msg) => {
-                if let Some((code, rest)) = parse_http_status_from_msg(&msg) {
-                    ScraperError::Http {
-                        status: code,
-                        url: rest.to_string(),
-                    }
-                } else {
-                    ScraperError::Internal(format!("http: {msg}"))
-                }
-            },
+            CrawlError::Http { status, url } => ScraperError::Http { status, url },
             CrawlError::InvalidUrl(msg) => ScraperError::InvalidUrl(msg),
             CrawlError::Io(e) => ScraperError::Io(e),
             CrawlError::WafChallenge { provider, url, .. } => {
@@ -528,6 +505,8 @@ impl From<crate::domain::error::CrawlError> for ScraperError {
                 "retry exhausted for {url} after {attempts} attempts"
             )),
             CrawlError::TransientHttp { status, url } => ScraperError::Http { status, url },
+            // NOTE: retry_after embedded in message. If downstream needs to
+            // pattern-match on retry_after, consider adding ScraperError::RateLimited(u64).
             CrawlError::RateLimited(retry_after) => {
                 ScraperError::Internal(format!("rate limited, retry after {retry_after}s"))
             },
@@ -993,5 +972,93 @@ mod tests {
     fn test_classify_internal_fatal_persistence() {
         let err = ScraperError::persistence("disk full");
         assert_eq!(err.classify(), ErrorClass::InternalFatal);
+    }
+
+    // ========================================================================
+    // B-05: CrawlError → ScraperError → classify() integration tests
+    // ========================================================================
+
+    #[test]
+    fn test_crawl_rate_limited_classifies_as_internal_fatal() {
+        let crawl_err = crate::domain::error::CrawlError::RateLimited(60);
+        let scraper_err: ScraperError = crawl_err.into();
+        assert_eq!(
+            scraper_err.classify(),
+            ErrorClass::InternalFatal,
+            "RateLimited maps to ScraperError::Internal → InternalFatal"
+        );
+    }
+
+    #[test]
+    fn test_crawl_timeout_classifies_as_internal_fatal() {
+        let crawl_err = crate::domain::error::CrawlError::Timeout;
+        let scraper_err: ScraperError = crawl_err.into();
+        assert_eq!(
+            scraper_err.classify(),
+            ErrorClass::InternalFatal,
+            "Timeout maps to ScraperError::Internal → InternalFatal"
+        );
+    }
+
+    #[test]
+    fn test_crawl_connection_classifies_as_internal_fatal() {
+        let crawl_err = crate::domain::error::CrawlError::Connection("refused".into());
+        let scraper_err: ScraperError = crawl_err.into();
+        assert_eq!(
+            scraper_err.classify(),
+            ErrorClass::InternalFatal,
+            "Connection maps to ScraperError::Internal → InternalFatal"
+        );
+    }
+
+    #[test]
+    fn test_crawl_http_403_classifies_as_permanent_fatal() {
+        let crawl_err = crate::domain::error::CrawlError::Http {
+            status: 403,
+            url: "https://example.com".to_string(),
+        };
+        let scraper_err: ScraperError = crawl_err.into();
+        assert_eq!(
+            scraper_err.classify(),
+            ErrorClass::PermanentFatal,
+            "HTTP 403 should be PermanentFatal"
+        );
+    }
+
+    #[test]
+    fn test_crawl_http_503_classifies_as_transient_retriable() {
+        let crawl_err = crate::domain::error::CrawlError::Http {
+            status: 503,
+            url: "https://example.com".to_string(),
+        };
+        let scraper_err: ScraperError = crawl_err.into();
+        assert_eq!(
+            scraper_err.classify(),
+            ErrorClass::TransientRetriable,
+            "HTTP 503 should be TransientRetriable"
+        );
+    }
+
+    #[test]
+    fn test_crawl_http_429_classifies_as_transient_backoff() {
+        let crawl_err = crate::domain::error::CrawlError::Http {
+            status: 429,
+            url: "https://example.com".to_string(),
+        };
+        let scraper_err: ScraperError = crawl_err.into();
+        assert_eq!(
+            scraper_err.classify(),
+            ErrorClass::TransientBackoff,
+            "HTTP 429 should be TransientBackoff"
+        );
+    }
+
+    #[test]
+    fn test_is_transient_network_broken_pipe() {
+        let err = ScraperError::Network(Box::new(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "broken pipe",
+        )));
+        assert_eq!(err.classify(), ErrorClass::TransientRetriable);
     }
 }
