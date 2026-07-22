@@ -32,12 +32,12 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::io::Write;
 use std::pin::Pin;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::domain::clock::{SystemUtcClock, UtcClock};
 use crate::domain::repository::VectorRepository;
 use crate::error::ScraperError;
 
@@ -80,10 +80,12 @@ pub struct StreamRepository {
     /// and read by [`VectorRepository::save_chunk`] (the chunk call only receives
     /// `resource_url`, not the title).
     titles: Mutex<HashMap<String, String>>,
+    /// Injected clock for deterministic timestamps in tests.
+    clock: Arc<dyn UtcClock>,
 }
 
 impl StreamRepository {
-    /// Open the JSONL sink.
+    /// Open the JSONL sink with the system clock.
     ///
     /// * `path == "-"` → buffered stdout.
     /// * otherwise → a file created (truncated) at `path`.
@@ -92,6 +94,15 @@ impl StreamRepository {
     ///
     /// Returns [`ScraperError::Io`] if the file cannot be created.
     pub fn new(path: &str) -> Result<Self, ScraperError> {
+        Self::with_clock(path, Arc::new(SystemUtcClock))
+    }
+
+    /// Open the JSONL sink with an injected clock.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScraperError::Io`] if the file cannot be created.
+    pub fn with_clock(path: &str, clock: Arc<dyn UtcClock>) -> Result<Self, ScraperError> {
         let boxed: Box<dyn Write + Send> = if path == "-" {
             Box::new(std::io::stdout())
         } else {
@@ -113,6 +124,7 @@ impl StreamRepository {
         Ok(Self {
             writer: Mutex::new(std::io::BufWriter::new(boxed)),
             titles: Mutex::new(HashMap::new()),
+            clock,
         })
     }
 
@@ -126,6 +138,7 @@ impl StreamRepository {
         Self {
             writer: Mutex::new(std::io::BufWriter::new(w)),
             titles: Mutex::new(HashMap::new()),
+            clock: Arc::new(SystemUtcClock),
         }
     }
 }
@@ -184,7 +197,7 @@ impl VectorRepository for StreamRepository {
                 chunk_text: content.to_string(),
                 embedding,
                 metadata: Value::Null,
-                timestamp: Utc::now().to_rfc3339(),
+                timestamp: self.clock.now().to_rfc3339(),
             };
 
             let line = serde_json::to_string(&record)?;
