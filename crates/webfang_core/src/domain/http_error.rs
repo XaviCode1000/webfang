@@ -18,7 +18,7 @@ pub type HttpResult<T> = Result<T, HttpError>;
 /// - `Forbidden`: 403 - retry with different UA
 /// - `RateLimited`: 429 - respect Retry-After header
 /// - `ClientError` / `ServerError`: other 4xx/5xx codes
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub enum HttpError {
     /// 403 Forbidden - site blocking
     Forbidden,
@@ -66,46 +66,46 @@ mod tests {
     #[test]
     fn test_http_error_forbidden() {
         let err = HttpError::Forbidden;
-        assert_eq!(err, HttpError::Forbidden);
+        assert!(matches!(err, HttpError::Forbidden));
     }
 
     #[test]
     fn test_http_error_rate_limited() {
         let err = HttpError::RateLimited(60);
-        assert_eq!(err, HttpError::RateLimited(60));
+        assert!(matches!(err, HttpError::RateLimited(60)));
 
         let err2 = HttpError::RateLimited(30);
-        assert_ne!(err, err2);
+        assert!(!matches!(err2, HttpError::RateLimited(60)));
     }
 
     #[test]
     fn test_http_error_client_error() {
         let err = HttpError::ClientError(404);
-        assert_eq!(err, HttpError::ClientError(404));
+        assert!(matches!(err, HttpError::ClientError(404)));
     }
 
     #[test]
     fn test_http_error_server_error() {
         let err = HttpError::ServerError(500);
-        assert_eq!(err, HttpError::ServerError(500));
+        assert!(matches!(err, HttpError::ServerError(500)));
     }
 
     #[test]
     fn test_http_error_timeout() {
         let err = HttpError::Timeout;
-        assert_eq!(err, HttpError::Timeout);
+        assert!(matches!(err, HttpError::Timeout));
     }
 
     #[test]
     fn test_http_error_connection() {
         let err = HttpError::Connection("Connection refused".into());
-        assert_eq!(err, HttpError::Connection("Connection refused".into()));
+        assert!(matches!(err, HttpError::Connection(_)));
     }
 
     #[test]
     fn test_http_error_request() {
         let err = HttpError::Request("Invalid URL".into());
-        assert_eq!(err, HttpError::Request("Invalid URL".into()));
+        assert!(matches!(err, HttpError::Request(_)));
     }
 
     #[test]
