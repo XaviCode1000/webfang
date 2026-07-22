@@ -11,6 +11,7 @@
 //! - **Zero-cost abstraction** — `impl SessionManager` not `Box<dyn SessionManager>`
 
 use std::fmt;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "otel-metrics")]
@@ -18,6 +19,8 @@ use std::hash::{Hash, Hasher};
 
 use dashmap::DashMap;
 use tracing::{debug, instrument, warn};
+
+use crate::domain::clock::{Clock, SystemClock};
 
 #[cfg(feature = "otel-metrics")]
 use crate::infrastructure::observability::metrics_instruments::{
@@ -124,6 +127,8 @@ pub struct DomainSessionPool {
     /// Per-domain session states. Key = domain string, Value = Vec of session states.
     sessions: DashMap<String, Vec<SessionState>>,
     config: SessionPoolConfig,
+    /// Injected clock for deterministic time in tests.
+    clock: Arc<dyn Clock>,
 }
 
 /// Hash a domain string to a bounded bucket (0–999) for metric attributes.
@@ -137,19 +142,20 @@ fn domain_bucket(domain: &str) -> u64 {
 }
 
 impl DomainSessionPool {
-    /// Create a new session pool with the given configuration.
+    /// Create a new session pool with the given configuration and clock.
     #[must_use]
-    pub fn new(config: SessionPoolConfig) -> Self {
+    pub fn new(config: SessionPoolConfig, clock: Arc<dyn Clock>) -> Self {
         Self {
             sessions: DashMap::new(),
             config,
+            clock,
         }
     }
 
-    /// Create a pool with default configuration.
+    /// Create a pool with default configuration using the system clock.
     #[must_use]
     pub fn default_pool() -> Self {
-        Self::new(SessionPoolConfig::default())
+        Self::new(SessionPoolConfig::default(), Arc::new(SystemClock))
     }
 
     /// Count total healthy sessions across all domains and update the gauge.
@@ -197,7 +203,7 @@ impl SessionManager for DomainSessionPool {
             .or_insert_with(|| vec![SessionState::healthy(); self.config.pool_size]);
 
         // Evict stale sessions first
-        let now = Instant::now();
+        let now = self.clock.now();
         for state in sessions.iter_mut() {
             if let Some(last_failure) = state.last_failure_time {
                 if now.duration_since(last_failure) > self.config.ttl_duration
@@ -266,11 +272,11 @@ impl SessionManager for DomainSessionPool {
         if let Some(mut sessions) = self.sessions.get_mut(domain) {
             if let Some(state) = sessions.get_mut(session_id.0) {
                 state.consecutive_failures += 1;
-                state.last_failure_time = Some(Instant::now());
+                state.last_failure_time = Some(self.clock.now());
 
                 if should_ban {
                     let delay = self.backoff_delay(state.consecutive_failures);
-                    state.next_retry_time = Some(Instant::now() + delay);
+                    state.next_retry_time = Some(self.clock.now() + delay);
                     state.status = SessionStatus::Banned;
                     #[cfg(feature = "otel-metrics")]
                     {
@@ -318,7 +324,7 @@ impl SessionManager for DomainSessionPool {
 
     #[instrument(skip(self))]
     fn evict_stale(&self) {
-        let now = Instant::now();
+        let now = self.clock.now();
         for mut entry in self.sessions.iter_mut() {
             let domain = entry.key().clone();
             let sessions = entry.value_mut();
@@ -356,6 +362,7 @@ mod sealed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::clock::MockClock;
     use std::thread;
 
     // ── Task 3.3: State transitions ──
@@ -435,7 +442,7 @@ mod tests {
             max_exp: 6,
             ..Default::default()
         };
-        let pool = DomainSessionPool::new(config);
+        let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
         let d_large = pool.backoff_delay(100);
         assert_eq!(d_large, Duration::from_secs(10));
     }
@@ -448,7 +455,7 @@ mod tests {
             max_exp: 4,
             ..Default::default()
         };
-        let pool = DomainSessionPool::new(config);
+        let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
         let d4 = pool.backoff_delay(4);
         let d5 = pool.backoff_delay(5);
         let d6 = pool.backoff_delay(6);
@@ -467,7 +474,7 @@ mod tests {
             ttl_duration: Duration::from_millis(1),
             ..Default::default()
         };
-        let pool = DomainSessionPool::new(config);
+        let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
         let id = pool.acquire("example.com").unwrap();
         pool.report_failure("example.com", id, 429);
 
@@ -485,7 +492,7 @@ mod tests {
             ttl_duration: Duration::from_millis(1),
             ..Default::default()
         };
-        let pool = DomainSessionPool::new(config);
+        let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
         let id = pool.acquire("example.com").unwrap();
         pool.report_failure("example.com", id, 429);
 
@@ -502,7 +509,7 @@ mod tests {
             ttl_duration: Duration::from_millis(1),
             ..Default::default()
         };
-        let pool = DomainSessionPool::new(config);
+        let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
         let _id = pool.acquire("example.com").unwrap();
 
         thread::sleep(Duration::from_millis(5));
@@ -520,7 +527,7 @@ mod tests {
             pool_size: 3,
             ..Default::default()
         };
-        let pool = DomainSessionPool::new(config);
+        let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
         let _id = pool.acquire("example.com").unwrap();
 
         assert_eq!(pool.domain_count("example.com"), 3);
@@ -532,7 +539,7 @@ mod tests {
             pool_size: 4,
             ..Default::default()
         };
-        let pool = DomainSessionPool::new(config);
+        let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
         let id1 = pool.acquire("example.com").unwrap();
         let id2 = pool.acquire("example.com").unwrap();
 
@@ -577,7 +584,7 @@ mod tests {
             max_exp: 1,
             ..Default::default()
         };
-        let pool = DomainSessionPool::new(config);
+        let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
         let id = pool.acquire("example.com").unwrap();
         pool.report_failure("example.com", id, 429);
 

@@ -36,6 +36,12 @@ pub trait UtcClock: Send + Sync {
 /// System clock using real `Instant::now()`.
 pub struct SystemClock;
 
+impl Default for SystemClock {
+    fn default() -> Self {
+        Self
+    }
+}
+
 impl Clock for SystemClock {
     fn now(&self) -> Instant {
         Instant::now()
