@@ -95,7 +95,7 @@ pub trait AssetDownloaderPort: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::http_error::{HttpError, HttpResult};
+    use crate::domain::http_error::HttpError;
     use crate::domain::http_port::HttpResponse;
     use std::collections::HashMap;
 
