@@ -516,35 +516,23 @@ impl From<crate::domain::error::CrawlError> for ScraperError {
             CrawlError::MaxPagesExceeded { max } => {
                 ScraperError::CrawlLimit(format!("maximum pages {max} exceeded"))
             },
-            CrawlError::UrlExcluded(url) => {
-                ScraperError::Internal(format!("URL excluded: {url}"))
-            },
+            CrawlError::UrlExcluded(url) => ScraperError::Internal(format!("URL excluded: {url}")),
             CrawlError::InvalidContentType(ct) => {
                 ScraperError::Internal(format!("invalid content type: {ct}"))
             },
             CrawlError::Storage(msg) => ScraperError::Internal(format!("storage: {msg}")),
-            CrawlError::Checkpoint(msg) => {
-                ScraperError::Internal(format!("checkpoint: {msg}"))
-            },
-            CrawlError::SessionPool(msg) => {
-                ScraperError::Internal(format!("session pool: {msg}"))
-            },
-            CrawlError::Discovery(msg) => {
-                ScraperError::Internal(format!("discovery: {msg}"))
-            },
-            CrawlError::RetryExhausted { url, attempts } => {
-                ScraperError::Internal(format!(
-                    "retry exhausted for {url} after {attempts} attempts"
-                ))
-            },
+            CrawlError::Checkpoint(msg) => ScraperError::Internal(format!("checkpoint: {msg}")),
+            CrawlError::SessionPool(msg) => ScraperError::Internal(format!("session pool: {msg}")),
+            CrawlError::Discovery(msg) => ScraperError::Internal(format!("discovery: {msg}")),
+            CrawlError::RetryExhausted { url, attempts } => ScraperError::Internal(format!(
+                "retry exhausted for {url} after {attempts} attempts"
+            )),
             CrawlError::TransientHttp { status, url } => ScraperError::Http { status, url },
             CrawlError::RateLimited(retry_after) => {
                 ScraperError::Internal(format!("rate limited, retry after {retry_after}s"))
             },
             CrawlError::Timeout => ScraperError::Internal("request timeout".to_string()),
-            CrawlError::Connection(msg) => {
-                ScraperError::Internal(format!("connection: {msg}"))
-            },
+            CrawlError::Connection(msg) => ScraperError::Internal(format!("connection: {msg}")),
             CrawlError::ResourceExhausted {
                 resource,
                 limit,
@@ -552,9 +540,7 @@ impl From<crate::domain::error::CrawlError> for ScraperError {
             } => ScraperError::Internal(format!(
                 "resource exhausted: {resource:?} limit={limit} actual={actual}"
             )),
-            CrawlError::SitemapEmpty => {
-                ScraperError::SitemapNotFound("empty sitemap".to_string())
-            },
+            CrawlError::SitemapEmpty => ScraperError::SitemapNotFound("empty sitemap".to_string()),
             CrawlError::SitemapDepthExceeded => {
                 ScraperError::CrawlLimit("sitemap depth exceeded".to_string())
             },

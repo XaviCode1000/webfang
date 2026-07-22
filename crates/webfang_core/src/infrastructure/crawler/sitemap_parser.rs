@@ -195,27 +195,27 @@ impl SitemapParser {
         let base_url = Url::parse(url)?;
 
         // [3.6] RetryPolicy: wrap HTTP request with retry logic
-        let response = self
-            .retry_policy
-            .execute_with_retry(|| {
-                let url = url.to_string();
-                async move {
-                    #[allow(clippy::io_other_error)]
-                    let client = wreq::Client::builder()
-                        .emulation(wreq_util::Emulation::Chrome145)
-                        .timeout(std::time::Duration::from_secs(10))
-                        .build()
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-                    #[allow(clippy::io_other_error)]
-                    client
-                        .get(&url)
-                        .send()
-                        .await
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                }
-            })
-            .await
-            .map_err(|e| SitemapError::HttpError(e.to_string()))?;
+        let response =
+            self.retry_policy
+                .execute_with_retry(|| {
+                    let url = url.to_string();
+                    async move {
+                        #[allow(clippy::io_other_error)]
+                        let client = wreq::Client::builder()
+                            .emulation(wreq_util::Emulation::Chrome145)
+                            .timeout(std::time::Duration::from_secs(10))
+                            .build()
+                            .map_err(|e| {
+                                std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                            })?;
+                        #[allow(clippy::io_other_error)]
+                        client.get(&url).send().await.map_err(|e| {
+                            std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                        })
+                    }
+                })
+                .await
+                .map_err(|e| SitemapError::HttpError(e.to_string()))?;
 
         // Validate content type
         let content_type = response
