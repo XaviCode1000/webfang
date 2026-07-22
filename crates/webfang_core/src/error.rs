@@ -443,25 +443,6 @@ impl From<crate::infrastructure::error::InfraError> for ScraperError {
     }
 }
 
-impl From<crate::application::error::AppError> for ScraperError {
-    fn from(e: crate::application::error::AppError) -> Self {
-        match e {
-            crate::application::error::AppError::Config(msg) => ScraperError::Config(msg),
-            crate::application::error::AppError::Export(msg) => ScraperError::Export(msg),
-            crate::application::error::AppError::ExportBatch(msg) => ScraperError::ExportBatch(msg),
-            crate::application::error::AppError::FeatureGated(msg) => {
-                ScraperError::FeatureGated(msg)
-            },
-            crate::application::error::AppError::GlobalTimeout => ScraperError::GlobalTimeout,
-            crate::application::error::AppError::SlowlorisTimeout => ScraperError::SlowlorisTimeout,
-            crate::application::error::AppError::PayloadTooLarge => ScraperError::PayloadTooLarge,
-            crate::application::error::AppError::SemaphoreInanition => {
-                ScraperError::SemaphoreInanition
-            },
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -779,56 +760,4 @@ mod tests {
         assert!(scraper_err.to_string().contains("URL"));
     }
 
-    // ========================================================================
-    // Phase 2: Error Stratification — AppError → ScraperError From tests
-    // ========================================================================
-
-    #[test]
-    fn test_app_error_config_wraps_to_scraper() {
-        let app_err = crate::application::error::AppError::Config("invalid port".to_string());
-        let scraper_err: ScraperError = app_err.into();
-        assert!(scraper_err.to_string().contains("invalid port"));
-        assert!(scraper_err.to_string().contains("configuración"));
-    }
-
-    #[test]
-    fn test_app_error_export_wraps_to_scraper() {
-        let app_err = crate::application::error::AppError::Export("write failed".to_string());
-        let scraper_err: ScraperError = app_err.into();
-        assert!(scraper_err.to_string().contains("write failed"));
-        assert!(scraper_err.to_string().contains("exportación"));
-    }
-
-    #[test]
-    fn test_app_error_export_batch_wraps_to_scraper() {
-        let app_err =
-            crate::application::error::AppError::ExportBatch("partial success".to_string());
-        let scraper_err: ScraperError = app_err.into();
-        assert!(scraper_err.to_string().contains("partial success"));
-        assert!(scraper_err.to_string().contains("batch"));
-    }
-
-    #[test]
-    fn test_app_error_feature_gated_wraps_to_scraper() {
-        let app_err = crate::application::error::AppError::FeatureGated("AI module".to_string());
-        let scraper_err: ScraperError = app_err.into();
-        assert!(scraper_err.to_string().contains("AI module"));
-    }
-
-    #[test]
-    fn test_app_error_question_mark_operator() {
-        fn inner() -> std::result::Result<(), crate::application::error::AppError> {
-            Err(crate::application::error::AppError::Config(
-                "test".to_string(),
-            ))
-        }
-
-        fn outer() -> std::result::Result<(), ScraperError> {
-            inner().map_err(ScraperError::from)?;
-            Ok(())
-        }
-
-        let err = outer().unwrap_err();
-        assert!(err.to_string().contains("configuración"));
-    }
 }
