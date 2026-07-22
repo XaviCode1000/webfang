@@ -136,10 +136,12 @@ impl StateStore {
             .open(&lock_path)
             .map_err(ScraperError::Io)?;
         let _ = writeln!(lock_file, "pid={} op=shared_read", std::process::id());
+        #[allow(clippy::io_other_error)]
         fs2::FileExt::lock_shared(&lock_file).map_err(|e| {
-            ScraperError::Io(std::io::Error::other(format!(
-                "failed to acquire state read lock: {e}"
-            )))
+            ScraperError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("failed to acquire state read lock: {e}"),
+            ))
         })?;
 
         // Read and parse JSON file
@@ -201,10 +203,12 @@ impl StateStore {
             .open(&lock_path)
             .map_err(ScraperError::Io)?;
         let _ = writeln!(lock_file, "pid={} op=exclusive_write", std::process::id());
+        #[allow(clippy::io_other_error)]
         lock_file.lock_exclusive().map_err(|e| {
-            ScraperError::Io(std::io::Error::other(format!(
-                "failed to acquire state lock: {e}"
-            )))
+            ScraperError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("failed to acquire state lock: {e}"),
+            ))
         })?;
 
         // Serialize to JSON

@@ -171,7 +171,10 @@ mod tests {
 
     #[test]
     fn test_download_error_display() {
-        let err = DownloadError::Network(Box::new(std::io::Error::other("connection refused")));
+        let err = DownloadError::Network(Box::new(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "connection refused",
+        )));
         assert!(err.to_string().contains("connection refused"));
 
         let err = DownloadError::Http {
@@ -192,7 +195,10 @@ mod tests {
 
     #[test]
     fn test_download_error_into_crawl_error() {
-        let err = DownloadError::Network(Box::new(std::io::Error::other("reset")));
+        let err = DownloadError::Network(Box::new(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "reset",
+        )));
         let crawl_err: crate::domain::CrawlError = err.into();
         assert!(crawl_err.to_string().contains("download error"));
         assert!(crawl_err.to_string().contains("reset"));

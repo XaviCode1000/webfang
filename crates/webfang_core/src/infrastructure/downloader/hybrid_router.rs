@@ -323,7 +323,8 @@ mod tests {
 
     impl Downloader for FailingDownloader {
         async fn fetch(&self, _url: &Url) -> Result<FetchedPage, DownloadError> {
-            Err(DownloadError::Network(Box::new(std::io::Error::other(
+            Err(DownloadError::Network(Box::new(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
                 self.message.clone(),
             ))))
         }

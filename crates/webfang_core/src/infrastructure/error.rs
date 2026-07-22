@@ -93,7 +93,10 @@ mod tests {
 
     #[test]
     fn test_infra_error_network() {
-        let err = InfraError::Network(Box::new(std::io::Error::other("connection refused")));
+        let err = InfraError::Network(Box::new(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "connection refused",
+        )));
         assert!(err.to_string().contains("connection refused"));
         assert!(err.to_string().contains("red"));
     }
@@ -116,7 +119,10 @@ mod tests {
 
     #[test]
     fn test_infra_error_is_std_error() {
-        let err = InfraError::Network(Box::new(std::io::Error::other("test")));
+        let err = InfraError::Network(Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "test",
+        )));
         let _: &dyn std::error::Error = &err;
     }
 }

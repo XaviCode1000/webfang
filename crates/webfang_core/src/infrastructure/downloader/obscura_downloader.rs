@@ -68,9 +68,10 @@ impl Downloader for ObscuraDownloader {
             Ok(Ok(Ok(output))) => {
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    return Err(DownloadError::Network(Box::new(std::io::Error::other(
-                        format!("obscura exited with {}: {stderr}", output.status),
-                    ))));
+                    return Err(DownloadError::Internal(format!(
+                        "obscura exited with {}: {stderr}",
+                        output.status
+                    )));
                 }
 
                 let markdown = String::from_utf8_lossy(&output.stdout).to_string();

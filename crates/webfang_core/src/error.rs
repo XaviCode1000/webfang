@@ -147,6 +147,18 @@ pub enum ScraperError {
     /// HTTP/2 configuration error (ALPN, settings, or handshake failure)
     #[error("Error de configuración HTTP/2: {0}")]
     H2Config(String),
+
+    /// Internal error from domain layer
+    #[error("error interno: {0}")]
+    Internal(String),
+
+    /// Crawl limit exceeded (max depth, max pages)
+    #[error("{0}")]
+    CrawlLimit(String),
+
+    /// Sitemap not found during auto-discovery
+    #[error("sitemap not found for {0}")]
+    SitemapNotFound(String),
 }
 
 /// Semantic cleaning errors (AI/ML operations)
@@ -384,6 +396,9 @@ impl ScraperError {
             Self::ExportBatch(_) => ErrorClass::InternalFatal,
             Self::Conversion(_) => ErrorClass::InternalFatal,
             Self::Semantic(_) => ErrorClass::InternalFatal,
+            Self::Internal(_) => ErrorClass::InternalFatal,
+            Self::CrawlLimit(_) => ErrorClass::PermanentFatal,
+            Self::SitemapNotFound(_) => ErrorClass::PermanentFatal,
             // Non-transient Network/Download (e.g. DNS resolution, TLS errors)
             Self::Network(_) | Self::Download(_) => ErrorClass::InternalFatal,
         }
@@ -466,19 +481,24 @@ impl From<crate::domain::error::CrawlError> for ScraperError {
             CrawlError::Network {
                 message,
                 status_code,
-            } => ScraperError::Network(Box::new(std::io::Error::other(format!(
-                "network: {message} (status: {status_code:?})"
-            )))),
+            } => {
+                if let Some(status) = status_code {
+                    ScraperError::Http {
+                        status,
+                        url: message,
+                    }
+                } else {
+                    ScraperError::Internal(format!("network: {message}"))
+                }
+            },
             CrawlError::Http(msg) => {
-                // Try to extract status code from the message for ScraperError::Http
-                // Messages like "403 Forbidden at url" or "HTTP 500 at url"
                 if let Some((code, rest)) = parse_http_status_from_msg(&msg) {
                     ScraperError::Http {
                         status: code,
                         url: rest.to_string(),
                     }
                 } else {
-                    ScraperError::Network(Box::new(std::io::Error::other(format!("http: {msg}"))))
+                    ScraperError::Internal(format!("http: {msg}"))
                 }
             },
             CrawlError::InvalidUrl(msg) => ScraperError::InvalidUrl(msg),
@@ -486,14 +506,59 @@ impl From<crate::domain::error::CrawlError> for ScraperError {
             CrawlError::WafChallenge { provider, url, .. } => {
                 ScraperError::WafBlocked { url, provider }
             },
-            CrawlError::Internal(msg) => {
-                ScraperError::Network(Box::new(std::io::Error::other(format!("internal: {msg}"))))
-            },
+            CrawlError::Internal(msg) => ScraperError::Internal(msg),
             CrawlError::Download(e) => ScraperError::Download(e),
-            CrawlError::SitemapNotFound(url) => ScraperError::Network(Box::new(
-                std::io::Error::other(format!("sitemap not found for {url}")),
+            CrawlError::SitemapNotFound(url) => ScraperError::SitemapNotFound(url),
+            CrawlError::Parse(msg) => ScraperError::Internal(format!("parse: {msg}")),
+            CrawlError::MaxDepthExceeded { current, max } => {
+                ScraperError::CrawlLimit(format!("maximum depth {max} exceeded at depth {current}"))
+            },
+            CrawlError::MaxPagesExceeded { max } => {
+                ScraperError::CrawlLimit(format!("maximum pages {max} exceeded"))
+            },
+            CrawlError::UrlExcluded(url) => {
+                ScraperError::Internal(format!("URL excluded: {url}"))
+            },
+            CrawlError::InvalidContentType(ct) => {
+                ScraperError::Internal(format!("invalid content type: {ct}"))
+            },
+            CrawlError::Storage(msg) => ScraperError::Internal(format!("storage: {msg}")),
+            CrawlError::Checkpoint(msg) => {
+                ScraperError::Internal(format!("checkpoint: {msg}"))
+            },
+            CrawlError::SessionPool(msg) => {
+                ScraperError::Internal(format!("session pool: {msg}"))
+            },
+            CrawlError::Discovery(msg) => {
+                ScraperError::Internal(format!("discovery: {msg}"))
+            },
+            CrawlError::RetryExhausted { url, attempts } => {
+                ScraperError::Internal(format!(
+                    "retry exhausted for {url} after {attempts} attempts"
+                ))
+            },
+            CrawlError::TransientHttp { status, url } => ScraperError::Http { status, url },
+            CrawlError::RateLimited(retry_after) => {
+                ScraperError::Internal(format!("rate limited, retry after {retry_after}s"))
+            },
+            CrawlError::Timeout => ScraperError::Internal("request timeout".to_string()),
+            CrawlError::Connection(msg) => {
+                ScraperError::Internal(format!("connection: {msg}"))
+            },
+            CrawlError::ResourceExhausted {
+                resource,
+                limit,
+                actual,
+            } => ScraperError::Internal(format!(
+                "resource exhausted: {resource:?} limit={limit} actual={actual}"
             )),
-            other => ScraperError::Network(Box::new(std::io::Error::other(other.to_string()))),
+            CrawlError::SitemapEmpty => {
+                ScraperError::SitemapNotFound("empty sitemap".to_string())
+            },
+            CrawlError::SitemapDepthExceeded => {
+                ScraperError::CrawlLimit("sitemap depth exceeded".to_string())
+            },
+            CrawlError::SemaphoreInanition => ScraperError::SemaphoreInanition,
         }
     }
 }
@@ -521,9 +586,9 @@ impl From<crate::infrastructure::error::InfraError> for ScraperError {
                 ScraperError::Http { status, url }
             },
             crate::infrastructure::error::InfraError::Network(e) => ScraperError::Network(e),
-            crate::infrastructure::error::InfraError::Middleware(msg) => ScraperError::Network(
-                Box::new(std::io::Error::other(format!("middleware: {msg}"))),
-            ),
+            crate::infrastructure::error::InfraError::Middleware(msg) => {
+                ScraperError::Middleware(msg)
+            },
             crate::infrastructure::error::InfraError::WafBlocked { url, provider } => {
                 ScraperError::WafBlocked { url, provider }
             },
@@ -771,7 +836,7 @@ mod tests {
     #[test]
     fn test_infra_error_network_wraps_to_scraper() {
         let infra_err = crate::infrastructure::error::InfraError::Network(Box::new(
-            std::io::Error::other("connection refused"),
+            std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "connection refused"),
         ));
         let scraper_err: ScraperError = infra_err.into();
         assert!(scraper_err.to_string().contains("connection refused"));
@@ -783,7 +848,7 @@ mod tests {
         // Regression: download failures must reach `ScraperError::Download`,
         // NOT be silently misrouted into `ScraperError::Network` (arch-remediation).
         let infra_err = crate::infrastructure::error::InfraError::Download(Box::new(
-            std::io::Error::other("checksum mismatch"),
+            std::io::Error::new(std::io::ErrorKind::Other, "checksum mismatch"),
         ));
         let scraper_err: ScraperError = infra_err.into();
         assert!(

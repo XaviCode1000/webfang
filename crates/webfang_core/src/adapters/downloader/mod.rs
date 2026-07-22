@@ -199,9 +199,7 @@ impl Downloader {
 
         // Unreachable: loop always returns on last attempt, but required for type inference
         Err(last_err.unwrap_or_else(|| {
-            ScraperError::download(Box::new(std::io::Error::other(
-                "exhausted retries with no error captured",
-            )))
+            ScraperError::Internal("exhausted retries with no error captured".to_string())
         }))
     }
 
@@ -230,10 +228,10 @@ impl Downloader {
             return Err(ScraperError::http(status.as_u16(), url));
         }
         if status.is_server_error() {
-            // Mark as transient so retry logic will retry on 5xx
-            return Err(ScraperError::Network(Box::new(std::io::Error::other(
-                format!("transient HTTP {}", status),
-            ))));
+            return Err(ScraperError::Http {
+                status: status.as_u16(),
+                url: url.to_string(),
+            });
         }
 
         let mime_type = response
@@ -277,21 +275,13 @@ impl Downloader {
 
             let chunk_len = chunk.len() as u64;
             downloaded = downloaded.checked_add(chunk_len).ok_or_else(|| {
-                ScraperError::download(Box::new(std::io::Error::other(
-                    "integer overflow in download size",
-                )))
+                ScraperError::Internal("integer overflow in download size".to_string())
             })?;
 
             // Check limit in real-time
             if downloaded > self.config.max_file_size {
-                // Cleanup temp file on failure
                 let _ = fs::remove_file(&temp_path).await;
-                return Err(ScraperError::download(Box::new(std::io::Error::other(
-                    format!(
-                        "file too large: {} bytes (max: {} bytes)",
-                        downloaded, self.config.max_file_size
-                    ),
-                ))));
+                return Err(ScraperError::PayloadTooLarge);
             }
 
             // Write chunk to disk IMMEDIATELY (true streaming)
