@@ -14,10 +14,10 @@ use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use wreq::Client;
 
-use webfang::config::Config;
-use webfang::di::Container;
-use webfang::infrastructure::mcp_server::server::build_mcp_router;
-use webfang::infrastructure::mcp_server::state::McpState;
+use webfang_core::config::Config;
+use webfang_core::di::Container;
+use webfang_mcp::mcp_server::server::build_mcp_router;
+use webfang_mcp::mcp_server::state::McpState;
 
 /// JSON-RPC standard error code for "Method not found" (JSON-RPC 2.0 spec).
 const JSONRPC_METHOD_NOT_FOUND: i64 = -32601;
@@ -42,7 +42,7 @@ fn parse_jsonrpc_error_code(body: &str) -> Option<i64> {
 /// Start a test MCP server on a random port and return the base URL.
 async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
     let config = Config::default();
-    let container = Container::new(config)
+    let container = Container::new(config.crawler, config.scraper)
         .await
         .expect("container creation failed");
     let state = McpState::new(container);

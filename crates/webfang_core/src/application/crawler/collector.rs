@@ -179,6 +179,10 @@ impl ResultsCollector {
         &self,
         msg: CrawlMessage,
     ) -> Result<(), Box<mpsc::error::TrySendError<CrawlMessage>>> {
+        // Update counter synchronously for is_full() checks (same as send())
+        if let CrawlMessage::Success(_) = &msg {
+            self.counter.fetch_add(1, Ordering::Relaxed);
+        }
         self.tx.try_send(msg).map_err(Box::new)
     }
 

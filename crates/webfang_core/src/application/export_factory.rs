@@ -39,17 +39,17 @@ pub fn create_exporter(
             let jsonl_path = output_dir.join(format!("{filename}.jsonl"));
             let vector_path = output_dir.join(format!("{filename}.json"));
 
-            if vector_path.exists() {
-                info!("Detected Vector format - {:?} exists", vector_path);
-                let config = ExporterConfig::new(output_dir, ExportFormat::Vector, filename)
-                    .with_append(true);
-                let exporter = VectorExporter::new(config);
-                Ok(Box::new(exporter))
-            } else if jsonl_path.exists() {
+            if jsonl_path.exists() {
                 info!("Detected JSONL format - {:?} exists", jsonl_path);
                 let config = ExporterConfig::new(output_dir, ExportFormat::Jsonl, filename)
                     .with_append(true);
                 let exporter = jsonl_exporter::JsonlExporter::new(config);
+                Ok(Box::new(exporter))
+            } else if vector_path.exists() {
+                info!("Detected Vector format - {:?} exists", vector_path);
+                let config = ExporterConfig::new(output_dir, ExportFormat::Vector, filename)
+                    .with_append(true);
+                let exporter = VectorExporter::new(config);
                 Ok(Box::new(exporter))
             } else {
                 // Fallback to default Jsonl
