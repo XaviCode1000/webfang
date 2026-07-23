@@ -3,11 +3,13 @@
 //! Uses SessionManager trait: acquire, report_success, report_failure,
 //! evict_stale, domain_count, total_domains.
 
-use webfang::infrastructure::network::session_pool::{
-    DomainSessionPool, SessionId, SessionManager, SessionPoolConfig,
-};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use webfang_core::domain::clock::SystemClock;
+use webfang_core::infrastructure::network::session_pool::{
+    DomainSessionPool, SessionId, SessionManager, SessionPoolConfig,
+};
 
 // ── Acquire / release cycle ───────────────────────────────────────────────
 
@@ -38,7 +40,7 @@ fn ban_on_429_makes_session_unavailable() {
         base_delay: Duration::from_secs(60),
         ..Default::default()
     };
-    let pool = DomainSessionPool::new(config);
+    let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
     let id = pool.acquire("example.com").unwrap();
     pool.report_failure("example.com", id, 429);
 
@@ -54,7 +56,7 @@ fn ban_on_403_makes_session_unavailable() {
         base_delay: Duration::from_secs(60),
         ..Default::default()
     };
-    let pool = DomainSessionPool::new(config);
+    let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
     let id = pool.acquire("example.com").unwrap();
     pool.report_failure("example.com", id, 403);
 
@@ -69,7 +71,7 @@ fn ban_on_503_makes_session_unavailable() {
         base_delay: Duration::from_secs(60),
         ..Default::default()
     };
-    let pool = DomainSessionPool::new(config);
+    let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
     let id = pool.acquire("example.com").unwrap();
     pool.report_failure("example.com", id, 503);
 
@@ -118,7 +120,7 @@ fn banned_session_recovers_after_cooldown() {
         max_exp: 1,
         ..Default::default()
     };
-    let pool = DomainSessionPool::new(config);
+    let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
     let id = pool.acquire("example.com").unwrap();
     pool.report_failure("example.com", id, 429);
 
@@ -143,7 +145,7 @@ fn stale_sessions_evicted_on_acquire() {
         base_delay: Duration::from_secs(60),
         ..Default::default()
     };
-    let pool = DomainSessionPool::new(config);
+    let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
     let id = pool.acquire("example.com").unwrap();
     pool.report_failure("example.com", id, 429);
 
@@ -163,7 +165,7 @@ fn evict_stale_recovers_banned_sessions() {
         base_delay: Duration::from_secs(60),
         ..Default::default()
     };
-    let pool = DomainSessionPool::new(config);
+    let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
     let id = pool.acquire("example.com").unwrap();
     pool.report_failure("example.com", id, 429);
 
@@ -183,7 +185,7 @@ fn pool_respects_configured_size() {
         pool_size: 3,
         ..Default::default()
     };
-    let pool = DomainSessionPool::new(config);
+    let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
     let _id = pool.acquire("example.com").unwrap();
     assert_eq!(pool.domain_count("example.com"), 3);
 }
@@ -205,7 +207,7 @@ fn domains_independent_failure_tracking() {
         base_delay: Duration::from_secs(60),
         ..Default::default()
     };
-    let pool = DomainSessionPool::new(config);
+    let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
 
     let id_a = pool.acquire("a.com").unwrap();
     pool.report_failure("a.com", id_a, 429);
