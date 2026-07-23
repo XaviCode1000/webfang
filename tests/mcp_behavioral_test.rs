@@ -19,6 +19,26 @@ use webfang::di::Container;
 use webfang::infrastructure::mcp_server::server::build_mcp_router;
 use webfang::infrastructure::mcp_server::state::McpState;
 
+/// JSON-RPC standard error code for "Method not found" (JSON-RPC 2.0 spec).
+const JSONRPC_METHOD_NOT_FOUND: i64 = -32601;
+
+/// Parse JSON-RPC response body and extract the error code, if present.
+///
+/// Handles both direct JSON and SSE-wrapped (`data: ` prefix) responses.
+/// Returns `Some(error_code)` if the response contains a JSON-RPC error object.
+fn parse_jsonrpc_error_code(body: &str) -> Option<i64> {
+    let json_str = if body.contains("data: ") {
+        body.lines()
+            .find(|line| line.starts_with("data: "))
+            .map(|line| line.strip_prefix("data: ").unwrap_or(line))?
+    } else {
+        body
+    };
+
+    let parsed: Value = serde_json::from_str(json_str).ok()?;
+    parsed.get("error")?.get("code")?.as_i64()
+}
+
 /// Start a test MCP server on a random port and return the base URL.
 async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
     let config = Config::default();
@@ -286,9 +306,10 @@ async fn test_invalid_session_returns_error() {
 
     // Should return an error (4xx) or handle gracefully
     // The MCP protocol may return 400 Bad Request or similar for invalid sessions
+    let has_jsonrpc_error = parse_jsonrpc_error_code(&body).is_some();
     assert!(
-        !status.is_success() || body.contains("error"),
-        "invalid session should return error status or error in body, got {}: {}",
+        !status.is_success() || has_jsonrpc_error,
+        "invalid session should return error status or JSON-RPC error in body, got {}: {}",
         status,
         &body[..body.len().min(500)]
     );
@@ -350,11 +371,14 @@ async fn test_unknown_method_returns_error() {
     // Should return success (200) with JSON-RPC error in body,
     // or an HTTP error status
     if status.is_success() {
-        // Check for JSON-RPC error in response
-        let has_error = body.contains("error") || body.contains("Method not found");
-        assert!(
-            has_error,
-            "unknown method should return JSON-RPC error: {}",
+        // Verify JSON-RPC error code -32601 (Method not found)
+        let error_code = parse_jsonrpc_error_code(&body);
+        assert_eq!(
+            error_code,
+            Some(JSONRPC_METHOD_NOT_FOUND),
+            "unknown method should return JSON-RPC error code {} (Method not found), got code {:?} in: {}",
+            JSONRPC_METHOD_NOT_FOUND,
+            error_code,
             &body[..body.len().min(500)]
         );
     }

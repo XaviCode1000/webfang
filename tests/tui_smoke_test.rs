@@ -26,85 +26,10 @@ fn make_urls(n: usize) -> Vec<Url> {
 
 // ===========================================================================
 // Group 1: UrlSelectorState
+//
+// Core UrlSelectorState tests live in tui_unit_tests.rs (more comprehensive).
+// Only tests for behavior NOT covered there belong here.
 // ===========================================================================
-
-#[test]
-fn url_selector_new_initializes_empty_selection() {
-    let urls = make_urls(5);
-    let state = UrlSelectorState::new(&urls);
-    assert_eq!(state.selected_count(), 0);
-    assert_eq!(state.total_count(), 5);
-}
-
-#[test]
-fn url_selector_toggle_selection() {
-    let urls = make_urls(3);
-    let mut state = UrlSelectorState::new(&urls);
-    state.toggle_selection();
-    assert!(state.is_selected(0));
-    assert_eq!(state.selected_count(), 1);
-}
-
-#[test]
-fn url_selector_toggle_deselects() {
-    let urls = make_urls(3);
-    let mut state = UrlSelectorState::new(&urls);
-    state.toggle_selection();
-    state.toggle_selection();
-    assert!(!state.is_selected(0));
-    assert_eq!(state.selected_count(), 0);
-}
-
-#[test]
-fn url_selector_select_all() {
-    let urls = make_urls(5);
-    let mut state = UrlSelectorState::new(&urls);
-    state.select_all();
-    assert_eq!(state.selected_count(), 5);
-}
-
-#[test]
-fn url_selector_deselect_all() {
-    let urls = make_urls(5);
-    let mut state = UrlSelectorState::new(&urls);
-    state.select_all();
-    state.deselect_all();
-    assert_eq!(state.selected_count(), 0);
-}
-
-#[test]
-fn url_selector_cursor_movement() {
-    let urls = make_urls(5);
-    let mut state = UrlSelectorState::new(&urls);
-    state.cursor_down();
-    state.cursor_down();
-    assert_eq!(state.cursor(), 2);
-    state.cursor_up();
-    assert_eq!(state.cursor(), 1);
-}
-
-#[test]
-fn url_selector_cursor_clamps_at_bounds() {
-    let urls = make_urls(3);
-    let mut state = UrlSelectorState::new(&urls);
-    // Already at 0, going up should stay at 0
-    state.cursor_up();
-    state.cursor_up();
-    assert_eq!(state.cursor(), 0);
-    // Go to end, then try past the end
-    state.cursor_down();
-    state.cursor_down();
-    state.cursor_down();
-    state.cursor_down();
-    assert_eq!(state.cursor(), 2);
-}
-
-#[test]
-fn url_selector_empty_urls() {
-    let state = UrlSelectorState::new(&[]);
-    assert_eq!(state.selected_count(), 0);
-    assert_eq!(state.total_count(), 0);
-}
 
 #[test]
 fn url_selector_toggle_out_of_bounds() {
@@ -113,59 +38,6 @@ fn url_selector_toggle_out_of_bounds() {
     // Cursor at 0, should not panic
     state.toggle_selection();
     assert!(state.is_selected(0));
-}
-
-#[test]
-fn url_selector_get_selected_urls() {
-    let urls = make_urls(3);
-    let mut state = UrlSelectorState::new(&urls);
-    state.toggle_selection(); // index 0
-    state.cursor_down();
-    state.cursor_down();
-    state.toggle_selection(); // index 2
-    let selected = state.get_selected_urls();
-    assert_eq!(selected.len(), 2);
-    assert_eq!(selected[0].as_str(), "https://example.com/page/0");
-    assert_eq!(selected[1].as_str(), "https://example.com/page/2");
-}
-
-#[test]
-fn url_selector_confirmation_mode() {
-    let urls = make_urls(3);
-    let mut state = UrlSelectorState::new(&urls);
-    assert!(!state.is_confirming());
-    state.enter_confirm_mode();
-    assert!(state.is_confirming());
-    state.exit_confirm_mode();
-    assert!(!state.is_confirming());
-}
-
-#[test]
-fn url_selector_scroll_with_visible_height() {
-    let urls = make_urls(10);
-    let mut state = UrlSelectorState::new(&urls);
-    state.set_visible_height(3);
-
-    // Move cursor past the visible area
-    for _ in 0..5 {
-        state.cursor_down();
-    }
-    assert_eq!(state.cursor(), 5);
-    assert!(
-        state.scroll() > 0,
-        "scroll should advance when cursor goes below visible area"
-    );
-}
-
-#[test]
-fn url_selector_get_url() {
-    let urls = make_urls(3);
-    let state = UrlSelectorState::new(&urls);
-    assert_eq!(
-        state.get_url(0).unwrap().as_str(),
-        "https://example.com/page/0"
-    );
-    assert!(state.get_url(99).is_none());
 }
 
 // ===========================================================================
@@ -193,12 +65,10 @@ fn progress_widget_builder_methods() {
 
 // ===========================================================================
 // Group 3: ErrorLogWidget
+//
+// Core ErrorLogWidget::new() and rendering tests live in tui_unit_tests.rs.
+// Only tests for behavior NOT covered there belong here.
 // ===========================================================================
-
-#[test]
-fn error_log_widget_init_no_panic() {
-    let _widget = ErrorLogWidget::new();
-}
 
 #[test]
 fn error_log_widget_toggle_auto_scroll() {

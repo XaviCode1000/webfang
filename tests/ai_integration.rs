@@ -203,43 +203,73 @@ fn test_download_progress_calculations() {
 /// Test that SemanticError variants are properly defined
 #[test]
 fn test_semantic_error_variants() {
-    // Test ModelLoad error
+    // Test ModelLoad error — match on variant, verify inner error
     let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
     let err = SemanticError::ModelLoad(io_err);
-    assert!(err.to_string().contains("cargando modelo"));
+    match err {
+        SemanticError::ModelLoad(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
+        other => panic!("expected ModelLoad, got {other:?}"),
+    }
 
-    // Test ChunkTooLarge error
+    // Test ChunkTooLarge error — match on variant, verify fields
     let err = SemanticError::ChunkTooLarge {
         chunk_id: "chunk-1".to_string(),
         tokens: 600,
         max: 512,
     };
-    assert!(err.to_string().contains("chunk-1"));
-    assert!(err.to_string().contains("600 > 512"));
+    match err {
+        SemanticError::ChunkTooLarge {
+            chunk_id,
+            tokens,
+            max,
+        } => {
+            assert_eq!(chunk_id, "chunk-1");
+            assert_eq!(tokens, 600);
+            assert_eq!(max, 512);
+        },
+        other => panic!("expected ChunkTooLarge, got {other:?}"),
+    }
 
-    // Test Download error
+    // Test Download error — match on variant, verify fields
     let err = SemanticError::Download {
         repo: "test/repo".to_string(),
         cause: "network error".to_string(),
     };
-    assert!(err.to_string().contains("test/repo"));
-    assert!(err.to_string().contains("network error"));
+    match err {
+        SemanticError::Download { repo, cause } => {
+            assert_eq!(repo, "test/repo");
+            assert_eq!(cause, "network error");
+        },
+        other => panic!("expected Download, got {other:?}"),
+    }
 
-    // Test CacheValidation error
+    // Test CacheValidation error — match on variant, verify fields
     let err = SemanticError::CacheValidation {
         repo: "test/repo".to_string(),
         expected: "abc123".to_string(),
         actual: "def456".to_string(),
     };
-    assert!(err.to_string().contains("abc123"));
-    assert!(err.to_string().contains("def456"));
+    match err {
+        SemanticError::CacheValidation {
+            repo,
+            expected,
+            actual,
+        } => {
+            assert_eq!(repo, "test/repo");
+            assert_eq!(expected, "abc123");
+            assert_eq!(actual, "def456");
+        },
+        other => panic!("expected CacheValidation, got {other:?}"),
+    }
 
-    // Test OfflineMode error
+    // Test OfflineMode error — match on variant, verify field
     let err = SemanticError::OfflineMode {
         repo: "test/repo".to_string(),
     };
-    assert!(err.to_string().contains("test/repo"));
-    assert!(err.to_string().contains("offline"));
+    match err {
+        SemanticError::OfflineMode { repo } => assert_eq!(repo, "test/repo"),
+        other => panic!("expected OfflineMode, got {other:?}"),
+    }
 }
 
 /// Test that ScraperError can be created from SemanticError
@@ -253,7 +283,12 @@ fn test_scraper_error_from_semantic_error() {
     ));
 
     let scraper_err: ScraperError = semantic_err.into();
-    assert!(scraper_err.to_string().contains("limpieza semántica"));
+    match scraper_err {
+        ScraperError::Semantic(SemanticError::ModelLoad(e)) => {
+            assert_eq!(e.kind(), std::io::ErrorKind::NotFound);
+        },
+        other => panic!("expected ScraperError::Semantic(ModelLoad), got {other:?}"),
+    }
 }
 
 /// Test ChunkId inner value access
