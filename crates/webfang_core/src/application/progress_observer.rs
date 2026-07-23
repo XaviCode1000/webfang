@@ -18,10 +18,8 @@ use crate::application::progress_types::{ScrapeError, ScrapeProgress};
 /// pattern in `domain::repository::VectorRepository`.
 pub trait ProgressObserver: Send + Sync {
     /// A page scrape has started.
-    fn on_page_started<'a>(
-        &'a self,
-        url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    fn on_page_started<'a>(&'a self, url: &'a str)
+        -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
     /// A page scrape completed successfully.
     fn on_page_completed<'a>(
@@ -234,18 +232,16 @@ mod tests {
         let observer = LiveProgressObserver::new(Some(tx), true);
 
         observer.on_page_started("https://example.com").await;
+        observer.on_page_completed("https://example.com", 100).await;
         observer
-            .on_page_completed("https://example.com", 100)
-            .await;
-        observer
-            .on_page_failed(
-                "https://example.com",
-                &ScrapeError::Other("test".into()),
-            )
+            .on_page_failed("https://example.com", &ScrapeError::Other("test".into()))
             .await;
         observer.on_finished(1, 0, 1).await;
 
-        assert!(rx.try_recv().is_err(), "quiet mode should suppress all events");
+        assert!(
+            rx.try_recv().is_err(),
+            "quiet mode should suppress all events"
+        );
     }
 
     #[tokio::test]
@@ -253,17 +249,14 @@ mod tests {
         let observer = LiveProgressObserver::new(None, false);
 
         observer.on_page_started("https://example.com").await;
+        observer.on_page_completed("https://example.com", 100).await;
         observer
-            .on_page_completed("https://example.com", 100)
-            .await;
-        observer
-            .on_page_failed(
-                "https://example.com",
-                &ScrapeError::Other("test".into()),
-            )
+            .on_page_failed("https://example.com", &ScrapeError::Other("test".into()))
             .await;
         observer.on_finished(1, 0, 1).await;
-        observer.on_robots_blocked("https://example.com/robots").await;
+        observer
+            .on_robots_blocked("https://example.com/robots")
+            .await;
     }
 
     #[tokio::test]
@@ -289,7 +282,14 @@ mod tests {
 
         let msg = rx.recv().await.expect("should receive message");
         assert!(
-            matches!(msg, ScrapeProgress::Finished { total: 10, successful: 8, failed: 2 }),
+            matches!(
+                msg,
+                ScrapeProgress::Finished {
+                    total: 10,
+                    successful: 8,
+                    failed: 2
+                }
+            ),
             "expected Finished with correct counts"
         );
     }
@@ -299,7 +299,9 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         let observer = LiveProgressObserver::new(Some(tx), false);
 
-        observer.on_robots_blocked("https://example.com/blocked").await;
+        observer
+            .on_robots_blocked("https://example.com/blocked")
+            .await;
 
         let msg = rx.recv().await.expect("should receive message");
         assert!(
@@ -313,16 +315,13 @@ mod tests {
         let observer = NoopObserver;
 
         observer.on_page_started("https://example.com").await;
+        observer.on_page_completed("https://example.com", 100).await;
         observer
-            .on_page_completed("https://example.com", 100)
-            .await;
-        observer
-            .on_page_failed(
-                "https://example.com",
-                &ScrapeError::Other("test".into()),
-            )
+            .on_page_failed("https://example.com", &ScrapeError::Other("test".into()))
             .await;
         observer.on_finished(1, 0, 1).await;
-        observer.on_robots_blocked("https://example.com/robots").await;
+        observer
+            .on_robots_blocked("https://example.com/robots")
+            .await;
     }
 }
