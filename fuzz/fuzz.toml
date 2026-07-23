@@ -1,0 +1,42 @@
+# Fuzz configuration for cargo-fuzz
+# Docs: https://rust-fuzz.github.io/book/cargo-fuzz/configuration.html
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+# Default libfuzzer settings applied to all targets
+[libfuzzer]
+max_len = 8192
+timeout = 10
+runs = 0  # unlimited (run until Ctrl-C)
+max_total_time = 600  # 10 minutes per target
+jobs = 1
+
+# Per-target overrides
+[[target]]
+name = "fuzz_html_cleaner"
+max_len = 16384  # HTML can be large
+
+[[target]]
+name = "fuzz_parse_content_disposition"
+max_len = 4096  # HTTP headers are typically small
+
+[[target]]
+name = "fuzz_decompression"
+max_len = 32768  # compressed payloads can be larger
+timeout = 15  # decompression can be slower
+
+[[target]]
+name = "fuzz_compression_detect"
+max_len = 16384
+
+[[target]]
+name = "fuzz_waf_detection"
+max_len = 8192
+
+[[target]]
+name = "fuzz_parse_sitemap"
+max_len = 32768  # sitemaps can be large XML
+timeout = 15

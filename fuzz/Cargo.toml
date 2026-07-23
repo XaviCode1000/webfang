@@ -10,10 +10,12 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
 arbitrary = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt"] }
 url = "2"
 
 [dependencies.webfang]
-path = ".."
+package = "webfang_core"
+path = "../crates/webfang_core"
 
 # ============================================================================
 # Fuzz Targets — ordered by risk (highest exposure to untrusted input first)
@@ -93,6 +95,20 @@ bench = false
 [[bin]]
 name = "fuzz_compression_detect"
 path = "fuzz_targets/fuzz_compression_detect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_parse_content_disposition"
+path = "fuzz_targets/fuzz_parse_content_disposition.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_decompression"
+path = "fuzz_targets/fuzz_decompression.rs"
 test = false
 doc = false
 bench = false
