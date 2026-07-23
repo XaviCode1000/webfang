@@ -195,6 +195,14 @@ path = "../../tests/scraper_service_test.rs"
 name = "args_test"
 path = "../../tests/args_test.rs"
 
+[[test]]
+name = "session_pool_integration"
+path = "../../tests/session_pool_integration.rs"
+
+[[test]]
+name = "infrastructure_session_pool"
+path = "../../tests/infrastructure/session_pool.rs"
+
 [lints.clippy]
 doc_markdown = "allow"
 uninlined_format_args = "allow"

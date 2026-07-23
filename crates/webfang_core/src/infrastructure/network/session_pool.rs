@@ -123,6 +123,7 @@ pub trait SessionManager: sealed::Sealed {
 }
 
 /// Per-domain session pool with health tracking and exponential backoff.
+#[derive(Clone)]
 pub struct DomainSessionPool {
     /// Per-domain session states. Key = domain string, Value = Vec of session states.
     sessions: DashMap<String, Vec<SessionState>>,

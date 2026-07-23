@@ -20,6 +20,7 @@ use crate::application::deduplicator::UrlDeduplicator;
 use crate::application::pipeline::{OutputStage, PipelineExecutor, ScrapedItem, StageOutcome};
 use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::application::url_filter::is_allowed;
+use crate::domain::clock::SystemClock;
 use crate::domain::{CrawlError, CrawlResult, CrawlerConfig, DiscoveredUrl, JsStrategy};
 use crate::infrastructure::checkpoint::store::BannedDomain;
 use crate::infrastructure::checkpoint::BincodeCheckpoint;
@@ -36,7 +37,9 @@ use crate::infrastructure::downloader::obscura_downloader::ObscuraDownloader;
 use crate::infrastructure::downloader::resource_governor::ResourceGovernor;
 use crate::infrastructure::downloader::wreq_downloader::WreqDownloader;
 use crate::infrastructure::downloader::{DownloadError, Downloader, FetchedPage};
-use crate::infrastructure::session::DomainSessionPool;
+use crate::infrastructure::network::session_pool::{
+    DomainSessionPool, SessionManager, SessionPoolConfig,
+};
 
 #[cfg(feature = "otel-metrics")]
 use crate::infrastructure::observability::metrics_instruments::{
@@ -212,8 +215,12 @@ impl Engine {
     }
 
     /// Enable the domain session pool for per-domain rate limiting.
-    pub fn with_session_pool(mut self, cooldown: Duration, max_failures: u32) -> Self {
-        self.session_pool = Some(DomainSessionPool::new(cooldown, max_failures));
+    pub fn with_session_pool(mut self, cooldown: Duration, _max_failures: u32) -> Self {
+        let config = SessionPoolConfig {
+            base_delay: cooldown,
+            ..SessionPoolConfig::default()
+        };
+        self.session_pool = Some(DomainSessionPool::new(config, Arc::new(SystemClock)));
         self
     }
 
@@ -596,19 +603,18 @@ async fn run_crawl_task(
     let parent_url = discovered_url.url.clone();
 
     // Session pool: check if domain is healthy before fetching
+    let mut session_id = None;
     if let Some(ref pool) = ctx.session_pool {
         let domain = url::Url::parse(&url_str)
             .ok()
             .and_then(|u| u.host_str().map(String::from))
             .unwrap_or_default();
-        match pool.acquire(&domain).await {
-            Ok(true) => {}, // proceed
-            Ok(false) => {
-                debug!("Domain {} on cooldown, skipping", domain);
-                return Ok(());
+        match pool.acquire(&domain) {
+            Some(id) => {
+                session_id = Some(id);
             },
-            Err(e) => {
-                warn!("Domain {} unhealthy: {e}", domain);
+            None => {
+                debug!("Domain {} has no available sessions, skipping", domain);
                 return Ok(());
             },
         }
@@ -684,9 +690,11 @@ async fn run_crawl_task(
 
     // Report success to session pool
     if let Some(ref pool) = ctx.session_pool {
-        if let Ok(parsed) = url::Url::parse(&url_str) {
-            if let Some(domain) = parsed.host_str() {
-                pool.report_success(domain).await;
+        if let Some(id) = session_id {
+            if let Ok(parsed) = url::Url::parse(&url_str) {
+                if let Some(domain) = parsed.host_str() {
+                    pool.report_success(domain, id);
+                }
             }
         }
     }

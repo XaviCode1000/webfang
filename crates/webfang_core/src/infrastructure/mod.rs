@@ -36,6 +36,5 @@ pub mod stream;
 #[cfg(feature = "persistence")]
 pub mod persistence;
 
-// Competitive Features Phase 1 — checkpoint + session pool
+// Competitive Features Phase 1 — checkpoint
 pub mod checkpoint;
-pub mod session;

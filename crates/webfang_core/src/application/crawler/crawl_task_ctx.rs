@@ -18,7 +18,7 @@ use crate::infrastructure::checkpoint::store::BannedDomain;
 use crate::infrastructure::crawler::RobotsCache;
 use crate::infrastructure::crawler::UrlQueue;
 use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
-use crate::infrastructure::session::DomainSessionPool;
+use crate::infrastructure::network::session_pool::DomainSessionPool;
 
 /// Shared context for all crawl tasks spawned by the engine.
 ///

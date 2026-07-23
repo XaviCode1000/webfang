@@ -75,9 +75,9 @@ pub use infrastructure::{
     converter, crawler,
     export::{jsonl_exporter, state_store, vector_exporter},
     http,
+    network::session_pool::{DomainSessionPool, SessionId, SessionManager, SessionPoolConfig},
     output::file_saver,
     scraper::readability,
-    session::DomainSessionPool,
 };
 
 // Adapters
