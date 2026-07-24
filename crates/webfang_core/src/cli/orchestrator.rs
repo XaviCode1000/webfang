@@ -41,30 +41,155 @@ pub fn handle_completions(shell: Shell) -> CliExit {
 /// Main orchestration entry point.
 ///
 /// Coordinates the full scraping pipeline:
-/// 1. URL discovery
+/// 1. URL discovery + config preparation
 /// 2. Scraping with progress
 /// 3. Export results
+/// 4. Report failures + exit code
 #[instrument(level = "info", skip(opts, ai_cleaner), fields(url = %opts.url))]
 pub async fn run(
     opts: CrawlOptions,
     #[cfg(feature = "ai")] ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
 ) -> CliExit {
-    // Dry-run mode: list planned URLs without any network requests
     if opts.export.dry_run {
         println!("Dry-run: 1 URL(s) would be scraped:");
         println!("  {}", opts.url);
         return CliExit::Success;
     }
-
-    // Batch mode: process URLs from stdin or file, then exit early
     if opts.batch.enabled {
         return run_batch(opts).await;
     }
+    let prepare = match prepare_phase(&opts).await {
+        Err(e) => return e,
+        Ok(p) => p,
+    };
 
+    let elastic_ingestion = match build_elastic_ingestion(&opts).await {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+
+    #[cfg(not(feature = "ai"))]
+    if opts.elastic.output_vectors.is_some() && opts.ai {
+        warn!(
+            "--output-vectors specified with --clean-ai but AI feature is not compiled in. \
+             The output file will be created but no embedding vectors will be written. \
+             Rebuild with --features ai to generate embeddings."
+        );
+    }
+
+    let observer = Box::new(
+        crate::application::progress_observer::LiveProgressObserver::new(None, opts.export.quiet),
+    );
+    let (results, failures) = scrape_phase(
+        &prepare.urls_to_scrape,
+        &prepare.scraper_config,
+        &opts,
+        observer.as_ref(),
+        prepare
+            .shared_downloader
+            .as_deref()
+            .map(|d| d as &dyn crate::domain::ports::AssetDownloaderPort),
+    )
+    .await;
+
+    if let Some(ref ingestion) = elastic_ingestion {
+        if let Err(e) = run_elastic_ingestion(ingestion, &results).await {
+            return CliExit::IoError(format!("Falló la ingesta de vectores: {e}"));
+        }
+    }
+
+    if let Some(exit) = report_phase(&results, &failures) {
+        return exit;
+    }
+
+    #[cfg(feature = "ai")]
+    {
+        export_phase(&results, &opts, ai_cleaner).await
+    }
+    #[cfg(not(feature = "ai"))]
+    {
+        export_phase(&results, &opts).await
+    }
+}
+
+/// Export scraped results to files and run AI cleaning if requested.
+async fn export_phase(
+    results: &[domain::ScrapedContent],
+    opts: &CrawlOptions,
+    #[cfg(feature = "ai")] ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
+) -> CliExit {
+    let output_dir = opts.export.output_dir.clone();
+
+    let obsidian_options = ObsidianOptions {
+        wiki_links: opts.export.obsidian_wiki_links,
+        relative_assets: opts.export.obsidian_relative_assets,
+        tags: opts.export.obsidian_tags.clone(),
+        rich_metadata: opts.export.obsidian_rich_metadata,
+        quick_save: opts.export.quick_save,
+        vault_path: opts.export.obsidian_vault.clone(),
+    };
+
+    let file_output_dir = if opts.export.quick_save {
+        let base = opts.export.obsidian_vault.as_deref().unwrap_or(&output_dir);
+        let inbox = base.join("_inbox");
+        if !inbox.exists() {
+            let _ = std::fs::create_dir_all(&inbox);
+        }
+        inbox
+    } else {
+        output_dir.clone()
+    };
+
+    save_files(
+        results,
+        &file_output_dir,
+        &opts.export.output_format,
+        &obsidian_options,
+    );
+
+    let export_config = ExportConfig {
+        results,
+        output_dir,
+        format: opts.export.output_format,
+        export_format: opts.export.export_format,
+        clean_ai: opts.ai,
+        quick_save: opts.export.quick_save,
+        vault_path: opts.export.obsidian_vault.as_ref(),
+        obsidian_options,
+        state_store: None,
+        resume: opts.crawl.resume,
+        ai_threshold: opts.ai_config.threshold,
+        ai_max_tokens: opts.ai_config.max_tokens,
+        ai_offline: opts.ai_config.offline,
+        ai_model: opts.ai_config.model.clone(),
+    };
+
+    #[cfg(feature = "ai")]
+    let export_result = run_export(export_config, ai_cleaner).await;
+    #[cfg(not(feature = "ai"))]
+    let export_result = run_export(export_config).await;
+
+    match export_result {
+        Ok(processed_urls) => {
+            info!("Export completed for {} URLs", processed_urls.len());
+            CliExit::Success
+        },
+        Err(e) => {
+            error!(error = ?e, "Export failed");
+            e
+        },
+    }
+}
+
+/// Prepare scraper config and discover URLs.
+///
+/// Returns the initial `ScraperConfig` (before asset/download wiring) and
+/// the list of URLs to scrape.  On discovery failure, returns the
+/// appropriate `CliExit` error.
+async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
     let urls_to_scrape = if opts.crawl.single_page {
         plan_urls(true, opts.url.clone(), Vec::new())
     } else {
-        // Create crawler config from CrawlOptions
         let mut crawler_config = CrawlerConfig::builder(opts.url.clone())
             .max_pages(opts.crawl.max_pages)
             .max_depth(opts.crawl.max_depth)
@@ -77,13 +202,14 @@ pub async fn run(
         }
         let crawler_config = crawler_config.build();
 
-        // URL discovery phase
-        let discovered_urls = match discover_urls(&crawler_config, &opts).await {
+        let discovered_urls = match discover_urls(&crawler_config, opts).await {
             Err(e) => {
-                return CliExit::NetworkError(format!("URL discovery failed: {e}"));
+                return Err(CliExit::NetworkError(format!("URL discovery failed: {e}")));
             },
             Ok(urls) if urls.is_empty() => {
-                return CliExit::EmptyDiscovery("No URLs discovered from sitemaps".into());
+                return Err(CliExit::EmptyDiscovery(
+                    "No URLs discovered from sitemaps".into(),
+                ));
             },
             Ok(urls) => urls,
         };
@@ -91,14 +217,12 @@ pub async fn run(
         plan_urls(false, opts.url.clone(), discovered_urls)
     };
 
-    // Create scraper config
     let mut scraper_config = ScraperConfig::default()
         .with_output_dir(opts.export.output_dir.clone())
         .with_scraper_concurrency(opts.network.concurrency.resolve())
         .with_max_pages(opts.crawl.max_pages)
         .with_selector(opts.crawl.selector.clone());
 
-    // Apply download flags (builder pattern requires conditional application)
     if opts.network.download_images {
         scraper_config = scraper_config.with_images();
     }
@@ -117,62 +241,55 @@ pub async fn run(
     scraper_config = scraper_config.with_download_concurrency(opts.download_concurrency);
 
     // Create shared Downloader once for connection pooling across all page scrapes.
-    // Propagates error on failure — the user must know if asset downloads can't start.
     let shared_downloader = if scraper_config.has_downloads() {
         match crate::adapters::downloader::Downloader::new(scraper_config.to_download_config()) {
             Ok(dl) => Some(std::sync::Arc::new(dl)),
             Err(e) => {
-                return CliExit::IoError(format!("No se pudo crear el descargador de assets: {e}"));
+                return Err(CliExit::IoError(format!(
+                    "No se pudo crear el descargador de assets: {e}"
+                )));
             },
         }
     } else {
         None
     };
 
-    // Initialize elastic ingestion if requested (`--elastic` → SQLite, or
-    // `--output-vectors` → headless JSONL stream). Both are erased to
-    // `DynVectorRepository` so the field type is feature-independent.
-    let elastic_ingestion = match build_elastic_ingestion(&opts).await {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
+    Ok(PrepareResult {
+        urls_to_scrape,
+        scraper_config,
+        shared_downloader,
+    })
+}
 
-    // Warn if --output-vectors is specified but AI feature is unavailable
-    #[cfg(not(feature = "ai"))]
-    if opts.elastic.output_vectors.is_some() && opts.ai {
-        warn!(
-            "--output-vectors specified with --clean-ai but AI feature is not compiled in. \
-             The output file will be created but no embedding vectors will be written. \
-             Rebuild with --features ai to generate embeddings."
-        );
-    }
+struct PrepareResult {
+    urls_to_scrape: Vec<url::Url>,
+    scraper_config: ScraperConfig,
+    shared_downloader: Option<std::sync::Arc<crate::adapters::downloader::Downloader>>,
+}
 
-    // Scraping phase
-    let (results, failures): (
-        Vec<domain::ScrapedContent>,
-        Vec<(String, crate::error::ScraperError)>,
-    ) = scrape_urls(
-        &urls_to_scrape,
-        &scraper_config,
-        &opts,
-        None,
-        shared_downloader
-            .as_deref()
-            .map(|d| d as &dyn crate::domain::ports::AssetDownloaderPort),
-    )
-    .await;
+/// Run the scraping loop over all URLs with progress events.
+async fn scrape_phase(
+    urls: &[url::Url],
+    scraper_config: &ScraperConfig,
+    opts: &CrawlOptions,
+    observer: &dyn crate::application::progress_observer::ProgressObserver,
+    downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
+) -> (
+    Vec<domain::ScrapedContent>,
+    Vec<(String, crate::error::ScraperError)>,
+) {
+    scrape_urls(urls, scraper_config, opts, observer, downloader).await
+}
 
-    // Post-scrape: elastic ingestion. Fail-fast — a broken pipe / write error
-    // (D2) propagates as a fatal `IoError` and aborts the crawl.
-    if let Some(ref ingestion) = elastic_ingestion {
-        if let Err(e) = run_elastic_ingestion(ingestion, &results).await {
-            return CliExit::IoError(format!("Falló la ingesta de vectores: {e}"));
-        }
-    }
-
-    // Report failures — preserve the full root-cause chain via `Error::source()`
-    // so the cause (e.g. wreq::Error → I/O → timeout) is not flattened (D4).
-    for (url, error) in &failures {
+/// Report failures and determine the exit code.
+///
+/// Returns `None` if all pages scraped successfully (caller proceeds to export).
+fn report_phase(
+    results: &[domain::ScrapedContent],
+    failures: &[(String, crate::error::ScraperError)],
+) -> Option<CliExit> {
+    // Preserve the full root-cause chain via `Error::source()` (D4)
+    for (url, error) in failures {
         let mut chain = error.to_string();
         let mut src = std::error::Error::source(error);
         while let Some(cause) = src {
@@ -182,88 +299,22 @@ pub async fn run(
         eprintln!("Failed to scrape {url}: {chain}");
     }
 
-    // Partial failure: some succeeded, some failed → exit 69 (H4 fix)
     if !failures.is_empty() && !results.is_empty() {
-        return CliExit::PartialSuccess {
+        return Some(CliExit::PartialSuccess {
             success: results.len(),
             failed: failures.len(),
-        };
+        });
     }
 
     if results.is_empty() {
         eprintln!("No pages were successfully scraped");
-        return CliExit::NetworkError("No pages were successfully scraped".into());
+        return Some(CliExit::NetworkError(
+            "No pages were successfully scraped".into(),
+        ));
     }
 
     info!("Successfully scraped {} pages", results.len());
-
-    // Obsidian options
-    let obsidian_options = ObsidianOptions {
-        wiki_links: opts.export.obsidian_wiki_links,
-        relative_assets: opts.export.obsidian_relative_assets,
-        tags: opts.export.obsidian_tags.clone(),
-        rich_metadata: opts.export.obsidian_rich_metadata,
-        quick_save: opts.export.quick_save,
-        vault_path: opts.export.obsidian_vault.clone(),
-    };
-
-    // Determine output directory for individual files
-    let output_dir = if opts.export.quick_save {
-        let base = opts
-            .export
-            .obsidian_vault
-            .as_deref()
-            .unwrap_or(&opts.export.output_dir);
-        let inbox = base.join("_inbox");
-        if !inbox.exists() {
-            let _ = std::fs::create_dir_all(&inbox);
-        }
-        inbox
-    } else {
-        opts.export.output_dir.clone()
-    };
-
-    // Export phase
-    let export_config = ExportConfig {
-        results: &results,
-        output_dir: opts.export.output_dir.clone(),
-        format: opts.export.output_format,
-        export_format: opts.export.export_format,
-        clean_ai: opts.ai,
-        quick_save: opts.export.quick_save,
-        vault_path: opts.export.obsidian_vault.as_ref(),
-        obsidian_options: obsidian_options.clone(),
-        state_store: None, // TODO: Add state store
-        resume: opts.crawl.resume,
-        ai_threshold: opts.ai_config.threshold,
-        ai_max_tokens: opts.ai_config.max_tokens,
-        ai_offline: opts.ai_config.offline,
-        ai_model: opts.ai_config.model.clone(),
-    };
-
-    // Save individual files (Markdown, etc.)
-    save_files(
-        &results,
-        &output_dir,
-        &opts.export.output_format,
-        &obsidian_options,
-    );
-
-    #[cfg(feature = "ai")]
-    let export_result = run_export(export_config, ai_cleaner).await;
-    #[cfg(not(feature = "ai"))]
-    let export_result = run_export(export_config).await;
-
-    match export_result {
-        Ok(processed_urls) => {
-            info!("Export completed for {} URLs", processed_urls.len());
-            CliExit::Success
-        },
-        Err(e) => {
-            error!(error = ?e, "Export failed");
-            e
-        },
-    }
+    None
 }
 
 /// Run the elastic ingestion pipeline on all scraped results.

@@ -1,13 +1,13 @@
 //! Scraping flow logic extracted from orchestrator.
 
 use std::path::PathBuf;
-use tokio::sync::mpsc;
 use tracing::{info, warn};
 use url::Url;
 
 use crate::application::crawl_options::CrawlOptions;
 use crate::application::export_factory;
-use crate::application::progress_types::{ScrapeError, ScrapeProgress, ScrapeStatus};
+use crate::application::progress_observer::ProgressObserver;
+use crate::application::progress_types::ScrapeError;
 use crate::application::scrape_single_url_for_tui;
 use crate::domain::ScrapedContent;
 use crate::infrastructure::crawler::robots_utils::{is_allowed_by_robots, new_robots_cache};
@@ -87,16 +87,15 @@ pub async fn apply_resume_mode(
     (filtered, state_store)
 }
 
-/// Scrape all URLs with progress events via mpsc channel.
+/// Scrape all URLs, reporting progress via the provided observer.
 ///
-/// When progress_tx is provided (non-TUI mode), emits ScrapeProgress events.
-/// When progress_tx is None (TUI mode), no progress events are emitted.
-/// The --quiet flag suppresses all output including progress events.
+/// The observer handles quiet/channel logic internally — callers pass
+/// `&NoopObserver` for dry-run or `&LiveProgressObserver` for live output.
 pub async fn scrape_urls(
     urls: &[Url],
     scraper_config: &ScraperConfig,
     opts: &CrawlOptions,
-    progress_tx: Option<mpsc::Sender<ScrapeProgress>>,
+    observer: &dyn ProgressObserver,
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
 ) -> (
     Vec<ScrapedContent>,
@@ -160,44 +159,14 @@ pub async fn scrape_urls(
         let url_str = url.as_str();
         let _url_host = url.host_str().unwrap_or("unknown").to_string();
 
-        // Emit progress event: Started
-        if !opts.export.quiet {
-            if let Some(ref tx) = progress_tx {
-                let _ = tx
-                    .send(ScrapeProgress::Started {
-                        url: url_str.to_string(),
-                    })
-                    .await;
-            }
-        }
-
-        // Emit progress event: StatusChanged to Fetching
-        if !opts.export.quiet {
-            if let Some(ref tx) = progress_tx {
-                let _ = tx
-                    .send(ScrapeProgress::StatusChanged {
-                        url: url_str.to_string(),
-                        status: ScrapeStatus::Fetching,
-                    })
-                    .await;
-            }
-        }
+        observer.on_page_started(url_str).await;
 
         // Robots.txt enforcement — skip disallowed URLs unless --ignore-robots
         if !opts.crawl.ignore_robots {
             let domain = url.host_str().unwrap_or("unknown");
             if !is_allowed_by_robots(url_str, domain, &robots_cache).await {
                 info!("Blocked by robots.txt: {}", url_str);
-                if !opts.export.quiet {
-                    if let Some(ref tx) = progress_tx {
-                        let _ = tx
-                            .send(ScrapeProgress::Failed {
-                                url: url_str.to_string(),
-                                error: ScrapeError::Other("blocked by robots.txt".into()),
-                            })
-                            .await;
-                    }
-                }
+                observer.on_robots_blocked(url_str).await;
                 failures.push((
                     url_str.to_string(),
                     crate::error::ScraperError::Validation("blocked by robots.txt".into()),
@@ -212,53 +181,23 @@ pub async fn scrape_urls(
             Ok(content) => {
                 let chars = content.content.chars().count();
                 results.push(content);
-                // Emit progress event: Completed (only if not quiet)
-                if !opts.export.quiet {
-                    if let Some(ref tx) = progress_tx {
-                        let _ = tx
-                            .send(ScrapeProgress::Completed {
-                                url: url_str.to_string(),
-                                chars,
-                            })
-                            .await;
-                    }
-                }
+                observer.on_page_completed(url_str, chars).await;
             },
             Err(e) => {
                 let url_str = url.as_str().to_string();
                 warn!("Failed to scrape {}: {}", url_str, e);
-                // Emit progress event: Failed (borrows `e` before it is moved)
-                if !opts.export.quiet {
-                    if let Some(ref tx) = progress_tx {
-                        let _ = tx
-                            .send(ScrapeProgress::Failed {
-                                url: url_str.clone(),
-                                error: ScrapeError::Other(format!("{e}")),
-                            })
-                            .await;
-                    }
-                }
-                failures.push((url_str.clone(), e));
+                let scrape_err = ScrapeError::Other(format!("{e}"));
+                observer.on_page_failed(&url_str, &scrape_err).await;
+                failures.push((url_str, e));
             },
         }
     }
 
-    // Count totals from results/failures
     let total_successful = results.len();
     let total_failed = failures.len();
-
-    // Emit Finished event when all done (only if not quiet)
-    if !opts.export.quiet {
-        if let Some(ref tx) = progress_tx {
-            let _ = tx
-                .send(ScrapeProgress::Finished {
-                    total: processing_count,
-                    successful: total_successful,
-                    failed: total_failed,
-                })
-                .await;
-        }
-    }
+    observer
+        .on_finished(processing_count, total_successful, total_failed)
+        .await;
 
     (results, failures)
 }

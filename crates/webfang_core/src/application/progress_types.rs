@@ -303,11 +303,11 @@ impl ProgressState {
                 self.update_eta();
             },
             ScrapeProgress::Finished {
-                total: _,
+                total,
                 successful: _,
                 failed: _,
             } => {
-                // Final event — counts already tracked via Completed/Failed updates
+                self.total = total;
             },
         }
     }

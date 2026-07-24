@@ -15,6 +15,7 @@ pub mod export_factory;
 pub mod export_utils;
 pub mod http_client;
 pub mod pipeline;
+pub mod progress_observer;
 pub mod progress_types;
 pub mod rate_limiter;
 pub mod scraper_service;
