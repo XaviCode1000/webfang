@@ -22,7 +22,7 @@ pub use crate::infrastructure::scraper::{fallback, readability};
 pub use crate::ScraperConfig;
 
 // --- Crawler sub-module re-exports (canonical paths) ---
-pub use super::crawler::collector::{CrawlMessage, ResultsAdapter, ResultsCollector};
+pub use super::crawler::collector::{ResultsAdapter, ResultsCollector};
 pub use super::crawler::discovery::{
     crawl_with_sitemap, discover_urls_for_tui, scrape_single_url_for_tui, scrape_urls_for_tui,
 };

@@ -48,7 +48,7 @@ pub use config::{ConcurrencyConfig, ExportFormat, OutputFormat, PipelineOutputFo
 pub use content_processor::ContentProcessor;
 pub use crawl_job::{ContentType, DiscoveredUrl};
 pub use credentials::{
-    AccessToken, ApiKey, CredentialError, CredentialStore, SecretCredential, SensitiveString,
+    AccessToken, ApiKey, CredentialStore, SecretCredential, SensitiveString,
 };
 pub use dom_inspector::{
     DomInspectorPort, DomStructureReport, ExtractResult, SelectorDiagnostic, SelectorErrorKind,
@@ -60,7 +60,7 @@ pub use entities::{
     DownloadedAsset, Draft, ExportState, Exported, ScrapedContent, Validated, ValidationError,
 };
 pub use error::{CrawlError, DomainError};
-pub use exporter::{ExportResult, Exporter, ExporterConfig, ExporterError};
+pub use exporter::{ExportResult, Exporter, ExporterConfig};
 pub use http_config::HttpClientConfig;
 pub use http_error::{HttpError, HttpResult};
 pub use http_port::{HttpClientPort, HttpResponse};

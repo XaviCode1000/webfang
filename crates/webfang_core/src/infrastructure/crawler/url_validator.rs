@@ -11,7 +11,7 @@ use crate::domain::{DomainError, UrlValidatorTrait, ValidationResult};
 
 /// Errors that can occur during URL validation
 #[derive(Debug, thiserror::Error)]
-pub enum ValidationError {
+pub(crate) enum ValidationError {
     #[error("HTTP request failed: {0}")]
     HttpError(String),
     #[error("URL validation timeout")]

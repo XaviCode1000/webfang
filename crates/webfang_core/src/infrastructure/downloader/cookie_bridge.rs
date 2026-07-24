@@ -111,12 +111,12 @@ impl CookieBridge {
 /// CDP-compatible cookie representation for `Network.setCookies`.
 #[derive(Debug, Clone)]
 pub struct CdpCookie {
-    pub name: String,
-    pub value: String,
-    pub domain: String,
-    pub path: String,
-    pub http_only: bool,
-    pub secure: bool,
+    pub(crate) name: String,
+    pub(crate) value: String,
+    pub(crate) domain: String,
+    pub(crate) path: String,
+    pub(crate) http_only: bool,
+    pub(crate) secure: bool,
 }
 
 /// Check if `cookie_domain` matches `request_domain`.

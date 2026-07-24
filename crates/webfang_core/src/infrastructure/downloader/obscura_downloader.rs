@@ -32,7 +32,7 @@ const OBSCURA_TIMEOUT: Duration = Duration::from_secs(15);
 pub struct ObscuraDownloader;
 
 impl ObscuraDownloader {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 }

@@ -36,16 +36,16 @@ pub const MIN_DB_POOL_SIZE: usize = 4;
 
 /// Default SQLite database path: `~/.webfang/crawl.db`.
 pub const DEFAULT_DB_DIR: &str = ".webfang";
-pub const DEFAULT_DB_FILE: &str = "crawl.db";
+pub(crate) const DEFAULT_DB_FILE: &str = "crawl.db";
 
 // ============================================================================
 // Environment variable names (frozen design decision #12 — snake-upper)
 // ============================================================================
 
-pub const ENV_CPU_CORES: &str = "WEBFANG_CPU_CORES";
-pub const ENV_RAM_BUDGET: &str = "WEBFANG_RAM_BUDGET";
-pub const ENV_MAX_RESOURCE_MB: &str = "WEBFANG_MAX_RESOURCE_MB";
-pub const ENV_DB_PATH: &str = "WEBFANG_DB_PATH";
+pub(crate) const ENV_CPU_CORES: &str = "WEBFANG_CPU_CORES";
+pub(crate) const ENV_RAM_BUDGET: &str = "WEBFANG_RAM_BUDGET";
+pub(crate) const ENV_MAX_RESOURCE_MB: &str = "WEBFANG_MAX_RESOURCE_MB";
+pub(crate) const ENV_DB_PATH: &str = "WEBFANG_DB_PATH";
 
 // ============================================================================
 // Hardware detection primitives

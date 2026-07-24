@@ -31,7 +31,7 @@ pub use secrecy::SecretString;
 
 /// Errors from credentials operations
 #[derive(Debug, thiserror::Error)]
-pub enum CredentialError {
+pub(crate) enum CredentialError {
     #[error("credential expired")]
     Expired,
 

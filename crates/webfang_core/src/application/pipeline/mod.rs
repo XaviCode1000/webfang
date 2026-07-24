@@ -8,7 +8,7 @@ pub mod stages;
 
 pub use executor::PipelineExecutor;
 pub use stages::{
-    CleanStage, JsonlOutputStage, MultiSinkOutput, OutputError, OutputStage, ValidateStage,
+    CleanStage, JsonlOutputStage, MultiSinkOutput, OutputStage, ValidateStage,
 };
 
 // Re-export domain types used by the pipeline API

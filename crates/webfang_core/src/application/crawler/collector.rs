@@ -33,7 +33,7 @@ use crate::domain::DiscoveredUrl;
 ///
 /// Usamos DiscoveredUrl porque eso es lo que el crawler colecta.
 #[derive(Debug, Clone)]
-pub enum CrawlMessage {
+pub(crate) enum CrawlMessage {
     /// URL scrapeada exitosamente
     Success(DiscoveredUrl),
     /// Error durante el scrape
@@ -222,7 +222,7 @@ pub struct ResultsAdapter {
 }
 
 impl ResultsAdapter {
-    pub fn new(capacity: usize) -> Self {
+    pub(crate) fn new(capacity: usize) -> Self {
         Self {
             collector: ResultsCollector::with_capacity(capacity),
         }

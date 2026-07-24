@@ -8,7 +8,7 @@ use tracing::instrument;
 
 /// Errors that can occur during retry operations
 #[derive(Debug, thiserror::Error)]
-pub enum RetryError {
+pub(crate) enum RetryError {
     #[error("max retries exceeded: {0}")]
     MaxRetriesExceeded(String),
     #[error("operation timeout")]

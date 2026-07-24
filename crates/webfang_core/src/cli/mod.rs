@@ -2,6 +2,7 @@
 //!
 //! Clean Architecture Adapters layer: all CLI-related utilities.
 
+#[allow(missing_docs)]
 pub mod args;
 pub mod commands;
 pub mod completions;
@@ -20,10 +21,10 @@ pub use args::{Args, Commands, Shell};
 
 /// Result of URL selection.
 #[derive(Debug)]
-pub enum SelectedUrls {
+pub(crate) enum SelectedUrls {
     Urls(Vec<url::Url>),
     None, // User cancelled or no selection
     Error(CliExit),
 }
 
-pub use SelectedUrls::*;
+pub(crate) use SelectedUrls::*;

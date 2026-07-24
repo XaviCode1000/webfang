@@ -23,21 +23,21 @@ use crate::domain::semantic_cleaner::SemanticCleaner;
 /// Configuration for the export flow.
 #[allow(dead_code)]
 pub struct ExportConfig<'a> {
-    pub results: &'a [ScrapedContent],
-    pub output_dir: PathBuf,
-    pub format: OutputFormat,
-    pub export_format: ExportFormat,
-    pub clean_ai: bool,
-    pub quick_save: bool,
-    pub vault_path: Option<&'a PathBuf>,
-    pub obsidian_options: ObsidianOptions,
-    pub state_store: Option<&'a StateStore>,
-    pub resume: bool,
+    pub(crate) results: &'a [ScrapedContent],
+    pub(crate) output_dir: PathBuf,
+    pub(crate) format: OutputFormat,
+    pub(crate) export_format: ExportFormat,
+    pub(crate) clean_ai: bool,
+    pub(crate) quick_save: bool,
+    pub(crate) vault_path: Option<&'a PathBuf>,
+    pub(crate) obsidian_options: ObsidianOptions,
+    pub(crate) state_store: Option<&'a StateStore>,
+    pub(crate) resume: bool,
     /// AI settings (only used when clean_ai is true and feature is enabled)
-    pub ai_threshold: f32,
-    pub ai_max_tokens: usize,
-    pub ai_offline: bool,
-    pub ai_model: String,
+    pub(crate) ai_threshold: f32,
+    pub(crate) ai_max_tokens: usize,
+    pub(crate) ai_offline: bool,
+    pub(crate) ai_model: String,
 }
 
 /// Run the export flow: AI-cleaned or standard export.

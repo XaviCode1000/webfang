@@ -15,7 +15,7 @@ const CHROMIUMOXIDE_MEMORY_COST: usize = 200_000_000;
 pub struct ChromiumoxideDownloader;
 
 impl ChromiumoxideDownloader {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 }

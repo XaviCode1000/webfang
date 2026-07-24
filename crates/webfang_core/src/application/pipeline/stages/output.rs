@@ -11,7 +11,7 @@ use crate::domain::pipeline_item::ScrapedItem;
 
 /// Errors that can occur when writing to an output sink.
 #[derive(Debug, thiserror::Error)]
-pub enum OutputError {
+pub(crate) enum OutputError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("serialization error: {0}")]

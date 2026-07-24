@@ -10,7 +10,7 @@ use tokio::io::{AsyncReadExt, BufReader};
 
 /// Errors that can occur during compression handling
 #[derive(Debug, thiserror::Error)]
-pub enum CompressionError {
+pub(crate) enum CompressionError {
     #[error("unsupported compression format: {0}")]
     UnsupportedFormat(String),
     #[error("decompression failed: {0}")]

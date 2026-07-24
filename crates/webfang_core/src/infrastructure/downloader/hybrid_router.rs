@@ -41,7 +41,7 @@ pub struct HybridRouter<L1: Downloader, L2: Downloader, L3: Downloader> {
 }
 
 impl<L1: Downloader, L2: Downloader, L3: Downloader> HybridRouter<L1, L2, L3> {
-    pub fn new(layer1: L1, layer2: L2, layer3: L3) -> Self {
+    pub(crate) fn new(layer1: L1, layer2: L2, layer3: L3) -> Self {
         Self {
             layer1,
             layer2,

@@ -26,26 +26,26 @@ use crate::infrastructure::network::session_pool::DomainSessionPool;
 /// we construct one `Arc<CrawlTaskCtx>` and clone only the `Arc` wrapper.
 pub struct CrawlTaskCtx {
     // --- Shared config (read-only) ---
-    pub config: Arc<CrawlerConfig>,
-    pub visited: Arc<UrlDeduplicator>,
-    pub visited_urls: Arc<RwLock<Vec<String>>>,
-    pub queue: Arc<UrlQueue>,
-    pub rate_limiter: SharedRateLimiter,
-    pub session_pool: Option<DomainSessionPool>,
-    pub ignore_robots: bool,
-    pub robots_cache: RobotsCache,
+    pub(crate) config: Arc<CrawlerConfig>,
+    pub(crate) visited: Arc<UrlDeduplicator>,
+    pub(crate) visited_urls: Arc<RwLock<Vec<String>>>,
+    pub(crate) queue: Arc<UrlQueue>,
+    pub(crate) rate_limiter: SharedRateLimiter,
+    pub(crate) session_pool: Option<DomainSessionPool>,
+    pub(crate) ignore_robots: bool,
+    pub(crate) robots_cache: RobotsCache,
 
     // --- Per-task mutable (atomics) ---
-    pub error_count: Arc<AtomicUsize>,
-    pub pages_crawled: Arc<AtomicU64>,
+    pub(crate) error_count: Arc<AtomicUsize>,
+    pub(crate) pages_crawled: Arc<AtomicU64>,
 
     // --- Infrastructure ---
-    pub collector: ResultsCollector,
-    pub cookie_bridge: Arc<RwLock<CookieBridge>>,
-    pub banned_domains: Arc<RwLock<Vec<BannedDomain>>>,
+    pub(crate) collector: ResultsCollector,
+    pub(crate) cookie_bridge: Arc<RwLock<CookieBridge>>,
+    pub(crate) banned_domains: Arc<RwLock<Vec<BannedDomain>>>,
     pub(crate) fetch_router: Option<FetchRouter>,
 
     // --- Pipeline ---
-    pub pipeline: Option<Arc<PipelineExecutor>>,
-    pub output_stages: Vec<Arc<Box<dyn OutputStage>>>,
+    pub(crate) pipeline: Option<Arc<PipelineExecutor>>,
+    pub(crate) output_stages: Vec<Arc<Box<dyn OutputStage>>>,
 }

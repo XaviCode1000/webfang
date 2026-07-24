@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use tracing::info;
 
 use crate::{
-    domain::{entities::ExportFormat, Exporter, ExporterConfig, ExporterError},
+    domain::{entities::ExportFormat, exporter::ExporterError, Exporter, ExporterConfig},
     infrastructure::export::{
         jsonl_exporter, state_store::StateStore, vector_exporter::VectorExporter,
     },

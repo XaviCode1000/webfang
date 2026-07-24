@@ -17,7 +17,7 @@ pub trait TtyDetector: Send + Sync {
 }
 
 /// Abstraction for checking if a stream is a TTY.
-pub trait IsTty {
+pub(crate) trait IsTty {
     fn is_tty(&self) -> bool;
 }
 
@@ -31,7 +31,7 @@ impl IsTty for io::Stdin {
 pub struct StdTtyDetector;
 
 impl StdTtyDetector {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 }

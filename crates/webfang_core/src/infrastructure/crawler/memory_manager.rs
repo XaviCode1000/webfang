@@ -9,7 +9,7 @@ use url::Url;
 
 /// Errors that can occur during memory management
 #[derive(Debug, thiserror::Error)]
-pub enum MemoryError {
+pub(crate) enum MemoryError {
     #[error("memory limit exceeded: {0} MB")]
     MemoryLimitExceeded(usize),
     #[error("disk swap failed: {0}")]

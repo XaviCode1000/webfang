@@ -25,7 +25,7 @@ pub mod url_filter;
 pub use batch::{
     BatchJob, BatchManager, BatchManagerSummary, BatchProcessor, BatchProgress, BatchResult,
 };
-pub use crawler::collector::{CrawlMessage, ResultsAdapter, ResultsCollector};
+pub use crawler::collector::{ResultsAdapter, ResultsCollector};
 pub use crawler::engine::EngineOptions;
 pub use crawler::{
     crawl_site, crawl_site_with_options, crawl_with_sitemap, discover_urls_for_tui,

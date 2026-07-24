@@ -192,7 +192,7 @@ impl DistributedRateLimiter {
 
 /// Builder for rate limiter with automatic fallback
 #[derive(Clone)]
-pub enum RateLimiter {
+pub(crate) enum RateLimiter {
     /// In-memory rate limiter (default, always available)
     InMemory(SharedRateLimiter),
     /// Redis-backed distributed rate limiter (prepared for future use)

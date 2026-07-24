@@ -10,7 +10,7 @@ use url::Url;
 
 /// Errors that can occur during batch processing
 #[derive(Debug, thiserror::Error)]
-pub enum BatchError {
+pub(crate) enum BatchError {
     #[error("batch processing failed: {0}")]
     ProcessingFailed(String),
 }

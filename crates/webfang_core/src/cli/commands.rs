@@ -13,9 +13,9 @@ use crate::infrastructure::obsidian::detect_vault;
 
 /// Common preflight checks for all commands
 pub struct PreflightContext {
-    pub vault_path: Option<PathBuf>,
-    pub config_path: PathBuf,
-    pub target_url: String,
+    pub(crate) vault_path: Option<PathBuf>,
+    pub(crate) config_path: PathBuf,
+    pub(crate) target_url: String,
 }
 
 /// Run preflight checks and build context
