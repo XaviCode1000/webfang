@@ -127,6 +127,10 @@ fn banned_session_recovers_after_cooldown() {
     // Immediately: banned
     assert!(pool.acquire("example.com").is_none());
 
+    // NOTE: This sleep is intentionally kept — the pool uses SystemClock and
+    // there's no FakeClock injection point in SessionPoolConfig. Eliminating
+    // this requires injecting a clock abstraction (trait object or feature-gated
+    // clock), which is a design change beyond this refactor scope.
     // Wait past cooldown (2^1 * 1ms = 2ms)
     thread::sleep(Duration::from_millis(50));
 
@@ -149,6 +153,8 @@ fn stale_sessions_evicted_on_acquire() {
     let id = pool.acquire("example.com").unwrap();
     pool.report_failure("example.com", id, 429);
 
+    // NOTE: Same as above — SystemClock only, no FakeClock available yet.
+    // This sleep simulates time passing for TTL expiry.
     thread::sleep(Duration::from_millis(5));
 
     // TTL expired — acquire should evict stale and return healthy session
@@ -169,6 +175,8 @@ fn evict_stale_recovers_banned_sessions() {
     let id = pool.acquire("example.com").unwrap();
     pool.report_failure("example.com", id, 429);
 
+    // NOTE: Same as above — SystemClock only, no FakeClock available yet.
+    // This sleep simulates time passing for TTL expiry.
     thread::sleep(Duration::from_millis(5));
     pool.evict_stale();
 

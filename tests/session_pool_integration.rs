@@ -137,6 +137,10 @@ fn test_banned_session_recovers_after_cooldown() {
     // Immediately: banned
     assert!(pool.acquire("example.com").is_none());
 
+    // NOTE: This sleep is intentionally kept — the pool uses SystemClock and
+    // there's no FakeClock injection point in SessionPoolConfig. Eliminating
+    // this requires injecting a clock abstraction (trait object or feature-gated
+    // clock), which is a design change beyond this refactor scope.
     // Wait past cooldown (2^1 * 1ms = 2ms)
     thread::sleep(Duration::from_millis(50));
 

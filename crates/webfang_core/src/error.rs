@@ -595,8 +595,10 @@ mod tests {
     #[test]
     fn test_http_error() {
         let err = ScraperError::http(404, "https://example.com");
-        assert!(err.to_string().contains("404"));
-        assert!(err.to_string().contains("example.com"));
+        assert!(
+            matches!(err, ScraperError::Http { status: 404, .. }),
+            "HTTP variant with status 404 must be preserved"
+        );
     }
 
     #[test]
@@ -612,7 +614,10 @@ mod tests {
     fn test_io_error_from_std() {
         let std_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
         let err: ScraperError = std_err.into();
-        assert!(err.to_string().contains("file not found"));
+        assert!(
+            matches!(err, ScraperError::Io(_)),
+            "std::io::Error must convert to ScraperError::Io"
+        );
     }
 
     #[test]
@@ -640,6 +645,7 @@ mod tests {
             .expect_err("expected error for missing table");
         let scraper_err = ScraperError::persistence(&rusqlite_err);
         let msg = scraper_err.to_string();
+        // Display contract: triangulation test — verify real rusqlite error text appears
         assert!(
             msg.contains("persistencia"),
             "missing Spanish prefix: {msg}"
@@ -654,7 +660,10 @@ mod tests {
     fn test_semantic_error_model_load() {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "model file missing");
         let err = SemanticError::ModelLoad(io_err);
-        assert!(err.to_string().contains("cargando modelo"));
+        assert!(
+            matches!(err, SemanticError::ModelLoad(_)),
+            "ModelLoad variant must be preserved"
+        );
     }
 
     #[test]
@@ -664,8 +673,18 @@ mod tests {
             tokens: 600,
             max: 512,
         };
-        assert!(err.to_string().contains("chunk-123"));
-        assert!(err.to_string().contains("600 > 512"));
+        assert!(
+            matches!(
+                err,
+                SemanticError::ChunkTooLarge {
+                    chunk_id,
+                    tokens: 600,
+                    max: 512,
+                }
+                if chunk_id == "chunk-123"
+            ),
+            "ChunkTooLarge fields must be preserved"
+        );
     }
 
     #[test]
@@ -674,8 +693,14 @@ mod tests {
             repo: "sentence-transformers/all-MiniLM-L6-v2".to_string(),
             cause: "network timeout".to_string(),
         };
-        assert!(err.to_string().contains("all-MiniLM-L6-v2"));
-        assert!(err.to_string().contains("network timeout"));
+        assert!(
+            matches!(
+                err,
+                SemanticError::Download { repo, cause }
+                if repo == "sentence-transformers/all-MiniLM-L6-v2" && cause == "network timeout"
+            ),
+            "Download fields must be preserved"
+        );
     }
 
     #[test]
@@ -683,14 +708,22 @@ mod tests {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "model missing");
         let semantic_err = SemanticError::ModelLoad(io_err);
         let scraper_err: ScraperError = semantic_err.into();
-        assert!(scraper_err.to_string().contains("limpieza semántica"));
+        assert!(
+            matches!(
+                scraper_err,
+                ScraperError::Semantic(SemanticError::ModelLoad(_))
+            ),
+            "SemanticError::ModelLoad must convert to ScraperError::Semantic(ModelLoad)"
+        );
     }
 
     #[test]
     fn test_scraper_error_h2_config() {
         let err = ScraperError::H2Config("ALPN negotiation failed".to_string());
-        assert!(err.to_string().contains("Error de configuración HTTP/2"));
-        assert!(err.to_string().contains("ALPN negotiation failed"));
+        assert!(
+            matches!(err, ScraperError::H2Config(s) if s == "ALPN negotiation failed"),
+            "H2Config variant with message must be preserved"
+        );
     }
 
     // ========================================================================
@@ -712,16 +745,20 @@ mod tests {
     fn test_domain_error_readability_wraps_to_scraper() {
         let domain_err = crate::domain::error::DomainError::Readability("parse failed".to_string());
         let scraper_err: ScraperError = domain_err.into();
-        assert!(scraper_err.to_string().contains("parse failed"));
-        assert!(scraper_err.to_string().contains("legibilidad"));
+        assert!(
+            matches!(scraper_err, ScraperError::Readability(s) if s == "parse failed"),
+            "DomainError::Readability must convert to ScraperError::Readability"
+        );
     }
 
     #[test]
     fn test_domain_error_extraction_wraps_to_scraper() {
         let domain_err = crate::domain::error::DomainError::Extraction("no content".to_string());
         let scraper_err: ScraperError = domain_err.into();
-        assert!(scraper_err.to_string().contains("no content"));
-        assert!(scraper_err.to_string().contains("extracción"));
+        assert!(
+            matches!(scraper_err, ScraperError::Extraction(s) if s == "no content"),
+            "DomainError::Extraction must convert to ScraperError::Extraction"
+        );
     }
 
     #[test]
@@ -731,34 +768,44 @@ mod tests {
             reason: "empty body".to_string(),
         };
         let scraper_err: ScraperError = domain_err.into();
-        assert!(scraper_err.to_string().contains("example.com"));
-        assert!(scraper_err.to_string().contains("empty body"));
+        assert!(
+            matches!(
+                scraper_err,
+                ScraperError::ExtractionFailed { url, reason }
+                if url == "https://example.com" && reason == "empty body"
+            ),
+            "DomainError::ExtractionFailed fields must be preserved"
+        );
     }
 
     #[test]
     fn test_domain_error_validation_wraps_to_scraper() {
         let domain_err = crate::domain::error::DomainError::Validation("bad pattern".to_string());
         let scraper_err: ScraperError = domain_err.into();
-        assert!(scraper_err.to_string().contains("bad pattern"));
-        assert!(scraper_err.to_string().contains("Validación"));
+        assert!(
+            matches!(scraper_err, ScraperError::Validation(s) if s == "bad pattern"),
+            "DomainError::Validation must convert to ScraperError::Validation"
+        );
     }
 
     #[test]
     fn test_domain_error_feature_gated_wraps_to_scraper() {
         let domain_err = crate::domain::error::DomainError::FeatureGated("AI module".to_string());
         let scraper_err: ScraperError = domain_err.into();
-        assert!(scraper_err.to_string().contains("AI module"));
-        assert!(scraper_err
-            .to_string()
-            .contains("funcionalidad no disponible"));
+        assert!(
+            matches!(scraper_err, ScraperError::FeatureGated(s) if s == "AI module"),
+            "DomainError::FeatureGated must convert to ScraperError::FeatureGated"
+        );
     }
 
     #[test]
     fn test_domain_error_conversion_wraps_to_scraper() {
         let domain_err = crate::domain::error::DomainError::Conversion("YAML parse".to_string());
         let scraper_err: ScraperError = domain_err.into();
-        assert!(scraper_err.to_string().contains("YAML parse"));
-        assert!(scraper_err.to_string().contains("conversión"));
+        assert!(
+            matches!(scraper_err, ScraperError::Conversion(s) if s == "YAML parse"),
+            "DomainError::Conversion must convert to ScraperError::Conversion"
+        );
     }
 
     #[test]
@@ -775,7 +822,10 @@ mod tests {
         }
 
         let err = outer().unwrap_err();
-        assert!(err.to_string().contains("URL inválida"));
+        assert!(
+            matches!(err, ScraperError::InvalidUrl(s) if s == "test"),
+            "? operator must preserve InvalidUrl variant and message"
+        );
     }
 
     // ========================================================================
@@ -790,11 +840,15 @@ mod tests {
         };
         let scraper_err: ScraperError = infra_err.into();
         assert!(
-            scraper_err.to_string().contains("500"),
+            matches!(scraper_err, ScraperError::Http { status: 500, .. }),
             "Status code must be preserved"
         );
         assert!(
-            scraper_err.to_string().contains("example.com"),
+            matches!(
+                scraper_err,
+                ScraperError::Http { url, .. }
+                if url == "https://example.com"
+            ),
             "URL must be preserved"
         );
     }
@@ -805,8 +859,10 @@ mod tests {
             std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "connection refused"),
         ));
         let scraper_err: ScraperError = infra_err.into();
-        assert!(scraper_err.to_string().contains("connection refused"));
-        assert!(scraper_err.to_string().contains("red"));
+        assert!(
+            matches!(scraper_err, ScraperError::Network(_)),
+            "InfraError::Network must convert to ScraperError::Network"
+        );
     }
 
     #[test]
@@ -821,8 +877,11 @@ mod tests {
             matches!(scraper_err, ScraperError::Download(_)),
             "InfraError::Download must map to ScraperError::Download, got: {scraper_err}"
         );
-        assert!(scraper_err.to_string().contains("descarga"));
-        assert!(scraper_err.to_string().contains("checksum mismatch"));
+        // Display contract: Download variant must preserve Spanish prefix and inner message
+        assert_eq!(
+            scraper_err.to_string(),
+            "Error de descarga: checksum mismatch"
+        );
         // Must NOT be classified as a Network error.
         assert!(!matches!(scraper_err, ScraperError::Network(_)));
     }
@@ -834,8 +893,14 @@ mod tests {
             provider: "Cloudflare".to_string(),
         };
         let scraper_err: ScraperError = infra_err.into();
-        assert!(scraper_err.to_string().contains("example.com"));
-        assert!(scraper_err.to_string().contains("Cloudflare"));
+        assert!(
+            matches!(
+                scraper_err,
+                ScraperError::WafBlocked { url, provider }
+                if url == "https://example.com" && provider == "Cloudflare"
+            ),
+            "WafBlocked fields must be preserved"
+        );
     }
 
     #[test]
@@ -843,8 +908,10 @@ mod tests {
         let infra_err =
             crate::infrastructure::error::InfraError::Persistence("disk full".to_string());
         let scraper_err: ScraperError = infra_err.into();
-        assert!(scraper_err.to_string().contains("disk full"));
-        assert!(scraper_err.to_string().contains("persistencia"));
+        assert!(
+            matches!(scraper_err, ScraperError::Persistence(s) if s == "disk full"),
+            "InfraError::Persistence must convert to ScraperError::Persistence"
+        );
     }
 
     #[test]
@@ -852,36 +919,50 @@ mod tests {
         let infra_err =
             crate::infrastructure::error::InfraError::Ingestion("pipeline failed".to_string());
         let scraper_err: ScraperError = infra_err.into();
-        assert!(scraper_err.to_string().contains("pipeline failed"));
-        assert!(scraper_err.to_string().contains("ingestión"));
+        assert!(
+            matches!(scraper_err, ScraperError::Ingestion(s) if s == "pipeline failed"),
+            "InfraError::Ingestion must convert to ScraperError::Ingestion"
+        );
     }
 
     #[test]
     fn test_infra_error_global_timeout_wraps_to_scraper() {
         let infra_err = crate::infrastructure::error::InfraError::GlobalTimeout;
         let scraper_err: ScraperError = infra_err.into();
-        assert!(scraper_err.to_string().contains("30 segundos"));
+        assert!(
+            matches!(scraper_err, ScraperError::GlobalTimeout),
+            "InfraError::GlobalTimeout must convert to ScraperError::GlobalTimeout"
+        );
     }
 
     #[test]
     fn test_infra_error_slowloris_timeout_wraps_to_scraper() {
         let infra_err = crate::infrastructure::error::InfraError::SlowlorisTimeout;
         let scraper_err: ScraperError = infra_err.into();
-        assert!(scraper_err.to_string().contains("5 segundos"));
+        assert!(
+            matches!(scraper_err, ScraperError::SlowlorisTimeout),
+            "InfraError::SlowlorisTimeout must convert to ScraperError::SlowlorisTimeout"
+        );
     }
 
     #[test]
     fn test_infra_error_payload_too_large_wraps_to_scraper() {
         let infra_err = crate::infrastructure::error::InfraError::PayloadTooLarge;
         let scraper_err: ScraperError = infra_err.into();
-        assert!(scraper_err.to_string().contains("25 MB"));
+        assert!(
+            matches!(scraper_err, ScraperError::PayloadTooLarge),
+            "InfraError::PayloadTooLarge must convert to ScraperError::PayloadTooLarge"
+        );
     }
 
     #[test]
     fn test_infra_error_semaphore_inanition_wraps_to_scraper() {
         let infra_err = crate::infrastructure::error::InfraError::SemaphoreInanition;
         let scraper_err: ScraperError = infra_err.into();
-        assert!(scraper_err.to_string().contains("semáforo agotado"));
+        assert!(
+            matches!(scraper_err, ScraperError::SemaphoreInanition),
+            "InfraError::SemaphoreInanition must convert to ScraperError::SemaphoreInanition"
+        );
     }
 
     #[test]
@@ -889,8 +970,10 @@ mod tests {
         let infra_err =
             crate::infrastructure::error::InfraError::H2Config("ALPN failed".to_string());
         let scraper_err: ScraperError = infra_err.into();
-        assert!(scraper_err.to_string().contains("ALPN failed"));
-        assert!(scraper_err.to_string().contains("HTTP/2"));
+        assert!(
+            matches!(scraper_err, ScraperError::H2Config(s) if s == "ALPN failed"),
+            "InfraError::H2Config must convert to ScraperError::H2Config"
+        );
     }
 
     #[test]
@@ -898,7 +981,10 @@ mod tests {
         let url_err = url::ParseError::EmptyHost;
         let infra_err = crate::infrastructure::error::InfraError::UrlParse(url_err);
         let scraper_err: ScraperError = infra_err.into();
-        assert!(scraper_err.to_string().contains("URL"));
+        assert!(
+            matches!(scraper_err, ScraperError::UrlParse(_)),
+            "InfraError::UrlParse must convert to ScraperError::UrlParse"
+        );
     }
 
     // ========================================================================

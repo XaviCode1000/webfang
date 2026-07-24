@@ -56,8 +56,13 @@ async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
         axum::serve(listener, app).await.unwrap();
     });
 
-    // Give the server a moment to start
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Wait for the server to accept TCP connections instead of a fixed sleep.
+    for _ in 0..20 {
+        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 
     (base_url, handle)
 }
