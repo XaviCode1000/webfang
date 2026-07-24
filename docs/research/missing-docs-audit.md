@@ -56,7 +56,7 @@
 
 ## Recomendación de implementación
 
-Esfuerzo estimado: M
+Esfuerzo estimado: L
 
 Justificación basada en el total de warnings:
 - Total 100-500 → M (2-3 PRs por módulo)
@@ -79,3 +79,10 @@ Plan sugerido por fases:
 - `missing_docs` default es `allow`. Se cambió a `warn` para la auditoría.
 - No se activó `deny` en esta fase.
 - No se modificó ningún ítem de configuración de lints en Cargo.toml.
+
+## Corrección de clasificación
+
+La clasificación original fue **M**, pero el total de 419 warnings supera el umbral de 200 warnings definido en el brief.
+Por lo tanto, el esfuerzo correcto es **L** y corresponde implementar la documentación por fases,
+no en un único PR.
+
