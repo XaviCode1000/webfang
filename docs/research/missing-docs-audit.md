@@ -86,26 +86,54 @@ La clasificación original fue **M**, pero el total de 419 warnings supera el um
 Por lo tanto, el esfuerzo correcto es **L** y corresponde implementar la documentación por fases,
 no en un único PR.
 
+## Addendum: Reconciliación crudo → deduplicado (2026-07-24)
+
+La auditoría original reporta **419 warnings crudos**:
+
+- `webfang_core`: 206
+- `webfang_ai`: 213
+- Total crudo: 419
+
+Sin embargo, `webfang_ai` depende de `webfang_core`. Cuando se activa `#![warn(missing_docs)]`
+en `webfang_ai`, los 206 warnings de `webfang_core` se propagan. Solo **7 warnings** son
+realmente de `webfang_ai` (en `infrastructure_ai/`).
+
+El script `audit-missing-docs.sh` fue corregido para deduplicar por `file:line`,
+eliminando el doble-conteo. Estado efectivo:
+
+| Métrica | Crudo | Deduplicado |
+|:--------|------:|:-----------:|
+| webfang_core | 206 | 192 |
+| webfang_ai (propios) | 213 | 7 |
+| **Total** | **419** | **199** |
+
+### Breakdown por PR (Fase 0)
+
+| PR | Módulos | ΣWarnings | ΣE (pub(crate)) | ΣR (docs/allow) |
+|:--:|:--------|:---------:|:----------------:|:----------------:|
+| 0A | (sin warnings — tooling + lint swap) | 0 | 0 | 0 |
+| 0B | infrastructure/*, adapters/* | 62 | ~50 | ~12 |
+| 0C | cli/*, cli/args/* | 50 | ~35 | ~15 |
+| 0D | domain/*, application/*, config.rs | 80 | ~42 | ~38 |
+| F5 | webfang_ai/infrastructure_ai | 7 | 0 | 7 |
+| **Total** | | **199** | **~127** | **~72** |
+
+Verificación: 62 + 50 + 80 + 7 = 199 ✓
+
+### Impacto en esfuerzo
+
+El esfuerzo se revisa de **L** a **M**, dado que:
+- Warnings únicos reales: 199 (no 419)
+- Eliminables vía `pub(crate)`: ~127 (sin escribir docs)
+- Restantes para documentación: ~72
+
 ## Reproducción
 
-Esta auditoría se generó activando temporalmente:
-
-```rust
-#![warn(missing_docs)]
-```
-
-en `webfang_core/src/lib.rs` y `webfang_ai/src/lib.rs`.
-
-El PR no incluye esos cambios de lint para mantener el diff sin cambios funcionales.
-Para reproducir el conteo:
-
-1. Cambiar temporalmente `allow(missing_docs)` por `warn(missing_docs)` en `webfang_core`.
-2. Agregar `#![warn(missing_docs)]` en `webfang_ai`.
-3. Ejecutar:
+Para reproducir el conteo deduplicado:
 
 ```bash
-./scripts/audit-missing-docs.sh > docs/research/missing-docs-audit.tsv
+./scripts/audit-missing-docs.sh
 ```
 
-4. Revertir los cambios de lint si no se desea dejar `warn` en el código.
+El script deduplica automáticamente por `file:line` usando `sort + awk`.
 

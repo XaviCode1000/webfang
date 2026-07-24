@@ -6,9 +6,10 @@ CRATES=(
   webfang_ai
 )
 
-for crate in "${CRATES[@]}"; do
-  echo "# Missing docs: ${crate}"
+TMPFILE=$(mktemp)
+trap 'rm -f "$TMPFILE"' EXIT
 
+for crate in "${CRATES[@]}"; do
   cargo check -p "$crate" --all-features --message-format=json 2>/dev/null \
     | jq -r --arg crate "$crate" '
         select(
@@ -24,4 +25,14 @@ for crate in "${CRATES[@]}"; do
           ]
         | @tsv
       '
-done
+done >> "$TMPFILE"
+
+# Deduplicate by file:line (columns 2 and 3)
+# Keep the first crate name seen for each unique file:line
+sort -t$'\t' -k2,2 -k3,3n "$TMPFILE" | awk -F'\t' '
+  !seen[$2,$3]++ { print }
+' > "${TMPFILE}.dedup"
+
+cat "${TMPFILE}.dedup"
+echo "---"
+echo "# Total unique warnings: $(wc -l < "${TMPFILE}.dedup")"
