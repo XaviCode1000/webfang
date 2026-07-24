@@ -188,7 +188,9 @@ mod html_cleaner_regression {
 
 #[cfg(all(test, not(miri)))]
 mod bridge_aggressive_regression {
+    use std::sync::Arc;
     use webfang_core::infrastructure::bridge::CpuBridge;
+    use webfang_core::infrastructure::content_processing::AggressiveProcessor;
     use webfang_core::infrastructure::cpu_pool::RayonCpuPool;
     use webfang_core::infrastructure::crawler::resource_downloader::DownloadedResource;
 
@@ -203,7 +205,7 @@ mod bridge_aggressive_regression {
 
     async fn cleaned_text(html: &str) -> String {
         let pool = RayonCpuPool::new(2).expect("build rayon pool");
-        let bridge = CpuBridge::new(pool);
+        let bridge = CpuBridge::new(pool, Arc::new(AggressiveProcessor));
         let rx = bridge.dispatch_resource(resource(html));
         let resource = rx
             .await
@@ -294,9 +296,10 @@ mod clean_semantic_regression {
     use webfang_core::application::pipeline::{
         CleanStage, PipelineStage, ScrapedItem, StageOutcome,
     };
+    use webfang_core::infrastructure::content_processing::SemanticProcessor;
 
     async fn run_clean(raw_html: &str) -> String {
-        let stage = CleanStage;
+        let stage = CleanStage(Box::new(SemanticProcessor));
         let item = ScrapedItem {
             raw_html: raw_html.to_string(),
             ..Default::default()
@@ -360,7 +363,7 @@ mod clean_semantic_regression {
     async fn short_content_tags_spa() {
         let html = "<html><head></head><body></body></html>";
         let item = {
-            let stage = CleanStage;
+            let stage = CleanStage(Box::new(SemanticProcessor));
             let item = ScrapedItem {
                 raw_html: html.to_string(),
                 ..Default::default()
@@ -382,7 +385,7 @@ mod clean_semantic_regression {
     async fn metadata_records_sizes() {
         let html = "<p>Hello world content that is long enough to pass the minimum text length threshold.</p>";
         let item = {
-            let stage = CleanStage;
+            let stage = CleanStage(Box::new(SemanticProcessor));
             let item = ScrapedItem {
                 raw_html: html.to_string(),
                 ..Default::default()

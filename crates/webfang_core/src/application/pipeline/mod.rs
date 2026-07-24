@@ -17,13 +17,18 @@ pub use crate::domain::pipeline_item::{PipelineStage, ScrapedItem, StageOutcome}
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+    use crate::infrastructure::content_processing::SemanticProcessor;
+
+    fn stage() -> CleanStage {
+        CleanStage(Box::new(SemanticProcessor))
+    }
 
     #[cfg_attr(miri, ignore)] // runs CleanStage -> legible/servo_arc (Tree-Borrows UB), same as stages/clean.rs
     #[tokio::test]
     async fn test_validate_then_clean_pipeline() {
         let mut executor = PipelineExecutor::new();
         executor.add_stage(Box::new(ValidateStage));
-        executor.add_stage(Box::new(CleanStage));
+        executor.add_stage(Box::new(stage()));
 
         let item = ScrapedItem {
             url: "https://example.com".into(),
@@ -49,7 +54,7 @@ mod integration_tests {
     async fn test_validate_rejects_before_clean_runs() {
         let mut executor = PipelineExecutor::new();
         executor.add_stage(Box::new(ValidateStage));
-        executor.add_stage(Box::new(CleanStage));
+        executor.add_stage(Box::new(stage()));
 
         let item = ScrapedItem {
             url: "".into(),
@@ -66,7 +71,7 @@ mod integration_tests {
     async fn test_validate_skips_robots_txt() {
         let mut executor = PipelineExecutor::new();
         executor.add_stage(Box::new(ValidateStage));
-        executor.add_stage(Box::new(CleanStage));
+        executor.add_stage(Box::new(stage()));
 
         let item = ScrapedItem {
             url: "https://example.com/robots.txt".into(),

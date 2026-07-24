@@ -23,6 +23,7 @@ use std::sync::Arc;
 use webfang::application::elastic_ingestion::ElasticIngestion;
 use webfang::infrastructure::bridge::CpuBridge;
 use webfang::infrastructure::config::AutotuningConfig;
+use webfang::infrastructure::content_processing::AggressiveProcessor;
 use webfang::infrastructure::cpu_pool::RayonCpuPool;
 use webfang::infrastructure::crawler::resource_downloader::{
     DownloadConfig, ResourceDownloader,
@@ -68,7 +69,10 @@ async fn elastic_ingestion_persists_cleaned_content_to_sqlite() {
             ..DownloadConfig::default()
         },
     );
-    let bridge = CpuBridge::new(RayonCpuPool::new(2).expect("pool Rayon de 2 hilos"));
+    let bridge = CpuBridge::new(
+        RayonCpuPool::new(2).expect("pool Rayon de 2 hilos"),
+        Arc::new(AggressiveProcessor),
+    );
     let config = AutotuningConfig {
         cpu_cores: 2,
         ram_budget_bytes: 1 << 20,
@@ -165,7 +169,10 @@ async fn elastic_ingestion_dedup_prevents_duplicate_rows() {
             ..DownloadConfig::default()
         },
     );
-    let bridge = CpuBridge::new(RayonCpuPool::new(2).expect("pool"));
+    let bridge = CpuBridge::new(
+        RayonCpuPool::new(2).expect("pool"),
+        Arc::new(AggressiveProcessor),
+    );
     let orc = ElasticIngestion::new(
         downloader,
         bridge,

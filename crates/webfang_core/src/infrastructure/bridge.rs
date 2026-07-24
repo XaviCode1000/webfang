@@ -1,10 +1,11 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::Arc;
 
 use tokio::sync::oneshot;
 use tracing::{warn, Instrument};
 
+use crate::domain::content_processor::ContentProcessor;
 use crate::error::ScraperError;
-use crate::infrastructure::converter::html_cleaner::clean_html;
 use crate::infrastructure::cpu_pool::RayonCpuPool;
 use crate::infrastructure::crawler::resource_downloader::DownloadedResource;
 
@@ -35,24 +36,24 @@ pub struct ProcessedResource {
 /// Tokio→Rayon crossing for CPU-bound ingestion work (frozen design decision #3).
 ///
 /// Holds a dedicated [`RayonCpuPool`] (cloned cheaply — it wraps an `Arc`) and
-/// exposes a generic [`dispatch`](CpuBridge::dispatch) that moves any CPU-bound
-/// closure off the event loop, plus a typed
-/// [`dispatch_resource`](CpuBridge::dispatch_resource) stub that demonstrates
-/// the `DownloadedResource` → `ProcessedResource` wiring (PR5 replaces the stub
-/// cleaner with real `lol_html` + ONNX).
+/// a [`ContentProcessor`] strategy for HTML-to-text conversion, plus exposes
+/// a generic [`dispatch`](CpuBridge::dispatch) that moves any CPU-bound
+/// closure off the event loop, and a typed
+/// [`dispatch_resource`](CpuBridge::dispatch_resource) that cleans
+/// `DownloadedResource` → `ProcessedResource` via the injected processor.
 ///
 /// `CpuBridge` is `Send + Sync` (spec: "dispatch gateway MUST be Send + Sync"),
 /// so it can be shared across Tokio tasks via `Arc<CpuBridge>`.
-#[derive(Clone)]
 pub struct CpuBridge {
     pool: RayonCpuPool,
+    processor: Arc<dyn ContentProcessor>,
 }
 
 impl CpuBridge {
-    /// Wrap a dedicated [`RayonCpuPool`] in a bridge.
+    /// Wrap a dedicated [`RayonCpuPool`] and [`ContentProcessor`] in a bridge.
     #[must_use]
-    pub fn new(pool: RayonCpuPool) -> Self {
-        Self { pool }
+    pub fn new(pool: RayonCpuPool, processor: Arc<dyn ContentProcessor>) -> Self {
+        Self { pool, processor }
     }
 
     /// Borrow the underlying CPU pool.
@@ -121,8 +122,11 @@ impl CpuBridge {
     ) -> oneshot::Receiver<Result<ProcessedResource, ScraperError>> {
         let url = payload.url.clone();
         let size = payload.size_bytes;
+        let processor = Arc::clone(&self.processor);
+        let processor_name = processor.name().to_owned();
         self.dispatch(move || {
-            let text = clean_html_to_text(&payload.bytes);
+            let html = String::from_utf8_lossy(&payload.bytes);
+            let text = processor.process(&html);
             let chunk = ProcessedChunk {
                 content: text,
                 embedding: None,
@@ -130,7 +134,7 @@ impl CpuBridge {
             let metadata = serde_json::json!({
                 "size_bytes": size,
                 "chunk_count": 1u64,
-                "cleaner": "lol_html",
+                "cleaner": processor_name,
             });
             ProcessedResource {
                 resource_url: url,
@@ -156,94 +160,18 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-/// Clean downloaded HTML into visible text using Cloudflare's `lol_html`.
-///
-/// Two-stage (frozen Task 5.3 — replaces the PR3 naive stub):
-/// 1. [`clean_html`] runs the `lol_html` streaming rewriter with element
-///    handlers that `el.remove()` boilerplate tags (`script`, `style`,
-///    `noscript`, `nav`, `header`, `footer`, `aside`, `form`, `iframe`, …) and
-///    CSS-selector-matched chrome. This is a real HTML parse, so it correctly
-///    handles comments, nested boilerplate, and `</script>`-inside-string cases
-///    the naive stub mishandled.
-/// 2. [`strip_html_tags`] then extracts the visible text from the
-///    boilerplate-stripped HTML (the remaining semantic markup: `main`, `p`,
-///    `h1`, …) and collapses whitespace.
-///
-/// `from_utf8_lossy` is used so malformed payloads never crash the Rayon pool.
-/// If `lol_html` itself errors on a pathological input, `clean_html` falls back
-/// to the original HTML (logged via `tracing::warn!`), so this function is
-/// infallible — the work closure stays non-`Result`, reusing `dispatch`'s
-/// single `Result` wrap. (ONNX embeddings are wired in the orchestrator's async
-/// layer — see Decision 5; the bridge is sync CPU-bound text extraction only.)
-fn clean_html_to_text(bytes: &[u8]) -> String {
-    // `from_utf8_lossy` never panics on invalid UTF-8 (replaces with U+FFFD),
-    // so malformed payloads do not crash the Rayon pool.
-    let html = String::from_utf8_lossy(bytes);
-    let cleaned_html = clean_html(&html);
-    strip_html_tags(&cleaned_html)
-}
-
-/// Naive, UTF-8-safe tag stripper used by the stub cleaner.
-fn strip_html_tags(html: &str) -> String {
-    let lower = html.to_ascii_lowercase();
-    let lbytes = lower.as_bytes();
-    let n = html.len();
-    let mut out = String::with_capacity(n);
-    let mut i = 0;
-    while i < n {
-        if lbytes[i] == b'<' {
-            let rest = &lower[i..];
-            if rest.starts_with("<script") {
-                if let Some(rel) = rest.find("</script>") {
-                    i += rel + "</script>".len();
-                    continue;
-                } else {
-                    break; // unterminated script: drop the rest
-                }
-            }
-            if rest.starts_with("<style") {
-                if let Some(rel) = rest.find("</style>") {
-                    i += rel + "</style>".len();
-                    continue;
-                } else {
-                    break;
-                }
-            }
-            // Regular tag: skip to '>'.
-            i += 1;
-            while i < n && lbytes[i] != b'>' {
-                i += 1;
-            }
-            if i < n {
-                i += 1; // consume '>'
-            }
-            if !out.is_empty() && !out.ends_with(' ') {
-                out.push(' ');
-            }
-        } else {
-            // Push one char on its proper UTF-8 boundary.
-            let next = html[i..]
-                .char_indices()
-                .nth(1)
-                .map(|(j, _)| i + j)
-                .unwrap_or(n);
-            out.push_str(&html[i..next]);
-            i = next;
-        }
-    }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::{CpuBridge, ProcessedChunk, ProcessedResource};
     use crate::error::ScraperError;
+    use crate::infrastructure::content_processing::AggressiveProcessor;
     use crate::infrastructure::cpu_pool::RayonCpuPool;
     use crate::infrastructure::crawler::resource_downloader::DownloadedResource;
+    use std::sync::Arc;
 
     fn make_bridge(threads: usize) -> CpuBridge {
         let pool = RayonCpuPool::new(threads).expect("pool should build");
-        CpuBridge::new(pool)
+        CpuBridge::new(pool, Arc::new(AggressiveProcessor))
     }
 
     fn html_payload(html: &str) -> DownloadedResource {
@@ -505,8 +433,8 @@ mod tests {
             .expect("metadata is an object");
         assert_eq!(
             metadata.get("cleaner").and_then(|v| v.as_str()),
-            Some("lol_html"),
-            "metadata must record the real cleaner provenance"
+            Some("aggressive"),
+            "metadata must record the processor name"
         );
     }
 
