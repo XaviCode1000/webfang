@@ -118,14 +118,14 @@ eliminando el doble-conteo. Estado efectivo:
 | F5 | webfang_ai/infrastructure_ai | 7 | 0 | 7 |
 | **Total** | | **199** | **~127** | **~72** |
 
-Verificación: 62 + 50 + 80 + 7 = 199 ✓
+**Post-Fase-0 (real):** 90 eliminados, 109 restantes para Fases 1-5.
 
 ### Impacto en esfuerzo
 
 El esfuerzo se revisa de **L** a **M**, dado que:
 - Warnings únicos reales: 199 (no 419)
-- Eliminables vía `pub(crate)`: ~127 (sin escribir docs)
-- Restantes para documentación: ~72
+- Eliminados vía `pub(crate)` (Fase 0): 90
+- Restantes para documentación (Fases 1-5): **109**
 
 ## Reproducción
 
