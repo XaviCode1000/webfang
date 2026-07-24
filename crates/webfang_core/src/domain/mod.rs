@@ -39,11 +39,13 @@ pub mod url_validation;
 pub mod url_validator;
 pub mod value_objects;
 
+pub mod content_processor;
 pub mod semantic_cleaner;
 
 // Re-exports for backward compatibility (crate::domain::X)
 pub use clock::{Clock, MockClock, MockUtcClock, SystemClock, SystemUtcClock, UtcClock};
 pub use config::{ConcurrencyConfig, ExportFormat, OutputFormat, PipelineOutputFormat};
+pub use content_processor::ContentProcessor;
 pub use crawl_job::{ContentType, DiscoveredUrl};
 pub use credentials::{
     AccessToken, ApiKey, CredentialError, CredentialStore, SecretCredential, SensitiveString,
