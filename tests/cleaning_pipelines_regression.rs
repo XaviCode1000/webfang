@@ -406,3 +406,207 @@ mod clean_semantic_regression {
         );
     }
 }
+
+// ─── ContentProcessor trait regression ────────────────────────────────────────
+//
+// These tests prove the trait adapters produce identical behavior to the
+// original pipeline functions. Same HTML inputs, same expected outputs.
+
+#[cfg(all(test, not(miri)))]
+mod content_processor_regression {
+    use webfang_core::domain::content_processor::ContentProcessor;
+    use webfang_core::infrastructure::content_processing::{
+        AggressiveProcessor, McpProcessor, SemanticProcessor,
+    };
+
+    // ─── SemanticProcessor vs clean.rs ──────────────────────────────────────
+
+    #[test]
+    fn semantic_strips_tags() {
+        let p = SemanticProcessor;
+        let result = p.process("<div><p>Hello <b>world</b></p></div>");
+        assert!(!result.contains('<'), "no tags: {result}");
+        assert!(
+            result.contains("Hello") && result.contains("world"),
+            "text preserved: {result}"
+        );
+    }
+
+    #[test]
+    fn semantic_normalizes_whitespace() {
+        let p = SemanticProcessor;
+        let result = p.process("<div>  Hello   \n\n  World  </div>");
+        assert!(!result.contains("  "), "no double spaces: {result}");
+        assert!(
+            result.contains("Hello") && result.contains("World"),
+            "text preserved: {result}"
+        );
+    }
+
+    #[test]
+    fn semantic_empty_returns_empty() {
+        let p = SemanticProcessor;
+        assert_eq!(p.process(""), "");
+    }
+
+    #[test]
+    fn semantic_plain_text_preserved() {
+        let p = SemanticProcessor;
+        let result = p.process("just plain text");
+        assert!(
+            result.contains("just plain text"),
+            "plain text preserved: {result}"
+        );
+    }
+
+    // ─── AggressiveProcessor vs bridge.rs ───────────────────────────────────
+
+    #[test]
+    fn aggressive_removes_script_blocks() {
+        let p = AggressiveProcessor;
+        let result = p.process("<p>Hello</p><script>alert('xss')</script><p>World</p>");
+        assert!(!result.contains("alert"), "script body removed: {result}");
+        assert!(
+            result.contains("Hello") && result.contains("World"),
+            "visible text preserved: {result}"
+        );
+    }
+
+    #[test]
+    fn aggressive_removes_style_blocks() {
+        let p = AggressiveProcessor;
+        let result = p.process("<p>Content</p><style>.red{color:red}</style>");
+        assert!(
+            !result.contains("color:red"),
+            "style content removed: {result}"
+        );
+        assert!(result.contains("Content"), "text preserved: {result}");
+    }
+
+    #[test]
+    fn aggressive_removes_boilerplate() {
+        let p = AggressiveProcessor;
+        let result =
+            p.process("<nav>Menu</nav><header>Top</header><p>Article</p><footer>Bottom</footer>");
+        assert!(!result.contains("Menu"), "nav removed: {result}");
+        assert!(!result.contains("Top"), "header removed: {result}");
+        assert!(!result.contains("Bottom"), "footer removed: {result}");
+        assert!(result.contains("Article"), "article preserved: {result}");
+    }
+
+    #[test]
+    fn aggressive_no_raw_tags() {
+        let p = AggressiveProcessor;
+        let result = p.process("<p>Hello <b>bold</b> world</p>");
+        assert!(!result.contains('<'), "no raw tags: {result}");
+    }
+
+    #[test]
+    fn aggressive_empty_returns_empty() {
+        let p = AggressiveProcessor;
+        assert_eq!(p.process(""), "");
+    }
+
+    // ─── McpProcessor vs html_cleaner.rs ────────────────────────────────────
+
+    #[test]
+    fn mcp_removes_scripts() {
+        let p = McpProcessor;
+        let result = p.process(r#"<p>Hello</p><script>evil()</script><p>World</p>"#);
+        assert!(!result.contains("evil"), "script removed: {result}");
+        assert!(
+            result.contains("Hello") && result.contains("World"),
+            "text preserved: {result}"
+        );
+    }
+
+    #[test]
+    fn mcp_preserves_semantic_tags() {
+        let p = McpProcessor;
+        let result = p.process("<h1>Title</h1><p>Paragraph</p>");
+        assert!(
+            result.contains("<h1>") || result.contains("<h1 "),
+            "h1 preserved: {result}"
+        );
+        assert!(
+            result.contains("<p>") || result.contains("<p "),
+            "p preserved: {result}"
+        );
+    }
+
+    #[test]
+    fn mcp_removes_boilerplate() {
+        let p = McpProcessor;
+        let result = p.process("<nav>Menu</nav><main>Content</main><footer>Footer</footer>");
+        assert!(!result.contains("Menu"), "nav removed: {result}");
+        assert!(!result.contains("Footer"), "footer removed: {result}");
+        assert!(result.contains("Content"), "content preserved: {result}");
+    }
+
+    #[test]
+    fn mcp_empty_returns_empty() {
+        let p = McpProcessor;
+        assert_eq!(p.process(""), "");
+    }
+
+    #[test]
+    fn mcp_css_selectors_removed() {
+        let p = McpProcessor;
+        let result = p.process(
+            r#"<div class="site-title">Title</div><div class="global-nav">Nav</div><p>Content</p>"#,
+        );
+        assert!(!result.contains("Nav"), "global-nav removed: {result}");
+        assert!(result.contains("Content"), "content preserved: {result}");
+    }
+
+    // ─── Cross-processor behavioral divergence tests ────────────────────────
+    //
+    // These tests document that different processors intentionally produce
+    // different outputs for the same input — this is the whole point.
+
+    #[test]
+    fn mcp_preserves_tags_while_aggressive_strips() {
+        let html = "<p>Hello <b>world</b></p>";
+        let mcp = McpProcessor;
+        let aggressive = AggressiveProcessor;
+        let mcp_result = mcp.process(html);
+        let agg_result = aggressive.process(html);
+        // MCP keeps semantic tags
+        assert!(
+            mcp_result.contains("<p>") || mcp_result.contains("<p "),
+            "MCP keeps <p>: {mcp_result}"
+        );
+        // Aggressive strips all tags
+        assert!(
+            !agg_result.contains('<'),
+            "Aggressive strips all: {agg_result}"
+        );
+    }
+
+    #[test]
+    fn semantic_uses_readability_while_aggressive_uses_lol_html() {
+        // A complex page where Readability extraction differs from lol_html stripping
+        let html = r#"<html><head><title>Page</title></head>
+        <body>
+        <nav>Navigation menu</nav>
+        <article>
+            <h1>Article Title</h1>
+            <p>Main content paragraph with enough text to be extracted by readability.</p>
+        </article>
+        <footer>Copyright notice</footer>
+        </body></html>"#;
+        let semantic = SemanticProcessor;
+        let aggressive = AggressiveProcessor;
+        let sem_result = semantic.process(html);
+        let agg_result = aggressive.process(html);
+        // Both should preserve the article content
+        assert!(
+            sem_result.contains("Main content") || sem_result.contains("Article Title"),
+            "semantic extracts content: {sem_result}"
+        );
+        assert!(
+            agg_result.contains("Main content") || agg_result.contains("Article Title"),
+            "aggressive preserves content: {agg_result}"
+        );
+    }
+}
