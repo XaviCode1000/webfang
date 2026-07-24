@@ -86,3 +86,26 @@ La clasificación original fue **M**, pero el total de 419 warnings supera el um
 Por lo tanto, el esfuerzo correcto es **L** y corresponde implementar la documentación por fases,
 no en un único PR.
 
+## Reproducción
+
+Esta auditoría se generó activando temporalmente:
+
+```rust
+#![warn(missing_docs)]
+```
+
+en `webfang_core/src/lib.rs` y `webfang_ai/src/lib.rs`.
+
+El PR no incluye esos cambios de lint para mantener el diff sin cambios funcionales.
+Para reproducir el conteo:
+
+1. Cambiar temporalmente `allow(missing_docs)` por `warn(missing_docs)` en `webfang_core`.
+2. Agregar `#![warn(missing_docs)]` en `webfang_ai`.
+3. Ejecutar:
+
+```bash
+./scripts/audit-missing-docs.sh > docs/research/missing-docs-audit.tsv
+```
+
+4. Revertir los cambios de lint si no se desea dejar `warn` en el código.
+
