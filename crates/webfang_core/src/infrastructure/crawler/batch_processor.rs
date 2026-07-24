@@ -83,7 +83,7 @@ impl BatchProcessor {
         let mut result = Vec::new();
 
         for url in urls {
-            let normalized_str = normalize_url(url.as_str());
+            let normalized_str = normalize_url(url.as_str(), true);
 
             if seen.insert(normalized_str) {
                 result.push(url);

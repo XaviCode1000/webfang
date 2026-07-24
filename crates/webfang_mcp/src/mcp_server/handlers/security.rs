@@ -23,13 +23,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<DetectWafParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .security
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, security);
 
         match webfang_core::infrastructure::http::waf_engine::WafInspector::detect_body(
             &params.html,
@@ -52,13 +46,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<VerifyWafIntegrityParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .security
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, security);
 
         let html = params.html.as_deref().unwrap_or("");
         let mut header_map = wreq::header::HeaderMap::new();
@@ -91,13 +79,7 @@ impl McpHandler {
     )]
     #[instrument(skip(self))]
     async fn list_waf_providers(&self) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .security
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, security);
 
         let providers =
             webfang_core::infrastructure::http::waf_engine::WafInspector::supported_providers();
@@ -112,13 +94,7 @@ impl McpHandler {
     )]
     #[instrument(skip(self))]
     async fn get_scrape_metrics(&self) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .security
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, security);
 
         let metrics = serde_json::json!({
             "message": "Metrics collection requires active scraping session",

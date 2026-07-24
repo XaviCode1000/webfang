@@ -58,7 +58,7 @@ pub fn extract_links(html: &str, base_url: &str) -> Result<Vec<String>, crate::d
             // Resolve relative URLs
             match base.join(href) {
                 Ok(absolute_url) => {
-                    let normalized = normalize_url(absolute_url.as_str());
+                    let normalized = normalize_url(absolute_url.as_str(), true);
                     if !links.contains(&normalized) {
                         links.push(normalized);
                     }
@@ -114,18 +114,19 @@ pub fn is_internal_link(url: &str, domain: &str) -> bool {
 ///
 /// Options:
 /// - `strip_hash: true` — removes URL fragments (`#section`)
-/// - `strip_www: true` — removes `www.` prefix for better dedup
+/// - `strip_www` — removes `www.` prefix when `true` (caller controls behavior)
 /// - `remove_trailing_slash: false` — preserves trailing slashes
 /// - `remove_query_parameters: All` — strips query strings for dedup
 /// - `sort_query_parameters: true` — consistent ordering
 ///
-/// # Arguments
-///
-/// * `url` - URL to normalize
-///
 /// # Returns
 ///
 /// Normalized URL string
+///
+/// # Arguments
+///
+/// * `url` - URL to normalize
+/// * `strip_www` - If `true`, removes `www.` prefix (e.g. `www.example.com` → `example.com`)
 ///
 /// # Examples
 ///
@@ -133,21 +134,25 @@ pub fn is_internal_link(url: &str, domain: &str) -> bool {
 /// use webfang::infrastructure::crawler::normalize_url;
 ///
 /// assert_eq!(
-///     normalize_url("https://example.com/page#section"),
+///     normalize_url("https://example.com/page#section", true),
 ///     "https://example.com/page"
 /// );
 /// assert_eq!(
-///     normalize_url("https://www.example.com/page"),
+///     normalize_url("https://www.example.com/page", true),
 ///     "https://example.com/page"
 /// );
 /// assert_eq!(
-///     normalize_url("https://example.com:443/page"),
+///     normalize_url("https://www.example.com/page", false),
+///     "https://www.example.com/page"
+/// );
+/// assert_eq!(
+///     normalize_url("https://example.com:443/page", true),
 ///     "https://example.com/page"
 /// );
 /// ```
 #[inline]
 #[must_use]
-pub fn normalize_url(url: &str) -> String {
+pub fn normalize_url(url: &str, strip_www: bool) -> String {
     use url_normalize::{normalize_url as normalize, Options, RemoveQueryParameters};
 
     // Non-URLs (no scheme) should not be normalized — return as-is.
@@ -161,7 +166,7 @@ pub fn normalize_url(url: &str) -> String {
         remove_trailing_slash: false,
         remove_query_parameters: RemoveQueryParameters::All,
         sort_query_parameters: true,
-        strip_www: true,
+        strip_www,
         force_https: false,
         ..Options::default()
     };
@@ -303,11 +308,11 @@ mod tests {
     #[test]
     fn test_normalize_url_remove_fragment() {
         assert_eq!(
-            normalize_url("https://example.com/page#section"),
+            normalize_url("https://example.com/page#section", true),
             "https://example.com/page"
         );
         assert_eq!(
-            normalize_url("https://example.com/page#top"),
+            normalize_url("https://example.com/page#top", true),
             "https://example.com/page"
         );
     }
@@ -315,11 +320,11 @@ mod tests {
     #[test]
     fn test_normalize_url_preserve_trailing_slash() {
         assert_eq!(
-            normalize_url("https://example.com/page/"),
+            normalize_url("https://example.com/page/", true),
             "https://example.com/page/"
         );
         assert_eq!(
-            normalize_url("https://example.com/page/#section"),
+            normalize_url("https://example.com/page/#section", true),
             "https://example.com/page/"
         );
     }
@@ -327,37 +332,45 @@ mod tests {
     #[test]
     fn test_normalize_url_no_change() {
         assert_eq!(
-            normalize_url("https://example.com/page"),
+            normalize_url("https://example.com/page", true),
             "https://example.com/page"
         );
     }
 
     #[test]
     fn test_normalize_url_invalid() {
-        let result = normalize_url("not-a-valid-url");
+        let result = normalize_url("not-a-valid-url", true);
         assert_eq!(result, "not-a-valid-url");
     }
 
     #[test]
     fn test_normalize_url_strips_www() {
         assert_eq!(
-            normalize_url("https://www.example.com/page"),
+            normalize_url("https://www.example.com/page", true),
             "https://example.com/page"
         );
         assert_eq!(
-            normalize_url("https://www.example.com/page/"),
+            normalize_url("https://www.example.com/page/", true),
             "https://example.com/page/"
+        );
+    }
+
+    #[test]
+    fn test_normalize_url_keeps_www_when_disabled() {
+        assert_eq!(
+            normalize_url("https://www.example.com/page", false),
+            "https://www.example.com/page"
         );
     }
 
     #[test]
     fn test_normalize_url_removes_default_port() {
         assert_eq!(
-            normalize_url("https://example.com:443/page"),
+            normalize_url("https://example.com:443/page", true),
             "https://example.com/page"
         );
         assert_eq!(
-            normalize_url("http://example.com:80/page"),
+            normalize_url("http://example.com:80/page", true),
             "http://example.com/page"
         );
     }

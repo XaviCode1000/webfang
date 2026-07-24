@@ -24,13 +24,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ScrapeUrlParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .scraping
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, scraping);
 
         let url = url::Url::parse(&params.url).map_err(|e| {
             McpError::invalid_params(
@@ -61,13 +55,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ScrapeWithOptionsParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .scraping
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, scraping);
 
         let url = url::Url::parse(&params.url).map_err(|e| {
             McpError::invalid_params(
@@ -129,13 +117,7 @@ impl McpHandler {
         let _enter = span.enter();
 
         tracing::info!("starting batch scrape");
-        let _permit = self
-            .state
-            .semaphores
-            .scraping
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, scraping);
 
         let urls: Vec<url::Url> = params
             .urls
@@ -187,13 +169,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<CrawlSiteParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .scraping
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, scraping);
 
         let seed_url = url::Url::parse(&params.url).map_err(|e| {
             McpError::invalid_params(
@@ -235,16 +211,7 @@ impl McpHandler {
         let _enter = span.enter();
 
         tracing::info!("starting sitemap crawl");
-        let _permit = self
-            .state
-            .semaphores
-            .scraping
-            .acquire()
-            .await
-            .map_err(|e| {
-                tracing::error!("semaphore acquire failed: {}", e);
-                McpError::internal_error(format!("semaphore error: {e}"), None)
-            })?;
+        let _permit = acquire_semaphore!(self, scraping);
 
         let seed_url = url::Url::parse(&params.url).map_err(|e| {
             tracing::error!("invalid URL: {}", e);
@@ -284,13 +251,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<DiscoverUrlsParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .scraping
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, scraping);
 
         let port = self.state.container.http_client();
         match port.get(&params.url).await {
@@ -320,13 +281,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<DiscoverUrlsParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .scraping
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, scraping);
 
         let seed = url::Url::parse(&params.url).map_err(|e| {
             McpError::invalid_params(
@@ -362,13 +317,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<DetectSpaParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .scraping
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, scraping);
 
         let port = self.state.container.http_client();
         match port.get(&params.url).await {

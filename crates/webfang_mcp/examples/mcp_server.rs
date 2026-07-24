@@ -20,7 +20,7 @@
 //! Axum router (/mcp)
 //!   └── StreamableHttpService (rmcp)
 //!         ├── LocalSessionManager — tracks Mcp-Session-Id per client
-//!         └── McpHandler — 34 tools across 8 categories
+//!         └── McpHandler — 35 tools across 8 categories
 //!               ├── State: Container (HTTP client, config) + semaphores
 //!               └── Tools: scraping, content, export, url_utils,
 //!                          security, obsidian, assets, ai
@@ -160,7 +160,7 @@
 //! The stdio transport reads JSON-RPC from stdin and writes to stdout.
 //! All logging goes to stderr. See `mcp_server_stdio.rs` for details.
 //!
-//! ## Complete tool catalog (34 tools)
+//! ## Complete tool catalog (35 tools)
 //!
 //! ### Category 1: Scraping Core (8 tools)
 //!

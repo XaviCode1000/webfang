@@ -28,13 +28,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ScrapeUrlParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .ai
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, ai);
 
         let _url = url::Url::parse(&params.url).map_err(|e| {
             McpError::invalid_params(
@@ -57,13 +51,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<SearchObsidianParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .obsidian
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, obsidian);
 
         Ok(CallToolResult::error(vec![Content::text(
             "AI feature not available in webfang_mcp. Rebuild webfang_cli with --features ai instead.".to_string(),

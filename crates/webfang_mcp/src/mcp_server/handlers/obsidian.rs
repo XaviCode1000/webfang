@@ -22,13 +22,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<DetectVaultParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .obsidian
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, obsidian);
 
         let cli_path = params
             .vault_path
@@ -55,13 +49,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<BuildObsidianUriParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .obsidian
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, obsidian);
 
         let uri = webfang_core::infrastructure::obsidian::uri::build_obsidian_uri(
             &params.vault_name,
@@ -79,13 +67,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<BuildObsidianUriParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .obsidian
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, obsidian);
 
         let uri = webfang_core::infrastructure::obsidian::uri::build_obsidian_uri(
             &params.vault_name,

@@ -23,13 +23,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ValidateUrlParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .url_utils
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, url_utils);
 
         match url::Url::parse(&params.url) {
             Ok(u) => {
@@ -63,13 +57,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ExtractDomainParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .url_utils
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, url_utils);
 
         match url::Url::parse(&params.url) {
             Ok(u) => {
@@ -89,36 +77,19 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<NormalizeUrlParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .url_utils
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, url_utils);
 
-        use url_normalize::{normalize_url as normalize, Options, RemoveQueryParameters};
+        // Delegate to core normalize_url with strip_www=false (MCP preserves www prefix)
+        let normalized = webfang_core::infrastructure::crawler::normalize_url(&params.url, false);
 
+        // Core returns as-is for non-URLs; MCP tool reports error for invalid input
         if !params.url.contains("://") {
             return Ok(CallToolResult::error(vec![Content::text(
                 "Invalid URL: no scheme found".to_string(),
             )]));
         }
 
-        let opts = Options {
-            strip_hash: true,
-            remove_trailing_slash: false,
-            remove_query_parameters: RemoveQueryParameters::All,
-            sort_query_parameters: true,
-            strip_www: false,
-            force_https: false,
-            ..Options::default()
-        };
-
-        match normalize(&params.url, &opts) {
-            Ok(normalized) => Ok(CallToolResult::success(vec![Content::text(normalized)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
-        }
+        Ok(CallToolResult::success(vec![Content::text(normalized)]))
     }
 
     /// Match a URL against a glob pattern
@@ -130,13 +101,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<MatchUrlPatternParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .url_utils
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, url_utils);
 
         let matches = webfang_core::domain::matches_pattern(&params.url, &params.pattern);
         Ok(CallToolResult::success(vec![Content::text(
@@ -153,13 +118,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<IsInternalLinkParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .url_utils
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, url_utils);
 
         let is_internal = match (
             url::Url::parse(&params.url),
@@ -186,13 +145,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ValidateUrlParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .url_utils
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, url_utils);
 
         match webfang_core::adapters::url_path::OutputPath::from_url(&params.url) {
             Ok(output_path) => {

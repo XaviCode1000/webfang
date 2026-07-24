@@ -134,7 +134,7 @@ pub async fn discover_urls_for_tui(
         // Filter and normalize URLs
         let mut urls = Vec::new();
         for link in links {
-            let normalized = normalize_url(&link);
+            let normalized = normalize_url(&link, true);
             if let Ok(parsed_url) = Url::parse(&normalized) {
                 // Check if internal link
                 if let Some(seed_domain) = base.host_str() {

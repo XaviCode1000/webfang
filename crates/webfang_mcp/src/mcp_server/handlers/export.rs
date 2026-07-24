@@ -24,13 +24,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ExportFileParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .export
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, export);
 
         let format = webfang_core::domain::entities::ExportFormat::parse_str(&params.format)
             .unwrap_or(webfang_core::domain::entities::ExportFormat::Jsonl);
@@ -59,13 +53,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ExportJsonlParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .export
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, export);
 
         let output_dir = params.output_dir.as_deref().unwrap_or("./output");
         let filename = params.filename.as_deref().unwrap_or("export");
@@ -83,13 +71,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ExportVectorParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .export
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, export);
 
         let output_dir = params.output_dir.as_deref().unwrap_or("./output");
         let filename = params.filename.as_deref().unwrap_or("export");
@@ -107,13 +89,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ProcessExportPipelineParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .export
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, export);
 
         let url = params.url.as_deref().unwrap_or("");
         let format = params.format.as_deref().unwrap_or("jsonl");

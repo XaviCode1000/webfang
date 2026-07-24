@@ -22,13 +22,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<DownloadAssetsParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .assets
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, assets);
 
         let base_url = url::Url::parse(&params.base_url).map_err(|e| {
             McpError::invalid_params(

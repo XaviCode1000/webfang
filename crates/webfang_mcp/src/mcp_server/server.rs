@@ -95,8 +95,8 @@ mod tests {
         let handler = test_handler().await;
         let tools = handler.tool_router.list_all();
         assert!(
-            tools.len() >= 34,
-            "Expected at least 34 tools, got {}",
+            tools.len() >= 35,
+            "Expected at least 35 tools, got {}",
             tools.len()
         );
 

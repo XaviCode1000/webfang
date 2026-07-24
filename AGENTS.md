@@ -154,7 +154,7 @@ webfang/                          # virtual workspace root (no [package])
 │   ├── webfang_core/             # domain + application + infrastructure
 │   ├── webfang_ai/               # ONNX embeddings, semantic cleaning
 │   ├── webfang_tui/              # ratatui TUI selector
-│   ├── webfang_mcp/              # MCP server (34 tools)
+│   ├── webfang_mcp/              # MCP server (35 tools)
 │   └── webfang_cli/              # CLI binary (webfang)
 ```
 
@@ -187,7 +187,7 @@ Dual wrapping pattern: infra errors wrap into domain errors via `From` impls.
 **`crates/webfang_mcp/src/mcp_server/`** is the ONLY canonical location.
 The root `src/` was deleted (PR #163 cleanup). Never create code in `src/`.
 
-MCP tools: 34 tools across 8 categories (scraping, content, export, URL utils, security, Obsidian, assets, AI).
+MCP tools: 35 tools across 8 categories (scraping, content, export, URL utils, security, Obsidian, assets, AI).
 Transport: Streamable HTTP (`rmcp`) at `127.0.0.1:8080/mcp`, also stdio via `mcp_server_stdio` example.
 
 ### HTTP client

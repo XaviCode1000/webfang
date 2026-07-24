@@ -66,7 +66,7 @@ fn bench_extract_links_large(c: &mut Criterion) {
 fn bench_normalize_url_simple(c: &mut Criterion) {
     c.bench_function("normalize_url_simple", |b| {
         b.iter(|| {
-            let result = normalize_url(black_box("https://example.com/page"));
+            let result = normalize_url(black_box("https://example.com/page"), true);
             assert!(!result.is_empty());
             black_box(result)
         })
@@ -76,7 +76,7 @@ fn bench_normalize_url_simple(c: &mut Criterion) {
 fn bench_normalize_url_relative(c: &mut Criterion) {
     c.bench_function("normalize_url_relative", |b| {
         b.iter(|| {
-            let result = normalize_url(black_box("/page?id=1&sort=name"));
+            let result = normalize_url(black_box("/page?id=1&sort=name"), true);
             assert!(!result.is_empty());
             black_box(result)
         })
@@ -86,7 +86,7 @@ fn bench_normalize_url_relative(c: &mut Criterion) {
 fn bench_normalize_url_with_fragment(c: &mut Criterion) {
     c.bench_function("normalize_url_with_fragment", |b| {
         b.iter(|| {
-            let result = normalize_url(black_box("https://example.com/page#section"));
+            let result = normalize_url(black_box("https://example.com/page#section"), true);
             assert!(!result.contains('#'));
             black_box(result)
         })

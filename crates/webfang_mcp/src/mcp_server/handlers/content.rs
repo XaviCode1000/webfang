@@ -24,13 +24,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<CleanHtmlParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .content
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, content);
 
         let cleaned =
             webfang_core::infrastructure::converter::html_cleaner::clean_html(&params.html);
@@ -46,13 +40,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<HtmlToMarkdownParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .content
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, content);
 
         let md = webfang_core::infrastructure::converter::html_to_markdown::convert_to_markdown(
             &params.html,
@@ -69,13 +57,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ExtractLinksParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .content
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, content);
 
         match webfang_core::infrastructure::crawler::extract_links(&params.html, &params.base_url) {
             Ok(links) => {
@@ -96,13 +78,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<HighlightCodeParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .content
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, content);
 
         let highlighted =
             webfang_core::infrastructure::converter::syntax_highlight::highlight_code_blocks(
@@ -120,13 +96,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ConvertWikiLinksParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .content
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, content);
 
         let wikilinks = webfang_core::infrastructure::converter::wikilinks::convert_wiki_links(
             &params.markdown,
@@ -144,13 +114,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<GenerateFrontmatterParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .content
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, content);
 
         let title = params.title.as_deref().unwrap_or("Untitled");
         let url = params.url.as_deref().unwrap_or("");
@@ -175,13 +139,7 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<GenerateRichMetadataParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _permit = self
-            .state
-            .semaphores
-            .content
-            .acquire()
-            .await
-            .map_err(|e| McpError::internal_error(format!("semaphore error: {e}"), None))?;
+        let _permit = acquire_semaphore!(self, content);
 
         let content = params.content.as_deref().unwrap_or("");
 
