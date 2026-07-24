@@ -196,6 +196,10 @@ name = "args_test"
 path = "../../tests/args_test.rs"
 
 [[test]]
+name = "cleaning_pipelines_regression"
+path = "../../tests/cleaning_pipelines_regression.rs"
+
+[[test]]
 name = "session_pool_integration"
 path = "../../tests/session_pool_integration.rs"
 

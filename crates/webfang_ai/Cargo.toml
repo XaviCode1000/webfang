@@ -47,6 +47,10 @@ uuid = { workspace = true }
 name = "ai_integration"
 path = "../../tests/ai_integration.rs"
 
+[[test]]
+name = "chunker_regression"
+path = "../../tests/chunker_regression.rs"
+
 [lints.clippy]
 doc_markdown = "allow"
 uninlined_format_args = "allow"
