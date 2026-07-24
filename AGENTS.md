@@ -204,8 +204,8 @@ Transport: Streamable HTTP (`rmcp`) at `127.0.0.1:8080/mcp`, also stdio via `mcp
 ### Crate version conflicts (DO NOT unify)
 
 - `dashmap` 5.x (via governor) + 6.x (direct) — both needed
-- `quick-xml` 0.37 (direct) + 0.38 (via syntect→plist) — both needed
-- `scraper` 0.27 → selectors 0.35, `legible` → dom_query → selectors 0.38 — both needed
+- `selectors` 0.35 (via legible→dom_query), 0.37 (via lol_html), 0.38 (via scraper) — all THREE needed
+- `quick-xml` no longer has a version conflict — single 0.41
 
 ### AI feature (`--features ai`)
 
