@@ -1,0 +1,421 @@
+# Missing docs: webfang_core
+webfang_core	crates/webfang_core/src/config.rs	89	missing documentation for a variant
+webfang_core	crates/webfang_core/src/config.rs	91	missing documentation for a variant
+webfang_core	crates/webfang_core/src/config.rs	93	missing documentation for a variant
+webfang_core	crates/webfang_core/src/domain/mod.rs	32	missing documentation for a module
+webfang_core	crates/webfang_core/src/domain/mod.rs	81	missing documentation for a variant
+webfang_core	crates/webfang_core/src/domain/mod.rs	82	missing documentation for a variant
+webfang_core	crates/webfang_core/src/domain/mod.rs	83	missing documentation for a variant
+webfang_core	crates/webfang_core/src/domain/mod.rs	84	missing documentation for a variant
+webfang_core	crates/webfang_core/src/domain/mod.rs	85	missing documentation for a variant
+webfang_core	crates/webfang_core/src/domain/mod.rs	91	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/mod.rs	92	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/mod.rs	93	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/mod.rs	99	missing documentation for a variant
+webfang_core	crates/webfang_core/src/domain/mod.rs	100	missing documentation for a variant
+webfang_core	crates/webfang_core/src/domain/mod.rs	101	missing documentation for a variant
+webfang_core	crates/webfang_core/src/domain/credentials.rs	36	missing documentation for a variant
+webfang_core	crates/webfang_core/src/domain/credentials.rs	39	missing documentation for a variant
+webfang_core	crates/webfang_core/src/domain/entities/content.rs	26	missing documentation for a variant
+webfang_core	crates/webfang_core/src/domain/entities/content.rs	29	missing documentation for a variant
+webfang_core	crates/webfang_core/src/domain/entities/content.rs	32	missing documentation for a variant
+webfang_core	crates/webfang_core/src/domain/entities/content.rs	35	missing documentation for a variant
+webfang_core	crates/webfang_core/src/domain/entities/content.rs	83	missing documentation for an associated function
+webfang_core	crates/webfang_core/src/domain/entities/content.rs	105	missing documentation for an associated function
+webfang_core	crates/webfang_core/src/domain/entities/content.rs	234	missing documentation for a type alias
+webfang_core	crates/webfang_core/src/domain/entities/content.rs	235	missing documentation for a type alias
+webfang_core	crates/webfang_core/src/domain/error/crawl_error.rs	53	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/error/crawl_error.rs	54	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/error/crawl_error.rs	76	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/error/crawl_error.rs	76	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/error/crawl_error.rs	80	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/error/crawl_error.rs	129	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/error/crawl_error.rs	130	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/error/crawl_error.rs	131	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/error/crawl_error.rs	136	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/error/crawl_error.rs	136	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/error/crawl_error.rs	140	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/error/crawl_error.rs	140	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/error/crawl_error.rs	157	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/error/crawl_error.rs	158	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/error/crawl_error.rs	159	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/exporter.rs	46	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/exporter.rs	46	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/domain/site/crawler_config.rs	208	missing documentation for a method
+webfang_core	crates/webfang_core/src/domain/semantic_cleaner.rs	32	missing documentation for a trait
+webfang_core	crates/webfang_core/src/adapters/detector/mime.rs	44	missing documentation for a variant
+webfang_core	crates/webfang_core/src/adapters/detector/mime.rs	45	missing documentation for a variant
+webfang_core	crates/webfang_core/src/adapters/detector/mime.rs	46	missing documentation for a variant
+webfang_core	crates/webfang_core/src/adapters/downloader/mod.rs	37	missing documentation for a variant
+webfang_core	crates/webfang_core/src/adapters/downloader/mod.rs	38	missing documentation for a variant
+webfang_core	crates/webfang_core/src/adapters/downloader/mod.rs	39	missing documentation for a variant
+webfang_core	crates/webfang_core/src/adapters/url_path.rs	37	missing documentation for an associated function
+webfang_core	crates/webfang_core/src/adapters/url_path.rs	51	missing documentation for an associated function
+webfang_core	crates/webfang_core/src/adapters/url_path.rs	55	missing documentation for a method
+webfang_core	crates/webfang_core/src/adapters/url_path.rs	59	missing documentation for a method
+webfang_core	crates/webfang_core/src/adapters/url_path.rs	79	missing documentation for an associated function
+webfang_core	crates/webfang_core/src/adapters/url_path.rs	101	missing documentation for an associated function
+webfang_core	crates/webfang_core/src/adapters/url_path.rs	191	missing documentation for a method
+webfang_core	crates/webfang_core/src/adapters/url_path.rs	203	missing documentation for an enum
+webfang_core	crates/webfang_core/src/adapters/url_path.rs	205	missing documentation for a variant
+webfang_core	crates/webfang_core/src/adapters/url_path.rs	216	missing documentation for an associated function
+webfang_core	crates/webfang_core/src/adapters/url_path.rs	225	missing documentation for an associated function
+webfang_core	crates/webfang_core/src/adapters/url_path.rs	254	missing documentation for a method
+webfang_core	crates/webfang_core/src/adapters/url_path.rs	258	missing documentation for a method
+webfang_core	crates/webfang_core/src/adapters/url_path.rs	262	missing documentation for a method
+webfang_core	crates/webfang_core/src/adapters/url_path.rs	266	missing documentation for a method
+webfang_core	crates/webfang_core/src/adapters/url_path.rs	283	missing documentation for an enum
+webfang_core	crates/webfang_core/src/adapters/url_path.rs	285	missing documentation for a variant
+webfang_core	crates/webfang_core/src/adapters/url_path.rs	287	missing documentation for a variant
+webfang_core	crates/webfang_core/src/application/mod.rs	21	missing documentation for a module
+webfang_core	crates/webfang_core/src/application/batch/manager.rs	180	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/batch/manager.rs	181	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/batch/manager.rs	182	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/batch/manager.rs	183	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/batch/processor.rs	234	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/batch/processor.rs	234	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/crawler/collector.rs	40	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/crawler/collector.rs	40	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/crawler/collector.rs	225	missing documentation for an associated function
+webfang_core	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	29	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	30	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	31	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	32	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	33	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	34	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	35	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	36	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	39	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	40	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	43	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	44	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	45	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	49	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	50	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/pipeline/stages/output.rs	16	missing documentation for a variant
+webfang_core	crates/webfang_core/src/application/pipeline/stages/output.rs	18	missing documentation for a variant
+webfang_core	crates/webfang_core/src/application/pipeline/stages/output.rs	20	missing documentation for a variant
+webfang_core	crates/webfang_core/src/application/progress_types.rs	108	missing documentation for a variant
+webfang_core	crates/webfang_core/src/application/progress_types.rs	111	missing documentation for a variant
+webfang_core	crates/webfang_core/src/application/progress_types.rs	114	missing documentation for a variant
+webfang_core	crates/webfang_core/src/application/progress_types.rs	117	missing documentation for a variant
+webfang_core	crates/webfang_core/src/application/progress_types.rs	120	missing documentation for a variant
+webfang_core	crates/webfang_core/src/application/progress_types.rs	123	missing documentation for a variant
+webfang_core	crates/webfang_core/src/application/progress_types.rs	126	missing documentation for a variant
+webfang_core	crates/webfang_core/src/application/progress_types.rs	162	missing documentation for a variant
+webfang_core	crates/webfang_core/src/application/progress_types.rs	163	missing documentation for a variant
+webfang_core	crates/webfang_core/src/application/progress_types.rs	164	missing documentation for a variant
+webfang_core	crates/webfang_core/src/application/progress_types.rs	165	missing documentation for a variant
+webfang_core	crates/webfang_core/src/application/progress_types.rs	166	missing documentation for a variant
+webfang_core	crates/webfang_core/src/application/rate_limiter.rs	203	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/application/rate_limiter.rs	204	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/mod.rs	5	missing documentation for a module
+webfang_core	crates/webfang_core/src/cli/mod.rs	24	missing documentation for a variant
+webfang_core	crates/webfang_core/src/cli/mod.rs	25	missing documentation for a variant
+webfang_core	crates/webfang_core/src/cli/mod.rs	26	missing documentation for a variant
+webfang_core	crates/webfang_core/src/cli/args/mod.rs	1	missing documentation for a module
+webfang_core	crates/webfang_core/src/cli/args/mod.rs	2	missing documentation for a module
+webfang_core	crates/webfang_core/src/cli/args/mod.rs	3	missing documentation for a module
+webfang_core	crates/webfang_core/src/cli/args/mod.rs	4	missing documentation for a module
+webfang_core	crates/webfang_core/src/cli/args/mod.rs	5	missing documentation for a module
+webfang_core	crates/webfang_core/src/cli/args/mod.rs	48	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/args/mod.rs	51	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/args/mod.rs	54	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/args/mod.rs	57	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/args/mod.rs	60	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/args/mod.rs	77	missing documentation for a variant
+webfang_core	crates/webfang_core/src/cli/args/mod.rs	78	missing documentation for a variant
+webfang_core	crates/webfang_core/src/cli/args/mod.rs	79	missing documentation for a variant
+webfang_core	crates/webfang_core/src/cli/args/mod.rs	80	missing documentation for a variant
+webfang_core	crates/webfang_core/src/cli/args/mod.rs	81	missing documentation for a variant
+webfang_core	crates/webfang_core/src/cli/args/ai.rs	4	missing documentation for a struct
+webfang_core	crates/webfang_core/src/cli/args/crawler.rs	22	missing documentation for a struct
+webfang_core	crates/webfang_core/src/cli/args/export.rs	5	missing documentation for a struct
+webfang_core	crates/webfang_core/src/cli/args/obsidian.rs	4	missing documentation for a struct
+webfang_core	crates/webfang_core/src/cli/args/tui.rs	4	missing documentation for a struct
+webfang_core	crates/webfang_core/src/cli/commands.rs	16	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/commands.rs	17	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/commands.rs	18	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/error.rs	38	missing documentation for a variant
+webfang_core	crates/webfang_core/src/cli/error.rs	38	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/error.rs	38	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/error.rs	41	missing documentation for a variant
+webfang_core	crates/webfang_core/src/cli/error.rs	41	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/error.rs	41	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/error.rs	44	missing documentation for a variant
+webfang_core	crates/webfang_core/src/cli/error.rs	45	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/error.rs	46	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/error.rs	47	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/error.rs	51	missing documentation for a variant
+webfang_core	crates/webfang_core/src/cli/error.rs	51	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/error.rs	51	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/error.rs	117	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/error.rs	117	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/export_flow.rs	26	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/export_flow.rs	27	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/export_flow.rs	28	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/export_flow.rs	29	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/export_flow.rs	30	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/export_flow.rs	31	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/export_flow.rs	32	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/export_flow.rs	33	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/export_flow.rs	34	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/export_flow.rs	35	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/export_flow.rs	38	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/export_flow.rs	39	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/export_flow.rs	40	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/cli/wizard.rs	21	missing documentation for a method
+webfang_core	crates/webfang_core/src/cli/wizard.rs	34	missing documentation for an associated function
+webfang_core	crates/webfang_core/src/infrastructure/mod.rs	29	missing documentation for a module
+webfang_core	crates/webfang_core/src/infrastructure/crawler/batch_processor.rs	15	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/compression_handler.rs	15	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/compression_handler.rs	17	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/compression_handler.rs	19	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/memory_manager.rs	14	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/memory_manager.rs	16	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/retry_policy.rs	13	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/retry_policy.rs	15	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	49	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	52	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	55	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	58	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	61	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	64	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	67	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	70	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	73	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	76	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	79	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	82	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/url_validator.rs	16	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/crawler/url_validator.rs	18	missing documentation for a variant
+webfang_core	crates/webfang_core/src/infrastructure/downloader/mod.rs	112	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/infrastructure/downloader/mod.rs	112	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/infrastructure/downloader/chromiumoxide_downloader.rs	18	missing documentation for an associated function
+webfang_core	crates/webfang_core/src/infrastructure/downloader/cookie_bridge.rs	114	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/infrastructure/downloader/cookie_bridge.rs	115	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/infrastructure/downloader/cookie_bridge.rs	116	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/infrastructure/downloader/cookie_bridge.rs	117	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/infrastructure/downloader/cookie_bridge.rs	118	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/infrastructure/downloader/cookie_bridge.rs	119	missing documentation for a struct field
+webfang_core	crates/webfang_core/src/infrastructure/downloader/hybrid_router.rs	44	missing documentation for an associated function
+webfang_core	crates/webfang_core/src/infrastructure/downloader/obscura_downloader.rs	35	missing documentation for an associated function
+webfang_core	crates/webfang_core/src/infrastructure/autotuning.rs	39	missing documentation for a constant
+webfang_core	crates/webfang_core/src/infrastructure/autotuning.rs	45	missing documentation for a constant
+webfang_core	crates/webfang_core/src/infrastructure/autotuning.rs	46	missing documentation for a constant
+webfang_core	crates/webfang_core/src/infrastructure/autotuning.rs	47	missing documentation for a constant
+webfang_core	crates/webfang_core/src/infrastructure/autotuning.rs	48	missing documentation for a constant
+# Missing docs: webfang_ai
+webfang_ai	crates/webfang_core/src/config.rs	89	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/config.rs	91	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/config.rs	93	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/domain/mod.rs	32	missing documentation for a module
+webfang_ai	crates/webfang_core/src/domain/mod.rs	81	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/domain/mod.rs	82	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/domain/mod.rs	83	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/domain/mod.rs	84	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/domain/mod.rs	85	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/domain/mod.rs	91	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/mod.rs	92	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/mod.rs	93	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/mod.rs	99	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/domain/mod.rs	100	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/domain/mod.rs	101	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/domain/credentials.rs	36	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/domain/credentials.rs	39	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/domain/entities/content.rs	26	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/domain/entities/content.rs	29	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/domain/entities/content.rs	32	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/domain/entities/content.rs	35	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/domain/entities/content.rs	83	missing documentation for an associated function
+webfang_ai	crates/webfang_core/src/domain/entities/content.rs	105	missing documentation for an associated function
+webfang_ai	crates/webfang_core/src/domain/entities/content.rs	234	missing documentation for a type alias
+webfang_ai	crates/webfang_core/src/domain/entities/content.rs	235	missing documentation for a type alias
+webfang_ai	crates/webfang_core/src/domain/error/crawl_error.rs	53	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/error/crawl_error.rs	54	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/error/crawl_error.rs	76	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/error/crawl_error.rs	76	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/error/crawl_error.rs	80	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/error/crawl_error.rs	129	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/error/crawl_error.rs	130	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/error/crawl_error.rs	131	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/error/crawl_error.rs	136	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/error/crawl_error.rs	136	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/error/crawl_error.rs	140	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/error/crawl_error.rs	140	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/error/crawl_error.rs	157	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/error/crawl_error.rs	158	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/error/crawl_error.rs	159	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/exporter.rs	46	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/exporter.rs	46	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/domain/site/crawler_config.rs	208	missing documentation for a method
+webfang_ai	crates/webfang_core/src/domain/semantic_cleaner.rs	32	missing documentation for a trait
+webfang_ai	crates/webfang_core/src/adapters/detector/mime.rs	44	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/adapters/detector/mime.rs	45	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/adapters/detector/mime.rs	46	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/adapters/downloader/mod.rs	37	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/adapters/downloader/mod.rs	38	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/adapters/downloader/mod.rs	39	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/adapters/url_path.rs	37	missing documentation for an associated function
+webfang_ai	crates/webfang_core/src/adapters/url_path.rs	51	missing documentation for an associated function
+webfang_ai	crates/webfang_core/src/adapters/url_path.rs	55	missing documentation for a method
+webfang_ai	crates/webfang_core/src/adapters/url_path.rs	59	missing documentation for a method
+webfang_ai	crates/webfang_core/src/adapters/url_path.rs	79	missing documentation for an associated function
+webfang_ai	crates/webfang_core/src/adapters/url_path.rs	101	missing documentation for an associated function
+webfang_ai	crates/webfang_core/src/adapters/url_path.rs	191	missing documentation for a method
+webfang_ai	crates/webfang_core/src/adapters/url_path.rs	203	missing documentation for an enum
+webfang_ai	crates/webfang_core/src/adapters/url_path.rs	205	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/adapters/url_path.rs	216	missing documentation for an associated function
+webfang_ai	crates/webfang_core/src/adapters/url_path.rs	225	missing documentation for an associated function
+webfang_ai	crates/webfang_core/src/adapters/url_path.rs	254	missing documentation for a method
+webfang_ai	crates/webfang_core/src/adapters/url_path.rs	258	missing documentation for a method
+webfang_ai	crates/webfang_core/src/adapters/url_path.rs	262	missing documentation for a method
+webfang_ai	crates/webfang_core/src/adapters/url_path.rs	266	missing documentation for a method
+webfang_ai	crates/webfang_core/src/adapters/url_path.rs	283	missing documentation for an enum
+webfang_ai	crates/webfang_core/src/adapters/url_path.rs	285	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/adapters/url_path.rs	287	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/application/mod.rs	21	missing documentation for a module
+webfang_ai	crates/webfang_core/src/application/batch/manager.rs	180	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/batch/manager.rs	181	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/batch/manager.rs	182	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/batch/manager.rs	183	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/batch/processor.rs	234	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/batch/processor.rs	234	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/crawler/collector.rs	40	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/crawler/collector.rs	40	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/crawler/collector.rs	225	missing documentation for an associated function
+webfang_ai	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	29	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	30	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	31	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	32	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	33	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	34	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	35	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	36	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	39	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	40	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	43	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	44	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	45	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	49	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/crawler/crawl_task_ctx.rs	50	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/pipeline/stages/output.rs	16	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/application/pipeline/stages/output.rs	18	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/application/pipeline/stages/output.rs	20	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/application/progress_types.rs	108	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/application/progress_types.rs	111	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/application/progress_types.rs	114	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/application/progress_types.rs	117	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/application/progress_types.rs	120	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/application/progress_types.rs	123	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/application/progress_types.rs	126	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/application/progress_types.rs	162	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/application/progress_types.rs	163	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/application/progress_types.rs	164	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/application/progress_types.rs	165	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/application/progress_types.rs	166	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/application/rate_limiter.rs	203	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/application/rate_limiter.rs	204	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/mod.rs	5	missing documentation for a module
+webfang_ai	crates/webfang_core/src/cli/mod.rs	24	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/cli/mod.rs	25	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/cli/mod.rs	26	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/cli/args/mod.rs	1	missing documentation for a module
+webfang_ai	crates/webfang_core/src/cli/args/mod.rs	2	missing documentation for a module
+webfang_ai	crates/webfang_core/src/cli/args/mod.rs	3	missing documentation for a module
+webfang_ai	crates/webfang_core/src/cli/args/mod.rs	4	missing documentation for a module
+webfang_ai	crates/webfang_core/src/cli/args/mod.rs	5	missing documentation for a module
+webfang_ai	crates/webfang_core/src/cli/args/mod.rs	48	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/args/mod.rs	51	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/args/mod.rs	54	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/args/mod.rs	57	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/args/mod.rs	60	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/args/mod.rs	77	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/cli/args/mod.rs	78	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/cli/args/mod.rs	79	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/cli/args/mod.rs	80	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/cli/args/mod.rs	81	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/cli/args/ai.rs	4	missing documentation for a struct
+webfang_ai	crates/webfang_core/src/cli/args/crawler.rs	22	missing documentation for a struct
+webfang_ai	crates/webfang_core/src/cli/args/export.rs	5	missing documentation for a struct
+webfang_ai	crates/webfang_core/src/cli/args/obsidian.rs	4	missing documentation for a struct
+webfang_ai	crates/webfang_core/src/cli/args/tui.rs	4	missing documentation for a struct
+webfang_ai	crates/webfang_core/src/cli/commands.rs	16	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/commands.rs	17	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/commands.rs	18	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/error.rs	38	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/cli/error.rs	38	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/error.rs	38	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/error.rs	41	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/cli/error.rs	41	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/error.rs	41	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/error.rs	44	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/cli/error.rs	45	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/error.rs	46	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/error.rs	47	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/error.rs	51	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/cli/error.rs	51	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/error.rs	51	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/error.rs	117	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/error.rs	117	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/export_flow.rs	26	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/export_flow.rs	27	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/export_flow.rs	28	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/export_flow.rs	29	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/export_flow.rs	30	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/export_flow.rs	31	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/export_flow.rs	32	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/export_flow.rs	33	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/export_flow.rs	34	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/export_flow.rs	35	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/export_flow.rs	38	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/export_flow.rs	39	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/export_flow.rs	40	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/cli/wizard.rs	21	missing documentation for a method
+webfang_ai	crates/webfang_core/src/cli/wizard.rs	34	missing documentation for an associated function
+webfang_ai	crates/webfang_core/src/infrastructure/mod.rs	29	missing documentation for a module
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/batch_processor.rs	15	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/compression_handler.rs	15	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/compression_handler.rs	17	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/compression_handler.rs	19	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/memory_manager.rs	14	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/memory_manager.rs	16	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/retry_policy.rs	13	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/retry_policy.rs	15	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	49	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	52	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	55	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	58	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	61	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	64	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	67	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	70	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	73	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	76	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	79	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs	82	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/url_validator.rs	16	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/crawler/url_validator.rs	18	missing documentation for a variant
+webfang_ai	crates/webfang_core/src/infrastructure/downloader/mod.rs	112	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/infrastructure/downloader/mod.rs	112	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/infrastructure/downloader/chromiumoxide_downloader.rs	18	missing documentation for an associated function
+webfang_ai	crates/webfang_core/src/infrastructure/downloader/cookie_bridge.rs	114	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/infrastructure/downloader/cookie_bridge.rs	115	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/infrastructure/downloader/cookie_bridge.rs	116	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/infrastructure/downloader/cookie_bridge.rs	117	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/infrastructure/downloader/cookie_bridge.rs	118	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/infrastructure/downloader/cookie_bridge.rs	119	missing documentation for a struct field
+webfang_ai	crates/webfang_core/src/infrastructure/downloader/hybrid_router.rs	44	missing documentation for an associated function
+webfang_ai	crates/webfang_core/src/infrastructure/downloader/obscura_downloader.rs	35	missing documentation for an associated function
+webfang_ai	crates/webfang_core/src/infrastructure/autotuning.rs	39	missing documentation for a constant
+webfang_ai	crates/webfang_core/src/infrastructure/autotuning.rs	45	missing documentation for a constant
+webfang_ai	crates/webfang_core/src/infrastructure/autotuning.rs	46	missing documentation for a constant
+webfang_ai	crates/webfang_core/src/infrastructure/autotuning.rs	47	missing documentation for a constant
+webfang_ai	crates/webfang_core/src/infrastructure/autotuning.rs	48	missing documentation for a constant
+webfang_ai	crates/webfang_ai/src/infrastructure_ai/mod.rs	85	missing documentation for a module
+webfang_ai	crates/webfang_ai/src/infrastructure_ai/model_downloader.rs	73	missing documentation for an associated function
+webfang_ai	crates/webfang_ai/src/infrastructure_ai/model_downloader.rs	83	missing documentation for a method
+webfang_ai	crates/webfang_ai/src/infrastructure_ai/model_downloader.rs	89	missing documentation for a method
+webfang_ai	crates/webfang_ai/src/infrastructure_ai/model_downloader.rs	95	missing documentation for a method
+webfang_ai	crates/webfang_ai/src/infrastructure_ai/model_downloader.rs	101	missing documentation for a method
+webfang_ai	crates/webfang_ai/src/infrastructure_ai/model_downloader.rs	207	missing documentation for a method
