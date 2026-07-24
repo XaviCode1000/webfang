@@ -27,6 +27,7 @@ pub mod user_agent;
 // Elastic ingestion (Issue #51) — hardware autotuning + SQLite persistence.
 pub mod autotuning;
 pub mod bridge;
+pub mod content_processing;
 pub mod cpu_pool;
 // Dependency-free JSONL vector sink (headless RAG export). Always compiled — no
 // heavy deps — so `--output-vectors` works in the lightweight core binary.

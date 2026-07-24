@@ -226,7 +226,10 @@ impl Container {
         let cpu_pool = RayonCpuPool::new(config.cpu_cores)?;
 
         // 2. CpuBridge wraps the Rayon pool with catch_unwind safety
-        let bridge = CpuBridge::new(cpu_pool);
+        let bridge = CpuBridge::new(
+            cpu_pool,
+            Arc::new(crate::infrastructure::content_processing::AggressiveProcessor),
+        );
 
         // 3. HTTP client for resource downloads (separate from scraping client)
         let client = crate::application::http_client::create_http_client()?;

@@ -495,7 +495,10 @@ mod tests {
                 },
             );
             let pool = RayonCpuPool::new(2).expect("pool de 2 hilos");
-            let bridge = CpuBridge::new(pool);
+            let bridge = CpuBridge::new(
+                pool,
+                Arc::new(crate::infrastructure::content_processing::AggressiveProcessor),
+            );
             let config = AutotuningConfig {
                 cpu_cores: 2,
                 ram_budget_bytes: 1 << 20,

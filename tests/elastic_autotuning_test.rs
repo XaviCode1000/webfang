@@ -136,6 +136,7 @@ async fn memory_db_elastic_pipeline_roundtrip() {
 
     use webfang::application::elastic_ingestion::ElasticIngestion;
     use webfang::infrastructure::bridge::CpuBridge;
+    use webfang::infrastructure::content_processing::AggressiveProcessor;
     use webfang::infrastructure::cpu_pool::RayonCpuPool;
     use webfang::infrastructure::crawler::resource_downloader::{
         DownloadConfig, ResourceDownloader,
@@ -151,7 +152,7 @@ async fn memory_db_elastic_pipeline_roundtrip() {
 
     // 2. Set up pipeline components
     let cpu_pool = RayonCpuPool::new(2).expect("Rayon pool");
-    let bridge = CpuBridge::new(cpu_pool);
+    let bridge = CpuBridge::new(cpu_pool, Arc::new(AggressiveProcessor));
 
     let config = AutotuningConfig {
         cpu_cores: 2,
@@ -213,6 +214,7 @@ async fn ram_budget_cascade_to_elastic_ingestion() {
 
     use webfang::application::elastic_ingestion::ElasticIngestion;
     use webfang::infrastructure::bridge::CpuBridge;
+    use webfang::infrastructure::content_processing::AggressiveProcessor;
     use webfang::infrastructure::cpu_pool::RayonCpuPool;
     use webfang::infrastructure::crawler::resource_downloader::{
         DownloadConfig, ResourceDownloader,
@@ -226,7 +228,7 @@ async fn ram_budget_cascade_to_elastic_ingestion() {
 
     // 2. Set up pipeline with tiny ram_budget (5 MiB)
     let cpu_pool = RayonCpuPool::new(2).expect("Rayon pool");
-    let bridge = CpuBridge::new(cpu_pool);
+    let bridge = CpuBridge::new(cpu_pool, Arc::new(AggressiveProcessor));
 
     let ram_budget = 5 * 1024 * 1024; // 5 MiB
     let max_resource = 25 * 1024 * 1024; // 25 MiB

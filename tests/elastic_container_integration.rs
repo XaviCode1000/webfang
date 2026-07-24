@@ -74,6 +74,7 @@ async fn elastic_pipeline_returns_error_on_bad_url() {
     use webfang::infrastructure::autotuning::ElasticConfig;
     use webfang::infrastructure::bridge::CpuBridge;
     use webfang::infrastructure::config::AutotuningConfig;
+    use webfang::infrastructure::content_processing::AggressiveProcessor;
     use webfang::infrastructure::cpu_pool::RayonCpuPool;
     use webfang::infrastructure::crawler::resource_downloader::{
         DownloadConfig, ResourceDownloader,
@@ -92,7 +93,7 @@ async fn elastic_pipeline_returns_error_on_bad_url() {
     };
 
     let cpu_pool = RayonCpuPool::new(2).expect("pool rayon");
-    let bridge = CpuBridge::new(cpu_pool);
+    let bridge = CpuBridge::new(cpu_pool, Arc::new(AggressiveProcessor));
 
     let pool = sqlite::create_pool(&db_path, 4).expect("pool sqlite");
     setup_schema(&pool).await.expect("esquema sqlite");
