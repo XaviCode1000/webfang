@@ -676,7 +676,15 @@ mod tests {
     }
 
     // ===== build_elastic_ingestion tests =====
+    // All three tests call build_elastic_ingestion() → Container::new() →
+    // HttpClient::new() → wreq → BoringSSL FFI (btls::ffi::TLS_method).
+    // Miri cannot execute C FFI — this is a known limitation, not UB.
+    // See: https://github.com/rust-lang/miri#unsupported-operations
 
+    #[cfg_attr(
+        miri,
+        ignore = "Container::new creates HttpClient with boring-sys2 FFI (unsupported by Miri)"
+    )]
     #[tokio::test]
     async fn build_elastic_ingestion_none_when_no_options() {
         let opts = CrawlOptions::default();
@@ -688,6 +696,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "Container::new creates HttpClient with boring-sys2 FFI (unsupported by Miri)"
+    )]
     #[tokio::test]
     async fn build_elastic_ingestion_some_when_output_vectors() {
         let mut opts = CrawlOptions::default();
@@ -696,6 +708,10 @@ mod tests {
         assert!(result.is_ok(), "should not error: {:?}", result.err());
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "Container::new creates HttpClient with boring-sys2 FFI (unsupported by Miri)"
+    )]
     #[tokio::test]
     async fn build_elastic_ingestion_some_when_elastic_enabled() {
         let mut opts = CrawlOptions::default();
