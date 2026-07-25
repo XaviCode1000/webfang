@@ -1,7 +1,12 @@
+/// AI-powered semantic cleaning arguments.
 pub mod ai;
+/// Crawler and discovery configuration arguments.
 pub mod crawler;
+/// Export format and output configuration arguments.
 pub mod export;
+/// Obsidian vault integration arguments.
 pub mod obsidian;
+/// Terminal UI configuration arguments.
 pub mod tui;
 
 pub use ai::AiArgs;
@@ -44,18 +49,23 @@ pub struct Args {
     #[command(subcommand)]
     pub subcommand: Option<Commands>,
 
+    /// Crawler and discovery configuration.
     #[command(flatten)]
     pub crawler: CrawlerArgs,
 
+    /// Export format and output configuration.
     #[command(flatten)]
     pub export: ExportArgs,
 
+    /// Obsidian vault integration settings.
     #[command(flatten)]
     pub obsidian: ObsidianArgs,
 
+    /// AI-powered semantic cleaning settings.
     #[command(flatten)]
     pub ai: AiArgs,
 
+    /// Terminal UI configuration.
     #[command(flatten)]
     pub tui: TuiArgs,
 }
@@ -74,10 +84,15 @@ pub enum Commands {
 /// Shell type for completions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Shell {
+    /// Bash shell completions.
     Bash,
+    /// Elvish shell completions.
     Elvish,
+    /// Fish shell completions.
     Fish,
+    /// PowerShell completions.
     PowerShell,
+    /// Zsh shell completions.
     Zsh,
 }
 

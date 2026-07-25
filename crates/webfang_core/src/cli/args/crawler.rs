@@ -18,6 +18,7 @@ pub(crate) fn parse_download_concurrency(s: &str) -> Result<usize, String> {
     Ok(v)
 }
 
+/// Crawler and discovery configuration arguments.
 #[derive(Args, Debug, Default)]
 pub struct CrawlerArgs {
     // ========== Target ==========

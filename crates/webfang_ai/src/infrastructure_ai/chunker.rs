@@ -27,7 +27,7 @@ use super::sentence::SentenceSplitter;
 /// ```no_run
 /// # #[cfg(feature = "ai")]
 /// # fn example() -> anyhow::Result<()> {
-/// use webfang::infrastructure::ai::HtmlChunker;
+/// use webfang_ai::HtmlChunker;
 ///
 /// let chunker = HtmlChunker::new();
 /// let html = "<article><p>First paragraph.</p><p>Second paragraph.</p></article>";
@@ -155,7 +155,7 @@ impl HtmlChunker {
     /// ```no_run
     /// # #[cfg(feature = "ai")]
     /// # fn example() -> anyhow::Result<()> {
-    /// use webfang::infrastructure::ai::HtmlChunker;
+    /// use webfang_ai::HtmlChunker;
     ///
     /// let chunker = HtmlChunker::new();
     /// let html = "<article><p>Hello World</p><p>Second paragraph</p></article>";

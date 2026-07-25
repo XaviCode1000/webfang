@@ -27,7 +27,7 @@ pub const DEFAULT_FALLBACK_MODEL_REPO: &str = "ibm-granite/granite-embedding-311
 pub const DEFAULT_FALLBACK_MODEL_FILE: &str = "onnx/model.onnx";
 
 /// Expected SHA256 for Granite-311M ONNX model
-/// Verified via HuggingFace API: https://huggingface.co/ibm-granite/granite-embedding-311m-multilingual-r2
+/// Verified via HuggingFace API: <https://huggingface.co/ibm-granite/granite-embedding-311m-multilingual-r2>
 pub const DEFAULT_FALLBACK_MODEL_SHA256: &str =
     "49158cc56a6ae40b0ab0634706d7e524c33e105f358a6fb7ed4f63c5e1187fbe";
 

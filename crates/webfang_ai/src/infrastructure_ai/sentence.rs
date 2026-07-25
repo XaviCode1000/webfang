@@ -18,7 +18,7 @@ use unicode_segmentation::UnicodeSegmentation;
 /// ```
 /// # #[cfg(feature = "ai")]
 /// # fn example() {
-/// use webfang::infrastructure::ai::SentenceSplitter;
+/// use webfang_ai::SentenceSplitter;
 ///
 /// let splitter = SentenceSplitter;
 /// let sentences = splitter.split("Hello world. How are you?");
@@ -45,7 +45,7 @@ impl SentenceSplitter {
     /// ```
     /// # #[cfg(feature = "ai")]
     /// # fn example() {
-    /// use webfang::infrastructure::ai::SentenceSplitter;
+    /// use webfang_ai::SentenceSplitter;
     ///
     /// let splitter = SentenceSplitter;
     /// let text = "First sentence. Second sentence! Third?";
@@ -93,7 +93,7 @@ impl SentenceSplitter {
     /// ```
     /// # #[cfg(feature = "ai")]
     /// # fn example() {
-    /// use webfang::infrastructure::ai::SentenceSplitter;
+    /// use webfang_ai::SentenceSplitter;
     ///
     /// let splitter = SentenceSplitter;
     /// let count = splitter.count("One. Two. Three.");

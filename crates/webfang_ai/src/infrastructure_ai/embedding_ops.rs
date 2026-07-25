@@ -48,7 +48,7 @@ use wide::f32x8;
 /// ```
 /// # #[cfg(feature = "ai")]
 /// # fn example() {
-/// use webfang::infrastructure::ai::embedding_ops::cosine_similarity;
+/// use webfang_ai::infrastructure_ai::embedding_ops::cosine_similarity;
 ///
 /// // Identical vectors
 /// let vec = vec![0.5f32, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5];
@@ -239,7 +239,7 @@ pub fn find_most_similar(query: &[f32], candidates: &[Vec<f32>]) -> Option<usize
 /// # Examples
 ///
 /// ```
-/// # use webfang::infrastructure::ai::embedding_ops::mean_pool;
+/// # use webfang_ai::infrastructure_ai::embedding_ops::mean_pool;
 /// let data: Vec<f32> = (0..4 * 384).map(|i| i as f32).collect();
 /// let pooled = mean_pool(&data, 4, 384, &[1i64; 4]);
 /// assert_eq!(pooled.len(), 384);
@@ -303,7 +303,7 @@ pub fn mean_pool(
 /// # Examples
 ///
 /// ```
-/// # use webfang::infrastructure::ai::embedding_ops::l2_normalize_safe;
+/// # use webfang_ai::infrastructure_ai::embedding_ops::l2_normalize_safe;
 /// let v = vec![3.0f32, 4.0];
 /// let normalized = l2_normalize_safe(&v);
 /// let mag: f32 = normalized.iter().map(|&x| x * x).sum::<f32>().sqrt();

@@ -1,6 +1,7 @@
 use crate::domain::config::{ExportFormat, OutputFormat, PipelineOutputFormat};
 use clap::Args;
 
+/// Export format and output configuration arguments.
 #[derive(Args, Debug, Default)]
 pub struct ExportArgs {
     // ========== Output ==========

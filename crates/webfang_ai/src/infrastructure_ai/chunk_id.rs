@@ -8,7 +8,7 @@
 /// ```
 /// # #[cfg(feature = "ai")]
 /// # fn example() {
-/// use webfang::infrastructure::ai::ChunkId;
+/// use webfang_ai::ChunkId;
 ///
 /// let id = ChunkId(42);
 /// assert_eq!(format!("{}", id), "chunk-42");

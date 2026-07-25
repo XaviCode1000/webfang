@@ -2,7 +2,7 @@
 //!
 //! Handles tokenization of text chunks into token IDs compatible with the model:
 //! - WordPiece tokenization (BERT-style)
-//! - Special tokens: [CLS], [SEP], [PAD]
+//! - Special tokens: `[CLS]`, `[SEP]`, `[PAD]`
 //! - Truncation and padding to max_length (384)
 //! - Batch tokenization for throughput
 //! - **Returns ModelInput**: input_ids, attention_mask, token_type_ids
@@ -82,14 +82,14 @@ impl TokenBatch {
         self.sequences.first().map_or(0, Vec::len)
     }
 
-    /// Convert batch to Vec<ModelInput> for inference
+    /// Convert batch to `Vec<ModelInput>` for inference
     ///
-    /// This converts each sequence in the batch to a ModelInput
-    /// suitable for passing to InferencePool::infer.
+    /// This converts each sequence in the batch to a `ModelInput`
+    /// suitable for passing to `InferencePool::infer`.
     ///
     /// # Returns
     ///
-    /// Vec of ModelInput, one for each sequence in the batch
+    /// `Vec` of `ModelInput`, one for each sequence in the batch
     #[must_use]
     pub fn to_model_inputs(&self) -> Vec<ModelInput> {
         self.sequences
@@ -105,7 +105,7 @@ impl TokenBatch {
 ///
 /// This tokenizer handles:
 /// - WordPiece tokenization
-/// - Special token insertion ([CLS], [SEP])
+/// - Special token insertion (`[CLS]`, `[SEP]`)
 /// - Truncation to max_length
 /// - Padding to max_length
 /// - **Returns ModelInput**: Complete input for ONNX model
@@ -114,7 +114,7 @@ impl TokenBatch {
 ///
 /// ```no_run
 /// # async fn example() -> anyhow::Result<()> {
-/// use webfang::infrastructure::ai::MiniLmTokenizer;
+/// use webfang_ai::MiniLmTokenizer;
 ///
 /// let tokenizer = MiniLmTokenizer::load_default().await?;
 /// let input = tokenizer.tokenize("Hello world")?;

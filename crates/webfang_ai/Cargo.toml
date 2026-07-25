@@ -55,5 +55,9 @@ path = "../../tests/chunker_regression.rs"
 doc_markdown = "allow"
 uninlined_format_args = "allow"
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("ai"))'] }

@@ -14,7 +14,7 @@ use super::embedding_ops::cosine_similarity;
 /// ```
 /// # #[cfg(feature = "ai")]
 /// # fn example() {
-/// use webfang::infrastructure::ai::RelevanceScorer;
+/// use webfang_ai::RelevanceScorer;
 ///
 /// let scorer = RelevanceScorer::new(0.3);
 /// assert_eq!(scorer.threshold(), 0.3);
@@ -171,15 +171,6 @@ impl RelevanceScorer {
     ///
     /// Vector of chunks with similarity >= threshold
     ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # #[cfg(feature = "ai")]
-    /// Filter chunks and preserve their embeddings
-    ///
-    /// Unlike [`filter`](Self::filter), this method returns the chunks WITH their
-    /// embedding vectors, not just the chunks.
-    ///
     /// # Arguments
     ///
     /// * `chunks` - Slice of (DocumentChunk, embedding) pairs
@@ -188,6 +179,7 @@ impl RelevanceScorer {
     /// # Returns
     ///
     /// Vector of (DocumentChunk, embedding) pairs that meet the relevance threshold
+    /// unlike [`filter`](Self::filter) which discards the embedding vectors.
     #[must_use]
     pub fn filter_with_embeddings(
         &self,
@@ -238,21 +230,6 @@ impl RelevanceScorer {
     /// # Returns
     ///
     /// Vector of relevant chunks (embeddings are discarded)
-    ///
-    /// # fn example() -> anyhow::Result<()> {
-    /// use webfang::infrastructure::ai::RelevanceScorer;
-    /// use webfang::domain::DocumentChunk;
-    ///
-    /// let scorer = RelevanceScorer::new(0.3);
-    /// let reference = vec![0.1f32; 384]; // all-MiniLM-L6-v2 dimension
-    ///
-    /// // Example chunks with embeddings
-    /// let chunks: Vec<(DocumentChunk, Vec<f32>)> = vec![];
-    ///
-    /// let filtered = scorer.filter(&chunks, Some(&reference));
-    /// # Ok(())
-    /// # }
-    /// ```
     #[must_use]
     pub fn filter(
         &self,

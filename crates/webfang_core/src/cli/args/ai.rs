@@ -1,5 +1,6 @@
 use clap::Args;
 
+/// AI-powered semantic cleaning arguments.
 #[derive(Args, Debug, Default)]
 pub struct AiArgs {
     /// Relevance threshold for AI semantic filtering (0.0-1.0)

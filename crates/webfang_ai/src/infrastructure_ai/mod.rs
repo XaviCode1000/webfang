@@ -10,7 +10,7 @@
 //!
 //! # Architecture
 //!
-//! Following Clean Architecture, this module implements the [`SemanticCleaner`](webfang_core::domain::semantic_cleaner::SemanticCleaner)
+//! Following Clean Architecture, this module implements the [`SemanticCleaner`](crate::SemanticCleaner)
 //! trait defined in the domain layer.
 //!
 //! ```text
@@ -46,17 +46,17 @@
 //!
 //! # Rust-Skills Applied
 //!
-//! - [`async-join-parallel`](crate::rust_skills::async_join_parallel): Concurrent embedding generation
-//! - [`mem-reuse-collections`](crate::rust_skills::mem_reuse_collections): Buffer reuse
-//! - [`own-borrow-over-clone`](crate::rust_skills::own_borrow_over_clone): Borrow over clone
-//! - [`async-spawn-blocking`](crate::rust_skills::async_spawn_blocking): CPU-intensive inference
-//! - [`opt-simd-portable`](crate::rust_skills::opt_simd_portable): SIMD cosine similarity
+//! - `async-join-parallel`: Concurrent embedding generation
+//! - `mem-reuse-collections`: Buffer reuse
+//! - `own-borrow-over-clone`: Borrow over clone
+//! - `async-spawn-blocking`: CPU-intensive inference
+//! - `opt-simd-portable`: SIMD cosine similarity
 //!
 //! # Examples
 //!
 //! ```no_run
 //! # async fn example() -> anyhow::Result<()> {
-//! use webfang::infrastructure::ai::{SemanticCleanerImpl, ModelConfig};
+//! use webfang_ai::{SemanticCleaner, SemanticCleanerImpl, ModelConfig};
 //!
 //! let config = ModelConfig::default();
 //! let cleaner = SemanticCleanerImpl::new(config).await?;

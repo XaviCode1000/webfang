@@ -12,7 +12,7 @@
 /// ```
 /// # #[cfg(feature = "ai")]
 /// # fn example() {
-/// use webfang::infrastructure::ai::ThresholdConfig;
+/// use webfang_ai::ThresholdConfig;
 ///
 /// let config = ThresholdConfig::new()
 ///     .with_min_threshold(0.2)

@@ -1,5 +1,6 @@
 use clap::Args;
 
+/// Obsidian vault integration arguments.
 #[derive(Args, Debug, Default)]
 pub struct ObsidianArgs {
     /// Convert same-domain links to Obsidian [[wiki-link]] syntax

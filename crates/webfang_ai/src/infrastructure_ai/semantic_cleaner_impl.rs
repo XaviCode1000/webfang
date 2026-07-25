@@ -1,6 +1,6 @@
 //! Semantic Cleaner implementation — Full RAG Pipeline Integration
 //!
-//! This module provides the concrete implementation of the [`SemanticCleaner`](webfang_core::domain::semantic_cleaner::SemanticCleaner)
+//! This module provides the concrete implementation of the [`SemanticCleaner`]
 //! trait using the complete Phase 2 + Phase 3 pipeline:
 //!
 //! # Architecture
@@ -21,24 +21,24 @@
 //!
 //! # Rust-Skills Applied
 //!
-//! - [`async-join-parallel`](crate::rust_skills::async_join_parallel): Use `try_join_all` for concurrent embeddings
-//! - [`mem-reuse-collections`](crate::rust_skills::mem_reuse_collections): Pre-allocate `Vec::with_capacity`, reuse buffers
-//! - [`own-borrow-over-clone`](crate::rust_skills::own_borrow_over_clone): Borrow `&chunks`, `&embeddings` - don't clone
-//! - [`async-spawn-blocking`](crate::rust_skills::async_spawn_blocking): InferencePool uses dedicated worker threads
-//! - [`err-context-chain`](crate::rust_skills::err_context_chain): Add `.context()` to errors
-//! - [`anti-unwrap-abuse`](crate::rust_skills::anti_unwrap_abuse): Use `?` operator, NO `.unwrap()` in prod
-//! - [`anti-lock-across-await`](crate::rust_skills::anti_lock_across_await): Don't hold MutexGuard across `.await`
-//! - [`api-builder-pattern`](crate::rust_skills::api_builder_pattern): ModelConfig uses builder pattern
-//! - [`type-newtype-ids`](crate::rust_skills::type_newtype_ids): Using `ChunkId` for type-safe IDs
-//! - [`opt-simd-portable`](crate::rust_skills::opt_simd_portable): RelevanceScorer uses `wide::f32x8` SIMD
+//! - `async-join-parallel`: Use `try_join_all` for concurrent embeddings
+//! - `mem-reuse-collections`: Pre-allocate `Vec::with_capacity`, reuse buffers
+//! - `own-borrow-over-clone`: Borrow `&chunks`, `&embeddings` - don't clone
+//! - `async-spawn-blocking`: InferencePool uses dedicated worker threads
+//! - `err-context-chain`: Add `.context()` to errors
+//! - `anti-unwrap-abuse`: Use `?` operator, NO `.unwrap()` in prod
+//! - `anti-lock-across-await`: Don't hold MutexGuard across `.await`
+//! - `api-builder-pattern`: ModelConfig uses builder pattern
+//! - `type-newtype-ids`: Using `ChunkId` for type-safe IDs
+//! - `opt-simd-portable`: RelevanceScorer uses `wide::f32x8` SIMD
 //!
 //! # Examples
 //!
 //! ```no_run
 //! # #[cfg(feature = "ai")]
 //! # async fn example() -> anyhow::Result<()> {
-//! use webfang::infrastructure::ai::{SemanticCleanerImpl, ModelConfig};
-//! use webfang::SemanticCleaner;
+//! use webfang_ai::{SemanticCleanerImpl, ModelConfig};
+//! use webfang_ai::SemanticCleaner;
 //!
 //! let config = ModelConfig::default();
 //! let cleaner = SemanticCleanerImpl::new(config).await?;
@@ -266,7 +266,7 @@ impl SemanticCleanerImpl {
     ///
     /// ```no_run
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// use webfang::infrastructure::ai::{SemanticCleanerImpl, ModelConfig};
+    /// use webfang_ai::{SemanticCleanerImpl, ModelConfig};
     ///
     /// let config = ModelConfig::default();
     /// let cleaner = SemanticCleanerImpl::new(config).await?;
@@ -581,7 +581,7 @@ impl SemanticCleanerImpl {
     /// ```no_run
     /// # #[cfg(feature = "ai")]
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// use webfang::infrastructure::ai::{SemanticCleaner, SemanticCleanerImpl, ModelConfig};
+    /// use webfang_ai::{SemanticCleaner, SemanticCleanerImpl, ModelConfig};
     ///
     /// // Create semantic cleaner (requires --features ai)
     /// let config = ModelConfig::default();
@@ -595,8 +595,7 @@ impl SemanticCleanerImpl {
     /// let has_embeddings = chunks.first()
     ///     .map(|c| c.embeddings.is_some())
     ///     .ok_or_else(|| SemanticError::Inference(
-    ///         "No chunks returned from semantic cleaner. "
-    ///         "Check HTML content and AI model availability."
+    ///         "No chunks returned from semantic cleaner. Check HTML content and AI model availability."
     ///     ))?;
     /// assert!(has_embeddings, "embeddings should not be None after fix");
     ///
@@ -675,8 +674,8 @@ impl SemanticCleanerImpl {
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use webfang::infrastructure::ai::{SemanticCleanerImpl, ModelConfig};
-/// use webfang::SemanticCleaner;
+/// use webfang_ai::{SemanticCleanerImpl, ModelConfig};
+/// use webfang_ai::SemanticCleaner;
 ///
 /// let config = ModelConfig::default();
 /// let cleaner = SemanticCleanerImpl::new(config).await?;

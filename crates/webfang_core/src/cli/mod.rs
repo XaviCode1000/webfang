@@ -2,7 +2,7 @@
 //!
 //! Clean Architecture Adapters layer: all CLI-related utilities.
 
-#[allow(missing_docs)]
+/// CLI argument definitions using clap derive macros.
 pub mod args;
 pub mod commands;
 pub mod completions;
