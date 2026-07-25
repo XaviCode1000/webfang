@@ -226,7 +226,13 @@ impl SessionManager for DomainSessionPool {
                     },
                     SessionStatus::Banned => {
                         if let Some(next_retry) = state.next_retry_time {
-                            if now >= next_retry {
+                            // Apply ±20% dynamic jitter to prevent thundering herd
+                            let jitter_range = self.backoff_delay(state.consecutive_failures);
+                            let jitter_ms = (jitter_range.as_millis() as f64 * 0.2) as u128;
+                            let jitter_offset =
+                                Duration::from_millis((idx as u64 * 37) % (jitter_ms.max(1) as u64));
+                            let effective_retry = next_retry + jitter_offset;
+                            if now >= effective_retry {
                                 debug!(domain, session_id = idx, "acquired session after cooldown");
                                 break 'find Some(SessionId(idx));
                             }
@@ -358,6 +364,20 @@ impl SessionManager for DomainSessionPool {
 /// Sealed trait internals — prevents external implementations.
 mod sealed {
     pub trait Sealed {}
+}
+
+impl crate::domain::session_port::SessionPort for DomainSessionPool {
+    fn acquire(&self, domain: &str) -> Option<SessionId> {
+        SessionManager::acquire(self, domain)
+    }
+
+    fn report_success(&self, domain: &str, session: SessionId) {
+        SessionManager::report_success(self, domain, session)
+    }
+
+    fn report_failure(&self, domain: &str, session: SessionId, status: u16) {
+        SessionManager::report_failure(self, domain, session, status)
+    }
 }
 
 #[cfg(test)]
