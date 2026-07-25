@@ -13,7 +13,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use webfang_core::user_agent::UserAgentCache;
+//! use webfang_core::infrastructure::user_agent::UserAgentCache;
 //!
 //! # #[tokio::main]
 //! # async fn main() {
@@ -203,7 +203,7 @@ impl UserAgentCache {
 /// # Examples
 ///
 /// ```
-/// use webfang_core::user_agent::get_random_user_agent_from_pool;
+/// use webfang_core::infrastructure::user_agent::get_random_user_agent_from_pool;
 ///
 /// let agents = vec!["Chrome/131".to_string(), "Firefox/123".to_string()];
 /// let ua = get_random_user_agent_from_pool(&agents);

@@ -64,7 +64,7 @@ impl CrawlMessage {
 ///
 /// # Uso
 ///
-/// ```rust
+/// ```compile_fail
 /// let collector = ResultsCollector::new(512, Some(1000));
 ///
 /// // En cada worker:

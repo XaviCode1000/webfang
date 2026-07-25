@@ -33,12 +33,12 @@ use wreq_util::Profile;
 /// - `ContentDisposition` — `filename=` from `Content-Disposition` header, falls back to `Hash`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AssetNamingStrategy {
+    /// SHA-256 hash of content (first 12 hex chars). Dedup-friendly.
     #[default]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     Hash,
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// Last path segment of the URL (e.g. `rust-book.pdf`).
     Slug,
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// `filename=` from `Content-Disposition` header, falls back to `Hash`.
     ContentDisposition,
 }
 

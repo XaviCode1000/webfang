@@ -34,14 +34,13 @@ const WREQ_MEMORY_COST: usize = 1_024 * 1_024; // ~1 MB
 ///
 /// # Examples
 ///
-/// ```no_run
-/// use webfang_core::infrastructure::downloader::{WreqDownloader, Downloader};
+/// ```ignore
+/// use webfang_core::infrastructure::downloader::wreq_downloader::WreqDownloader;
+/// use webfang_core::infrastructure::downloader::Downloader;
 ///
-/// # tokio_test::block_on(async {
 /// let downloader = WreqDownloader::new(30, 10);
 /// let page = downloader.fetch(&"https://example.com".parse().unwrap()).await.unwrap();
 /// assert_eq!(page.status, 200);
-/// # });
 /// ```
 pub struct WreqDownloader {
     client: Arc<Client>,

@@ -177,13 +177,13 @@ impl BatchManager {
 /// Aggregated summary across all batch jobs in a manager
 #[derive(Debug, Default, Clone)]
 pub struct BatchManagerSummary {
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// Total number of URLs across all jobs
     pub total_urls: usize,
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// Number of successfully processed URLs
     pub succeeded: usize,
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// Number of failed URLs
     pub failed: usize,
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// Error messages from failed jobs
     pub errors: Vec<(String, String)>,
 }
 

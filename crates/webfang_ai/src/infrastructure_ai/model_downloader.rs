@@ -68,8 +68,9 @@ impl Default for ModelDownloader {
     }
 }
 
-#[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+/// Builder for downloading ONNX models from HuggingFace Hub.
 impl ModelDownloader {
+    /// Create a new downloader with empty defaults.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -80,24 +81,28 @@ impl ModelDownloader {
         }
     }
 
+    /// Set the HuggingFace repository name (e.g. `sentence-transformers/all-MiniLM-L6-v2`).
     #[must_use]
     pub fn with_repo(mut self, repo: impl Into<String>) -> Self {
         self.repo = repo.into();
         self
     }
 
+    /// Set the model file name within the repository.
     #[must_use]
     pub fn with_file(mut self, file: impl Into<String>) -> Self {
         self.file = file.into();
         self
     }
 
+    /// Set the expected SHA-256 hash for integrity verification.
     #[must_use]
     pub fn with_sha256(mut self, sha256: impl Into<String>) -> Self {
         self.sha256 = Some(sha256.into());
         self
     }
 
+    /// Set a callback for download progress updates.
     #[must_use]
     pub fn with_progress_callback(mut self, callback: ProgressCallback) -> Self {
         self.progress_callback = Some(callback);
@@ -204,6 +209,7 @@ impl ModelDownloader {
         Ok(downloaded_path)
     }
 
+    /// Check if the model file already exists in the cache directory.
     #[must_use]
     pub fn is_cached(&self, cache_dir: &Path) -> bool {
         let dest_path = cache_dir.join(&self.file);

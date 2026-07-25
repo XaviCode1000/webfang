@@ -34,7 +34,10 @@ const WINDOWS_RESERVED: &[&str] = &[
 pub struct Domain(String);
 
 impl Domain {
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// Extract a validated [`Domain`] from a URL string.
+    ///
+    /// Strips the `www.` prefix for consistency. Returns a [`DomainError`]
+    /// if the URL is malformed or has no host.
     pub fn from_url(url: &str) -> Result<Self, DomainError> {
         let parsed = url::Url::parse(url).map_err(|e| DomainError::InvalidUrl(e.to_string()))?;
         let host = parsed
@@ -48,17 +51,18 @@ impl Domain {
         Ok(Self(clean.to_string()))
     }
 
-    #[allow(dead_code, missing_docs)] // Phase 0 triage — internal API surface
+    #[allow(dead_code)]
+    /// Create a [`Domain`] from a raw string without validation.
     pub fn new_unchecked<S: Into<String>>(s: S) -> Self {
         Self(s.into())
     }
 
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// Returns the domain as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// Consumes the domain and returns the inner string.
     pub fn into_string(self) -> String {
         self.0
     }
@@ -79,7 +83,10 @@ pub struct UrlPath {
 }
 
 impl UrlPath {
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// Create an [`UrlPath`] from a raw URL path string.
+    ///
+    /// Normalizes the path: ensures leading `/`, strips query/fragment,
+    /// removes trailing slashes (except root `/`).
     pub fn from_url_path(path: &str) -> Self {
         let clean = path.split('?').next().unwrap_or(path);
         let clean = clean.split('#').next().unwrap_or(clean);
@@ -102,7 +109,9 @@ impl UrlPath {
         }
     }
 
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// Create an [`UrlPath`] from a full URL string.
+    ///
+    /// Parses the URL and extracts its path component.
     pub fn from_url(url: &str) -> Result<Self, UrlPathError> {
         let parsed = url::Url::parse(url).map_err(|e| UrlPathError::InvalidUrl(e.to_string()))?;
         Ok(Self::from_url_path(parsed.path()))
@@ -204,11 +213,11 @@ impl std::fmt::Display for UrlPath {
     }
 }
 
-#[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+/// Errors that can occur when constructing an [`UrlPath`].
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum UrlPathError {
+    /// The URL string could not be parsed.
     #[error("Invalid URL: {0}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     InvalidUrl(String),
 }
 
@@ -220,7 +229,9 @@ pub struct OutputPath {
 }
 
 impl OutputPath {
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// Construct an [`OutputPath`] from a full URL.
+    ///
+    /// Extracts the domain and path, returning an error on malformed URLs.
     pub fn from_url(url: &str) -> Result<Self, OutputPathError> {
         let domain = Domain::from_url(url)?;
         let parsed =
@@ -229,7 +240,8 @@ impl OutputPath {
         Ok(Self { domain, path })
     }
 
-    #[allow(dead_code, missing_docs)] // Phase 0 triage — internal API surface
+    #[allow(dead_code)]
+    /// Create an [`OutputPath`] from a domain and path directly.
     pub fn new(domain: Domain, path: UrlPath) -> Self {
         Self { domain, path }
     }
@@ -259,22 +271,24 @@ impl OutputPath {
         format!("{folder}{filename}")
     }
 
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// Convert this output path to a [`PathBuf`].
     pub fn to_pathbuf(&self) -> PathBuf {
         PathBuf::from(self.to_full_path())
     }
 
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// Returns a reference to the [`Domain`] component.
     pub fn domain(&self) -> &Domain {
         &self.domain
     }
 
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// Returns a reference to the [`UrlPath`] component.
     pub fn path(&self) -> &UrlPath {
         &self.path
     }
 
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// Relative path to the images directory for this output path.
+    ///
+    /// Returns `images/` for root URLs, or `{dir}/images/` for nested paths.
     pub fn images_relative_path(&self) -> String {
         let dir = self.path.to_directory();
         if dir.is_empty() {
@@ -291,14 +305,14 @@ impl std::fmt::Display for OutputPath {
     }
 }
 
-#[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+/// Errors that can occur when constructing an [`OutputPath`].
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum OutputPathError {
+    /// The URL string could not be parsed.
     #[error("Invalid URL: {0}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     InvalidUrl(String),
+    /// The domain portion of the URL is invalid.
     #[error("Domain error: {0}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     Domain(#[from] DomainError),
 }
 

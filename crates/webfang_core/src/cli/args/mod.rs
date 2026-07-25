@@ -30,7 +30,7 @@ use clap::Parser;
 ///     "--resume",
 /// ]);
 ///
-/// assert_eq!(args.url, "https://example.com");
+/// assert_eq!(args.crawler.url.as_deref(), Some("https://example.com"));
 /// ```
 #[derive(Parser, Debug, Default)]
 #[command(name = "webfang", version)]

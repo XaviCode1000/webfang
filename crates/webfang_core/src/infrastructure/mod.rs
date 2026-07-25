@@ -26,7 +26,6 @@ pub mod user_agent;
 
 // Elastic ingestion (Issue #51) — hardware autotuning + SQLite persistence.
 pub mod autotuning;
-#[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
 pub mod bridge;
 pub mod content_processing;
 pub mod cpu_pool;

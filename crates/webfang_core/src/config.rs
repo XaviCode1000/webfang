@@ -85,13 +85,13 @@ impl Default for Config {
 /// Configuration validation errors
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    /// Concurrency value must be greater than zero
     #[error("scraper concurrency must be > 0")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     InvalidConcurrency,
+    /// Max pages value must be greater than zero
     #[error("max pages must be > 0")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     InvalidMaxPages,
+    /// Max retries cannot exceed 10
     #[error("max retries must be <= 10")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     InvalidRetries,
 }

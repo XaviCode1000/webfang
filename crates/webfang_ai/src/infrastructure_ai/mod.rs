@@ -81,8 +81,7 @@ pub mod inference_engine;
 
 pub mod tokenizer;
 
-// Semantic Chunking (Modules 3-4)
-#[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+/// Unique identifier for content chunks with newtype safety.
 pub mod chunk_id;
 
 pub mod sentence;

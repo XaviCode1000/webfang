@@ -1,3 +1,5 @@
+//! Bridge between sync and async contexts for elastic ingestion.
+
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 

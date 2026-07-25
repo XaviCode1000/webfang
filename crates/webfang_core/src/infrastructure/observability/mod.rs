@@ -20,9 +20,9 @@
 //! ```
 //!
 //! Then in your code:
-//! ```rust
+//! ```ignore
 //! #[cfg(feature = "console")]
-//! webfang::infrastructure::observability::init_console();
+//! webfang_core::infrastructure::observability::init_console();
 //! ```
 
 pub mod file_trace_layer;

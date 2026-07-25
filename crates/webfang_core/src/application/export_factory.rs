@@ -197,7 +197,7 @@ pub fn process_results(
 /// # Examples
 ///
 /// ```
-/// use webfang_core::export_factory::domain_from_url;
+/// use webfang_core::application::export_factory::domain_from_url;
 ///
 /// let domain = domain_from_url("https://www.example.com/docs/api/");
 /// assert_eq!(domain, "www.example.com");

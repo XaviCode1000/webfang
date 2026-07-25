@@ -19,7 +19,7 @@ pub mod progress_observer;
 pub mod progress_types;
 pub mod rate_limiter;
 pub mod scraper_service;
-#[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+/// Resolve extracted page titles to guaranteed non-empty strings.
 pub mod title_resolver;
 pub mod url_filter;
 

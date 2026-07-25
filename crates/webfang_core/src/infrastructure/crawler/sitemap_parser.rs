@@ -45,52 +45,52 @@ use url::Url;
 /// Following err-thiserror-for-libraries: typed, matchable errors
 #[derive(Debug, Error)]
 pub enum SitemapError {
+    /// URL could not be parsed
     #[error("invalid URL: {0}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     InvalidUrl(#[from] url::ParseError),
 
+    /// HTTP request to fetch the sitemap failed
     #[error("http request failed: {0}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     HttpError(String),
 
+    /// XML parsing of sitemap content failed
     #[error("XML parsing failed: {0}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     XmlError(#[from] quick_xml::Error),
 
+    /// I/O error reading or writing sitemap data
     #[error("IO error: {0}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     IoError(#[from] std::io::Error),
 
+    /// Sitemap contained no URL entries
     #[error("no URLs found in sitemap")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     NoUrlsFound,
 
+    /// Sitemap XML structure does not match expected format
     #[error("invalid sitemap structure")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     InvalidStructure,
 
+    /// Sitemap index depth exceeded the configured maximum
     #[error("maximum recursion depth exceeded")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     MaxDepthExceeded,
 
+    /// URL scheme is not http or https
     #[error("invalid scheme: {0} (only http/https allowed)")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     InvalidScheme(String),
 
+    /// HTTP response body exceeds the size limit
     #[error("response too large: exceeds {0} bytes")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     ResponseTooLarge(usize),
 
+    /// Decompressed sitemap data exceeds the size limit
     #[error("decompressed data too large: exceeds {0} bytes")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     DecompressedTooLarge(usize),
 
+    /// No sitemap found at the expected URL
     #[error("no sitemap found at {0}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     SitemapNotFound(String),
 
+    /// Response Content-Type is not XML
     #[error("invalid content type: expected XML, got {0}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     InvalidContentType(String),
 }
 

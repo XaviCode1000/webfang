@@ -905,6 +905,7 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
 /// ```no_run
 /// use webfang_core::{domain::CrawlerConfig, application::crawl_site_with_options};
 /// use webfang_core::application::crawler::engine::EngineOptions;
+/// use webfang_core::domain::JsStrategy;
 /// use std::time::Duration;
 /// use url::Url;
 ///
@@ -920,6 +921,7 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
 ///     checkpoint_path: Some(std::path::PathBuf::from("/tmp/checkpoint")),
 ///     session_pool_enabled: true,
 ///     ignore_robots: false,
+///     js_strategy: JsStrategy::Static,
 ///     autoscale_enabled: true,
 /// };
 ///

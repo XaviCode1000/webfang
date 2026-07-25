@@ -19,7 +19,7 @@
 //!     config,
 //! );
 //!
-//! let processor = BatchProcessor::new(3);
+//! let processor = BatchProcessor::new(3).unwrap();
 //! let result = processor.process_batch(job).await?;
 //!
 //! println!("Processed {} URLs, {} succeeded, {} failed",
@@ -232,9 +232,9 @@ pub enum BatchError {
     /// Crawl operation failed
     #[error("crawl failed for {url}: {error}")]
     CrawlFailed {
-        #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+        /// URL that failed to crawl
         url: String,
-        #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+        /// The underlying crawl error
         error: CrawlError,
     },
 }

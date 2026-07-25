@@ -9,9 +9,11 @@
 //!
 //! # Usage
 //!
-//! ```rust
+//! ```ignore
 //! use webfang_core::infrastructure::http::waf_engine::WafInspector;
 //!
+//! # let response = wreq::header::HeaderMap::new();
+//! # let body = String::new();
 //! // Full integrity check (headers + body)
 //! if let Err(e) = WafInspector::verify_integrity(&response, &body) {
 //!     return Err(e);

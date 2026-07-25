@@ -34,28 +34,43 @@ pub const EXIT_CONFIG: u8 = 78;
 /// Categorized CLI errors with user-friendly suggestions.
 #[derive(Error, Debug)]
 pub enum CliError {
+    /// Configuration file error (invalid TOML, missing fields, etc.)
     #[error("Configuración: {msg}\n  Sugerencia: {suggestion}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
-    ConfigFile { msg: String, suggestion: String },
-
-    #[error("Red: {msg}\n  Sugerencia: {suggestion}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
-    NetworkError { msg: String, suggestion: String },
-
-    #[error("Éxito parcial: {success} exitosos, {failed} fallidos\n  Sugerencia: {suggestion}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
-    PartialSuccess {
-        #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
-        success: u32,
-        #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
-        failed: u32,
-        #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    ConfigFile {
+        /// Error message describing the issue
+        msg: String,
+        /// Suggested fix or workaround
         suggestion: String,
     },
 
+    /// Network-related error (DNS, connection, timeout)
+    #[error("Red: {msg}\n  Sugerencia: {suggestion}")]
+    NetworkError {
+        /// Error message describing the network failure
+        msg: String,
+        /// Suggested fix or workaround
+        suggestion: String,
+    },
+
+    /// Some URLs succeeded, others failed
+    #[error("Éxito parcial: {success} exitosos, {failed} fallidos\n  Sugerencia: {suggestion}")]
+    PartialSuccess {
+        /// Number of successfully scraped URLs
+        success: u32,
+        /// Number of failed URLs
+        failed: u32,
+        /// Suggested action
+        suggestion: String,
+    },
+
+    /// Pre-flight validation failed (e.g., unreachable seed URL)
     #[error("Verificación previa fallida: {msg}\n  Sugerencia: {suggestion}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
-    PreflightFailed { msg: String, suggestion: String },
+    PreflightFailed {
+        /// Error message describing the failure
+        msg: String,
+        /// Suggested fix or workaround
+        suggestion: String,
+    },
 }
 
 impl CliError {
@@ -122,9 +137,9 @@ pub enum CliExit {
     EmptyDiscovery(String),
     /// Exit 69 — some URLs succeeded, some failed
     PartialSuccess {
-        #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+        /// Number of successfully scraped URLs
         success: usize,
-        #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+        /// Number of failed URLs
         failed: usize,
     },
 }

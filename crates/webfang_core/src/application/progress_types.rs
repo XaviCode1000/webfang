@@ -104,32 +104,32 @@ impl ScrapeStatus {
 /// WAF/CAPTCHA blocks, network issues, or parsing failures.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ScrapeError {
+    /// Network-level failure (DNS, connection refused, etc.)
     #[error("Network error: {0}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     Network(String),
 
+    /// Non-2xx HTTP response with status code
     #[error("HTTP error {0}: {1}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     Http(u16, String),
 
+    /// Request blocked by WAF or CAPTCHA challenge
     #[error("WAF/CAPTCHA detected: {0}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     WafBlocked(String),
 
+    /// Failed to parse HTML or extract content
     #[error("Parse error: {0}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     Parse(String),
 
+    /// Request exceeded the timeout threshold
     #[error("Timeout: {0}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     Timeout(String),
 
+    /// TCP/TLS connection failure
     #[error("Connection error: {0}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     Connection(String),
 
+    /// Unclassified error
     #[error("Other error: {0}")]
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     Other(String),
 }
 
@@ -166,16 +166,16 @@ impl ScrapeError {
 /// Events drive state updates in the reactive UI system.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppEvent {
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
-    UserInput(String), // User typed input (e.g., keyboard command)
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
-    Progress(ScrapeProgress), // Scraping progress update
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
-    Tick, // Timer tick (periodic refresh)
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
-    Quit, // Request to exit application
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
-    None, // No event (used for polling)
+    /// User typed input (e.g., keyboard command)
+    UserInput(String),
+    /// Scraping progress update
+    Progress(ScrapeProgress),
+    /// Timer tick (periodic refresh)
+    Tick,
+    /// Request to exit application
+    Quit,
+    /// No event (used for polling)
+    None,
 }
 
 /// Type of error for classification

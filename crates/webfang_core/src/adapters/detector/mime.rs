@@ -41,11 +41,11 @@ fn get_mime_from_extension(ext: &str) -> Option<&'static str> {
 /// Supported asset types for download
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssetType {
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// Image file (JPEG, PNG, GIF, WebP, SVG, etc.)
     Image,
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// Document file (PDF, DOC, XLS, CSV, etc.)
     Document,
-    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    /// Unrecognized or non-asset file type
     Unknown,
 }
 
