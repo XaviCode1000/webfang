@@ -208,7 +208,9 @@ impl HttpClient {
                         HttpError::RateLimited(_) => 429,
                         HttpError::Timeout => 504,
                         HttpError::Connection(_) => 503,
-                        // ClientError(404), DomainBanned, and others: no penalty
+                        // No penalty: ClientError (healthy server), ServerError (transient,
+                        // not domain-level blocking), Request (client-side), DomainBanned (already handled).
+                        // ServerError 5xx are transient — banning would be too aggressive.
                         HttpError::ClientError(_)
                         | HttpError::ServerError(_)
                         | HttpError::Request(_)
@@ -266,11 +268,8 @@ impl HttpClient {
         let result = self.get_inner(url).await;
 
         // Report outcome to session pool
-        if let (Some(ref pool), Some(ref domain), Some(sid)) =
-            (&self.session_pool, &domain, session_id)
-        {
+        if let (Some(ref domain), Some(sid)) = (&domain, session_id) {
             self.report_outcome(domain, sid, &result);
-            let _ = pool; // suppress unused warning when otel-metrics is off
         }
 
         #[cfg(feature = "otel-metrics")]

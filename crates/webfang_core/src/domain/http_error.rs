@@ -56,7 +56,7 @@ impl std::fmt::Display for HttpError {
                 write!(f, "WAF/CAPTCHA challenge detected ({provider})")
             },
             HttpError::DomainBanned(domain) => {
-                write!(f, "domain banned: {domain} — no sessions available")
+                write!(f, "domain {domain} temporarily unavailable — all sessions in cooldown")
             },
         }
     }

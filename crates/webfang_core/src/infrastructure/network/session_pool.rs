@@ -217,7 +217,7 @@ impl SessionManager for DomainSessionPool {
                     },
                     SessionStatus::Banned => {
                         if let Some(next_retry) = state.next_retry_time {
-                            // Apply ±20% dynamic jitter to prevent thundering herd
+                            // Apply +0–20% dynamic jitter to prevent thundering herd recovery
                             let jitter_range = self.backoff_delay(state.consecutive_failures);
                             let jitter_ms = (jitter_range.as_millis() as f64 * 0.2) as u128;
                             let jitter_offset = Duration::from_millis(
