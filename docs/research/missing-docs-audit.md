@@ -137,3 +137,11 @@ Para reproducir el conteo deduplicado:
 
 El script deduplica automáticamente por `file:line` usando `sort + awk`.
 
+## Estado final (post #257)
+
+- Warnings missing_docs: **0** (199 dedup → 0)
+- Doctests: **86 passed**, 7 ignored (justificados por ítem), 0 failed
+- deny(missing_docs): **activo** en webfang_core y webfang_ai
+- `[package.metadata.docs.rs]`: configurado en ambos crates
+- CI: 3 jobs de calidad de docs (rustdoc, doctests, workspace check+test)
+

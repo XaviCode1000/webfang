@@ -3,7 +3,7 @@
 //! Provides AI-powered content cleaning using sentence-transformers models.
 //! Depends on `webfang_core` for domain types.
 
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 
 pub mod infrastructure_ai;
 

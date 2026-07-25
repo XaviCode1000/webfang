@@ -178,12 +178,31 @@ jobs:
             --ignore RUSTSEC-2026-0195
 
   # ============================================================================
+  # TIER 5: DOC QUALITY — After full tests pass
+  # Ensures documentation is complete and doctests compile.
+  # ============================================================================
+  doc-quality:
+    name: Documentation quality
+    needs: [test-full]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Rustdoc (links + missing_docs)
+        run: cargo doc -p webfang_core -p webfang_ai --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Doctests
+        run: cargo test --doc -p webfang_core -p webfang_ai --all-features
+
+  # ============================================================================
   # MCP SMOKE: After full tests pass
   # Separate job so MCP failure doesn't block test results.
   # ============================================================================
   mcp:
     name: MCP handshake
-    needs: [test-full]
+    needs: [doc-quality]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
