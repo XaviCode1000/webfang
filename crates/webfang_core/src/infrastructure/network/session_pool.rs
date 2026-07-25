@@ -229,8 +229,9 @@ impl SessionManager for DomainSessionPool {
                             // Apply ±20% dynamic jitter to prevent thundering herd
                             let jitter_range = self.backoff_delay(state.consecutive_failures);
                             let jitter_ms = (jitter_range.as_millis() as f64 * 0.2) as u128;
-                            let jitter_offset =
-                                Duration::from_millis((idx as u64 * 37) % (jitter_ms.max(1) as u64));
+                            let jitter_offset = Duration::from_millis(
+                                (idx as u64 * 37) % (jitter_ms.max(1) as u64),
+                            );
                             let effective_retry = next_retry + jitter_offset;
                             if now >= effective_retry {
                                 debug!(domain, session_id = idx, "acquired session after cooldown");

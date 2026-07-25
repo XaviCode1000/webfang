@@ -101,10 +101,12 @@ impl Container {
         // The application layer depends on `HttpClientPort`; the production
         // `HttpClient` impl is stored as the trait object. No concrete
         // `wreq::Client` is exposed — raw HTTP stays behind the port.
-        let session_pool: Arc<dyn crate::domain::session_port::SessionPort> =
-            Arc::new(crate::infrastructure::network::session_pool::DomainSessionPool::default_pool());
-        let http_client_inner =
-            HttpClient::builder(HttpClientConfig::default()).session_pool(session_pool).build()?;
+        let session_pool: Arc<dyn crate::domain::session_port::SessionPort> = Arc::new(
+            crate::infrastructure::network::session_pool::DomainSessionPool::default_pool(),
+        );
+        let http_client_inner = HttpClient::builder(HttpClientConfig::default())
+            .session_pool(session_pool)
+            .build()?;
         let http_client: Arc<dyn HttpClientPort> = Arc::new(http_client_inner);
 
         // 2. Rate limiter (optional — failure is non-fatal)

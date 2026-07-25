@@ -43,9 +43,9 @@ fn scraper_error_from_http(err: HttpError, url: &str) -> ScraperError {
             kind: crate::domain::error::WafDetectionKind::BodySignature,
             url: url.to_string(),
         },
-        HttpError::DomainBanned(domain) => CrawlError::SessionPool(format!(
-            "domain banned: {domain}"
-        )),
+        HttpError::DomainBanned(domain) => {
+            CrawlError::SessionPool(format!("domain banned: {domain}"))
+        },
     };
     ScraperError::from(crawl_err)
 }

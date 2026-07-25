@@ -120,7 +120,10 @@ pub async fn scrape_urls(
         std::sync::Arc::new(
             crate::infrastructure::network::session_pool::DomainSessionPool::default_pool(),
         );
-    let http_client = match HttpClient::builder(http_config).session_pool(session_pool).build() {
+    let http_client = match HttpClient::builder(http_config)
+        .session_pool(session_pool)
+        .build()
+    {
         Ok(c) => c,
         Err(e) => {
             warn!("Failed to create HTTP client: {}", e);

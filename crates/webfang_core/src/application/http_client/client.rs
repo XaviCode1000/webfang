@@ -209,7 +209,10 @@ impl HttpClient {
                         HttpError::Timeout => 504,
                         HttpError::Connection(_) => 503,
                         // ClientError(404), DomainBanned, and others: no penalty
-                        HttpError::ClientError(_) | HttpError::ServerError(_) | HttpError::Request(_) | HttpError::DomainBanned(_) => return,
+                        HttpError::ClientError(_)
+                        | HttpError::ServerError(_)
+                        | HttpError::Request(_)
+                        | HttpError::DomainBanned(_) => return,
                     };
                     pool.report_failure(domain, session, status);
                 },
@@ -242,8 +245,7 @@ impl HttpClient {
 
         // Session pool check (sync, fast) — BEFORE rate limiter to save tokens
         let domain = parsed_url.host_str().map(String::from);
-        let session_id = if let (Some(ref pool), Some(ref domain)) = (&self.session_pool, &domain)
-        {
+        let session_id = if let (Some(ref pool), Some(ref domain)) = (&self.session_pool, &domain) {
             match pool.acquire(domain) {
                 Some(id) => Some(id),
                 None => return Err(HttpError::DomainBanned(domain.clone())),
