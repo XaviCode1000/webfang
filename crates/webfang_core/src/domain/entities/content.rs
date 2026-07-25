@@ -61,6 +61,7 @@ pub struct Exported;
 /// Constructor for DocumentChunk<Draft> that bypasses From<ScrapedContent> (tests only)
 #[cfg(test)]
 impl DocumentChunk<Draft> {
+    /// Create a test DocumentChunk with the given fields.
     pub fn test_new(
         id: Uuid,
         url: impl Into<String>,

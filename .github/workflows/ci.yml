@@ -132,11 +132,10 @@ jobs:
 
   # ============================================================================
   # TIER 4: TEST FULL (4-6 minutes)
-  # All features enabled. Gate: must pass before MCP + release.
+  # All features enabled. Independent — runs in parallel with test-core.
   # ============================================================================
   test-full:
     name: Tests (all features)
-    needs: [test-core]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -176,6 +175,25 @@ jobs:
             --ignore RUSTSEC-2026-0002 \
             --ignore RUSTSEC-2026-0194 \
             --ignore RUSTSEC-2026-0195
+
+  # ============================================================================
+  # TIER 5: DOC QUALITY — Independent of tests
+  # Ensures documentation is complete and doctests compile.
+  # Runs in parallel with tests so doc issues surface immediately.
+  # ============================================================================
+  doc-quality:
+    name: Documentation quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Rustdoc (links + missing_docs)
+        run: cargo doc -p webfang_core -p webfang_ai --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Doctests
+        run: cargo test --doc -p webfang_core -p webfang_ai --all-features
 
   # ============================================================================
   # MCP SMOKE: After full tests pass

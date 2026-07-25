@@ -55,6 +55,9 @@ fn test_invalid_url_shows_error() {
 
 /// Test that --help contains scraper description
 /// Test that --help prints usage and exits with code 0.
+/// Only runs when the `ai` feature is enabled, because the snapshot includes
+/// AI-specific flags that are only present in the binary with `--features ai`.
+#[cfg(feature = "ai")]
 #[test]
 fn test_help_contains_scraper() {
     let output = cmd().arg("--help").output().expect("run binary");
