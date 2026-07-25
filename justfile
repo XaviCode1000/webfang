@@ -174,3 +174,41 @@ test-ci-quick:
     gitnexus analyze || echo "GitNexus ya estaba actualizado"
     cargo nextest run --profile ci --no-fail-fast
     @echo "✅ CI rápido pasado"
+
+# -- Documentación --
+
+# Genera documentación Markdown para NotebookLM (llms.txt compatible)
+# Requiere: rustdoc-md (mise install cargo:rustdoc-md)
+docs:
+    @echo "📚 Generando documentación para NotebookLM..."
+    @for crate in webfang_core webfang_ai webfang_tui webfang_mcp; do \
+        echo "  → $crate..."; \
+        RUSTC_BOOTSTRAP=1 RUSTDOCFLAGS="-Z unstable-options --output-format json" \
+            cargo doc -p $crate --no-deps 2>/dev/null; \
+        if [ -f "target/doc/$crate.json" ]; then \
+            rustdoc-md --path "target/doc/$crate.json" --output "target/doc/$crate.md" 2>&1; \
+        else \
+            echo "  ⚠️  $crate.json no generado"; \
+        fi; \
+    done
+    @# Archivo combinado para NotebookLM
+    @echo "# WebFang Documentation" > target/doc/wiki.md
+    @echo "" >> target/doc/wiki.md
+    @echo "Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> target/doc/wiki.md
+    @echo "" >> target/doc/wiki.md
+    @echo "---" >> target/doc/wiki.md
+    @echo "" >> target/doc/wiki.md
+    @for crate in webfang_core webfang_ai webfang_tui webfang_mcp; do \
+        if [ -f "target/doc/$crate.md" ]; then \
+            echo "# $crate" >> target/doc/wiki.md; \
+            echo "" >> target/doc/wiki.md; \
+            cat "target/doc/$crate.md" >> target/doc/wiki.md; \
+            echo "" >> target/doc/wiki.md; \
+            echo "---" >> target/doc/wiki.md; \
+            echo "" >> target/doc/wiki.md; \
+        fi; \
+    done
+    @echo "✅ Documentación generada:"
+    @ls -lh target/doc/*.md | grep -v index | awk '{print "  " $NF " (" $5 ")"}'
+    @echo ""
+    @echo "📋 Para NotebookLM: arrastrá target/doc/wiki.md"
