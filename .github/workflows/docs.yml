@@ -1,0 +1,52 @@
+# ============================================================================
+# DOCS: Deploy rustdoc to GitHub Pages
+# ============================================================================
+# Generates documentation for all crates and deploys to GitHub Pages.
+# Accessible at: https://xavicode1000.github.io/webfang/
+#
+# Triggers:
+#   - Push to main (auto-deploy)
+#   - Manual dispatch (re-deploy)
+# ============================================================================
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  docs:
+    name: Generate & Deploy Docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rust-docs
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Generate rustdoc
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: |
+          cargo doc --workspace --all-features --no-deps
+          touch target/doc/.nojekyll
+          cp target/doc/webfang_core/index.html target/doc/index.html
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./target/doc
+          publish_branch: gh-pages
+          force_orphan: true
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
+          commit_message: 'docs: deploy rustdoc to GitHub Pages'
