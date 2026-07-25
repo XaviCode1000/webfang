@@ -132,11 +132,10 @@ jobs:
 
   # ============================================================================
   # TIER 4: TEST FULL (4-6 minutes)
-  # All features enabled. Gate: must pass before MCP + release.
+  # All features enabled. Independent — runs in parallel with test-core.
   # ============================================================================
   test-full:
     name: Tests (all features)
-    needs: [test-core]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -178,12 +177,12 @@ jobs:
             --ignore RUSTSEC-2026-0195
 
   # ============================================================================
-  # TIER 5: DOC QUALITY — After full tests pass
+  # TIER 5: DOC QUALITY — Independent of tests
   # Ensures documentation is complete and doctests compile.
+  # Runs in parallel with tests so doc issues surface immediately.
   # ============================================================================
   doc-quality:
     name: Documentation quality
-    needs: [test-full]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -202,7 +201,7 @@ jobs:
   # ============================================================================
   mcp:
     name: MCP handshake
-    needs: [doc-quality]
+    needs: [test-full]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
