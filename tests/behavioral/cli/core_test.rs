@@ -194,8 +194,12 @@ fn invalid_url_exit_code_64() {
 
 // ---------------------------------------------------------------------------
 // --help output snapshot (deterministic, network-free)
+// Only runs when the `ai` feature is enabled, because the snapshot includes
+// AI-specific flags (--clean-ai, --threshold, --max-tokens, etc.) that are
+// only present in the binary when compiled with `--features ai`.
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "ai")]
 #[test]
 fn help_output_snapshot() {
     let output = cmd().arg("--help").output().expect("run binary");
