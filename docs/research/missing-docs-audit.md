@@ -2,9 +2,14 @@
 
 ## Resumen
 
-- webfang_core: 206 warnings
-- webfang_ai: 213 warnings
-- Total: 419 warnings
+> **Baseline histórico de auditoría cruda** (con doble-conteo por módulo):
+> - webfang_core: 206 warnings
+> - webfang_ai: 213 warnings
+> - Total: 419 warnings
+>
+> Este número incluye duplicados entre módulos. El conteo deduplicado real es 199.
+
+- warnings deduplicados: **199** → **0** (post #257/#258)
 
 ## Por módulo
 
@@ -137,11 +142,13 @@ Para reproducir el conteo deduplicado:
 
 El script deduplica automáticamente por `file:line` usando `sort + awk`.
 
-## Estado final (post #257)
+## Estado final (post #257 / #258)
 
 - Warnings missing_docs: **0** (199 dedup → 0)
 - Doctests: **86 passed**, 7 ignored (justificados por ítem), 0 failed
 - deny(missing_docs): **activo** en webfang_core y webfang_ai
 - `[package.metadata.docs.rs]`: configurado en ambos crates
 - CI: 3 jobs de calidad de docs (rustdoc, doctests, workspace check+test)
+- Miri: 3 tests FFI ignorados (BoringSSL), resto PASS
+- Snapshot tests: `#[cfg(feature = "ai")]` gating + `webfang_path()` con `--all-features`
 
