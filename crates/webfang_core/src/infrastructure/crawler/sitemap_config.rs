@@ -23,7 +23,7 @@ pub struct SitemapConfig {
     pub pagination_enabled: bool,
     /// Batch size for pagination (default: 10,000)
     pub batch_size: usize,
-    /// Supported compression types (default: [Gzip])
+    /// Supported compression types (default: [`crate::domain::CompressionType::Gzip`])
     pub compression_types: Vec<CompressionType>,
     /// Enable URL validation and filtering (default: false)
     pub url_validation_enabled: bool,
@@ -60,7 +60,7 @@ impl SitemapConfig {
 
 /// Builder for SitemapConfig
 ///
-/// Following api-builder-must-use: #[must_use] attribute
+/// Following api-builder-must-use: `#[must_use]` attribute
 #[derive(Default)]
 #[must_use = "builders do nothing unless you call build()"]
 pub struct SitemapConfigBuilder {

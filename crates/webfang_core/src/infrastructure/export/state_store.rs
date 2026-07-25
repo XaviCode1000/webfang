@@ -46,7 +46,7 @@ impl StateStore {
     /// # Examples
     ///
     /// ```
-    /// use webfang::infrastructure::export::StateStore;
+    /// use webfang_core::infrastructure::export::StateStore;
     ///
     /// let store = StateStore::new("example.com");
     /// ```
@@ -82,7 +82,7 @@ impl StateStore {
     /// # Examples
     ///
     /// ```
-    /// use webfang::infrastructure::export::StateStore;
+    /// use webfang_core::infrastructure::export::StateStore;
     ///
     /// let store = StateStore::new("example.com");
     /// let path = store.get_state_path();
@@ -104,7 +104,7 @@ impl StateStore {
     /// # Examples
     ///
     /// ```
-    /// use webfang::infrastructure::export::StateStore;
+    /// use webfang_core::infrastructure::export::StateStore;
     ///
     /// let store = StateStore::new("example.com");
     /// match store.load() {
@@ -174,8 +174,8 @@ impl StateStore {
     /// # Examples
     ///
     /// ```
-    /// use webfang::infrastructure::export::StateStore;
-    /// use webfang::domain::ExportState;
+    /// use webfang_core::infrastructure::export::StateStore;
+    /// use webfang_core::domain::ExportState;
     ///
     /// # fn main() -> anyhow::Result<()> {
     /// let store = StateStore::new("example.com");
@@ -246,8 +246,8 @@ impl StateStore {
     /// # Examples
     ///
     /// ```
-    /// use webfang::infrastructure::export::StateStore;
-    /// use webfang::domain::ExportState;
+    /// use webfang_core::infrastructure::export::StateStore;
+    /// use webfang_core::domain::ExportState;
     ///
     /// let store = StateStore::new("example.com");
     /// let mut state = ExportState::new("example.com");
@@ -272,8 +272,8 @@ impl StateStore {
     /// # Examples
     ///
     /// ```
-    /// use webfang::infrastructure::export::StateStore;
-    /// use webfang::domain::ExportState;
+    /// use webfang_core::infrastructure::export::StateStore;
+    /// use webfang_core::domain::ExportState;
     ///
     /// let store = StateStore::new("example.com");
     /// let mut state = ExportState::new("example.com");
@@ -296,7 +296,7 @@ impl StateStore {
     /// # Examples
     ///
     /// ```
-    /// use webfang::infrastructure::export::StateStore;
+    /// use webfang_core::infrastructure::export::StateStore;
     ///
     /// let store = StateStore::new("example.com");
     /// let state = store.load_or_default().unwrap();

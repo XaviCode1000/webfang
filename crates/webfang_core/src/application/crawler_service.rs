@@ -5,7 +5,7 @@
 //! - `crate::application::crawler::discovery` — URL discovery
 //! - `crate::application::crawler::collector` — ResultsCollector (mpsc)
 //!
-//! Migrate imports to `use webfang::application::crawler::*;`
+//! Migrate imports to `use webfang_core::application::crawler::*;`
 
 // --- Domain / infrastructure re-exports (unchanged) ---
 pub use super::url_filter::is_allowed;

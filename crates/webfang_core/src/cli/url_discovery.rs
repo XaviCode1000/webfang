@@ -61,6 +61,7 @@ pub async fn discover_urls(
 }
 
 /// Select URLs via TUI, quick-save, or headless mode.
+#[allow(dead_code)] // pub(crate) Phase 0 triage — internal API surface
 pub(crate) async fn select_urls(
     discovered_urls: &[Url],
     opts: &CrawlOptions,

@@ -108,11 +108,11 @@ impl CpuBridge {
     /// Typed dispatch: clean a [`DownloadedResource`] into a
     /// [`ProcessedResource`] on the Rayon pool.
     ///
-    /// PR5 wires real `lol_html` boilerplate removal (via [`clean_html_to_text`])
+    /// PR5 wires real `lol_html` boilerplate removal (via `clean_html_to_text`)
     /// that strips `script`/`style`/`nav`/`footer`/`aside` chrome and extracts
     /// visible text. The cleaner is infallible (`clean_html` falls back to the
     /// raw HTML on a `lol_html` parse error), so the work closure returns
-    /// `ProcessedResource` directly and reuses [`dispatch`]'s single `Result`
+    /// `ProcessedResource` directly and reuses [`dispatch`](Self::dispatch)'s single `Result`
     /// wrap. Embeddings stay `None` here — ONNX inference is async and runs in
     /// the orchestrator's async layer (Decision 5); the bridge is sync
     /// CPU-bound text extraction only.

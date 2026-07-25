@@ -174,7 +174,7 @@ pub enum ScraperError {
 /// ```
 /// # #[cfg(feature = "ai")]
 /// # fn example() {
-/// use webfang::SemanticError;
+/// use webfang_core::SemanticError;
 /// use std::io;
 ///
 /// let io_err = io::Error::new(io::ErrorKind::NotFound, "model file missing");

@@ -5,6 +5,7 @@
 use std::io::{self, IsTerminal};
 
 /// Trait for detecting terminal capabilities.
+#[allow(dead_code)] // pub(crate) Phase 0 triage — internal API surface
 pub(crate) trait TtyDetector: Send + Sync {
     /// Check if stdin is connected to a terminal.
     fn is_terminal(&self, stream: &dyn IsTty) -> bool;
@@ -17,6 +18,7 @@ pub(crate) trait TtyDetector: Send + Sync {
 }
 
 /// Abstraction for checking if a stream is a TTY.
+#[allow(dead_code)] // pub(crate) Phase 0 triage — internal API surface
 pub(crate) trait IsTty {
     fn is_tty(&self) -> bool;
 }

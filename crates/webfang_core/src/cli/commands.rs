@@ -12,6 +12,7 @@ use crate::cli::error::CliExit;
 use crate::infrastructure::obsidian::detect_vault;
 
 /// Common preflight checks for all commands
+#[allow(dead_code)] // pub(crate) Phase 0 triage — internal API surface
 pub struct PreflightContext {
     pub(crate) vault_path: Option<PathBuf>,
     pub(crate) config_path: PathBuf,

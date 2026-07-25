@@ -72,7 +72,7 @@ impl UtcClock for SystemUtcClock {
 ///
 /// ```rust
 /// use std::time::{Duration, Instant};
-/// use webfang::domain::clock::{Clock, MockClock};
+/// use webfang_core::domain::clock::{Clock, MockClock};
 ///
 /// let clock = MockClock::new(Instant::now());
 /// let t0 = clock.now();
@@ -129,7 +129,7 @@ impl Clock for Mutex<Instant> {
 ///
 /// ```rust
 /// use chrono::{Duration, Utc};
-/// use webfang::domain::clock::{UtcClock, MockUtcClock};
+/// use webfang_core::domain::clock::{UtcClock, MockUtcClock};
 ///
 /// let t0 = Utc::now();
 /// let mut clock = MockUtcClock::new(t0);

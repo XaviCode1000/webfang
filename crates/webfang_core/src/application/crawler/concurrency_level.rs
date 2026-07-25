@@ -1,6 +1,6 @@
 //! Autoscaled concurrency — dynamically adjusts task concurrency based on RAM usage.
 //!
-//! Uses `sysinfo` via [`ResourceGovernor`] to monitor system memory and
+//! Uses `sysinfo` via [`crate::infrastructure::downloader::resource_governor::ResourceGovernor`] to monitor system memory and
 //! adaptively scales the effective concurrency limit:
 //!
 //! | RAM Usage | Level      | Effect                          |

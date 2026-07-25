@@ -1,7 +1,7 @@
 //! Pipeline processing stages.
 //!
-//! Each stage implements [`PipelineStage`] and performs a single,
-//! well-defined transformation or validation on [`ScrapedItem`]s.
+//! Each stage implements [`crate::domain::pipeline_item::PipelineStage`] and performs a single,
+//! well-defined transformation or validation on [`crate::domain::pipeline_item::ScrapedItem`]s.
 
 mod clean;
 pub mod jsonl_output;

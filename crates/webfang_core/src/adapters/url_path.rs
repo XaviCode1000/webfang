@@ -34,6 +34,7 @@ const WINDOWS_RESERVED: &[&str] = &[
 pub struct Domain(String);
 
 impl Domain {
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     pub fn from_url(url: &str) -> Result<Self, DomainError> {
         let parsed = url::Url::parse(url).map_err(|e| DomainError::InvalidUrl(e.to_string()))?;
         let host = parsed
@@ -47,15 +48,17 @@ impl Domain {
         Ok(Self(clean.to_string()))
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, missing_docs)] // Phase 0 triage — internal API surface
     pub fn new_unchecked<S: Into<String>>(s: S) -> Self {
         Self(s.into())
     }
 
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     pub fn into_string(self) -> String {
         self.0
     }
@@ -76,6 +79,7 @@ pub struct UrlPath {
 }
 
 impl UrlPath {
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     pub fn from_url_path(path: &str) -> Self {
         let clean = path.split('?').next().unwrap_or(path);
         let clean = clean.split('#').next().unwrap_or(clean);
@@ -98,6 +102,7 @@ impl UrlPath {
         }
     }
 
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     pub fn from_url(url: &str) -> Result<Self, UrlPathError> {
         let parsed = url::Url::parse(url).map_err(|e| UrlPathError::InvalidUrl(e.to_string()))?;
         Ok(Self::from_url_path(parsed.path()))
@@ -187,7 +192,7 @@ impl UrlPath {
             .collect()
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, missing_docs)] // Phase 0 triage — internal API surface
     pub fn as_str(&self) -> &str {
         &self.raw
     }
@@ -199,9 +204,11 @@ impl std::fmt::Display for UrlPath {
     }
 }
 
+#[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum UrlPathError {
     #[error("Invalid URL: {0}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     InvalidUrl(String),
 }
 
@@ -213,6 +220,7 @@ pub struct OutputPath {
 }
 
 impl OutputPath {
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     pub fn from_url(url: &str) -> Result<Self, OutputPathError> {
         let domain = Domain::from_url(url)?;
         let parsed =
@@ -221,7 +229,7 @@ impl OutputPath {
         Ok(Self { domain, path })
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, missing_docs)] // Phase 0 triage — internal API surface
     pub fn new(domain: Domain, path: UrlPath) -> Self {
         Self { domain, path }
     }
@@ -251,18 +259,22 @@ impl OutputPath {
         format!("{folder}{filename}")
     }
 
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     pub fn to_pathbuf(&self) -> PathBuf {
         PathBuf::from(self.to_full_path())
     }
 
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     pub fn domain(&self) -> &Domain {
         &self.domain
     }
 
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     pub fn path(&self) -> &UrlPath {
         &self.path
     }
 
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     pub fn images_relative_path(&self) -> String {
         let dir = self.path.to_directory();
         if dir.is_empty() {
@@ -279,11 +291,14 @@ impl std::fmt::Display for OutputPath {
     }
 }
 
+#[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum OutputPathError {
     #[error("Invalid URL: {0}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     InvalidUrl(String),
     #[error("Domain error: {0}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     Domain(#[from] DomainError),
 }
 

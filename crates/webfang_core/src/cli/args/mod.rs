@@ -19,7 +19,7 @@ use clap::Parser;
 /// # Examples
 ///
 /// ```no_run
-/// use webfang::Args;
+/// use webfang_core::Args;
 /// use clap::Parser;
 ///
 /// let args = Args::parse_from([
@@ -121,7 +121,7 @@ impl Args {
 // ============================================================================
 
 impl From<Args> for crate::application::crawl_options::CrawlOptions {
-    /// Convert CLI arguments into structured [`CrawlOptions`].
+    /// Convert CLI arguments into structured [`crate::application::crawl_options::CrawlOptions`].
     ///
     /// This is an owned, lossless conversion — every field in `Args` maps
     /// to exactly one field in `CrawlOptions`. The `url` field is parsed

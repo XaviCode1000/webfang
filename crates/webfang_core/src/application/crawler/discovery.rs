@@ -31,7 +31,7 @@ use crate::infrastructure::observability::metrics_instruments::{
 ///
 /// This is the first step in the TUI workflow:
 /// 1. Discover all URLs from sitemap or DOM scraping
-/// 2. Return Vec<Url> for interactive selection
+/// 2. Return `Vec<Url>` for interactive selection
 /// 3. User selects which URLs to scrape
 ///
 /// Following **own-borrow-over-clone**: Accepts `&str` not `&String`.
@@ -50,7 +50,7 @@ use crate::infrastructure::observability::metrics_instruments::{
 /// # Examples
 ///
 /// ```no_run
-/// use webfang::{application::discover_urls_for_tui, domain::CrawlerConfig};
+/// use webfang_core::{application::discover_urls_for_tui, domain::CrawlerConfig};
 /// use url::Url;
 ///
 /// # #[tokio::main]
@@ -180,7 +180,7 @@ pub async fn discover_urls_for_tui(
 /// # Examples
 ///
 /// ```no_run
-/// use webfang::{application::scrape_urls_for_tui, ScraperConfig};
+/// use webfang_core::{application::scrape_urls_for_tui, ScraperConfig};
 /// use url::Url;
 ///
 /// # #[tokio::main]
@@ -486,8 +486,8 @@ pub async fn scrape_single_url_for_tui(
 /// # Examples
 ///
 /// ```no_run
-/// use webfang::application::crawl_with_sitemap;
-/// use webfang::domain::CrawlerConfig;
+/// use webfang_core::application::crawl_with_sitemap;
+/// use webfang_core::domain::CrawlerConfig;
 /// use url::Url;
 ///
 /// # #[tokio::main]

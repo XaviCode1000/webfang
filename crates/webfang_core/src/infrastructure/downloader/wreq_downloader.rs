@@ -35,7 +35,7 @@ const WREQ_MEMORY_COST: usize = 1_024 * 1_024; // ~1 MB
 /// # Examples
 ///
 /// ```no_run
-/// use webfang::infrastructure::downloader::{WreqDownloader, Downloader};
+/// use webfang_core::infrastructure::downloader::{WreqDownloader, Downloader};
 ///
 /// # tokio_test::block_on(async {
 /// let downloader = WreqDownloader::new(30, 10);

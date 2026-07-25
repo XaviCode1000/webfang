@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use webfang::infrastructure::crawler::SitemapParser;
+//! use webfang_core::infrastructure::crawler::SitemapParser;
 //!
 //! # #[tokio::main]
 //! # async fn main() -> anyhow::Result<()> {
@@ -46,39 +46,51 @@ use url::Url;
 #[derive(Debug, Error)]
 pub enum SitemapError {
     #[error("invalid URL: {0}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     InvalidUrl(#[from] url::ParseError),
 
     #[error("http request failed: {0}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     HttpError(String),
 
     #[error("XML parsing failed: {0}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     XmlError(#[from] quick_xml::Error),
 
     #[error("IO error: {0}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     IoError(#[from] std::io::Error),
 
     #[error("no URLs found in sitemap")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     NoUrlsFound,
 
     #[error("invalid sitemap structure")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     InvalidStructure,
 
     #[error("maximum recursion depth exceeded")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     MaxDepthExceeded,
 
     #[error("invalid scheme: {0} (only http/https allowed)")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     InvalidScheme(String),
 
     #[error("response too large: exceeds {0} bytes")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     ResponseTooLarge(usize),
 
     #[error("decompressed data too large: exceeds {0} bytes")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     DecompressedTooLarge(usize),
 
     #[error("no sitemap found at {0}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     SitemapNotFound(String),
 
     #[error("invalid content type: expected XML, got {0}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     InvalidContentType(String),
 }
 
@@ -107,7 +119,7 @@ pub type Result<T> = std::result::Result<T, SitemapError>;
 ///
 /// ```
 /// use url::Url;
-/// use webfang::infrastructure::crawler::sitemap_parser::resolve_url;
+/// use webfang_core::infrastructure::crawler::sitemap_parser::resolve_url;
 ///
 /// let base = Url::parse("https://example.com/sitemap.xml").unwrap();
 /// let resolved = resolve_url(&base, "/page.html").unwrap();

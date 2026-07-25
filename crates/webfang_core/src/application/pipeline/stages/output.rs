@@ -1,7 +1,7 @@
 //! Output stage trait for pipeline sinks.
 //!
-//! Output stages write [`ScrapedItem`]s to arbitrary backends (files, databases,
-//! network). They are called AFTER [`PipelineExecutor`] completes, not as part
+//! Output stages write [`crate::domain::pipeline_item::ScrapedItem`]s to arbitrary backends (files, databases,
+//! network). They are called AFTER [`crate::application::pipeline::executor::PipelineExecutor`] completes, not as part
 //! of the stage chain.
 
 use std::future::Future;

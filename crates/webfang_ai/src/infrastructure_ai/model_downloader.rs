@@ -68,6 +68,7 @@ impl Default for ModelDownloader {
     }
 }
 
+#[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
 impl ModelDownloader {
     #[must_use]
     pub fn new() -> Self {

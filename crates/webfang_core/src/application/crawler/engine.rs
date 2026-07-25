@@ -835,7 +835,7 @@ pub struct EngineOptions {
 /// # Examples
 ///
 /// ```no_run
-/// use webfang::{domain::CrawlerConfig, application::crawl_site};
+/// use webfang_core::{domain::CrawlerConfig, application::crawl_site};
 /// use url::Url;
 ///
 /// # #[tokio::main]
@@ -903,8 +903,8 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
 /// # Examples
 ///
 /// ```no_run
-/// use webfang::{domain::CrawlerConfig, application::crawl_site_with_options};
-/// use webfang::application::crawler::engine::EngineOptions;
+/// use webfang_core::{domain::CrawlerConfig, application::crawl_site_with_options};
+/// use webfang_core::application::crawler::engine::EngineOptions;
 /// use std::time::Duration;
 /// use url::Url;
 ///

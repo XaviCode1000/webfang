@@ -44,7 +44,7 @@ pub mod private {
 /// # Examples
 ///
 /// ```no_run
-/// # use webfang::domain::semantic_cleaner::SemanticCleaner;
+/// # use webfang_core::domain::semantic_cleaner::SemanticCleaner;
 /// # async fn example(cleaner: &dyn SemanticCleaner) -> Result<(), Box<dyn std::error::Error>> {
 /// let html = "<html><body><p>Hello World</p></body></html>";
 /// let chunks = cleaner.clean(html).await?;
@@ -96,7 +96,7 @@ pub trait SemanticCleaner: private::Sealed + Send + Sync {
     /// # Examples
     ///
     /// ```no_run
-    /// # use webfang::domain::semantic_cleaner::SemanticCleaner;
+    /// # use webfang_core::domain::semantic_cleaner::SemanticCleaner;
     /// # async fn example(cleaner: &dyn SemanticCleaner) -> Result<(), Box<dyn std::error::Error>> {
     /// let html = "<article><h1>Title</h1><p>Content here...</p></article>";
     /// let chunks = cleaner.clean(html).await?;
@@ -137,7 +137,7 @@ pub trait SemanticCleaner: private::Sealed + Send + Sync {
     /// # Examples
     ///
     /// ```no_run
-    /// # use webfang::domain::semantic_cleaner::SemanticCleaner;
+    /// # use webfang_core::domain::semantic_cleaner::SemanticCleaner;
     /// fn example(cleaner: &dyn SemanticCleaner) {
     ///     let max_tokens = cleaner.max_tokens();
     ///     println!("Model accepts up to {} tokens per chunk", max_tokens);
@@ -160,7 +160,7 @@ pub trait SemanticCleaner: private::Sealed + Send + Sync {
     /// # Examples
     ///
     /// ```no_run
-    /// # use webfang::domain::semantic_cleaner::SemanticCleaner;
+    /// # use webfang_core::domain::semantic_cleaner::SemanticCleaner;
     /// fn example(cleaner: &dyn SemanticCleaner) {
     ///     if cleaner.is_ready() {
     ///         println!("Model ready for inference");

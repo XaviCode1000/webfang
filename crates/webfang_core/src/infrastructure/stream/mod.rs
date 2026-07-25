@@ -26,7 +26,7 @@
 //!   closed pipe) is returned as a fatal [`ScraperError::Io`], which propagates
 //!   out of `ElasticIngestion::run` and aborts the crawl.
 //! - **Concurrency:** writes are serialized through a `Mutex` so the JSONL stream
-//!   stays line-oriented even when [`ElasticIngestion`] processes URLs concurrently.
+//!   stays line-oriented even when [`crate::application::elastic_ingestion::ElasticIngestion`] processes URLs concurrently.
 
 use std::collections::HashMap;
 use std::future::Future;

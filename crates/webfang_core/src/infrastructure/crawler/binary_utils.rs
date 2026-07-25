@@ -24,7 +24,7 @@ use url::Url;
 /// # Examples
 ///
 /// ```
-/// use webfang::infrastructure::crawler::binary_utils::percent_decode;
+/// use webfang_core::infrastructure::crawler::binary_utils::percent_decode;
 ///
 /// assert_eq!(percent_decode("file%20name.pdf"), "file name.pdf");
 /// assert_eq!(percent_decode("no-encoding"), "no-encoding");
@@ -67,7 +67,7 @@ pub fn percent_decode(input: &str) -> String {
 /// # Examples
 ///
 /// ```
-/// use webfang::infrastructure::crawler::binary_utils::derive_filename_from_response;
+/// use webfang_core::infrastructure::crawler::binary_utils::derive_filename_from_response;
 /// use url::Url;
 ///
 /// let headers = wreq::header::HeaderMap::new();
@@ -146,7 +146,7 @@ pub fn derive_filename_from_response(
 /// # Examples
 ///
 /// ```
-/// use webfang::infrastructure::crawler::binary_utils::parse_content_disposition;
+/// use webfang_core::infrastructure::crawler::binary_utils::parse_content_disposition;
 ///
 /// assert_eq!(
 ///     parse_content_disposition("attachment; filename=\"report.pdf\""),

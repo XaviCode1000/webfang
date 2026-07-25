@@ -12,6 +12,7 @@ use tokio::io::{AsyncReadExt, BufReader};
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CompressionError {
     #[error("unsupported compression format: {0}")]
+    #[allow(dead_code)] // pub(crate) Phase 0 triage — internal API surface
     UnsupportedFormat(String),
     #[error("decompression failed: {0}")]
     DecompressionFailed(String),

@@ -38,7 +38,7 @@ static THEME_SET: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
 /// # Examples
 ///
 /// ```
-/// use webfang::infrastructure::converter::syntax_highlight::highlight_code_blocks;
+/// use webfang_core::infrastructure::converter::syntax_highlight::highlight_code_blocks;
 ///
 /// let md = "Text\n```rust\nfn main() {}\n```";
 /// let highlighted = highlight_code_blocks(md);

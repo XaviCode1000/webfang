@@ -105,24 +105,31 @@ impl ScrapeStatus {
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ScrapeError {
     #[error("Network error: {0}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     Network(String),
 
     #[error("HTTP error {0}: {1}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     Http(u16, String),
 
     #[error("WAF/CAPTCHA detected: {0}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     WafBlocked(String),
 
     #[error("Parse error: {0}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     Parse(String),
 
     #[error("Timeout: {0}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     Timeout(String),
 
     #[error("Connection error: {0}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     Connection(String),
 
     #[error("Other error: {0}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     Other(String),
 }
 
@@ -159,11 +166,16 @@ impl ScrapeError {
 /// Events drive state updates in the reactive UI system.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppEvent {
-    UserInput(String),        // User typed input (e.g., keyboard command)
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    UserInput(String), // User typed input (e.g., keyboard command)
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     Progress(ScrapeProgress), // Scraping progress update
-    Tick,                     // Timer tick (periodic refresh)
-    Quit,                     // Request to exit application
-    None,                     // No event (used for polling)
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    Tick, // Timer tick (periodic refresh)
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    Quit, // Request to exit application
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+    None, // No event (used for polling)
 }
 
 /// Type of error for classification

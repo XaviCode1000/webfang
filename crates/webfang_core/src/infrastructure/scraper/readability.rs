@@ -37,7 +37,7 @@ pub struct Article {
 /// # Examples
 ///
 /// ```no_run
-/// use webfang::infrastructure::scraper::readability::parse;
+/// use webfang_core::infrastructure::scraper::readability::parse;
 ///
 /// let html = "<html><body><article><h1>Title</h1><p>Content</p></article></body></html>";
 /// let article = parse(html, Some("https://example.com")).unwrap();

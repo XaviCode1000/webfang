@@ -14,7 +14,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! use webfang::infrastructure::observability::otel::{OtelConfig, init_otel_tracing};
+//! use webfang_core::infrastructure::observability::otel::{OtelConfig, init_otel_tracing};
 //!
 //! let config = OtelConfig::from_env();
 //! let (guard, layer) = init_otel_tracing(config)?;

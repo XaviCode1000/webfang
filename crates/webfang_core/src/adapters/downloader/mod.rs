@@ -34,8 +34,11 @@ use wreq_util::Profile;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AssetNamingStrategy {
     #[default]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     Hash,
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     Slug,
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     ContentDisposition,
 }
 

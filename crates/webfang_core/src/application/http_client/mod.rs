@@ -23,7 +23,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use webfang::application::http_client::{HttpClient, HttpClientConfig};
+//! use webfang_core::application::http_client::{HttpClient, HttpClientConfig};
 //! use wreq_util::Profile;
 //!
 //! let config = HttpClientConfig {

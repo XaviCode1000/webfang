@@ -35,19 +35,26 @@ pub const EXIT_CONFIG: u8 = 78;
 #[derive(Error, Debug)]
 pub enum CliError {
     #[error("Configuración: {msg}\n  Sugerencia: {suggestion}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     ConfigFile { msg: String, suggestion: String },
 
     #[error("Red: {msg}\n  Sugerencia: {suggestion}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     NetworkError { msg: String, suggestion: String },
 
     #[error("Éxito parcial: {success} exitosos, {failed} fallidos\n  Sugerencia: {suggestion}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     PartialSuccess {
+        #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
         success: u32,
+        #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
         failed: u32,
+        #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
         suggestion: String,
     },
 
     #[error("Verificación previa fallida: {msg}\n  Sugerencia: {suggestion}")]
+    #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
     PreflightFailed { msg: String, suggestion: String },
 }
 
@@ -114,7 +121,12 @@ pub enum CliExit {
     /// Exit 2 — no URLs discovered from sitemaps (technical success, null result)
     EmptyDiscovery(String),
     /// Exit 69 — some URLs succeeded, some failed
-    PartialSuccess { success: usize, failed: usize },
+    PartialSuccess {
+        #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+        success: usize,
+        #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+        failed: usize,
+    },
 }
 
 impl std::process::Termination for CliExit {

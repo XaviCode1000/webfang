@@ -12,6 +12,7 @@ pub(crate) enum RetryError {
     #[error("max retries exceeded: {0}")]
     MaxRetriesExceeded(String),
     #[error("operation timeout")]
+    #[allow(dead_code)] // pub(crate) Phase 0 triage — internal API surface
     Timeout,
 }
 

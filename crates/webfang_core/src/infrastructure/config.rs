@@ -16,7 +16,7 @@ use wreq_util::Profile;
 /// # Examples
 ///
 /// ```
-/// use webfang::OutputFormat;
+/// use webfang_core::OutputFormat;
 ///
 /// let format = OutputFormat::Markdown;
 /// assert_eq!(format, OutputFormat::Markdown);
@@ -41,7 +41,7 @@ pub enum OutputFormat {
 /// # Examples
 ///
 /// ```
-/// use webfang::ScraperConfig;
+/// use webfang_core::ScraperConfig;
 ///
 /// // Default configuration
 /// let config = ScraperConfig::default();
@@ -124,7 +124,7 @@ impl ScraperConfig {
     /// # Examples
     ///
     /// ```
-    /// use webfang::ScraperConfig;
+    /// use webfang_core::ScraperConfig;
     ///
     /// let config = ScraperConfig::new();
     /// assert!(!config.download_images);
@@ -258,7 +258,7 @@ impl ScraperConfig {
 /// # Examples
 ///
 /// ```
-/// use webfang::ConcurrencyConfig;
+/// use webfang_core::ConcurrencyConfig;
 ///
 /// // Auto-detect (default)
 /// let config = ConcurrencyConfig::default();
@@ -446,7 +446,7 @@ impl clap::builder::TypedValueParser for ConcurrencyValueParser {
 /// # Examples
 ///
 /// ```
-/// use webfang::AutotuningConfig;
+/// use webfang_core::AutotuningConfig;
 ///
 /// // Explicit overrides win.
 /// let cfg = AutotuningConfig::resolve(Some(4), Some(8 * 1024 * 1024 * 1024));
@@ -478,7 +478,7 @@ impl AutotuningConfig {
         }
     }
 
-    /// Build a snapshot from a resolved [`ElasticConfig`].
+    /// Build a snapshot from a resolved [`crate::infrastructure::autotuning::ElasticConfig`].
     #[must_use]
     pub fn from_elastic(elastic: &crate::infrastructure::autotuning::ElasticConfig) -> Self {
         Self {

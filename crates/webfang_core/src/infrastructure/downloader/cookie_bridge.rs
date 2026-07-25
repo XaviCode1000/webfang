@@ -109,6 +109,7 @@ impl CookieBridge {
 }
 
 /// CDP-compatible cookie representation for `Network.setCookies`.
+#[allow(dead_code)] // pub(crate) Phase 0 triage — internal API surface
 #[derive(Debug, Clone)]
 pub struct CdpCookie {
     pub(crate) name: String,

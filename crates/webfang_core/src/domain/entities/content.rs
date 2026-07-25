@@ -44,7 +44,7 @@ pub enum ValidationError {
 // ============================================================================
 
 /// Private state marker: DocumentChunk is newly created, not validated
-/// No public constructor - only created via From<ScrapedContent>
+/// No public constructor - only created via `From<ScrapedContent>`
 #[derive(Clone, Copy)]
 pub struct Draft;
 
@@ -81,7 +81,7 @@ impl DocumentChunk<Draft> {
     }
 }
 
-/// Public constructor for DocumentChunk<Draft> in production code
+/// Public constructor for `DocumentChunk<Draft>` in production code
 /// Required for modules that create DocumentChunk directly (e.g., chunker, relevance_scorer)
 impl DocumentChunk<Draft> {
     /// Create a new [`DocumentChunk<Draft>`](DocumentChunk) from individual fields.
@@ -184,11 +184,11 @@ impl std::fmt::Display for ScrapedContent {
 /// Uses typestate pattern: must call `.validate()` before export.
 ///
 /// ```compile_fail
-/// use webfang::domain::DocumentChunkUnvalidated;
-/// use webfang::domain::Exporter;
-/// use webfang::domain::exporter::ExporterConfig;
-/// use webfang::infrastructure::export::FileExporter;
-/// use webfang::ExportFormat;
+/// use webfang_core::domain::DocumentChunkUnvalidated;
+/// use webfang_core::domain::Exporter;
+/// use webfang_core::domain::exporter::ExporterConfig;
+/// use webfang_core::infrastructure::export::FileExporter;
+/// use webfang_core::ExportFormat;
 /// use uuid::Uuid;
 /// use std::path::PathBuf;
 ///
@@ -235,7 +235,7 @@ pub struct DocumentChunk<S = Draft> {
 }
 
 /// Alias for backward compatibility - DocumentChunk in Draft state
-/// Use DocumentChunk<Draft> for new code, DocumentChunk for existing code
+/// Use `DocumentChunk<Draft>` for new code, DocumentChunk for existing code
 pub type DocumentChunkUnvalidated = DocumentChunk<Draft>;
 /// Type alias for a [`DocumentChunk`] that has passed validation.
 pub type DocumentChunkValidated = DocumentChunk<Validated>;

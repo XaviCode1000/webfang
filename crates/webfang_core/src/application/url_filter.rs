@@ -37,7 +37,7 @@ use crate::domain::CrawlerConfig;
 /// # Examples
 ///
 /// ```
-/// use webfang::application::url_filter::matches_pattern;
+/// use webfang_core::application::url_filter::matches_pattern;
 ///
 /// assert!(matches_pattern("https://example.com/page", "*"));
 /// assert!(matches_pattern("https://example.com/pricing", "/pricing"));
@@ -68,7 +68,7 @@ pub fn matches_pattern(url: &str, pattern: &str) -> bool {
 /// # Examples
 ///
 /// ```
-/// use webfang::application::url_filter::is_excluded;
+/// use webfang_core::application::url_filter::is_excluded;
 ///
 /// // To exclude both root domain AND subdomains, need both patterns
 /// let patterns = vec![
@@ -103,7 +103,7 @@ pub fn is_excluded(url: &str, patterns: &[String]) -> bool {
 /// # Examples
 ///
 /// ```
-/// use webfang::{application::url_filter::is_allowed, domain::CrawlerConfig};
+/// use webfang_core::{application::url_filter::is_allowed, domain::CrawlerConfig};
 /// use url::Url;
 ///
 /// let seed = Url::parse("https://example.com").unwrap();
@@ -155,7 +155,7 @@ pub fn is_allowed(url: &str, config: &CrawlerConfig) -> bool {
 /// # Examples
 ///
 /// ```
-/// use webfang::application::url_filter::extract_domain;
+/// use webfang_core::application::url_filter::extract_domain;
 ///
 /// assert_eq!(extract_domain("https://example.com/page"), Some("example.com".to_string()));
 /// assert_eq!(extract_domain("https://blog.example.com/post"), Some("blog.example.com".to_string()));
@@ -186,7 +186,7 @@ pub fn extract_domain(url: &str) -> Option<String> {
 /// # Examples
 ///
 /// ```
-/// use webfang::application::url_filter::is_internal_link;
+/// use webfang_core::application::url_filter::is_internal_link;
 ///
 /// assert!(is_internal_link("https://example.com/page", "example.com"));
 /// assert!(is_internal_link("https://www.example.com/page", "example.com"));

@@ -64,7 +64,7 @@ impl ExportFormat {
 
 /// Metadata for the export state file
 ///
-/// Stored at ~/.cache/webfang/state/<domain>.json
+/// Stored at `~/.cache/webfang/state/<domain>.json`
 /// Tracks which URLs have been processed for a given domain
 /// to support incremental exports and resume capability.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

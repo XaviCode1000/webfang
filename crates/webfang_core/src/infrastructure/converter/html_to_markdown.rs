@@ -17,7 +17,7 @@ use tracing::warn;
 /// # Examples
 ///
 /// ```
-/// use webfang::infrastructure::converter::html_to_markdown::convert_to_markdown;
+/// use webfang_core::infrastructure::converter::html_to_markdown::convert_to_markdown;
 ///
 /// let html = "<h1>Title</h1><p>Content</p>";
 /// let md = convert_to_markdown(html);

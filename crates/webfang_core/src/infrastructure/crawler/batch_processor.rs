@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use url::Url;
 
 /// Errors that can occur during batch processing
+#[allow(dead_code)] // pub(crate) Phase 0 triage — internal API surface
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum BatchError {
     #[error("batch processing failed: {0}")]
@@ -16,6 +17,7 @@ pub(crate) enum BatchError {
 }
 
 /// Result type for batch operations
+#[allow(dead_code)] // pub(crate) Phase 0 triage — internal API surface
 pub(crate) type Result<T> = std::result::Result<T, BatchError>;
 
 /// Handles batch processing with crawl budget optimization

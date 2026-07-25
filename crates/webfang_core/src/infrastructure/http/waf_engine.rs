@@ -10,7 +10,7 @@
 //! # Usage
 //!
 //! ```rust
-//! use webfang::infrastructure::http::waf_engine::WafInspector;
+//! use webfang_core::infrastructure::http::waf_engine::WafInspector;
 //!
 //! // Full integrity check (headers + body)
 //! if let Err(e) = WafInspector::verify_integrity(&response, &body) {

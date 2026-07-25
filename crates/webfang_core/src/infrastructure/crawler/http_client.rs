@@ -32,7 +32,7 @@ use crate::domain::{CrawlError, CrawlerConfig};
 /// # Examples
 ///
 /// ```
-/// use webfang::infrastructure::crawler::create_rate_limited_client;
+/// use webfang_core::infrastructure::crawler::create_rate_limited_client;
 ///
 /// let client = create_rate_limited_client(500).unwrap();
 /// ```

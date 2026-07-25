@@ -191,6 +191,7 @@ impl DistributedRateLimiter {
 }
 
 /// Builder for rate limiter with automatic fallback
+#[allow(dead_code)] // pub(crate) Phase 0 triage — internal API surface
 #[derive(Clone)]
 pub(crate) enum RateLimiter {
     /// In-memory rate limiter (default, always available)
@@ -205,6 +206,7 @@ pub(crate) enum RateLimiter {
     },
 }
 
+#[allow(dead_code)] // pub(crate) Phase 0 triage — internal API surface
 impl RateLimiter {
     /// Create rate limiter based on configuration
     /// Uses automatic fallback on Redis failure

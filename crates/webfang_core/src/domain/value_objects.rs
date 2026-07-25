@@ -22,7 +22,7 @@ use uuid::Uuid;
 /// # Examples
 ///
 /// ```
-/// use webfang::domain::value_objects::CorrelationId;
+/// use webfang_core::domain::value_objects::CorrelationId;
 ///
 /// let correlation_id = CorrelationId::new();
 /// let traceparent = correlation_id.to_traceparent();
@@ -42,7 +42,7 @@ impl CorrelationId {
     /// # Examples
     ///
     /// ```
-    /// use webfang::domain::value_objects::CorrelationId;
+    /// use webfang_core::domain::value_objects::CorrelationId;
     ///
     /// let corr = CorrelationId::new();
     /// let traceparent = corr.to_traceparent();
@@ -153,7 +153,7 @@ impl std::fmt::Display for CorrelationId {
 /// # Examples
 ///
 /// ```
-/// use webfang::domain::ValidUrl;
+/// use webfang_core::domain::ValidUrl;
 ///
 /// // Create from parsed URL
 /// let url = url::Url::parse("https://example.com").unwrap();
@@ -182,7 +182,7 @@ impl ValidUrl {
     /// # Examples
     ///
     /// ```
-    /// use webfang::domain::ValidUrl;
+    /// use webfang_core::domain::ValidUrl;
     ///
     /// let url = ValidUrl::parse("https://example.com").unwrap();
     /// assert_eq!(url.host_str(), Some("example.com"));

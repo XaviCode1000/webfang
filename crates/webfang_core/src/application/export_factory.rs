@@ -192,12 +192,12 @@ pub fn process_results(
 ///
 /// # Returns
 ///
-/// Domain string (e.g., "example.com" from "https://www.example.com/docs/api/")
+/// Domain string (e.g., "example.com" from `<https://www.example.com/docs/api/>`)
 ///
 /// # Examples
 ///
 /// ```
-/// use webfang::export_factory::domain_from_url;
+/// use webfang_core::export_factory::domain_from_url;
 ///
 /// let domain = domain_from_url("https://www.example.com/docs/api/");
 /// assert_eq!(domain, "www.example.com");

@@ -6,8 +6,8 @@
 //! # Usage
 //!
 //! ```no_run
-//! use webfang::application::batch::{BatchJob, BatchProcessor};
-//! use webfang::domain::CrawlerConfig;
+//! use webfang_core::application::batch::{BatchJob, BatchProcessor};
+//! use webfang_core::domain::CrawlerConfig;
 //! use url::Url;
 //!
 //! # #[tokio::main]
@@ -231,7 +231,12 @@ pub enum BatchError {
 
     /// Crawl operation failed
     #[error("crawl failed for {url}: {error}")]
-    CrawlFailed { url: String, error: CrawlError },
+    CrawlFailed {
+        #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+        url: String,
+        #[allow(missing_docs)] // Phase 0: documented in phases 1-5 per #257
+        error: CrawlError,
+    },
 }
 
 #[cfg(test)]

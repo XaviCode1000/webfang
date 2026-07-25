@@ -31,7 +31,7 @@ use crate::Result;
 /// # Examples
 ///
 /// ```
-/// use webfang::validate_and_parse_url;
+/// use webfang_core::validate_and_parse_url;
 ///
 /// // Valid URLs
 /// let url = validate_and_parse_url("https://example.com").unwrap();
@@ -51,7 +51,7 @@ use crate::Result;
 /// Leading and trailing whitespace is automatically trimmed:
 ///
 /// ```
-/// use webfang::validate_and_parse_url;
+/// use webfang_core::validate_and_parse_url;
 ///
 /// let url = validate_and_parse_url("  https://example.com  ").unwrap();
 /// assert_eq!(url.host_str(), Some("example.com"));

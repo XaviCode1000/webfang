@@ -31,7 +31,7 @@ use dashmap::DashSet;
 /// # Example
 ///
 /// ```rust
-/// use webfang::application::deduplicator::UrlDeduplicator;
+/// use webfang_core::application::deduplicator::UrlDeduplicator;
 ///
 /// let dedup = UrlDeduplicator::new();
 /// assert!(dedup.try_insert("https://example.com"));   // newly inserted

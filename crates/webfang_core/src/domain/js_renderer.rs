@@ -64,7 +64,7 @@ pub enum JsRenderError {
 /// # Example (future implementation)
 ///
 /// ```ignore
-/// use webfang::domain::JsRenderer;
+/// use webfang_core::domain::JsRenderer;
 /// use url::Url;
 ///
 /// // Future: HeadlessChromeRenderer implements JsRenderer

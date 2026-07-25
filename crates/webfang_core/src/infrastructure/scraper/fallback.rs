@@ -11,7 +11,7 @@
 /// # Examples
 ///
 /// ```
-/// use webfang::infrastructure::scraper::fallback::extract_text;
+/// use webfang_core::infrastructure::scraper::fallback::extract_text;
 ///
 /// let html = "<html><body><p>Hello World</p></body></html>";
 /// let text = extract_text(html);

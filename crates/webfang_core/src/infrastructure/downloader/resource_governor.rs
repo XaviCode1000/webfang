@@ -89,7 +89,7 @@ impl ResourceGovernor {
     /// Acquire an owned semaphore permit, returning an error when resources
     /// are exhausted.
     ///
-    /// Returns an [`OwnedSemaphorePermit`] (`'static`) so callers can hold
+    /// Returns a [`tokio::sync::OwnedSemaphorePermit`] (`'static`) so callers can hold
     /// it across async boundaries without tying it to the governor's lifetime.
     pub async fn acquire(&self) -> Result<tokio::sync::OwnedSemaphorePermit, DownloadError> {
         let arc = Arc::clone(&self.semaphore);

@@ -79,7 +79,7 @@ const WAF_MARKERS: &[&str] = &[
 /// # Examples
 ///
 /// ```
-/// use webfang::infrastructure::downloader::spa_detector::{detect_spa, SpaSignal};
+/// use webfang_core::infrastructure::downloader::spa_detector::{detect_spa, SpaSignal};
 ///
 /// let html = "<html><body><article><h1>Hello</h1></article></body></html>";
 /// assert_eq!(detect_spa(html), SpaSignal::StaticContent);

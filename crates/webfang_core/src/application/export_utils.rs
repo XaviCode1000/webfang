@@ -20,7 +20,7 @@ use tracing::info;
 /// # Examples
 ///
 /// ```
-/// use webfang::export_utils::domain_from_url;
+/// use webfang_core::export_utils::domain_from_url;
 ///
 /// assert_eq!(domain_from_url("https://example.com"), "example.com");
 /// assert_eq!(domain_from_url("https://sub.example.com/page"), "example.com");
@@ -49,7 +49,7 @@ pub fn domain_from_url(url: &str) -> String {
 ///
 /// ```
 /// use std::path::PathBuf;
-/// use webfang::export_utils::create_state_store;
+/// use webfang_core::export_utils::create_state_store;
 ///
 /// let store = create_state_store(
 ///     PathBuf::from("/custom/state/dir"),

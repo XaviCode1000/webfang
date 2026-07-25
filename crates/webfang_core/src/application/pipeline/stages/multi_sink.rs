@@ -21,6 +21,7 @@ pub struct MultiSinkOutput {
 
 impl MultiSinkOutput {
     /// Create a multi-sink from a list of output stages.
+    #[allow(dead_code)] // pub(crate) Phase 0 triage — internal API surface
     pub(crate) fn new(sinks: Vec<Box<dyn OutputStage>>) -> Self {
         Self { sinks }
     }

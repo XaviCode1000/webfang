@@ -52,7 +52,7 @@ pub fn new_robots_cache() -> RobotsCache {
 /// # Examples
 ///
 /// ```
-/// use webfang::infrastructure::crawler::robots_utils::parse_crawl_delay;
+/// use webfang_core::infrastructure::crawler::robots_utils::parse_crawl_delay;
 ///
 /// assert_eq!(parse_crawl_delay("User-agent: *\nCrawl-delay: 5\n"), Some(5.0));
 /// assert_eq!(parse_crawl_delay("User-agent: *\n"), None);
@@ -89,7 +89,7 @@ pub fn parse_crawl_delay(content: &str) -> Option<f64> {
 /// # Examples
 ///
 /// ```no_run
-/// use webfang::infrastructure::crawler::robots_utils::{new_robots_cache, fetch_robots_rules};
+/// use webfang_core::infrastructure::crawler::robots_utils::{new_robots_cache, fetch_robots_rules};
 ///
 /// # #[tokio::main]
 /// # async fn main() {
@@ -155,7 +155,7 @@ pub async fn fetch_robots_rules(domain: &str, cache: &RobotsCache) -> Option<Arc
 /// # Examples
 ///
 /// ```no_run
-/// use webfang::infrastructure::crawler::robots_utils::{new_robots_cache, is_allowed_by_robots};
+/// use webfang_core::infrastructure::crawler::robots_utils::{new_robots_cache, is_allowed_by_robots};
 ///
 /// # #[tokio::main]
 /// # async fn main() {
@@ -189,9 +189,9 @@ pub async fn is_allowed_by_robots(url: &str, domain: &str, cache: &RobotsCache) 
 /// # Examples
 ///
 /// ```
-/// use webfang::infrastructure::crawler::robots_utils::{new_robots_cache, get_crawl_delay};
+/// use webfang_core::infrastructure::crawler::robots_utils::{new_robots_cache, get_crawl_delay};
 /// use std::sync::Arc;
-/// use webfang::infrastructure::crawler::robots_utils::RobotsRules;
+/// use webfang_core::infrastructure::crawler::robots_utils::RobotsRules;
 ///
 /// let cache = new_robots_cache();
 /// cache.insert("example.com".to_string(), Arc::new(RobotsRules {

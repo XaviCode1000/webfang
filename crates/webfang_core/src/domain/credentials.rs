@@ -3,7 +3,7 @@
 //! Phase 2: Secrets Protection for auditoria-resiliencia-webfang
 //! Provides zeroize-based secret types that:
 //! - Automatically zeroize memory on drop
-//! - DON'T leak in logs (Debug shows "[REDACTED]")
+//! - DON'T leak in logs (Debug shows `[REDACTED]`)
 //! - Support optional expiry for credentials
 //!
 //! # Security
@@ -14,7 +14,7 @@
 //! # Usage
 //!
 //! ```
-//! use webfang::domain::credentials::{ApiKey, SecretCredential};
+//! use webfang_core::domain::credentials::{ApiKey, SecretCredential};
 //! use chrono::Utc;
 //!
 //! let api_key = ApiKey::new("sk-actual-key-here".to_string());
@@ -45,7 +45,7 @@ pub(crate) enum CredentialError {
 /// # Security
 ///
 /// - Memory is zeroized on drop (secrecy trait)
-/// - Debug prints "[REDACTED]" instead of actual value
+/// - Debug prints `[REDACTED]` instead of actual value
 /// - Does NOT implement Serialize/Deserialize (secrets should never be serialized)
 #[derive(Clone)]
 pub struct ApiKey(SecretString);
@@ -60,7 +60,7 @@ impl ApiKey {
     /// # Example
     ///
     /// ```
-    /// use webfang::domain::credentials::ApiKey;
+    /// use webfang_core::domain::credentials::ApiKey;
     ///
     /// let key = ApiKey::new("sk-abc123".to_string());
     /// ```
@@ -111,7 +111,7 @@ impl Default for ApiKey {
 /// # Security
 ///
 /// - Memory is zeroized on drop
-/// - Debug prints "[REDACTED]"
+/// - Debug prints `[REDACTED]`
 /// - Does NOT implement Serialize/Deserialize
 #[derive(Clone)]
 pub struct AccessToken(SecretString);
@@ -324,7 +324,7 @@ impl CredentialStore {
 /// # Security
 ///
 /// - Memory is zeroized on drop
-/// - Debug prints "[REDACTED]"
+/// - Debug prints `[REDACTED]`
 /// - Does NOT implement Serialize/Deserialize
 #[derive(Clone)]
 pub struct SensitiveString {

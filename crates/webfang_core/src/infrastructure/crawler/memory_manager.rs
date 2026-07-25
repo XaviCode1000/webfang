@@ -57,6 +57,7 @@ impl MemoryManager {
     ///
     /// This method implements the page iterator pattern, chunking large URL
     /// collections into manageable batches to avoid memory issues.
+    #[allow(dead_code)] // pub(crate) Phase 0 triage — internal API surface
     pub(crate) fn create_page_iterator(
         &self,
         urls: Vec<Url>,

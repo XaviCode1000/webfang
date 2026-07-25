@@ -43,7 +43,7 @@ use url::Url;
 /// # Examples
 ///
 /// ```
-/// use webfang::domain::pattern_matching::matches_pattern;
+/// use webfang_core::domain::pattern_matching::matches_pattern;
 ///
 /// // Path pattern: matches URL path
 /// assert!(matches_pattern("https://example.com/pricing", "/pricing"));

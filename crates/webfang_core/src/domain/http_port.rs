@@ -37,7 +37,7 @@ pub trait HttpClientPort: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`HttpError`] on network failure, timeout, or non-2xx status.
+    /// Returns [`crate::domain::http_error::HttpError`] on network failure, timeout, or non-2xx status.
     fn get(
         &self,
         url: &str,
