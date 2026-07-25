@@ -2,7 +2,7 @@
 
 Production-ready web scraper. Clean Architecture, TUI selector, AI semantic cleaning, sitemap-based crawling.
 
-**Stack:** Rust 1.88 · Tokio · wreq 6 (TLS fingerprint) · ratatui · tract-onnx (feature-gated) · SQLite
+**Stack:** Rust 1.88 · Tokio · wreq 6 (TLS fingerprint) · ratatui · ort (feature-gated) · SQLite
 
 ---
 
@@ -175,7 +175,7 @@ Domain defines ports (traits) → Infrastructure implements them → Application
 ```
 [CLI] → ScraperError : [infra] HttpError/WafError/ParseError
                 ↓
-        DomainError (6 variants)
+        DomainError (7 variants)
         AppError (6 variants)
         InfraError (13 variants)
 ```
@@ -209,7 +209,7 @@ Transport: Streamable HTTP (`rmcp`) at `127.0.0.1:8080/mcp`, also stdio via `mcp
 
 ### AI feature (`--features ai`)
 
-- ~90MB ONNX model (all-MiniLM-L6-v2), cached in `~/.cache/webfang/models/`
+- ~90MB ONNX model (Granite-97M, 384d), cached in `~/.cache/webfang/models/`
 - `cleaner.clean(html)` → `Vec<DocumentChunk>` with embeddings
 
 ### Build requirement
