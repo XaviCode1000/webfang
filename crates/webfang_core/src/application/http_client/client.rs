@@ -4,6 +4,7 @@
 
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::http_error::{HttpError, HttpResult};
+use crate::domain::session_port::SessionPort;
 use crate::error::ScraperError;
 use crate::infrastructure::http::waf_engine::WafInspector;
 use crate::infrastructure::user_agent::UserAgentCache;
@@ -12,6 +13,7 @@ use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter};
 use rand;
 use std::num::NonZeroU32;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, warn};
 use url::Url;
@@ -58,6 +60,8 @@ pub struct HttpClient {
     user_agents: Vec<String>,
     /// Rate limiter for requests per minute
     rate_limiter: Option<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
+    /// Session health pool for domain-level ban tracking (optional)
+    session_pool: Option<Arc<dyn SessionPort>>,
 }
 
 impl HttpClient {
@@ -156,7 +160,19 @@ impl HttpClient {
             config,
             user_agents,
             rate_limiter,
+            session_pool: None,
         })
+    }
+
+    /// Create a builder for constructing an `HttpClient` with optional session pool.
+    ///
+    /// The builder pattern allows attaching a `SessionPort` for domain-level
+    /// ban tracking while keeping `new()` backward compatible (pool = None).
+    pub fn builder(config: HttpClientConfig) -> HttpClientBuilder {
+        HttpClientBuilder {
+            config,
+            session_pool: None,
+        }
     }
 
     /// Get a reference to the inner `wreq::Client`.
@@ -166,6 +182,39 @@ impl HttpClient {
     #[must_use]
     pub fn client(&self) -> &Client {
         &self.client
+    }
+
+    /// Report request outcome to the session pool for domain health tracking.
+    ///
+    /// Maps `HttpError` variants to penalty status codes:
+    /// - WafChallenge/Forbidden → 403 (HIGH penalty)
+    /// - RateLimited → 429 (HIGH penalty)
+    /// - Timeout → 504 (MEDIUM penalty)
+    /// - Connection → 503 (LOW penalty)
+    /// - ClientError(404) → no report (healthy server)
+    /// - Ok → report_success
+    fn report_outcome(
+        &self,
+        domain: &str,
+        session: crate::domain::session_port::SessionId,
+        result: &HttpResult<String>,
+    ) {
+        if let Some(ref pool) = self.session_pool {
+            match result {
+                Ok(_) => pool.report_success(domain, session),
+                Err(e) => {
+                    let status = match e {
+                        HttpError::WafChallenge(_) | HttpError::Forbidden => 403,
+                        HttpError::RateLimited(_) => 429,
+                        HttpError::Timeout => 504,
+                        HttpError::Connection(_) => 503,
+                        // ClientError(404), DomainBanned, and others: no penalty
+                        HttpError::ClientError(_) | HttpError::ServerError(_) | HttpError::Request(_) | HttpError::DomainBanned(_) => return,
+                    };
+                    pool.report_failure(domain, session, status);
+                },
+            }
+        }
     }
 
     /// Perform GET request with retry logic
@@ -191,6 +240,18 @@ impl HttpClient {
             ));
         }
 
+        // Session pool check (sync, fast) — BEFORE rate limiter to save tokens
+        let domain = parsed_url.host_str().map(String::from);
+        let session_id = if let (Some(ref pool), Some(ref domain)) = (&self.session_pool, &domain)
+        {
+            match pool.acquire(domain) {
+                Some(id) => Some(id),
+                None => return Err(HttpError::DomainBanned(domain.clone())),
+            }
+        } else {
+            None
+        };
+
         // Apply rate limiting if configured
         if let Some(ref limiter) = self.rate_limiter {
             limiter.until_ready().await;
@@ -201,6 +262,14 @@ impl HttpClient {
         in_flight_inc();
 
         let result = self.get_inner(url).await;
+
+        // Report outcome to session pool
+        if let (Some(ref pool), Some(ref domain), Some(sid)) =
+            (&self.session_pool, &domain, session_id)
+        {
+            self.report_outcome(domain, sid, &result);
+            let _ = pool; // suppress unused warning when otel-metrics is off
+        }
 
         #[cfg(feature = "otel-metrics")]
         {
@@ -217,6 +286,7 @@ impl HttpClient {
                         HttpError::ServerError(_) => "server_error",
                         HttpError::Connection(_) => "connection",
                         HttpError::Request(_) => "request",
+                        HttpError::DomainBanned(_) => "domain_banned",
                     };
                     HTTP_ERRORS.add(1, &[opentelemetry::KeyValue::new("error_type", error_type)]);
                 },
@@ -483,6 +553,35 @@ impl HttpClient {
                 },
             }
         }
+    }
+}
+
+/// Builder for constructing `HttpClient` with optional session pool.
+///
+/// Use `HttpClient::builder(config)` to create a builder, then chain
+/// `.session_pool(pool)` before calling `.build()`.
+pub struct HttpClientBuilder {
+    config: HttpClientConfig,
+    session_pool: Option<Arc<dyn SessionPort>>,
+}
+
+impl HttpClientBuilder {
+    /// Attach a session health pool for domain-level ban tracking.
+    #[must_use]
+    pub fn session_pool(mut self, pool: Arc<dyn SessionPort>) -> Self {
+        self.session_pool = Some(pool);
+        self
+    }
+
+    /// Build the `HttpClient`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ScraperError::Config` if client creation fails.
+    pub fn build(self) -> Result<HttpClient, ScraperError> {
+        let mut client = HttpClient::new(self.config)?;
+        client.session_pool = self.session_pool;
+        Ok(client)
     }
 }
 
