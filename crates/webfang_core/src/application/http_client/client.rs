@@ -1096,8 +1096,16 @@ mod session_port_integration_tests {
         let result = client.get(&mock_server.uri()).await;
 
         assert!(result.is_ok(), "Request should succeed");
-        assert_eq!(pool.success_count(), 1, "report_success should be called once");
-        assert_eq!(pool.failure_count(), 0, "report_failure should not be called");
+        assert_eq!(
+            pool.success_count(),
+            1,
+            "report_success should be called once"
+        );
+        assert_eq!(
+            pool.failure_count(),
+            0,
+            "report_failure should not be called"
+        );
     }
 
     // ── Test: 403 response → report_failure(403) ──
@@ -1123,7 +1131,11 @@ mod session_port_integration_tests {
         let result = client.get(&mock_server.uri()).await;
 
         assert!(result.is_err());
-        assert_eq!(pool.failure_count(), 1, "report_failure should be called once");
+        assert_eq!(
+            pool.failure_count(),
+            1,
+            "report_failure should be called once"
+        );
         assert_eq!(
             pool.last_failure_status(),
             Some(403),
@@ -1138,9 +1150,7 @@ mod session_port_integration_tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/"))
-            .respond_with(
-                ResponseTemplate::new(429).insert_header("retry-after", "1"),
-            )
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "1"))
             .mount(&mock_server)
             .await;
 
@@ -1158,7 +1168,11 @@ mod session_port_integration_tests {
         let result = client.get(&mock_server.uri()).await;
 
         assert!(result.is_err());
-        assert_eq!(pool.failure_count(), 1, "report_failure should be called once");
+        assert_eq!(
+            pool.failure_count(),
+            1,
+            "report_failure should be called once"
+        );
         assert_eq!(
             pool.last_failure_status(),
             Some(429),
