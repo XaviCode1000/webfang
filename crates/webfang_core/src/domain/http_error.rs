@@ -36,6 +36,8 @@ pub enum HttpError {
     Request(String),
     /// WAF/CAPTCHA challenge detected in HTTP 200 (false positive)
     WafChallenge(String),
+    /// Domain banned — all sessions exhausted or in cooldown (FQDN)
+    DomainBanned(String),
 }
 
 impl std::fmt::Display for HttpError {
@@ -52,6 +54,9 @@ impl std::fmt::Display for HttpError {
             HttpError::Request(msg) => write!(f, "Request Error: {msg}"),
             HttpError::WafChallenge(provider) => {
                 write!(f, "WAF/CAPTCHA challenge detected ({provider})")
+            },
+            HttpError::DomainBanned(domain) => {
+                write!(f, "domain banned: {domain} — no sessions available")
             },
         }
     }
