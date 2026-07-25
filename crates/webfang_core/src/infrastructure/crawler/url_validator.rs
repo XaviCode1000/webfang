@@ -19,7 +19,7 @@ pub(crate) enum ValidationError {
 }
 
 /// Result type for validation operations
-pub type Result<T> = std::result::Result<T, ValidationError>;
+pub(crate) type Result<T> = std::result::Result<T, ValidationError>;
 
 impl From<ValidationError> for DomainError {
     fn from(err: ValidationError) -> Self {

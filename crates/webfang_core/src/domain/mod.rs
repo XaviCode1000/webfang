@@ -29,6 +29,7 @@ pub mod js_renderer;
 pub mod js_strategy;
 pub mod link_extractor;
 pub mod pattern_matching;
+/// Pipeline stage definitions and scraped item types for the crawl pipeline.
 pub mod pipeline_item;
 pub mod ports;
 pub mod repositories;
@@ -47,9 +48,7 @@ pub use clock::{Clock, MockClock, MockUtcClock, SystemClock, SystemUtcClock, Utc
 pub use config::{ConcurrencyConfig, ExportFormat, OutputFormat, PipelineOutputFormat};
 pub use content_processor::ContentProcessor;
 pub use crawl_job::{ContentType, DiscoveredUrl};
-pub use credentials::{
-    AccessToken, ApiKey, CredentialStore, SecretCredential, SensitiveString,
-};
+pub use credentials::{AccessToken, ApiKey, CredentialStore, SecretCredential, SensitiveString};
 pub use dom_inspector::{
     DomInspectorPort, DomStructureReport, ExtractResult, SelectorDiagnostic, SelectorErrorKind,
     SelectorSuggestion,
@@ -80,25 +79,36 @@ pub use value_objects::{CorrelationId, ValidUrl};
 /// Compression types supported for sitemap parsing
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompressionType {
+    /// No compression — raw, uncompressed content.
     None,
+    /// gzip (RFC 1952) — common in HTTP Content-Encoding.
     Gzip,
+    /// DEFLATE (RFC 1951) — raw deflate without zlib wrapper.
     Deflate,
+    /// Brotli — modern high-ratio compression, used by CDNs.
     Brotli,
+    /// Zstandard — modern compression balancing speed and ratio.
     Zstd,
 }
 
 /// Batch of URLs for paginated processing
 #[derive(Debug, Clone)]
 pub struct UrlBatch {
+    /// URLs in this batch.
     pub urls: Vec<Url>,
+    /// Zero-based batch index for ordering and progress tracking.
     pub batch_id: u32,
+    /// `true` when additional batches follow; `false` for the final batch.
     pub has_more: bool,
 }
 
 /// Result of URL validation
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationResult {
+    /// URL is valid and allowed.
     Valid,
-    Invalid(String),    // reason
-    NeedsRedirect(Url), // new URL
+    /// URL is invalid; `String` describes the reason.
+    Invalid(String),
+    /// URL is valid but must be redirected to the contained canonical URL.
+    NeedsRedirect(Url),
 }

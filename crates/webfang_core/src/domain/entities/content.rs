@@ -22,15 +22,19 @@ use super::download::DownloadedAsset;
 /// Presentation layer (CLI/TUI) maps these to user-friendly messages.
 #[derive(Debug, thiserror::Error)]
 pub enum ValidationError {
+    /// Content body is empty or whitespace-only.
     #[error("empty_content")]
     EmptyContent,
 
+    /// Title is empty or whitespace-only.
     #[error("empty_title")]
     EmptyTitle,
 
+    /// URL failed to parse as a valid HTTP/HTTPS URL.
     #[error("invalid_url: {0}")]
     InvalidUrl(String),
 
+    /// A metadata value is empty or whitespace-only.
     #[error("invalid_metadata: {0}")]
     InvalidMetadata(String),
 }
@@ -80,6 +84,7 @@ impl DocumentChunk<Draft> {
 /// Public constructor for DocumentChunk<Draft> in production code
 /// Required for modules that create DocumentChunk directly (e.g., chunker, relevance_scorer)
 impl DocumentChunk<Draft> {
+    /// Create a new [`DocumentChunk<Draft>`](DocumentChunk) from individual fields.
     pub fn new(
         id: Uuid,
         url: impl Into<String>,
@@ -102,6 +107,7 @@ impl DocumentChunk<Draft> {
 
 /// Constructor with metadata for chunks that need to preserve source metadata
 impl DocumentChunk<Draft> {
+    /// Create a new [`DocumentChunk<Draft>`](DocumentChunk) with pre-populated metadata.
     pub fn with_metadata(
         id: Uuid,
         url: impl Into<String>,
@@ -231,7 +237,9 @@ pub struct DocumentChunk<S = Draft> {
 /// Alias for backward compatibility - DocumentChunk in Draft state
 /// Use DocumentChunk<Draft> for new code, DocumentChunk for existing code
 pub type DocumentChunkUnvalidated = DocumentChunk<Draft>;
+/// Type alias for a [`DocumentChunk`] that has passed validation.
 pub type DocumentChunkValidated = DocumentChunk<Validated>;
+/// Type alias for a [`DocumentChunk`] that has been exported.
 pub type DocumentChunkExported = DocumentChunk<Exported>;
 
 // NOTE: DocumentChunk (non-generic) is re-exported from domain/mod.rs for backward compatibility

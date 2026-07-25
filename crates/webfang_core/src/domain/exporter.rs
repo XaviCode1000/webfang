@@ -43,6 +43,7 @@ pub enum ExporterError {
 
     /// Embedding dimensions don't match expected size
     #[error("dimension mismatch: expected {expected}, got {actual}")]
+    #[allow(missing_docs)] // enum variant fields can't have pub(crate) visibility
     DimensionMismatch { expected: usize, actual: usize },
 }
 

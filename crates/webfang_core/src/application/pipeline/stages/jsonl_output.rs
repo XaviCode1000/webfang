@@ -20,10 +20,11 @@ pub struct JsonlOutputStage {
 }
 
 impl JsonlOutputStage {
+    #[allow(dead_code)] // pub(crate) for Phase 0 missing-docs triage — used in production builds
     /// Create a new JSONL output stage writing to `path`.
     ///
     /// The file is created if it doesn't exist, or opened for append if it does.
-    pub fn new(path: impl AsRef<Path>) -> Result<Self, OutputError> {
+    pub(crate) fn new(path: impl AsRef<Path>) -> Result<Self, OutputError> {
         let file = OpenOptions::new()
             .create(true)
             .append(true)

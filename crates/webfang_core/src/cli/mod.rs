@@ -26,5 +26,3 @@ pub(crate) enum SelectedUrls {
     None, // User cancelled or no selection
     Error(CliExit),
 }
-
-pub(crate) use SelectedUrls::*;

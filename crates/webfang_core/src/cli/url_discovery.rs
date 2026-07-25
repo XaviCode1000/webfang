@@ -61,7 +61,7 @@ pub async fn discover_urls(
 }
 
 /// Select URLs via TUI, quick-save, or headless mode.
-pub async fn select_urls(
+pub(crate) async fn select_urls(
     discovered_urls: &[Url],
     opts: &CrawlOptions,
     vault_path: &Option<std::path::PathBuf>,

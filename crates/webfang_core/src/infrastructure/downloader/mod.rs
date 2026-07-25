@@ -109,6 +109,7 @@ pub enum DownloadError {
 
     /// HTTP error response (non-2xx status).
     #[error("HTTP {status}: {message}")]
+    #[allow(missing_docs)] // enum variant fields can't have pub(crate) visibility
     Http { status: u16, message: String },
 
     /// WAF challenge detected (Cloudflare, reCAPTCHA, etc.).

@@ -7,9 +7,8 @@ mod executor;
 pub mod stages;
 
 pub use executor::PipelineExecutor;
-pub use stages::{
-    CleanStage, JsonlOutputStage, MultiSinkOutput, OutputStage, ValidateStage,
-};
+pub(crate) use stages::OutputStage;
+pub use stages::{CleanStage, ValidateStage};
 
 // Re-export domain types used by the pipeline API
 pub use crate::domain::pipeline_item::{PipelineStage, ScrapedItem, StageOutcome};

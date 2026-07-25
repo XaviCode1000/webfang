@@ -17,7 +17,7 @@ pub(crate) enum MemoryError {
 }
 
 /// Result type for memory operations
-pub type Result<T> = std::result::Result<T, MemoryError>;
+pub(crate) type Result<T> = std::result::Result<T, MemoryError>;
 
 /// Manages memory usage for large URL collections
 pub struct MemoryManager {
@@ -57,7 +57,7 @@ impl MemoryManager {
     ///
     /// This method implements the page iterator pattern, chunking large URL
     /// collections into manageable batches to avoid memory issues.
-    pub fn create_page_iterator(
+    pub(crate) fn create_page_iterator(
         &self,
         urls: Vec<Url>,
         batch_size: usize,
@@ -92,7 +92,7 @@ impl MemoryManager {
     /// When the number of URLs exceeds the memory limit, this method
     /// writes URLs to disk in chunks and provides a reference to the
     /// on-disk storage.
-    pub fn handle_disk_swapping(&self, urls: &[Url]) -> Result<()> {
+    pub(crate) fn handle_disk_swapping(&self, urls: &[Url]) -> Result<()> {
         if !self.enable_disk_swap {
             // Disk swapping disabled, check memory limit
             // Each URL takes roughly 2KB when stored in memory

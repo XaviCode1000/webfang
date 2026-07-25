@@ -41,11 +41,13 @@ pub(crate) enum CrawlMessage {
 }
 
 impl CrawlMessage {
+    #[allow(dead_code)] // pub(crate) for Phase 0 missing-docs triage — used in production builds
     /// Crear mensaje de éxito
     pub fn success(url: DiscoveredUrl) -> Self {
         Self::Success(url)
     }
 
+    #[allow(dead_code)] // pub(crate) for Phase 0 missing-docs triage — used in production builds
     /// Crear mensaje de error
     pub fn error(url: impl Into<String>, error: impl Into<String>) -> Self {
         Self::Error {
@@ -160,7 +162,7 @@ impl ResultsCollector {
     /// Enviar resultado (con backpressure implícito)
     ///
     /// Si el canal está lleno, esta llamada awaitará.
-    pub async fn send(
+    pub(crate) async fn send(
         &self,
         msg: CrawlMessage,
     ) -> Result<(), mpsc::error::SendError<CrawlMessage>> {
@@ -171,11 +173,12 @@ impl ResultsCollector {
         self.tx.send(msg).await
     }
 
+    #[allow(dead_code)] // pub(crate) for Phase 0 missing-docs triage — used in production builds
     /// Intentar enviar sin esperar
     ///
     /// Útil para manejo custom de backpressure.
     /// Retorna error si el canal está lleno.
-    pub fn try_send(
+    pub(crate) fn try_send(
         &self,
         msg: CrawlMessage,
     ) -> Result<(), Box<mpsc::error::TrySendError<CrawlMessage>>> {
@@ -222,22 +225,25 @@ pub struct ResultsAdapter {
 }
 
 impl ResultsAdapter {
+    #[allow(dead_code)] // pub(crate) for Phase 0 missing-docs triage — used in production builds
     pub(crate) fn new(capacity: usize) -> Self {
         Self {
             collector: ResultsCollector::with_capacity(capacity),
         }
     }
 
+    #[allow(dead_code)] // pub(crate) for Phase 0 missing-docs triage — used in production builds
     /// Enviar URL scrapeada exitosamente
-    pub async fn add_success(
+    pub(crate) async fn add_success(
         &self,
         url: DiscoveredUrl,
     ) -> Result<(), mpsc::error::SendError<CrawlMessage>> {
         self.collector.send(CrawlMessage::success(url)).await
     }
 
+    #[allow(dead_code)] // pub(crate) for Phase 0 missing-docs triage — used in production builds
     /// Enviar error de scrape
-    pub async fn add_error(
+    pub(crate) async fn add_error(
         &self,
         url: String,
         error: String,

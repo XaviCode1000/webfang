@@ -21,7 +21,7 @@ pub struct MultiSinkOutput {
 
 impl MultiSinkOutput {
     /// Create a multi-sink from a list of output stages.
-    pub fn new(sinks: Vec<Box<dyn OutputStage>>) -> Self {
+    pub(crate) fn new(sinks: Vec<Box<dyn OutputStage>>) -> Self {
         Self { sinks }
     }
 

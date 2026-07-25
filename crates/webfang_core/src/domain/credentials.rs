@@ -30,6 +30,7 @@ use secrecy::ExposeSecret;
 pub use secrecy::SecretString;
 
 /// Errors from credentials operations
+#[allow(dead_code)] // pub(crate) API for credential store — used in tests
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CredentialError {
     #[error("credential expired")]
@@ -225,7 +226,8 @@ impl SecretCredential {
     /// # Errors
     ///
     /// Returns CredentialError::Expired if credential is expired
-    pub fn check_expiry(&self) -> Result<(), CredentialError> {
+    #[allow(dead_code)] // pub(crate) API for credential store — used in tests
+    pub(crate) fn check_expiry(&self) -> Result<(), CredentialError> {
         if self.is_expired() {
             Err(CredentialError::Expired)
         } else {
@@ -276,7 +278,8 @@ impl CredentialStore {
     /// # Errors
     ///
     /// Returns CredentialError::NotFound if provider doesn't exist
-    pub fn get(&self, provider: &str) -> Result<&SecretCredential, CredentialError> {
+    #[allow(dead_code)] // pub(crate) API for credential store — used in tests
+    pub(crate) fn get(&self, provider: &str) -> Result<&SecretCredential, CredentialError> {
         self.credentials
             .get(provider)
             .ok_or_else(|| CredentialError::NotFound(provider.to_string()))
@@ -288,7 +291,8 @@ impl CredentialStore {
     ///
     /// Returns CredentialError::Expired if credential is expired
     /// Returns CredentialError::NotFound if provider doesn't exist
-    pub fn get_valid(&self, provider: &str) -> Result<&SecretCredential, CredentialError> {
+    #[allow(dead_code)] // pub(crate) API for credential store — used in tests
+    pub(crate) fn get_valid(&self, provider: &str) -> Result<&SecretCredential, CredentialError> {
         let cred = self.get(provider)?;
         cred.check_expiry()?;
         Ok(cred)

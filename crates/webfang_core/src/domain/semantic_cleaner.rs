@@ -29,6 +29,7 @@ use crate::error::SemanticError;
 /// This prevents users from creating invalid implementations that could
 /// violate memory safety or caching invariants.
 pub mod private {
+    /// Marker trait for the sealed pattern — only implementable within this crate.
     pub trait Sealed {}
 }
 

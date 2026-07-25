@@ -5,7 +5,7 @@
 use std::io::{self, IsTerminal};
 
 /// Trait for detecting terminal capabilities.
-pub trait TtyDetector: Send + Sync {
+pub(crate) trait TtyDetector: Send + Sync {
     /// Check if stdin is connected to a terminal.
     fn is_terminal(&self, stream: &dyn IsTty) -> bool;
 

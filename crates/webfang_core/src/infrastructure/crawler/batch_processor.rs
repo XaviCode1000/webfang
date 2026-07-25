@@ -16,7 +16,7 @@ pub(crate) enum BatchError {
 }
 
 /// Result type for batch operations
-pub type Result<T> = std::result::Result<T, BatchError>;
+pub(crate) type Result<T> = std::result::Result<T, BatchError>;
 
 /// Handles batch processing with crawl budget optimization
 pub struct BatchProcessor {

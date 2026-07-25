@@ -50,7 +50,9 @@ pub enum CrawlError {
     /// Infrastructure layer converts reqwest::Error → this variant.
     #[error("network error: {message} (status: {status_code:?})")]
     Network {
+        /// Human-readable error description.
         message: String,
+        /// HTTP status code if the server responded; `None` for connection failures.
         status_code: Option<u16>,
     },
 
@@ -73,11 +75,19 @@ pub enum CrawlError {
 
     /// Maximum depth exceeded
     #[error("maximum depth {max} exceeded at depth {current}")]
-    MaxDepthExceeded { current: u8, max: u8 },
+    MaxDepthExceeded {
+        /// Depth at which the limit was exceeded.
+        current: u8,
+        /// Configured maximum crawl depth.
+        max: u8,
+    },
 
     /// Maximum pages exceeded
     #[error("maximum pages {max} exceeded")]
-    MaxPagesExceeded { max: usize },
+    MaxPagesExceeded {
+        /// Configured maximum page count.
+        max: usize,
+    },
 
     /// URL excluded by pattern
     #[error("URL excluded: {0}")]
@@ -126,18 +136,31 @@ pub enum CrawlError {
     /// WAF challenge detected during crawl
     #[error("WAF challenge: {provider} ({kind:?}) at {url}")]
     WafChallenge {
+        /// Name of the WAF provider (e.g., "Cloudflare", "AWS WAF").
         provider: String,
+        /// How the WAF challenge was detected.
         kind: WafDetectionKind,
+        /// URL that triggered the WAF challenge.
         url: String,
     },
 
     /// Retry attempts exhausted for a URL
     #[error("retry exhausted for {url} after {attempts} attempts")]
-    RetryExhausted { url: String, attempts: usize },
+    RetryExhausted {
+        /// URL that failed after exhausting retries.
+        url: String,
+        /// Total number of attempts made.
+        attempts: usize,
+    },
 
     /// Transient HTTP error (5xx, retryable)
     #[error("transient HTTP {status} at {url}")]
-    TransientHttp { status: u16, url: String },
+    TransientHttp {
+        /// HTTP status code (typically 5xx).
+        status: u16,
+        /// URL that returned the transient error.
+        url: String,
+    },
 
     /// Rate limited with retry-after duration in seconds
     #[error("rate limited, retry after {0}s")]
@@ -154,8 +177,11 @@ pub enum CrawlError {
     /// Resource limit exhausted
     #[error("resource exhausted: {resource:?} limit={limit} actual={actual}")]
     ResourceExhausted {
+        /// Which resource limit was hit.
         resource: ResourceKind,
+        /// Configured limit value.
         limit: usize,
+        /// Actual usage that exceeded the limit.
         actual: usize,
     },
 

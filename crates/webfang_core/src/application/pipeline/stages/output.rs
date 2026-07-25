@@ -24,7 +24,7 @@ pub(crate) enum OutputError {
 ///
 /// Output stages are separate from [`PipelineStage`](crate::domain::pipeline_item::PipelineStage).
 /// Pipeline stages transform items; output stages persist them.
-pub trait OutputStage: Send + Sync {
+pub(crate) trait OutputStage: Send + Sync {
     /// Human-readable name for logging/diagnostics.
     fn name(&self) -> &str;
 

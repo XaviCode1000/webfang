@@ -204,6 +204,7 @@ impl CrawlerConfigBuilder {
         self
     }
 
+    /// Build the final [`CrawlerConfig`], consuming this builder.
     #[must_use]
     pub fn build(self) -> CrawlerConfig {
         CrawlerConfig {

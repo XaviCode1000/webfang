@@ -16,7 +16,7 @@ pub(crate) enum RetryError {
 }
 
 /// Result type for retry operations
-pub type Result<T> = std::result::Result<T, RetryError>;
+pub(crate) type Result<T> = std::result::Result<T, RetryError>;
 
 /// Handles retry logic with exponential backoff
 pub struct RetryPolicy {
@@ -57,7 +57,7 @@ impl RetryPolicy {
             error
         )
     )]
-    pub async fn execute_with_retry<F, Fut, T, E>(&self, mut operation: F) -> Result<T>
+    pub(crate) async fn execute_with_retry<F, Fut, T, E>(&self, mut operation: F) -> Result<T>
     where
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = std::result::Result<T, E>>,

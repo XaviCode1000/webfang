@@ -304,8 +304,9 @@ impl Engine {
         self
     }
 
+    #[allow(dead_code)] // pub(crate) for Phase 0 missing-docs triage — used in production builds
     /// Add an output stage that receives items after pipeline processing.
-    pub fn add_output_stage(&mut self, stage: Box<dyn OutputStage>) {
+    pub(crate) fn add_output_stage(&mut self, stage: Box<dyn OutputStage>) {
         self.output_stages.push(Arc::from(stage));
     }
 

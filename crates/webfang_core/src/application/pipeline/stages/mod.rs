@@ -10,7 +10,5 @@ pub mod output;
 mod validate;
 
 pub use clean::CleanStage;
-pub use jsonl_output::JsonlOutputStage;
-pub use multi_sink::MultiSinkOutput;
-pub use output::OutputStage;
+pub(crate) use output::OutputStage;
 pub use validate::ValidateStage;

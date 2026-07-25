@@ -20,7 +20,7 @@ pub(crate) enum CompressionError {
 }
 
 /// Result type for compression operations
-pub type Result<T> = std::result::Result<T, CompressionError>;
+pub(crate) type Result<T> = std::result::Result<T, CompressionError>;
 
 /// Handles multi-format compression detection and decompression
 pub struct CompressionHandler {
@@ -84,7 +84,7 @@ impl CompressionHandler {
     }
 
     /// Detect compression format and decompress content
-    pub async fn detect_and_decompress(&self, content: &[u8], url: &str) -> Result<Vec<u8>> {
+    pub(crate) async fn detect_and_decompress(&self, content: &[u8], url: &str) -> Result<Vec<u8>> {
         let formats = Self::detect_compression(content, url);
 
         if formats.is_empty() {
