@@ -38,7 +38,57 @@ jobs:
         run: |
           cargo doc --workspace --all-features --no-deps
           touch target/doc/.nojekyll
-          cp target/doc/webfang_core/index.html target/doc/index.html
+
+      - name: Create landing page
+        run: |
+          cat > target/doc/index.html << 'LANDING'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>WebFang Documentation</title>
+            <style>
+              * { margin: 0; padding: 0; box-sizing: border-box; }
+              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d1117; color: #c9d1d9; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+              .container { max-width: 640px; padding: 2rem; }
+              h1 { font-size: 2rem; margin-bottom: 0.5rem; color: #f0f6fc; }
+              .subtitle { color: #8b949e; margin-bottom: 2rem; font-size: 1.1rem; }
+              .crates { display: grid; gap: 1rem; }
+              .crate { display: block; padding: 1.25rem 1.5rem; background: #161b22; border: 1px solid #30363d; border-radius: 8px; text-decoration: none; transition: border-color 0.2s; }
+              .crate:hover { border-color: #58a6ff; }
+              .crate-name { font-size: 1.15rem; font-weight: 600; color: #58a6ff; margin-bottom: 0.25rem; }
+              .crate-desc { font-size: 0.9rem; color: #8b949e; }
+              .footer { margin-top: 2.5rem; font-size: 0.8rem; color: #484f58; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <h1>WebFang</h1>
+              <p class="subtitle">Production-ready web scraper &mdash; Rust 1.88, Clean Architecture</p>
+              <div class="crates">
+                <a class="crate" href="./webfang_core/">
+                  <div class="crate-name">webfang_core</div>
+                  <div class="crate-desc">Core scraping library &mdash; domain, application, infrastructure, CLI</div>
+                </a>
+                <a class="crate" href="./webfang_ai/">
+                  <div class="crate-name">webfang_ai</div>
+                  <div class="crate-desc">ONNX embeddings &amp; semantic cleaning</div>
+                </a>
+                <a class="crate" href="./webfang_mcp/">
+                  <div class="crate-name">webfang_mcp</div>
+                  <div class="crate-desc">MCP server (35 tools)</div>
+                </a>
+                <a class="crate" href="./webfang_tui/">
+                  <div class="crate-name">webfang_tui</div>
+                  <div class="crate-desc">ratatui TUI selector</div>
+                </a>
+              </div>
+              <div class="footer">Auto-generated from main &bull; <a href="https://github.com/XaviCode1000/webfang" style="color:#58a6ff">GitHub</a></div>
+            </div>
+          </body>
+          </html>
+          LANDING
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
