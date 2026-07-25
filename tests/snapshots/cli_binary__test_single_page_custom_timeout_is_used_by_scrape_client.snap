@@ -6,7 +6,7 @@ expression: "redact_nondeterministic(output_dir.path(), &stderr)"
     at crates/webfang_core/src/infrastructure/crawler/robots_utils.rs:125
 
   <TIMESTAMP>  WARN webfang_core::cli::scrape_flow: Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: error sending request for uri (http://127.0.0.1:<PORT>/slow): operation timed out
-    at crates/webfang_core/src/cli/scrape_flow.rs:229
+    at crates/webfang_core/src/cli/scrape_flow.rs:188
 
 Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: error sending request for uri (http://127.0.0.1:<PORT>/slow): operation timed out  ← error sending request for uri (http://127.0.0.1:<PORT>/slow): operation timed out  ← operation timed out
 No pages were successfully scraped
