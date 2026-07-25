@@ -35,6 +35,7 @@ pub mod ports;
 pub mod repositories;
 pub mod repository;
 pub mod result;
+pub mod session_port;
 pub mod site;
 pub mod url_validation;
 pub mod url_validator;

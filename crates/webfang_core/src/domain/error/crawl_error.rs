@@ -223,6 +223,9 @@ impl From<crate::domain::http_error::HttpError> for CrawlError {
                 kind: WafDetectionKind::BodySignature,
                 url: String::new(),
             },
+            HttpError::DomainBanned(domain) => {
+                CrawlError::SessionPool(format!("domain banned: {domain}"))
+            },
         }
     }
 }

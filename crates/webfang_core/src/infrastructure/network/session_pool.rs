@@ -21,21 +21,12 @@ use dashmap::DashMap;
 use tracing::{debug, instrument, warn};
 
 use crate::domain::clock::{Clock, SystemClock};
+pub use crate::domain::session_port::SessionId;
 
 #[cfg(feature = "otel-metrics")]
 use crate::infrastructure::observability::metrics_instruments::{
     update_session_pool_healthy, SESSION_POOL_BACKOFF, SESSION_POOL_BANNED,
 };
-
-/// Unique identifier for a session slot within a domain pool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SessionId(pub usize);
-
-impl fmt::Display for SessionId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "session-{}", self.0)
-    }
-}
 
 /// Health status of a session for a given domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,7 +217,14 @@ impl SessionManager for DomainSessionPool {
                     },
                     SessionStatus::Banned => {
                         if let Some(next_retry) = state.next_retry_time {
-                            if now >= next_retry {
+                            // Apply +0–20% dynamic jitter to prevent thundering herd recovery
+                            let jitter_range = self.backoff_delay(state.consecutive_failures);
+                            let jitter_ms = (jitter_range.as_millis() as f64 * 0.2) as u128;
+                            let jitter_offset = Duration::from_millis(
+                                (idx as u64 * 37) % (jitter_ms.max(1) as u64),
+                            );
+                            let effective_retry = next_retry + jitter_offset;
+                            if now >= effective_retry {
                                 debug!(domain, session_id = idx, "acquired session after cooldown");
                                 break 'find Some(SessionId(idx));
                             }
@@ -358,6 +356,20 @@ impl SessionManager for DomainSessionPool {
 /// Sealed trait internals — prevents external implementations.
 mod sealed {
     pub trait Sealed {}
+}
+
+impl crate::domain::session_port::SessionPort for DomainSessionPool {
+    fn acquire(&self, domain: &str) -> Option<SessionId> {
+        SessionManager::acquire(self, domain)
+    }
+
+    fn report_success(&self, domain: &str, session: SessionId) {
+        SessionManager::report_success(self, domain, session)
+    }
+
+    fn report_failure(&self, domain: &str, session: SessionId, status: u16) {
+        SessionManager::report_failure(self, domain, session, status)
+    }
 }
 
 #[cfg(test)]
