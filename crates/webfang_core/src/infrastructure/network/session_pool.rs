@@ -21,21 +21,12 @@ use dashmap::DashMap;
 use tracing::{debug, instrument, warn};
 
 use crate::domain::clock::{Clock, SystemClock};
+pub use crate::domain::session_port::SessionId;
 
 #[cfg(feature = "otel-metrics")]
 use crate::infrastructure::observability::metrics_instruments::{
     update_session_pool_healthy, SESSION_POOL_BACKOFF, SESSION_POOL_BANNED,
 };
-
-/// Unique identifier for a session slot within a domain pool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SessionId(pub usize);
-
-impl fmt::Display for SessionId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "session-{}", self.0)
-    }
-}
 
 /// Health status of a session for a given domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

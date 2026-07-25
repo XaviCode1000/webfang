@@ -13,11 +13,21 @@
 //! we define `SessionPort` here in the domain layer as a public, unsealed
 //! trait that `DomainSessionPool` will also implement.
 
+use std::fmt;
+
 /// Unique identifier for a session slot within a domain pool.
 ///
-/// Re-exported from `infrastructure::network::session_pool` for
-/// convenience. Domain code should treat this as an opaque ID.
-pub use crate::infrastructure::network::session_pool::SessionId;
+/// Defined in the domain layer so that `SessionPort` and its consumers
+/// never depend on infrastructure types. Infrastructure converts
+/// internally when needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SessionId(pub usize);
+
+impl fmt::Display for SessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "session-{}", self.0)
+    }
+}
 
 /// Port trait for session health tracking — domain layer contract.
 ///
