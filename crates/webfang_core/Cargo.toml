@@ -35,6 +35,7 @@ otel-metrics = [
 ai = []
 ui = []
 mcp = []
+chromium = ["dep:chromiumoxide"]
 
 [dependencies]
 # CLI
@@ -141,6 +142,9 @@ mimetype-detector = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
 deadpool-sqlite = { workspace = true, optional = true }
 sys-info = { workspace = true, optional = true }
+
+# Browser automation (CDP)
+chromiumoxide = { workspace = true, optional = true }
 
 # CPU pool
 rayon = "1.10"
