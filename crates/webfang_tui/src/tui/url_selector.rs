@@ -30,7 +30,7 @@ use super::theme::Theme;
 
 /// URL selector state (testable without rendering)
 ///
-/// Follows own-borrow-over-clone: stores owned Vec<Url> but provides &Url access
+/// Follows own-borrow-over-clone: stores owned `Vec<Url>` but provides `&Url` access
 #[derive(Debug, Clone)]
 pub struct UrlSelectorState {
     /// All discovered URLs

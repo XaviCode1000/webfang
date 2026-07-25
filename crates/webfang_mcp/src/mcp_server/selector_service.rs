@@ -1,6 +1,6 @@
 //! Selector service — builds MCP JSON responses with selector diagnostics.
 //!
-//! Keeps [`super::mod`] from growing past 1197 lines by delegating the
+//! Keeps `super` from growing past 1197 lines by delegating the
 //! response-building logic for CSS selector scraping to this module.
 //!
 //! The [`build_scrape_response`] function takes the scrape results, the
