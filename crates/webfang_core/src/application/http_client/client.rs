@@ -979,3 +979,234 @@ mod waf_detection_tests {
         assert_eq!(result.unwrap(), normal_body);
     }
 }
+
+// ============================================================================
+// SessionPort integration tests — verify full get() flow with MockSessionPort
+// ============================================================================
+
+#[cfg(test)]
+#[cfg(not(miri))]
+mod session_port_integration_tests {
+    use super::*;
+    use crate::domain::http_config::HttpClientConfig;
+    use crate::domain::session_port::{SessionId, SessionPort};
+    use std::sync::Arc;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Test double that records all SessionPort calls for assertions.
+    struct MockSessionPort {
+        acquire_result: Option<SessionId>,
+        success_calls: std::sync::Mutex<Vec<(String, SessionId)>>,
+        failure_calls: std::sync::Mutex<Vec<(String, SessionId, u16)>>,
+    }
+
+    impl MockSessionPort {
+        fn healthy() -> Self {
+            Self {
+                acquire_result: Some(SessionId(0)),
+                success_calls: std::sync::Mutex::new(Vec::new()),
+                failure_calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn banned() -> Self {
+            Self {
+                acquire_result: None,
+                success_calls: std::sync::Mutex::new(Vec::new()),
+                failure_calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn success_count(&self) -> usize {
+            self.success_calls.lock().unwrap().len()
+        }
+
+        fn failure_count(&self) -> usize {
+            self.failure_calls.lock().unwrap().len()
+        }
+
+        fn last_failure_status(&self) -> Option<u16> {
+            self.failure_calls
+                .lock()
+                .unwrap()
+                .last()
+                .map(|(_, _, status)| *status)
+        }
+    }
+
+    impl SessionPort for MockSessionPort {
+        fn acquire(&self, _domain: &str) -> Option<SessionId> {
+            self.acquire_result
+        }
+
+        fn report_success(&self, domain: &str, session: SessionId) {
+            self.success_calls
+                .lock()
+                .unwrap()
+                .push((domain.to_string(), session));
+        }
+
+        fn report_failure(&self, domain: &str, session: SessionId, status: u16) {
+            self.failure_calls
+                .lock()
+                .unwrap()
+                .push((domain.to_string(), session, status));
+        }
+    }
+
+    /// Build an HttpClient with a MockSessionPort attached.
+    fn client_with_pool(pool: Arc<dyn SessionPort>) -> HttpClient {
+        HttpClient::builder(HttpClientConfig::default())
+            .session_pool(pool)
+            .build()
+            .unwrap()
+    }
+
+    // ── Test: acquire() returns None → DomainBanned ──
+
+    #[tokio::test]
+    async fn test_acquire_banned_returns_domain_banned() {
+        let pool = Arc::new(MockSessionPort::banned());
+        let client = client_with_pool(pool);
+
+        let result = client.get("https://example.com").await;
+
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), HttpError::DomainBanned(d) if d == "example.com"),
+            "Expected DomainBanned for example.com"
+        );
+    }
+
+    // ── Test: acquire() returns Some → request proceeds → report_success ──
+
+    #[tokio::test]
+    async fn test_acquire_healthy_proceeds_and_reports_success() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<p>OK</p>"))
+            .mount(&mock_server)
+            .await;
+
+        let pool = Arc::new(MockSessionPort::healthy());
+        let client = client_with_pool(pool.clone());
+
+        let result = client.get(&mock_server.uri()).await;
+
+        assert!(result.is_ok(), "Request should succeed");
+        assert_eq!(pool.success_count(), 1, "report_success should be called once");
+        assert_eq!(pool.failure_count(), 0, "report_failure should not be called");
+    }
+
+    // ── Test: 403 response → report_failure(403) ──
+
+    #[tokio::test]
+    async fn test_report_outcome_maps_403_to_failure() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&mock_server)
+            .await;
+
+        let pool = Arc::new(MockSessionPort::healthy());
+        let client = HttpClient::builder(HttpClientConfig {
+            max_retries: 1,
+            ..Default::default()
+        })
+        .session_pool(pool.clone())
+        .build()
+        .unwrap();
+
+        let result = client.get(&mock_server.uri()).await;
+
+        assert!(result.is_err());
+        assert_eq!(pool.failure_count(), 1, "report_failure should be called once");
+        assert_eq!(
+            pool.last_failure_status(),
+            Some(403),
+            "Failure status should be 403 (HIGH penalty)"
+        );
+    }
+
+    // ── Test: 429 response → report_failure(429) ──
+
+    #[tokio::test]
+    async fn test_report_outcome_maps_429_to_failure() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(429).insert_header("retry-after", "1"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let pool = Arc::new(MockSessionPort::healthy());
+        let client = HttpClient::builder(HttpClientConfig {
+            max_retries: 1,
+            backoff_base_ms: 10,
+            backoff_max_ms: 50,
+            ..Default::default()
+        })
+        .session_pool(pool.clone())
+        .build()
+        .unwrap();
+
+        let result = client.get(&mock_server.uri()).await;
+
+        assert!(result.is_err());
+        assert_eq!(pool.failure_count(), 1, "report_failure should be called once");
+        assert_eq!(
+            pool.last_failure_status(),
+            Some(429),
+            "Failure status should be 429 (HIGH penalty)"
+        );
+    }
+
+    // ── Test: no session pool → no DomainBanned error ──
+
+    #[tokio::test]
+    async fn test_no_pool_no_domain_banned() {
+        let config = HttpClientConfig::default();
+        let client = HttpClient::new(config).unwrap();
+
+        // Without a session pool, even a valid URL should not return DomainBanned
+        let result = client.get("not-a-valid-url").await;
+        assert!(result.is_err());
+        assert!(
+            !matches!(result.unwrap_err(), HttpError::DomainBanned(_)),
+            "Should not return DomainBanned when no pool is configured"
+        );
+    }
+
+    // ── Test: 404 response → no report_failure (zero penalty) ──
+
+    #[tokio::test]
+    async fn test_404_no_penalty_no_failure_report() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/missing"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        let pool = Arc::new(MockSessionPort::healthy());
+        let client = client_with_pool(pool.clone());
+
+        let result = client.get(&format!("{}/missing", mock_server.uri())).await;
+
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), HttpError::ClientError(404)),
+            "Should return ClientError(404)"
+        );
+        assert_eq!(
+            pool.failure_count(),
+            0,
+            "404 should NOT trigger report_failure (zero penalty)"
+        );
+    }
+}
