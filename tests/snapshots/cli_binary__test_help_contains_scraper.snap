@@ -91,6 +91,17 @@ Options:
           
           [env: WEBFANG_DOWNLOAD_ASSETS=]
 
+      --clean-ai
+          Use AI-powered semantic cleaning for better RAG output
+          
+          [env: WEBFANG_CLEAN_AI=]
+          [alias: --ai]
+
+      --adaptive-selectors
+          Enable adaptive CSS selector repair (2-tier cascade)
+          
+          [env: WEBFANG_ADAPTIVE_SELECTORS=]
+
       --force-js-render
           Force JavaScript rendering for SPA sites (not yet implemented)
           
@@ -353,7 +364,7 @@ Options:
       --quick-save
           Quick-save mode: save directly to vault _inbox folder
           
-           [env: WEBFANG_OBSIDIAN_QUICK_SAVE=]
+          [env: WEBFANG_OBSIDIAN_QUICK_SAVE=]
 
       --obsidian-rich-metadata
           Add rich metadata to frontmatter
