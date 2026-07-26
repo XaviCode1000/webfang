@@ -33,6 +33,7 @@ use crate::infrastructure::config::ScraperConfig;
 use crate::infrastructure::cpu_pool::RayonCpuPool;
 use crate::infrastructure::crawler::resource_downloader::{DownloadConfig, ResourceDownloader};
 use crate::infrastructure::export::state_store::StateStore;
+use crate::infrastructure::network::session_pool::DomainSessionPool;
 // SQLite persistence layer — only compiled under the `persistence` feature.
 #[cfg(feature = "persistence")]
 use crate::infrastructure::persistence::sqlite::{
@@ -101,12 +102,9 @@ impl Container {
         // The application layer depends on `HttpClientPort`; the production
         // `HttpClient` impl is stored as the trait object. No concrete
         // `wreq::Client` is exposed — raw HTTP stays behind the port.
-        let session_pool: Arc<dyn crate::domain::session_port::SessionPort> = Arc::new(
-            crate::infrastructure::network::session_pool::DomainSessionPool::default_pool(),
-        );
-        let http_client_inner = HttpClient::builder(HttpClientConfig::default())
-            .session_pool(session_pool)
-            .build()?;
+        let session_pool = Arc::new(DomainSessionPool::default_pool());
+        let http_client_inner = HttpClient::new(HttpClientConfig::default())?
+            .with_session_pool(session_pool as Arc<dyn crate::domain::session_port::SessionPort>);
         let http_client: Arc<dyn HttpClientPort> = Arc::new(http_client_inner);
 
         // 2. Rate limiter (optional — failure is non-fatal)

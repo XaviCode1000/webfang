@@ -36,7 +36,7 @@ pub enum HttpError {
     Request(String),
     /// WAF/CAPTCHA challenge detected in HTTP 200 (false positive)
     WafChallenge(String),
-    /// Domain banned — all sessions exhausted or in cooldown (FQDN)
+    /// Domain banned — no sessions available in the pool
     DomainBanned(String),
 }
 
@@ -56,10 +56,7 @@ impl std::fmt::Display for HttpError {
                 write!(f, "WAF/CAPTCHA challenge detected ({provider})")
             },
             HttpError::DomainBanned(domain) => {
-                write!(
-                    f,
-                    "domain {domain} temporarily unavailable — all sessions in cooldown"
-                )
+                write!(f, "domain banned: {domain} — no sessions available")
             },
         }
     }
@@ -135,5 +132,15 @@ mod tests {
             "Server Error 500"
         );
         assert_eq!(format!("{}", HttpError::Timeout), "Request Timeout");
+    }
+
+    #[test]
+    fn test_http_error_domain_banned() {
+        let err = HttpError::DomainBanned("example.com".into());
+        assert!(matches!(err, HttpError::DomainBanned(_)));
+        assert_eq!(
+            format!("{err}"),
+            "domain banned: example.com — no sessions available"
+        );
     }
 }

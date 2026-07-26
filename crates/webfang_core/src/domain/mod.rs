@@ -77,6 +77,7 @@ pub use ports::AssetDownloaderPort;
 pub use repositories::CrawlResultRepository;
 pub use repository::VectorRepository;
 pub use result::CrawlResult;
+pub use session_port::{SessionId, SessionPort};
 pub use site::{CrawlerConfig, CrawlerConfigBuilder};
 pub use url_validator::{StaticUrlValidator, UrlValidator, UrlValidatorTrait};
 pub use value_objects::{CorrelationId, ValidUrl};

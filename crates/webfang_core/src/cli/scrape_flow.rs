@@ -12,6 +12,7 @@ use crate::domain::entities::progress::{ScrapeError, ScrapeStatus};
 use crate::domain::ScrapedContent;
 use crate::infrastructure::crawler::robots_utils::{is_allowed_by_robots, new_robots_cache};
 use crate::infrastructure::export::state_store::StateStore;
+use crate::infrastructure::network::session_pool::DomainSessionPool;
 use crate::ScraperConfig;
 use crate::{HttpClient, HttpClientConfig};
 
@@ -116,14 +117,12 @@ pub async fn scrape_urls(
     }
 
     let http_config = build_http_client_config(opts);
-    let session_pool: std::sync::Arc<dyn crate::domain::session_port::SessionPort> =
-        std::sync::Arc::new(
-            crate::infrastructure::network::session_pool::DomainSessionPool::default_pool(),
-        );
-    let http_client = match HttpClient::builder(http_config)
-        .session_pool(session_pool)
-        .build()
-    {
+    let session_pool = std::sync::Arc::new(DomainSessionPool::default_pool());
+    let http_client = match HttpClient::new(http_config).map(|c| {
+        c.with_session_pool(
+            session_pool as std::sync::Arc<dyn crate::domain::session_port::SessionPort>,
+        )
+    }) {
         Ok(c) => c,
         Err(e) => {
             warn!("Failed to create HTTP client: {}", e);

@@ -21,7 +21,7 @@ use dashmap::DashMap;
 use tracing::{debug, instrument, warn};
 
 use crate::domain::clock::{Clock, SystemClock};
-pub use crate::domain::session_port::SessionId;
+use crate::domain::session_port::SessionId;
 
 #[cfg(feature = "otel-metrics")]
 use crate::infrastructure::observability::metrics_instruments::{
@@ -165,13 +165,19 @@ impl DomainSessionPool {
     }
 
     /// Calculate exponential backoff delay for a given failure count.
+    ///
+    /// Applies ±20% jitter to prevent thundering herd on retry.
     fn backoff_delay(&self, consecutive_failures: u32) -> Duration {
+        use rand::Rng;
         let exponent = consecutive_failures.min(self.config.max_exp);
         let base_ms = self.config.base_delay.as_millis();
         let max_ms = self.config.max_delay.as_millis();
         let delay_ms = base_ms.saturating_mul(2u128.pow(exponent));
         let capped = delay_ms.min(max_ms).max(1);
-        Duration::from_millis(capped as u64)
+        // ±20% jitter: random factor between 0.8 and 1.2
+        let jitter_factor = rand::rng().random_range(0.8_f64..=1.2);
+        let jittered = (capped as f64 * jitter_factor).round() as u64;
+        Duration::from_millis(jittered.max(1))
     }
 }
 
@@ -353,11 +359,6 @@ impl SessionManager for DomainSessionPool {
     }
 }
 
-/// Sealed trait internals — prevents external implementations.
-mod sealed {
-    pub trait Sealed {}
-}
-
 impl crate::domain::session_port::SessionPort for DomainSessionPool {
     fn acquire(&self, domain: &str) -> Option<SessionId> {
         SessionManager::acquire(self, domain)
@@ -370,6 +371,11 @@ impl crate::domain::session_port::SessionPort for DomainSessionPool {
     fn report_failure(&self, domain: &str, session: SessionId, status: u16) {
         SessionManager::report_failure(self, domain, session, status)
     }
+}
+
+/// Sealed trait internals — prevents external implementations.
+mod sealed {
+    pub trait Sealed {}
 }
 
 #[cfg(test)]
@@ -432,18 +438,27 @@ mod tests {
         assert_eq!(sessions[0].status, SessionStatus::Retiring);
     }
 
-    // ── Task 3.3: Backoff doubling ──
+    // ── Task 3.3: Backoff doubling (with ±20% jitter) ──
 
     #[test]
     fn backoff_doubles_with_failures() {
         let pool = DomainSessionPool::default_pool();
+        // With ±20% jitter, d1 should be in [1.6s, 2.4s], d2 in [3.2s, 4.8s], d3 in [6.4s, 9.6s]
         let d1 = pool.backoff_delay(1);
+        assert!(
+            d1 >= Duration::from_millis(1600) && d1 <= Duration::from_millis(2400),
+            "d1 should be ~2s ±20%, got {d1:?}"
+        );
         let d2 = pool.backoff_delay(2);
+        assert!(
+            d2 >= Duration::from_millis(3200) && d2 <= Duration::from_millis(4800),
+            "d2 should be ~4s ±20%, got {d2:?}"
+        );
         let d3 = pool.backoff_delay(3);
-
-        assert_eq!(d1, Duration::from_secs(2));
-        assert_eq!(d2, Duration::from_secs(4));
-        assert_eq!(d3, Duration::from_secs(8));
+        assert!(
+            d3 >= Duration::from_millis(6400) && d3 <= Duration::from_millis(9600),
+            "d3 should be ~8s ±20%, got {d3:?}"
+        );
     }
 
     #[test]
@@ -455,8 +470,12 @@ mod tests {
             ..Default::default()
         };
         let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
+        // With ±20% jitter, capped delay should be in [8s, 12s]
         let d_large = pool.backoff_delay(100);
-        assert_eq!(d_large, Duration::from_secs(10));
+        assert!(
+            d_large >= Duration::from_secs(8) && d_large <= Duration::from_secs(12),
+            "capped delay should be ~10s ±20%, got {d_large:?}"
+        );
     }
 
     #[test]
@@ -468,14 +487,23 @@ mod tests {
             ..Default::default()
         };
         let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
-        let d4 = pool.backoff_delay(4);
-        let d5 = pool.backoff_delay(5);
-        let d6 = pool.backoff_delay(6);
-
         // max_exp=4 means exponent is capped at 4, so 2^4=16
-        assert_eq!(d4, Duration::from_secs(16));
-        assert_eq!(d5, Duration::from_secs(16));
-        assert_eq!(d6, Duration::from_secs(16));
+        // With ±20% jitter, delay should be in [12.8s, 19.2s]
+        let d4 = pool.backoff_delay(4);
+        assert!(
+            d4 >= Duration::from_millis(12800) && d4 <= Duration::from_millis(19200),
+            "d4 should be ~16s ±20%, got {d4:?}"
+        );
+        let d5 = pool.backoff_delay(5);
+        assert!(
+            d5 >= Duration::from_millis(12800) && d5 <= Duration::from_millis(19200),
+            "d5 should be ~16s ±20%, got {d5:?}"
+        );
+        let d6 = pool.backoff_delay(6);
+        assert!(
+            d6 >= Duration::from_millis(12800) && d6 <= Duration::from_millis(19200),
+            "d6 should be ~16s ±20%, got {d6:?}"
+        );
     }
 
     // ── Task 3.3: TTL eviction ──

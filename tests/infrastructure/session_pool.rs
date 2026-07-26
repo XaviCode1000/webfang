@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use webfang_core::domain::clock::SystemClock;
+use webfang_core::domain::session_port::SessionId;
 use webfang_core::infrastructure::network::session_pool::{
-    DomainSessionPool, SessionId, SessionManager, SessionPoolConfig,
+    DomainSessionPool, SessionManager, SessionPoolConfig,
 };
 
 // ── Acquire / release cycle ───────────────────────────────────────────────
