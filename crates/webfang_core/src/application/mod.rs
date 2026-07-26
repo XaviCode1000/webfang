@@ -23,6 +23,9 @@ pub mod scraper_service;
 pub mod title_resolver;
 pub mod url_filter;
 
+#[cfg(feature = "adaptive-selectors")]
+pub mod adaptive_engine;
+
 pub use batch::{
     BatchJob, BatchManager, BatchManagerSummary, BatchProcessor, BatchProgress, BatchResult,
 };
