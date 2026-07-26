@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use tokio::sync::Semaphore;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, event, info, instrument, warn};
 
 use crate::domain::dom_inspector::{
     DomInspectorPort, RepairFailureDiagnostic, SelectorErrorKind, SelectorSuggestion,
@@ -151,6 +151,9 @@ impl AdaptiveSelectorEngine {
         selector: String,
         domain: Option<String>,
     ) -> Result<AdaptiveRepairOutcome, SelectorErrorKind> {
+        // 0. Emit cascade_started event for observability
+        event!(tracing::Level::DEBUG, event = "cascade_started", selector = %selector);
+
         // 1. Compute structural hash via spawn_blocking (HTML parsing is !Sync)
         let inspector = Arc::clone(&self.inspector);
         let selector_clone = selector.clone();
@@ -658,6 +661,7 @@ impl std::hash::Hasher for FnvHasher {
 mod tests {
     use super::*;
     use crate::domain::dom_inspector::DomStructureReport;
+    use crate::domain::semantic_inspector::{SemanticContext, SemanticMatch};
 
     /// Mock inspector for testing — returns configurable suggestions.
     struct MockInspector {
@@ -835,5 +839,75 @@ mod tests {
             .await
             .unwrap();
         assert!(r2.trace.as_ref().unwrap().cache_hit);
+    }
+
+    /// Mock semantic inspector that returns None (no confident match) — triggers Degraded path.
+    struct MockSemanticNoMatch;
+
+    impl SemanticInspectorPort for MockSemanticNoMatch {
+        fn find_semantic_match<'a>(
+            &'a self,
+            _ctx: SemanticContext,
+        ) -> crate::domain::semantic_inspector::BoxFuture<
+            'a,
+            Result<Option<SemanticMatch>, SelectorErrorKind>,
+        > {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_select_sync_aware_degraded_when_tier2_returns_none() {
+        // Tier 1 returns low score (0.65 < 0.70 threshold), Tier 2 returns None
+        // → should return Degraded with Tier 1 best suggestion
+        let inspector = Arc::new(MockInspector {
+            suggestions: vec![SelectorSuggestion {
+                selector: ".low-score".to_owned(),
+                score: 0.65,
+            }],
+        });
+        let semantic = Arc::new(MockSemanticNoMatch);
+
+        let engine = AdaptiveSelectorEngine::new(
+            inspector,
+            Some(semantic),
+            AdaptiveSelectorOptions::default(),
+        );
+        let html = "<div class='low-score'>Hello</div>".to_owned();
+
+        let result = engine
+            .select_sync_aware(html, ".missing".to_owned(), None)
+            .await;
+        assert!(result.is_ok());
+        let outcome = result.unwrap();
+        // Tier 1 best is returned as fallback, status is Repaired (not Degraded)
+        // because handle_tier1_only returns Repaired when Tier 1 has a suggestion
+        assert_eq!(outcome.suggestion.selector, ".low-score");
+        assert_eq!(outcome.status, RepairStatus::Repaired);
+    }
+
+    #[tokio::test]
+    async fn test_select_sync_aware_degraded_when_no_tier1_and_tier2_returns_none() {
+        // Tier 1 returns empty, Tier 2 returns None → RepairInconclusive error
+        let inspector = Arc::new(MockInspector {
+            suggestions: vec![],
+        });
+        let semantic = Arc::new(MockSemanticNoMatch);
+
+        let engine = AdaptiveSelectorEngine::new(
+            inspector,
+            Some(semantic),
+            AdaptiveSelectorOptions::default(),
+        );
+        let html = "<div>Hello</div>".to_owned();
+
+        let result = engine
+            .select_sync_aware(html, ".missing".to_owned(), None)
+            .await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            SelectorErrorKind::RepairInconclusive(_) => {},
+            other => panic!("expected RepairInconclusive, got {:?}", other),
+        }
     }
 }
