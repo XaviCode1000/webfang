@@ -135,6 +135,205 @@ impl AdaptiveSelectorEngine {
         }
     }
 
+    /// Sync-aware repair entry point — accepts raw HTML string (Send + Sync)
+    /// instead of `&scraper::Html` (!Sync).
+    ///
+    /// Tier 1 (lexical) runs inside `spawn_blocking` to isolate the `!Sync`
+    /// `scraper::Html` from the async runtime. Tier 2 (semantic) runs async
+    /// on fragments extracted from the DOM.
+    ///
+    /// This is the recommended entry point for integration into async pipelines
+    /// like `scrape_with_config` where `#[instrument]` requires `Sync`.
+    #[instrument(skip(self), fields(failed_selector = %selector))]
+    pub async fn select_sync_aware(
+        &self,
+        html_raw: String,
+        selector: String,
+        domain: Option<String>,
+    ) -> Result<AdaptiveRepairOutcome, SelectorErrorKind> {
+        // 1. Compute structural hash via spawn_blocking (HTML parsing is !Sync)
+        let inspector = Arc::clone(&self.inspector);
+        let selector_clone = selector.clone();
+        let html_for_hash = html_raw.clone();
+
+        let structural_hash = tokio::task::spawn_blocking(move || {
+            let document = scraper::Html::parse_document(&html_for_hash);
+            let report = inspector.inspect(&document);
+            // Deterministic hash from sorted tag counts
+            let mut tags: Vec<_> = report.tag_counts.iter().collect();
+            tags.sort_by_key(|(tag, _)| tag.as_str());
+            let mut combined = String::new();
+            for (tag, count) in &tags {
+                combined.push_str(tag);
+                combined.push(':');
+                combined.push_str(&count.to_string());
+                combined.push(',');
+            }
+            use std::hash::{Hash, Hasher};
+            let mut hasher = FnvHasher::default();
+            combined.hash(&mut hasher);
+            hasher.finish()
+        })
+        .await
+        .expect("Tier 1 hash computation panicked");
+
+        // 2. Check cache
+        let cache_key = self.cache_key(&selector, structural_hash);
+        if let Some(entry) = self.cache.get(&cache_key) {
+            if entry.expires_at > Instant::now() {
+                let mut outcome = entry.outcome.clone();
+                if let Some(ref mut trace) = outcome.trace {
+                    trace.cache_hit = true;
+                }
+                debug!(cache_hit = true, "returning cached repair outcome");
+                return Ok(outcome);
+            }
+        }
+
+        // 3. Tier 1: lexical via spawn_blocking (HTML parsing is !Sync)
+        let inspector = Arc::clone(&self.inspector);
+        let html_for_t1 = html_raw.clone();
+
+        let t1_suggestions = tokio::task::spawn_blocking(move || {
+            let document = scraper::Html::parse_document(&html_for_t1);
+            inspector.suggest(&document, &selector_clone)
+        })
+        .await
+        .expect("Tier 1 suggestion panicked");
+
+        let best_tier1 = t1_suggestions.into_iter().max_by(|a, b| {
+            a.score
+                .partial_cmp(&b.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let tier1_score = best_tier1.as_ref().map(|s| s.score).unwrap_or(0.0);
+        debug!(score = tier1_score, "tier1_evaluated");
+
+        // 4. Fast path: high confidence → return immediately
+        if tier1_score > self.options.lexical_threshold {
+            if let Some(best) = best_tier1 {
+                let trace = CascadeTrace {
+                    tier1_score,
+                    tier2_score: None,
+                    tier2_latency_ms: 0,
+                    cache_hit: false,
+                };
+                let outcome = AdaptiveRepairOutcome::repaired(best, trace);
+                self.cache_insert(cache_key, outcome.clone());
+                info!(new_selector = %outcome.suggestion.selector, method = "tier1_lexical", "repair_resolved");
+                return Ok(outcome);
+            }
+        }
+
+        // 5. Tier 2: semantic (if available)
+        let semantic = match &self.semantic {
+            Some(s) => s,
+            None => {
+                return self
+                    .handle_tier1_only(best_tier1, tier1_score, structural_hash, cache_key)
+                    .await;
+            },
+        };
+
+        // Check Tier 2 availability — skip if inference pool is saturated
+        let _permit = match tokio::time::timeout(
+            Duration::from_millis(100),
+            self.inference_semaphore.acquire(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) => {
+                warn!("inference semaphore closed, skipping tier2");
+                return self
+                    .handle_tier1_only(best_tier1, tier1_score, structural_hash, cache_key)
+                    .await;
+            },
+            Err(_) => {
+                warn!("tier2 inference pool saturated (semaphore timeout), skipping tier2");
+                return self
+                    .handle_tier1_only(best_tier1, tier1_score, structural_hash, cache_key)
+                    .await;
+            },
+        };
+
+        // 6. Extract DOM fragments via spawn_blocking (HTML parsing is !Sync)
+        let inspector = Arc::clone(&self.inspector);
+        let html_for_fragments = html_raw.clone();
+
+        let dom_fragments = tokio::task::spawn_blocking(move || {
+            let document = scraper::Html::parse_document(&html_for_fragments);
+            let report = inspector.inspect(&document);
+            report
+                .common_classes
+                .iter()
+                .map(|(class, _)| class.clone())
+                .chain(report.common_ids.iter().map(|(id, _)| id.clone()))
+                .collect::<Vec<_>>()
+        })
+        .await
+        .expect("DOM fragment extraction panicked");
+
+        // 7. Build semantic context and run Tier 2
+        let ctx = SemanticContext {
+            target_text: html_raw,
+            dom_fragments,
+            domain_hint: domain,
+        };
+
+        let tier2_start = Instant::now();
+        let tier2_result = semantic.find_semantic_match(ctx).await;
+        let tier2_latency_ms = tier2_start.elapsed().as_millis() as u64;
+
+        match tier2_result {
+            Ok(Some(sem_match)) => {
+                debug!(confidence = sem_match.confidence, "tier2_escalated");
+
+                let trace = CascadeTrace {
+                    tier1_score,
+                    tier2_score: Some(sem_match.confidence),
+                    tier2_latency_ms,
+                    cache_hit: false,
+                };
+
+                let suggestion = SelectorSuggestion {
+                    selector: sem_match.selector,
+                    score: sem_match.confidence as f64,
+                };
+
+                let status = if sem_match.confidence >= self.options.semantic_threshold {
+                    RepairStatus::Repaired
+                } else {
+                    RepairStatus::Degraded
+                };
+
+                let outcome = AdaptiveRepairOutcome {
+                    suggestion,
+                    status,
+                    trace: Some(trace),
+                };
+                self.cache_insert(cache_key, outcome.clone());
+                info!(
+                    new_selector = %outcome.suggestion.selector,
+                    final_score = sem_match.confidence,
+                    method = "tier2_semantic",
+                    "repair_resolved"
+                );
+                Ok(outcome)
+            },
+            Ok(None) => {
+                self.handle_tier1_only(best_tier1, tier1_score, structural_hash, cache_key)
+                    .await
+            },
+            Err(e) => {
+                warn!(error = ?e, "tier2 inference failed");
+                self.handle_tier1_only(best_tier1, tier1_score, structural_hash, cache_key)
+                    .await
+            },
+        }
+    }
+
     /// Compute a structural hash from DOM tag counts for cache keying.
     #[instrument(skip(self))]
     fn structural_hash(&self, document: &scraper::Html) -> u64 {
@@ -585,5 +784,56 @@ mod tests {
             "second call should hit cache, cache_len={}",
             engine.cache_len()
         );
+    }
+
+    #[tokio::test]
+    async fn test_select_sync_aware_tier1_high_score() {
+        let inspector = Arc::new(MockInspector {
+            suggestions: vec![SelectorSuggestion {
+                selector: ".main-content".to_owned(),
+                score: 0.92,
+            }],
+        });
+
+        let engine =
+            AdaptiveSelectorEngine::new(inspector, None, AdaptiveSelectorOptions::default());
+        let html = "<div class='main-content'>Hello</div>".to_owned();
+
+        let result = engine
+            .select_sync_aware(html, ".content".to_owned(), None)
+            .await;
+        assert!(result.is_ok());
+        let outcome = result.unwrap();
+        assert_eq!(outcome.status, RepairStatus::Repaired);
+        assert_eq!(outcome.suggestion.selector, ".main-content");
+        assert!(outcome.trace.as_ref().unwrap().tier2_score.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_select_sync_aware_cache_hit() {
+        let inspector = Arc::new(MockInspector {
+            suggestions: vec![SelectorSuggestion {
+                selector: ".cached".to_owned(),
+                score: 0.90,
+            }],
+        });
+
+        let engine =
+            AdaptiveSelectorEngine::new(inspector, None, AdaptiveSelectorOptions::default());
+        let html = "<div class='cached'>Hello</div>".to_owned();
+
+        // First call
+        let r1 = engine
+            .select_sync_aware(html.clone(), ".target".to_owned(), None)
+            .await
+            .unwrap();
+        assert!(!r1.trace.as_ref().unwrap().cache_hit);
+
+        // Second call — should hit cache
+        let r2 = engine
+            .select_sync_aware(html, ".target".to_owned(), None)
+            .await
+            .unwrap();
+        assert!(r2.trace.as_ref().unwrap().cache_hit);
     }
 }
