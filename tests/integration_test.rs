@@ -360,9 +360,7 @@ async fn test_download_images_from_website() {
     };
 
     // Act
-    let result: Result<Vec<_>, _> = scrape_with_config(&client, &url, &config, None).await;
-
-    // Assert - Should succeed or fail gracefully (network dependent)
+    let result: Result<Vec<_>, _> = scrape_with_config(&client, &url, &config, None, None, None).await;
     if let Ok(contents) = result {
         if !contents.is_empty() {
             let content = &contents[0];
@@ -432,7 +430,7 @@ async fn test_download_documents_from_website() {
     };
 
     // Act
-    let result: Result<Vec<_>, _> = scrape_with_config(&client, &url, &config, None).await;
+    let result: Result<Vec<_>, _> = scrape_with_config(&client, &url, &config, None, None, None).await;
 
     // Assert - Just verify it doesn't crash
     // Document extraction depends on specific site content
