@@ -16,7 +16,6 @@ pub mod export_utils;
 pub mod http_client;
 pub mod pipeline;
 pub mod progress_observer;
-pub mod progress_types;
 pub mod rate_limiter;
 pub mod scraper_service;
 /// Resolve extracted page titles to guaranteed non-empty strings.
@@ -45,3 +44,9 @@ pub use scraper_service::{
 };
 pub use title_resolver::resolve_title;
 pub use url_filter::{extract_domain, is_allowed, is_excluded, is_internal_link, matches_pattern};
+
+/// Re-export progress types from domain for backward compatibility.
+/// The canonical location is now `domain::entities::progress`.
+pub mod progress_types {
+    pub use crate::domain::entities::progress::*;
+}

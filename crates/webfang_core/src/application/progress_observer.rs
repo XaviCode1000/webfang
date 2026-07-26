@@ -1,68 +1,31 @@
-//! Progress observer trait for decoupled progress reporting.
+//! Progress observer implementations for decoupled progress reporting.
 //!
-//! Provides a trait abstraction over the raw `mpsc::Sender<ScrapeProgress>` channel,
-//! eliminating boilerplate `if !quiet { if let Some(tx) = ... }` patterns.
+//! Provides concrete implementations of the `ProgressObserver` trait
+//! (defined in `domain::ports`) that handle the channel/quiet logic
+//! internally, so callers only need a single one-liner per event.
 
-use std::future::Future;
-use std::pin::Pin;
+use crate::domain::entities::progress::{ScrapeError, ScrapeProgress, ScrapeStatus};
+pub use crate::domain::ports::ProgressObserver;
 
-use crate::application::progress_types::{ScrapeError, ScrapeProgress};
-
-/// Trait for observing scraping progress events.
+/// Live observer that forwards events through an optional `UnboundedSender`.
 ///
-/// Implementations handle the quiet/channel logic internally, so callers
-/// only need a single one-liner per event.
-///
-/// Methods are desugared to `Pin<Box<dyn Future<…> + Send + '_>>` so the
-/// trait is dyn-compatible without the `async_trait` crate, matching the
-/// pattern in `domain::repository::VectorRepository`.
-pub trait ProgressObserver: Send + Sync {
-    /// A page scrape has started.
-    fn on_page_started<'a>(&'a self, url: &'a str)
-        -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
-
-    /// A page scrape completed successfully.
-    fn on_page_completed<'a>(
-        &'a self,
-        url: &'a str,
-        chars: usize,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
-
-    /// A page scrape failed.
-    fn on_page_failed<'a>(
-        &'a self,
-        url: &'a str,
-        error: &'a ScrapeError,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
-
-    /// All URLs have been processed.
-    fn on_finished<'a>(
-        &'a self,
-        total: usize,
-        successful: usize,
-        failed: usize,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
-
-    /// A URL was blocked by robots.txt.
-    fn on_robots_blocked<'a>(
-        &'a self,
-        url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
-}
-
-/// Live observer that forwards events through an optional `mpsc::Sender`.
-///
-/// Respects the `quiet` flag — when `true`, no events are emitted.
+/// When `tx` is `Some`, events are sent through the channel.
+/// When `tx` is `None` (non-TUI mode), events are written to stderr.
+/// When `quiet` is `true`, all methods become no-ops.
 pub struct LiveProgressObserver {
-    tx: Option<tokio::sync::mpsc::Sender<ScrapeProgress>>,
+    tx: Option<tokio::sync::mpsc::UnboundedSender<ScrapeProgress>>,
     quiet: bool,
 }
 
 impl LiveProgressObserver {
     /// Create a new live observer.
     ///
-    /// If `tx` is `None` or `quiet` is `true`, all methods become no-ops.
-    pub fn new(tx: Option<tokio::sync::mpsc::Sender<ScrapeProgress>>, quiet: bool) -> Self {
+    /// If `tx` is `None` and `quiet` is `false`, events are written to stderr.
+    /// If `quiet` is `true`, all events are suppressed.
+    pub fn new(
+        tx: Option<tokio::sync::mpsc::UnboundedSender<ScrapeProgress>>,
+        quiet: bool,
+    ) -> Self {
         Self { tx, quiet }
     }
 }
@@ -71,17 +34,37 @@ impl ProgressObserver for LiveProgressObserver {
     fn on_page_started<'a>(
         &'a self,
         url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             if self.quiet {
                 return;
             }
             if let Some(ref tx) = self.tx {
-                let _ = tx
-                    .send(ScrapeProgress::Started {
-                        url: url.to_string(),
-                    })
-                    .await;
+                let _ = tx.send(ScrapeProgress::Started {
+                    url: url.to_string(),
+                });
+            } else {
+                eprintln!("Status: {} [Started]", url);
+            }
+        })
+    }
+
+    fn on_status_changed<'a>(
+        &'a self,
+        url: &'a str,
+        status: ScrapeStatus,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            if self.quiet {
+                return;
+            }
+            if let Some(ref tx) = self.tx {
+                let _ = tx.send(ScrapeProgress::StatusChanged {
+                    url: url.to_string(),
+                    status,
+                });
+            } else {
+                eprintln!("Status: {} [{:?}]", url, status);
             }
         })
     }
@@ -90,18 +73,18 @@ impl ProgressObserver for LiveProgressObserver {
         &'a self,
         url: &'a str,
         chars: usize,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             if self.quiet {
                 return;
             }
             if let Some(ref tx) = self.tx {
-                let _ = tx
-                    .send(ScrapeProgress::Completed {
-                        url: url.to_string(),
-                        chars,
-                    })
-                    .await;
+                let _ = tx.send(ScrapeProgress::Completed {
+                    url: url.to_string(),
+                    chars,
+                });
+            } else {
+                eprintln!("Status: {} [Completed, {} chars]", url, chars);
             }
         })
     }
@@ -110,18 +93,18 @@ impl ProgressObserver for LiveProgressObserver {
         &'a self,
         url: &'a str,
         error: &'a ScrapeError,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             if self.quiet {
                 return;
             }
             if let Some(ref tx) = self.tx {
-                let _ = tx
-                    .send(ScrapeProgress::Failed {
-                        url: url.to_string(),
-                        error: error.clone(),
-                    })
-                    .await;
+                let _ = tx.send(ScrapeProgress::Failed {
+                    url: url.to_string(),
+                    error: error.clone(),
+                });
+            } else {
+                eprintln!("Status: {} [Failed: {}]", url, error);
             }
         })
     }
@@ -131,19 +114,19 @@ impl ProgressObserver for LiveProgressObserver {
         total: usize,
         successful: usize,
         failed: usize,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             if self.quiet {
                 return;
             }
             if let Some(ref tx) = self.tx {
-                let _ = tx
-                    .send(ScrapeProgress::Finished {
-                        total,
-                        successful,
-                        failed,
-                    })
-                    .await;
+                let _ = tx.send(ScrapeProgress::Finished {
+                    total,
+                    successful,
+                    failed,
+                });
+            } else {
+                eprintln!("Finished: {total} total, {successful} succeeded, {failed} failed");
             }
         })
     }
@@ -151,18 +134,18 @@ impl ProgressObserver for LiveProgressObserver {
     fn on_robots_blocked<'a>(
         &'a self,
         url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             if self.quiet {
                 return;
             }
             if let Some(ref tx) = self.tx {
-                let _ = tx
-                    .send(ScrapeProgress::Failed {
-                        url: url.to_string(),
-                        error: ScrapeError::Other("blocked by robots.txt".into()),
-                    })
-                    .await;
+                let _ = tx.send(ScrapeProgress::Failed {
+                    url: url.to_string(),
+                    error: ScrapeError::Other("blocked by robots.txt".into()),
+                });
+            } else {
+                eprintln!("Status: {} [Blocked by robots.txt]", url);
             }
         })
     }
@@ -175,21 +158,28 @@ impl ProgressObserver for NoopObserver {
     fn on_page_started<'a>(
         &'a self,
         _url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async {})
+    }
+    fn on_status_changed<'a>(
+        &'a self,
+        _url: &'a str,
+        _status: ScrapeStatus,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
     fn on_page_completed<'a>(
         &'a self,
         _url: &'a str,
         _chars: usize,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
     fn on_page_failed<'a>(
         &'a self,
         _url: &'a str,
         _error: &'a ScrapeError,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
     fn on_finished<'a>(
@@ -197,13 +187,13 @@ impl ProgressObserver for NoopObserver {
         _total: usize,
         _successful: usize,
         _failed: usize,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
     fn on_robots_blocked<'a>(
         &'a self,
         _url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
 }
@@ -214,7 +204,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_observer_sends_started_when_not_quiet() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let observer = LiveProgressObserver::new(Some(tx), false);
 
         observer.on_page_started("https://example.com").await;
@@ -228,7 +218,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_observer_suppresses_when_quiet() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let observer = LiveProgressObserver::new(Some(tx), true);
 
         observer.on_page_started("https://example.com").await;
@@ -261,7 +251,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_observer_sends_completed_with_chars() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let observer = LiveProgressObserver::new(Some(tx), false);
 
         observer.on_page_completed("https://example.com", 42).await;
@@ -275,7 +265,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_observer_sends_finished_counts() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let observer = LiveProgressObserver::new(Some(tx), false);
 
         observer.on_finished(10, 8, 2).await;
@@ -296,7 +286,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_observer_sends_robots_blocked_as_failed() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let observer = LiveProgressObserver::new(Some(tx), false);
 
         observer

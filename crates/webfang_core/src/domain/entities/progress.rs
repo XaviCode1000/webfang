@@ -182,8 +182,13 @@ impl From<crate::error::ScraperError> for ScrapeError {
                 ScrapeError::WafBlocked(provider)
             },
             crate::error::ScraperError::Readability(_) => ScrapeError::Parse(format!("{e}")),
-            crate::error::ScraperError::ExtractionFailed { .. } => ScrapeError::Parse(format!("{e}")),
-            crate::error::ScraperError::Timeout => ScrapeError::Timeout(format!("{e}")),
+            crate::error::ScraperError::ExtractionFailed { .. } => {
+                ScrapeError::Parse(format!("{e}"))
+            },
+            crate::error::ScraperError::GlobalTimeout
+            | crate::error::ScraperError::SlowlorisTimeout => {
+                ScrapeError::Timeout(format!("{e}"))
+            },
             crate::error::ScraperError::Io(_) => ScrapeError::Connection(format!("{e}")),
             crate::error::ScraperError::Persistence(_) => ScrapeError::Connection(format!("{e}")),
             crate::error::ScraperError::Conversion(_) => ScrapeError::Parse(format!("{e}")),

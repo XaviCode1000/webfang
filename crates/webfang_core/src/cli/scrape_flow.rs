@@ -7,8 +7,8 @@ use url::Url;
 use crate::application::crawl_options::CrawlOptions;
 use crate::application::export_factory;
 use crate::application::progress_observer::ProgressObserver;
-use crate::application::progress_types::ScrapeError;
 use crate::application::scrape_single_url_for_tui;
+use crate::domain::entities::progress::{ScrapeError, ScrapeStatus};
 use crate::domain::ScrapedContent;
 use crate::infrastructure::crawler::robots_utils::{is_allowed_by_robots, new_robots_cache};
 use crate::infrastructure::export::state_store::StateStore;
@@ -182,10 +182,17 @@ pub async fn scrape_urls(
             }
         }
 
+        observer
+            .on_status_changed(url_str, ScrapeStatus::Fetching)
+            .await;
+
         match scrape_single_url_for_tui(http_client.client(), &url, scraper_config, downloader)
             .await
         {
             Ok(content) => {
+                observer
+                    .on_status_changed(url_str, ScrapeStatus::Extracting)
+                    .await;
                 let chars = content.content.chars().count();
                 results.push(content);
                 observer.on_page_completed(url_str, chars).await;
@@ -193,6 +200,8 @@ pub async fn scrape_urls(
             Err(e) => {
                 let url_str = url.as_str().to_string();
                 warn!("Failed to scrape {}: {}", url_str, e);
+                // ScraperError doesn't impl Clone, so we format for the observer
+                // and keep the original for the failures vec (needed for error chain display).
                 let scrape_err = ScrapeError::Other(format!("{e}"));
                 observer.on_page_failed(&url_str, &scrape_err).await;
                 failures.push((url_str, e));

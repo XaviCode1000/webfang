@@ -38,6 +38,27 @@ pub fn handle_completions(shell: Shell) -> CliExit {
         .unwrap_or_else(|_| CliExit::UsageError("completion generation failed".into()))
 }
 
+/// Create an unbounded channel and a `LiveProgressObserver` wired to it.
+///
+/// Returns `(observer, rx)` where:
+/// - `observer` wraps the `tx` side and can be passed to `scrape_urls`
+/// - `rx` is the receiving end for the TUI progress view
+///
+/// The caller must pass `rx` to `run_progress_view` on the main thread
+/// (crossterm TTY ownership requirement).
+pub fn prepare_progress_channel(
+    quiet: bool,
+) -> (
+    Box<dyn crate::domain::ports::ProgressObserver>,
+    tokio::sync::mpsc::UnboundedReceiver<crate::domain::entities::progress::ScrapeProgress>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let observer = Box::new(
+        crate::application::progress_observer::LiveProgressObserver::new(Some(tx), quiet),
+    );
+    (observer, rx)
+}
+
 /// Main orchestration entry point.
 ///
 /// Coordinates the full scraping pipeline:
@@ -77,6 +98,9 @@ pub async fn run(
         );
     }
 
+    // Create observer with stderr fallback (no channel) for non-TUI mode.
+    // For TUI mode, call `prepare_progress_channel()` from main.rs and pass
+    // the observer here instead.
     let observer = Box::new(
         crate::application::progress_observer::LiveProgressObserver::new(None, opts.export.quiet),
     );

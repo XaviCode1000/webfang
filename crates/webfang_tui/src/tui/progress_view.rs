@@ -27,14 +27,14 @@
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let urls = vec![Url::parse("https://example.com/1")?];
-//! let (tx, rx) = mpsc::channel(100);
+//! let (tx, rx) = mpsc::unbounded_channel();
 //! run_progress_view(rx, &urls).await;
 //! # Ok(())
 //! # }
 //! ```
 
 use std::io;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::UnboundedReceiver;
 use url::Url;
 
 use crate::tui::{
@@ -65,7 +65,7 @@ use crate::tui::{
 ///
 /// Returns `io::Error` if terminal setup fails.
 pub async fn run_progress_view(
-    progress_rx: mpsc::Receiver<ScrapeProgress>,
+    progress_rx: UnboundedReceiver<ScrapeProgress>,
     urls: &[Url],
 ) -> io::Result<()> {
     let help_bindings: Vec<(String, String)> = vec![
