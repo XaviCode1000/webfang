@@ -224,7 +224,6 @@ required-features = ["ui"]
 [[test]]
 name = "progress_e2e_wiring"
 path = "../../tests/progress_e2e_wiring.rs"
-required-features = ["ui"]
 
 [lints.clippy]
 doc_markdown = "allow"
