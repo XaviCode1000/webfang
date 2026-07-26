@@ -99,17 +99,6 @@ impl SemanticInspectorPort for GraniteDomInspector {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    /// Mock pool for testing — returns a fixed embedding.
-    struct MockPool;
-
-    impl MockPool {
-        fn new() -> Self {
-            Self
-        }
-    }
-
     // Note: GraniteDomInspector requires real InferencePool and MiniLmTokenizer.
     // Unit tests use MockSemanticInspector in adaptive_engine tests instead.
     // Integration tests should use real models with #[ignore] annotation.
