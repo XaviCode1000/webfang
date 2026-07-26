@@ -33,7 +33,6 @@ pub mod pattern_matching;
 pub mod pipeline_item;
 pub mod ports;
 pub mod repositories;
-pub mod session_port;
 pub mod repository;
 pub mod result;
 pub mod session_port;

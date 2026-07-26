@@ -21,7 +21,7 @@ use dashmap::DashMap;
 use tracing::{debug, instrument, warn};
 
 use crate::domain::clock::{Clock, SystemClock};
-pub use crate::domain::session_port::SessionId;
+use crate::domain::session_port::SessionId;
 
 #[cfg(feature = "otel-metrics")]
 use crate::infrastructure::observability::metrics_instruments::{
@@ -378,20 +378,6 @@ mod sealed {
     pub trait Sealed {}
 }
 
-impl crate::domain::session_port::SessionPort for DomainSessionPool {
-    fn acquire(&self, domain: &str) -> Option<SessionId> {
-        SessionManager::acquire(self, domain)
-    }
-
-    fn report_success(&self, domain: &str, session: SessionId) {
-        SessionManager::report_success(self, domain, session)
-    }
-
-    fn report_failure(&self, domain: &str, session: SessionId, status: u16) {
-        SessionManager::report_failure(self, domain, session, status)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,14 +445,20 @@ mod tests {
         let pool = DomainSessionPool::default_pool();
         // With ±20% jitter, d1 should be in [1.6s, 2.4s], d2 in [3.2s, 4.8s], d3 in [6.4s, 9.6s]
         let d1 = pool.backoff_delay(1);
-        assert!(d1 >= Duration::from_millis(1600) && d1 <= Duration::from_millis(2400),
-            "d1 should be ~2s ±20%, got {d1:?}");
+        assert!(
+            d1 >= Duration::from_millis(1600) && d1 <= Duration::from_millis(2400),
+            "d1 should be ~2s ±20%, got {d1:?}"
+        );
         let d2 = pool.backoff_delay(2);
-        assert!(d2 >= Duration::from_millis(3200) && d2 <= Duration::from_millis(4800),
-            "d2 should be ~4s ±20%, got {d2:?}");
+        assert!(
+            d2 >= Duration::from_millis(3200) && d2 <= Duration::from_millis(4800),
+            "d2 should be ~4s ±20%, got {d2:?}"
+        );
         let d3 = pool.backoff_delay(3);
-        assert!(d3 >= Duration::from_millis(6400) && d3 <= Duration::from_millis(9600),
-            "d3 should be ~8s ±20%, got {d3:?}");
+        assert!(
+            d3 >= Duration::from_millis(6400) && d3 <= Duration::from_millis(9600),
+            "d3 should be ~8s ±20%, got {d3:?}"
+        );
     }
 
     #[test]
@@ -480,8 +472,10 @@ mod tests {
         let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
         // With ±20% jitter, capped delay should be in [8s, 12s]
         let d_large = pool.backoff_delay(100);
-        assert!(d_large >= Duration::from_secs(8) && d_large <= Duration::from_secs(12),
-            "capped delay should be ~10s ±20%, got {d_large:?}");
+        assert!(
+            d_large >= Duration::from_secs(8) && d_large <= Duration::from_secs(12),
+            "capped delay should be ~10s ±20%, got {d_large:?}"
+        );
     }
 
     #[test]
@@ -496,14 +490,20 @@ mod tests {
         // max_exp=4 means exponent is capped at 4, so 2^4=16
         // With ±20% jitter, delay should be in [12.8s, 19.2s]
         let d4 = pool.backoff_delay(4);
-        assert!(d4 >= Duration::from_millis(12800) && d4 <= Duration::from_millis(19200),
-            "d4 should be ~16s ±20%, got {d4:?}");
+        assert!(
+            d4 >= Duration::from_millis(12800) && d4 <= Duration::from_millis(19200),
+            "d4 should be ~16s ±20%, got {d4:?}"
+        );
         let d5 = pool.backoff_delay(5);
-        assert!(d5 >= Duration::from_millis(12800) && d5 <= Duration::from_millis(19200),
-            "d5 should be ~16s ±20%, got {d5:?}");
+        assert!(
+            d5 >= Duration::from_millis(12800) && d5 <= Duration::from_millis(19200),
+            "d5 should be ~16s ±20%, got {d5:?}"
+        );
         let d6 = pool.backoff_delay(6);
-        assert!(d6 >= Duration::from_millis(12800) && d6 <= Duration::from_millis(19200),
-            "d6 should be ~16s ±20%, got {d6:?}");
+        assert!(
+            d6 >= Duration::from_millis(12800) && d6 <= Duration::from_millis(19200),
+            "d6 should be ~16s ±20%, got {d6:?}"
+        );
     }
 
     // ── Task 3.3: TTL eviction ──

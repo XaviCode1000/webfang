@@ -179,44 +179,6 @@ impl HttpClient {
         &self.client
     }
 
-    /// Report request outcome to the session pool for domain health tracking.
-    ///
-    /// Maps `HttpError` variants to penalty status codes:
-    /// - WafChallenge/Forbidden → 403 (HIGH penalty)
-    /// - RateLimited → 429 (HIGH penalty)
-    /// - Timeout → 504 (MEDIUM penalty)
-    /// - Connection → 503 (LOW penalty)
-    /// - ClientError(404) → no report (healthy server)
-    /// - Ok → report_success
-    fn report_outcome(
-        &self,
-        domain: &str,
-        session: crate::domain::session_port::SessionId,
-        result: &HttpResult<String>,
-    ) {
-        if let Some(ref pool) = self.session_pool {
-            match result {
-                Ok(_) => pool.report_success(domain, session),
-                Err(e) => {
-                    let status = match e {
-                        HttpError::WafChallenge(_) | HttpError::Forbidden => 403,
-                        HttpError::RateLimited(_) => 429,
-                        HttpError::Timeout => 504,
-                        HttpError::Connection(_) => 503,
-                        // No penalty: ClientError (healthy server), ServerError (transient,
-                        // not domain-level blocking), Request (client-side), DomainBanned (already handled).
-                        // ServerError 5xx are transient — banning would be too aggressive.
-                        HttpError::ClientError(_)
-                        | HttpError::ServerError(_)
-                        | HttpError::Request(_)
-                        | HttpError::DomainBanned(_) => return,
-                    };
-                    pool.report_failure(domain, session, status);
-                },
-            }
-        }
-    }
-
     /// Perform GET request with retry logic
     ///
     /// Handles status codes as follows:
@@ -575,35 +537,6 @@ impl HttpClient {
                 },
             }
         }
-    }
-}
-
-/// Builder for constructing `HttpClient` with optional session pool.
-///
-/// Use `HttpClient::builder(config)` to create a builder, then chain
-/// `.session_pool(pool)` before calling `.build()`.
-pub struct HttpClientBuilder {
-    config: HttpClientConfig,
-    session_pool: Option<Arc<dyn SessionPort>>,
-}
-
-impl HttpClientBuilder {
-    /// Attach a session health pool for domain-level ban tracking.
-    #[must_use]
-    pub fn session_pool(mut self, pool: Arc<dyn SessionPort>) -> Self {
-        self.session_pool = Some(pool);
-        self
-    }
-
-    /// Build the `HttpClient`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ScraperError::Config` if client creation fails.
-    pub fn build(self) -> Result<HttpClient, ScraperError> {
-        let mut client = HttpClient::new(self.config)?;
-        client.session_pool = self.session_pool;
-        Ok(client)
     }
 }
 
@@ -998,6 +931,7 @@ mod waf_detection_tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), normal_body);
+    }
 }
 
 #[cfg(test)]
@@ -1078,8 +1012,10 @@ mod session_pool_tests {
         let result = client.get("https://httpbin.org/get").await;
         // Should NOT be DomainBanned — could be any other error (network, etc.)
         match &result {
-            Err(HttpError::DomainBanned(_)) => panic!("should not be DomainBanned for healthy pool"),
-            _ => {} // Any other error (network, timeout) is fine
+            Err(HttpError::DomainBanned(_)) => {
+                panic!("should not be DomainBanned for healthy pool")
+            },
+            _ => {}, // Any other error (network, timeout) is fine
         }
     }
 

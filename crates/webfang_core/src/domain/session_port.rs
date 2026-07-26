@@ -5,7 +5,21 @@
 //! on infrastructure types. The sealed [`SessionManager`] in infrastructure
 //! implements this port via [`DomainSessionPool`].
 
-pub use crate::infrastructure::network::session_pool::SessionId;
+use std::fmt;
+
+/// Unique identifier for a session slot within a domain pool.
+///
+/// Defined in the domain layer so that `SessionPort` and its consumers
+/// never depend on infrastructure types. Infrastructure converts
+/// internally when needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SessionId(pub usize);
+
+impl fmt::Display for SessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "session-{}", self.0)
+    }
+}
 
 /// Port trait for per-domain session health management.
 ///

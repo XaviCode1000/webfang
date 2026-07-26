@@ -54,7 +54,7 @@ pub mod infrastructure;
 // Domain layer
 pub use domain::{
     ContentType, CrawlError, CrawlResult, CrawlerConfig, CrawlerConfigBuilder, DiscoveredUrl,
-    DownloadedAsset, JsRenderError, JsRenderer, ScrapedContent, ValidUrl,
+    DownloadedAsset, JsRenderError, JsRenderer, ScrapedContent, SessionId, ValidUrl,
 };
 
 // Application layer
@@ -79,7 +79,7 @@ pub use infrastructure::{
     converter, crawler,
     export::{jsonl_exporter, state_store, vector_exporter},
     http,
-    network::session_pool::{DomainSessionPool, SessionId, SessionManager, SessionPoolConfig},
+    network::session_pool::{DomainSessionPool, SessionManager, SessionPoolConfig},
     output::file_saver,
     scraper::readability,
 };
