@@ -22,6 +22,13 @@ use crate::ScraperConfig;
 use futures::stream::{self, StreamExt};
 use tracing::{debug, info, instrument, warn};
 
+#[cfg(feature = "adaptive-selectors")]
+use crate::application::adaptive_engine::AdaptiveSelectorEngine;
+
+/// Placeholder when `adaptive-selectors` feature is disabled.
+#[cfg(not(feature = "adaptive-selectors"))]
+type AdaptiveSelectorEngine = ();
+
 /// Convert an [`HttpError`] into a [`ScraperError`] with the URL context.
 fn scraper_error_from_http(err: HttpError, url: &str) -> ScraperError {
     use crate::domain::error::CrawlError;
@@ -248,7 +255,7 @@ pub async fn scrape_with_readability(
     url: &url::Url,
 ) -> Result<Vec<ScrapedContent>> {
     let outcome =
-        scrape_with_config(client, url, &ScraperConfig::default(), None, None).await?;
+        scrape_with_config(client, url, &ScraperConfig::default(), None, None, None).await?;
     Ok(outcome.results)
 }
 
@@ -290,7 +297,7 @@ impl ScrapeOutcome {
 /// connection errors.
 #[instrument(
     name = "scrape_with_config",
-    skip(client, config, downloader, inspector),
+    skip(client, config, downloader, inspector, engine),
     fields(
         url = %url,
         has_downloads = config.has_downloads()
@@ -302,6 +309,7 @@ pub async fn scrape_with_config(
     config: &ScraperConfig,
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     inspector: Option<&dyn DomInspectorPort>,
+    engine: Option<&AdaptiveSelectorEngine>,
 ) -> Result<ScrapeOutcome> {
     let mut results = Vec::new();
 
@@ -380,6 +388,42 @@ pub async fn scrape_with_config(
 
     // Apply CSS selector extraction if a non-default selector is configured.
     let extract_result = extract_with_selector(&cleaned_html, &config.selector, inspector);
+
+    // Adaptive selector repair: when extraction fails and engine is available,
+    // attempt to find a repaired selector and re-extract.
+    #[cfg(feature = "adaptive-selectors")]
+    let extract_result = if let ExtractResult::Fallback { html, diagnostic } = extract_result {
+        if let Some(engine) = engine {
+            match engine
+                .select_sync_aware(
+                    html.clone(),
+                    config.selector.clone(),
+                    url.host_str().map(|s| s.to_owned()),
+                )
+                .await
+            {
+                Ok(outcome) => {
+                    let repaired =
+                        extract_with_selector(&html, &outcome.suggestion.selector, inspector);
+                    if repaired.is_matched() {
+                        info!(
+                            repaired_selector = %outcome.suggestion.selector,
+                            method = ?outcome.status,
+                            "adaptive_repair_resolved"
+                        );
+                        repaired
+                    } else {
+                        ExtractResult::Fallback { html, diagnostic }
+                    }
+                },
+                Err(_) => ExtractResult::Fallback { html, diagnostic },
+            }
+        } else {
+            ExtractResult::Fallback { html, diagnostic }
+        }
+    } else {
+        extract_result
+    };
 
     let extraction_html = extract_result.as_html().to_owned();
 
@@ -547,7 +591,7 @@ pub async fn scrape_multiple_with_limit(
     let results: Vec<Result<ScrapeOutcome>> = stream::iter(urls.to_vec())
         .map(|url| {
             let config = config.clone();
-            async move { scrape_with_config(client, &url, &config, downloader, None).await }
+            async move { scrape_with_config(client, &url, &config, downloader, None, None).await }
         })
         .buffer_unordered(config.scraper_concurrency)
         .collect()
