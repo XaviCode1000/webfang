@@ -58,7 +58,15 @@ pub(crate) fn webfang_path() -> std::path::PathBuf {
     }
     let cargo = option_env!("CARGO").unwrap_or("cargo");
     let build_args = if cfg!(feature = "ai") {
-        vec!["build", "-p", "webfang_cli", "--bin", "webfang", "--quiet", "--all-features"]
+        vec![
+            "build",
+            "-p",
+            "webfang_cli",
+            "--bin",
+            "webfang",
+            "--quiet",
+            "--all-features",
+        ]
     } else {
         vec!["build", "-p", "webfang_cli", "--bin", "webfang", "--quiet"]
     };
