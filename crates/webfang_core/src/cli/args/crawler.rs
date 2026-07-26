@@ -115,11 +115,7 @@ pub struct CrawlerArgs {
 
     /// Enable adaptive CSS selector repair (2-tier cascade)
     #[cfg(feature = "adaptive-selectors")]
-    #[arg(
-        long,
-        default_value = "false",
-        env = "WEBFANG_ADAPTIVE_SELECTORS"
-    )]
+    #[arg(long, default_value = "false", env = "WEBFANG_ADAPTIVE_SELECTORS")]
     #[clap(next_help_heading = "Behavior")]
     pub adaptive_selectors: bool,
 

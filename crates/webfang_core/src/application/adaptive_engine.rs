@@ -139,18 +139,22 @@ impl AdaptiveSelectorEngine {
     /// Compute a structural hash from DOM tag counts for cache keying.
     #[instrument(skip(self))]
     fn structural_hash(&self, document: &scraper::Html) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
         let report = self.inspector.inspect(document);
-        let mut hasher = DefaultHasher::new();
-        // Sort tags for deterministic hashing
+        // Build a deterministic string from sorted tag counts and hash it
         let mut tags: Vec<_> = report.tag_counts.iter().collect();
         tags.sort_by_key(|(tag, _)| tag.as_str());
+        let mut combined = String::new();
         for (tag, count) in &tags {
-            tag.hash(&mut hasher);
-            count.hash(&mut hasher);
+            combined.push_str(tag);
+            combined.push(':');
+            combined.push_str(&count.to_string());
+            combined.push(',');
         }
+        // Use a simple FNV-1a hash for determinism
+        let mut hasher = FnvHasher::default();
+        combined.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -181,7 +185,11 @@ impl AdaptiveSelectorEngine {
             return None;
         }
 
-        let best = suggestions.into_iter().max_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal))?;
+        let best = suggestions.into_iter().max_by(|a, b| {
+            a.score
+                .partial_cmp(&b.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })?;
 
         debug!(score = best.score, "tier1_evaluated");
 
@@ -224,16 +232,22 @@ impl AdaptiveSelectorEngine {
         let cache_key = self.cache_key(failed_selector, structural_hash);
         if let Some(entry) = self.cache.get(&cache_key) {
             if entry.expires_at > Instant::now() {
+                let mut outcome = entry.outcome.clone();
+                if let Some(ref mut trace) = outcome.trace {
+                    trace.cache_hit = true;
+                }
                 debug!(cache_hit = true, "returning cached repair outcome");
-                return Ok(entry.outcome.clone());
+                return Ok(outcome);
             }
         }
 
         // Tier 1: lexical
         let suggestions = self.inspector.suggest(document, failed_selector);
-        let best_tier1 = suggestions
-            .into_iter()
-            .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal));
+        let best_tier1 = suggestions.into_iter().max_by(|a, b| {
+            a.score
+                .partial_cmp(&b.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let tier1_score = best_tier1.as_ref().map(|s| s.score).unwrap_or(0.0);
         debug!(score = tier1_score, "tier1_evaluated");
@@ -262,7 +276,7 @@ impl AdaptiveSelectorEngine {
                 return self
                     .handle_tier1_only(best_tier1, tier1_score, structural_hash, cache_key)
                     .await;
-            }
+            },
         };
 
         // Check Tier 2 availability — skip if inference pool is saturated
@@ -278,13 +292,13 @@ impl AdaptiveSelectorEngine {
                 return self
                     .handle_tier1_only(best_tier1, tier1_score, structural_hash, cache_key)
                     .await;
-            }
+            },
             Err(_) => {
                 warn!("tier2 inference pool saturated (semaphore timeout), skipping tier2");
                 return self
                     .handle_tier1_only(best_tier1, tier1_score, structural_hash, cache_key)
                     .await;
-            }
+            },
         };
 
         // Build semantic context
@@ -333,17 +347,17 @@ impl AdaptiveSelectorEngine {
                     "repair_resolved"
                 );
                 Ok(outcome)
-            }
+            },
             Ok(None) => {
                 // Tier 2 found nothing — use Tier 1 best or fail
                 self.handle_tier1_only(best_tier1, tier1_score, structural_hash, cache_key)
                     .await
-            }
+            },
             Err(e) => {
                 warn!(error = ?e, "tier2 inference failed");
                 self.handle_tier1_only(best_tier1, tier1_score, structural_hash, cache_key)
                     .await
-            }
+            },
         }
     }
 
@@ -391,10 +405,9 @@ impl AdaptiveSelectorEngine {
 
     /// Compute cache key from selector + structural hash.
     fn cache_key(&self, selector: &str, structural_hash: u64) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = FnvHasher::default();
         selector.hash(&mut hasher);
         structural_hash.hash(&mut hasher);
         hasher.finish()
@@ -421,6 +434,25 @@ impl AdaptiveSelectorEngine {
     #[must_use]
     pub fn cache_len(&self) -> usize {
         self.cache.len()
+    }
+}
+
+/// Minimal FNV-1a hasher for deterministic cache key computation.
+#[derive(Default)]
+struct FnvHasher(u64);
+
+impl std::hash::Hasher for FnvHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        self.0 = h;
     }
 }
 
@@ -457,7 +489,8 @@ mod tests {
             }],
         });
 
-        let engine = AdaptiveSelectorEngine::new(inspector, None, AdaptiveSelectorOptions::default());
+        let engine =
+            AdaptiveSelectorEngine::new(inspector, None, AdaptiveSelectorOptions::default());
         let html = "<div class='main-content'>Hello</div>";
         let document = scraper::Html::parse_document(html);
 
@@ -478,7 +511,8 @@ mod tests {
             }],
         });
 
-        let engine = AdaptiveSelectorEngine::new(inspector, None, AdaptiveSelectorOptions::default());
+        let engine =
+            AdaptiveSelectorEngine::new(inspector, None, AdaptiveSelectorOptions::default());
         let html = "<div class='similar'>Hello</div>";
         let document = scraper::Html::parse_document(html);
 
@@ -495,14 +529,15 @@ mod tests {
             suggestions: vec![],
         });
 
-        let engine = AdaptiveSelectorEngine::new(inspector, None, AdaptiveSelectorOptions::default());
+        let engine =
+            AdaptiveSelectorEngine::new(inspector, None, AdaptiveSelectorOptions::default());
         let html = "<div>Hello</div>";
         let document = scraper::Html::parse_document(html);
 
         let result = engine.repair(&document, html, ".content", None).await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            SelectorErrorKind::RepairInconclusive(_) => {}
+            SelectorErrorKind::RepairInconclusive(_) => {},
             other => panic!("expected RepairInconclusive, got {:?}", other),
         }
     }
@@ -516,17 +551,40 @@ mod tests {
             }],
         });
 
-        let engine = AdaptiveSelectorEngine::new(inspector, None, AdaptiveSelectorOptions::default());
+        let engine =
+            AdaptiveSelectorEngine::new(inspector, None, AdaptiveSelectorOptions::default());
         let html = "<div class='cached'>Hello</div>";
         let document = scraper::Html::parse_document(html);
 
+        // Debug: compute hash twice to verify determinism
+        let h1 = engine.structural_hash(&document);
+        let h2 = engine.structural_hash(&document);
+        assert_eq!(h1, h2, "structural_hash must be deterministic");
+        let k1 = engine.cache_key(".target", h1);
+        let k2 = engine.cache_key(".target", h2);
+        assert_eq!(k1, k2, "cache_key must be deterministic");
+
         // First call — populates cache
-        let r1 = engine.repair(&document, html, ".target", None).await.unwrap();
+        let r1 = engine
+            .repair(&document, html, ".target", None)
+            .await
+            .unwrap();
         assert!(!r1.trace.as_ref().unwrap().cache_hit);
+        assert_eq!(
+            engine.cache_len(),
+            1,
+            "cache should have 1 entry after first call"
+        );
 
         // Second call — should hit cache
-        let r2 = engine.repair(&document, html, ".target", None).await.unwrap();
-        assert!(r2.trace.as_ref().unwrap().cache_hit);
-        assert_eq!(engine.cache_len(), 1);
+        let r2 = engine
+            .repair(&document, html, ".target", None)
+            .await
+            .unwrap();
+        assert!(
+            r2.trace.as_ref().unwrap().cache_hit,
+            "second call should hit cache, cache_len={}",
+            engine.cache_len()
+        );
     }
 }

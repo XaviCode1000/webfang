@@ -55,7 +55,9 @@ pub use dom_inspector::{
     DomInspectorPort, DomStructureReport, ExtractResult, RepairFailureDiagnostic,
     SelectorDiagnostic, SelectorErrorKind, SelectorSuggestion,
 };
-pub use semantic_inspector::{BoxFuture, SemanticContext, SemanticInspectorPort, SemanticMatch, TierSource};
+pub use semantic_inspector::{
+    BoxFuture, SemanticContext, SemanticInspectorPort, SemanticMatch, TierSource,
+};
 
 pub use entities::{
     DocumentChunk, DocumentChunkExported, DocumentChunkUnvalidated, DocumentChunkValidated,
