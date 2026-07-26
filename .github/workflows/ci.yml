@@ -128,7 +128,7 @@ jobs:
       - name: Unit tests (lib)
         run: cargo nextest run --lib --test-threads 4 --retries 2
       - name: Integration tests
-        run: cargo nextest run --test '*' --test-threads 4 --retries 2
+        run: cargo nextest run --features ui --test '*' --test-threads 4 --retries 2
 
   # ============================================================================
   # TIER 4: TEST FULL (4-6 minutes)

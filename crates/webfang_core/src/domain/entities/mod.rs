@@ -6,6 +6,7 @@
 pub mod content;
 pub mod download;
 pub mod export;
+pub mod progress;
 
 pub use content::{
     DocumentChunk, DocumentChunkExported, DocumentChunkUnvalidated, DocumentChunkValidated, Draft,
@@ -13,3 +14,6 @@ pub use content::{
 };
 pub use download::DownloadedAsset;
 pub use export::{ExportFormat, ExportState};
+pub use progress::{
+    ErrorEntry, ErrorType, ProgressState, ScrapeError, ScrapeProgress, ScrapeStatus, UrlState,
+};

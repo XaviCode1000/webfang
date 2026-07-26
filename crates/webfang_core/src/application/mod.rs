@@ -16,7 +16,6 @@ pub mod export_utils;
 pub mod http_client;
 pub mod pipeline;
 pub mod progress_observer;
-pub mod progress_types;
 pub mod rate_limiter;
 pub mod scraper_service;
 /// Resolve extracted page titles to guaranteed non-empty strings.
@@ -33,7 +32,7 @@ pub use crawler::collector::{ResultsAdapter, ResultsCollector};
 pub use crawler::engine::EngineOptions;
 pub use crawler::{
     crawl_site, crawl_site_with_options, crawl_with_sitemap, discover_urls_for_tui,
-    scrape_single_url_for_tui, scrape_urls_for_tui,
+    scrape_single_url_for_tui,
 };
 pub use deduplicator::UrlDeduplicator;
 pub use http_client::create_http_client;
@@ -45,3 +44,14 @@ pub use scraper_service::{
 };
 pub use title_resolver::resolve_title;
 pub use url_filter::{extract_domain, is_allowed, is_excluded, is_internal_link, matches_pattern};
+
+#[deprecated(
+    since = "0.5.0",
+    note = "Tipos de progreso migrados a webfang_core::domain::entities::progress. Este shim será removido."
+)]
+/// Re-export de tipos de progreso desde el dominio para retrocompatibilidad.
+///
+/// La ubicación canónica es ahora `webfang_core::domain::entities::progress`.
+pub mod progress_types {
+    pub use crate::domain::entities::progress::*;
+}

@@ -18,8 +18,10 @@
 
 pub use crate::domain::http_port::HttpClientPort;
 
+use std::future::Future;
 use std::pin::Pin;
 
+use crate::domain::entities::progress::{ScrapeError, ScrapeStatus};
 use crate::domain::entities::ScrapedContent;
 use crate::domain::error::DomainError;
 
@@ -90,6 +92,52 @@ pub trait AssetDownloaderPort: Send + Sync {
                 + '_,
         >,
     >;
+}
+
+/// Port trait for real-time progress reporting during scraping.
+///
+/// Implementations receive structured progress events as the scraper
+/// processes each URL. The trait is `Send + Sync` so observers can be
+/// shared across async tasks.
+pub trait ProgressObserver: Send + Sync {
+    /// Called when scraping starts for a URL.
+    fn on_page_started<'a>(&'a self, url: &'a str)
+        -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+    /// Called when the status changes for a URL (Fetching, Extracting, etc.).
+    fn on_status_changed<'a>(
+        &'a self,
+        url: &'a str,
+        status: ScrapeStatus,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+    /// Called when a URL is successfully scraped.
+    fn on_page_completed<'a>(
+        &'a self,
+        url: &'a str,
+        chars: usize,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+    /// Called when scraping a URL fails.
+    fn on_page_failed<'a>(
+        &'a self,
+        url: &'a str,
+        error: &'a ScrapeError,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+    /// Called when a URL is blocked by robots.txt.
+    fn on_robots_blocked<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+    /// Called after all URLs have been processed.
+    fn on_finished<'a>(
+        &'a self,
+        total: usize,
+        successful: usize,
+        failed: usize,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 
 #[cfg(test)]

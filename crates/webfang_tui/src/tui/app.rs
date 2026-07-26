@@ -138,15 +138,15 @@ impl App {
 
     /// Bridge a progress channel to the action system.
     ///
-    /// Spawns a background task that polls the `mpsc::Receiver<ScrapeProgress>`
+    /// Spawns a background task that polls the `mpsc::UnboundedReceiver<ScrapeProgress>`
     /// and forwards each event as an `Action::Progress(ScrapeProgress)` action.
     ///
-    /// When the channel closes (scraper finished), sends a final
-    /// `Action::Progress(ScrapeProgress::Finished)` to signal completion.
+    /// When the channel closes (scraper finished, tx dropped), sends
+    /// `Action::Quit` to terminate the TUI.
     #[must_use]
     pub fn with_progress_bridge(
         self,
-        mut progress_rx: tokio::sync::mpsc::Receiver<ScrapeProgress>,
+        mut progress_rx: tokio::sync::mpsc::UnboundedReceiver<ScrapeProgress>,
     ) -> Self {
         let action_tx = self.action_tx.clone();
         tokio::spawn(async move {
@@ -155,12 +155,8 @@ impl App {
                     break;
                 }
             }
-            // Channel closed — send Finished signal
-            let _ = action_tx.send(Action::Progress(ScrapeProgress::Finished {
-                total: 0,
-                successful: 0,
-                failed: 0,
-            }));
+            // Channel closed — scraper finished, quit the TUI
+            let _ = action_tx.send(Action::Quit);
         });
         self
     }

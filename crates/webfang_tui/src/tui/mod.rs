@@ -38,8 +38,8 @@ mod config_form;
 mod error_log_widget;
 pub mod modal;
 pub mod progress_types {
-    //! Path-compat shim — canonical home is now `webfang_core::application::progress_types`.
-    pub use webfang_core::application::progress_types::*;
+    //! Path-compat shim — canonical home is now `webfang_core::domain::entities::progress`.
+    pub use webfang_core::domain::entities::progress::*;
 }
 mod progress_view;
 mod progress_widget;
@@ -55,8 +55,7 @@ pub use tui_terminal::Tui;
 pub use collapsible_config::CollapsibleConfig;
 pub use config_form::ConfigFormState;
 pub use progress_types::{
-    AppEvent, ErrorEntry, ErrorType, ProgressState, ScrapeError, ScrapeProgress, ScrapeStatus,
-    UrlState,
+    ErrorEntry, ErrorType, ProgressState, ScrapeError, ScrapeProgress, ScrapeStatus, UrlState,
 };
 pub use progress_view::run_progress_view;
 pub use progress_widget::{ProgressIcons, ProgressWidget};

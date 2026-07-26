@@ -1,9 +1,13 @@
-//! Progress tracking types for async-reactive TUI.
+//! Progress tracking types for the scraper pipeline.
 //!
-//! This module defines the core data structures used for tracking
-//! scraping progress and handling events in the reactive TUI system.
+//! These types define the domain-level contract for real-time progress
+//! reporting during scraping operations. They live in the domain layer
+//! so both the application (observer) and infrastructure (TUI) layers
+//! can depend on them without circular references.
 
+use std::fmt;
 use std::time::{Instant, SystemTime};
+
 use thiserror::Error;
 
 /// Represents the progress of a scraping operation.
@@ -98,6 +102,12 @@ impl ScrapeStatus {
     }
 }
 
+impl fmt::Display for ScrapeStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.label())
+    }
+}
+
 /// Errors that can occur during the scraping process.
 ///
 /// These errors are categorized by the failure mode and may include
@@ -159,23 +169,6 @@ impl ScrapeError {
             ScrapeError::Other(s) => s.clone(),
         }
     }
-}
-
-/// Application events for the reactive TUI event loop.
-///
-/// Events drive state updates in the reactive UI system.
-#[derive(Debug, Clone, PartialEq)]
-pub enum AppEvent {
-    /// User typed input (e.g., keyboard command)
-    UserInput(String),
-    /// Scraping progress update
-    Progress(ScrapeProgress),
-    /// Timer tick (periodic refresh)
-    Tick,
-    /// Request to exit application
-    Quit,
-    /// No event (used for polling)
-    None,
 }
 
 /// Type of error for classification

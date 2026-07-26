@@ -57,11 +57,19 @@ pub(crate) fn webfang_path() -> std::path::PathBuf {
         }
     }
     let cargo = option_env!("CARGO").unwrap_or("cargo");
-    let mut build_args = vec!["build", "-p", "webfang_cli", "--bin", "webfang", "--quiet"];
-    // When the test binary has the `ai` feature, build the CLI binary with
-    // --all-features so the help output matches the AI-gated snapshot.
-    #[cfg(feature = "ai")]
-    build_args.push("--all-features");
+    let build_args = if cfg!(feature = "ai") {
+        vec![
+            "build",
+            "-p",
+            "webfang_cli",
+            "--bin",
+            "webfang",
+            "--quiet",
+            "--all-features",
+        ]
+    } else {
+        vec!["build", "-p", "webfang_cli", "--bin", "webfang", "--quiet"]
+    };
     let status = std::process::Command::new(cargo)
         .args(&build_args)
         .status()

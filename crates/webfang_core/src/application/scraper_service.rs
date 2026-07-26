@@ -309,7 +309,7 @@ pub async fn scrape_with_config(
     config: &ScraperConfig,
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     inspector: Option<&dyn DomInspectorPort>,
-    engine: Option<&AdaptiveSelectorEngine>,
+    #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
 ) -> Result<ScrapeOutcome> {
     let mut results = Vec::new();
 
