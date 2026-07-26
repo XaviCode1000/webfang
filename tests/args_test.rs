@@ -127,9 +127,7 @@ fn args_with_all_fields_set() -> Args {
             obsidian_rich_metadata: true,
         },
 
-        ai: AiArgs {
-            ..Default::default()
-        },
+        ai: AiArgs::default(),
 
         tui: TuiArgs {
             interactive: true,

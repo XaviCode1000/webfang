@@ -45,8 +45,13 @@ pub use scraper_service::{
 pub use title_resolver::resolve_title;
 pub use url_filter::{extract_domain, is_allowed, is_excluded, is_internal_link, matches_pattern};
 
-/// Re-export progress types from domain for backward compatibility.
-/// The canonical location is now `domain::entities::progress`.
+#[deprecated(
+    since = "0.5.0",
+    note = "Tipos de progreso migrados a webfang_core::domain::entities::progress. Este shim será removido."
+)]
+/// Re-export de tipos de progreso desde el dominio para retrocompatibilidad.
+///
+/// La ubicación canónica es ahora `webfang_core::domain::entities::progress`.
 pub mod progress_types {
     pub use crate::domain::entities::progress::*;
 }

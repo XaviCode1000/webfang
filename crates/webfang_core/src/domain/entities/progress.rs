@@ -171,30 +171,6 @@ impl ScrapeError {
     }
 }
 
-impl From<crate::error::ScraperError> for ScrapeError {
-    fn from(e: crate::error::ScraperError) -> Self {
-        match e {
-            crate::error::ScraperError::Network(_) => ScrapeError::Network(format!("{e}")),
-            crate::error::ScraperError::Http { status, .. } => {
-                ScrapeError::Http(status, format!("{e}"))
-            },
-            crate::error::ScraperError::WafBlocked { provider, .. } => {
-                ScrapeError::WafBlocked(provider)
-            },
-            crate::error::ScraperError::Readability(_) => ScrapeError::Parse(format!("{e}")),
-            crate::error::ScraperError::ExtractionFailed { .. } => {
-                ScrapeError::Parse(format!("{e}"))
-            },
-            crate::error::ScraperError::GlobalTimeout
-            | crate::error::ScraperError::SlowlorisTimeout => ScrapeError::Timeout(format!("{e}")),
-            crate::error::ScraperError::Io(_) => ScrapeError::Connection(format!("{e}")),
-            crate::error::ScraperError::Persistence(_) => ScrapeError::Connection(format!("{e}")),
-            crate::error::ScraperError::Conversion(_) => ScrapeError::Parse(format!("{e}")),
-            _ => ScrapeError::Other(format!("{e}")),
-        }
-    }
-}
-
 /// Type of error for classification
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorType {
@@ -610,101 +586,6 @@ mod tests {
         assert_eq!(entry.url, "https://example.com/404");
         assert!(matches!(entry.error_type, ErrorType::Http(404)));
         assert_eq!(entry.message, "Not found");
-    }
-
-    // ========================================================================
-    // From<ScraperError> for ScrapeError — variant mapping tests
-    // ========================================================================
-
-    #[test]
-    fn test_scraper_to_scrape_network() {
-        let scraper_err = crate::error::ScraperError::Network(Box::new(std::io::Error::new(
-            std::io::ErrorKind::ConnectionRefused,
-            "refused",
-        )));
-        let scrape_err: ScrapeError = scraper_err.into();
-        assert!(matches!(scrape_err, ScrapeError::Network(_)));
-    }
-
-    #[test]
-    fn test_scraper_to_scrape_http() {
-        let scraper_err = crate::error::ScraperError::http(404, "https://example.com");
-        let scrape_err: ScrapeError = scraper_err.into();
-        assert!(
-            matches!(scrape_err, ScrapeError::Http(status, _) if status == 404),
-            "HTTP status must be preserved"
-        );
-    }
-
-    #[test]
-    fn test_scraper_to_scrape_waf_blocked() {
-        let scraper_err =
-            crate::error::ScraperError::waf_blocked("https://example.com", "Cloudflare");
-        let scrape_err: ScrapeError = scraper_err.into();
-        assert!(
-            matches!(scrape_err, ScrapeError::WafBlocked(p) if p == "Cloudflare"),
-            "WAF provider must be preserved"
-        );
-    }
-
-    #[test]
-    fn test_scraper_to_scrape_readability_to_parse() {
-        let scraper_err = crate::error::ScraperError::readability("parse failed");
-        let scrape_err: ScrapeError = scraper_err.into();
-        assert!(matches!(scrape_err, ScrapeError::Parse(_)));
-    }
-
-    #[test]
-    fn test_scraper_to_scrape_extraction_failed_to_parse() {
-        let scraper_err = crate::error::ScraperError::ExtractionFailed {
-            url: "https://example.com".to_string(),
-            reason: "empty body".to_string(),
-        };
-        let scrape_err: ScrapeError = scraper_err.into();
-        assert!(matches!(scrape_err, ScrapeError::Parse(_)));
-    }
-
-    #[test]
-    fn test_scraper_to_scrape_global_timeout() {
-        let scrape_err: ScrapeError = crate::error::ScraperError::GlobalTimeout.into();
-        assert!(matches!(scrape_err, ScrapeError::Timeout(_)));
-    }
-
-    #[test]
-    fn test_scraper_to_scrape_slowloris_timeout() {
-        let scrape_err: ScrapeError = crate::error::ScraperError::SlowlorisTimeout.into();
-        assert!(matches!(scrape_err, ScrapeError::Timeout(_)));
-    }
-
-    #[test]
-    fn test_scraper_to_scrape_io_to_connection() {
-        let scraper_err: crate::error::ScraperError =
-            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pipe").into();
-        let scrape_err: ScrapeError = scraper_err.into();
-        assert!(matches!(scrape_err, ScrapeError::Connection(_)));
-    }
-
-    #[test]
-    fn test_scraper_to_scrape_persistence_to_connection() {
-        let scraper_err = crate::error::ScraperError::Persistence("disk full".to_string());
-        let scrape_err: ScrapeError = scraper_err.into();
-        assert!(matches!(scrape_err, ScrapeError::Connection(_)));
-    }
-
-    #[test]
-    fn test_scraper_to_scrape_conversion_to_parse() {
-        let scraper_err = crate::error::ScraperError::Conversion("bad yaml".to_string());
-        let scrape_err: ScrapeError = scraper_err.into();
-        assert!(matches!(scrape_err, ScrapeError::Parse(_)));
-    }
-
-    #[test]
-    fn test_scraper_to_scrape_catch_all_to_other() {
-        let scraper_err = crate::error::ScraperError::Serialization(
-            serde_json::from_str::<serde_json::Value>("invalid").unwrap_err(),
-        );
-        let scrape_err: ScrapeError = scraper_err.into();
-        assert!(matches!(scrape_err, ScrapeError::Other(_)));
     }
 
     #[test]

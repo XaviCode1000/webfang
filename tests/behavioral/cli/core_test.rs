@@ -1,8 +1,10 @@
 //! Core CLI behavior: version, help, missing/invalid URL.
 
-use crate::assert_snapshot_plain;
 use crate::cmd;
 use predicates::prelude::*;
+
+#[cfg(feature = "ai")]
+use crate::assert_snapshot_plain;
 
 // ---------------------------------------------------------------------------
 // --version
