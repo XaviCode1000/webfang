@@ -33,6 +33,7 @@ otel-metrics = [
 # These are activated by dependent crates (ai, tui, mcp) to preserve
 # existing cfg(feature) gates in core during the transition period.
 ai = []
+adaptive-selectors = []
 ui = []
 mcp = []
 chromium = ["dep:chromiumoxide"]
@@ -210,6 +211,10 @@ path = "../../tests/session_pool_integration.rs"
 [[test]]
 name = "infrastructure_session_pool"
 path = "../../tests/infrastructure/session_pool.rs"
+
+[[test]]
+name = "adaptive_selector_integration"
+path = "tests/adaptive_selector_integration.rs"
 
 [lints.clippy]
 doc_markdown = "allow"

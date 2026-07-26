@@ -158,6 +158,7 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
             verbosity: args.crawler.verbose,
             quiet: args.crawler.quiet,
             ai: args.crawler.clean_ai,
+            adaptive_selectors: args.crawler.adaptive_selectors,
             crawl: CrawlLimits {
                 selector: args.crawler.selector,
                 max_depth: args.crawler.max_depth,

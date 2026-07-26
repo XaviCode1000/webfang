@@ -113,6 +113,22 @@ pub struct CrawlerArgs {
     )]
     pub clean_ai: bool,
 
+    /// Enable adaptive CSS selector repair (2-tier cascade)
+    #[cfg(feature = "adaptive-selectors")]
+    #[arg(long, default_value = "false", env = "WEBFANG_ADAPTIVE_SELECTORS")]
+    #[clap(next_help_heading = "Behavior")]
+    pub adaptive_selectors: bool,
+
+    /// Feature flag placeholder when adaptive-selectors is not enabled
+    #[cfg(not(feature = "adaptive-selectors"))]
+    #[arg(
+        long,
+        default_value = "false",
+        hide = true,
+        env = "WEBFANG_ADAPTIVE_SELECTORS"
+    )]
+    pub adaptive_selectors: bool,
+
     /// Force JavaScript rendering for SPA sites (not yet implemented)
     #[arg(long, default_value = "false", env = "WEBFANG_FORCE_JS_RENDER")]
     #[clap(next_help_heading = "Behavior")]

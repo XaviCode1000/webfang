@@ -58,6 +58,8 @@ pub struct CrawlOptions {
     pub quiet: bool,
     /// Enable AI-powered semantic cleaning (semantic_cleaner / ONNX, requires `ai` feature).
     pub ai: bool,
+    /// Enable adaptive CSS selector repair (2-tier cascade).
+    pub adaptive_selectors: bool,
     /// Crawl scope and discovery settings.
     pub crawl: CrawlLimits,
     /// HTTP and network settings.
@@ -287,6 +289,7 @@ impl Default for CrawlOptions {
             verbosity: 0,
             quiet: false,
             ai: false,
+            adaptive_selectors: false,
             crawl: CrawlLimits::default(),
             network: NetworkOptions::default(),
             export: ExportOptions::default(),

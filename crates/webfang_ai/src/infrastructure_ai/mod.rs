@@ -96,6 +96,8 @@ pub mod threshold_config;
 
 pub mod content_pruner;
 
+pub mod granite_dom_inspector;
+
 // Re-exports for convenience (Modules 1-2)
 pub use cache_config::{
     default_cache_dir, AiModel, CacheConfig, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO,
@@ -126,3 +128,5 @@ pub use relevance_scorer::RelevanceScorer;
 pub use threshold_config::ThresholdConfig;
 
 pub use content_pruner::{ContentPruner, LegibleContentPruner, PruneAggressiveness};
+
+pub use granite_dom_inspector::GraniteDomInspector;

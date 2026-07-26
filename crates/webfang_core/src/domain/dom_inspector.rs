@@ -9,8 +9,21 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Diagnostic information when both Tier 1 and Tier 2 repair fail.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RepairFailureDiagnostic {
+    /// Best lexical suggestion from Tier 1 (if any).
+    pub tier1_best: Option<SelectorSuggestion>,
+    /// Best semantic match from Tier 2 (if any).
+    pub tier2_best: Option<super::semantic_inspector::SemanticMatch>,
+    /// Total candidates evaluated across both tiers.
+    pub candidates_evaluated: usize,
+    /// Structural hash of the DOM used for cache keying.
+    pub structural_hash: u64,
+}
+
 /// Error kind for CSS selector diagnostics.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SelectorErrorKind {
     /// Selector matched 0 elements in the DOM.
     ZeroMatches,
@@ -18,6 +31,8 @@ pub enum SelectorErrorKind {
     InvalidSelector(String),
     /// The HTML document is empty.
     EmptyDocument,
+    /// Both Tier 1 and Tier 2 repair failed — diagnostic details enclosed.
+    RepairInconclusive(Box<RepairFailureDiagnostic>),
 }
 
 /// A closest-match selector suggestion computed via Jaro-Winkler similarity.

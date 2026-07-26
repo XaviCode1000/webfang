@@ -69,6 +69,10 @@ pub use application::{
     EngineOptions, SpaDetectionResult,
 };
 
+// Adaptive selector types (feature-gated)
+#[cfg(feature = "adaptive-selectors")]
+pub use application::adaptive_engine::{AdaptiveRepairOutcome, AdaptiveSelectorEngine};
+
 // Infrastructure layer
 pub use infrastructure::{
     checkpoint::BincodeCheckpoint,
