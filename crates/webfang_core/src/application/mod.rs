@@ -32,7 +32,7 @@ pub use crawler::collector::{ResultsAdapter, ResultsCollector};
 pub use crawler::engine::EngineOptions;
 pub use crawler::{
     crawl_site, crawl_site_with_options, crawl_with_sitemap, discover_urls_for_tui,
-    scrape_single_url_for_tui, scrape_urls_for_tui,
+    scrape_single_url_for_tui,
 };
 pub use deduplicator::UrlDeduplicator;
 pub use http_client::create_http_client;

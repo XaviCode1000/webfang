@@ -216,6 +216,16 @@ path = "../../tests/infrastructure/session_pool.rs"
 name = "adaptive_selector_integration"
 path = "tests/adaptive_selector_integration.rs"
 
+[[test]]
+name = "progress_tui_integration"
+path = "../../tests/progress_tui_integration.rs"
+required-features = ["ui"]
+
+[[test]]
+name = "progress_e2e_wiring"
+path = "../../tests/progress_e2e_wiring.rs"
+required-features = ["ui"]
+
 [lints.clippy]
 doc_markdown = "allow"
 uninlined_format_args = "allow"

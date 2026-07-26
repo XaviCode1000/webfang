@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use webfang::application::progress_types::{ProgressState, ScrapeError, ScrapeProgress};
+use webfang_core::domain::entities::progress::{ProgressState, ScrapeError, ScrapeProgress, ScrapeStatus};
 use tokio::sync::mpsc;
 
 /// Test that progress events are processed within 200ms.
@@ -191,7 +191,7 @@ async fn test_concurrent_progress_updates() {
     let in_progress = state
         .urls
         .iter()
-        .filter(|u| u.status == webfang::application::progress_types::ScrapeStatus::Fetching)
+        .filter(|u| u.status == ScrapeStatus::Fetching)
         .count();
     assert_eq!(in_progress, 5);
 }
