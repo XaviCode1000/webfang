@@ -40,7 +40,7 @@ const CONTENT_TIMEOUT: Duration = Duration::from_secs(10);
 /// CDP downloader that spawns a headless Chrome instance per fetch.
 ///
 /// Note: Resource gating is handled by [`super::hybrid_router::HybridRouter`].
-/// This downloader does NOT own a [`ResourceGovernor`] — the router checks
+/// This downloader does NOT own a `ResourceGovernor` — the router checks
 /// resources before invoking this layer.
 pub struct ChromiumoxideDownloader {
     #[cfg(feature = "chromium")]
@@ -82,9 +82,7 @@ impl Downloader for ChromiumoxideDownloader {
             .map_err(|e| DownloadError::Internal(format!("Chrome launch failed: {e}")))?;
 
         // 3. Process CDP messages in isolated task to prevent hangs
-        let handler_job = tokio::spawn(async move {
-            while handler.next().await.is_some() {}
-        });
+        let handler_job = tokio::spawn(async move { while handler.next().await.is_some() {} });
 
         // 4. Inject cookies from L1 cookie bridge, filtered by domain
         let current_domain = url.host_str().unwrap_or("");
