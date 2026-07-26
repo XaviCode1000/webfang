@@ -13,25 +13,36 @@ use {
     chromiumoxide::cdp::browser_protocol::network::{CookieParam, SetCookiesParams},
     chromiumoxide::{Browser, BrowserConfig},
     futures::StreamExt,
+    tokio::time::{timeout, Duration},
 };
 
 use std::sync::Arc;
 use std::sync::RwLock;
 use url::Url;
 
-use super::cookie_bridge::CookieBridge;
 #[cfg(feature = "chromium")]
-use super::resource_governor::ResourceGovernor;
+use super::cookie_bridge::domain_matches;
+use super::cookie_bridge::CookieBridge;
 use super::{DownloadError, Downloader, FetchedPage};
 
 /// Memory budget for one Chrome tab (~200 MB).
 #[cfg(feature = "chromium")]
 const CHROMIUMOXIDE_MEMORY_COST: usize = 200_000_000;
 
+/// Timeout for browser navigation (page.goto).
+#[cfg(feature = "chromium")]
+const NAV_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Timeout for content extraction (page.content).
+#[cfg(feature = "chromium")]
+const CONTENT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// CDP downloader that spawns a headless Chrome instance per fetch.
+///
+/// Note: Resource gating is handled by [`super::hybrid_router::HybridRouter`].
+/// This downloader does NOT own a [`ResourceGovernor`] — the router checks
+/// resources before invoking this layer.
 pub struct ChromiumoxideDownloader {
-    #[cfg(feature = "chromium")]
-    governor: ResourceGovernor,
     #[cfg(feature = "chromium")]
     cookie_bridge: Arc<RwLock<CookieBridge>>,
 }
@@ -39,10 +50,7 @@ pub struct ChromiumoxideDownloader {
 impl ChromiumoxideDownloader {
     #[cfg(feature = "chromium")]
     pub(crate) fn new(cookie_bridge: Arc<RwLock<CookieBridge>>) -> Self {
-        Self {
-            governor: ResourceGovernor::new(),
-            cookie_bridge,
-        }
+        Self { cookie_bridge }
     }
 
     #[cfg(not(feature = "chromium"))]
@@ -54,8 +62,13 @@ impl ChromiumoxideDownloader {
 #[cfg(feature = "chromium")]
 impl Downloader for ChromiumoxideDownloader {
     async fn fetch(&self, url: &Url) -> Result<FetchedPage, DownloadError> {
-        // 1. RAM gating via resource governor
-        let _permit = self.governor.acquire().await?;
+        // 1. Early URL scheme validation
+        if !url.scheme().starts_with("http") {
+            return Err(DownloadError::InvalidUrl(format!(
+                "unsupported scheme: {}",
+                url.scheme()
+            )));
+        }
 
         // 2. Browser config with sandbox bypass for CI/Docker
         let config = BrowserConfig::builder()
@@ -66,20 +79,24 @@ impl Downloader for ChromiumoxideDownloader {
 
         let (mut browser, mut handler) = Browser::launch(config)
             .await
-            .map_err(|_| DownloadError::Internal("Chrome binary not found".into()))?;
+            .map_err(|e| DownloadError::Internal(format!("Chrome launch failed: {e}")))?;
 
         // 3. Process CDP messages in isolated task to prevent hangs
-        let handler_job = tokio::spawn(async move { while handler.next().await.is_some() {} });
+        let handler_job = tokio::spawn(async move {
+            while handler.next().await.is_some() {}
+        });
 
-        // 4. Inject cookies from L1 cookie bridge before navigation
+        // 4. Inject cookies from L1 cookie bridge, filtered by domain
+        let current_domain = url.host_str().unwrap_or("");
         let cdp_cookies: Vec<CookieParam> = {
             let bridge = self
                 .cookie_bridge
                 .read()
-                .map_err(|e| DownloadError::Internal(e.to_string()))?;
+                .map_err(|e| DownloadError::Internal(format!("Lock poisoned: {e}")))?;
             bridge
                 .to_cdp_cookies()
                 .into_iter()
+                .filter(|c| domain_matches(current_domain, &c.domain))
                 .map(|c| {
                     let mut param = CookieParam::new(c.name, c.value);
                     param.domain = Some(c.domain);
@@ -102,17 +119,19 @@ impl Downloader for ChromiumoxideDownloader {
                 .map_err(|e| DownloadError::Internal(e.to_string()))?;
         }
 
-        // 5. Navigate and extract rendered DOM
-        page.goto(url.as_str())
+        // 5. Navigate with timeout
+        timeout(NAV_TIMEOUT, page.goto(url.as_str()))
             .await
+            .map_err(|_| DownloadError::Timeout(NAV_TIMEOUT.as_secs()))?
             .map_err(|e| DownloadError::Internal(e.to_string()))?;
 
-        let html = page
-            .content()
+        // 6. Extract rendered DOM with timeout
+        let html = timeout(CONTENT_TIMEOUT, page.content())
             .await
+            .map_err(|_| DownloadError::Timeout(CONTENT_TIMEOUT.as_secs()))?
             .map_err(|e| DownloadError::Internal(e.to_string()))?;
 
-        // 6. Deterministic shutdown — prevents zombie processes
+        // 7. Deterministic shutdown — prevents zombie processes
         browser.close().await.ok();
         handler_job.await.ok();
 
