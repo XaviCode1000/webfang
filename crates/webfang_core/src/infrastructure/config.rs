@@ -96,6 +96,8 @@ pub struct ScraperConfig {
     pub asset_exclude_patterns: Vec<String>,
     /// Strategy for naming downloaded asset files
     pub asset_naming: AssetNamingStrategy,
+    /// Enable adaptive CSS selector repair (2-tier cascade)
+    pub adaptive_selectors: bool,
 }
 
 impl Default for ScraperConfig {
@@ -114,6 +116,7 @@ impl Default for ScraperConfig {
             asset_include_patterns: Vec::new(),
             asset_exclude_patterns: Vec::new(),
             asset_naming: AssetNamingStrategy::Hash,
+            adaptive_selectors: false,
         }
     }
 }
