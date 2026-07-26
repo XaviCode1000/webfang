@@ -101,10 +101,8 @@ pub trait AssetDownloaderPort: Send + Sync {
 /// shared across async tasks.
 pub trait ProgressObserver: Send + Sync {
     /// Called when scraping starts for a URL.
-    fn on_page_started<'a>(
-        &'a self,
-        url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    fn on_page_started<'a>(&'a self, url: &'a str)
+        -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
     /// Called when the status changes for a URL (Fetching, Extracting, etc.).
     fn on_status_changed<'a>(

@@ -65,8 +65,8 @@ pub use application::{
     detect_spa_content, discover_urls_for_tui, extract_domain,
     http_client::{HttpClient, HttpClientConfig, HttpError},
     is_allowed, is_excluded, is_internal_link, matches_pattern, scrape_multiple_with_limit,
-    scrape_single_url_for_tui, scrape_with_config, scrape_with_readability,
-    EngineOptions, SpaDetectionResult,
+    scrape_single_url_for_tui, scrape_with_config, scrape_with_readability, EngineOptions,
+    SpaDetectionResult,
 };
 
 // Adaptive selector types (feature-gated)

@@ -53,9 +53,8 @@ pub fn prepare_progress_channel(
     tokio::sync::mpsc::UnboundedReceiver<crate::domain::entities::progress::ScrapeProgress>,
 ) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let observer = Box::new(
-        crate::application::progress_observer::LiveProgressObserver::new(Some(tx), quiet),
-    );
+    let observer =
+        Box::new(crate::application::progress_observer::LiveProgressObserver::new(Some(tx), quiet));
     (observer, rx)
 }
 

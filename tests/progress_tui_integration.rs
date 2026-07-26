@@ -5,8 +5,10 @@
 
 use std::time::{Duration, Instant};
 
-use webfang_core::domain::entities::progress::{ProgressState, ScrapeError, ScrapeProgress, ScrapeStatus};
 use tokio::sync::mpsc;
+use webfang_core::domain::entities::progress::{
+    ProgressState, ScrapeError, ScrapeProgress, ScrapeStatus,
+};
 
 /// Test that progress events are processed within 200ms.
 ///

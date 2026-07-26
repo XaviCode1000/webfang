@@ -16,8 +16,10 @@ async fn test_full_pipeline_event_flow() -> anyhow::Result<()> {
 
     tokio::spawn(async move {
         obs.on_page_started(&url_clone).await;
-        obs.on_status_changed(&url_clone, ScrapeStatus::Fetching).await;
-        obs.on_status_changed(&url_clone, ScrapeStatus::Extracting).await;
+        obs.on_status_changed(&url_clone, ScrapeStatus::Fetching)
+            .await;
+        obs.on_status_changed(&url_clone, ScrapeStatus::Extracting)
+            .await;
         obs.on_page_completed(&url_clone, 1024).await;
         obs.on_finished(1, 1, 0).await;
     });

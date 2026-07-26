@@ -186,9 +186,7 @@ impl From<crate::error::ScraperError> for ScrapeError {
                 ScrapeError::Parse(format!("{e}"))
             },
             crate::error::ScraperError::GlobalTimeout
-            | crate::error::ScraperError::SlowlorisTimeout => {
-                ScrapeError::Timeout(format!("{e}"))
-            },
+            | crate::error::ScraperError::SlowlorisTimeout => ScrapeError::Timeout(format!("{e}")),
             crate::error::ScraperError::Io(_) => ScrapeError::Connection(format!("{e}")),
             crate::error::ScraperError::Persistence(_) => ScrapeError::Connection(format!("{e}")),
             crate::error::ScraperError::Conversion(_) => ScrapeError::Parse(format!("{e}")),
@@ -640,7 +638,8 @@ mod tests {
 
     #[test]
     fn test_scraper_to_scrape_waf_blocked() {
-        let scraper_err = crate::error::ScraperError::waf_blocked("https://example.com", "Cloudflare");
+        let scraper_err =
+            crate::error::ScraperError::waf_blocked("https://example.com", "Cloudflare");
         let scrape_err: ScrapeError = scraper_err.into();
         assert!(
             matches!(scrape_err, ScrapeError::WafBlocked(p) if p == "Cloudflare"),
