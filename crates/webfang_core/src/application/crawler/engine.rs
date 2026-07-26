@@ -235,7 +235,7 @@ impl Engine {
             JsStrategy::Hybrid => {
                 let l1 = WreqDownloader::new(30, 10);
                 let l2 = ObscuraDownloader::new();
-                let l3 = ChromiumoxideDownloader::new();
+                let l3 = ChromiumoxideDownloader::new(Arc::clone(&self.cookie_bridge));
                 self.fetch_router =
                     Some(FetchRouter::Hybrid(Arc::new(HybridRouter::new(l1, l2, l3))));
             },
@@ -243,7 +243,7 @@ impl Engine {
                 // Full strategy: use Chromiumoxide only via HybridRouter with wreq fallback
                 let l1 = WreqDownloader::new(30, 10);
                 let l2 = ObscuraDownloader::new();
-                let l3 = ChromiumoxideDownloader::new();
+                let l3 = ChromiumoxideDownloader::new(Arc::clone(&self.cookie_bridge));
                 self.fetch_router =
                     Some(FetchRouter::Hybrid(Arc::new(HybridRouter::new(l1, l2, l3))));
             },

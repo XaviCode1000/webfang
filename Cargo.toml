@@ -144,6 +144,9 @@ walkdir = "2"
 fs2 = "0.4"
 async-compression = { version = "0.4.41", features = ["tokio", "gzip", "deflate", "brotli", "zstd"] }
 
+# Browser automation (CDP)
+chromiumoxide = { version = "0.7", features = ["tokio-runtime"] }
+
 # Dev dependencies
 assert_cmd = "2"
 predicates = "3"

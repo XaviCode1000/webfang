@@ -125,7 +125,7 @@ pub struct CdpCookie {
 /// Follows standard cookie domain matching:
 /// - Exact match: `example.com` matches `example.com`
 /// - Subdomain match: `.example.com` matches `sub.example.com`
-fn domain_matches(request_domain: &str, cookie_domain: &str) -> bool {
+pub(crate) fn domain_matches(request_domain: &str, cookie_domain: &str) -> bool {
     if cookie_domain.starts_with('.') {
         // Subdomain cookie: .example.com matches example.com and sub.example.com
         request_domain == &cookie_domain[1..] || request_domain.ends_with(cookie_domain)
