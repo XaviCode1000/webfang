@@ -297,7 +297,7 @@ impl ScrapeOutcome {
 /// connection errors.
 #[instrument(
     name = "scrape_with_config",
-    skip(client, config, downloader, inspector, engine),
+    skip(client, config, downloader, inspector, _engine),
     fields(
         url = %url,
         has_downloads = config.has_downloads()
@@ -309,7 +309,7 @@ pub async fn scrape_with_config(
     config: &ScraperConfig,
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     inspector: Option<&dyn DomInspectorPort>,
-    engine: Option<&AdaptiveSelectorEngine>,
+    _engine: Option<&AdaptiveSelectorEngine>,
 ) -> Result<ScrapeOutcome> {
     let mut results = Vec::new();
 
