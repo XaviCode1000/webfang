@@ -97,11 +97,6 @@ Options:
           [env: WEBFANG_CLEAN_AI=]
           [alias: --ai]
 
-      --adaptive-selectors
-          Enable adaptive CSS selector repair (2-tier cascade)
-          
-          [env: WEBFANG_ADAPTIVE_SELECTORS=]
-
       --force-js-render
           Force JavaScript rendering for SPA sites (not yet implemented)
           
