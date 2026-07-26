@@ -355,9 +355,9 @@ Options:
           
           [env: WEBFANG_OBSIDIAN_QUICK_SAVE=]
 
-      --obsidian-rich-metadata
-          Add rich metadata to frontmatter
-          
+       --obsidian-rich-metadata
+           Add rich metadata to frontmatter
+           
            [env: WEBFANG_OBSIDIAN_RICH_METADATA=]
 
       --tui
