@@ -87,7 +87,7 @@ impl McpHandler {
             .map(|d| d as &dyn webfang_core::domain::ports::AssetDownloaderPort);
         let inspector = self.state.inspector.as_deref();
         match webfang_core::application::scraper_service::scrape_with_config(
-            client, &url, &config, dl, inspector, None,
+            client, &url, &config, dl, inspector,
         )
         .await
         {
