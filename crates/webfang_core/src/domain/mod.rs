@@ -43,6 +43,7 @@ pub mod value_objects;
 
 pub mod content_processor;
 pub mod semantic_cleaner;
+pub mod semantic_inspector;
 
 // Re-exports for backward compatibility (crate::domain::X)
 pub use clock::{Clock, MockClock, MockUtcClock, SystemClock, SystemUtcClock, UtcClock};
@@ -51,9 +52,10 @@ pub use content_processor::ContentProcessor;
 pub use crawl_job::{ContentType, DiscoveredUrl};
 pub use credentials::{AccessToken, ApiKey, CredentialStore, SecretCredential, SensitiveString};
 pub use dom_inspector::{
-    DomInspectorPort, DomStructureReport, ExtractResult, SelectorDiagnostic, SelectorErrorKind,
-    SelectorSuggestion,
+    DomInspectorPort, DomStructureReport, ExtractResult, RepairFailureDiagnostic,
+    SelectorDiagnostic, SelectorErrorKind, SelectorSuggestion,
 };
+pub use semantic_inspector::{BoxFuture, SemanticContext, SemanticInspectorPort, SemanticMatch, TierSource};
 
 pub use entities::{
     DocumentChunk, DocumentChunkExported, DocumentChunkUnvalidated, DocumentChunkValidated,
