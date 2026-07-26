@@ -212,6 +212,10 @@ path = "../../tests/session_pool_integration.rs"
 name = "infrastructure_session_pool"
 path = "../../tests/infrastructure/session_pool.rs"
 
+[[test]]
+name = "adaptive_selector_integration"
+path = "tests/adaptive_selector_integration.rs"
+
 [lints.clippy]
 doc_markdown = "allow"
 uninlined_format_args = "allow"

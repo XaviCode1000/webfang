@@ -63,7 +63,6 @@ impl AdaptiveRepairOutcome {
     }
 
     /// Create a failed repair outcome (both tiers exhausted).
-    #[must_use]
     pub fn failed(diagnostic: RepairFailureDiagnostic) -> Result<Self, SelectorErrorKind> {
         Err(SelectorErrorKind::RepairInconclusive(Box::new(diagnostic)))
     }

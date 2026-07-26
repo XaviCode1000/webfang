@@ -22,6 +22,9 @@ use crate::ScraperConfig;
 use futures::stream::{self, StreamExt};
 use tracing::{debug, info, instrument, warn};
 
+#[cfg(feature = "adaptive-selectors")]
+use crate::application::adaptive_engine::AdaptiveSelectorEngine;
+
 /// Convert an [`HttpError`] into a [`ScraperError`] with the URL context.
 fn scraper_error_from_http(err: HttpError, url: &str) -> ScraperError {
     use crate::domain::error::CrawlError;
@@ -166,6 +169,58 @@ fn build_diagnostic(
         report: insp.inspect(document),
         suggestions: insp.suggest(document, failed_selector),
     })
+}
+
+/// Adaptive selector repair: tries lexical first, escalates to semantic if needed.
+///
+/// This function wraps the existing [`extract_with_selector`] with an adaptive
+/// cascade. When a selector fails, it attempts repair via the engine before
+/// falling back to the full HTML.
+///
+/// # Flow
+///
+/// 1. Try normal extraction via [`extract_with_selector`].
+/// 2. If matched, return immediately.
+/// 3. If no engine or no inspector, return the fallback as-is.
+/// 4. Attempt adaptive repair (Tier 1 lexical → Tier 2 semantic).
+/// 5. Try extraction with the repaired selector.
+/// 6. If the repaired selector also fails, return the original fallback.
+#[cfg(feature = "adaptive-selectors")]
+pub async fn extract_with_adaptive_repair(
+    html: &str,
+    selector: &str,
+    inspector: Option<&dyn DomInspectorPort>,
+    engine: Option<&AdaptiveSelectorEngine>,
+    domain: Option<&str>,
+) -> ExtractResult {
+    // First try normal extraction
+    let result = extract_with_selector(html, selector, inspector);
+
+    // If matched, return as-is
+    if result.is_matched() {
+        return result;
+    }
+
+    // If no engine, return the fallback as-is
+    let Some(engine) = engine else {
+        return result;
+    };
+
+    // Try adaptive repair
+    let document = scraper::Html::parse_document(html);
+    match engine.repair(&document, html, selector, domain).await {
+        Ok(outcome) => {
+            // Try extraction with the repaired selector
+            let repaired = extract_with_selector(html, &outcome.suggestion.selector, inspector);
+            if repaired.is_matched() {
+                repaired
+            } else {
+                // Repair didn't work, return original fallback
+                result
+            }
+        },
+        Err(_) => result,
+    }
 }
 
 /// Result of SPA content detection analysis.
