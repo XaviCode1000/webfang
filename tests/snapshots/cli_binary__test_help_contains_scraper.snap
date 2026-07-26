@@ -380,7 +380,7 @@ Options:
       --ai-model <AI_MODEL>
           AI model to use: granite-97m (default, fast) or granite-311m (higher quality)
           
-          [env: WEBFANG_AI_MODEL_ID=]
+          [env: AI_MODEL_ID=]
           [possible values: granite-97m, granite-311m]
 
       --tui
