@@ -2,8 +2,8 @@
 //!
 //! [`SessionPort`] abstracts the session pool so the application layer
 //! can gate requests through per-domain health tracking without depending
-//! on infrastructure types. The sealed [`SessionManager`] in infrastructure
-//! implements this port via [`DomainSessionPool`].
+//! on infrastructure types. The sealed [`crate::infrastructure::network::session_pool::SessionManager`]
+//! in infrastructure implements this port via [`crate::infrastructure::network::session_pool::DomainSessionPool`].
 
 use std::fmt;
 
@@ -23,7 +23,7 @@ impl fmt::Display for SessionId {
 
 /// Port trait for per-domain session health management.
 ///
-/// Implemented by [`DomainSessionPool`] in infrastructure.
+/// Implemented by [`crate::infrastructure::network::session_pool::DomainSessionPool`] in infrastructure.
 /// The application layer uses this trait — never the concrete pool type.
 pub trait SessionPort: Send + Sync {
     /// Acquire an available session for the given domain.

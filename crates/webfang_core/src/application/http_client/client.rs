@@ -1011,11 +1011,8 @@ mod session_pool_tests {
         // Use a non-existent URL — we just want to verify it doesn't return DomainBanned
         let result = client.get("https://httpbin.org/get").await;
         // Should NOT be DomainBanned — could be any other error (network, etc.)
-        match &result {
-            Err(HttpError::DomainBanned(_)) => {
-                panic!("should not be DomainBanned for healthy pool")
-            },
-            _ => {}, // Any other error (network, timeout) is fine
+        if let Err(HttpError::DomainBanned(_)) = &result {
+            panic!("should not be DomainBanned for healthy pool")
         }
     }
 
