@@ -135,12 +135,16 @@ Options:
           [default: 30]
 
       --include-pattern <INCLUDE_PATTERNS>
-          URL patterns to include (glob-style)
+          URL patterns to include (glob-style). Three modes:
+          
+          * Path: starts with `/` → matched against URL path, e.g. `/pricing`, `/admin/*` * Path glob: starts with `*/` → matched against URL path, e.g. `*/api/*` * Host (default): matched against hostname, e.g. `example.com`, `*.example.com`
+          
+          Example: to exclude a path, use `--exclude-pattern "/admin/*"`, not `*admin*`
           
           [env: WEBFANG_INCLUDE=]
 
       --exclude-pattern <EXCLUDE_PATTERNS>
-          URL patterns to exclude (glob-style)
+          URL patterns to exclude (glob-style, same three modes as --include-pattern). Deny takes precedence over allow
           
           [env: WEBFANG_EXCLUDE=]
 

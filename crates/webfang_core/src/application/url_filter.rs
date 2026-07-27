@@ -11,6 +11,9 @@
 //! - **security-ssrf-prevention**: Delegates to domain::matches_pattern (SSRF-safe host comparison)
 
 use crate::domain::CrawlerConfig;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static BARE_PATTERN_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Check if a URL matches a glob-style pattern (dual-mode)
 ///
@@ -125,12 +128,25 @@ pub fn is_excluded(url: &str, patterns: &[String]) -> bool {
 #[inline]
 #[must_use]
 pub fn is_allowed(url: &str, config: &CrawlerConfig) -> bool {
-    // First check exclude patterns (deny takes precedence)
+    if !BARE_PATTERN_WARNED.swap(true, Ordering::SeqCst) {
+        let bare: Vec<&str> = config
+            .exclude_patterns
+            .iter()
+            .chain(config.include_patterns.iter())
+            .filter(|p| !p.starts_with('/') && !p.starts_with("*/") && !p.starts_with("*.'"))
+            .map(|p| p.as_str())
+            .collect();
+        if !bare.is_empty() {
+            tracing::warn!(
+                "Patterns without a leading / or */ are matched against hostname only, not the URL path. Use /pricing or */pricing for path matching. Affected: {:?}",
+                bare
+            );
+        }
+    }
+
     if is_excluded(url, &config.exclude_patterns) {
         return false;
     }
-
-    // Then check include patterns (if any are specified)
     config.matches_include(url)
 }
 

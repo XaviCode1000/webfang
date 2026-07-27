@@ -98,7 +98,17 @@ pub async fn fetch_url(url: &str, config: &CrawlerConfig) -> Result<String, Craw
         });
     }
 
-    let text = response.text().await.map_err(|e| CrawlError::Network {
+    let text = tokio::time::timeout(Duration::from_secs(config.timeout_secs), response.text())
+        .await
+        .map_err(|_| CrawlError::Network {
+            message: format!(
+                "Response body read timed out after {}s for {}",
+                config.timeout_secs, url
+            ),
+            status_code: None,
+        })?;
+
+    let text = text.map_err(|e| CrawlError::Network {
         message: e.to_string(),
         status_code: None,
     })?;

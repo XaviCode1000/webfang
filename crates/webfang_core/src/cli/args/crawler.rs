@@ -166,7 +166,13 @@ pub struct CrawlerArgs {
     #[clap(next_help_heading = "Crawler Settings")]
     pub timeout_secs: u64,
 
-    /// URL patterns to include (glob-style)
+    /// URL patterns to include (glob-style). Three modes:
+    ///
+    /// * Path: starts with `/` → matched against URL path, e.g. `/pricing`, `/admin/*`
+    /// * Path glob: starts with `*/` → matched against URL path, e.g. `*/api/*`
+    /// * Host (default): matched against hostname, e.g. `example.com`, `*.example.com`
+    ///
+    /// Example: to exclude a path, use `--exclude-pattern "/admin/*"`, not `*admin*`
     #[arg(
         long = "include-pattern",
         env = "WEBFANG_INCLUDE",
@@ -175,7 +181,8 @@ pub struct CrawlerArgs {
     #[clap(next_help_heading = "Crawler Settings")]
     pub include_patterns: Vec<String>,
 
-    /// URL patterns to exclude (glob-style)
+    /// URL patterns to exclude (glob-style, same three modes as --include-pattern).
+    /// Deny takes precedence over allow.
     #[arg(
         long = "exclude-pattern",
         env = "WEBFANG_EXCLUDE",
