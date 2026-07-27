@@ -211,7 +211,7 @@ async fn export_phase(
 /// appropriate `CliExit` error.
 async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
     let urls_to_scrape = if opts.crawl.single_page {
-        plan_urls(true, opts.url.clone(), Vec::new())
+        plan_urls(true, false, opts.url.clone(), Vec::new())
     } else {
         let mut crawler_config = CrawlerConfig::builder(opts.url.clone())
             .max_pages(opts.crawl.max_pages)
@@ -238,7 +238,12 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
             Ok(urls) => urls,
         };
 
-        plan_urls(false, opts.url.clone(), discovered_urls)
+        plan_urls(
+            false,
+            opts.crawl.use_sitemap,
+            opts.url.clone(),
+            discovered_urls,
+        )
     };
 
     let mut scraper_config = ScraperConfig::default()
@@ -538,13 +543,23 @@ fn batch_exit_code(succeeded: usize, failed: usize) -> CliExit {
 
 fn plan_urls(
     single_page: bool,
+    use_sitemap: bool,
     seed_url: url::Url,
     discovered_urls: Vec<url::Url>,
 ) -> Vec<url::Url> {
     if single_page {
         vec![seed_url]
-    } else {
+    } else if use_sitemap {
+        // Sitemap is the source of truth — do not inject the seed URL.
         discovered_urls
+    } else {
+        // DOM discovery: always include the seed URL so it gets crawled
+        // even when link extraction only returns child URLs.
+        let mut urls = discovered_urls;
+        if !urls.contains(&seed_url) {
+            urls.insert(0, seed_url);
+        }
+        urls
     }
 }
 
@@ -617,13 +632,13 @@ mod tests {
             url::Url::parse("https://example.com/blog").unwrap(),
         ];
 
-        let result = plan_urls(true, seed.clone(), discovered);
+        let result = plan_urls(true, false, seed.clone(), discovered);
 
         assert_eq!(result, vec![seed]);
     }
 
     #[test]
-    fn plan_urls_normal_mode_returns_discovered() {
+    fn plan_urls_dom_mode_prepends_seed() {
         let seed = url::Url::parse("https://example.com").unwrap();
         let discovered = vec![
             url::Url::parse("https://example.com/a").unwrap(),
@@ -631,17 +646,35 @@ mod tests {
             url::Url::parse("https://example.com/c").unwrap(),
         ];
 
-        let result = plan_urls(false, seed, discovered.clone());
+        let result = plan_urls(false, false, seed.clone(), discovered.clone());
 
+        // DOM mode: the seed is prepended when absent so it always gets scraped.
+        let mut expected = vec![seed];
+        expected.extend(discovered);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn plan_urls_sitemap_mode_does_not_prepend_seed() {
+        let seed = url::Url::parse("https://example.com").unwrap();
+        let discovered = vec![
+            url::Url::parse("https://example.com/a").unwrap(),
+            url::Url::parse("https://example.com/b").unwrap(),
+        ];
+
+        let result = plan_urls(false, true, seed, discovered.clone());
+
+        // Sitemap mode: the sitemap is the source of truth — seed is NOT injected.
         assert_eq!(result, discovered);
     }
 
     #[test]
-    fn plan_urls_normal_mode_empty_discovered() {
+    fn plan_urls_dom_mode_empty_discovered() {
         let seed = url::Url::parse("https://example.com").unwrap();
-        let result = plan_urls(false, seed, Vec::new());
+        let result = plan_urls(false, false, seed.clone(), Vec::new());
 
-        assert!(result.is_empty());
+        // Even with no discovered URLs, the seed is always included in DOM mode.
+        assert_eq!(result, vec![seed]);
     }
 
     #[test]
@@ -651,21 +684,24 @@ mod tests {
             .map(|i| url::Url::parse(&format!("https://example.com/page{i}")).unwrap())
             .collect();
 
-        let result = plan_urls(true, seed.clone(), discovered);
+        let result = plan_urls(true, false, seed.clone(), discovered);
 
         assert_eq!(result, vec![seed]);
     }
 
     #[test]
-    fn plan_urls_preserves_order() {
+    fn plan_urls_dom_mode_preserves_order() {
         let seed = url::Url::parse("https://example.com").unwrap();
         let urls: Vec<_> = (0..10)
             .map(|i| url::Url::parse(&format!("https://example.com/page{i}")).unwrap())
             .collect();
 
-        let result = plan_urls(false, seed, urls.clone());
+        let result = plan_urls(false, false, seed.clone(), urls.clone());
 
-        assert_eq!(result, urls);
+        // Discovered order is preserved; the seed is prepended when absent.
+        let mut expected = vec![seed];
+        expected.extend(urls);
+        assert_eq!(result, expected);
     }
 
     // ===== batch_exit_code tests =====

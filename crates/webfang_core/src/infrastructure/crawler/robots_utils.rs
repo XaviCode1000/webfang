@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use robotstxt::DefaultMatcher;
+use url::Url;
 
 /// Parsed robots.txt rules for a domain.
 ///
@@ -71,6 +72,19 @@ pub fn parse_crawl_delay(content: &str) -> Option<f64> {
     None
 }
 
+/// Build the robots.txt URL for a page URL, preserving its scheme and port.
+///
+/// The previous implementation hardcoded `https://{domain}/robots.txt`, which
+/// broke robots enforcement for plain-HTTP sites and non-standard ports (the
+/// port was dropped and the scheme forced to https). Deriving the URL from the
+/// page's own origin fixes both. Falls back to the https form if parsing fails.
+fn robots_txt_url(url: &str, domain: &str) -> String {
+    match Url::parse(url) {
+        Ok(parsed) => format!("{}/robots.txt", parsed.origin().ascii_serialization()),
+        Err(_) => format!("https://{domain}/robots.txt"),
+    }
+}
+
 /// Fetch and cache robots.txt rules for a domain.
 ///
 /// On cache miss, fetches `robots.txt` from the domain root using wreq.
@@ -79,7 +93,8 @@ pub fn parse_crawl_delay(content: &str) -> Option<f64> {
 ///
 /// # Arguments
 ///
-/// * `domain` - Domain to fetch robots.txt for
+/// * `domain` - Cache key for the site (typically the bare host)
+/// * `url` - A page URL on the site, used to derive the robots.txt origin
 /// * `cache` - Shared robots.txt rules cache
 ///
 /// # Returns
@@ -94,15 +109,19 @@ pub fn parse_crawl_delay(content: &str) -> Option<f64> {
 /// # #[tokio::main]
 /// # async fn main() {
 /// let cache = new_robots_cache();
-/// let rules = fetch_robots_rules("example.com", &cache).await;
+/// let rules = fetch_robots_rules("example.com", "https://example.com/page", &cache).await;
 /// # }
 /// ```
-pub async fn fetch_robots_rules(domain: &str, cache: &RobotsCache) -> Option<Arc<RobotsRules>> {
+pub async fn fetch_robots_rules(
+    domain: &str,
+    url: &str,
+    cache: &RobotsCache,
+) -> Option<Arc<RobotsRules>> {
     if let Some(rules) = cache.get(domain) {
         return Some(Arc::clone(rules.value()));
     }
 
-    let robots_url = format!("https://{domain}/robots.txt");
+    let robots_url = robots_txt_url(url, domain);
     tracing::debug!("Fetching robots.txt from {}", robots_url);
 
     let content = match wreq::get(&robots_url).send().await {
@@ -164,7 +183,7 @@ pub async fn fetch_robots_rules(domain: &str, cache: &RobotsCache) -> Option<Arc
 /// # }
 /// ```
 pub async fn is_allowed_by_robots(url: &str, domain: &str, cache: &RobotsCache) -> bool {
-    let rules = match fetch_robots_rules(domain, cache).await {
+    let rules = match fetch_robots_rules(domain, url, cache).await {
         Some(r) => r,
         None => return true, // fail-open
     };
