@@ -7,7 +7,7 @@
 
 use url::Url;
 
-use crate::domain::{DomainError, UrlValidatorTrait, ValidationResult};
+use crate::domain::{CrawlError, DomainError, UrlValidatorTrait, ValidationResult};
 
 /// Errors that can occur during URL validation
 #[derive(Debug, thiserror::Error)]
@@ -41,23 +41,32 @@ pub struct UrlValidator {
 
 impl UrlValidator {
     /// Create new URL validator with default settings
-    pub fn new() -> Self {
-        Self {
-            client: wreq::Client::builder()
-                .emulation(wreq_util::Emulation::Chrome145)
-                .timeout(std::time::Duration::from_secs(10))
-                .build()
-                .expect("BUG: failed to build HTTP client"),
+    ///
+    /// # Errors
+    ///
+    /// Returns `CrawlError::Internal` if the underlying HTTP client fails to build.
+    pub fn new() -> std::result::Result<Self, CrawlError> {
+        let client = wreq::Client::builder()
+            .emulation(wreq_util::Emulation::Chrome145)
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| CrawlError::Internal(format!("Failed to create HTTP client: {e}")))?;
+        Ok(Self {
+            client,
             timeout_ms: 10_000,
-        }
+        })
     }
 
     /// Create validator with custom timeout
-    pub fn with_timeout(timeout_ms: u64) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `CrawlError::Internal` if the underlying HTTP client fails to build.
+    pub fn with_timeout(timeout_ms: u64) -> std::result::Result<Self, CrawlError> {
+        Ok(Self {
             timeout_ms,
-            ..Self::new()
-        }
+            ..Self::new()?
+        })
     }
 
     /// Validate URL by checking HTTP status code
@@ -98,12 +107,6 @@ impl UrlValidator {
     }
 }
 
-impl Default for UrlValidator {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl UrlValidatorTrait for UrlValidator {
     /// Delegates pattern filtering to the domain's pure logic
     fn filter_invalid_patterns(&self, url: &Url) -> ValidationResult {
@@ -127,14 +130,12 @@ mod tests {
 
     #[test]
     fn test_url_validator_creation() {
-        let validator = UrlValidator::new();
-        // Just test that it can be created without panicking
-        let _ = validator;
+        assert!(UrlValidator::new().is_ok());
     }
 
     #[test]
     fn test_filter_invalid_patterns_valid_url() {
-        let validator = UrlValidator::new();
+        let validator = UrlValidator::new().unwrap();
         let url = Url::parse("https://example.com/page").unwrap();
 
         // Uses trait method
@@ -144,7 +145,7 @@ mod tests {
 
     #[test]
     fn test_filter_invalid_patterns_invalid_node_version() {
-        let validator = UrlValidator::new();
+        let validator = UrlValidator::new().unwrap();
         let url = Url::parse("https://nodejs.org/blog/release/v106.0").unwrap();
 
         let result = <UrlValidator as UrlValidatorTrait>::filter_invalid_patterns(&validator, &url);
@@ -153,7 +154,7 @@ mod tests {
 
     #[test]
     fn test_filter_invalid_patterns_invalid_scheme() {
-        let validator = UrlValidator::new();
+        let validator = UrlValidator::new().unwrap();
         let url = Url::parse("ftp://example.com/file").unwrap();
 
         let result = <UrlValidator as UrlValidatorTrait>::filter_invalid_patterns(&validator, &url);
@@ -162,7 +163,7 @@ mod tests {
 
     #[test]
     fn test_filter_invalid_patterns_valid_node_version() {
-        let validator = UrlValidator::new();
+        let validator = UrlValidator::new().unwrap();
         let url = Url::parse("https://nodejs.org/blog/release/v18.12.0").unwrap();
 
         let result = <UrlValidator as UrlValidatorTrait>::filter_invalid_patterns(&validator, &url);
@@ -171,7 +172,7 @@ mod tests {
 
     #[test]
     fn test_filter_invalid_patterns_delegates_to_domain() {
-        let validator = UrlValidator::new();
+        let validator = UrlValidator::new().unwrap();
         let url = Url::parse("https://example.com/page").unwrap();
 
         let from_infra = validator.filter_invalid_patterns(&url);
@@ -182,7 +183,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "depends on external httpbin.org service, flaky in CI/CD"]
     async fn test_validate_http_status_200() {
-        let validator = UrlValidator::new();
+        let validator = UrlValidator::new().unwrap();
         let url = Url::parse("https://httpbin.org/status/200").unwrap();
 
         let result = validator.validate_http_status_inner(&url).await;
@@ -192,7 +193,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "depends on external httpbin.org service, flaky in CI/CD"]
     async fn test_validate_http_status_404() {
-        let validator = UrlValidator::new();
+        let validator = UrlValidator::new().unwrap();
         let url = Url::parse("https://httpbin.org/status/404").unwrap();
 
         let result = validator.validate_http_status_inner(&url).await;
@@ -202,7 +203,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "depends on external httpbin.org service, flaky in CI/CD"]
     async fn test_validate_http_status_500() {
-        let validator = UrlValidator::new();
+        let validator = UrlValidator::new().unwrap();
         let url = Url::parse("https://httpbin.org/status/500").unwrap();
 
         let result = validator.validate_http_status_inner(&url).await;

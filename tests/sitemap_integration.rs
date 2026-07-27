@@ -38,7 +38,7 @@ const SITEMAP_NAMESPACES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 
 /// Helper: create parser with default config (no gzip, low depth for tests)
 fn parser() -> SitemapParser {
-    SitemapParser::new()
+    SitemapParser::new().unwrap()
 }
 
 // ===== HAPPY PATH =====

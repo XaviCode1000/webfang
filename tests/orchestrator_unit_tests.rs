@@ -34,7 +34,7 @@ async fn sitemap_valid_xml_discovers_urls() {
         .mount(&mock)
         .await;
 
-    let parser = webfang_core::infrastructure::crawler::SitemapParser::new();
+    let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
     let url = format!("{}/sitemap.xml", mock.uri());
     let urls = parser.parse_from_url(&url).await.unwrap();
 
@@ -60,7 +60,7 @@ async fn sitemap_malformed_xml_returns_error() {
         .mount(&mock)
         .await;
 
-    let parser = webfang_core::infrastructure::crawler::SitemapParser::new();
+    let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
     let url = format!("{}/bad-sitemap", mock.uri());
     let result = parser.parse_from_url(&url).await;
 
@@ -93,7 +93,7 @@ async fn sitemap_large_sitemap_parses_all_urls() {
         .mount(&mock)
         .await;
 
-    let parser = webfang_core::infrastructure::crawler::SitemapParser::new();
+    let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
     let url = format!("{}/big-sitemap.xml", mock.uri());
     let urls = parser.parse_from_url(&url).await.unwrap();
 
@@ -119,7 +119,7 @@ async fn sitemap_empty_returns_no_urls_found() {
         .mount(&mock)
         .await;
 
-    let parser = webfang_core::infrastructure::crawler::SitemapParser::new();
+    let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
     let url = format!("{}/empty.xml", mock.uri());
     let result = parser.parse_from_url(&url).await;
 
@@ -155,7 +155,7 @@ async fn sitemap_deduplicates_urls() {
         .mount(&mock)
         .await;
 
-    let parser = webfang_core::infrastructure::crawler::SitemapParser::new();
+    let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
     let url = format!("{}/sitemap.xml", mock.uri());
     let urls = parser.parse_from_url(&url).await.unwrap();
 
