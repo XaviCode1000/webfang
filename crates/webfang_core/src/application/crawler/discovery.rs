@@ -523,12 +523,21 @@ async fn crawl_with_sitemap_internal(
     }
 
     // Following own-borrow-over-clone: use Url directly, not String
-    // Use explicit type annotation for type inference
-    // Apply include/exclude patterns from config (Fix: sitemap URLs were bypassing filters)
+    // Apply include/exclude patterns from config (Fix: sitemap URLs were bypassing filters).
+    //
+    // Depth assignment: the seed itself is depth 0; every other sitemap URL is one
+    // hop from the seed, hence depth 1. Filtering by `depth <= max_depth` enforces
+    // the CLI contract "0 = only seed URL" here, because the CLI scrape flow scrapes
+    // whatever discovery returns verbatim — there is no later depth gate (the Engine's
+    // `run_crawl_task` check is a separate, non-CLI code path).
+    let max_depth = config.max_depth;
     let discovered: Vec<DiscoveredUrl> = relevant_urls
         .into_iter()
         .filter(|url| is_allowed(url.as_str(), config))
-        .map(|url| DiscoveredUrl::html(url, 0, base.clone()))
+        .filter_map(|url| {
+            let depth = if url == base { 0 } else { 1 };
+            (depth <= max_depth).then(|| DiscoveredUrl::html(url, depth, base.clone()))
+        })
         .collect();
 
     #[cfg(feature = "otel-metrics")]
@@ -594,9 +603,10 @@ async fn crawl_with_subpath_sitemaps(
         tracing::warn!("no se encontraron sitemaps de subruta para {}", base_url);
         Ok(Vec::new())
     } else {
+        // Sub-path sitemap URLs are at depth 1 (one hop from seed)
         Ok(all_urls
             .into_iter()
-            .map(|url| DiscoveredUrl::html(url, 0, base.clone()))
+            .map(|url| DiscoveredUrl::html(url, 1, base.clone()))
             .collect())
     }
 }

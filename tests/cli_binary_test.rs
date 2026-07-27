@@ -176,8 +176,15 @@ async fn test_single_page_requests_only_seed_and_writes_output() {
         .received_requests()
         .await
         .expect("request recording should be enabled");
-    assert_eq!(received_requests.len(), 1);
-    assert_eq!(received_requests[0].url.path(), "/");
+    // Filter out infrastructure requests (robots.txt) — we only care about
+    // page fetches. The robots_utils fix now correctly fetches robots.txt
+    // from the mock server origin (previously it hardcoded https:// and failed).
+    let page_requests: Vec<_> = received_requests
+        .iter()
+        .filter(|r| r.url.path() != "/robots.txt")
+        .collect();
+    assert_eq!(page_requests.len(), 1);
+    assert_eq!(page_requests[0].url.path(), "/");
 
     let output_entries = std::fs::read_dir(output_dir.path())
         .expect("read output dir")

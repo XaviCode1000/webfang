@@ -173,10 +173,6 @@ pub async fn scrape_urls(
             if !is_allowed_by_robots(url_str, domain, &robots_cache).await {
                 info!("Blocked by robots.txt: {}", url_str);
                 observer.on_robots_blocked(url_str).await;
-                failures.push((
-                    url_str.to_string(),
-                    crate::error::ScraperError::Validation("blocked by robots.txt".into()),
-                ));
                 continue;
             }
         }

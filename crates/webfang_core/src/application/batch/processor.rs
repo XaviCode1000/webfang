@@ -195,6 +195,9 @@ impl BatchProcessor {
 ///
 /// Creates a new `CrawlerConfig` for the given URL, copying settings from
 /// the base config but using the specific URL as the seed.
+///
+/// Returns `Err(CrawlError)` if the crawl result has any errors (e.g., timeouts),
+/// ensuring the batch processor correctly counts failed URLs.
 async fn process_single_url(
     url: &str,
     base_config: CrawlerConfig,
@@ -209,9 +212,21 @@ async fn process_single_url(
         .delay_ms(base_config.delay_ms)
         .timeout_secs(base_config.timeout_secs)
         .ignore_robots(base_config.ignore_robots)
+        .exclude_patterns(base_config.exclude_patterns.clone())
+        .include_patterns(base_config.include_patterns.clone())
         .build();
 
-    crate::application::crawler::engine::crawl_site(config).await
+    let result = crate::application::crawler::engine::crawl_site(config).await?;
+
+    // Treat any crawl errors (timeouts, etc.) as failures for batch processing
+    if result.errors > 0 {
+        return Err(CrawlError::Internal(format!(
+            "crawl completed with {} error(s)",
+            result.errors
+        )));
+    }
+
+    Ok(result)
 }
 
 /// Errors that can occur during batch processing
