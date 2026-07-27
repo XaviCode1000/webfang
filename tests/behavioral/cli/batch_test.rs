@@ -1,8 +1,10 @@
 //! Batch mode: stdin and file-based URL processing.
 
 use crate::cmd;
-use std::time::Duration;
+use crate::BehavioralTest;
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
+use tokio::time::timeout;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -106,4 +108,119 @@ fn batch_empty_file_exits_64() {
         .assert()
         .code(64)
         .stderr(predicates::str::contains("No URLs provided"));
+}
+
+// ---------------------------------------------------------------------------
+// Batch timeout tests
+// ---------------------------------------------------------------------------
+
+/// A --batch-file with a slow endpoint and --timeout-secs 1 must exit 69
+/// and complete well under 15s (the per-request timeout fires, not a hang).
+#[tokio::test]
+async fn batch_file_timeout_does_not_hang() {
+    let t = BehavioralTest::new().await;
+
+    Mock::given(method("GET"))
+        .and(path("/slow"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("<html><body><article><h1>Slow</h1></article></body></html>")
+                .set_delay(Duration::from_secs(10)),
+        )
+        .mount(&t.server)
+        .await;
+
+    let batch_file = t.out.path().join("urls.txt");
+    std::fs::write(&batch_file, format!("{}/slow\n", t.server.uri())).unwrap();
+
+    let start = Instant::now();
+    let output = timeout(
+        Duration::from_secs(30),
+        tokio::task::spawn_blocking(move || {
+            cmd()
+                .arg("--batch-file")
+                .arg(&batch_file)
+                .arg("--timeout-secs")
+                .arg("1")
+                .arg("--output")
+                .arg(t.out.path())
+                .output()
+        }),
+    )
+    .await
+    .expect("test must not hang — tokio::time::timeout fired")
+    .expect("task must not panic")
+    .expect("command must execute");
+
+    let elapsed = start.elapsed();
+
+    assert_eq!(
+        output.status.code(),
+        Some(69),
+        "expected exit code 69 (partial/all failures), got {:?}",
+        output.status.code()
+    );
+    assert!(
+        elapsed < Duration::from_secs(15),
+        "batch timeout test should complete in under 15s, took {:?}",
+        elapsed
+    );
+}
+
+/// A --batch-file with a slow endpoint and --timeout-secs 1 must exit 69
+/// and stderr must contain the failed URL and a timeout keyword.
+#[tokio::test]
+async fn batch_file_timeout_reports_failures() {
+    let t = BehavioralTest::new().await;
+
+    Mock::given(method("GET"))
+        .and(path("/slow"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("<html><body><article><h1>Slow</h1></article></body></html>")
+                .set_delay(Duration::from_secs(10)),
+        )
+        .mount(&t.server)
+        .await;
+
+    let batch_file = t.out.path().join("urls.txt");
+    let slow_url = format!("{}/slow", t.server.uri());
+    std::fs::write(&batch_file, format!("{}\n", slow_url)).unwrap();
+
+    let output = timeout(
+        Duration::from_secs(30),
+        tokio::task::spawn_blocking(move || {
+            cmd()
+                .arg("--batch-file")
+                .arg(&batch_file)
+                .arg("--timeout-secs")
+                .arg("1")
+                .arg("--output")
+                .arg(t.out.path())
+                .output()
+        }),
+    )
+    .await
+    .expect("test must not hang")
+    .expect("task must not panic")
+    .expect("command must execute");
+
+    assert_eq!(
+        output.status.code(),
+        Some(69),
+        "expected exit code 69, got {:?}",
+        output.status.code()
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&slow_url),
+        "stderr should contain the failed URL, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.to_lowercase().contains("timeout") || stderr.to_lowercase().contains("timed out"),
+        "stderr should mention timeout, got: {}",
+        stderr
+    );
 }
