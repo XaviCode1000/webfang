@@ -219,7 +219,8 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
             .include_patterns(opts.crawl.include_patterns.clone())
             .exclude_patterns(opts.crawl.exclude_patterns.clone())
             .ignore_robots(opts.crawl.ignore_robots)
-            .use_sitemap(opts.crawl.use_sitemap);
+            .use_sitemap(opts.crawl.use_sitemap)
+            .timeout_secs(opts.network.timeout_secs);
         if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
             crawler_config = crawler_config.sitemap_url(sitemap_url);
         }
@@ -468,7 +469,8 @@ async fn run_batch(opts: CrawlOptions) -> CliExit {
         .include_patterns(opts.crawl.include_patterns.clone())
         .exclude_patterns(opts.crawl.exclude_patterns.clone())
         .ignore_robots(opts.crawl.ignore_robots)
-        .use_sitemap(opts.crawl.use_sitemap);
+        .use_sitemap(opts.crawl.use_sitemap)
+        .timeout_secs(opts.network.timeout_secs);
     if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
         crawler_config = crawler_config.sitemap_url(sitemap_url);
     }
