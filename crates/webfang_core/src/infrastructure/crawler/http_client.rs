@@ -44,7 +44,6 @@ pub fn create_rate_limited_client(delay_ms: u64) -> Result<Client> {
         .emulation(Emulation::Chrome145)
         .pool_max_idle_per_host(pool_size)
         .pool_idle_timeout(Duration::from_secs(60))
-        .timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(10))
         .gzip(true)
         .brotli(true)
@@ -98,17 +97,7 @@ pub async fn fetch_url(url: &str, config: &CrawlerConfig) -> Result<String, Craw
         });
     }
 
-    let text = tokio::time::timeout(Duration::from_secs(config.timeout_secs), response.text())
-        .await
-        .map_err(|_| CrawlError::Network {
-            message: format!(
-                "Response body read timed out after {}s for {}",
-                config.timeout_secs, url
-            ),
-            status_code: None,
-        })?;
-
-    let text = text.map_err(|e| CrawlError::Network {
+    let text = response.text().await.map_err(|e| CrawlError::Network {
         message: e.to_string(),
         status_code: None,
     })?;
