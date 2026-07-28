@@ -17,6 +17,7 @@ use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
 
@@ -34,8 +35,63 @@ mod private {
 }
 
 // ---------------------------------------------------------------------------
+// BannedDomain — a domain temporarily banned due to WAF or rate-limiting
+// ---------------------------------------------------------------------------
+
+/// A domain temporarily banned due to WAF or rate-limiting.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BannedDomain {
+    /// The banned domain (e.g. "example.com").
+    pub domain: String,
+    /// When the ban expires. `None` means banned until restart.
+    pub banned_until: Option<DateTime<Utc>>,
+    /// Reason for the ban (e.g. "WAF challenge", "rate limit exceeded").
+    pub reason: String,
+}
+
+// ---------------------------------------------------------------------------
+// CheckpointPath — path helper for checkpoint files
+// ---------------------------------------------------------------------------
+
+/// Path helper for checkpoint files.
+#[derive(Debug, Clone)]
+pub struct CheckpointPath {
+    base_dir: PathBuf,
+}
+
+impl CheckpointPath {
+    /// Create a new `CheckpointPath` for the given base directory.
+    pub fn new(base_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            base_dir: base_dir.into(),
+        }
+    }
+
+    /// Get the checkpoint file path.
+    #[must_use]
+    pub fn file(&self) -> PathBuf {
+        self.base_dir.join("crawl_checkpoint.json")
+    }
+
+    /// Ensure the base directory exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the directory cannot be created.
+    pub fn ensure_dir(&self) -> Result<(), String> {
+        std::fs::create_dir_all(&self.base_dir)
+            .map_err(|e| format!("failed to create checkpoint dir: {e}"))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CrawlCheckpoint — the serializable state
 // ---------------------------------------------------------------------------
+
+/// Default checkpoint version for forward-compatible schema evolution.
+fn default_version() -> u32 {
+    1
+}
 
 /// Serializable crawl state for checkpoint persistence.
 ///
@@ -52,6 +108,12 @@ pub struct CrawlCheckpoint {
     /// Number of pages successfully crawled.
     #[serde(default)]
     pub pages_crawled: u64,
+    /// Domains currently banned due to WAF or rate limiting.
+    #[serde(default)]
+    pub banned_domains: Vec<BannedDomain>,
+    /// Checkpoint schema version for forward compatibility.
+    #[serde(default = "default_version")]
+    pub version: u32,
 }
 
 impl CrawlCheckpoint {
@@ -62,6 +124,8 @@ impl CrawlCheckpoint {
             visited: HashSet::new(),
             queued: Vec::new(),
             pages_crawled: 0,
+            banned_domains: Vec::new(),
+            version: 1,
         }
     }
 }
@@ -110,6 +174,36 @@ pub trait CheckpointStore: private::Sealed {
 // ---------------------------------------------------------------------------
 // BincodeCheckpoint — the default implementation
 // ---------------------------------------------------------------------------
+
+/// Old checkpoint schema (pure JSON, no CRC32 header).
+///
+/// Used for backward-compatible loading of checkpoints written by the
+/// previous infrastructure-layer implementation. `visited` was a `Vec<String>`
+/// in the old format; we convert to `HashSet` on load.
+#[derive(Deserialize)]
+struct OldCheckpointSchema {
+    visited: Vec<String>,
+    #[serde(default)]
+    queued: Vec<String>,
+    #[serde(default)]
+    pages_crawled: u64,
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    banned_domains: Vec<BannedDomain>,
+}
+
+impl From<OldCheckpointSchema> for CrawlCheckpoint {
+    fn from(old: OldCheckpointSchema) -> Self {
+        Self {
+            visited: old.visited.into_iter().collect(),
+            queued: old.queued,
+            pages_crawled: old.pages_crawled,
+            banned_domains: old.banned_domains,
+            version: old.version,
+        }
+    }
+}
 
 /// Checkpoint store using jzon-rs JSON serialization with CRC32 integrity.
 ///
@@ -189,6 +283,18 @@ impl CheckpointStore for BincodeCheckpoint {
 
         // Verify integrity
         if stored_checksum != computed_checksum {
+            // CRC mismatch — try old-format fallback (pure JSON, no CRC32 header).
+            // Old JSON starts with `{` (0x7B), which is never a valid CRC32+JSON combo.
+            if let Ok(old) = jzon_serde::from_slice::<OldCheckpointSchema>(&data) {
+                info!(
+                    "migrated old-format checkpoint: {} (visited={}, pages={})",
+                    path.display(),
+                    old.visited.len(),
+                    old.pages_crawled
+                );
+                return Some(old.into());
+            }
+
             warn!(
                 "checkpoint CRC32 mismatch: stored={:#x}, computed={:#x}",
                 stored_checksum, computed_checksum
@@ -271,6 +377,8 @@ mod tests {
                 "https://example.com/blog".to_string(),
             ],
             pages_crawled: 42,
+            banned_domains: Vec::new(),
+            version: 1,
         }
     }
 
@@ -435,6 +543,122 @@ mod tests {
         assert!(display.contains("pages=42"));
         assert!(display.contains("visited=2"));
         assert!(display.contains("queued=2"));
+    }
+
+    // ── Phase 1 RED: Tests for new behavior (types don't exist yet) ──────
+
+    #[test]
+    fn test_banned_domains_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("checkpoint.json");
+
+        let banned = vec![
+            BannedDomain {
+                domain: "waf.example.com".into(),
+                banned_until: None,
+                reason: "WAF challenge".into(),
+            },
+            BannedDomain {
+                domain: "rate.example.com".into(),
+                banned_until: Some("2026-12-31T23:59:59Z".parse().unwrap()),
+                reason: "rate limit exceeded".into(),
+            },
+        ];
+
+        let mut original = sample_checkpoint();
+        original.banned_domains = banned;
+
+        let store = BincodeCheckpoint::new();
+        store.save(&original, &path).unwrap();
+        let loaded = store.load(&path).unwrap();
+
+        assert_eq!(loaded.banned_domains.len(), 2);
+        assert_eq!(loaded.banned_domains[0].domain, "waf.example.com");
+        assert!(loaded.banned_domains[0].banned_until.is_none());
+        assert_eq!(loaded.banned_domains[0].reason, "WAF challenge");
+        assert_eq!(loaded.banned_domains[1].domain, "rate.example.com");
+        assert!(loaded.banned_domains[1].banned_until.is_some());
+        assert_eq!(original, loaded);
+    }
+
+    #[test]
+    fn test_old_format_json_loads() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("checkpoint.json");
+
+        // Write a pure-JSON old-schema file (visited as Vec, no CRC32 header)
+        let old_json = r#"{
+            "visited": ["https://a.com", "https://b.com"],
+            "queued": ["https://c.com"],
+            "pages_crawled": 10,
+            "version": 1,
+            "banned_domains": [
+                {
+                    "domain": "old.example.com",
+                    "banned_until": null,
+                    "reason": "WAF challenge"
+                }
+            ]
+        }"#;
+        fs::write(&path, old_json).unwrap();
+
+        let store = BincodeCheckpoint::new();
+        let loaded = store.load(&path);
+
+        assert!(loaded.is_some(), "old-format JSON should load successfully");
+        let cp = loaded.unwrap();
+        assert_eq!(cp.visited.len(), 2);
+        assert!(cp.visited.contains("https://a.com"));
+        assert!(cp.visited.contains("https://b.com"));
+        assert_eq!(cp.queued.len(), 1);
+        assert_eq!(cp.pages_crawled, 10);
+        assert_eq!(cp.banned_domains.len(), 1);
+        assert_eq!(cp.banned_domains[0].domain, "old.example.com");
+    }
+
+    #[test]
+    fn test_old_format_resaved_as_new() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("checkpoint.json");
+
+        // Write old-format pure JSON
+        let old_json = r#"{"visited":["https://x.com"],"queued":[],"pages_crawled":5,"version":1}"#;
+        fs::write(&path, old_json).unwrap();
+
+        let store = BincodeCheckpoint::new();
+        let loaded = store.load(&path).unwrap();
+
+        // Re-save — should write new CRC32 format
+        store.save(&loaded, &path).unwrap();
+
+        // Verify first 4 bytes are a valid CRC32 header
+        let data = fs::read(&path).unwrap();
+        assert!(data.len() > 4, "new format must have CRC32 header + payload");
+        let stored_checksum = u32::from_ne_bytes([data[0], data[1], data[2], data[3]]);
+        let payload = &data[4..];
+        let computed_checksum = crc32fast::hash(payload);
+        assert_eq!(
+            stored_checksum, computed_checksum,
+            "re-saved file must have valid CRC32 header"
+        );
+    }
+
+    #[test]
+    fn test_checkpoint_path_helper() {
+        let tmp = TempDir::new().unwrap();
+        let cp_path = CheckpointPath::new(tmp.path());
+        let file = cp_path.file();
+        assert!(file.to_string_lossy().contains("crawl_checkpoint.json"));
+        assert!(file.starts_with(tmp.path()));
+    }
+
+    #[test]
+    fn test_checkpoint_path_ensure_dir() {
+        let tmp = TempDir::new().unwrap();
+        let nested = tmp.path().join("deep").join("nested");
+        let cp_path = CheckpointPath::new(&nested);
+        cp_path.ensure_dir().unwrap();
+        assert!(nested.exists());
     }
 }
 
