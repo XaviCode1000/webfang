@@ -36,6 +36,3 @@ pub mod stream;
 // binary ships without any bundled-libsqlite3 dependency (spec R2 / S2.1).
 #[cfg(feature = "persistence")]
 pub mod persistence;
-
-// Competitive Features Phase 1 — checkpoint
-pub mod checkpoint;

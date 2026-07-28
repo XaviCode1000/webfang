@@ -75,13 +75,17 @@ pub use application::adaptive_engine::{AdaptiveRepairOutcome, AdaptiveSelectorEn
 
 // Infrastructure layer
 pub use infrastructure::{
-    checkpoint::BincodeCheckpoint,
     converter, crawler,
     export::{jsonl_exporter, state_store, vector_exporter},
     http,
     network::session_pool::{DomainSessionPool, SessionManager, SessionPoolConfig},
     output::file_saver,
     scraper::readability,
+};
+
+// Checkpoint types (application layer — consolidated from infrastructure)
+pub use application::crawler::checkpoint::{
+    BannedDomain, BincodeCheckpoint, CheckpointPath, CheckpointStore, CrawlCheckpoint,
 };
 
 // Adapters

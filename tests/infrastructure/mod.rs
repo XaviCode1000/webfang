@@ -3,7 +3,6 @@
 //! Real I/O tests using temp dirs, wiremock servers, and in-memory databases.
 //! Each submodule exercises one infrastructure component end-to-end.
 
-mod checkpoint_store;
 mod cookie_bridge;
 mod file_saver;
 mod jsonl_exporter;
