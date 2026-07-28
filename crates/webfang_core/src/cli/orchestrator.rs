@@ -24,6 +24,13 @@ use crate::Shell;
 #[cfg(feature = "ai")]
 use crate::domain::semantic_cleaner::SemanticCleaner;
 
+#[cfg(feature = "adaptive-selectors")]
+use crate::application::adaptive_engine::AdaptiveSelectorEngine;
+
+/// Placeholder when `adaptive-selectors` feature is disabled.
+#[cfg(not(feature = "adaptive-selectors"))]
+type AdaptiveSelectorEngine = ();
+
 /// Handle shell completion generation.
 pub fn handle_completions(shell: Shell) -> CliExit {
     let clap_shell = match shell {
@@ -65,10 +72,13 @@ pub fn prepare_progress_channel(
 /// 2. Scraping with progress
 /// 3. Export results
 /// 4. Report failures + exit code
-#[instrument(level = "info", skip(opts, ai_cleaner), fields(url = %opts.url))]
+#[instrument(level = "info", skip(opts, ai_cleaner, adaptive_engine), fields(url = %opts.url))]
 pub async fn run(
     opts: CrawlOptions,
     #[cfg(feature = "ai")] ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
+    #[cfg(feature = "adaptive-selectors")] adaptive_engine: Option<
+        std::sync::Arc<AdaptiveSelectorEngine>,
+    >,
 ) -> CliExit {
     if opts.export.dry_run {
         println!("Dry-run: 1 URL(s) would be scraped:");
@@ -103,6 +113,13 @@ pub async fn run(
     let observer = Box::new(
         crate::application::progress_observer::LiveProgressObserver::new(None, opts.export.quiet),
     );
+    // Bridge the cfg-gated engine into an always-present reference option for
+    // the scrape phase: `None` when the feature is compiled out.
+    #[cfg(feature = "adaptive-selectors")]
+    let engine_ref = adaptive_engine.as_deref();
+    #[cfg(not(feature = "adaptive-selectors"))]
+    let engine_ref: Option<&AdaptiveSelectorEngine> = None;
+
     let (results, failures) = scrape_phase(
         &prepare.urls_to_scrape,
         &prepare.scraper_config,
@@ -112,6 +129,7 @@ pub async fn run(
             .shared_downloader
             .as_deref()
             .map(|d| d as &dyn crate::domain::ports::AssetDownloaderPort),
+        engine_ref,
     )
     .await;
 
@@ -303,11 +321,12 @@ async fn scrape_phase(
     opts: &CrawlOptions,
     observer: &dyn crate::application::progress_observer::ProgressObserver,
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
+    engine: Option<&AdaptiveSelectorEngine>,
 ) -> (
     Vec<domain::ScrapedContent>,
     Vec<(String, crate::error::ScraperError)>,
 ) {
-    scrape_urls(urls, scraper_config, opts, observer, downloader).await
+    scrape_urls(urls, scraper_config, opts, observer, downloader, engine).await
 }
 
 /// Report failures and determine the exit code.

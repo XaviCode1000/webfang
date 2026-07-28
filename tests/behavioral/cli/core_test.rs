@@ -3,7 +3,7 @@
 use crate::cmd;
 use predicates::prelude::*;
 
-#[cfg(feature = "ai")]
+#[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
 use crate::assert_snapshot_plain;
 
 // ---------------------------------------------------------------------------
@@ -196,12 +196,13 @@ fn invalid_url_exit_code_64() {
 
 // ---------------------------------------------------------------------------
 // --help output snapshot (deterministic, network-free)
-// Only runs when the `ai` feature is enabled, because the snapshot includes
-// AI-specific flags (--clean-ai, --threshold, --max-tokens, etc.) that are
-// only present in the binary when compiled with `--features ai`.
+// Only runs when both the `ai` and `adaptive-selectors` features are enabled,
+// because the snapshot includes AI-specific flags (--clean-ai, --threshold,
+// --max-tokens, etc.; present only with `--features ai`) and the
+// `--adaptive-selectors` flag (present only with `--features adaptive-selectors`).
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "ai")]
+#[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
 #[test]
 fn help_output_snapshot() {
     let output = cmd().arg("--help").output().expect("run binary");

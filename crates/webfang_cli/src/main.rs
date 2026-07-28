@@ -29,16 +29,20 @@ use std::panic;
 use clap::Parser;
 #[cfg(feature = "ui")]
 use inquire::Text;
-#[cfg(feature = "ai")]
+#[cfg(any(feature = "ai", feature = "adaptive-selectors"))]
 use std::sync::Arc;
 #[cfg(feature = "ai")]
 use webfang_ai::{ModelConfig, SemanticCleanerImpl};
+#[cfg(feature = "adaptive-selectors")]
+use webfang_core::application::adaptive_engine::{AdaptiveSelectorEngine, AdaptiveSelectorOptions};
 use webfang_core::application::crawl_options::CrawlOptions;
 use webfang_core::cli::config::ConfigDefaults;
 use webfang_core::cli::error::CliExit;
 use webfang_core::cli::preflight;
 #[cfg(feature = "ai")]
 use webfang_core::domain::semantic_cleaner::SemanticCleaner;
+#[cfg(feature = "adaptive-selectors")]
+use webfang_core::infrastructure::scraper::dom_inspector::DefaultDomInspector;
 use webfang_core::{init_logging_dual, is_no_color, Args, Commands};
 #[cfg(feature = "ui")]
 use webfang_tui::tui::modal::HelpModal;
@@ -411,43 +415,63 @@ async fn __main() -> CliExit {
     // =========================================================================
     // 8. Delegate to orchestrator
     // =========================================================================
-    #[cfg(feature = "ai")]
-    let result = {
-        let ai_cleaner = if opts.ai {
-            // Resolve model variant: CLI flag takes precedence over AI_MODEL_ID env var
-            let model_variant = if opts.ai_config.model.is_empty() {
-                webfang_ai::AiModel::from_env_or_default()
-            } else {
-                match opts.ai_config.model.parse::<webfang_ai::AiModel>() {
-                    Ok(variant) => variant,
-                    Err(e) => {
-                        tracing::warn!("Parsing error para --ai-model: {}", e);
-                        webfang_ai::AiModel::from_env_or_default()
-                    },
-                }
-            };
+    // Build the adaptive selector engine when the feature and flag are both
+    // active. Tier 1 (lexical) only — Tier 2 semantic repair would require the
+    // `ai` feature plus a GraniteDomInspector, so `semantic` is wired as None.
+    #[cfg(feature = "adaptive-selectors")]
+    let adaptive_engine: Option<Arc<AdaptiveSelectorEngine>> = if opts.adaptive_selectors {
+        Some(Arc::new(AdaptiveSelectorEngine::new(
+            Arc::new(DefaultDomInspector::new()),
+            None,
+            AdaptiveSelectorOptions::default(),
+        )))
+    } else {
+        None
+    };
 
-            match SemanticCleanerImpl::new(
-                ModelConfig::default()
-                    .with_model_variant(model_variant)
-                    .with_relevance_threshold(opts.ai_config.threshold)
-                    .with_max_tokens(opts.ai_config.max_tokens)
-                    .with_offline_mode(opts.ai_config.offline),
-            )
-            .await
-            {
-                Ok(cleaner) => Some(Arc::new(cleaner) as Arc<dyn SemanticCleaner>),
+    #[cfg(feature = "ai")]
+    let ai_cleaner: Option<Arc<dyn SemanticCleaner>> = if opts.ai {
+        // Resolve model variant: CLI flag takes precedence over AI_MODEL_ID env var
+        let model_variant = if opts.ai_config.model.is_empty() {
+            webfang_ai::AiModel::from_env_or_default()
+        } else {
+            match opts.ai_config.model.parse::<webfang_ai::AiModel>() {
+                Ok(variant) => variant,
                 Err(e) => {
-                    tracing::warn!("No se pudo inicializar el limpiador semántico AI: {e}");
-                    None
+                    tracing::warn!("Parsing error para --ai-model: {}", e);
+                    webfang_ai::AiModel::from_env_or_default()
                 },
             }
-        } else {
-            None
         };
-        orchestrator::run(opts, ai_cleaner).await
+
+        match SemanticCleanerImpl::new(
+            ModelConfig::default()
+                .with_model_variant(model_variant)
+                .with_relevance_threshold(opts.ai_config.threshold)
+                .with_max_tokens(opts.ai_config.max_tokens)
+                .with_offline_mode(opts.ai_config.offline),
+        )
+        .await
+        {
+            Ok(cleaner) => Some(Arc::new(cleaner) as Arc<dyn SemanticCleaner>),
+            Err(e) => {
+                tracing::warn!("No se pudo inicializar el limpiador semántico AI: {e}");
+                None
+            },
+        }
+    } else {
+        None
     };
-    #[cfg(not(feature = "ai"))]
+
+    // Dispatch to the orchestrator. The argument list depends on which optional
+    // features are compiled in, so each combination is spelled out explicitly.
+    #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
+    let result = orchestrator::run(opts, ai_cleaner, adaptive_engine).await;
+    #[cfg(all(feature = "ai", not(feature = "adaptive-selectors")))]
+    let result = orchestrator::run(opts, ai_cleaner).await;
+    #[cfg(all(not(feature = "ai"), feature = "adaptive-selectors"))]
+    let result = orchestrator::run(opts, adaptive_engine).await;
+    #[cfg(all(not(feature = "ai"), not(feature = "adaptive-selectors")))]
     let result = orchestrator::run(opts).await;
 
     // Flush OpenTelemetry while the Tokio runtime is still alive.

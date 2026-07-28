@@ -16,6 +16,13 @@ use crate::infrastructure::network::session_pool::DomainSessionPool;
 use crate::ScraperConfig;
 use crate::{HttpClient, HttpClientConfig};
 
+#[cfg(feature = "adaptive-selectors")]
+use crate::application::adaptive_engine::AdaptiveSelectorEngine;
+
+/// Placeholder when `adaptive-selectors` feature is disabled.
+#[cfg(not(feature = "adaptive-selectors"))]
+type AdaptiveSelectorEngine = ();
+
 /// Apply resume mode filtering.
 pub async fn apply_resume_mode(
     urls_to_scrape: Vec<Url>,
@@ -98,6 +105,7 @@ pub async fn scrape_urls(
     opts: &CrawlOptions,
     observer: &dyn ProgressObserver,
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
+    engine: Option<&AdaptiveSelectorEngine>,
 ) -> (
     Vec<ScrapedContent>,
     Vec<(String, crate::error::ScraperError)>,
@@ -181,8 +189,14 @@ pub async fn scrape_urls(
             .on_status_changed(url_str, ScrapeStatus::Fetching)
             .await;
 
-        match scrape_single_url_for_tui(http_client.client(), &url, scraper_config, downloader)
-            .await
+        match scrape_single_url_for_tui(
+            http_client.client(),
+            &url,
+            scraper_config,
+            downloader,
+            engine,
+        )
+        .await
         {
             Ok(content) => {
                 observer
