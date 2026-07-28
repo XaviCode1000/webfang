@@ -36,6 +36,17 @@ pub enum ResourceKind {
     RamBudget,
 }
 
+impl std::fmt::Display for ResourceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::SitemapUrls => "sitemap URLs",
+            Self::SitemapDepth => "sitemap depth",
+            Self::RamBudget => "RAM budget",
+        };
+        f.write_str(label)
+    }
+}
+
 /// Crawl errors
 ///
 /// Following **err-thiserror-for-libraries**: Uses thiserror for library error types.
@@ -405,6 +416,27 @@ mod tests {
         assert!(error.to_string().contains("RamBudget"));
         assert!(error.to_string().contains("1024"));
         assert!(error.to_string().contains("2048"));
+    }
+
+    #[test]
+    fn test_resource_kind_display() {
+        // EC-RESOURCE-DISPLAY: human-friendly Display per variant.
+        assert_eq!(ResourceKind::SitemapUrls.to_string(), "sitemap URLs");
+        assert_eq!(ResourceKind::SitemapDepth.to_string(), "sitemap depth");
+        assert_eq!(ResourceKind::RamBudget.to_string(), "RAM budget");
+
+        // ResourceExhausted must keep rendering the resource via Debug
+        // (`{resource:?}`), so the machine-readable variant name stays in the
+        // error string even though Display now exists (type-display-vs-debug).
+        let error = CrawlError::ResourceExhausted {
+            resource: ResourceKind::RamBudget,
+            limit: 1024,
+            actual: 2048,
+        };
+        assert!(
+            error.to_string().contains("RamBudget"),
+            "ResourceExhausted must keep Debug rendering of the resource: {error}"
+        );
     }
 
     #[test]

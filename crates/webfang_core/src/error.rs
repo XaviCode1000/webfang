@@ -152,7 +152,12 @@ pub enum ScraperError {
     #[error("error interno: {0}")]
     Internal(String),
 
-    /// Crawl limit exceeded (max depth, max pages)
+    /// Crawl limit exceeded.
+    ///
+    /// Groups all crawl-budget configuration limits — max-depth, max-pages,
+    /// and sitemap-depth. All three are `PermanentFatal` configuration
+    /// boundaries (see [`Self::classify`]); the payload carries the
+    /// human-readable limit description rendered verbatim by `Display`.
     #[error("{0}")]
     CrawlLimit(String),
 
