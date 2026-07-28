@@ -23,6 +23,15 @@ use crate::infrastructure::observability::metrics_instruments::{
     CRAWLER_BANDWIDTH, CRAWLER_PAGES, CRAWLER_URLS,
 };
 
+#[cfg(feature = "adaptive-selectors")]
+use crate::application::adaptive_engine::AdaptiveSelectorEngine;
+#[cfg(feature = "adaptive-selectors")]
+use crate::domain::ExtractResult;
+
+/// Placeholder when `adaptive-selectors` feature is disabled.
+#[cfg(not(feature = "adaptive-selectors"))]
+type AdaptiveSelectorEngine = ();
+
 // ============================================================================
 // TUI Support — Discover/Scrape Use Cases
 // ============================================================================
@@ -174,7 +183,7 @@ pub async fn discover_urls_for_tui(
 /// * `Err(ScraperError)` - Error during scraping
 #[instrument(
     name = "scrape_single_url",
-    skip(client, config, downloader),
+    skip(client, config, downloader, engine),
     fields(url = %url)
 )]
 pub async fn scrape_single_url_for_tui(
@@ -182,6 +191,7 @@ pub async fn scrape_single_url_for_tui(
     url: &Url,
     config: &ScraperConfig,
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
+    #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
 ) -> ScraperResult<ScrapedContent> {
     let span = span!(Level::DEBUG, "scrape_single", url = %url);
     let _guard = span.enter();
@@ -312,13 +322,54 @@ pub async fn scrape_single_url_for_tui(
     let cleaned_html = crate::infrastructure::converter::html_cleaner::clean_html(&html);
 
     // Apply CSS selector extraction if a non-default selector is configured.
-    let extraction_html = crate::application::scraper_service::extract_with_selector(
+    let extract_result = crate::application::scraper_service::extract_with_selector(
         &cleaned_html,
         &config.selector,
         None,
-    )
-    .as_html()
-    .to_owned();
+    );
+
+    // Adaptive selector repair (Tier 1 lexical): when extraction falls back and
+    // an engine is wired in, try to find a repaired selector and re-extract.
+    // Mirrors the repair in `scrape_with_config`; this TUI path keeps its own
+    // binary/metrics handling instead of delegating to that function.
+    #[cfg(feature = "adaptive-selectors")]
+    let extract_result = if let ExtractResult::Fallback { html, diagnostic } = extract_result {
+        if let Some(engine) = engine {
+            match engine
+                .select_sync_aware(
+                    html.clone(),
+                    config.selector.clone(),
+                    url.host_str().map(|s| s.to_owned()),
+                )
+                .await
+            {
+                Ok(outcome) => {
+                    let repaired = crate::application::scraper_service::extract_with_selector(
+                        &html,
+                        &outcome.suggestion.selector,
+                        None,
+                    );
+                    if repaired.is_matched() {
+                        info!(
+                            repaired_selector = %outcome.suggestion.selector,
+                            method = ?outcome.status,
+                            "adaptive_repair_resolved"
+                        );
+                        repaired
+                    } else {
+                        ExtractResult::Fallback { html, diagnostic }
+                    }
+                },
+                Err(_) => ExtractResult::Fallback { html, diagnostic },
+            }
+        } else {
+            ExtractResult::Fallback { html, diagnostic }
+        }
+    } else {
+        extract_result
+    };
+
+    let extraction_html = extract_result.as_html().to_owned();
 
     // Try Readability first, fallback to plain text extraction
     match readability::parse(&extraction_html, Some(url.as_str())) {
