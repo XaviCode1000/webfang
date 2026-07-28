@@ -36,6 +36,7 @@ pub use crawler::{
 };
 pub use deduplicator::UrlDeduplicator;
 pub use http_client::create_http_client;
+pub use http_client::create_http_client_with_config;
 pub use http_client::HttpClientPort;
 pub use rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 pub use scraper_service::{

@@ -27,7 +27,6 @@ use crate::infrastructure::observability::metrics_instruments::{
 };
 use wreq::header::{HeaderMap, HeaderName, HeaderValue};
 use wreq::Client;
-use wreq_util::Emulation;
 
 /// Client Hints headers for Chrome 145 (2026 Standard)
 /// These headers must match the TLS fingerprint to avoid "Headless Spoofing" detection
@@ -566,29 +565,41 @@ fn build_wreq_client(
         .map_err(|e| ScraperError::Config(format!("failed to create http client: {e}")))
 }
 
-// Legacy function - simplified, returns wreq::Client directly
-/// Create configured HTTP client
+/// Create a bare `wreq::Client` that honors the given domain config.
 ///
-/// This function creates a client with basic configuration.
-/// For more control, use `HttpClient::new()` with `HttpClientConfig`.
-pub fn create_http_client() -> Result<Client, ScraperError> {
-    let agents = UserAgentCache::fallback_agents();
-    let user_agent = get_random_user_agent_from_pool(&agents);
+/// This is the config-driven counterpart of `HttpClient::new`: it returns the
+/// raw inner client (no retry middleware) for callers that manage requests
+/// themselves, while still applying the Chrome Client Hints headers, the
+/// resolved H2/TLS profile, request/connect timeouts, and pool tuning from
+/// `config`.
+///
+/// User-agent resolution: `config.user_agent` is used when set; otherwise a
+/// random agent is drawn from the fallback pool, preserving the historical
+/// rotation behavior of `create_http_client`.
+///
+/// # Errors
+///
+/// Returns `ScraperError::Config` if the underlying client fails to build.
+pub fn create_http_client_with_config(config: &HttpClientConfig) -> Result<Client, ScraperError> {
+    let user_agent = match config.user_agent.clone() {
+        Some(ua) => ua,
+        None => get_random_user_agent_from_pool(&UserAgentCache::fallback_agents()),
+    };
 
     tracing::debug!("Using user agent: {}", user_agent);
 
-    let client = Client::builder()
-        .emulation(Emulation::Chrome145)
-        .user_agent(user_agent)
-        .timeout(Duration::from_secs(30))
-        .gzip(true)
-        .brotli(true)
-        .cookie_store(true)
-        .redirect(wreq::redirect::Policy::limited(10))
-        .build()
-        .map_err(|e| ScraperError::Config(format!("failed to create http client: {e}")))?;
+    build_wreq_client(config, Some(user_agent))
+}
 
-    Ok(client)
+// Legacy function - simplified, returns wreq::Client directly
+/// Create configured HTTP client
+///
+/// Equivalent to `create_http_client_with_config(&HttpClientConfig::default())`:
+/// a Chrome145 client with a random pooled user agent, a 30s request timeout,
+/// and a 10s connect timeout, plus the Chrome Client Hints default headers.
+/// For more control, use `HttpClient::new()` with `HttpClientConfig`.
+pub fn create_http_client() -> Result<Client, ScraperError> {
+    create_http_client_with_config(&HttpClientConfig::default())
 }
 
 /// Get random user agent from pool (legacy function)
