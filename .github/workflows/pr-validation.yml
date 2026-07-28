@@ -1,0 +1,47 @@
+name: PR Validation
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  validate:
+    name: Validate PR metadata
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require linked issue
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if ! printf '%s' "$BODY" | grep -qiE '(closes|fixes|resolves) #[0-9]+'; then
+            echo "::error::El cuerpo del PR debe vincular una issue con 'Closes #N', 'Fixes #N' o 'Resolves #N'."
+            exit 1
+          fi
+          echo "OK: issue vinculada."
+
+      - name: Require exactly one type:* label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          count=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels \
+            --jq '[.labels[].name | select(startswith("type:"))] | length')
+          if [ "$count" -ne 1 ]; then
+            echo "::error::El PR debe tener exactamente un label 'type:*' (encontrados: $count)."
+            exit 1
+          fi
+          echo "OK: label type:* presente."
+
+      - name: Require conventional branch name
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if ! printf '%s' "$HEAD_REF" | grep -qE '^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)/[a-z0-9._-]+$'; then
+            echo "::error::La rama '$HEAD_REF' debe seguir el patron type/description (ej: fix/mi-bug)."
+            exit 1
+          fi
+          echo "OK: nombre de rama."
