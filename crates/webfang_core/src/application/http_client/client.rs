@@ -71,63 +71,7 @@ impl HttpClient {
     ///
     /// Returns `ScraperError::Config` if client creation fails
     pub fn new(config: HttpClientConfig) -> Result<Self, ScraperError> {
-        let pool_size = std::cmp::max(6, num_cpus::get() - 1);
-
-        // Build Client Hints headers for Chrome 145 (2026 Standard)
-        // These MUST match the TLS fingerprint to avoid "Headless Spoofing" detection
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            HeaderName::from_static("sec-ch-ua"),
-            HeaderValue::from_static(CLIENT_HINTS_SEC_CH_UA),
-        );
-        headers.insert(
-            HeaderName::from_static("sec-ch-ua-mobile"),
-            HeaderValue::from_static(CLIENT_HINTS_SEC_CH_UA_MOBILE),
-        );
-        headers.insert(
-            HeaderName::from_static("sec-ch-ua-platform"),
-            HeaderValue::from_static(CLIENT_HINTS_SEC_CH_UA_PLATFORM),
-        );
-        // Additional security headers (Sec-Fetch)
-        headers.insert(
-            HeaderName::from_static("sec-fetch-dest"),
-            HeaderValue::from_static("document"),
-        );
-        headers.insert(
-            HeaderName::from_static("sec-fetch-mode"),
-            HeaderValue::from_static("navigate"),
-        );
-        headers.insert(
-            HeaderName::from_static("sec-fetch-site"),
-            HeaderValue::from_static("none"),
-        );
-        headers.insert(
-            HeaderName::from_static("sec-fetch-user"),
-            HeaderValue::from_static("?1"),
-        );
-        headers.insert(
-            HeaderName::from_static("upgrade-insecure-requests"),
-            HeaderValue::from_static("1"),
-        );
-
-        // Resolve H2/TLS profile from name — overrides tls_emulation if h2_profile is set
-        let profile = HttpClientConfig::resolve_profile(&config.h2_profile);
-
-        let builder = Client::builder()
-            .emulation(profile)
-            .default_headers(headers)
-            .timeout(Duration::from_secs(config.timeout_secs))
-            .connect_timeout(Duration::from_secs(config.connect_timeout_secs))
-            .pool_max_idle_per_host(pool_size)
-            .pool_idle_timeout(Duration::from_secs(60))
-            .gzip(true)
-            .brotli(true)
-            .cookie_store(true)
-            .redirect(wreq::redirect::Policy::limited(10));
-
-        let client = builder
-            .build()
-            .map_err(|e| ScraperError::Config(format!("failed to create http client: {e}")))?;
+        let client = build_wreq_client(&config, None)?;
 
         let mut user_agents = UserAgentCache::fallback_agents();
         if let Some(ref ua) = config.user_agent {
@@ -538,6 +482,88 @@ impl HttpClient {
             }
         }
     }
+}
+
+/// Build the inner `wreq::Client` shared by `HttpClient::new` and the
+/// bare-client factories.
+///
+/// Applies the Chrome Client Hints + Sec-Fetch default headers (these MUST
+/// match the TLS fingerprint to avoid "Headless Spoofing" detection), the
+/// resolved H2/TLS profile, request/connect timeouts, connection-pool tuning,
+/// compression, cookie storage, and a bounded redirect policy.
+///
+/// When `user_agent` is `Some`, it is set as the build-time `User-Agent`;
+/// when `None`, no build-time UA is applied (callers such as `HttpClient`
+/// set the UA per request instead).
+///
+/// # Errors
+///
+/// Returns `ScraperError::Config` if the underlying client fails to build.
+fn build_wreq_client(
+    config: &HttpClientConfig,
+    user_agent: Option<String>,
+) -> Result<Client, ScraperError> {
+    let pool_size = std::cmp::max(6, num_cpus::get() - 1);
+
+    // Build Client Hints headers for Chrome 145 (2026 Standard)
+    // These MUST match the TLS fingerprint to avoid "Headless Spoofing" detection
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        HeaderName::from_static("sec-ch-ua"),
+        HeaderValue::from_static(CLIENT_HINTS_SEC_CH_UA),
+    );
+    headers.insert(
+        HeaderName::from_static("sec-ch-ua-mobile"),
+        HeaderValue::from_static(CLIENT_HINTS_SEC_CH_UA_MOBILE),
+    );
+    headers.insert(
+        HeaderName::from_static("sec-ch-ua-platform"),
+        HeaderValue::from_static(CLIENT_HINTS_SEC_CH_UA_PLATFORM),
+    );
+    // Additional security headers (Sec-Fetch)
+    headers.insert(
+        HeaderName::from_static("sec-fetch-dest"),
+        HeaderValue::from_static("document"),
+    );
+    headers.insert(
+        HeaderName::from_static("sec-fetch-mode"),
+        HeaderValue::from_static("navigate"),
+    );
+    headers.insert(
+        HeaderName::from_static("sec-fetch-site"),
+        HeaderValue::from_static("none"),
+    );
+    headers.insert(
+        HeaderName::from_static("sec-fetch-user"),
+        HeaderValue::from_static("?1"),
+    );
+    headers.insert(
+        HeaderName::from_static("upgrade-insecure-requests"),
+        HeaderValue::from_static("1"),
+    );
+
+    // Resolve H2/TLS profile from name — overrides tls_emulation if h2_profile is set
+    let profile = HttpClientConfig::resolve_profile(&config.h2_profile);
+
+    let mut builder = Client::builder()
+        .emulation(profile)
+        .default_headers(headers)
+        .timeout(Duration::from_secs(config.timeout_secs))
+        .connect_timeout(Duration::from_secs(config.connect_timeout_secs))
+        .pool_max_idle_per_host(pool_size)
+        .pool_idle_timeout(Duration::from_secs(60))
+        .gzip(true)
+        .brotli(true)
+        .cookie_store(true)
+        .redirect(wreq::redirect::Policy::limited(10));
+
+    if let Some(ua) = user_agent {
+        builder = builder.user_agent(ua);
+    }
+
+    builder
+        .build()
+        .map_err(|e| ScraperError::Config(format!("failed to create http client: {e}")))
 }
 
 // Legacy function - simplified, returns wreq::Client directly
