@@ -225,6 +225,10 @@ required-features = ["ui"]
 name = "progress_e2e_wiring"
 path = "../../tests/progress_e2e_wiring.rs"
 
+[[test]]
+name = "engine_js_strategy_timeout"
+path = "../../tests/engine_js_strategy_timeout_test.rs"
+
 [lints.clippy]
 doc_markdown = "allow"
 uninlined_format_args = "allow"

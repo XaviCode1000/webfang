@@ -23,23 +23,27 @@ use std::time::Instant;
 /// Memory budget for one Obscura subprocess (~30 MB).
 const OBSCURA_MEMORY_COST: usize = 30_000_000;
 
-/// Hard timeout per page fetch.
-const OBSCURA_TIMEOUT: Duration = Duration::from_secs(15);
+/// Default timeout per page fetch.
+const DEFAULT_OBSCURA_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Subprocess-based downloader that shells out to `obscura fetch --dump markdown`.
 ///
 /// No cookies, no connection pool — each invocation is independent.
-pub struct ObscuraDownloader;
+pub struct ObscuraDownloader {
+    timeout: Duration,
+}
 
 impl ObscuraDownloader {
-    pub(crate) fn new() -> Self {
-        Self
+    pub(crate) fn new(timeout_secs: u64) -> Self {
+        Self {
+            timeout: Duration::from_secs(timeout_secs),
+        }
     }
 }
 
 impl Default for ObscuraDownloader {
     fn default() -> Self {
-        Self::new()
+        Self::new(DEFAULT_OBSCURA_TIMEOUT.as_secs())
     }
 }
 
@@ -54,7 +58,7 @@ impl Downloader for ObscuraDownloader {
         let url_string = url.to_string();
 
         let result = timeout(
-            OBSCURA_TIMEOUT,
+            self.timeout,
             tokio::task::spawn_blocking(move || {
                 Command::new("obscura")
                     .args(["fetch", "--dump", "markdown", &url_string])
@@ -101,7 +105,7 @@ impl Downloader for ObscuraDownloader {
                     DOWNLOAD_OBSCURA_LATENCY.record(start.elapsed().as_secs_f64(), &[]);
                     DOWNLOAD_OBSCURA_TIMEOUT.add(1, &[]);
                 }
-                Err(DownloadError::Timeout(OBSCURA_TIMEOUT.as_secs()))
+                Err(DownloadError::Timeout(self.timeout.as_secs()))
             },
             Err(_) => {
                 #[cfg(feature = "otel-metrics")]
@@ -109,7 +113,7 @@ impl Downloader for ObscuraDownloader {
                     DOWNLOAD_OBSCURA_LATENCY.record(start.elapsed().as_secs_f64(), &[]);
                     DOWNLOAD_OBSCURA_TIMEOUT.add(1, &[]);
                 }
-                Err(DownloadError::Timeout(OBSCURA_TIMEOUT.as_secs()))
+                Err(DownloadError::Timeout(self.timeout.as_secs()))
             },
         }
     }
@@ -129,14 +133,14 @@ mod tests {
 
     #[test]
     fn test_obscura_downloader_basics() {
-        let dl = ObscuraDownloader::new();
+        let dl = ObscuraDownloader::new(15);
         assert!(!dl.supports_interactions());
         assert_eq!(dl.memory_cost(), 30_000_000);
     }
 
     #[test]
     fn test_obscura_default() {
-        let dl = ObscuraDownloader;
+        let dl = ObscuraDownloader::default();
         assert_eq!(dl.memory_cost(), OBSCURA_MEMORY_COST);
     }
 }
