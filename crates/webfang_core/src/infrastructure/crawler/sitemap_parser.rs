@@ -10,7 +10,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> anyhow::Result<()> {
-//! let parser = SitemapParser::new();
+//! let parser = SitemapParser::new()?;
 //! let urls = parser.parse_from_url("https://example.com/sitemap.xml").await?;
 //! println!("Found {} URLs", urls.len());
 //! # Ok(())
@@ -31,7 +31,7 @@ use super::memory_manager::MemoryManager;
 use super::retry_policy::RetryPolicy;
 use super::sitemap_config::SitemapConfig;
 use super::url_validator::UrlValidator;
-use crate::domain::UrlValidatorTrait;
+use crate::domain::{CrawlError, UrlValidatorTrait};
 #[allow(unused_imports)]
 use async_compression::tokio::bufread::GzipDecoder;
 use quick_xml::events::Event;
@@ -155,29 +155,35 @@ pub struct SitemapParser {
 
 impl SitemapParser {
     /// Create new parser with default config
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `CrawlError::Internal` if the URL validator's HTTP client fails to build.
+    pub fn new() -> std::result::Result<Self, CrawlError> {
+        Ok(Self {
             config: SitemapConfig::default(),
             compression_handler: CompressionHandler::new(),
-            url_validator: UrlValidator::new(),
+            url_validator: UrlValidator::new()?,
             retry_policy: RetryPolicy::new(),
             memory_manager: MemoryManager::new(),
             batch_processor: BatchProcessor::new(),
-        }
+        })
     }
 
     /// Create new parser with custom config
-    #[must_use]
-    pub fn with_config(config: SitemapConfig) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `CrawlError::Internal` if the URL validator's HTTP client fails to build.
+    pub fn with_config(config: SitemapConfig) -> std::result::Result<Self, CrawlError> {
+        Ok(Self {
             config,
             compression_handler: CompressionHandler::new(),
-            url_validator: UrlValidator::new(),
+            url_validator: UrlValidator::new()?,
             retry_policy: RetryPolicy::new(),
             memory_manager: MemoryManager::new(),
             batch_processor: BatchProcessor::new(),
-        }
+        })
     }
 
     /// Parse sitemap from URL (streaming, zero-allocation)
@@ -430,12 +436,6 @@ impl SitemapParser {
     }
 }
 
-impl Default for SitemapParser {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
@@ -449,7 +449,7 @@ mod tests {
             <url><loc>https://example.com/page3</loc></url>
         </urlset>"#;
 
-        let parser = SitemapParser::new();
+        let parser = SitemapParser::new().unwrap();
         let base = Url::parse("https://example.com").unwrap();
         let urls = parser
             .parse_xml_sitemap(xml.as_bytes(), &base)
@@ -471,7 +471,7 @@ mod tests {
             <url><loc>https://example.com/page2</loc></url>
         </urlset>"#;
 
-        let parser = SitemapParser::new();
+        let parser = SitemapParser::new().unwrap();
         let base = Url::parse("https://example.com").unwrap();
         let urls = parser
             .parse_xml_sitemap(xml.as_bytes(), &base)
@@ -487,7 +487,7 @@ mod tests {
         <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
         </urlset>"#;
 
-        let parser = SitemapParser::new();
+        let parser = SitemapParser::new().unwrap();
         let base = Url::parse("https://example.com").unwrap();
         let result = parser.parse_xml_sitemap(xml.as_bytes(), &base).await;
 
@@ -502,7 +502,7 @@ mod tests {
             <!-- Missing closing tag -->
         </urlset>"#;
 
-        let parser = SitemapParser::new();
+        let parser = SitemapParser::new().unwrap();
         let base = Url::parse("https://example.com").unwrap();
         let result = parser.parse_xml_sitemap(xml.as_bytes(), &base).await;
 
@@ -540,7 +540,7 @@ mod tests {
 
     #[test]
     fn test_is_sitemap_index() {
-        let parser = SitemapParser::new();
+        let parser = SitemapParser::new().unwrap();
 
         let index_urls = vec![
             Url::parse("https://example.com/sitemap1.xml").unwrap(),
@@ -558,11 +558,13 @@ mod tests {
     #[test]
     fn test_parser_has_gzip() {
         let parser_gzip =
-            SitemapParser::with_config(SitemapConfig::builder().gzip_enabled(true).build());
+            SitemapParser::with_config(SitemapConfig::builder().gzip_enabled(true).build())
+                .unwrap();
         assert!(parser_gzip.has_gzip());
 
         let parser_no_gzip =
-            SitemapParser::with_config(SitemapConfig::builder().gzip_enabled(false).build());
+            SitemapParser::with_config(SitemapConfig::builder().gzip_enabled(false).build())
+                .unwrap();
         assert!(!parser_no_gzip.has_gzip());
     }
 
@@ -577,7 +579,7 @@ mod tests {
             <url><loc>javascript:alert(1)</loc></url>
         </urlset>"#;
 
-        let parser = SitemapParser::new();
+        let parser = SitemapParser::new().unwrap();
         let base = Url::parse("https://example.com").unwrap();
         let urls = parser
             .parse_xml_sitemap(xml.as_bytes(), &base)
@@ -602,7 +604,7 @@ mod tests {
             <url><loc>https://example.com/page2</loc></url>
         </urlset>"#;
 
-        let parser = SitemapParser::new();
+        let parser = SitemapParser::new().unwrap();
         let base = Url::parse("https://example.com").unwrap();
         let urls = parser
             .parse_xml_sitemap(xml.as_bytes(), &base)
@@ -681,7 +683,7 @@ mod tests {
     #[tokio::test]
     async fn test_parse_from_url_depth_zero_returns_error() {
         let config = SitemapConfig::builder().max_depth(0).build();
-        let parser = SitemapParser::with_config(config);
+        let parser = SitemapParser::with_config(config).unwrap();
         let result = parser
             .parse_from_url("https://example.com/sitemap.xml")
             .await;
@@ -692,7 +694,7 @@ mod tests {
     #[ignore = "requires network — hits real DNS for invalid-host-xyz-12345.com"]
     async fn test_parse_from_url_depth_one_attempts_fetch() {
         let config = SitemapConfig::builder().max_depth(1).build();
-        let parser = SitemapParser::with_config(config);
+        let parser = SitemapParser::with_config(config).unwrap();
         // depth=1 means it tries the HTTP fetch — with an invalid host it should fail
         let result = parser
             .parse_from_url("https://invalid-host-xyz-12345.com/sitemap.xml")
@@ -703,14 +705,14 @@ mod tests {
     // Gap C: is_sitemap_index — various URL patterns
     #[test]
     fn test_is_sitemap_index_xml_gz() {
-        let parser = SitemapParser::new();
+        let parser = SitemapParser::new().unwrap();
         let urls = vec![Url::parse("https://example.com/sitemap.xml.gz").unwrap()];
         assert!(parser.is_sitemap_index(&urls));
     }
 
     #[test]
     fn test_is_sitemap_index_mixed() {
-        let parser = SitemapParser::new();
+        let parser = SitemapParser::new().unwrap();
         let urls = vec![
             Url::parse("https://example.com/page1").unwrap(),
             Url::parse("https://example.com/sitemap2.xml").unwrap(),
@@ -720,7 +722,7 @@ mod tests {
 
     #[test]
     fn test_is_sitemap_index_no_xml() {
-        let parser = SitemapParser::new();
+        let parser = SitemapParser::new().unwrap();
         let urls = vec![
             Url::parse("https://example.com/page1.html").unwrap(),
             Url::parse("https://example.com/page2.json").unwrap(),
@@ -730,13 +732,14 @@ mod tests {
 
     #[test]
     fn test_max_depth_accessor() {
-        let parser = SitemapParser::with_config(SitemapConfig::builder().max_depth(7).build());
+        let parser =
+            SitemapParser::with_config(SitemapConfig::builder().max_depth(7).build()).unwrap();
         assert_eq!(parser.max_depth(), 7);
     }
 
     #[test]
     fn test_max_depth_default() {
-        let parser = SitemapParser::new();
+        let parser = SitemapParser::new().unwrap();
         assert_eq!(parser.max_depth(), 3);
     }
 }

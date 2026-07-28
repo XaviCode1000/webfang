@@ -107,7 +107,7 @@ async fn parse_from_mock_server_basic_sitemap() {
         .mount(&mock)
         .await;
 
-    let parser = SitemapParser::new();
+    let parser = SitemapParser::new().unwrap();
     let urls = parser
         .parse_from_url(&format!("{}/sitemap.xml", mock.uri()))
         .await
@@ -130,7 +130,7 @@ async fn parse_from_mock_server_empty_sitemap() {
         .mount(&mock)
         .await;
 
-    let parser = SitemapParser::new();
+    let parser = SitemapParser::new().unwrap();
     let result = parser
         .parse_from_url(&format!("{}/sitemap.xml", mock.uri()))
         .await;
@@ -151,7 +151,7 @@ async fn parse_from_mock_server_non_xml_content_type() {
         .mount(&mock)
         .await;
 
-    let parser = SitemapParser::new();
+    let parser = SitemapParser::new().unwrap();
     let result = parser.parse_from_url(&format!("{}/feed", mock.uri())).await;
 
     assert!(matches!(result, Err(SitemapError::InvalidContentType(_))));
@@ -166,7 +166,7 @@ async fn parse_from_mock_server_404() {
         .mount(&mock)
         .await;
 
-    let parser = SitemapParser::new();
+    let parser = SitemapParser::new().unwrap();
     let result = parser
         .parse_from_url(&format!("{}/sitemap.xml", mock.uri()))
         .await;
@@ -185,7 +185,7 @@ async fn parse_from_mock_server_no_content_type_accepted() {
         .mount(&mock)
         .await;
 
-    let parser = SitemapParser::new();
+    let parser = SitemapParser::new().unwrap();
     let urls = parser
         .parse_from_url(&format!("{}/sitemap.xml", mock.uri()))
         .await
@@ -208,7 +208,7 @@ async fn parse_from_mock_server_deduplicates() {
         .mount(&mock)
         .await;
 
-    let parser = SitemapParser::new();
+    let parser = SitemapParser::new().unwrap();
     let urls = parser
         .parse_from_url(&format!("{}/sitemap.xml", mock.uri()))
         .await
@@ -238,7 +238,7 @@ async fn parse_from_mock_server_filter_invalid_schemes() {
         .mount(&mock)
         .await;
 
-    let parser = SitemapParser::new();
+    let parser = SitemapParser::new().unwrap();
     let urls = parser
         .parse_from_url(&format!("{}/sitemap.xml", mock.uri()))
         .await
@@ -253,7 +253,7 @@ async fn parse_from_mock_server_filter_invalid_schemes() {
 #[tokio::test]
 async fn parse_depth_zero_returns_error_without_network() {
     let config = SitemapConfig::builder().max_depth(0).build();
-    let parser = SitemapParser::with_config(config);
+    let parser = SitemapParser::with_config(config).unwrap();
     let result = parser
         .parse_from_url("https://example.com/sitemap.xml")
         .await;
@@ -262,15 +262,15 @@ async fn parse_depth_zero_returns_error_without_network() {
 
 #[tokio::test]
 async fn parser_has_gzip_accessor() {
-    let gzip_on = SitemapParser::with_config(SitemapConfig::builder().gzip_enabled(true).build());
+    let gzip_on = SitemapParser::with_config(SitemapConfig::builder().gzip_enabled(true).build()).unwrap();
     assert!(gzip_on.has_gzip());
 
-    let gzip_off = SitemapParser::with_config(SitemapConfig::builder().gzip_enabled(false).build());
+    let gzip_off = SitemapParser::with_config(SitemapConfig::builder().gzip_enabled(false).build()).unwrap();
     assert!(!gzip_off.has_gzip());
 }
 
 #[tokio::test]
 async fn parser_max_depth_accessor() {
-    let parser = SitemapParser::with_config(SitemapConfig::builder().max_depth(7).build());
+    let parser = SitemapParser::with_config(SitemapConfig::builder().max_depth(7).build()).unwrap();
     assert_eq!(parser.max_depth(), 7);
 }

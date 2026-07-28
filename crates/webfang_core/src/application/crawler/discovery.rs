@@ -491,7 +491,7 @@ async fn crawl_with_sitemap_internal(
             .batch_size(DEFAULT_BATCH_SIZE)
             .pagination_enabled(true)
             .build(),
-    );
+    )?;
 
     // Parse sitemap
     let urls = parser.parse_from_url(&sitemap_url).await.map_err(|e| {
