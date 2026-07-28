@@ -227,22 +227,26 @@ impl Engine {
     /// Set the JavaScript rendering strategy.
     pub fn with_js_strategy(mut self, strategy: JsStrategy) -> Self {
         self.js_strategy = strategy;
+        let timeout = self.config.timeout_secs;
+        let connect_timeout = timeout.min(10);
         match strategy {
             JsStrategy::Static => {
-                self.fetch_router =
-                    Some(FetchRouter::Static(Arc::new(WreqDownloader::new(30, 10))));
+                self.fetch_router = Some(FetchRouter::Static(Arc::new(WreqDownloader::new(
+                    timeout,
+                    connect_timeout,
+                ))));
             },
             JsStrategy::Hybrid => {
-                let l1 = WreqDownloader::new(30, 10);
-                let l2 = ObscuraDownloader::new();
+                let l1 = WreqDownloader::new(timeout, connect_timeout);
+                let l2 = ObscuraDownloader::new(timeout);
                 let l3 = ChromiumoxideDownloader::new(Arc::clone(&self.cookie_bridge));
                 self.fetch_router =
                     Some(FetchRouter::Hybrid(Arc::new(HybridRouter::new(l1, l2, l3))));
             },
             JsStrategy::Full => {
                 // Full strategy: use Chromiumoxide only via HybridRouter with wreq fallback
-                let l1 = WreqDownloader::new(30, 10);
-                let l2 = ObscuraDownloader::new();
+                let l1 = WreqDownloader::new(timeout, connect_timeout);
+                let l2 = ObscuraDownloader::new(timeout);
                 let l3 = ChromiumoxideDownloader::new(Arc::clone(&self.cookie_bridge));
                 self.fetch_router =
                     Some(FetchRouter::Hybrid(Arc::new(HybridRouter::new(l1, l2, l3))));
