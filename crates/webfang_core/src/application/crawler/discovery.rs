@@ -3,6 +3,8 @@
 //! Functions for discovering URLs from websites via sitemaps or DOM scraping.
 //! Part of the TUI workflow: discover → select → scrape.
 
+use std::time::Duration;
+
 use anyhow::Result;
 use tracing::{debug, info, instrument, span, warn, Level};
 use url::Url;
@@ -454,6 +456,13 @@ async fn crawl_with_sitemap_internal(
 ) -> Result<Vec<DiscoveredUrl>, CrawlError> {
     info!("Crawling with sitemap for {}", base_url);
 
+    let discovery_client = wreq::Client::builder()
+        .emulation(wreq_util::Emulation::Chrome145)
+        .timeout(Duration::from_secs(config.timeout_secs))
+        .connect_timeout(Duration::from_secs(config.timeout_secs.min(10)))
+        .build()
+        .map_err(|e| CrawlError::Internal(format!("failed to build discovery client: {e}")))?;
+
     // Use default batch size (10,000) - SitemapConfig handles pagination
     // CrawlerConfig doesn't have batch_size, we use SitemapConfig for that
     const DEFAULT_BATCH_SIZE: usize = 10_000;
@@ -466,7 +475,7 @@ async fn crawl_with_sitemap_internal(
         },
         _ => {
             tracing::info!("Auto-discovering sitemap URL for {}", base_url);
-            match discover_sitemap_url(base_url).await {
+            match discover_sitemap_url(base_url, &discovery_client).await {
                 Ok(url) => {
                     tracing::info!("Discovered sitemap URL: {}", url);
                     url
@@ -519,7 +528,8 @@ async fn crawl_with_sitemap_internal(
             sitemap_url,
             target_path
         );
-        return crawl_with_subpath_sitemaps(base_url, &base, &parser, 3, 0).await;
+        return crawl_with_subpath_sitemaps(base_url, &base, &parser, 3, 0, &discovery_client)
+            .await;
     }
 
     // Following own-borrow-over-clone: use Url directly, not String
@@ -560,6 +570,7 @@ async fn crawl_with_subpath_sitemaps(
     parser: &SitemapParser,
     max_depth: usize,
     current_depth: usize,
+    client: &wreq::Client,
 ) -> Result<Vec<DiscoveredUrl>, CrawlError> {
     if current_depth >= max_depth {
         tracing::warn!(
@@ -582,7 +593,7 @@ async fn crawl_with_subpath_sitemaps(
             if let Ok(sitemap_url) = base.join(&candidate) {
                 let sitemap_str = sitemap_url.as_str();
                 tracing::debug!("Trying sub-path sitemap: {}", sitemap_str);
-                if let Ok(response) = wreq::Client::new().head(sitemap_str).send().await {
+                if let Ok(response) = client.head(sitemap_str).send().await {
                     if response.status().is_success() {
                         tracing::info!("Found sub-path sitemap: {}", sitemap_str);
                         if let Ok(urls) = parser.parse_from_url(sitemap_str).await {
@@ -624,7 +635,7 @@ async fn crawl_with_subpath_sitemaps(
 ///
 /// * `Ok(String)` - Discovered sitemap URL
 /// * `Err(CrawlError)` - Error during discovery
-async fn discover_sitemap_url(base_url: &str) -> Result<String, CrawlError> {
+async fn discover_sitemap_url(base_url: &str, client: &wreq::Client) -> Result<String, CrawlError> {
     let base = Url::parse(base_url).map_err(|e| CrawlError::InvalidUrl(e.to_string()))?;
 
     // Try robots.txt first
@@ -633,7 +644,7 @@ async fn discover_sitemap_url(base_url: &str) -> Result<String, CrawlError> {
         .map_err(|e| CrawlError::InvalidUrl(e.to_string()))?;
 
     tracing::info!("Checking robots.txt: {}", robots_url);
-    if let Ok(response) = wreq::get(robots_url.as_str()).send().await {
+    if let Ok(response) = client.get(robots_url.as_str()).send().await {
         tracing::info!("robots.txt status: {}", response.status());
         if response.status().is_success() {
             if let Ok(content) = response.text().await {
@@ -688,7 +699,7 @@ async fn discover_sitemap_url(base_url: &str) -> Result<String, CrawlError> {
 
         // Quick HEAD request to check if exists
         tracing::info!("Trying fallback sitemap: {}", sitemap_str);
-        if let Ok(response) = wreq::Client::new().head(sitemap_str).send().await {
+        if let Ok(response) = client.head(sitemap_str).send().await {
             tracing::info!("  Status: {}", response.status());
             if response.status().is_success() {
                 tracing::debug!("Found sitemap at fallback location: {}", sitemap_str);
@@ -708,7 +719,7 @@ async fn discover_sitemap_url(base_url: &str) -> Result<String, CrawlError> {
             if let Ok(sitemap_url) = base.join(&candidate) {
                 let sitemap_str = sitemap_url.as_str();
                 tracing::debug!("Trying sub-path sitemap: {}", sitemap_str);
-                if let Ok(response) = wreq::Client::new().head(sitemap_str).send().await {
+                if let Ok(response) = client.head(sitemap_str).send().await {
                     if response.status().is_success() {
                         tracing::info!("Found sitemap at sub-path: {}", sitemap_str);
                         return Ok(sitemap_str.to_string());
