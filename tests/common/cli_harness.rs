@@ -159,6 +159,23 @@ impl BehavioralTest {
             .arg(self.out.path());
         cmd
     }
+
+    /// Build a `Command` with `--resume` and a custom `--state-dir`, plus
+    /// `--url` and `--output`. The caller supplies a fresh temp dir for the
+    /// state so tests never read or write the shared default cache
+    /// (`~/.cache/webfang/state`), which collides across wiremock runs because
+    /// the state file is keyed by host without the port (`127.0.0.1.json`).
+    pub fn state_dir_cmd(&self, state_dir: &Path) -> assert_cmd::Command {
+        let mut cmd = Command::new(webfang_path());
+        cmd.arg("--resume")
+            .arg("--state-dir")
+            .arg(state_dir)
+            .arg("--url")
+            .arg(self.server.uri())
+            .arg("--output")
+            .arg(self.out.path());
+        cmd
+    }
 }
 
 /// Register a wiremock mock that responds to GET on the given relative path

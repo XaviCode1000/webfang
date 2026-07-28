@@ -9,7 +9,7 @@ use crate::application::crawl_options::CrawlOptions;
 use crate::cli::completions::generate_completions;
 use crate::cli::error::CliExit;
 use crate::cli::export_flow::{run_export, save_files, ExportConfig};
-use crate::cli::scrape_flow::scrape_urls;
+use crate::cli::scrape_flow::{apply_resume_mode, scrape_urls};
 use crate::cli::url_discovery::discover_urls;
 use crate::domain::repository::DynVectorRepository;
 use crate::error::ScraperError;
@@ -18,6 +18,7 @@ use crate::CrawlerConfig;
 use crate::ScraperConfig;
 
 use crate::domain;
+use crate::infrastructure::export::state_store::StateStore;
 use crate::infrastructure::output::file_saver::ObsidianOptions;
 use crate::Shell;
 
@@ -93,6 +94,9 @@ pub async fn run(
         Ok(p) => p,
     };
 
+    let (urls_to_scrape, state_store) =
+        apply_resume_mode(prepare.urls_to_scrape, &opts, opts.url.as_str()).await;
+
     let elastic_ingestion = match build_elastic_ingestion(&opts).await {
         Ok(v) => v,
         Err(e) => return e,
@@ -121,7 +125,7 @@ pub async fn run(
     let engine_ref: Option<&AdaptiveSelectorEngine> = None;
 
     let (results, failures) = scrape_phase(
-        &prepare.urls_to_scrape,
+        &urls_to_scrape,
         &prepare.scraper_config,
         &opts,
         observer.as_ref(),
@@ -145,11 +149,11 @@ pub async fn run(
 
     #[cfg(feature = "ai")]
     {
-        export_phase(&results, &opts, ai_cleaner).await
+        export_phase(&results, &opts, state_store.as_ref(), ai_cleaner).await
     }
     #[cfg(not(feature = "ai"))]
     {
-        export_phase(&results, &opts).await
+        export_phase(&results, &opts, state_store.as_ref()).await
     }
 }
 
@@ -157,6 +161,7 @@ pub async fn run(
 async fn export_phase(
     results: &[domain::ScrapedContent],
     opts: &CrawlOptions,
+    state_store: Option<&StateStore>,
     #[cfg(feature = "ai")] ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
 ) -> CliExit {
     let output_dir = opts.export.output_dir.clone();
@@ -197,7 +202,7 @@ async fn export_phase(
         quick_save: opts.export.quick_save,
         vault_path: opts.export.obsidian_vault.as_ref(),
         obsidian_options,
-        state_store: None,
+        state_store,
         resume: opts.crawl.resume,
         ai_threshold: opts.ai_config.threshold,
         ai_max_tokens: opts.ai_config.max_tokens,
