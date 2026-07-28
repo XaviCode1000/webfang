@@ -22,8 +22,7 @@ use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::application::url_filter::is_allowed;
 use crate::domain::clock::SystemClock;
 use crate::domain::{CrawlError, CrawlResult, CrawlerConfig, DiscoveredUrl, JsStrategy};
-use crate::infrastructure::checkpoint::store::BannedDomain;
-use crate::infrastructure::checkpoint::BincodeCheckpoint;
+use super::checkpoint::{BannedDomain, BincodeCheckpoint, CheckpointPath, CheckpointStore, CrawlCheckpoint};
 use crate::infrastructure::crawler::robots_utils::{
     is_allowed_by_robots, new_robots_cache, RobotsCache,
 };
@@ -97,8 +96,10 @@ pub struct Engine {
     queue: Arc<UrlQueue>,
     rate_limiter: SharedRateLimiter,
     error_count: Arc<AtomicUsize>,
-    /// Optional checkpoint persistence for crash recovery.
-    checkpoint: Option<BincodeCheckpoint>,
+    /// Checkpoint store for persistence (stateless — always available).
+    checkpoint_store: BincodeCheckpoint,
+    /// Loaded checkpoint state for crash recovery (`None` = fresh start).
+    checkpoint_state: Option<CrawlCheckpoint>,
     /// Path to save checkpoint files.
     checkpoint_path: Option<PathBuf>,
     /// Pages between automatic checkpoint saves (0 = disabled).
@@ -167,7 +168,8 @@ impl Engine {
             queue,
             rate_limiter,
             error_count,
-            checkpoint: None,
+            checkpoint_store: BincodeCheckpoint::new(),
+            checkpoint_state: None,
             checkpoint_path: None,
             checkpoint_interval: 100,
             ignore_robots,
@@ -188,24 +190,23 @@ impl Engine {
 
     /// Enable checkpoint persistence with the given interval and base directory.
     pub fn with_checkpoint(mut self, interval: u64, base_dir: PathBuf) -> Self {
-        use crate::infrastructure::checkpoint::store::CheckpointPath;
         let cp_path = CheckpointPath::new(&base_dir);
-        cp_path.ensure_dir().unwrap_or_else(|e| {
+        if let Err(e) = cp_path.ensure_dir() {
             warn!("Failed to create checkpoint dir: {e}");
-        });
+        }
 
-        match BincodeCheckpoint::load(&cp_path.file()) {
-            Ok(cp) => {
+        match self.checkpoint_store.load(&cp_path.file()) {
+            Some(cp) => {
                 info!(
                     "Resuming from checkpoint: {} visited, {} pages",
                     cp.visited.len(),
                     cp.pages_crawled
                 );
-                self.checkpoint = Some(cp);
+                self.checkpoint_state = Some(cp);
             },
-            Err(e) => {
-                warn!("Failed to load checkpoint, starting fresh: {e}");
-                self.checkpoint = Some(BincodeCheckpoint::default());
+            None => {
+                warn!("No checkpoint found, starting fresh");
+                self.checkpoint_state = Some(CrawlCheckpoint::new());
             },
         }
 
@@ -316,7 +317,7 @@ impl Engine {
 
     /// Save the current checkpoint to disk (non-blocking wrapper).
     async fn save_checkpoint(&self) {
-        if let (Some(_cp), Some(path)) = (&self.checkpoint, &self.checkpoint_path) {
+        if let Some(path) = &self.checkpoint_path {
             let visited_set: HashSet<String> = {
                 let urls = self.visited_urls.read().unwrap();
                 urls.iter().cloned().collect()
@@ -329,11 +330,18 @@ impl Engine {
                 .read()
                 .map(|d| d.clone())
                 .unwrap_or_default();
-            let new_cp = BincodeCheckpoint::from_state(&visited_set, &[], pages, banned);
+            let state = CrawlCheckpoint {
+                visited: visited_set,
+                queued: Vec::new(),
+                pages_crawled: pages,
+                banned_domains: banned,
+                version: 1,
+            };
 
             // Save on blocking thread to avoid blocking the event loop
+            let store = BincodeCheckpoint::new();
             let path = path.clone();
-            let _ = tokio::task::spawn_blocking(move || new_cp.save(&path))
+            let _ = tokio::task::spawn_blocking(move || store.save(&state, &path))
                 .in_current_span()
                 .await;
 
@@ -391,7 +399,7 @@ impl Engine {
         self.signal_handle = Some(Self::spawn_signal_handler(Arc::clone(&self.shutdown)));
 
         // Load checkpoint state if resuming
-        if let Some(ref cp) = self.checkpoint {
+        if let Some(ref cp) = self.checkpoint_state {
             if !cp.visited.is_empty() {
                 for url in &cp.visited {
                     self.record_visit(url);

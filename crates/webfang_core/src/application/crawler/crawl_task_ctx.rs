@@ -14,7 +14,7 @@ use crate::application::deduplicator::UrlDeduplicator;
 use crate::application::pipeline::{OutputStage, PipelineExecutor};
 use crate::application::rate_limiter::SharedRateLimiter;
 use crate::domain::CrawlerConfig;
-use crate::infrastructure::checkpoint::store::BannedDomain;
+use crate::application::crawler::checkpoint::BannedDomain;
 use crate::infrastructure::crawler::RobotsCache;
 use crate::infrastructure::crawler::UrlQueue;
 use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
