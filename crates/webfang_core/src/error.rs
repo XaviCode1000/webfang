@@ -152,6 +152,14 @@ pub enum ScraperError {
     #[error("error interno: {0}")]
     Internal(String),
 
+    /// Rate limited by the server; carries the retry-after delay in seconds.
+    ///
+    /// Classifies as [`ErrorClass::TransientBackoff`] — callers should wait
+    /// the indicated delay before retrying. Display is deliberately identical
+    /// to `CrawlError::RateLimited` so the message survives layer conversion.
+    #[error("rate limited, retry after {0}s")]
+    RateLimited(u64),
+
     /// Crawl limit exceeded.
     ///
     /// Groups all crawl-budget configuration limits — max-depth, max-pages,
@@ -378,6 +386,7 @@ impl ScraperError {
             Self::Http { status, .. } if *status == 429 => ErrorClass::TransientBackoff,
             Self::GlobalTimeout => ErrorClass::TransientBackoff,
             Self::SlowlorisTimeout => ErrorClass::TransientBackoff,
+            Self::RateLimited(_) => ErrorClass::TransientBackoff,
             Self::InvalidUrl(_) => ErrorClass::PermanentFatal,
             Self::WafBlocked { .. } => ErrorClass::PermanentFatal,
             Self::Readability(_) => ErrorClass::PermanentFatal,
@@ -427,12 +436,19 @@ fn is_transient_network(e: &(dyn std::error::Error + 'static)) -> bool {
     }
     if e.downcast_ref::<WreqError>().is_some() {
         let msg = e.to_string().to_ascii_lowercase();
-        return msg.contains("timeout")
+        let matched = msg.contains("timeout")
             || msg.contains("timed out")
             || msg.contains("connection refused")
             || msg.contains("connection reset")
             || msg.contains("broken pipe")
             || msg.contains("connection aborted");
+        if matched {
+            tracing::debug!(
+                error = %e,
+                "is_transient_network: classified transient via wreq text-fallback heuristic"
+            );
+        }
+        return matched;
     }
     false
 }
@@ -489,6 +505,7 @@ impl From<crate::domain::error::CrawlError> for ScraperError {
                 ScraperError::WafBlocked { url, provider }
             },
             CrawlError::Internal(msg) => ScraperError::Internal(msg),
+            CrawlError::RequestFailed(msg) => ScraperError::Internal(msg),
             CrawlError::Download(e) => ScraperError::Download(e),
             CrawlError::SitemapNotFound(url) => ScraperError::SitemapNotFound(url),
             CrawlError::Parse(msg) => ScraperError::Internal(format!("parse: {msg}")),
@@ -510,13 +527,18 @@ impl From<crate::domain::error::CrawlError> for ScraperError {
                 "retry exhausted for {url} after {attempts} attempts"
             )),
             CrawlError::TransientHttp { status, url } => ScraperError::Http { status, url },
-            // NOTE: retry_after embedded in message. If downstream needs to
-            // pattern-match on retry_after, consider adding ScraperError::RateLimited(u64).
-            CrawlError::RateLimited(retry_after) => {
-                ScraperError::Internal(format!("rate limited, retry after {retry_after}s"))
-            },
-            CrawlError::Timeout => ScraperError::Internal("request timeout".to_string()),
-            CrawlError::Connection(msg) => ScraperError::Internal(format!("connection: {msg}")),
+            CrawlError::RateLimited(retry_after) => ScraperError::RateLimited(retry_after),
+            // Timeout/Connection carry a synthetic io::Error source so
+            // is_transient_network's downcast recognizes them as transient
+            // (a bare message would fall through to InternalFatal).
+            CrawlError::Timeout => ScraperError::Network(Box::new(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "request timeout",
+            ))),
+            CrawlError::Connection(msg) => ScraperError::Network(Box::new(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                msg,
+            ))),
             CrawlError::ResourceExhausted {
                 resource,
                 limit,
@@ -1070,35 +1092,153 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_crawl_rate_limited_classifies_as_internal_fatal() {
+    fn test_crawl_rate_limited_classifies_as_transient_backoff() {
         let crawl_err = crate::domain::error::CrawlError::RateLimited(60);
         let scraper_err: ScraperError = crawl_err.into();
         assert_eq!(
             scraper_err.classify(),
-            ErrorClass::InternalFatal,
-            "RateLimited maps to ScraperError::Internal → InternalFatal"
+            ErrorClass::TransientBackoff,
+            "RateLimited maps to ScraperError::RateLimited → TransientBackoff"
         );
     }
 
     #[test]
-    fn test_crawl_timeout_classifies_as_internal_fatal() {
+    fn test_crawl_timeout_classifies_as_transient_retriable() {
         let crawl_err = crate::domain::error::CrawlError::Timeout;
         let scraper_err: ScraperError = crawl_err.into();
         assert_eq!(
             scraper_err.classify(),
-            ErrorClass::InternalFatal,
-            "Timeout maps to ScraperError::Internal → InternalFatal"
+            ErrorClass::TransientRetriable,
+            "Timeout maps to ScraperError::Network(TimedOut io::Error) → TransientRetriable"
         );
     }
 
     #[test]
-    fn test_crawl_connection_classifies_as_internal_fatal() {
+    fn test_crawl_connection_classifies_as_transient_retriable() {
         let crawl_err = crate::domain::error::CrawlError::Connection("refused".into());
         let scraper_err: ScraperError = crawl_err.into();
         assert_eq!(
             scraper_err.classify(),
+            ErrorClass::TransientRetriable,
+            "Connection maps to ScraperError::Network(ConnectionReset io::Error) → TransientRetriable"
+        );
+    }
+
+    #[test]
+    fn test_scraper_rate_limited_classifies_as_transient_backoff() {
+        // EC-RATE-LIMITED: the typed variant classifies as backoff-retriable.
+        let err = ScraperError::RateLimited(30);
+        assert_eq!(err.classify(), ErrorClass::TransientBackoff);
+    }
+
+    #[test]
+    fn test_rate_limited_payload_survives_conversion() {
+        // EC-RATE-LIMITED: retry_after must survive From<CrawlError> intact.
+        let crawl_err = crate::domain::error::CrawlError::RateLimited(120);
+        let scraper_err: ScraperError = crawl_err.into();
+        assert!(
+            matches!(&scraper_err, ScraperError::RateLimited(120)),
+            "retry_after payload must survive conversion, got: {scraper_err}"
+        );
+        // Display contract: byte-identical to CrawlError::RateLimited and the
+        // former Internal message — keeps the integration "rate limited" guard
+        // (tests/scraper_service_test.rs::test_mock_rate_limited_error) green.
+        assert_eq!(scraper_err.to_string(), "rate limited, retry after 120s");
+    }
+
+    #[test]
+    fn test_timeout_maps_to_transient_io_source() {
+        // EC-TIMEOUT: the Network source MUST be a synthetic io::Error with
+        // ErrorKind::TimedOut so is_transient_network's downcast recognizes it.
+        // A bare message would fall through to InternalFatal and defeat the fix.
+        let crawl_err = crate::domain::error::CrawlError::Timeout;
+        let scraper_err: ScraperError = crawl_err.into();
+        match &scraper_err {
+            ScraperError::Network(source) => {
+                let io_err = source
+                    .downcast_ref::<std::io::Error>()
+                    .expect("Network source must downcast to io::Error for is_transient_network");
+                assert_eq!(io_err.kind(), std::io::ErrorKind::TimedOut);
+            },
+            other => panic!("Timeout must map to ScraperError::Network, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_connection_preserves_message_and_transient() {
+        // EC-CONNECTION: original message preserved, classifies TransientRetriable.
+        let crawl_err = crate::domain::error::CrawlError::Connection("peer reset".into());
+        let scraper_err: ScraperError = crawl_err.into();
+        assert_eq!(scraper_err.classify(), ErrorClass::TransientRetriable);
+        match &scraper_err {
+            ScraperError::Network(source) => {
+                let io_err = source
+                    .downcast_ref::<std::io::Error>()
+                    .expect("Network source must downcast to io::Error");
+                assert_eq!(io_err.kind(), std::io::ErrorKind::ConnectionReset);
+                assert!(
+                    io_err.to_string().contains("peer reset"),
+                    "original message must be preserved, got: {io_err}"
+                );
+            },
+            other => panic!("Connection must map to ScraperError::Network, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_request_failed_classifies_as_internal_fatal() {
+        // EC-REQUEST-FAILED: typed variant, classification unchanged (InternalFatal).
+        let crawl_err = crate::domain::error::CrawlError::RequestFailed("build failed".to_string());
+        let scraper_err: ScraperError = crawl_err.into();
+        assert!(
+            matches!(&scraper_err, ScraperError::Internal(m) if m == "build failed"),
+            "RequestFailed must map to ScraperError::Internal, got: {scraper_err}"
+        );
+        assert_eq!(scraper_err.classify(), ErrorClass::InternalFatal);
+    }
+
+    #[test]
+    fn test_classification_matrix_unchanged() {
+        // EC-REGRESSION-GUARD: pre-existing classifications must not drift.
+        assert_eq!(
+            ScraperError::http(429, "u").classify(),
+            ErrorClass::TransientBackoff,
+            "Http{{429}} → TransientBackoff"
+        );
+        assert_eq!(
+            ScraperError::http(500, "u").classify(),
+            ErrorClass::TransientRetriable,
+            "Http{{>=500}} → TransientRetriable"
+        );
+        assert_eq!(
+            ScraperError::http(503, "u").classify(),
+            ErrorClass::TransientRetriable,
+            "Http{{>=500}} → TransientRetriable"
+        );
+        assert_eq!(
+            ScraperError::http(404, "u").classify(),
+            ErrorClass::PermanentFatal,
+            "Http{{other 4xx}} → PermanentFatal"
+        );
+        assert_eq!(
+            ScraperError::http(403, "u").classify(),
+            ErrorClass::PermanentFatal,
+            "Http{{other 4xx}} → PermanentFatal"
+        );
+        assert_eq!(
+            ScraperError::invalid_url("bad").classify(),
+            ErrorClass::PermanentFatal,
+            "InvalidUrl → PermanentFatal"
+        );
+        assert_eq!(
+            ScraperError::waf_blocked("u", "Cloudflare").classify(),
+            ErrorClass::PermanentFatal,
+            "WafBlocked → PermanentFatal"
+        );
+        assert_eq!(
+            ScraperError::Internal("x".into()).classify(),
             ErrorClass::InternalFatal,
-            "Connection maps to ScraperError::Internal → InternalFatal"
+            "Internal → InternalFatal"
         );
     }
 

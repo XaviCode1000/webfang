@@ -185,6 +185,14 @@ pub enum CrawlError {
     #[error("connection error: {0}")]
     Connection(String),
 
+    /// Request construction or body-read failure (non-transient)
+    ///
+    /// Produced when the HTTP request itself cannot be built or its body
+    /// cannot be read — as opposed to timeout/connection failures, which are
+    /// transient. Maps to `ScraperError::Internal` (InternalFatal).
+    #[error("request failed: {0}")]
+    RequestFailed(String),
+
     /// Resource limit exhausted
     #[error("resource exhausted: {resource:?} limit={limit} actual={actual}")]
     ResourceExhausted {
@@ -228,7 +236,7 @@ impl From<crate::domain::http_error::HttpError> for CrawlError {
             },
             HttpError::Timeout => CrawlError::Timeout,
             HttpError::Connection(msg) => CrawlError::Connection(msg),
-            HttpError::Request(msg) => CrawlError::Internal(msg),
+            HttpError::Request(msg) => CrawlError::RequestFailed(msg),
             HttpError::WafChallenge(provider) => CrawlError::WafChallenge {
                 provider,
                 kind: WafDetectionKind::BodySignature,
