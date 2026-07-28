@@ -47,6 +47,10 @@ pub mod cli;
 pub mod extractor;
 pub mod infrastructure;
 
+/// Shared test doubles for unit tests (compiled only under `cfg(test)`).
+#[cfg(test)]
+pub(crate) mod test_fixtures;
+
 // ============================================================================
 // Re-exports
 // ============================================================================

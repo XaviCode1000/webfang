@@ -145,63 +145,10 @@ mod tests {
     use super::*;
     use crate::domain::http_error::HttpError;
     use crate::domain::http_port::HttpResponse;
+    use crate::test_fixtures::MockHttpClient;
     use std::collections::HashMap;
 
     // --- Mock implementations for testing port traits ---
-
-    struct MockHttpClientPort {
-        responses: HashMap<String, crate::domain::http_error::HttpResult<HttpResponse>>,
-    }
-
-    impl MockHttpClientPort {
-        fn new() -> Self {
-            Self {
-                responses: HashMap::new(),
-            }
-        }
-
-        fn with_response(
-            mut self,
-            url: &str,
-            result: crate::domain::http_error::HttpResult<HttpResponse>,
-        ) -> Self {
-            self.responses.insert(url.to_string(), result);
-            self
-        }
-    }
-
-    impl HttpClientPort for MockHttpClientPort {
-        fn get(
-            &self,
-            url: &str,
-        ) -> std::pin::Pin<
-            Box<
-                dyn std::future::Future<
-                        Output = crate::domain::http_error::HttpResult<HttpResponse>,
-                    > + Send
-                    + '_,
-            >,
-        > {
-            let result = match self.responses.get(url) {
-                Some(Ok(resp)) => Ok(HttpResponse {
-                    status: resp.status,
-                    body: resp.body.clone(),
-                    headers: resp.headers.clone(),
-                }),
-                Some(Err(HttpError::Forbidden)) => Err(HttpError::Forbidden),
-                Some(Err(HttpError::RateLimited(r))) => Err(HttpError::RateLimited(*r)),
-                Some(Err(HttpError::ClientError(c))) => Err(HttpError::ClientError(*c)),
-                Some(Err(HttpError::ServerError(c))) => Err(HttpError::ServerError(*c)),
-                Some(Err(HttpError::Timeout)) => Err(HttpError::Timeout),
-                Some(Err(HttpError::Connection(m))) => Err(HttpError::Connection(m.clone())),
-                Some(Err(HttpError::Request(m))) => Err(HttpError::Request(m.clone())),
-                Some(Err(HttpError::WafChallenge(p))) => Err(HttpError::WafChallenge(p.clone())),
-                Some(Err(HttpError::DomainBanned(d))) => Err(HttpError::DomainBanned(d.clone())),
-                None => Err(HttpError::ClientError(404)),
-            };
-            Box::pin(async move { result })
-        }
-    }
 
     struct MockPersistencePort {
         store: std::sync::Arc<std::sync::Mutex<HashMap<String, ScrapedContent>>>,
@@ -250,7 +197,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_http_client_port_object_safe() {
-        let mock: Box<dyn HttpClientPort> = Box::new(MockHttpClientPort::new().with_response(
+        let mock: Box<dyn HttpClientPort> = Box::new(MockHttpClient::new().with_response(
             "https://example.com",
             Ok(HttpResponse {
                 status: 200,
@@ -267,7 +214,7 @@ mod tests {
     #[tokio::test]
     async fn test_http_client_port_error_propagation() {
         let mock: Box<dyn HttpClientPort> = Box::new(
-            MockHttpClientPort::new()
+            MockHttpClient::new()
                 .with_response("https://fail.com", Err(HttpError::ClientError(500))),
         );
 
