@@ -11,6 +11,7 @@ Production-ready web scraper. Clean Architecture, TUI selector, AI semantic clea
 You are the **Orchestrator-Engineer**. You decide WHAT to do and WHERE to delegate. You do NOT write code directly unless it's a trivial single-line fix.
 
 **Iron rules:**
+
 - Never assume unlisted dependencies exist — always verify with GitNexus (`context`/`cypher`) or CodeDB (`symbol`/`word`).
 - If a task touches 2+ non-trivial files → DELEGATE to a sub-agent.
 - Never `.unwrap()` in production code — use `?`, `match`, or `.context()`.
@@ -26,30 +27,30 @@ You are the **Orchestrator-Engineer**. You decide WHAT to do and WHERE to delega
 
 ### Tool selection matrix
 
-| Mission | Tool | Why this one |
-|:--------|:-----|:-------------|
-| First-touch orientation on a new task | **CodeDB** `context` | 1 call returns keywords + symbol defs + ranked files + snippets. Replaces 3-5 sequential calls. |
-| Exact identifier lookup | **CodeDB** `word` | O(1) inverted-index. Fastest possible — no Cypher, no graph traversal. |
-| Symbol definition (where is X defined) | **CodeDB** `symbol` | Fast, exact, no query language needed. |
-| File outline before reading | **CodeDB** `outline` | 4-15× smaller than reading the file. Get line ranges, then read only what you need. |
-| Read specific line range | **CodeDB** `read` | After outline, read precisely — never cat a whole file. |
-| Who calls this function | **CodeDB** `callers` | 1 round-trip, fuses word-index + outline scope. |
-| Call chain A→B | **CodeDB** `callpath` | Shortest resolved call chain via local call graph. |
-| Dependency graph (imports / imported-by) | **CodeDB** `deps` | Direct and fast. Use `transitive=true` for full blast radius. |
-| Composable multi-step query | **CodeDB** `query` | Chain find→filter→deps→outline→read in ONE call. |
-| Query public GitHub repo (no clone) | **CodeDB** `remote` | GitNexus cannot do this. |
-| Post-edit linter diagnostics | **CodeDB** `diagnostics` | Ruff/biome/etc. surface real errors after a change. |
-| Recently modified files | **CodeDB** `hot` | See where work is happening before exploring. |
-| Execution flow / process tracing | **GitNexus** `query` + `process/{name}` | 300 precomputed flows. CodeDB has no equivalent. |
-| Blast radius before refactor (depth-grouped) | **GitNexus** `impact` | d=1/2/3 + risk level (LOW→CRITICAL). Deeper than `callers`. |
-| Taint / security analysis (source→sink) | **GitNexus** `explain` (--pdg) | sql-injection, xss, path-traversal. CodeDB can't do this. |
-| Control / data dependence | **GitNexus** `pdg_query` (--pdg) | CDG + REACHING_DEF at basic-block granularity. CodeDB can't do this. |
-| Coordinated multi-file rename | **GitNexus** `rename` | Call-graph aware, confidence-scored. NEVER find-and-replace. |
-| API route impact | **GitNexus** `api_impact` / `route_map` / `shape_check` | Consumers, middleware, response shape mismatch. |
-| Git diff → affected symbols + flows | **GitNexus** `detect_changes` | Pre-commit regression review. |
-| Architecture docs / wiki generation | **GitNexus** `wiki` | Generate from knowledge graph. |
+| Mission                                      | Tool                                                    | Why this one                                                                                    |
+| :------------------------------------------- | :------------------------------------------------------ | :---------------------------------------------------------------------------------------------- |
+| First-touch orientation on a new task        | **CodeDB** `context`                                    | 1 call returns keywords + symbol defs + ranked files + snippets. Replaces 3-5 sequential calls. |
+| Exact identifier lookup                      | **CodeDB** `word`                                       | O(1) inverted-index. Fastest possible — no Cypher, no graph traversal.                          |
+| Symbol definition (where is X defined)       | **CodeDB** `symbol`                                     | Fast, exact, no query language needed.                                                          |
+| File outline before reading                  | **CodeDB** `outline`                                    | 4-15× smaller than reading the file. Get line ranges, then read only what you need.             |
+| Read specific line range                     | **CodeDB** `read`                                       | After outline, read precisely — never cat a whole file.                                         |
+| Who calls this function                      | **CodeDB** `callers`                                    | 1 round-trip, fuses word-index + outline scope.                                                 |
+| Call chain A→B                               | **CodeDB** `callpath`                                   | Shortest resolved call chain via local call graph.                                              |
+| Dependency graph (imports / imported-by)     | **CodeDB** `deps`                                       | Direct and fast. Use `transitive=true` for full blast radius.                                   |
+| Composable multi-step query                  | **CodeDB** `query`                                      | Chain find→filter→deps→outline→read in ONE call.                                                |
+| Query public GitHub repo (no clone)          | **CodeDB** `remote`                                     | GitNexus cannot do this.                                                                        |
+| Post-edit linter diagnostics                 | **CodeDB** `diagnostics`                                | Ruff/biome/etc. surface real errors after a change.                                             |
+| Recently modified files                      | **CodeDB** `hot`                                        | See where work is happening before exploring.                                                   |
+| Execution flow / process tracing             | **GitNexus** `query` + `process/{name}`                 | 300 precomputed flows. CodeDB has no equivalent.                                                |
+| Blast radius before refactor (depth-grouped) | **GitNexus** `impact`                                   | d=1/2/3 + risk level (LOW→CRITICAL). Deeper than `callers`.                                     |
+| Taint / security analysis (source→sink)      | **GitNexus** `explain` (--pdg)                          | sql-injection, xss, path-traversal. CodeDB can't do this.                                       |
+| Control / data dependence                    | **GitNexus** `pdg_query` (--pdg)                        | CDG + REACHING_DEF at basic-block granularity. CodeDB can't do this.                            |
+| Coordinated multi-file rename                | **GitNexus** `rename`                                   | Call-graph aware, confidence-scored. NEVER find-and-replace.                                    |
+| API route impact                             | **GitNexus** `api_impact` / `route_map` / `shape_check` | Consumers, middleware, response shape mismatch.                                                 |
+| Git diff → affected symbols + flows          | **GitNexus** `detect_changes`                           | Pre-commit regression review.                                                                   |
+| Architecture docs / wiki generation          | **GitNexus** `wiki`                                     | Generate from knowledge graph.                                                                  |
 
-**Rule of thumb:** CodeDB for *finding and reading* (fast, tactical, O(1) lookups). GitNexus for *analyzing and deciding* (deep, structural, precomputed flows + taint + PDG). Start with CodeDB `context` for orientation → escalate to GitNexus `impact`/`explain` before any edit.
+**Rule of thumb:** CodeDB for _finding and reading_ (fast, tactical, O(1) lookups). GitNexus for _analyzing and deciding_ (deep, structural, precomputed flows + taint + PDG). Start with CodeDB `context` for orientation → escalate to GitNexus `impact`/`explain` before any edit.
 
 ### Non-negotiable gates (full workflow in the `gitnexus` skill)
 
@@ -66,51 +67,52 @@ You are the **Orchestrator-Engineer**. You decide WHAT to do and WHERE to delega
 
 Route tasks to specialized skills. **Load the matching skill BEFORE executing.**
 
-| If the task is... | Load skill | What it handles |
-|:-------------------|:-----------|:----------------|
-| Code exploration / orientation | `codedb` | `context` (1-call orientation), `symbol`, `word`, `outline`+`read`, `callers`, `deps` |
-| Writing new Rust code (2+ files) | `rust-skills`, `gitnexus` | Ownership, errors, async, naming conventions |
-| Refactoring / renaming | `gitnexus` | Safe rename via call graph, impact analysis |
-| Bug investigation | `codedb` (locate), `gitnexus` (trace flows) | CodeDB finds the symbol fast; GitNexus traces the execution flow |
-| Security review (injection/taint) | `gitnexus` (--pdg) | `explain` taint, `pdg_query` control/data dependence |
-| API route changes | `gitnexus` | `api_impact`, `route_map`, `shape_check` |
-| PR review / verification | `gitnexus` | detect_changes + impact per symbol |
-| Commit planning (work units) | `work-unit-commits` | Commit by deliverable behavior, not by file type. Keep tests/docs with code. |
-| Rust quality rules | `rust-skills` | 265 rules across 26 categories |
-| Task planning (SDD) | `sdd-*` | Spec-driven development phases |
+| If the task is...                 | Load skill                                  | What it handles                                                                       |
+| :-------------------------------- | :------------------------------------------ | :------------------------------------------------------------------------------------ |
+| Code exploration / orientation    | `codedb`                                    | `context` (1-call orientation), `symbol`, `word`, `outline`+`read`, `callers`, `deps` |
+| Writing new Rust code (2+ files)  | `rust-skills`, `gitnexus`                   | Ownership, errors, async, naming conventions                                          |
+| Refactoring / renaming            | `gitnexus`                                  | Safe rename via call graph, impact analysis                                           |
+| Bug investigation                 | `codedb` (locate), `gitnexus` (trace flows) | CodeDB finds the symbol fast; GitNexus traces the execution flow                      |
+| Security review (injection/taint) | `gitnexus` (--pdg)                          | `explain` taint, `pdg_query` control/data dependence                                  |
+| API route changes                 | `gitnexus`                                  | `api_impact`, `route_map`, `shape_check`                                              |
+| PR review / verification          | `gitnexus`                                  | detect_changes + impact per symbol                                                    |
+| Commit planning (work units)      | `work-unit-commits`                         | Commit by deliverable behavior, not by file type. Keep tests/docs with code.          |
+| Rust quality rules                | `rust-skills`                               | 265 rules across 26 categories                                                        |
+| Task planning (SDD)               | `sdd-*`                                     | Spec-driven development phases                                                        |
 
 ### Sub-agent mandatory checklist
 
 Every sub-agent that reads/writes code MUST:
 
 1. Load the `codedb` skill → `codedb_context` for fast task orientation (1 call). Load the `gitnexus` skill → `gitnexus status` + READ `gitnexus://repo/webfang/context` for index freshness.
-2. `gitnexus_context({name})` before writing any symbol.
-3. `gitnexus_impact({direction:"upstream"})` BEFORE editing any symbol.
-4. Apply `rust-skills` category (see table below).
-5. `gitnexus_detect_changes()` before returning.
-6. NEVER use `grep`/`rg` for code search — use `query`/`cypher` (GitNexus) or `word`/`symbol`/`search` (CodeDB).
-7. NEVER rename with find-and-replace — use `gitnexus_rename` with `dry_run: true` FIRST, then apply.
-8. NEVER commit without `detect_changes({scope:"compare", base_ref:"main"})` for regression review.
+1. `gitnexus_context({name})` before writing any symbol.
+1. `gitnexus_impact({direction:"upstream"})` BEFORE editing any symbol.
+1. Apply `rust-skills` category (see table below).
+1. `gitnexus_detect_changes()` before returning.
+1. NEVER use `grep`/`rg` for code search — use `query`/`cypher` (GitNexus) or `word`/`symbol`/`search` (CodeDB).
+1. NEVER rename with find-and-replace — use `gitnexus_rename` with `dry_run: true` FIRST, then apply.
+1. NEVER commit without `detect_changes({scope:"compare", base_ref:"main"})` for regression review.
 
 ### rust-skills categories by task type
 
-| Code type | Rule prefixes |
-|:----------|:-------------|
-| New function | `own-`, `err-`, `name-`, `pat-` |
+| Code type               | Rule prefixes                              |
+| :---------------------- | :----------------------------------------- |
+| New function            | `own-`, `err-`, `name-`, `pat-`            |
 | New struct / public API | `api-`, `type-`, `serde-`, `doc-`, `name-` |
-| Async | `async-`, `own-`, `err-` |
-| Concurrency | `conc-`, `async-` |
-| Unsafe | `unsafe-`, `test-` (Miri) |
-| Errors | `err-`, `api-` |
-| Tests | `test-`, `unsafe-` |
-| Performance | `opt-`, `mem-`, `perf-` |
-| Serde | `serde-`, `type-` |
+| Async                   | `async-`, `own-`, `err-`                   |
+| Concurrency             | `conc-`, `async-`                          |
+| Unsafe                  | `unsafe-`, `test-` (Miri)                  |
+| Errors                  | `err-`, `api-`                             |
+| Tests                   | `test-`, `unsafe-`                         |
+| Performance             | `opt-`, `mem-`, `perf-`                    |
+| Serde                   | `serde-`, `type-`                          |
 
 ---
 
 ## ⚡ Critical Commands
 
 **Fast gate (< 5s):**
+
 ```bash
 git branch --show-current    # Verify correct worktree BEFORE any edit
 cargo check                    # Verify compilation
@@ -119,23 +121,27 @@ cargo fmt                      # Format
 ```
 
 **Moderate (< 5 min):**
+
 ```bash
 cargo nextest run              # Full suite
 cargo build --release          # LTO fat, ~3-5 min (first build compiles BoringSSL from C++)
 ```
 
 **Miri (unsafe/concurrent code only):**
+
 ```bash
 cargo +nightly miri test infrastructure::bridge::
 cargo +nightly miri test infrastructure::network::
 ```
 
 **Pre-commit (every commit):**
+
 ```bash
 cargo check && cargo clippy -- -D warnings && cargo fmt
 ```
 
 **Cloud verification:**
+
 ```bash
 gh workflow run ci.yml --ref $(git branch --show-current) && gh run watch
 ```
@@ -148,7 +154,7 @@ gh workflow run ci.yml --ref $(git branch --show-current) && gh run watch
 
 ### Workspace structure (5 crates)
 
-```
+```text
 webfang/                          # virtual workspace root (no [package])
 ├── crates/
 │   ├── webfang_core/             # domain + application + infrastructure
@@ -159,7 +165,8 @@ webfang/                          # virtual workspace root (no [package])
 ```
 
 **Inter-crate dependency direction (ENFORCED):**
-```
+
+```text
 cli ──→ tui ──→ core ←── ai
 cli ──→ mcp ──→ core
 cli ──────────→ core
@@ -172,7 +179,7 @@ Domain defines ports (traits) → Infrastructure implements them → Application
 
 ### Error stratification
 
-```
+```text
 [CLI] → ScraperError : [infra] HttpError/WafError/ParseError
                 ↓
         DomainError (7 variants)
@@ -236,7 +243,7 @@ This project uses **sibling worktrees** for parallel development. Each active br
 
 Worktrees live as **siblings** of the repo, never inside it:
 
-```
+```text
 ~/Projects/
 ├── webfang/                     # main repo (always on main)
 ├── webfang-worktrees/           # worktree siblings (gitignored globally)
@@ -251,9 +258,9 @@ Worktrees live as **siblings** of the repo, never inside it:
 
 Branch names use `/` (e.g. `feat/auth`), but directories can't contain `/`. Convention:
 
-| Branch | Worktree directory |
-|:-------|:-------------------|
-| `feat/auth` | `feat-auth` |
+| Branch                | Worktree directory    |
+| :-------------------- | :-------------------- |
+| `feat/auth`           | `feat-auth`           |
 | `fix/crawler-timeout` | `fix-crawler-timeout` |
 | `refactor/ai-cleaner` | `refactor-ai-cleaner` |
 
@@ -262,6 +269,7 @@ The global pre-commit hook validates this: branch `feat/auth` → normalized `fe
 ### Worktree lifecycle
 
 **Create (from main repo):**
+
 ```bash
 # Syntax: git worktree add <path> -b <type>/<description>
 git worktree add ~/Projects/webfang-worktrees/feat-auth -b feat/auth
@@ -274,14 +282,17 @@ gitnexus analyze --index-only --skip-agents-md  # GitNexus index is per-worktree
 ```
 
 **Cross-branch read access (NO checkout):**
+
 ```bash
 git show main:crates/webfang_core/src/main.rs  # read a file from another branch
 git diff main..HEAD -- crates/                       # compare with main
 git log main --oneline -10                           # inspect history
 ```
+
 These are safe — they read the shared `.git` object store without modifying the working tree.
 
 **Cleanup (after merge):**
+
 ```bash
 cd ~/Projects/webfang                 # return to main repo
 git worktree remove ~/Projects/webfang-worktrees/feat-auth
@@ -291,16 +302,16 @@ git worktree prune                          # remove stale worktree metadata
 
 ### Shared vs. per-worktree resources
 
-| Resource | Shared? | Action required |
-|:---------|:--------|:----------------|
-| `.git/` object store (commits, branches, refs) | ✅ Shared | Automatic — all worktrees share one object store |
-| Git config (remotes, aliases, hooks path) | ✅ Shared | Automatic — global config applies everywhere |
-| `Cargo.lock` | ✅ Shared | Automatic via Git — tracked file |
-| `target/` (build artifacts, BoringSSL) | ❌ Per-worktree | `cargo build` in each new worktree (~3-5 min first build) |
-| `.env` (secrets, config) | ❌ Per-worktree | Manual `cp` from main repo |
-| `.gitnexus/` index | ❌ Per-worktree | Each worktree needs its own `gitnexus analyze` (indexes the working tree of CWD, which differs per worktree) |
-| `codedb.snapshot` | ❌ Per-worktree | Each worktree needs its own CodeDB index |
-| Git stash (`refs/stash`) | ⚠️ Shared (DANGER) | **NEVER use `git stash` in a worktree** — shared storage causes cross-worktree contamination |
+| Resource                                       | Shared?            | Action required                                                                                              |
+| :--------------------------------------------- | :----------------- | :----------------------------------------------------------------------------------------------------------- |
+| `.git/` object store (commits, branches, refs) | ✅ Shared          | Automatic — all worktrees share one object store                                                             |
+| Git config (remotes, aliases, hooks path)      | ✅ Shared          | Automatic — global config applies everywhere                                                                 |
+| `Cargo.lock`                                   | ✅ Shared          | Automatic via Git — tracked file                                                                             |
+| `target/` (build artifacts, BoringSSL)         | ❌ Per-worktree    | `cargo build` in each new worktree (~3-5 min first build)                                                    |
+| `.env` (secrets, config)                       | ❌ Per-worktree    | Manual `cp` from main repo                                                                                   |
+| `.gitnexus/` index                             | ❌ Per-worktree    | Each worktree needs its own `gitnexus analyze` (indexes the working tree of CWD, which differs per worktree) |
+| `codedb.snapshot`                              | ❌ Per-worktree    | Each worktree needs its own CodeDB index                                                                     |
+| Git stash (`refs/stash`)                       | ⚠️ Shared (DANGER) | **NEVER use `git stash` in a worktree** — shared storage causes cross-worktree contamination                 |
 
 ### Rebase caveats in worktrees
 
@@ -311,13 +322,13 @@ git worktree prune                          # remove stale worktree metadata
 
 **Commit after every completed step** (git mv, sed bulk, cargo check, test pass, etc.). Uncommitted work in a worktree can be lost silently if the agent loses context or a checkout occurs. Load the `work-unit-commits` skill for the full pattern.
 
-| Step | Commit? |
-|:-----|:--------|
-| git mv of files/directories | ✅ Commit immediately |
-| Bulk sed/replace across files | ✅ Commit immediately |
-| cargo check passes | ✅ Commit (marker: "wip: cargo check passes") |
-| Tests pass | ✅ Commit (or amend previous WIP) |
-| Clippy + fmt clean | ✅ Final commit |
+| Step                          | Commit?                                       |
+| :---------------------------- | :-------------------------------------------- |
+| git mv of files/directories   | ✅ Commit immediately                         |
+| Bulk sed/replace across files | ✅ Commit immediately                         |
+| cargo check passes            | ✅ Commit (marker: "wip: cargo check passes") |
+| Tests pass                    | ✅ Commit (or amend previous WIP)             |
+| Clippy + fmt clean            | ✅ Final commit                               |
 
 **Why:** if the session restarts or a checkout happens, committed work survives in the `.git` object store. Uncommitted work in the working tree does not.
 
@@ -326,15 +337,16 @@ git worktree prune                          # remove stale worktree metadata
 If you detect you operated outside your assigned worktree, or `git stash pop` applied unexpected changes:
 
 1. **STOP** all operations immediately.
-2. Do NOT attempt to clean up — no `git reset`, no force-push, no manual patching.
-3. Report exactly: "Contamination detected. Worktree: `<path>`. Intruder commit: `<hash>` or unexpected stash applied. Awaiting human instructions."
-4. Wait for explicit human authorization before any corrective action.
+1. Do NOT attempt to clean up — no `git reset`, no force-push, no manual patching.
+1. Report exactly: "Contamination detected. Worktree: `<path>`. Intruder commit: `<hash>` or unexpected stash applied. Awaiting human instructions."
+1. Wait for explicit human authorization before any corrective action.
 
 ---
 
 ## 🔒 Safety & Permissions
 
 ### Allowed without asking
+
 - Read any file in the repo
 - `cargo check`, `cargo clippy`, `cargo fmt`, `cargo nextest run`
 - GitNexus MCP tools and CLI (`gitnexus analyze`, `status`, `query`, `impact`, `context`, etc.)
@@ -344,6 +356,7 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 - Read-only cross-branch inspection: `git show <branch>:<file>`, `git log <branch>`
 
 ### Ask first
+
 - Adding/removing dependencies (`Cargo.toml`)
 - Changing feature flags or profiles
 - Deleting files
@@ -353,6 +366,7 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 - Re-indexing with `--pdg` or `--drop-embeddings` (data-loss / cost implications)
 
 ### Never
+
 - Commit secrets, `.env`, or credentials
 - `.unwrap()` in production — use `?` or `match`
 - Force push to main
@@ -371,10 +385,12 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 ## 📝 Commit & PR
 
 **Format:** `type(scope): description`
+
 - type: `feat` | `fix` | `refactor` | `test` | `docs` | `perf` | `chore` | `revert`
 - scope: `cli` | `tui` | `crawler` | `ai` | `mcp` | `exporter` | `http` | `domain` | `infra`
 
 **PR checklist:**
+
 - [ ] `cargo check` + `cargo clippy -- -D warnings` + `cargo fmt`
 - [ ] `cargo nextest run` (at least affected module)
 - [ ] `gitnexus_detect_changes()` shows only expected symbols
@@ -390,28 +406,31 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 
 ## 📐 Good Patterns (copy these)
 
-| What | Copy from | Location |
-|:-----|:----------|:---------|
-| New service/trait | `crawler_service.rs` | `crates/webfang_core/src/application/` — trait → impl with DI, `async_trait`, `#[instrument]`, typed errors |
-| New domain entity | `entities.rs` | `crates/webfang_core/src/domain/` — struct + constructor + `TryFrom` validation, `Display`+`Debug`+`PartialEq` |
-| New adapter | `crawler/` | `crates/webfang_core/src/infrastructure/` — domain trait → impl, module with `mod.rs` |
-| New error type | `error.rs` | `crates/webfang_core/src/cli/` — `thiserror::Error` + `From` impls, Spanish user-facing |
-| New behavioral test | `cli_harness.rs` | `tests/common/` — `BehavioralTest` + wiremock + TempDir + insta snapshots |
+| What                | Copy from            | Location                                                                                                       |
+| :------------------ | :------------------- | :------------------------------------------------------------------------------------------------------------- |
+| New service/trait   | `crawler_service.rs` | `crates/webfang_core/src/application/` — trait → impl with DI, `async_trait`, `#[instrument]`, typed errors    |
+| New domain entity   | `entities.rs`        | `crates/webfang_core/src/domain/` — struct + constructor + `TryFrom` validation, `Display`+`Debug`+`PartialEq` |
+| New adapter         | `crawler/`           | `crates/webfang_core/src/infrastructure/` — domain trait → impl, module with `mod.rs`                          |
+| New error type      | `error.rs`           | `crates/webfang_core/src/cli/` — `thiserror::Error` + `From` impls, Spanish user-facing                        |
+| New behavioral test | `cli_harness.rs`     | `tests/common/` — `BehavioralTest` + wiremock + TempDir + insta snapshots                                      |
 
 **Avoid:** `adapters/tui/progress_widget.rs` (551 lines), `infrastructure/mcp_server/mod.rs` (1404 lines) — keep new components focused.
 
 ## 🧪 Testing — Snapshots, Harness & Conventions
 
 ### Integration test structure
+
 Root `tests/` integration tests are wired into `webfang_core` via explicit `[[test]]` entries in `crates/webfang_core/Cargo.toml`. The workspace root `Cargo.toml` is virtual (no `[package]`), so root `tests/` files need explicit `[[test]]` wiring — they are **never auto-discovered**.
 
 Test harness lives in `tests/common/cli_harness.rs`:
+
 - `BehavioralTest` — wiremock `MockServer` + `tempfile::TempDir`, `scraper_cmd()`, `find_files()`, `read_md_content()`
 - `cli_bin()` — binary selector (currently always `"webfang"`)
 - `webfang_path()` — path-based binary resolver (see below)
 - Snapshot helpers: `assert_snapshot`, `redact_nondeterministic`, `assert_snapshot_redacted`, `assert_snapshot_plain`
 
 ### Tests con wiremock (network-free behavioral tests)
+
 ```rust
 use crate::common::{cmd, redact_nondeterministic, BehavioralTest};
 
@@ -426,15 +445,18 @@ async fn test_example() {
 ```
 
 ### Snapshot testing (`insta`)
+
 Golden-master snapshots are enabled via `insta` (`features = ["redactions", "filters"]`). All behavioral tests that produce Markdown/JSON/stderr output MUST use snapshots instead of `assert!(output.contains("..."))`.
 
 **Snapshot workflow (review gate):**
+
 1. Make test changes → `cargo nextest run` → tests FAIL (pending `.snap.new`)
-2. `cargo insta review` → review every diff interactively → accept or reject
-3. `cargo nextest run` → tests PASS (committed `.snap` matches output)
-4. `.snap.new` is in `.gitignore` — never commit pending snapshots
+1. `cargo insta review` → review every diff interactively → accept or reject
+1. `cargo nextest run` → tests PASS (committed `.snap` matches output)
+1. `.snap.new` is in `.gitignore` — never commit pending snapshots
 
 **Sanitization rules (mandatory):** Snapshots MUST be deterministic. Always apply `redact_nondeterministic()` which normalizes:
+
 - `TempDir` path → `[TEMP_PATH]`
 - ISO-8601 timestamps (with/without fractional seconds, any offset) → `[TIMESTAMP]`
 - Wiremock dynamic ports → `[PORT]`
@@ -443,31 +465,36 @@ Golden-master snapshots are enabled via `insta` (`features = ["redactions", "fil
 If a test leaks additional non-deterministic fields (e.g. Obsidian YAML frontmatter dates), use `insta::with_settings!({ add_filter(r"...", "[REPLACEMENT]") }, { insta::assert_snapshot!(...) })`.
 
 ### Binary resolution: `webfang_path()`
+
 **NEVER use `assert_cmd::cargo_bin(...)` in integration tests.** The `CARGO_BIN_EXE_*` env var is only set for the owning crate. In this virtual workspace, `webfang` is built by `webfang_cli` — a sibling crate. Tests running under `webfang_core` cannot resolve it via `cargo_bin`.
 
 Always use `webfang_path()` from `tests/common/cli_harness.rs`, which:
+
 1. Tries `CARGO_BIN_EXE_webfang` (CI fallback)
-2. Searches `target/{debug,release}/webfang`
-3. Falls back to `cargo build -p webfang_cli --bin webfang` on demand
+1. Searches `target/{debug,release}/webfang`
+1. Falls back to `cargo build -p webfang_cli --bin webfang` on demand
 
 **Golden rule for new tests:** `Command::new(webfang_path())`, never `Command::cargo_bin(...)`.
 
 ### Creating a new root integration test
+
 1. Create the test file in `tests/` (e.g. `tests/my_new_test.rs`)
-2. Add a `[[test]]` entry in `crates/webfang_core/Cargo.toml`:
+1. Add a `[[test]]` entry in `crates/webfang_core/Cargo.toml`:
+
    ```toml
    [[test]]
    name = "my_new_test"
    path = "../../tests/my_new_test.rs"
    ```
-3. Use `use crate::common::*;` for the shared harness
-4. Use `webfang_path()` for binary resolution, snapshots for output validation
-5. Run `cargo nextest run --test my_new_test` to verify
+
+1. Use `use crate::common::*;` for the shared harness
+1. Use `webfang_path()` for binary resolution, snapshots for output validation
+1. Run `cargo nextest run --test my_new_test` to verify
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **webfang** (7815 symbols, 18655 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **webfang** (7778 symbols, 18679 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
