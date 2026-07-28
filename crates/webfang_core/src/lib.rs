@@ -85,7 +85,7 @@ pub use infrastructure::{
 
 // Checkpoint types (application layer — consolidated from infrastructure)
 pub use application::crawler::checkpoint::{
-    BannedDomain, BincodeCheckpoint, CheckpointPath, CrawlCheckpoint,
+    BannedDomain, BincodeCheckpoint, CheckpointPath, CheckpointStore, CrawlCheckpoint,
 };
 
 // Adapters

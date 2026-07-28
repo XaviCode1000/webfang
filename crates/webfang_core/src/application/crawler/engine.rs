@@ -13,6 +13,9 @@ use std::time::Duration;
 use tracing::{debug, info, instrument, span, warn, Instrument, Level};
 use url::Url;
 
+use super::checkpoint::{
+    BannedDomain, BincodeCheckpoint, CheckpointPath, CheckpointStore, CrawlCheckpoint,
+};
 use super::collector::{CrawlMessage, ResultsCollector};
 use super::concurrency_level::{ConcurrencyLevel, SharedConcurrencyLevel};
 use crate::application::crawler::crawl_task_ctx::CrawlTaskCtx;
@@ -22,7 +25,6 @@ use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::application::url_filter::is_allowed;
 use crate::domain::clock::SystemClock;
 use crate::domain::{CrawlError, CrawlResult, CrawlerConfig, DiscoveredUrl, JsStrategy};
-use super::checkpoint::{BannedDomain, BincodeCheckpoint, CheckpointPath, CheckpointStore, CrawlCheckpoint};
 use crate::infrastructure::crawler::robots_utils::{
     is_allowed_by_robots, new_robots_cache, RobotsCache,
 };

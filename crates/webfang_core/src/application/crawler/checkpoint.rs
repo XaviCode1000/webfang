@@ -633,7 +633,10 @@ mod tests {
 
         // Verify first 4 bytes are a valid CRC32 header
         let data = fs::read(&path).unwrap();
-        assert!(data.len() > 4, "new format must have CRC32 header + payload");
+        assert!(
+            data.len() > 4,
+            "new format must have CRC32 header + payload"
+        );
         let stored_checksum = u32::from_ne_bytes([data[0], data[1], data[2], data[3]]);
         let payload = &data[4..];
         let computed_checksum = crc32fast::hash(payload);
