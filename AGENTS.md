@@ -140,11 +140,21 @@ cargo +nightly miri test infrastructure::network::
 cargo check && cargo clippy -- -D warnings && cargo fmt
 ```
 
-**Cloud verification:**
+**Cloud verification (mind the timeouts):**
 
 ```bash
-gh workflow run ci.yml --ref $(git branch --show-current) && gh run watch
+# Trigger CI on the current branch (returns immediately)
+gh workflow run ci.yml --ref $(git branch --show-current)
+
+# Non-blocking status check (preferred — does NOT wait for CI to finish)
+gh run list --workflow=ci.yml --branch "$(git branch --show-current)" --limit 1 \
+  --json databaseId,status,conclusion
+gh run view <RUN_ID>     # inspect one run
 ```
+
+⚠️ **`gh run watch` blocks until the whole pipeline finishes** — CI runs up to ~30 min (the release job has `timeout-minutes: 30`). Never run it under a short tool timeout; if you must watch, use `gh run watch --exit-status` with a timeout ≥ 600s. Prefer the non-blocking `gh run list` / `gh run view` pattern above and poll.
+
+⚠️ **Git/GitHub network ops can hang transiently** (`git push`/`fetch`, `gh api`). Give them a generous timeout (≥ 180s) and **retry once** on timeout. A timed-out `git push` did NOT necessarily fail — verify with `git ls-remote origin <branch>` before re-pushing (a half-finished push is rare but possible).
 
 **GitNexus index refresh:** `gitnexus analyze --index-only --skip-agents-md` (ALWAYS `--skip-agents-md`). Add `--pdg` for taint/control-data dependence, `--skills` only when regenerating skill files. Plain `analyze` preserves embeddings; if ever enabled, re-pass `--embeddings`.
 
@@ -291,14 +301,36 @@ git log main --oneline -10                           # inspect history
 
 These are safe — they read the shared `.git` object store without modifying the working tree.
 
-**Cleanup (after merge):**
+### Post-merge cleanup & mission handoff (MANDATORY)
 
-```bash
-cd ~/Projects/webfang                 # return to main repo
-git worktree remove ~/Projects/webfang-worktrees/feat-auth
-git branch -d feat/auth
-git worktree prune                          # remove stale worktree metadata
-```
+A merge is NOT done until the repo is clean and ready for the next mission. Cleanup is part of the mission's **definition of done** — not an afterthought. Run from the MAIN repo (`~/Projects/webfang`, always on `main`):
+
+1. **Verify the merge landed** — `gh pr view <N> --json state,mergedAt,mergeCommit`; `state` must be `MERGED`.
+2. **Sync local main (ff-only)** —
+   ```bash
+   git fetch origin              # global fetch.prune=true already drops stale origin/* refs
+   git merge --ff-only origin/main
+   ```
+   If `--ff-only` FAILS, local main diverged (local-only commits) — STOP and investigate; never paper over it with a merge commit or a blind reset.
+3. **Remove the mission worktree** — `git worktree remove ~/Projects/webfang-worktrees/<dir>` (no uncommitted tracked changes; gitignored per-worktree files `.env`/`target/`/`.gitnexus/` go with it).
+4. **Delete the local branch** — `git branch -D <type>/<description>`. Squash-merge rewrites history, so the safe `-d` refuses even when merged; the step-1 `MERGED` check is your safety net. Never touch the protected set: `main`, `gh-pages`, `backup/*`, or the currently checked-out branch.
+5. **Prune orphaned metadata** — `git worktree prune`.
+6. **Verify the handoff contract** —
+   ```bash
+   git worktree list      # ONLY ~/Projects/webfang [main]
+   git branch -vv         # ONLY main, tracking origin/main, in sync
+   git status --short     # empty
+   ```
+
+**End-state contract (definition of a clean handoff):**
+
+- One worktree (main), on `main`, in sync with `origin/main`.
+- No local branches from the finished mission.
+- No stale `origin/*` remote-tracking refs.
+- Clean tree; no orphaned worktree metadata.
+- A safety/backup branch needs an explicit reason AND a removal plan — never "just in case".
+
+**Automated safety net (do NOT rely on it for worktrees):** a weekly systemd timer (`git-hygiene.timer`, Sun 03:00) runs `~/.local/bin/git-hygiene.sh`, which reconciles `delete_branch_on_merge` on all repos and prunes confirmed-safe stale LOCAL branches across `~/Projects/*` with a conservative squash-aware model (protected: `main`, `gh-pages`, `backup/*`, current branch; ambiguous → KEEP/REVIEW, never deleted). It **SKIPS `*-worktrees` containers and never syncs main** — worktree removal, `git worktree prune`, and the ff-only main sync above are STILL your per-mission responsibility. The timer is a backstop for forgotten branches, not a substitute for this runbook.
 
 ### Shared vs. per-worktree resources
 
@@ -389,6 +421,41 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 - type: `feat` | `fix` | `refactor` | `test` | `docs` | `perf` | `chore` | `revert`
 - scope: `cli` | `tui` | `crawler` | `ai` | `mcp` | `exporter` | `http` | `domain` | `infra`
 
+### PR creation — CI-enforced rules (`pr-validation.yml`)
+
+Every PR is validated on open / edit / synchronize / label changes. **All three MUST pass or CI fails:**
+
+1. **Linked issue** — the PR body must contain `Closes #N`, `Fixes #N`, or `Resolves #N` (case-insensitive).
+2. **Exactly one `type:*` label** — the count of labels starting with `type:` must be exactly 1.
+3. **Conventional branch name** — must match `type/description` (regex `^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)/[a-z0-9._-]+$`).
+
+**Valid `type:*` labels** — the label vocabulary is NOT the commit-type vocabulary:
+
+| Commit type | GitHub label           |
+| :---------- | :--------------------- |
+| `feat`      | `type:feature`         |
+| `fix`       | `type:bug`             |
+| `refactor`  | `type:refactor`        |
+| `docs`      | `type:docs`            |
+| `chore`     | `type:chore`           |
+| (breaking)  | `type:breaking-change` |
+
+No `type:test` / `type:perf` / `type:revert` labels exist — map those to the closest one (usually `type:chore`).
+
+**Set the label and linked issue at creation time** (don't wait for CI to reject the PR):
+
+```bash
+gh pr create --base main --head "$(git branch --show-current)" \
+  --label type:refactor \
+  --title "refactor(scope): description" \
+  --body "Closes #NNN
+
+## Summary
+- what and why"
+```
+
+Base the body on `.github/PULL_REQUEST_TEMPLATE.md` (it already documents these requirements).
+
 **PR checklist:**
 
 - [ ] `cargo check` + `cargo clippy -- -D warnings` + `cargo fmt`
@@ -397,10 +464,15 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 - [ ] `gitnexus_detect_changes({scope:"compare", base_ref:"main"})` for regression review
 - [ ] Error messages in Spanish if user-facing
 - [ ] New public items have doc comments
+- [ ] PR has **exactly one `type:*` label** (see mapping above) — CI rejects it otherwise
+- [ ] PR body links the issue with `Closes/Fixes/Resolves #N` — CI rejects it otherwise
+- [ ] Branch name matches `type/description` (e.g. `fix/mi-bug`) — CI rejects it otherwise
+- [ ] PR body based on `.github/PULL_REQUEST_TEMPLATE.md`
 - [ ] Verified worktree: `git branch --show-current` matches worktree directory name
 - [ ] No `git checkout`/`switch`/`stash` was executed during the session
 - [ ] Committed after every completed step (load `work-unit-commits` skill for the pattern)
 - [ ] Worktree scheduled for cleanup after merge (if task is complete)
+- [ ] **Post-merge handoff runbook executed** — merge verified, main synced (ff-only), worktree removed, branch deleted, `git worktree prune`, handoff contract verified (see "Post-merge cleanup & mission handoff")
 
 ---
 
