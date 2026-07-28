@@ -101,6 +101,162 @@ async fn max_depth_zero_only_scrapes_seed() {
     );
 }
 
+/// Mount a sub-path sitemap fallback scenario and return the server base URL:
+/// - main `/sitemap.xml` lists only a URL outside `/blog/`, so discovery finds
+///   no relevant URLs and falls back to sub-path sitemaps;
+/// - `/blog/sitemap.xml` (HEAD probe + GET parse) lists two `/blog/` content URLs;
+/// - the two content pages return scrapeable HTML.
+async fn mount_subpath_scenario(server: &wiremock::MockServer) -> String {
+    let base = server.uri();
+
+    crate::common::mock_robots(server, "User-agent: *\n").await;
+
+    let main_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>{}/about</loc></url>
+</urlset>"#,
+        base
+    );
+    crate::common::mock_sitemap(server, &format!("{}/sitemap.xml", base), &main_xml).await;
+
+    // The fallback probes candidates with HEAD before parsing them with GET.
+    Mock::given(method("HEAD"))
+        .and(path("/blog/sitemap.xml"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(server)
+        .await;
+
+    let subpath_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>{}/blog/post-1</loc></url>
+    <url><loc>{}/blog/post-2</loc></url>
+</urlset>"#,
+        base, base
+    );
+    crate::common::mock_sitemap(server, &format!("{}/blog/sitemap.xml", base), &subpath_xml).await;
+
+    Mock::given(method("GET"))
+        .and(path("/blog/post-1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("<html><body><article><h1>Post 1</h1></article></body></html>"),
+        )
+        .mount(server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/blog/post-2"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("<html><body><article><h1>Post 2</h1></article></body></html>"),
+        )
+        .mount(server)
+        .await;
+
+    base
+}
+
+/// --max-depth 0 on the sub-path sitemap fallback scrapes none of the
+/// sub-sitemap URLs: they are depth 1, so the crawl's max_depth gate filters
+/// them all out and discovery comes back empty (EmptyDiscovery exit).
+#[tokio::test]
+async fn subpath_sitemap_max_depth_zero_skips_content() {
+    let t = BehavioralTest::new().await;
+    let base = mount_subpath_scenario(&t.server).await;
+
+    let output = cmd()
+        .arg("--url")
+        .arg(format!("{}/blog/", base))
+        .arg("--sitemap-url")
+        .arg(format!("{}/sitemap.xml", base))
+        .arg("--use-sitemap")
+        .arg("--max-depth")
+        .arg("0")
+        .arg("--output")
+        .arg(t.out.path())
+        .arg("--quiet")
+        .output()
+        .expect("run binary");
+
+    // No scrapeable URL survives the depth gate -> EmptyDiscovery (non-success).
+    assert!(
+        !output.status.success(),
+        "expected empty-discovery failure, got success; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let requests = t.server.received_requests().await.unwrap();
+    let post1 = requests
+        .iter()
+        .filter(|r| r.url.path() == "/blog/post-1")
+        .count();
+    let post2 = requests
+        .iter()
+        .filter(|r| r.url.path() == "/blog/post-2")
+        .count();
+    assert_eq!(
+        post1, 0,
+        "expected 0 requests to /blog/post-1 with max-depth 0, got {}",
+        post1
+    );
+    assert_eq!(
+        post2, 0,
+        "expected 0 requests to /blog/post-2 with max-depth 0, got {}",
+        post2
+    );
+}
+
+/// Control for `subpath_sitemap_max_depth_zero_skips_content`: with --max-depth 1
+/// the same sub-path sitemap URLs (depth 1) ARE discovered and scraped, proving
+/// the zero above comes from the depth gate and not a broken fallback.
+#[tokio::test]
+async fn subpath_sitemap_max_depth_one_scrapes_content() {
+    let t = BehavioralTest::new().await;
+    let base = mount_subpath_scenario(&t.server).await;
+
+    let output = cmd()
+        .arg("--url")
+        .arg(format!("{}/blog/", base))
+        .arg("--sitemap-url")
+        .arg(format!("{}/sitemap.xml", base))
+        .arg("--use-sitemap")
+        .arg("--max-depth")
+        .arg("1")
+        .arg("--output")
+        .arg(t.out.path())
+        .arg("--quiet")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "expected success, got: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let requests = t.server.received_requests().await.unwrap();
+    let post1 = requests
+        .iter()
+        .filter(|r| r.url.path() == "/blog/post-1")
+        .count();
+    let post2 = requests
+        .iter()
+        .filter(|r| r.url.path() == "/blog/post-2")
+        .count();
+    assert!(
+        post1 >= 1,
+        "expected >=1 request to /blog/post-1 with max-depth 1, got {}",
+        post1
+    );
+    assert!(
+        post2 >= 1,
+        "expected >=1 request to /blog/post-2 with max-depth 1, got {}",
+        post2
+    );
+}
+
 /// --max-pages 2 caps the crawl output to at most 2 .md files.
 #[tokio::test]
 async fn max_pages_limits_crawl_output() {

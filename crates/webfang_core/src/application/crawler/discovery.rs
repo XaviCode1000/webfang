@@ -579,8 +579,16 @@ async fn crawl_with_sitemap_internal(
             sitemap_url,
             target_path
         );
-        return crawl_with_subpath_sitemaps(base_url, &base, &parser, 3, 0, &discovery_client)
-            .await;
+        return crawl_with_subpath_sitemaps(
+            base_url,
+            &base,
+            &parser,
+            3,
+            0,
+            config.max_depth,
+            &discovery_client,
+        )
+        .await;
     }
 
     // Following own-borrow-over-clone: use Url directly, not String
@@ -611,7 +619,13 @@ async fn crawl_with_sitemap_internal(
 ///
 /// For nested sites like `https://example.com/docs/en/`, this tries
 /// `/docs/sitemap.xml`, `/docs/en/sitemap.xml`, etc.
-/// Follows nested sitemaps recursively up to `max_depth` levels.
+/// Follows nested sitemaps recursively up to `sitemap_max_depth` levels.
+///
+/// `crawl_max_depth` is the crawl's configured max depth (CLI `--max-depth`),
+/// distinct from the sitemap-index recursion depth above. Sub-path sitemap URLs
+/// are one hop from the seed (depth 1), so when `crawl_max_depth` is 0 ("only
+/// the seed URL") none of them qualify and an empty list is returned — mirroring
+/// the `depth <= max_depth` gate in `crawl_with_sitemap_internal`.
 ///
 /// Following **own-borrow-over-clone**: Accepts `&Url` not `&String`.
 /// Following **err-no-unwrap-prod**: Proper error handling throughout.
@@ -619,15 +633,26 @@ async fn crawl_with_subpath_sitemaps(
     base_url: &str,
     base: &Url,
     parser: &SitemapParser,
-    max_depth: usize,
-    current_depth: usize,
+    sitemap_max_depth: usize,
+    sitemap_current_depth: usize,
+    crawl_max_depth: u8,
     client: &wreq::Client,
 ) -> Result<Vec<DiscoveredUrl>, CrawlError> {
-    if current_depth >= max_depth {
+    if sitemap_current_depth >= sitemap_max_depth {
         tracing::warn!(
             "sitemap recursion depth {} reached max {}, stopping",
-            current_depth,
-            max_depth
+            sitemap_current_depth,
+            sitemap_max_depth
+        );
+        return Ok(Vec::new());
+    }
+
+    // Sub-path sitemap URLs are depth 1; with a crawl max_depth of 0 none pass
+    // the gate, so short-circuit before probing the network.
+    if crawl_max_depth == 0 {
+        tracing::info!(
+            "crawl max_depth is 0, skipping sub-path sitemap URLs for {}",
+            base_url
         );
         return Ok(Vec::new());
     }
