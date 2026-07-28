@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use webfang_core::application::http_client::{HttpClientPort, HttpError, HttpResponse, HttpResult};
+use webfang_core::application::http_client::{HttpError, HttpResponse};
 use webfang_core::application::scraper_service::{
     detect_spa_content, extract_with_selector, scrape_multiple_with_limit, scrape_with_config,
     scrape_with_readability, MAX_INSTRUMENTED_BODY_SIZE, MIN_CONTENT_CHARS,
@@ -8,63 +8,11 @@ use webfang_core::application::scraper_service::{
 use webfang_core::domain::{DomInspectorPort, ExtractResult, SelectorErrorKind};
 use webfang_core::{ScraperConfig, ScraperError};
 
-// --- Mock HTTP client (test-local, not shared infrastructure) ---
+// --- Shared mock HTTP client (tests/common/mock_http.rs, Item 2 Tier-2) ---
 
-struct MockHttpClient {
-    responses: HashMap<String, HttpResult<HttpResponse>>,
-}
-
-impl MockHttpClient {
-    fn new() -> Self {
-        Self {
-            responses: HashMap::new(),
-        }
-    }
-
-    fn with_response(mut self, url: &str, result: HttpResult<HttpResponse>) -> Self {
-        self.responses.insert(url.to_string(), result);
-        self
-    }
-
-    /// Shorthand for a 200 OK response with the given HTML body.
-    fn with_ok_response(self, url: &str, body: &str) -> Self {
-        self.with_response(
-            url,
-            Ok(HttpResponse {
-                status: 200,
-                body: body.to_string(),
-                headers: HashMap::new(),
-            }),
-        )
-    }
-}
-
-impl HttpClientPort for MockHttpClient {
-    fn get(
-        &self,
-        url: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HttpResult<HttpResponse>> + Send + '_>>
-    {
-        let result = match self.responses.get(url) {
-            Some(Ok(resp)) => Ok(HttpResponse {
-                status: resp.status,
-                body: resp.body.clone(),
-                headers: resp.headers.clone(),
-            }),
-            Some(Err(HttpError::Forbidden)) => Err(HttpError::Forbidden),
-            Some(Err(HttpError::RateLimited(r))) => Err(HttpError::RateLimited(*r)),
-            Some(Err(HttpError::ClientError(c))) => Err(HttpError::ClientError(*c)),
-            Some(Err(HttpError::ServerError(c))) => Err(HttpError::ServerError(*c)),
-            Some(Err(HttpError::Timeout)) => Err(HttpError::Timeout),
-            Some(Err(HttpError::Connection(m))) => Err(HttpError::Connection(m.clone())),
-            Some(Err(HttpError::Request(m))) => Err(HttpError::Request(m.clone())),
-            Some(Err(HttpError::WafChallenge(p))) => Err(HttpError::WafChallenge(p.clone())),
-            Some(Err(HttpError::DomainBanned(d))) => Err(HttpError::DomainBanned(d.clone())),
-            None => Err(HttpError::ClientError(404)),
-        };
-        Box::pin(async move { result })
-    }
-}
+#[path = "common/mock_http.rs"]
+mod mock_http;
+use crate::mock_http::MockHttpClient;
 
 // =====================================================================
 // scrape_with_config tests

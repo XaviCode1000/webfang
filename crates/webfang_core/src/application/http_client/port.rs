@@ -63,55 +63,10 @@ impl HttpClientPort for wreq::Client {
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::http_error::{HttpError, HttpResult};
+    use crate::domain::http_error::HttpError;
     use crate::domain::http_port::{HttpClientPort, HttpResponse};
+    use crate::test_fixtures::MockHttpClient;
     use std::collections::HashMap;
-    use std::pin::Pin;
-
-    /// Minimal mock for verifying trait contract.
-    struct MockHttpClient {
-        responses: HashMap<String, HttpResult<HttpResponse>>,
-    }
-
-    impl MockHttpClient {
-        fn new() -> Self {
-            Self {
-                responses: HashMap::new(),
-            }
-        }
-
-        fn with_response(mut self, url: &str, result: HttpResult<HttpResponse>) -> Self {
-            self.responses.insert(url.to_string(), result);
-            self
-        }
-    }
-
-    impl HttpClientPort for MockHttpClient {
-        fn get(
-            &self,
-            url: &str,
-        ) -> Pin<Box<dyn std::future::Future<Output = HttpResult<HttpResponse>> + Send + '_>>
-        {
-            let result = match self.responses.get(url) {
-                Some(Ok(resp)) => Ok(HttpResponse {
-                    status: resp.status,
-                    body: resp.body.clone(),
-                    headers: resp.headers.clone(),
-                }),
-                Some(Err(HttpError::Forbidden)) => Err(HttpError::Forbidden),
-                Some(Err(HttpError::RateLimited(r))) => Err(HttpError::RateLimited(*r)),
-                Some(Err(HttpError::ClientError(c))) => Err(HttpError::ClientError(*c)),
-                Some(Err(HttpError::ServerError(c))) => Err(HttpError::ServerError(*c)),
-                Some(Err(HttpError::Timeout)) => Err(HttpError::Timeout),
-                Some(Err(HttpError::Connection(m))) => Err(HttpError::Connection(m.clone())),
-                Some(Err(HttpError::Request(m))) => Err(HttpError::Request(m.clone())),
-                Some(Err(HttpError::WafChallenge(p))) => Err(HttpError::WafChallenge(p.clone())),
-                Some(Err(HttpError::DomainBanned(d))) => Err(HttpError::DomainBanned(d.clone())),
-                None => Err(HttpError::ClientError(404)),
-            };
-            Box::pin(async move { result })
-        }
-    }
 
     #[tokio::test]
     async fn test_mock_returns_success() {
