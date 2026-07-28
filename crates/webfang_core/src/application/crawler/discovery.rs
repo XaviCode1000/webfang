@@ -10,6 +10,7 @@ use tracing::{debug, info, instrument, span, warn, Level};
 use url::Url;
 
 use crate::application::url_filter::is_allowed;
+use crate::domain::http_config::HttpClientConfig;
 use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl, ScrapedContent, ValidUrl};
 use crate::error::{Result as ScraperResult, ScraperError};
 use crate::infrastructure::crawler::binary_utils::derive_filename_from_response;
@@ -102,8 +103,17 @@ pub async fn discover_urls_for_tui(
 
         Ok(urls)
     } else {
-        // DOM scraping - extract links from single page
-        let client = super::super::create_http_client()?;
+        // DOM scraping - extract links from single page.
+        // Honor the configured request timeout (#289). The connect timeout is
+        // capped at 10s, replicating the #281 policy used by the sitemap branch.
+        // user_agent stays None (Default) so this path keeps rotating random pool
+        // agents instead of injecting config.user_agent.
+        let http_config = HttpClientConfig {
+            timeout_secs: config.timeout_secs,
+            connect_timeout_secs: config.timeout_secs.min(10), // #281 policy, replicated at call site
+            ..Default::default()
+        };
+        let client = super::super::create_http_client_with_config(&http_config)?;
 
         info!("Fetching {} for link extraction", base_url);
         let response = client
@@ -973,5 +983,88 @@ mod tests {
         assert_eq!(urls.len(), 2);
         assert!(urls.contains(&"https://example.com/page1".to_string()));
         assert!(urls.contains(&"https://external.com/page2".to_string()));
+    }
+
+    // #289 acceptance tests: the TUI DOM discovery path must honor CrawlerConfig
+    // timeouts. Both build a real wreq client (boring-sys2 FFI), hence not(miri).
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_discover_urls_for_tui_respects_request_timeout() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // wiremock completes TCP instantly then delays the HTTP response, so this
+        // exercises the request timeout (timeout_secs), not the connect timeout.
+        let server = MockServer::start().await;
+        Mock::given(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("<html></html>")
+                    .set_delay(Duration::from_secs(10)),
+            )
+            .mount(&server)
+            .await;
+
+        let seed = Url::parse(&server.uri()).unwrap();
+        let config = CrawlerConfig::builder(seed)
+            .timeout_secs(2)
+            .use_sitemap(false)
+            .build();
+
+        let start = std::time::Instant::now();
+        let result = discover_urls_for_tui(&server.uri(), &config).await;
+        let elapsed = start.elapsed();
+
+        let err = result.expect_err("slow response should time out");
+        assert!(
+            elapsed < Duration::from_secs(6),
+            "2s request timeout should fire well before 6s, took {elapsed:?}"
+        );
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("timeout") || msg.contains("http error"),
+            "error should mention timeout/http error, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_discover_urls_for_tui_respects_connect_timeout() {
+        use tokio::net::TcpListener;
+
+        // TLS blackhole: accept TCP connections and hold them open without ever
+        // completing the TLS handshake. wiremock cannot simulate this (it always
+        // finishes TCP+TLS), so a raw listener is used. This exercises the connect
+        // timeout, which covers TCP+TLS establishment (reqwest semantics).
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                // Keep the socket alive and silent so the handshake never finishes.
+                tokio::spawn(async move {
+                    let _socket = socket;
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                });
+            }
+        });
+
+        let target = format!("https://127.0.0.1:{port}");
+        let seed = Url::parse(&target).unwrap();
+        let config = CrawlerConfig::builder(seed)
+            .timeout_secs(2)
+            .use_sitemap(false)
+            .build();
+
+        let start = std::time::Instant::now();
+        let result = discover_urls_for_tui(&target, &config).await;
+        let elapsed = start.elapsed();
+
+        let err = result.expect_err("TLS blackhole should fail to connect");
+        eprintln!("connect-timeout error variant: {err:?}");
+        assert!(
+            elapsed < Duration::from_secs(6),
+            "2s connect timeout should fire well before 6s, took {elapsed:?}"
+        );
     }
 }
