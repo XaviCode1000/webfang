@@ -2,6 +2,8 @@
 
 use crate::cmd;
 use crate::BehavioralTest;
+use std::time::{Duration, Instant};
+use tokio::time::timeout;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -393,5 +395,80 @@ async fn include_pattern_only_scrapes_matching_urls() {
         1,
         "expected 1 .md file (/page-a only, seed excluded by include pattern), got {}",
         md_files.len()
+    );
+}
+
+/// Crawl mode with `--js-strategy static` must respect `--timeout-secs`.
+///
+/// End-to-end guard for the user-visible contract behind issue #280: a crawl
+/// against a slow endpoint with `--timeout-secs 2` must fail fast (~2s), not
+/// hang on a hardcoded timeout. Uses `--use-sitemap` so URL discovery fetches
+/// the fast sitemap instead of DOM-scraping the slow seed (DOM discovery uses
+/// a legacy client with its own 30s timeout, unrelated to this contract).
+/// The engine-level fix (`Engine::with_js_strategy`) is covered directly by
+/// `tests/engine_js_strategy_timeout_test.rs`.
+#[tokio::test]
+async fn crawl_js_strategy_respects_timeout_secs() {
+    let t = BehavioralTest::new().await;
+
+    Mock::given(method("GET"))
+        .and(path("/slow"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("<html><body><article><h1>Slow</h1></article></body></html>")
+                .set_delay(Duration::from_secs(10)),
+        )
+        .mount(&t.server)
+        .await;
+
+    let base = t.server.uri();
+    let slow_url = format!("{base}/slow");
+    let sitemap_url = format!("{base}/sitemap.xml");
+    let sitemap_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>{base}/slow</loc></url>
+</urlset>"#
+    );
+    crate::common::mock_sitemap(&t.server, &sitemap_url, &sitemap_xml).await;
+
+    let out_path = t.out.path().to_path_buf();
+
+    let start = Instant::now();
+    let output = timeout(
+        Duration::from_secs(15),
+        tokio::task::spawn_blocking(move || {
+            cmd()
+                .arg("--url")
+                .arg(&slow_url)
+                .arg("--sitemap-url")
+                .arg(&sitemap_url)
+                .arg("--use-sitemap")
+                .arg("--js-strategy")
+                .arg("static")
+                .arg("--timeout-secs")
+                .arg("2")
+                .arg("--max-depth")
+                .arg("0")
+                .arg("--output")
+                .arg(out_path)
+                .arg("--quiet")
+                .output()
+        }),
+    )
+    .await
+    .expect("test must not hang")
+    .expect("task must not panic")
+    .expect("command must execute");
+
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "JS strategy timeout test should complete in under 10s, took {:?}",
+        elapsed
+    );
+    assert!(
+        !output.status.success(),
+        "request should have timed out, but command succeeded"
     );
 }
