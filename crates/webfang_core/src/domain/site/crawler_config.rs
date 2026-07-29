@@ -216,7 +216,7 @@ impl CrawlerConfigBuilder {
             concurrency: self.concurrency,
             delay_ms: self.delay_ms,
             user_agent: self.user_agent,
-            timeout_secs: self.timeout_secs,
+            timeout_secs: self.timeout_secs.max(1),
             use_sitemap: self.use_sitemap,
             sitemap_url: self.sitemap_url,
             ignore_robots: self.ignore_robots,
@@ -457,5 +457,12 @@ mod tests {
         assert_eq!(config.max_depth, cloned.max_depth);
         assert_eq!(config.max_pages, cloned.max_pages);
         assert_eq!(config.seed_url, cloned.seed_url);
+    }
+
+    #[test]
+    fn builder_clamps_timeout_secs_to_minimum_one() {
+        let seed = Url::parse("https://example.com").unwrap();
+        let config = CrawlerConfig::builder(seed).timeout_secs(0).build();
+        assert_eq!(config.timeout_secs, 1);
     }
 }
