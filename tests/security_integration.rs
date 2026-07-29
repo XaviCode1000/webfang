@@ -302,19 +302,20 @@ async fn test_waf_inspector_cloudflare_detection() {
 
 #[tokio::test]
 async fn test_waf_inspector_datadome_header_detection() {
-    // RED: Test that WafInspector detects DataDome via header
+    // Control headers are Fingerprint-tier evidence — mere presence never
+    // auto-blocks without a correlated WAF status (correction B). verify_integrity
+    // runs in degraded mode (no status), so the header alone is clean.
+    // (Migrated from old presence-blocks behavior; TASK-14 verifies the policy.)
     let mut headers = HeaderMap::new();
     headers.insert("x-datadome-response", "blocked".parse().unwrap());
 
     let html = "<html><body>Content</body></html>";
     let result = WafInspector::verify_integrity(&headers, html);
 
-    assert!(result.is_err());
-    if let Err(webfang::error::ScraperError::WafBlocked { provider, .. }) = result {
-        assert!(provider.contains("DataDome"));
-    } else {
-        panic!("Expected WafBlocked error");
-    }
+    assert!(
+        result.is_ok(),
+        "T2 header alone must not block in degraded mode"
+    );
 }
 
 #[tokio::test]

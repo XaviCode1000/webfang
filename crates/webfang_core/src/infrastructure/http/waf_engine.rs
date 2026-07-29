@@ -469,6 +469,12 @@ const ENTROPY_THRESHOLD: f64 = 5.5;
 /// Body size threshold (100KB) above which entropy analysis is applied
 const SUSPICIOUS_SIZE_THRESHOLD: usize = 100_000;
 
+/// Maximum body size (bytes) for silent-challenge script-density analysis (REQ-WAF-06b)
+const SILENT_CHALLENGE_MAX_BYTES: usize = 1500;
+
+/// Minimum `<script>` tag count to flag a silent challenge (REQ-WAF-06b)
+const SILENT_CHALLENGE_MIN_SCRIPTS: usize = 5;
+
 /// Aho-Corasick automaton for O(N) multi-pattern body matching.
 ///
 /// Built once via `Lazy` from [`WAF_BODY_SIGNATURES`] patterns (pattern index
@@ -483,148 +489,96 @@ static WAF_AC: Lazy<AhoCorasick> = Lazy::new(|| {
 pub struct WafInspector;
 
 impl WafInspector {
-    /// Scan body for WAF challenge signatures using Aho-Corasick (O(N) single pass).
+    /// Inspect a response body with full HTTP context and return a verdict.
     ///
-    /// Returns the FIRST matching provider name, or `None` if the body is clean.
-    /// For bodies exceeding 100KB, Shannon entropy is computed; if entropy > 5.5,
-    /// returns `Some("Obfuscated WAF")`.
+    /// This is the single entry point for context-aware, evidence-based WAF
+    /// detection (REQ-WAF-01). It collects ALL evidence — boundary-filtered body
+    /// signatures (REQ-WAF-03/04), control headers (REQ-WAF-03), and entropy
+    /// signals (REQ-WAF-06) — then applies the verdict policy (REQ-WAF-05):
+    ///
+    /// - [`WafTier::Challenge`] (T1) blocks at ANY status, including 200.
+    /// - [`WafTier::Fingerprint`] (T2) blocks only with a correlated WAF status
+    ///   (403 / 429 / 503 / 520–529); in degraded mode (no status) T2 is reported
+    ///   low-confidence and never blocks.
+    ///
+    /// `ctx.ignore_waf` yields a clean verdict immediately (REQ-WAF-02 step 1),
+    /// and the content-type denylist (REQ-WAF-02) gates body scanning.
     ///
     /// Thread-safe: the AC automaton is immutable once compiled via `Lazy`.
+    #[must_use]
+    pub fn inspect(body: &str, ctx: &InspectionContext) -> WafVerdict {
+        // REQ-WAF-02 step 1: explicit bypass → clean verdict.
+        if ctx.ignore_waf {
+            return WafVerdict::clean();
+        }
+
+        let mut evidences = Vec::new();
+        let scan_body = should_scan_body(ctx);
+
+        // Body signatures (boundary-filtered), gated by content-type.
+        if scan_body {
+            evidences.extend(collect_body_evidence(body));
+        }
+
+        // Control headers are always inspected (independent of the body gate).
+        evidences.extend(collect_header_evidence(&ctx.headers));
+
+        // Entropy signals need full T2 awareness (rule (a) coexistence), so they
+        // run after body + header evidence is collected.
+        if scan_body {
+            let has_fingerprint = evidences.iter().any(|e| e.tier == WafTier::Fingerprint);
+            evidences.extend(entropy_evidence(body, ctx, has_fingerprint));
+        }
+
+        let is_blocked = decide(&evidences, ctx);
+        WafVerdict {
+            is_blocked,
+            evidences,
+        }
+    }
+
+    /// Scan a body for WAF challenge signatures (body-only callers).
     ///
-    /// # Arguments
-    /// * `body` - The HTTP response body to scan
-    ///
-    /// # Returns
-    /// * `Some(provider_name)` - WAF challenge detected
-    /// * `None` - No WAF challenge detected
+    /// Transitional shim over [`WafInspector::inspect`] in **degraded mode**
+    /// (no HTTP context): returns the first evidence's provider when the verdict
+    /// blocks, or `None` otherwise. In degraded mode only [`WafTier::Challenge`]
+    /// markers block; [`WafTier::Fingerprint`] evidence never blocks (REQ-WAF-05).
+    /// Callers should migrate to `inspect` with a full [`InspectionContext`].
     #[must_use]
     pub fn detect_body(body: &str) -> Option<&'static str> {
-        // Early exit for empty or very small bodies (no signatures fit in <10 chars)
-        if body.len() < 10 {
-            return None;
+        let ctx = InspectionContext::default();
+        let verdict = Self::inspect(body, &ctx);
+        if verdict.is_blocked {
+            verdict.evidences.first().map(|e| e.provider)
+        } else {
+            None
         }
-
-        // Shannon entropy check for large bodies (>100KB)
-        if body.len() > SUSPICIOUS_SIZE_THRESHOLD {
-            let entropy = calculate_entropy(body);
-            if entropy > ENTROPY_THRESHOLD {
-                return Some("Obfuscated WAF");
-            }
-        }
-
-        // Aho-Corasick single-pass scan for all 62 patterns.
-        // Returns provider name for the first match found by AC (earliest end position).
-        WAF_AC
-            .find(body)
-            .map(|m| WAF_BODY_SIGNATURES[m.pattern()].1)
     }
 
-    /// Verify response integrity across multiple layers
+    /// Verify response integrity across headers + body (callers with headers).
     ///
-    /// 1. Control Headers: Check for WAF-specific headers (immediate)
-    /// 2. Body Signatures: O(N) scan using Aho-Corasick
-    /// 3. Entropy Analysis: Detect "Silent Challenges" in minimal HTML
-    ///
-    /// # Arguments
-    /// * `headers` - Response headers from HTTP call
-    /// * `body` - Response body (HTML content)
-    ///
-    /// # Returns
-    /// * `Ok(())` - No WAF challenge detected
-    /// * `Err(ScraperError::WafBlocked)` - WAF challenge detected
+    /// Transitional shim over [`WafInspector::inspect`] in **degraded mode**
+    /// (headers present, but no status/content-type): returns
+    /// [`ScraperError::WafBlocked`] when the verdict blocks. Control headers are
+    /// [`WafTier::Fingerprint`] evidence and never auto-block on mere presence
+    /// (correction B). Callers should migrate to `inspect` with a full
+    /// [`InspectionContext`].
     pub fn verify_integrity(headers: &HeaderMap, body: &str) -> Result<(), ScraperError> {
-        // Layer 1: Control Headers (fastest - O(1) lookup)
-        Self::check_control_headers(headers)?;
-
-        // Layer 2: Body Signature Matching (O(N) with Aho-Corasick)
-        Self::check_body_signatures(body)?;
-
-        // Layer 3: Entropy Analysis (detect Silent Challenges)
-        Self::check_entropy(body)?;
-
-        Ok(())
-    }
-
-    /// Check for WAF control headers that indicate bot detection/processing
-    #[inline]
-    fn check_control_headers(headers: &HeaderMap) -> Result<(), ScraperError> {
-        for (header_name, provider) in WAF_CONTROL_HEADERS {
-            // Check if header exists (even with empty value indicates WAF processing)
-            if headers.get(*header_name).is_some() {
-                // Some headers like cf-ray exist even for normal requests,
-                // but others like x-datadome-response specifically indicate bot challenges
-                if *header_name == "x-datadome-response"
-                    || *header_name == "cf-mitigated"
-                    || *header_name == "x-akamai-edge-auth"
-                {
-                    return Err(ScraperError::WafBlocked {
-                        url: String::new(),
-                        provider: format!("{provider}: header detected"),
-                    });
-                }
-            }
+        let ctx = InspectionContext {
+            headers: headers.clone(),
+            ..Default::default()
+        };
+        let verdict = Self::inspect(body, &ctx);
+        if verdict.is_blocked {
+            let provider = verdict
+                .evidences
+                .first()
+                .map(|e| e.provider)
+                .unwrap_or("WAF desconocido");
+            Err(ScraperError::waf_blocked(String::new(), provider))
+        } else {
+            Ok(())
         }
-        Ok(())
-    }
-
-    /// Check body content for WAF signatures using O(N) Aho-Corasick
-    #[inline]
-    fn check_body_signatures(body: &str) -> Result<(), ScraperError> {
-        // Early exit for empty or very small bodies
-        // Lowered to 10 chars to detect short WAF challenge pages
-        if body.len() < 10 {
-            return Ok(());
-        }
-
-        // Use Aho-Corasick for O(N) multi-pattern matching
-        if let Some(mat) = WAF_AC.find_iter(body).next() {
-            // Map pattern index to provider name
-            let provider = WAF_BODY_SIGNATURES[mat.pattern()].1;
-            return Err(ScraperError::WafBlocked {
-                url: String::new(),
-                provider: format!("Signature detected: {provider}"),
-            });
-        }
-
-        Ok(())
-    }
-
-    /// Detect "Silent Challenges" using entropy analysis
-    ///
-    /// WAFs in 2026 sometimes return HTTP 200 with minimal HTML containing
-    /// heavy JavaScript challenges. This function detects that pattern:
-    /// - Body < 1500 bytes
-    /// - High density of <script> tags (> 5)
-    /// - Low text content ratio
-    #[inline]
-    fn check_entropy(body: &str) -> Result<(), ScraperError> {
-        // Only analyze bodies under 1500 bytes
-        if body.len() > 1500 {
-            return Ok(());
-        }
-
-        // Count <script> tags efficiently
-        let script_count = body.matches("<script").count();
-
-        // Silent Challenge detection:
-        // - Multiple script tags in a small body suggests JS challenge
-        // - Low text ratio indicates mostly code, not content
-        if script_count > 5 && body.len() < 1000 {
-            return Err(ScraperError::WafBlocked {
-                url: String::new(),
-                provider: "Silent Challenge: High JS density in minimal body".into(),
-            });
-        }
-
-        // Additional entropy check: ratio of script to text
-        if body.len() < 500 && script_count > 3 {
-            return Err(ScraperError::WafBlocked {
-                url: String::new(),
-                provider: "Silent Challenge: Suspicious script/text ratio".into(),
-            });
-        }
-
-        Ok(())
     }
 
     /// Get the list of supported WAF providers
@@ -746,6 +700,115 @@ fn should_scan_body(ctx: &InspectionContext) -> bool {
     }
     // text/* or anything else not denied → scan.
     true
+}
+
+/// Collect control-header evidence (REQ-WAF-03).
+///
+/// Every control header is [`WafTier::Fingerprint`] evidence — it never
+/// auto-blocks on mere presence (correction B), only when correlated with a
+/// WAF status code by [`decide`].
+fn collect_header_evidence(headers: &HeaderMap) -> Vec<WafEvidence> {
+    let mut evidences = Vec::new();
+    for (name, provider) in WAF_CONTROL_HEADERS {
+        if headers.get(*name).is_some() {
+            evidences.push(WafEvidence {
+                provider,
+                tier: WafTier::Fingerprint,
+                matched_pattern: name,
+            });
+        }
+    }
+    evidences
+}
+
+/// Verdict policy (REQ-WAF-05).
+///
+/// - [`WafTier::Challenge`] blocks at ANY status (including 200 and degraded).
+/// - [`WafTier::Fingerprint`] blocks only when the status correlates with a WAF
+///   response (403 / 429 / 503 / 520–529); degraded mode (no status) never
+///   blocks on Fingerprint evidence (reported low-confidence).
+///
+/// Entropy challenges are emitted as [`WafTier::Challenge`] evidence only when
+/// their own policy (REQ-WAF-06) already decided to block, so they short-circuit
+/// here like any other Challenge marker.
+fn decide(evidences: &[WafEvidence], ctx: &InspectionContext) -> bool {
+    for ev in evidences {
+        match ev.tier {
+            WafTier::Challenge => return true,
+            WafTier::Fingerprint => {
+                if is_t2_blocking_status(ctx.status) {
+                    return true;
+                }
+            },
+        }
+    }
+    false
+}
+
+/// Whether an HTTP status correlates with a WAF block for Fingerprint evidence.
+#[inline]
+fn is_t2_blocking_status(status: Option<u16>) -> bool {
+    matches!(status, Some(403 | 429 | 503 | 520..=529))
+}
+
+/// Entropy-based challenge detection (REQ-WAF-06).
+///
+/// Returns evidence ONLY when a rule decides to block (so its presence in a
+/// verdict always means "blocked"):
+/// - Rule (a): body > 100KB AND entropy > 5.5 b/B → block if status != 200
+///   (unknown/degraded counts as != 200) OR a Fingerprint marker coexists.
+/// - Rule (b): body < 1500B AND > 5 `<script>` tags → block if non-2xx OR
+///   (200 + HTML content-type). The 200+HTML case is the "H3 fix" silent
+///   challenge and MUST be kept (`discovery.rs` depends on it).
+fn entropy_evidence(
+    body: &str,
+    ctx: &InspectionContext,
+    has_fingerprint: bool,
+) -> Option<WafEvidence> {
+    // Rule (a): large + high entropy → obfuscated WAF.
+    if body.len() > SUSPICIOUS_SIZE_THRESHOLD {
+        let entropy = calculate_entropy(body);
+        if entropy > ENTROPY_THRESHOLD && (ctx.status != Some(200) || has_fingerprint) {
+            return Some(WafEvidence {
+                provider: "Obfuscated WAF",
+                tier: WafTier::Challenge,
+                matched_pattern: "high-entropy body (>100KB, >5.5 b/B)",
+            });
+        }
+    }
+
+    // Rule (b): tiny body dense with <script> tags → silent challenge.
+    if body.len() < SILENT_CHALLENGE_MAX_BYTES {
+        let script_count = body.matches("<script").count();
+        if script_count > SILENT_CHALLENGE_MIN_SCRIPTS {
+            let is_2xx = matches!(ctx.status, Some(200..=299));
+            let is_html = ctx
+                .content_type
+                .as_deref()
+                .is_some_and(is_html_content_type);
+            // Unknown status (degraded) is treated as non-2xx (conservative).
+            if !is_2xx || (ctx.status == Some(200) && is_html) {
+                return Some(WafEvidence {
+                    provider: "Silent Challenge",
+                    tier: WafTier::Challenge,
+                    matched_pattern: "script-density (<1500B, >5 <script>)",
+                });
+            }
+        }
+    }
+
+    None
+}
+
+/// Whether a content-type denotes HTML (for the 200+HTML silent-challenge rule).
+fn is_html_content_type(ct: &str) -> bool {
+    let mime = ct
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    mime == "text/html" || mime == "application/xhtml+xml"
 }
 
 /// Calculate Shannon entropy of a string
@@ -1116,6 +1179,163 @@ mod tests {
     }
 
     // ========================================================================
+    // TASK-05 — Verdict policy + inspect(ctx) (REQ-WAF-05)
+    // ========================================================================
+
+    fn ctx_with(status: Option<u16>, content_type: Option<&str>) -> InspectionContext {
+        InspectionContext {
+            status,
+            content_type: content_type.map(String::from),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_inspect_t1_blocks_at_200() {
+        // Fixture 3: Turnstile (T1) at 200 → BLOCK.
+        let ctx = ctx_with(Some(200), Some("text/html"));
+        let verdict = WafInspector::inspect(r#"<div id="cf-turnstile"></div>"#, &ctx);
+        assert!(verdict.is_blocked, "T1 must block at 200");
+        assert!(verdict
+            .evidences
+            .iter()
+            .any(|e| e.tier == WafTier::Challenge));
+    }
+
+    #[test]
+    fn test_inspect_cf_503_challenge_blocks() {
+        // Fixture 2: Cloudflare 503 challenge (T1 prose) → BLOCK.
+        let ctx = ctx_with(Some(503), Some("text/html"));
+        let verdict = WafInspector::inspect("<title>Just a moment...</title>", &ctx);
+        assert!(verdict.is_blocked, "T1 prose at 503 must block");
+    }
+
+    #[test]
+    fn test_inspect_t2_only_at_200_passes() {
+        // Fixtures 1/4/5: T2-only evidence at 200 → PASS (but evidence collected).
+        let ctx = ctx_with(Some(200), Some("text/html"));
+        let verdict = WafInspector::inspect("an article mentioning cloudflare in prose", &ctx);
+        assert!(!verdict.is_blocked, "T2 at 200 must not block");
+        assert!(!verdict.evidences.is_empty(), "T2 evidence still collected");
+    }
+
+    #[test]
+    fn test_inspect_t2_at_503_blocks() {
+        // T2 evidence with a correlated WAF status → BLOCK.
+        let ctx = ctx_with(Some(503), Some("text/html"));
+        let verdict = WafInspector::inspect("served by cloudflare", &ctx);
+        assert!(verdict.is_blocked, "T2 at 503 must block");
+    }
+
+    #[test]
+    fn test_inspect_t2_blocking_status_set() {
+        // Only 403/429/503/520-529 correlate with T2 evidence.
+        for status in [403u16, 429, 503, 520, 525, 529] {
+            let ctx = ctx_with(Some(status), Some("text/html"));
+            let verdict = WafInspector::inspect("perimeterx protected", &ctx);
+            assert!(verdict.is_blocked, "T2 at {status} must block");
+        }
+        for status in [200u16, 201, 301, 404, 500, 519, 530] {
+            let ctx = ctx_with(Some(status), Some("text/html"));
+            let verdict = WafInspector::inspect("perimeterx protected", &ctx);
+            assert!(!verdict.is_blocked, "T2 at {status} must NOT block");
+        }
+    }
+
+    #[test]
+    fn test_inspect_degraded_t2_never_blocks() {
+        // Degraded mode (no status): T2 reported low-confidence, never blocks.
+        let ctx = InspectionContext::default();
+        let verdict = WafInspector::inspect("served by cloudflare", &ctx);
+        assert!(!verdict.is_blocked, "degraded T2 must not block");
+        assert!(!verdict.evidences.is_empty(), "T2 evidence still emitted");
+    }
+
+    #[test]
+    fn test_inspect_degraded_t1_blocks() {
+        // Degraded mode: T1 still blocks.
+        let ctx = InspectionContext::default();
+        let verdict = WafInspector::inspect("<div class='g-recaptcha'></div>", &ctx);
+        assert!(verdict.is_blocked, "degraded T1 must block");
+    }
+
+    #[test]
+    fn test_inspect_ignore_waf_clean() {
+        // REQ-WAF-02 step 1: ignore_waf → clean verdict even with T1 present.
+        let ctx = InspectionContext {
+            ignore_waf: true,
+            content_type: Some("text/html".into()),
+            ..Default::default()
+        };
+        let verdict = WafInspector::inspect("<div id='cf-turnstile'></div>", &ctx);
+        assert!(!verdict.is_blocked, "ignore_waf must yield clean verdict");
+        assert!(
+            verdict.evidences.is_empty(),
+            "ignore_waf collects no evidence"
+        );
+    }
+
+    #[test]
+    fn test_inspect_control_header_t2_never_auto_blocks() {
+        // Correction B: a control header alone (T2) never blocks on mere presence.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-datadome-response", "blocked".parse().unwrap());
+        let ctx = InspectionContext {
+            headers,
+            ..Default::default()
+        };
+        let verdict = WafInspector::inspect("normal content here", &ctx);
+        assert!(
+            !verdict.is_blocked,
+            "header alone must not block (degraded)"
+        );
+        assert!(verdict
+            .evidences
+            .iter()
+            .any(|e| e.matched_pattern == "x-datadome-response"));
+    }
+
+    #[test]
+    fn test_inspect_control_header_with_503_blocks() {
+        // Control header (T2) + correlated status → block.
+        let mut headers = HeaderMap::new();
+        headers.insert("cf-mitigated", "challenge".parse().unwrap());
+        let ctx = InspectionContext {
+            headers,
+            status: Some(503),
+            content_type: Some("text/html".into()),
+            ..Default::default()
+        };
+        let verdict = WafInspector::inspect("normal content here", &ctx);
+        assert!(verdict.is_blocked, "cf-mitigated + 503 must block");
+    }
+
+    #[test]
+    fn test_inspect_json_gate_not_scanned() {
+        // Fixture 1: 200 application/json with akamai_hash → not scanned → clean.
+        let ctx = ctx_with(Some(200), Some("application/json"));
+        let verdict = WafInspector::inspect(r#"{"key": "akamai_hash"}"#, &ctx);
+        assert!(!verdict.is_blocked, "json body must not be scanned");
+        assert!(verdict.evidences.is_empty(), "no evidence from gated body");
+    }
+
+    #[test]
+    fn test_inspect_collects_all_evidences() {
+        // REQ-WAF-01: the verdict carries ALL evidences, not first-hit.
+        let ctx = ctx_with(Some(503), Some("text/html"));
+        let verdict = WafInspector::inspect(
+            "Just a moment... protected by cloudflare and datadome",
+            &ctx,
+        );
+        assert!(verdict.is_blocked);
+        assert!(
+            verdict.evidences.len() >= 2,
+            "multiple evidences collected (got {:?})",
+            verdict.evidences
+        );
+    }
+
+    // ========================================================================
     // detect_body() tests — ported from waf.rs (Approval Testing)
     // ========================================================================
 
@@ -1172,8 +1392,12 @@ mod tests {
 
     #[test]
     fn test_detect_body_akamai() {
+        // `_abck` is a Fingerprint-tier ([E]) marker. In degraded mode (the
+        // detect_body shim) T2 evidence never blocks, so this is no longer
+        // reported as a block — the false positive that motivated issue #346.
+        // (Migrated from old first-hit behavior; TASK-14 verifies the full policy.)
         let html = r#"<input type="hidden" name="_abck" value="xxx">"#;
-        assert_eq!(WafInspector::detect_body(html), Some("Akamai Bot Manager"));
+        assert_eq!(WafInspector::detect_body(html), None);
     }
 
     #[test]
@@ -1280,14 +1504,17 @@ mod tests {
 
     #[test]
     fn test_waf_control_header_detection() {
-        // Test DataDome header detection
+        // Control headers are Fingerprint-tier evidence — mere presence never
+        // auto-blocks (correction B). verify_integrity runs in degraded mode (no
+        // status), so a T2 header alone is clean.
+        // (Migrated from old presence-blocks behavior; TASK-14 verifies policy.)
         let mut headers = HeaderMap::new();
         headers.insert("x-datadome-response", "blocked".parse().unwrap());
 
         let result = WafInspector::verify_integrity(&headers, "normal content");
-        assert!(result.is_err());
+        assert!(result.is_ok(), "T2 header alone must not block (degraded)");
 
-        // Test that cf-ray alone doesn't trigger (common in normal requests)
+        // cf-ray alone also doesn't trigger (common in normal requests).
         let mut headers = HeaderMap::new();
         headers.insert("cf-ray", "abc123".parse().unwrap());
 
