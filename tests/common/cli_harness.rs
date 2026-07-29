@@ -31,12 +31,19 @@ use std::path::Path;
 use wiremock::matchers::{method, path as wm_path};
 use wiremock::{Mock, ResponseTemplate};
 
-/// Resolve the path to the `webfang` binary.
+/// Resolve the path to the `webfang` binary, building it on demand.
 ///
 /// `webfang` is built by the `webfang_cli` crate (a workspace sibling),
 /// so `assert_cmd::cargo_bin` cannot locate it from `webfang_core` tests
 /// — `CARGO_BIN_EXE_webfang` is only set for the crate that owns the binary.
-/// We fall back to the workspace `target/` dir and, if missing, build it.
+///
+/// Hermeticity (#302): the binary is ALWAYS built with the feature set
+/// derived from the active `cfg!(feature = "ai")` gate — it is never reused
+/// on the sole basis of `target/debug/webfang` existing. A stale binary
+/// built without `ai` would otherwise be served to `--all-features` tests
+/// whose `--help` snapshots include AI-only flags. Cargo tracks features in
+/// its build fingerprint, so this is a ~0s no-op when the binary is already
+/// up to date and only rebuilds when the feature set actually differs.
 pub(crate) fn webfang_path() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("CARGO_BIN_EXE_webfang") {
         return std::path::PathBuf::from(p);
@@ -47,15 +54,6 @@ pub(crate) fn webfang_path() -> std::path::PathBuf {
         .parent()
         .and_then(|p| p.parent())
         .expect("resolve workspace root");
-    for profile in ["debug", "release"] {
-        let mut candidate = workspace_root.join("target").join(profile).join("webfang");
-        if cfg!(windows) {
-            candidate.set_extension("exe");
-        }
-        if candidate.exists() {
-            return candidate;
-        }
-    }
     let cargo = option_env!("CARGO").unwrap_or("cargo");
     let build_args = if cfg!(feature = "ai") {
         vec![
