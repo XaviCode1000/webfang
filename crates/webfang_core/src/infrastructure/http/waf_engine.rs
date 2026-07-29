@@ -646,6 +646,63 @@ impl WafInspector {
     }
 }
 
+/// Collect all body-signature evidence in a single Aho-Corasick pass, applying
+/// the boundary post-filter (REQ-WAF-04) to Fingerprint `[B]` matches.
+///
+/// Returns every match that survives the filter (not just the first), so the
+/// verdict can carry all collected evidence (REQ-WAF-01) and reason about
+/// tier coexistence (REQ-WAF-06).
+fn collect_body_evidence(body: &str) -> Vec<WafEvidence> {
+    let mut evidences = Vec::new();
+    for mat in WAF_AC.find_iter(body) {
+        let sig = &WAF_BODY_SIGNATURES[mat.pattern()];
+        if !passes_boundary_filter(body, &mat, sig.2, sig.3) {
+            continue;
+        }
+        evidences.push(WafEvidence {
+            provider: sig.1,
+            tier: sig.2,
+            matched_pattern: sig.0,
+        });
+    }
+    evidences
+}
+
+/// O(1) adjacent-byte boundary post-filter for Fingerprint-tier `[B]` matches
+/// (REQ-WAF-04).
+///
+/// Rejects a bare vendor-name match when the byte immediately before its start
+/// or after its end is ASCII alphanumeric or `_` — this is what stops
+/// `akamai_hash` from matching bare `akamai`. UTF-8 safe: any non-ASCII byte
+/// (>= 0x80) counts as a boundary. `[E]` (Exempt) patterns and all
+/// Challenge-tier patterns skip the filter entirely.
+#[inline]
+fn passes_boundary_filter(
+    body: &str,
+    mat: &aho_corasick::Match,
+    tier: WafTier,
+    boundary: BoundaryMode,
+) -> bool {
+    // Only Fingerprint-tier bare vendor names get the filter.
+    if tier != WafTier::Fingerprint || boundary != BoundaryMode::Bare {
+        return true;
+    }
+    let bytes = body.as_bytes();
+    if mat.start() > 0 {
+        let before = bytes[mat.start() - 1];
+        if before.is_ascii_alphanumeric() || before == b'_' {
+            return false;
+        }
+    }
+    if mat.end() < bytes.len() {
+        let after = bytes[mat.end()];
+        if after.is_ascii_alphanumeric() || after == b'_' {
+            return false;
+        }
+    }
+    true
+}
+
 /// Calculate Shannon entropy of a string
 ///
 /// Used to detect obfuscated JavaScript in challenge pages, which often have
@@ -857,6 +914,74 @@ mod tests {
         assert!(names.contains(&"x-sucuri-id"));
         assert!(names.contains(&"cf-ray"));
         assert_eq!(names.len(), 5, "exactly 5 control headers expected");
+    }
+
+    // ========================================================================
+    // TASK-03 — Boundary post-filter (REQ-WAF-04)
+    // ========================================================================
+
+    #[test]
+    fn test_boundary_rejects_trailing_underscore() {
+        // Fixture 1 core: bare "akamai" [B] rejected when followed by '_'.
+        let evidences = collect_body_evidence(r#"{"key": "akamai_hash"}"#);
+        assert!(
+            !evidences.iter().any(|e| e.matched_pattern == "akamai"),
+            "bare 'akamai' must be rejected when followed by '_' (got {evidences:?})"
+        );
+    }
+
+    #[test]
+    fn test_boundary_rejects_alphanumeric_prefix() {
+        // bare "akamai" [B] rejected when preceded by an alphanumeric byte.
+        let evidences = collect_body_evidence("xakamai");
+        assert!(
+            !evidences.iter().any(|e| e.matched_pattern == "akamai"),
+            "bare 'akamai' must be rejected when preceded by 'x' (got {evidences:?})"
+        );
+    }
+
+    #[test]
+    fn test_boundary_stands_in_prose() {
+        // Fixture 4 core: "cloudflare" surrounded by spaces stands (T2 evidence).
+        let evidences = collect_body_evidence("an article mentioning cloudflare in prose");
+        assert!(
+            evidences
+                .iter()
+                .any(|e| e.matched_pattern == "cloudflare" && e.tier == WafTier::Fingerprint),
+            "'cloudflare' with space boundaries must stand (got {evidences:?})"
+        );
+    }
+
+    #[test]
+    fn test_boundary_exempt_pattern_matches_inside_token() {
+        // Fixture 5 core: "incap_ses" [E] matches inside the larger token.
+        let evidences = collect_body_evidence("cookie incap_ses_123 = abc");
+        assert!(
+            evidences.iter().any(|e| e.matched_pattern == "incap_ses"),
+            "[E] 'incap_ses' must match inside 'incap_ses_123' (got {evidences:?})"
+        );
+    }
+
+    #[test]
+    fn test_boundary_t1_exempt() {
+        // Challenge-tier patterns are exempt from the boundary filter.
+        let evidences = collect_body_evidence("xxcf-turnstileyy");
+        assert!(
+            evidences
+                .iter()
+                .any(|e| e.matched_pattern == "cf-turnstile"),
+            "T1 'cf-turnstile' matches regardless of adjacent bytes (got {evidences:?})"
+        );
+    }
+
+    #[test]
+    fn test_boundary_utf8_non_ascii_is_boundary() {
+        // Any non-ASCII byte counts as a boundary (UTF-8 safe).
+        let evidences = collect_body_evidence("ñakamaiñ");
+        assert!(
+            evidences.iter().any(|e| e.matched_pattern == "akamai"),
+            "non-ASCII adjacent bytes are boundaries, 'akamai' stands (got {evidences:?})"
+        );
     }
 
     // ========================================================================
