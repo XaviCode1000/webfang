@@ -110,6 +110,7 @@ pub async fn discover_urls_for_tui(
         let http_config = HttpClientConfig {
             timeout_secs: config.timeout_secs,
             connect_timeout_secs: config.timeout_secs.min(10), // #281 policy, replicated at call site
+            tls_emulation: config.tls_emulation,               // #312 honor configured profile
             ..Default::default()
         };
         let client = super::super::create_http_client_with_config(&http_config)?;
@@ -565,6 +566,7 @@ async fn crawl_with_sitemap_internal(
     let http_config = HttpClientConfig {
         timeout_secs: config.timeout_secs,
         connect_timeout_secs: config.timeout_secs.min(10), // #281 policy
+        tls_emulation: config.tls_emulation,               // #312 honor configured profile
         ..Default::default()
     };
     let discovery_client = super::super::create_http_client_with_config(&http_config)

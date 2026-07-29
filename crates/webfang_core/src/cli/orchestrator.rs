@@ -11,6 +11,7 @@ use crate::cli::error::CliExit;
 use crate::cli::export_flow::{run_export, save_files, ExportConfig};
 use crate::cli::scrape_flow::{apply_resume_mode, scrape_urls};
 use crate::cli::url_discovery::discover_urls;
+use crate::domain::http_config::HttpClientConfig;
 use crate::domain::repository::DynVectorRepository;
 use crate::error::ScraperError;
 use crate::Args;
@@ -242,6 +243,11 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
     let urls_to_scrape = if opts.crawl.single_page {
         plan_urls(true, false, opts.url.clone(), Vec::new())
     } else {
+        // Honor `--h2-profile` for URL discovery (#312): an unknown profile is a
+        // config error (exit 78), consistent with the scrape and batch phases.
+        let tls_emulation = HttpClientConfig::profile_from_name(&opts.network.h2_profile)
+            .map_err(|e| CliExit::ConfigError(e.to_string()))?;
+
         let mut crawler_config = CrawlerConfig::builder(opts.url.clone())
             .max_pages(opts.crawl.max_pages)
             .max_depth(opts.crawl.max_depth)
@@ -249,7 +255,8 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
             .exclude_patterns(opts.crawl.exclude_patterns.clone())
             .ignore_robots(opts.crawl.ignore_robots)
             .use_sitemap(opts.crawl.use_sitemap)
-            .timeout_secs(opts.network.timeout_secs);
+            .timeout_secs(opts.network.timeout_secs)
+            .tls_emulation(tls_emulation);
         if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
             crawler_config = crawler_config.sitemap_url(sitemap_url);
         }
@@ -506,6 +513,14 @@ async fn run_batch(opts: CrawlOptions) -> CliExit {
     use crate::application::batch::BatchManager;
     use crate::domain::CrawlerConfig;
 
+    // Resolve the TLS/H2 fingerprint once so the batch crawl engine honors
+    // `--h2-profile` (#312). An unknown profile is a config error (exit 78),
+    // matching the scrape phase — never silently crawl with a wrong fingerprint.
+    let tls_emulation = match HttpClientConfig::profile_from_name(&opts.network.h2_profile) {
+        Ok(profile) => profile,
+        Err(e) => return CliExit::ConfigError(e.to_string()),
+    };
+
     let mut crawler_config = CrawlerConfig::builder(opts.url.clone())
         .max_pages(opts.crawl.max_pages)
         .max_depth(opts.crawl.max_depth)
@@ -513,7 +528,8 @@ async fn run_batch(opts: CrawlOptions) -> CliExit {
         .exclude_patterns(opts.crawl.exclude_patterns.clone())
         .ignore_robots(opts.crawl.ignore_robots)
         .use_sitemap(opts.crawl.use_sitemap)
-        .timeout_secs(opts.network.timeout_secs);
+        .timeout_secs(opts.network.timeout_secs)
+        .tls_emulation(tls_emulation);
     if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
         crawler_config = crawler_config.sitemap_url(sitemap_url);
     }

@@ -212,6 +212,7 @@ async fn process_single_url(
         .delay_ms(base_config.delay_ms)
         .timeout_secs(base_config.timeout_secs)
         .ignore_robots(base_config.ignore_robots)
+        .tls_emulation(base_config.tls_emulation)
         .exclude_patterns(base_config.exclude_patterns.clone())
         .include_patterns(base_config.include_patterns.clone())
         .build();
