@@ -42,31 +42,73 @@ pub struct UrlValidator {
 impl UrlValidator {
     /// Create new URL validator with default settings
     ///
+    /// Uses the [`wreq_util::Profile::Chrome145`] TLS fingerprint (historical
+    /// default). For a caller-supplied profile, use
+    /// [`UrlValidator::with_profile`].
+    ///
     /// # Errors
     ///
     /// Returns `CrawlError::Internal` if the underlying HTTP client fails to build.
     pub fn new() -> std::result::Result<Self, CrawlError> {
-        let client = wreq::Client::builder()
-            .emulation(wreq_util::Emulation::Chrome145)
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(|e| CrawlError::Internal(format!("Failed to create HTTP client: {e}")))?;
-        Ok(Self {
-            client,
-            timeout_ms: 10_000,
-        })
+        Self::with_profile(wreq_util::Profile::Chrome145)
+    }
+
+    /// Create new URL validator with an explicit TLS/H2 profile.
+    ///
+    /// The client is built via the shared `create_http_client_with_config`
+    /// factory (#299), honoring the caller's `--h2-profile` selection instead
+    /// of a hardcoded preset (#324).
+    ///
+    /// # Errors
+    ///
+    /// Returns `CrawlError::Internal` if the underlying HTTP client fails to build.
+    pub fn with_profile(
+        tls_emulation: wreq_util::Profile,
+    ) -> std::result::Result<Self, CrawlError> {
+        Self::with_timeout_and_profile(10_000, tls_emulation)
     }
 
     /// Create validator with custom timeout
+    ///
+    /// Uses the [`wreq_util::Profile::Chrome145`] TLS fingerprint (historical
+    /// default). For a caller-supplied profile, use
+    /// [`UrlValidator::with_timeout_and_profile`].
     ///
     /// # Errors
     ///
     /// Returns `CrawlError::Internal` if the underlying HTTP client fails to build.
     pub fn with_timeout(timeout_ms: u64) -> std::result::Result<Self, CrawlError> {
-        Ok(Self {
-            timeout_ms,
-            ..Self::new()?
-        })
+        Self::with_timeout_and_profile(timeout_ms, wreq_util::Profile::Chrome145)
+    }
+
+    /// Create validator with custom timeout and an explicit TLS/H2 profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CrawlError::Internal` if the underlying HTTP client fails to build.
+    pub fn with_timeout_and_profile(
+        timeout_ms: u64,
+        tls_emulation: wreq_util::Profile,
+    ) -> std::result::Result<Self, CrawlError> {
+        let client = Self::build_client(tls_emulation)?;
+        Ok(Self { client, timeout_ms })
+    }
+
+    /// Build the validation HTTP client for a given TLS/H2 profile.
+    ///
+    /// Request and connect timeouts are pinned to 10s to preserve the
+    /// historical behavior of the previous hardcoded client (#324).
+    fn build_client(
+        tls_emulation: wreq_util::Profile,
+    ) -> std::result::Result<wreq::Client, CrawlError> {
+        let http_config = crate::domain::http_config::HttpClientConfig {
+            tls_emulation,
+            timeout_secs: 10,
+            connect_timeout_secs: 10,
+            ..Default::default()
+        };
+        crate::infrastructure::http::create_http_client_with_config(&http_config)
+            .map_err(|e| CrawlError::Internal(format!("Failed to create HTTP client: {e}")))
     }
 
     /// Validate URL by checking HTTP status code
@@ -131,6 +173,19 @@ mod tests {
     #[test]
     fn test_url_validator_creation() {
         assert!(UrlValidator::new().is_ok());
+    }
+
+    #[test]
+    fn test_url_validator_with_custom_profile() {
+        assert!(UrlValidator::with_profile(wreq_util::Profile::Chrome131).is_ok());
+        assert!(UrlValidator::with_profile(wreq_util::Profile::Firefox135).is_ok());
+    }
+
+    #[test]
+    fn test_url_validator_with_timeout_and_profile() {
+        assert!(
+            UrlValidator::with_timeout_and_profile(5_000, wreq_util::Profile::Chrome131).is_ok()
+        );
     }
 
     #[test]

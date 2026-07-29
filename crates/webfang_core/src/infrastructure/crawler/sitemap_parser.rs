@@ -213,7 +213,7 @@ impl SitemapParser {
         Ok(Self {
             config,
             compression_handler: CompressionHandler::new(),
-            url_validator: UrlValidator::new()?,
+            url_validator: UrlValidator::with_profile(tls_emulation)?,
             retry_policy: RetryPolicy::new(),
             memory_manager: MemoryManager::new(),
             batch_processor: BatchProcessor::new(),
