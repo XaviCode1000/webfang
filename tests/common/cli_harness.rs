@@ -239,5 +239,9 @@ pub(crate) fn redact_nondeterministic(dir: &Path, text: &str) -> String {
         Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}:?\d{2}|Z)").unwrap();
     let text = ts.replace_all(&text, "<TIMESTAMP>").into_owned();
     let port = Regex::new(r"127\.0\.0\.1:\d+").unwrap();
-    port.replace_all(&text, "127.0.0.1:<PORT>").into_owned()
+    let text = port.replace_all(&text, "127.0.0.1:<PORT>").into_owned();
+    // Normalize source line numbers in tracing spans (e.g. "scrape_flow.rs:193").
+    // These shift with #[cfg(feature = "...")] blocks and differ across feature sets.
+    let line_no = Regex::new(r"(\.rs:)\d+").unwrap();
+    line_no.replace_all(&text, "$1<LINE>").into_owned()
 }
