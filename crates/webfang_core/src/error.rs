@@ -79,11 +79,17 @@ pub enum ScraperError {
     FeatureGated(String),
 
     /// WAF/CAPTCHA challenge detected in HTTP 200 response
+    ///
+    /// The `provider` field carries the full Spanish evidence chain
+    /// (`provider (patrón: …, tier: …)` per evidence, joined by `; `) when raised
+    /// from a context-aware inspection verdict (REQ-WAF-08); legacy callers may
+    /// still pass a bare provider name.
     #[error("WAF/CAPTCHA detectado en {url}: {provider}")]
     WafBlocked {
         /// URL that was blocked
         url: String,
-        /// Detected WAF provider (e.g., "Cloudflare", "DataDome", "reCAPTCHA")
+        /// Detected WAF provider or formatted evidence chain (e.g. `"Cloudflare"`,
+        /// or `"Cloudflare (patrón: cf-turnstile, tier: desafío); …"`)
         provider: String,
     },
 

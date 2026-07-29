@@ -49,6 +49,17 @@ pub enum WafTier {
     Fingerprint,
 }
 
+impl WafTier {
+    /// Spanish user-facing label for the evidence chain (REQ-WAF-08).
+    #[must_use]
+    pub const fn label_es(self) -> &'static str {
+        match self {
+            WafTier::Challenge => "desafío",
+            WafTier::Fingerprint => "huella",
+        }
+    }
+}
+
 /// A single piece of WAF detection evidence collected during inspection.
 ///
 /// A verdict carries *all* collected evidences (REQ-WAF-01), enabling an
@@ -531,6 +542,23 @@ impl WafInspector {
         }
 
         let is_blocked = decide(&evidences, ctx);
+
+        // Observability (REQ-WAF-08): warn on a block with its evidence count;
+        // debug on every informational (non-blocking) detection.
+        if is_blocked {
+            tracing::warn!(
+                status = ?ctx.status,
+                evidences = evidences.len(),
+                "WAF/CAPTCHA challenge detected; blocking response"
+            );
+        } else if !evidences.is_empty() {
+            tracing::debug!(
+                status = ?ctx.status,
+                evidences = evidences.len(),
+                "WAF fingerprints observed but not blocking (informational)"
+            );
+        }
+
         WafVerdict {
             is_blocked,
             evidences,
@@ -570,12 +598,10 @@ impl WafInspector {
         };
         let verdict = Self::inspect(body, &ctx);
         if verdict.is_blocked {
-            let provider = verdict
-                .evidences
-                .first()
-                .map(|e| e.provider)
-                .unwrap_or("WAF desconocido");
-            Err(ScraperError::waf_blocked(String::new(), provider))
+            Err(ScraperError::waf_blocked(
+                String::new(),
+                format_evidence_chain(&verdict.evidences),
+            ))
         } else {
             Ok(())
         }
@@ -768,12 +794,20 @@ fn entropy_evidence(
     // Rule (a): large + high entropy → obfuscated WAF.
     if body.len() > SUSPICIOUS_SIZE_THRESHOLD {
         let entropy = calculate_entropy(body);
-        if entropy > ENTROPY_THRESHOLD && (ctx.status != Some(200) || has_fingerprint) {
-            return Some(WafEvidence {
-                provider: "Obfuscated WAF",
-                tier: WafTier::Challenge,
-                matched_pattern: "high-entropy body (>100KB, >5.5 b/B)",
-            });
+        if entropy > ENTROPY_THRESHOLD {
+            if ctx.status != Some(200) || has_fingerprint {
+                return Some(WafEvidence {
+                    provider: "Obfuscated WAF",
+                    tier: WafTier::Challenge,
+                    matched_pattern: "high-entropy body (>100KB, >5.5 b/B)",
+                });
+            }
+            // Informational detection (REQ-WAF-08): high entropy at status 200
+            // without a coexisting T2 marker is logged, not blocked.
+            tracing::debug!(
+                entropy,
+                "high-entropy body at status 200 without a T2 marker; not blocking"
+            );
         }
     }
 
@@ -809,6 +843,28 @@ fn is_html_content_type(ct: &str) -> bool {
         .trim()
         .to_ascii_lowercase();
     mime == "text/html" || mime == "application/xhtml+xml"
+}
+
+/// Format the evidence chain for the Spanish user-facing block message (REQ-WAF-08).
+///
+/// Each evidence renders as `provider (patrón: <pattern>, tier: <label_es>)`,
+/// joined by `; `. Falls back to a generic label when the chain is empty.
+fn format_evidence_chain(evidences: &[WafEvidence]) -> String {
+    if evidences.is_empty() {
+        return "WAF desconocido".to_string();
+    }
+    evidences
+        .iter()
+        .map(|e| {
+            format!(
+                "{} (patrón: {}, tier: {})",
+                e.provider,
+                e.matched_pattern,
+                e.tier.label_es()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Calculate Shannon entropy of a string
@@ -1431,6 +1487,74 @@ mod tests {
             verdict.is_blocked,
             "200 high-entropy with T2 coexistence must block"
         );
+    }
+
+    // ========================================================================
+    // TASK-07 — Error UX (Spanish evidence chain) + observability (REQ-WAF-08)
+    // ========================================================================
+
+    #[test]
+    fn test_evidence_chain_spanish_lists_all_evidences() {
+        let evidences = vec![
+            WafEvidence {
+                provider: "Cloudflare",
+                tier: WafTier::Challenge,
+                matched_pattern: "cf-turnstile",
+            },
+            WafEvidence {
+                provider: "Akamai",
+                tier: WafTier::Fingerprint,
+                matched_pattern: "akamai",
+            },
+        ];
+        let chain = format_evidence_chain(&evidences);
+        // Every evidence's provider + pattern + Spanish tier label is listed.
+        assert!(chain.contains("Cloudflare"), "chain: {chain}");
+        assert!(chain.contains("cf-turnstile"), "chain: {chain}");
+        assert!(
+            chain.contains("desafío"),
+            "Challenge Spanish label: {chain}"
+        );
+        assert!(chain.contains("Akamai"), "chain: {chain}");
+        assert!(chain.contains("akamai"), "chain: {chain}");
+        assert!(
+            chain.contains("huella"),
+            "Fingerprint Spanish label: {chain}"
+        );
+    }
+
+    #[test]
+    fn test_evidence_chain_empty_fallback() {
+        assert_eq!(format_evidence_chain(&[]), "WAF desconocido");
+    }
+
+    #[test]
+    fn test_verify_integrity_error_carries_evidence_chain() {
+        // REQ-WAF-08: the block error message lists each evidence in Spanish.
+        let result = WafInspector::verify_integrity(&HeaderMap::new(), "Just a moment...");
+        let err = result.expect_err("T1 prose must block");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("WAF/CAPTCHA detectado"),
+            "Spanish prefix: {msg}"
+        );
+        assert!(msg.contains("Cloudflare"), "chain provider: {msg}");
+        assert!(msg.contains("patrón:"), "chain pattern label: {msg}");
+        assert!(msg.contains("tier:"), "chain tier label: {msg}");
+    }
+
+    #[test]
+    fn test_block_error_stays_permanent_fatal() {
+        // REQ-WAF-08: ErrorClass stays PermanentFatal (exit 69).
+        let err = ScraperError::waf_blocked(
+            "https://example.com",
+            format_evidence_chain(&[WafEvidence {
+                provider: "Cloudflare",
+                tier: WafTier::Challenge,
+                matched_pattern: "cf-turnstile",
+            }]),
+        );
+        assert_eq!(err.classify(), crate::error::ErrorClass::PermanentFatal);
     }
 
     // ========================================================================
