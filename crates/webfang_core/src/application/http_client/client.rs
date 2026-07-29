@@ -541,11 +541,8 @@ fn build_wreq_client(
         HeaderValue::from_static("1"),
     );
 
-    // Resolve H2/TLS profile from name — overrides tls_emulation if h2_profile is set
-    let profile = HttpClientConfig::resolve_profile(&config.h2_profile);
-
     let mut builder = Client::builder()
-        .emulation(profile)
+        .emulation(config.tls_emulation)
         .default_headers(headers)
         .timeout(Duration::from_secs(config.timeout_secs))
         .connect_timeout(Duration::from_secs(config.connect_timeout_secs))
@@ -711,6 +708,10 @@ mod tests {
         assert!(matches!(result.unwrap_err(), HttpError::Request(_)));
     }
 
+    /// Construction smoke test: a non-default `tls_emulation` preset builds a
+    /// client successfully. `wreq::Client` does not expose its applied profile,
+    /// so the meaningful profile-mapping assertions live at the config level
+    /// (`http_config::profile_from_name` and `scrape_flow::build_http_client_config`).
     #[test]
     fn test_http_client_with_custom_tls_emulation() {
         let config = HttpClientConfig {

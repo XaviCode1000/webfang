@@ -65,7 +65,7 @@ pub use entities::{
 };
 pub use error::{CrawlError, DomainError};
 pub use exporter::{ExportResult, Exporter, ExporterConfig};
-pub use http_config::HttpClientConfig;
+pub use http_config::{HttpClientConfig, UnknownProfileError};
 pub use http_error::{HttpError, HttpResult};
 pub use http_port::{HttpClientPort, HttpResponse};
 pub use js_renderer::{JsRenderError, JsRenderer};
