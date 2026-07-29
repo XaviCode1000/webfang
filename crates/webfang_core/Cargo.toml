@@ -241,6 +241,11 @@ path = "../../tests/downloader_headers_test.rs"
 name = "http_client_integration"
 path = "../../tests/http_client_integration.rs"
 
+[[test]]
+name = "ai_error_propagation"
+path = "../../tests/ai_error_propagation.rs"
+required-features = ["ai"]
+
 [lints.clippy]
 doc_markdown = "allow"
 uninlined_format_args = "allow"
