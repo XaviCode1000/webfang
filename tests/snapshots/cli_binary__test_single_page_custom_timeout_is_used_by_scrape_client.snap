@@ -2,9 +2,9 @@
 source: crates/webfang_core/../../tests/cli_binary_test.rs
 expression: "redact_nondeterministic(output_dir.path(), &stderr)"
 ---
-  <TIMESTAMP>  WARN webfang_core::cli::scrape_flow: Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: error sending request for uri (http://127.0.0.1:<PORT>/slow): operation timed out
-    at crates/webfang_core/src/cli/scrape_flow.rs:211
+  <TIMESTAMP>  WARN webfang_core::cli::scrape_flow: Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: request timed out after 1s
+    at crates/webfang_core/src/cli/scrape_flow.rs:<LINE>
 
-Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: error sending request for uri (http://127.0.0.1:<PORT>/slow): operation timed out  ← error sending request for uri (http://127.0.0.1:<PORT>/slow): operation timed out  ← operation timed out
+Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: request timed out after 1s  ← request timed out after 1s
 No pages were successfully scraped
 Error: No pages were successfully scraped

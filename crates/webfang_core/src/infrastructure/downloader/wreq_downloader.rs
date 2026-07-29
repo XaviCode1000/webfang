@@ -9,6 +9,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::future::BoxFuture;
 use tracing::{debug, instrument};
 use url::Url;
 use wreq::Client;
@@ -179,7 +180,7 @@ fn parse_set_cookie(header: &str, url: &Url) -> Option<Cookie> {
     })
 }
 
-impl Downloader for WreqDownloader {
+impl WreqDownloader {
     #[instrument(
         skip(self),
         fields(
@@ -190,7 +191,7 @@ impl Downloader for WreqDownloader {
             client_id = %format!("{:p}", Arc::as_ptr(&self.client))
         )
     )]
-    async fn fetch(&self, url: &Url) -> Result<FetchedPage, DownloadError> {
+    async fn fetch_inner(&self, url: &Url) -> Result<FetchedPage, DownloadError> {
         debug!("Fetching URL: {}", url);
 
         #[cfg(feature = "otel-metrics")]
@@ -219,6 +220,18 @@ impl Downloader for WreqDownloader {
         let final_url = Url::parse(&response.uri().to_string())
             .map_err(|e| DownloadError::InvalidUrl(e.to_string()))?;
 
+        // Capture response headers (lowercased keys) before consuming the body.
+        let headers = response
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.as_str().to_ascii_lowercase(),
+                    value.to_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect();
+
         let html = response
             .text()
             .await
@@ -235,6 +248,7 @@ impl Downloader for WreqDownloader {
             url: final_url,
             html,
             status,
+            headers,
             cookies,
         });
 
@@ -242,6 +256,12 @@ impl Downloader for WreqDownloader {
         DOWNLOAD_WREQ_LATENCY.record(start.elapsed().as_secs_f64(), &[]);
 
         result
+    }
+}
+
+impl Downloader for WreqDownloader {
+    fn fetch<'a>(&'a self, url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
+        Box::pin(self.fetch_inner(url))
     }
 
     fn supports_interactions(&self) -> bool {

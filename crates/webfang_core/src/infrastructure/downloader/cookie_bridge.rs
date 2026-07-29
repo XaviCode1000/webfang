@@ -168,6 +168,7 @@ mod tests {
             url: "https://example.com".parse().unwrap(),
             html: "".into(),
             status: 200,
+            headers: std::collections::HashMap::new(),
             cookies: vec![
                 make_cookie("session", "example.com", "/"),
                 make_cookie("csrf", "example.com", "/"),
@@ -181,6 +182,7 @@ mod tests {
             url: "https://example.com".parse().unwrap(),
             html: "".into(),
             status: 200,
+            headers: std::collections::HashMap::new(),
             cookies: vec![make_cookie("session", "example.com", "/")],
         };
         bridge.ingest(&page2);

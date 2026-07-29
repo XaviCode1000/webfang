@@ -11,9 +11,10 @@
 //!
 //! [`WreqDownloader`]: wreq_downloader::WreqDownloader
 
-// Allow async fn in traits — project convention (see domain/repository.rs).
-// The trait is not dyn-compatible, which is intentional for this use case.
-#![allow(async_fn_in_trait)]
+// The `Downloader` trait is dyn-compatible: `fetch` uses manual `async fn`
+// desugaring to `BoxFuture` (matching the `VectorRepository` precedent in
+// `domain/repository.rs`) so `&dyn Downloader` can be passed for runtime
+// dispatch and test mocking.
 
 pub mod chromiumoxide_downloader;
 pub mod cookie_bridge;
@@ -23,6 +24,9 @@ pub mod resource_governor;
 pub mod spa_detector;
 pub mod wreq_downloader;
 
+use std::collections::HashMap;
+
+use futures::future::BoxFuture;
 use url::Url;
 
 /// Downloader trait for fetching pages.
@@ -43,12 +47,16 @@ use url::Url;
 pub trait Downloader: Send + Sync {
     /// Fetch a page from the given URL.
     ///
-    /// Returns the fetched page with HTML content, HTTP status, and cookies.
+    /// Returns the fetched page with HTML content, HTTP status, headers, and cookies.
+    ///
+    /// Desugared to [`BoxFuture`] (instead of native `async fn`) so the trait is
+    /// dyn-compatible — `&dyn Downloader` can be passed for runtime dispatch and
+    /// test mocking. Matches the `VectorRepository` precedent.
     ///
     /// # Errors
     ///
     /// Returns [`DownloadError`] on network failure, timeout, or WAF detection.
-    async fn fetch(&self, url: &Url) -> Result<FetchedPage, DownloadError>;
+    fn fetch<'a>(&'a self, url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>>;
 
     /// Whether this downloader supports JavaScript rendering / interactions.
     ///
@@ -71,6 +79,12 @@ pub struct FetchedPage {
     pub html: String,
     /// HTTP status code.
     pub status: u16,
+    /// Response headers (keys lowercased). Parity with domain `HttpResponse`.
+    ///
+    /// Used for content-type sniffing (binary detection) and filename derivation.
+    /// Downloaders with limited header access (e.g. subprocess-based) may leave
+    /// this empty.
+    pub headers: HashMap<String, String>,
     /// Cookies set by the server during this request.
     pub cookies: Vec<Cookie>,
 }
@@ -148,6 +162,7 @@ mod tests {
             url: "https://example.com".parse().unwrap(),
             html: "<html></html>".to_string(),
             status: 200,
+            headers: HashMap::new(),
             cookies: vec![],
         };
         let cloned = page.clone();

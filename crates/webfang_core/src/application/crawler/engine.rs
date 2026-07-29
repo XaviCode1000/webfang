@@ -13,6 +13,8 @@ use std::time::Duration;
 use tracing::{debug, info, instrument, span, warn, Instrument, Level};
 use url::Url;
 
+use futures::future::BoxFuture;
+
 use super::checkpoint::{
     BannedDomain, BincodeCheckpoint, CheckpointPath, CheckpointStore, CrawlCheckpoint,
 };
@@ -53,33 +55,64 @@ type ShutdownSignal = Arc<AtomicBool>;
 /// Type-erased fetch router that dispatches to the appropriate downloader
 /// based on the configured [`JsStrategy`].
 ///
-/// Since the `Downloader` trait uses native `async fn` in traits (not dyn-compatible),
-/// we use an enum to dispatch at runtime. Inner types are `Arc`-wrapped so the router
-/// can be cheaply cloned into spawned tasks.
+/// Implements [`Downloader`] so it can be passed as `&dyn Downloader` for
+/// runtime dispatch and test mocking. Inner types are `Arc`-wrapped so the
+/// router can be cheaply cloned into spawned tasks.
 #[derive(Clone)]
-pub(crate) enum FetchRouter {
+pub enum FetchRouter {
     /// Static HTTP only (wreq). Default.
     Static(Arc<WreqDownloader>),
     /// Hybrid 3-layer: wreq → Obscura → Chromiumoxide.
     Hybrid(Arc<HybridRouter<WreqDownloader, ObscuraDownloader, ChromiumoxideDownloader>>),
 }
 
-impl FetchRouter {
-    async fn fetch(
-        &self,
-        url: &Url,
-    ) -> Result<FetchedPage, crate::infrastructure::downloader::DownloadError> {
+/// Build the [`FetchRouter`] for a given JavaScript rendering strategy.
+///
+/// Single source of truth for the strategy → router mapping, shared by the
+/// crawl [`Engine`] and the CLI scrape path. `timeout_secs` drives the wreq
+/// request timeout (connect timeout is clamped to 10s); `cookie_bridge` is
+/// shared with the Chromiumoxide layer for cookie injection.
+pub fn build_fetch_router(
+    strategy: &JsStrategy,
+    timeout_secs: u64,
+    cookie_bridge: Arc<RwLock<CookieBridge>>,
+) -> FetchRouter {
+    let connect_timeout = timeout_secs.min(10);
+    match strategy {
+        JsStrategy::Static => {
+            FetchRouter::Static(Arc::new(WreqDownloader::new(timeout_secs, connect_timeout)))
+        },
+        // Hybrid and Full share the 3-layer escalation router; Full differs only
+        // in intent (the router still escalates wreq → obscura → chromiumoxide,
+        // preserving the previous Engine behavior).
+        JsStrategy::Hybrid | JsStrategy::Full => {
+            let l1 = WreqDownloader::new(timeout_secs, connect_timeout);
+            let l2 = ObscuraDownloader::new(timeout_secs);
+            let l3 = ChromiumoxideDownloader::new(cookie_bridge);
+            FetchRouter::Hybrid(Arc::new(HybridRouter::new(l1, l2, l3)))
+        },
+    }
+}
+
+impl Downloader for FetchRouter {
+    fn fetch<'a>(&'a self, url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
         match self {
-            Self::Static(dl) => dl.fetch(url).await,
-            Self::Hybrid(dl) => dl.fetch(url).await,
+            Self::Static(dl) => dl.fetch(url),
+            Self::Hybrid(dl) => dl.fetch(url),
         }
     }
 
-    #[allow(dead_code)]
     fn supports_interactions(&self) -> bool {
         match self {
             Self::Static(dl) => dl.supports_interactions(),
             Self::Hybrid(dl) => dl.supports_interactions(),
+        }
+    }
+
+    fn memory_cost(&self) -> usize {
+        match self {
+            Self::Static(dl) => dl.memory_cost(),
+            Self::Hybrid(dl) => dl.memory_cost(),
         }
     }
 }
@@ -229,32 +262,10 @@ impl Engine {
 
     /// Set the JavaScript rendering strategy.
     pub fn with_js_strategy(mut self, strategy: JsStrategy) -> Self {
-        self.js_strategy = strategy;
         let timeout = self.config.timeout_secs;
-        let connect_timeout = timeout.min(10);
-        match strategy {
-            JsStrategy::Static => {
-                self.fetch_router = Some(FetchRouter::Static(Arc::new(WreqDownloader::new(
-                    timeout,
-                    connect_timeout,
-                ))));
-            },
-            JsStrategy::Hybrid => {
-                let l1 = WreqDownloader::new(timeout, connect_timeout);
-                let l2 = ObscuraDownloader::new(timeout);
-                let l3 = ChromiumoxideDownloader::new(Arc::clone(&self.cookie_bridge));
-                self.fetch_router =
-                    Some(FetchRouter::Hybrid(Arc::new(HybridRouter::new(l1, l2, l3))));
-            },
-            JsStrategy::Full => {
-                // Full strategy: use Chromiumoxide only via HybridRouter with wreq fallback
-                let l1 = WreqDownloader::new(timeout, connect_timeout);
-                let l2 = ObscuraDownloader::new(timeout);
-                let l3 = ChromiumoxideDownloader::new(Arc::clone(&self.cookie_bridge));
-                self.fetch_router =
-                    Some(FetchRouter::Hybrid(Arc::new(HybridRouter::new(l1, l2, l3))));
-            },
-        }
+        let router = build_fetch_router(&strategy, timeout, Arc::clone(&self.cookie_bridge));
+        self.js_strategy = strategy;
+        self.fetch_router = Some(router);
         self
     }
 
@@ -1033,5 +1044,44 @@ mod metrics_tests {
     #[test]
     fn test_engine_concurrency_level_gauge_init() {
         let _ = &*ENGINE_CONCURRENCY_LEVEL;
+    }
+}
+
+#[cfg(test)]
+#[cfg(not(miri))]
+mod router_tests {
+    use super::*;
+    use crate::domain::JsStrategy;
+    use std::sync::RwLock;
+
+    fn test_cookie_bridge() -> Arc<RwLock<CookieBridge>> {
+        Arc::new(RwLock::new(CookieBridge::new()))
+    }
+
+    #[test]
+    fn build_fetch_router_static_returns_static_variant() {
+        let router = build_fetch_router(&JsStrategy::Static, 30, test_cookie_bridge());
+        assert!(
+            matches!(router, FetchRouter::Static(_)),
+            "Static strategy must produce FetchRouter::Static"
+        );
+    }
+
+    #[test]
+    fn build_fetch_router_hybrid_returns_hybrid_variant() {
+        let router = build_fetch_router(&JsStrategy::Hybrid, 30, test_cookie_bridge());
+        assert!(
+            matches!(router, FetchRouter::Hybrid(_)),
+            "Hybrid strategy must produce FetchRouter::Hybrid"
+        );
+    }
+
+    #[test]
+    fn build_fetch_router_full_returns_hybrid_variant() {
+        let router = build_fetch_router(&JsStrategy::Full, 30, test_cookie_bridge());
+        assert!(
+            matches!(router, FetchRouter::Hybrid(_)),
+            "Full strategy shares the Hybrid 3-layer router"
+        );
     }
 }

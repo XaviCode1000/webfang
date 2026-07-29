@@ -4,6 +4,7 @@ mod crawl_test;
 mod download_test;
 mod dry_run_test;
 mod error_path_test;
+mod js_strategy_test;
 mod obsidian_test;
 mod resume_test;
 mod robots_test;

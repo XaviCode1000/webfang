@@ -21,6 +21,7 @@ fn make_page(url: &str, cookies: Vec<Cookie>) -> FetchedPage {
         url: url.parse().unwrap(),
         html: String::new(),
         status: 200,
+        headers: std::collections::HashMap::new(),
         cookies,
     }
 }

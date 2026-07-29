@@ -18,6 +18,8 @@ use {
 
 use std::sync::Arc;
 use std::sync::RwLock;
+
+use futures::future::BoxFuture;
 use url::Url;
 
 #[cfg(feature = "chromium")]
@@ -61,83 +63,86 @@ impl ChromiumoxideDownloader {
 
 #[cfg(feature = "chromium")]
 impl Downloader for ChromiumoxideDownloader {
-    async fn fetch(&self, url: &Url) -> Result<FetchedPage, DownloadError> {
-        // 1. Early URL scheme validation
-        if !url.scheme().starts_with("http") {
-            return Err(DownloadError::InvalidUrl(format!(
-                "unsupported scheme: {}",
-                url.scheme()
-            )));
-        }
+    fn fetch<'a>(&'a self, url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
+        Box::pin(async move {
+            // 1. Early URL scheme validation
+            if !url.scheme().starts_with("http") {
+                return Err(DownloadError::InvalidUrl(format!(
+                    "unsupported scheme: {}",
+                    url.scheme()
+                )));
+            }
 
-        // 2. Browser config with sandbox bypass for CI/Docker
-        let config = BrowserConfig::builder()
-            .headless_mode(HeadlessMode::True)
-            .no_sandbox()
-            .build()
-            .map_err(DownloadError::Internal)?;
+            // 2. Browser config with sandbox bypass for CI/Docker
+            let config = BrowserConfig::builder()
+                .headless_mode(HeadlessMode::True)
+                .no_sandbox()
+                .build()
+                .map_err(DownloadError::Internal)?;
 
-        let (mut browser, mut handler) = Browser::launch(config)
-            .await
-            .map_err(|e| DownloadError::Internal(format!("Chrome launch failed: {e}")))?;
+            let (mut browser, mut handler) = Browser::launch(config)
+                .await
+                .map_err(|e| DownloadError::Internal(format!("Chrome launch failed: {e}")))?;
 
-        // 3. Process CDP messages in isolated task to prevent hangs
-        let handler_job = tokio::spawn(async move { while handler.next().await.is_some() {} });
+            // 3. Process CDP messages in isolated task to prevent hangs
+            let handler_job = tokio::spawn(async move { while handler.next().await.is_some() {} });
 
-        // 4. Inject cookies from L1 cookie bridge, filtered by domain
-        let current_domain = url.host_str().unwrap_or("");
-        let cdp_cookies: Vec<CookieParam> = {
-            let bridge = self
-                .cookie_bridge
-                .read()
-                .map_err(|e| DownloadError::Internal(format!("Lock poisoned: {e}")))?;
-            bridge
-                .to_cdp_cookies()
-                .into_iter()
-                .filter(|c| domain_matches(current_domain, &c.domain))
-                .map(|c| {
-                    let mut param = CookieParam::new(c.name, c.value);
-                    param.domain = Some(c.domain);
-                    param.path = Some(c.path);
-                    param.secure = Some(c.secure);
-                    param.http_only = Some(c.http_only);
-                    param
-                })
-                .collect()
-        };
+            // 4. Inject cookies from L1 cookie bridge, filtered by domain
+            let current_domain = url.host_str().unwrap_or("");
+            let cdp_cookies: Vec<CookieParam> = {
+                let bridge = self
+                    .cookie_bridge
+                    .read()
+                    .map_err(|e| DownloadError::Internal(format!("Lock poisoned: {e}")))?;
+                bridge
+                    .to_cdp_cookies()
+                    .into_iter()
+                    .filter(|c| domain_matches(current_domain, &c.domain))
+                    .map(|c| {
+                        let mut param = CookieParam::new(c.name, c.value);
+                        param.domain = Some(c.domain);
+                        param.path = Some(c.path);
+                        param.secure = Some(c.secure);
+                        param.http_only = Some(c.http_only);
+                        param
+                    })
+                    .collect()
+            };
 
-        let page = browser
-            .new_page("about:blank")
-            .await
-            .map_err(|e| DownloadError::Internal(e.to_string()))?;
-
-        if !cdp_cookies.is_empty() {
-            page.execute(SetCookiesParams::new(cdp_cookies))
+            let page = browser
+                .new_page("about:blank")
                 .await
                 .map_err(|e| DownloadError::Internal(e.to_string()))?;
-        }
 
-        // 5. Navigate with timeout
-        timeout(NAV_TIMEOUT, page.goto(url.as_str()))
-            .await
-            .map_err(|_| DownloadError::Timeout(NAV_TIMEOUT.as_secs()))?
-            .map_err(|e| DownloadError::Internal(e.to_string()))?;
+            if !cdp_cookies.is_empty() {
+                page.execute(SetCookiesParams::new(cdp_cookies))
+                    .await
+                    .map_err(|e| DownloadError::Internal(e.to_string()))?;
+            }
 
-        // 6. Extract rendered DOM with timeout
-        let html = timeout(CONTENT_TIMEOUT, page.content())
-            .await
-            .map_err(|_| DownloadError::Timeout(CONTENT_TIMEOUT.as_secs()))?
-            .map_err(|e| DownloadError::Internal(e.to_string()))?;
+            // 5. Navigate with timeout
+            timeout(NAV_TIMEOUT, page.goto(url.as_str()))
+                .await
+                .map_err(|_| DownloadError::Timeout(NAV_TIMEOUT.as_secs()))?
+                .map_err(|e| DownloadError::Internal(e.to_string()))?;
 
-        // 7. Deterministic shutdown — prevents zombie processes
-        browser.close().await.ok();
-        handler_job.await.ok();
+            // 6. Extract rendered DOM with timeout
+            let html = timeout(CONTENT_TIMEOUT, page.content())
+                .await
+                .map_err(|_| DownloadError::Timeout(CONTENT_TIMEOUT.as_secs()))?
+                .map_err(|e| DownloadError::Internal(e.to_string()))?;
 
-        Ok(FetchedPage {
-            url: url.clone(),
-            html,
-            status: 200,
-            cookies: Vec::new(),
+            // 7. Deterministic shutdown — prevents zombie processes
+            browser.close().await.ok();
+            handler_job.await.ok();
+
+            Ok(FetchedPage {
+                url: url.clone(),
+                html,
+                status: 200,
+                headers: std::collections::HashMap::new(),
+                cookies: Vec::new(),
+            })
         })
     }
 
@@ -152,10 +157,12 @@ impl Downloader for ChromiumoxideDownloader {
 
 #[cfg(not(feature = "chromium"))]
 impl Downloader for ChromiumoxideDownloader {
-    async fn fetch(&self, _url: &Url) -> Result<FetchedPage, DownloadError> {
-        Err(DownloadError::Internal(
-            "Chromiumoxide not enabled (compile with --features chromium)".to_string(),
-        ))
+    fn fetch<'a>(&'a self, _url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
+        Box::pin(async move {
+            Err(DownloadError::Internal(
+                "Chromiumoxide not enabled (compile with --features chromium)".to_string(),
+            ))
+        })
     }
 
     fn supports_interactions(&self) -> bool {
