@@ -28,9 +28,7 @@ use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::application::url_filter::is_allowed;
 use crate::domain::clock::SystemClock;
 use crate::domain::{CrawlError, CrawlResult, CrawlerConfig, DiscoveredUrl, JsStrategy};
-use crate::infrastructure::crawler::robots_utils::{
-    is_allowed_by_robots, new_robots_cache, RobotsCache,
-};
+use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
 use crate::infrastructure::crawler::{
     extract_links, fetch_url, is_internal_link, UrlQueue, UrlSource,
 };
@@ -170,8 +168,8 @@ pub struct Engine {
     checkpoint_interval: u64,
     /// Skip robots.txt enforcement.
     ignore_robots: bool,
-    /// Shared robots.txt cache for the crawl session.
-    robots_cache: RobotsCache,
+    /// Shared robots.txt fetcher for the crawl session (TLS-fingerprinted, #337).
+    robots_fetcher: Arc<RobotsFetcher>,
     /// Optional domain session pool for per-domain rate limiting.
     session_pool: Option<DomainSessionPool>,
     /// Atomic counter for total pages crawled (used by checkpoint and signal handler).
@@ -224,6 +222,13 @@ impl Engine {
         let pages_crawled = Arc::new(AtomicU64::new(0));
         let shutdown = Arc::new(AtomicBool::new(false));
 
+        // Robots.txt fetcher — shares the crawl's TLS fingerprint so the
+        // robots.txt request is indistinguishable from a page fetch (#337).
+        let robots_fetcher = Arc::new(
+            RobotsFetcher::new(config_clone.tls_emulation, config_clone.timeout_secs)
+                .map_err(|e| CrawlError::Internal(e.to_string()))?,
+        );
+
         Ok(Self {
             config,
             collector: Some(collector),
@@ -237,7 +242,7 @@ impl Engine {
             checkpoint_path: None,
             checkpoint_interval: 100,
             ignore_robots,
-            robots_cache: new_robots_cache(),
+            robots_fetcher,
             session_pool: None,
             pages_crawled,
             shutdown,
@@ -502,7 +507,7 @@ impl Engine {
             rate_limiter: self.rate_limiter.clone(),
             session_pool: self.session_pool.clone(),
             ignore_robots: self.ignore_robots,
-            robots_cache: self.robots_cache.clone(),
+            robots_fetcher: Arc::clone(&self.robots_fetcher),
             error_count: Arc::clone(&self.error_count),
             pages_crawled: Arc::clone(&self.pages_crawled),
             collector: self.collector.as_ref().unwrap().clone(),
@@ -829,8 +834,7 @@ async fn run_crawl_task(
                             if is_internal_link(&link, seed_domain)
                                 && is_allowed(&link, &ctx.config)
                                 && (ctx.ignore_robots
-                                    || is_allowed_by_robots(&link, link_domain, &ctx.robots_cache)
-                                        .await)
+                                    || ctx.robots_fetcher.is_allowed(&link, link_domain).await)
                                 && ctx.visited.try_insert(&link)
                             {
                                 // Record URL string for checkpoint

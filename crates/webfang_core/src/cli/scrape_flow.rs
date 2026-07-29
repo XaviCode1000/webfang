@@ -12,7 +12,7 @@ use crate::application::scrape_single_url_for_tui;
 use crate::domain::entities::progress::{ScrapeError, ScrapeStatus};
 use crate::domain::JsStrategy;
 use crate::domain::ScrapedContent;
-use crate::infrastructure::crawler::robots_utils::{is_allowed_by_robots, new_robots_cache};
+use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
 use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
 use crate::infrastructure::export::state_store::StateStore;
 use crate::HttpClientConfig;
@@ -142,8 +142,10 @@ pub async fn scrape_urls(
 
     let _total_urls = urls.len();
 
-    // Robots.txt cache — shared across all URLs in this batch
-    let robots_cache = new_robots_cache();
+    // Robots.txt fetcher — shares the batch's TLS fingerprint so the robots.txt
+    // request is indistinguishable from a page fetch (#337). Shared across all
+    // URLs in this batch.
+    let robots_fetcher = RobotsFetcher::new(http_config.tls_emulation, http_config.timeout_secs)?;
 
     // Apply max_pages limit if configured
     let urls_to_process = if let Some(max_pages) = scraper_config.max_pages {
@@ -174,7 +176,7 @@ pub async fn scrape_urls(
         // Robots.txt enforcement — skip disallowed URLs unless --ignore-robots
         if !opts.crawl.ignore_robots {
             let domain = url.host_str().unwrap_or("unknown");
-            if !is_allowed_by_robots(url_str, domain, &robots_cache).await {
+            if !robots_fetcher.is_allowed(url_str, domain).await {
                 info!("Blocked by robots.txt: {}", url_str);
                 observer.on_robots_blocked(url_str).await;
                 continue;
@@ -232,9 +234,7 @@ fn build_http_client_config(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        apply_resume_mode, build_http_client_config, is_allowed_by_robots, new_robots_cache,
-    };
+    use super::{apply_resume_mode, build_http_client_config, RobotsFetcher};
     use crate::application::crawl_options::CrawlOptions;
     use tempfile::TempDir;
     use url::Url;
@@ -289,9 +289,13 @@ mod tests {
     #[cfg_attr(miri, ignore)] // btls/wreq FFI (BoringSSL TLS_method) not supported by Miri
     #[tokio::test]
     async fn robots_cache_allows_public_urls() {
-        let cache = new_robots_cache();
+        let fetcher = RobotsFetcher::new(wreq_util::Profile::Chrome145, 30).unwrap();
         // No robots.txt for localhost → fail-open → allowed
-        assert!(is_allowed_by_robots("http://localhost:18080/page", "localhost", &cache).await);
+        assert!(
+            fetcher
+                .is_allowed("http://localhost:18080/page", "localhost")
+                .await
+        );
     }
 
     #[test]
