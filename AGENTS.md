@@ -226,7 +226,7 @@ Transport: Streamable HTTP (`rmcp`) at `127.0.0.1:8080/mcp`, also stdio via `mcp
 
 ### AI feature (`--features ai`)
 
-- ~90MB ONNX model (Granite-97M, 384d), cached in `~/.cache/webfang/models/`
+- ONNX models cached in `~/.cache/webfang/ai_models/`: Granite-97M (default, ~390MB, 384d) or Granite-311M (~1.25GB) via `AI_MODEL_ID` / `--ai-model`
 - `cleaner.clean(html)` → `Vec<DocumentChunk>` with embeddings
 
 ### Build requirement
