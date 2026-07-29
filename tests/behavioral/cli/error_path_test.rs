@@ -60,6 +60,60 @@ fn unreachable_host_stderr_mentions_failure() {
 }
 
 // ---------------------------------------------------------------------------
+// Unknown TLS profile → exit 78 (EX_CONFIG), Spanish message
+// ---------------------------------------------------------------------------
+
+/// An unrecognized `--h2-profile` is a configuration error: the run must abort
+/// with exit code 78 (`EX_CONFIG`) and a Spanish user-facing message, before any
+/// network I/O happens.
+#[test]
+fn unknown_h2_profile_exits_78_with_spanish_message() {
+    // No wiremock / TempDir needed: the profile is rejected inside
+    // `build_http_client_config` BEFORE any fetch or output write, so the run is
+    // fully hermetic. `cmd()` (not `BehavioralTest`) matches the other
+    // no-network error paths in this file (e.g. `unreachable_host_*`).
+    let output = cmd()
+        .arg("--url")
+        .arg("http://example.com")
+        .arg("--single-page")
+        .arg("--h2-profile")
+        .arg("Firefox")
+        .arg("--quiet")
+        .output()
+        .expect("run webfang");
+
+    // Semantic invariants (the contract under test): exit 78 (EX_CONFIG) and the
+    // Spanish message. Asserted explicitly so they hold even if the snapshot
+    // below drifts.
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "unknown TLS profile must exit 78 (EX_CONFIG)"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Perfil TLS desconocido"),
+        "stderr must carry the Spanish message, got: {stderr}"
+    );
+
+    // Snapshot the full stderr for regression detection, routed through the
+    // crate-root helper so it lands in `tests/behavioral/snapshots/` alongside
+    // the other behavioral snapshots (insta keys the on-disk location off the
+    // module where `assert_snapshot!` expands). The helper redacts tracing
+    // timestamps / source line numbers. The valid-profile catalog
+    // (`Opciones válidas: ...`) is captured verbatim: it is pinned by
+    // `Cargo.lock` (stable run-to-run), and a `wreq-util` upgrade that adds
+    // profiles is exactly the kind of change worth a human snapshot review.
+    // `Path::new("__no_temp__")` is a non-matching placeholder: this run passes
+    // no `--output`, so there is no temp dir to redact.
+    assert_snapshot_redacted(
+        "unknown_h2_profile_stderr",
+        Path::new("__no_temp__"),
+        stderr,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Slow server → timeout → exit error
 // ---------------------------------------------------------------------------
 
