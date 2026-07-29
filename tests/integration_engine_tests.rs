@@ -47,6 +47,7 @@ async fn test_engine_with_checkpoint_enabled() {
         ignore_robots: true,
         js_strategy: JsStrategy::Static,
         autoscale_enabled: false,
+        ..Default::default()
     };
 
     let result = crawl_site_with_options(config, options).await;
@@ -101,6 +102,7 @@ async fn test_engine_with_session_pool_429() {
         ignore_robots: true,
         js_strategy: JsStrategy::Static,
         autoscale_enabled: false,
+        ..Default::default()
     };
 
     // The crawl should NOT panic — 429 is handled gracefully.
@@ -179,6 +181,7 @@ async fn test_engine_resume_from_checkpoint() {
         ignore_robots: true,
         js_strategy: JsStrategy::Static,
         autoscale_enabled: false,
+        ..Default::default()
     };
 
     let result = crawl_site_with_options(config, options).await;
@@ -263,6 +266,7 @@ async fn test_robots_txt_enforcement() {
         ignore_robots: false,
         js_strategy: JsStrategy::Static,
         autoscale_enabled: false,
+        ..Default::default()
     };
 
     let result = crawl_site_with_options(config, options).await;

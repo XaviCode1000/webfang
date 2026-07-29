@@ -104,9 +104,10 @@ pub async fn apply_resume_mode(
 ///
 /// # Errors
 ///
-/// Returns [`crate::domain::UnknownProfileError`] if the configured H2/TLS
-/// profile name (`opts.network.h2_profile`) is not recognized. This is a
-/// setup failure that aborts the whole batch before any URL is scraped.
+/// Returns [`crate::error::ScraperError`] if the configured H2/TLS profile name
+/// (`opts.network.h2_profile`) is not recognized, or if the fetch router's HTTP
+/// client cannot be built. Both are setup failures that abort the whole batch
+/// before any URL is scraped.
 pub async fn scrape_urls(
     urls: &[Url],
     scraper_config: &ScraperConfig,
@@ -119,7 +120,7 @@ pub async fn scrape_urls(
         Vec<ScrapedContent>,
         Vec<(String, crate::error::ScraperError)>,
     ),
-    crate::domain::UnknownProfileError,
+    crate::error::ScraperError,
 > {
     // Build the fetch router from the configured JS strategy. `--force-js-render`
     // upgrades a Static strategy to Hybrid so JS-capable fetching is used instead
@@ -132,7 +133,12 @@ pub async fn scrape_urls(
             opts.network.js_strategy
         };
     let cookie_bridge = std::sync::Arc::new(std::sync::RwLock::new(CookieBridge::new()));
-    let router = build_fetch_router(&effective_strategy, http_config.timeout_secs, cookie_bridge);
+    let router = build_fetch_router(
+        &effective_strategy,
+        http_config.timeout_secs,
+        http_config.tls_emulation,
+        cookie_bridge,
+    )?;
 
     let _total_urls = urls.len();
 

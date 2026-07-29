@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use tracing::{debug, info, instrument, span, warn, Instrument, Level};
 use url::Url;
+use wreq_util::Profile;
 
 use futures::future::BoxFuture;
 
@@ -78,20 +79,28 @@ pub enum FetchRouter {
 ///
 /// Single source of truth for the strategy → router mapping, shared by the
 /// crawl [`Engine`] and the CLI scrape path. `timeout_secs` drives the wreq
-/// request timeout (connect timeout is clamped to 10s); `cookie_bridge` is
+/// request timeout (connect timeout is clamped to 10s); `tls_emulation` is the
+/// TLS/HTTP2 fingerprint profile applied to the wreq layer; `cookie_bridge` is
 /// shared with the Chromiumoxide layer for cookie injection.
+///
+/// # Errors
+///
+/// Returns [`DownloadError::Internal`] if the wreq client cannot be built.
 pub fn build_fetch_router(
     strategy: &JsStrategy,
     timeout_secs: u64,
+    tls_emulation: Profile,
     cookie_bridge: Arc<RwLock<CookieBridge>>,
-) -> FetchRouter {
+) -> Result<FetchRouter, DownloadError> {
     let connect_timeout = timeout_secs.min(10);
-    match strategy {
-        JsStrategy::Static => {
-            FetchRouter::Static(Arc::new(WreqDownloader::new(timeout_secs, connect_timeout)))
-        },
+    Ok(match strategy {
+        JsStrategy::Static => FetchRouter::Static(Arc::new(WreqDownloader::new(
+            timeout_secs,
+            connect_timeout,
+            tls_emulation,
+        )?)),
         JsStrategy::Hybrid => {
-            let l1 = WreqDownloader::new(timeout_secs, connect_timeout);
+            let l1 = WreqDownloader::new(timeout_secs, connect_timeout, tls_emulation)?;
             let l2 = ObscuraDownloader::new(timeout_secs);
             let l3 = ChromiumoxideDownloader::new(cookie_bridge);
             FetchRouter::Hybrid(Arc::new(HybridRouter::new(l1, l2, l3)))
@@ -104,7 +113,7 @@ pub fn build_fetch_router(
             let governor = ResourceGovernor::new();
             FetchRouter::Full(Arc::new(dl), Arc::new(governor))
         },
-    }
+    })
 }
 
 impl Downloader for FetchRouter {
@@ -281,12 +290,28 @@ impl Engine {
     }
 
     /// Set the JavaScript rendering strategy.
-    pub fn with_js_strategy(mut self, strategy: JsStrategy) -> Self {
+    ///
+    /// `tls_emulation` is the TLS/HTTP2 fingerprint profile applied to the wreq
+    /// layer of the fetch router.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DownloadError::Internal`] if the wreq client cannot be built.
+    pub fn with_js_strategy(
+        mut self,
+        strategy: JsStrategy,
+        tls_emulation: Profile,
+    ) -> Result<Self, DownloadError> {
         let timeout = self.config.timeout_secs;
-        let router = build_fetch_router(&strategy, timeout, Arc::clone(&self.cookie_bridge));
+        let router = build_fetch_router(
+            &strategy,
+            timeout,
+            tls_emulation,
+            Arc::clone(&self.cookie_bridge),
+        )?;
         self.js_strategy = strategy;
         self.fetch_router = Some(router);
-        self
+        Ok(self)
     }
 
     /// Enable autoscaled concurrency based on system RAM.
@@ -846,7 +871,7 @@ async fn run_crawl_task(
 /// Named `EngineOptions` (not `CrawlOptions`) to avoid collision with
 /// `application::crawl_options::CrawlOptions`, which is the CLI-level
 /// configuration struct.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct EngineOptions {
     /// Path to save checkpoint files. `None` disables checkpointing.
     pub checkpoint_path: Option<PathBuf>,
@@ -858,6 +883,23 @@ pub struct EngineOptions {
     pub js_strategy: JsStrategy,
     /// Enable autoscaled concurrency based on system RAM.
     pub autoscale_enabled: bool,
+    /// TLS/HTTP2 fingerprint profile applied to the wreq fetch layer.
+    ///
+    /// Defaults to [`Profile::Chrome145`], the historical hardcoded fingerprint.
+    pub tls_emulation: Profile,
+}
+
+impl Default for EngineOptions {
+    fn default() -> Self {
+        Self {
+            checkpoint_path: None,
+            session_pool_enabled: false,
+            ignore_robots: false,
+            js_strategy: JsStrategy::default(),
+            autoscale_enabled: false,
+            tls_emulation: Profile::Chrome145,
+        }
+    }
 }
 
 /// Crawl a website starting from the seed URL
@@ -965,9 +1007,9 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
 /// let options = EngineOptions {
 ///     checkpoint_path: Some(std::path::PathBuf::from("/tmp/checkpoint")),
 ///     session_pool_enabled: true,
-///     ignore_robots: false,
 ///     js_strategy: JsStrategy::Static,
 ///     autoscale_enabled: true,
+///     ..Default::default()
 /// };
 ///
 /// let result = crawl_site_with_options(config, options).await?;
@@ -1023,7 +1065,7 @@ pub async fn crawl_site_with_options(
     }
 
     // Apply JS strategy
-    engine = engine.with_js_strategy(options.js_strategy);
+    engine = engine.with_js_strategy(options.js_strategy, options.tls_emulation)?;
 
     // Apply autoscale if enabled
     if options.autoscale_enabled {
@@ -1080,7 +1122,13 @@ mod router_tests {
 
     #[test]
     fn build_fetch_router_static_returns_static_variant() {
-        let router = build_fetch_router(&JsStrategy::Static, 30, test_cookie_bridge());
+        let router = build_fetch_router(
+            &JsStrategy::Static,
+            30,
+            Profile::Chrome145,
+            test_cookie_bridge(),
+        )
+        .expect("static router must build");
         assert!(
             matches!(router, FetchRouter::Static(_)),
             "Static strategy must produce FetchRouter::Static"
@@ -1089,7 +1137,13 @@ mod router_tests {
 
     #[test]
     fn build_fetch_router_hybrid_returns_hybrid_variant() {
-        let router = build_fetch_router(&JsStrategy::Hybrid, 30, test_cookie_bridge());
+        let router = build_fetch_router(
+            &JsStrategy::Hybrid,
+            30,
+            Profile::Chrome145,
+            test_cookie_bridge(),
+        )
+        .expect("hybrid router must build");
         assert!(
             matches!(router, FetchRouter::Hybrid(_)),
             "Hybrid strategy must produce FetchRouter::Hybrid"
@@ -1098,7 +1152,13 @@ mod router_tests {
 
     #[test]
     fn build_fetch_router_full_returns_full_variant() {
-        let router = build_fetch_router(&JsStrategy::Full, 30, test_cookie_bridge());
+        let router = build_fetch_router(
+            &JsStrategy::Full,
+            30,
+            Profile::Chrome145,
+            test_cookie_bridge(),
+        )
+        .expect("full router must build");
         assert!(
             matches!(router, FetchRouter::Full(..)),
             "Full strategy must produce FetchRouter::Full (chrome-direct), not Hybrid"
