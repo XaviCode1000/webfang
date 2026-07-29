@@ -611,52 +611,26 @@ fn parse_asset_naming(s: &str) -> crate::adapters::downloader::AssetNamingStrate
     }
 }
 
-/// Parse H2/TLS profile from CLI string.
+/// Parse H2/TLS profile from CLI string for the asset download path.
 ///
-/// Resolves a profile name string to a `wreq_util::Profile` variant.
-///
-/// Tries exact match against known variants; defaults to `Chrome145` on
-/// unknown input.  This intentionally covers a subset of the ~100+
-/// variants — users who need edge/okhttp/safari profiles can configure
-/// the H2 profile via the HTTP client config directly.
+/// Delegates to the domain resolver
+/// [`crate::domain::profile::profile_from_name`], which accepts the full
+/// [`wreq_util::Profile`] catalog. Unlike the strict page-fetch path, the asset
+/// path is best-effort: an unknown name logs a warning and falls back to
+/// `Chrome145` rather than failing the run.
 fn parse_asset_h2_profile(s: &str) -> wreq_util::Profile {
-    use wreq_util::Profile;
-
-    match s {
-        // Chrome
-        "Chrome100" => Profile::Chrome100,
-        "Chrome101" => Profile::Chrome101,
-        "Chrome104" => Profile::Chrome104,
-        "Chrome107" => Profile::Chrome107,
-        "Chrome110" => Profile::Chrome110,
-        "Chrome116" => Profile::Chrome116,
-        "Chrome120" => Profile::Chrome120,
-        "Chrome131" => Profile::Chrome131,
-        "Chrome145" => Profile::Chrome145,
-        // Firefox
-        "Firefox135" => Profile::Firefox135,
-        "FirefoxAndroid135" => Profile::FirefoxAndroid135,
-        // Safari
-        "Safari18" => Profile::Safari18,
-        "SafariIos18_1_1" => Profile::SafariIos18_1_1,
-        "SafariIPad18" => Profile::SafariIPad18,
-        // OkHttp
-        "OkHttp4_12" => Profile::OkHttp4_12,
-        "OkHttp5" => Profile::OkHttp5,
-        // Fallback
-        _ => {
-            tracing::warn!(
-                "Unknown asset H2 profile '{s}', falling back to Chrome145. \
-                 Run `cargo doc -p wreq-util` to see all available profiles."
-            );
-            Profile::Chrome145
-        },
-    }
+    crate::domain::profile::profile_from_name(s).unwrap_or_else(|| {
+        tracing::warn!(
+            "Unknown asset H2 profile '{s}', falling back to Chrome145. \
+             Run `cargo doc -p wreq-util` to see all available profiles."
+        );
+        wreq_util::Profile::Chrome145
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{batch_exit_code, build_elastic_ingestion, plan_urls};
+    use super::{batch_exit_code, build_elastic_ingestion, parse_asset_h2_profile, plan_urls};
     use crate::application::crawl_options::CrawlOptions;
     use crate::cli::error::CliExit;
 
@@ -898,6 +872,28 @@ mod tests {
         assert!(
             in_export_config,
             "ExportConfig construction not found in source"
+        );
+    }
+
+    // ===== parse_asset_h2_profile tests =====
+
+    #[test]
+    fn parse_asset_h2_profile_resolves_known_non_default_profiles() {
+        assert_eq!(
+            parse_asset_h2_profile("Firefox135"),
+            wreq_util::Profile::Firefox135
+        );
+        assert_eq!(
+            parse_asset_h2_profile("Chrome120"),
+            wreq_util::Profile::Chrome120
+        );
+    }
+
+    #[test]
+    fn parse_asset_h2_profile_unknown_falls_back_to_chrome145() {
+        assert_eq!(
+            parse_asset_h2_profile("NetscapeNavigator"),
+            wreq_util::Profile::Chrome145
         );
     }
 }
