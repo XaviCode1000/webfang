@@ -51,8 +51,8 @@ pub async fn run_export(
     if config.clean_ai {
         match ai_cleaner {
             Some(cleaner) => run_ai_export(&config, cleaner).await,
-            None => Err(CliExit::UsageError(
-                "AI semantic cleaning requires the 'ai' feature. Recompile with --features ai"
+            None => Err(CliExit::ConfigError(
+                "Se solicitó limpieza semántica AI pero el limpiador no está disponible (no se propagó una falla de inicialización)"
                     .into(),
             )),
         }
