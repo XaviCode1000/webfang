@@ -132,7 +132,12 @@ pub async fn scrape_urls(
             opts.network.js_strategy
         };
     let cookie_bridge = std::sync::Arc::new(std::sync::RwLock::new(CookieBridge::new()));
-    let router = build_fetch_router(&effective_strategy, http_config.timeout_secs, cookie_bridge);
+    let router = build_fetch_router(
+        &effective_strategy,
+        http_config.timeout_secs,
+        cookie_bridge,
+        http_config.tls_emulation,
+    );
 
     let _total_urls = urls.len();
 

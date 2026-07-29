@@ -13,7 +13,7 @@ use futures::future::BoxFuture;
 use tracing::{debug, instrument};
 use url::Url;
 use wreq::Client;
-use wreq_util::Emulation;
+use wreq_util::Profile;
 
 #[cfg(feature = "otel-metrics")]
 use crate::infrastructure::observability::metrics_instruments::DOWNLOAD_WREQ_LATENCY;
@@ -38,8 +38,9 @@ const WREQ_MEMORY_COST: usize = 1_024 * 1_024; // ~1 MB
 /// ```ignore
 /// use webfang_core::infrastructure::downloader::wreq_downloader::WreqDownloader;
 /// use webfang_core::infrastructure::downloader::Downloader;
+/// use wreq_util::Profile;
 ///
-/// let downloader = WreqDownloader::new(30, 10);
+/// let downloader = WreqDownloader::new(30, 10, Profile::Chrome145);
 /// let page = downloader.fetch(&"https://example.com".parse().unwrap()).await.unwrap();
 /// assert_eq!(page.status, 200);
 /// ```
@@ -49,7 +50,7 @@ pub struct WreqDownloader {
 }
 
 impl WreqDownloader {
-    /// Create a new WreqDownloader with default Chrome 145 emulation.
+    /// Create a new WreqDownloader with the given TLS emulation profile.
     ///
     /// The client is built once and shared via `Arc` for connection pooling.
     ///
@@ -57,15 +58,32 @@ impl WreqDownloader {
     ///
     /// * `timeout_secs` - Request timeout in seconds
     /// * `connect_timeout_secs` - Connection timeout in seconds
+    /// * `tls_emulation` - TLS/HTTP2 fingerprint emulation preset
     ///
     /// # Panics
     ///
-    /// Panics if the wreq client cannot be built (should not happen with valid params).
-    pub fn new(timeout_secs: u64, connect_timeout_secs: u64) -> Self {
+    /// Panics if the wreq client cannot be built. Prefer [`try_new`](Self::try_new)
+    /// in fallible contexts.
+    pub fn new(timeout_secs: u64, connect_timeout_secs: u64, tls_emulation: Profile) -> Self {
+        Self::try_new(timeout_secs, connect_timeout_secs, tls_emulation)
+            .expect("failed to build wreq client — this should not happen")
+    }
+
+    /// Fallible constructor — builds the wreq client and propagates errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DownloadError::Internal`] if the underlying `wreq::Client`
+    /// cannot be constructed (e.g. TLS backend failure).
+    pub fn try_new(
+        timeout_secs: u64,
+        connect_timeout_secs: u64,
+        tls_emulation: Profile,
+    ) -> Result<Self, DownloadError> {
         let pool_size = std::cmp::max(6, num_cpus::get() - 1);
 
         let client = Client::builder()
-            .emulation(Emulation::Chrome145)
+            .emulation(tls_emulation)
             .timeout(Duration::from_secs(timeout_secs))
             .connect_timeout(Duration::from_secs(connect_timeout_secs))
             .pool_max_idle_per_host(pool_size)
@@ -75,17 +93,17 @@ impl WreqDownloader {
             .cookie_store(true)
             .redirect(wreq::redirect::Policy::limited(10))
             .build()
-            .expect("failed to build wreq client — this should not happen");
+            .map_err(|e| DownloadError::Internal(format!("wreq client build failed: {e}")))?;
 
         debug!(
-            "WreqDownloader created: pool_size={}, timeout={}s, connect_timeout={}s",
+            "WreqDownloader created: pool_size={}, timeout={}s, connect_timeout={}s, profile={tls_emulation:?}",
             pool_size, timeout_secs, connect_timeout_secs
         );
 
-        Self {
+        Ok(Self {
             client: Arc::new(client),
             timeout_secs,
-        }
+        })
     }
 
     /// Create a WreqDownloader from an existing `wreq::Client`.
@@ -280,7 +298,7 @@ mod tests {
 
     #[test]
     fn test_wreq_downloader_creation() {
-        let downloader = WreqDownloader::new(30, 10);
+        let downloader = WreqDownloader::new(30, 10, Profile::Chrome145);
         assert!(!downloader.supports_interactions());
         assert_eq!(downloader.memory_cost(), WREQ_MEMORY_COST);
     }
@@ -288,7 +306,7 @@ mod tests {
     #[test]
     fn test_wreq_downloader_from_client() {
         let client = Client::builder()
-            .emulation(Emulation::Chrome145)
+            .emulation(Profile::Chrome145)
             .build()
             .unwrap();
         let downloader = WreqDownloader::from_client(client, 60, 15);
@@ -346,7 +364,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network — wiremock tests below cover same scenario"]
     async fn test_fetch_example_com() {
-        let downloader = WreqDownloader::new(10, 5);
+        let downloader = WreqDownloader::new(10, 5, Profile::Chrome145);
         let url: Url = "https://example.com".parse().unwrap();
 
         let result = downloader.fetch(&url).await;
@@ -377,7 +395,7 @@ mod wiremock_tests {
             .mount(&mock_server)
             .await;
 
-        let downloader = WreqDownloader::new(10, 5);
+        let downloader = WreqDownloader::new(10, 5, Profile::Chrome145);
         let url: Url = mock_server.uri().parse().unwrap();
 
         let result = downloader.fetch(&url).await;
@@ -398,7 +416,7 @@ mod wiremock_tests {
             .mount(&mock_server)
             .await;
 
-        let downloader = WreqDownloader::new(10, 5);
+        let downloader = WreqDownloader::new(10, 5, Profile::Chrome145);
         let url: Url = format!("{}/notfound", mock_server.uri()).parse().unwrap();
 
         let result = downloader.fetch(&url).await;
@@ -423,7 +441,7 @@ mod wiremock_tests {
             .mount(&mock_server)
             .await;
 
-        let downloader = WreqDownloader::new(10, 5);
+        let downloader = WreqDownloader::new(10, 5, Profile::Chrome145);
         let url: Url = mock_server.uri().parse().unwrap();
 
         let result = downloader.fetch(&url).await;
@@ -455,7 +473,7 @@ mod wiremock_tests {
             .mount(&mock_server)
             .await;
 
-        let downloader = WreqDownloader::new(10, 5);
+        let downloader = WreqDownloader::new(10, 5, Profile::Chrome145);
         let url: Url = format!("{}/redirect", mock_server.uri()).parse().unwrap();
 
         let result = downloader.fetch(&url).await;

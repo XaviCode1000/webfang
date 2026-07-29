@@ -12,6 +12,7 @@ use webfang_core::infrastructure::downloader::wreq_downloader::WreqDownloader;
 use webfang_core::infrastructure::downloader::Downloader;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+use wreq_util::Profile;
 
 #[tokio::test]
 #[cfg(not(miri))]
@@ -28,7 +29,7 @@ async fn wreq_downloader_populates_response_headers() {
         .mount(&server)
         .await;
 
-    let downloader = WreqDownloader::new(10, 5);
+    let downloader = WreqDownloader::new(10, 5, Profile::Chrome145);
     let url = Url::parse(&server.uri()).expect("wiremock URI is valid");
 
     let page = downloader
@@ -69,7 +70,7 @@ async fn wreq_downloader_headers_keys_are_lowercased() {
         .mount(&server)
         .await;
 
-    let downloader = WreqDownloader::new(10, 5);
+    let downloader = WreqDownloader::new(10, 5, Profile::Chrome145);
     let url = Url::parse(&server.uri()).expect("wiremock URI is valid");
 
     let page = downloader.fetch(&url).await.expect("fetch should succeed");
