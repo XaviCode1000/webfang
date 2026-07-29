@@ -1,0 +1,5 @@
+---
+source: crates/webfang_core/../../tests/ai_error_propagation.rs
+expression: "redact_nondeterministic(output_dir.path(), &stderr)"
+---
+Error: No se pudo inicializar el limpiador semántico AI: Error descargando modelo 'ibm-granite/granite-embedding-97m-multilingual-r2': HuggingFace API error: request error: error sending request for url (https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/main/[ASSET])

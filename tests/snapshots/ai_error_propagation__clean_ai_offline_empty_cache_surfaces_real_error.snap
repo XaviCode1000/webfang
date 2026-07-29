@@ -1,0 +1,5 @@
+---
+source: crates/webfang_core/../../tests/ai_error_propagation.rs
+expression: "redact_nondeterministic(output_dir.path(), &stderr)"
+---
+Error: No se pudo inicializar el limpiador semántico AI: Modo offline: modelo 'ibm-granite/granite-embedding-97m-multilingual-r2' no está en caché

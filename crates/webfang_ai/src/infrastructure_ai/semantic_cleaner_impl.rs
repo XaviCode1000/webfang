@@ -275,7 +275,7 @@ impl SemanticCleanerImpl {
         // mode is cache-first: hf_hub returns the cached path when present and
         // transparently downloads missing assets otherwise.
         let (model_path, tokenizer_path) = if config.offline_mode {
-            let cache = HfCache::default();
+            let cache = HfCache::from_env();
             let cache_repo = cache.repo(Repo::new(config.repo.clone(), RepoType::Model));
 
             let model_path =
@@ -294,7 +294,7 @@ impl SemanticCleanerImpl {
             debug!("Resolved model and tokenizer from offline cache");
             (model_path, tokenizer_path)
         } else {
-            let api = ApiBuilder::new()
+            let api = ApiBuilder::from_env()
                 .with_progress(false)
                 .build()
                 .map_err(|e| SemanticError::Download {
