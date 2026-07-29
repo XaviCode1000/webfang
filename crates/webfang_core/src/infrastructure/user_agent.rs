@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tracing;
 use wreq::Client;
-use wreq_util::Emulation;
+use wreq_util::Profile;
 
 /// API URL for fresh user agents
 const UA_LIST_URL: &str =
@@ -56,7 +56,7 @@ impl UserAgentCache {
             .join("user_agents.json")
     }
 
-    /// Load UAs: cache if valid, else fetch fresh
+    /// Load UAs: cache if valid, else fetch fresh (uses Chrome145 TLS profile)
     ///
     /// # Returns
     ///
@@ -69,6 +69,14 @@ impl UserAgentCache {
     /// - API download fails
     /// - Cache is older than 1 year
     pub async fn load() -> Vec<String> {
+        Self::load_with_profile(Profile::Chrome145).await
+    }
+
+    /// Load UAs with a specific TLS emulation profile
+    ///
+    /// Same as [`load()`](Self::load) but uses the given profile for the HTTP client
+    /// when fetching fresh agents from the API.
+    pub async fn load_with_profile(profile: Profile) -> Vec<String> {
         let current_year = Utc::now().year();
 
         // Try load from cache
@@ -90,7 +98,7 @@ impl UserAgentCache {
         }
 
         // Fetch fresh
-        match Self::fetch_and_cache().await {
+        match Self::fetch_and_cache(profile).await {
             Ok(agents) => agents,
             Err(e) => {
                 tracing::warn!("Failed to fetch user agents: {}", e);
@@ -107,9 +115,11 @@ impl UserAgentCache {
     }
 
     /// Fetch user agents from API and save to cache
-    async fn fetch_and_cache() -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn fetch_and_cache(
+        profile: Profile,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
         let client = Client::builder()
-            .emulation(Emulation::Chrome145)
+            .emulation(profile)
             .timeout(Duration::from_secs(5))
             .build()?;
 
@@ -239,6 +249,16 @@ mod tests {
         let agents = UserAgentCache::load().await;
         assert!(!agents.is_empty());
         // At least one should contain Chrome/13x or Firefox
+        assert!(agents
+            .iter()
+            .any(|ua| ua.contains("Chrome/") || ua.contains("Firefox/")));
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn test_user_agent_cache_load_with_profile() {
+        let agents = UserAgentCache::load_with_profile(Profile::Chrome131).await;
+        assert!(!agents.is_empty());
         assert!(agents
             .iter()
             .any(|ua| ua.contains("Chrome/") || ua.contains("Firefox/")));
