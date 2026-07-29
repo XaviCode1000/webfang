@@ -72,29 +72,29 @@ impl HttpClientConfig {
     ///
     /// This is the fallible boundary that converts a user-facing profile name
     /// (e.g. the `--h2-profile` CLI value) into the typed
-    /// [`Self::tls_emulation`] preset. Unknown names are an error — there is
+    /// [`Self::tls_emulation`] preset. It delegates to the domain resolver
+    /// [`crate::domain::profile::profile_from_name`], which accepts the full
+    /// [`wreq_util::Profile`] catalog. Unknown names are an error — there is
     /// **no** silent fallback to a default profile.
     ///
     /// # Errors
     ///
     /// Returns [`UnknownProfileError`] if `name` is not a recognized profile.
     pub fn profile_from_name(name: &str) -> Result<wreq_util::Profile, UnknownProfileError> {
-        match name {
-            "Chrome131" => Ok(wreq_util::Profile::Chrome131),
-            "Chrome145" => Ok(wreq_util::Profile::Chrome145),
-            _ => Err(UnknownProfileError {
-                name: name.to_owned(),
-            }),
-        }
+        crate::domain::profile::profile_from_name(name).ok_or_else(|| UnknownProfileError {
+            name: name.to_owned(),
+        })
     }
 }
 
 /// Error returned when an H2/TLS profile name is not recognized.
 ///
 /// The user-facing [`Display`](std::fmt::Display) message is in Spanish and
-/// lists the valid options, per the project's user-facing-error convention.
+/// lists the full dynamic catalog of valid options (every
+/// [`wreq_util::Profile`] variant), per the project's user-facing-error
+/// convention.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("Perfil TLS desconocido: '{name}'. Opciones válidas: Chrome131, Chrome145")]
+#[error("Perfil TLS desconocido: '{name}'. Opciones válidas: {}", crate::domain::profile::valid_profile_names().join(", "))]
 pub struct UnknownProfileError {
     /// The unrecognized profile name supplied by the user.
     pub name: String,
@@ -178,6 +178,18 @@ mod tests {
     fn test_profile_from_name_unknown_returns_err() {
         let err = HttpClientConfig::profile_from_name("Firefox").unwrap_err();
         assert_eq!(err.name, "Firefox");
+    }
+
+    #[test]
+    fn test_profile_from_name_resolves_expanded_catalog() {
+        assert_eq!(
+            HttpClientConfig::profile_from_name("Chrome120").unwrap(),
+            wreq_util::Profile::Chrome120
+        );
+        assert_eq!(
+            HttpClientConfig::profile_from_name("Firefox135").unwrap(),
+            wreq_util::Profile::Firefox135
+        );
     }
 
     #[test]
