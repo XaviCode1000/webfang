@@ -1,10 +1,10 @@
 //! Integration tests for HttpClient
 //!
-//! Tests use wiremock for deterministic HTTP responses.
-//! Run with: cargo test --ignored (for network tests) or cargo test (for mock tests)
+//! All tests use wiremock for deterministic, network-free HTTP responses.
+//! Run with: cargo nextest run --test http_client_integration
 
-use webfang::application::http_client::{HttpClient, HttpClientConfig};
 use std::time::Duration;
+use webfang_core::application::http_client::{HttpClient, HttpClientConfig, HttpError};
 use wiremock::{
     matchers::{method, path},
     Mock, MockServer, ResponseTemplate,
@@ -28,7 +28,7 @@ async fn test_mock_server_200() {
     assert!(result.is_ok(), "Should succeed: {:?}", result);
 }
 
-/// Test HTTP 404 with mock server - 404 is not an error in HTTP spec
+/// Test HTTP 404 with mock server: the client maps 4xx responses to a `ClientError`.
 #[tokio::test]
 async fn test_mock_server_404() {
     let mock_server = MockServer::start().await;
@@ -44,13 +44,15 @@ async fn test_mock_server_404() {
 
     let url = format!("{}/missing", mock_server.uri());
     let result = client.get(&url).await;
-    // 404 returns body, not error (per wreq behavior)
-    if let Ok(body) = result {
-        assert!(body.contains("Not Found") || body.is_empty());
-    }
+    // HttpClient maps 404 to ClientError(404); 4xx responses are not retried.
+    assert!(
+        matches!(result, Err(HttpError::ClientError(404))),
+        "Expected ClientError(404), got: {:?}",
+        result
+    );
 }
 
-/// Test HTTP 500 with mock server
+/// Test HTTP 500 with mock server: the client retries 5xx, then surfaces `ServerError`.
 #[tokio::test]
 async fn test_mock_server_500() {
     let mock_server = MockServer::start().await;
@@ -61,15 +63,22 @@ async fn test_mock_server_500() {
         .mount(&mock_server)
         .await;
 
-    let config = HttpClientConfig::default();
+    let config = HttpClientConfig {
+        max_retries: 1,
+        backoff_base_ms: 10,
+        backoff_max_ms: 50,
+        ..Default::default()
+    };
     let client = HttpClient::new(config).unwrap();
 
     let url = format!("{}/error", mock_server.uri());
     let result = client.get(&url).await;
-    // wreq doesn't throw on 500, returns body
-    if let Ok(body) = result {
-        assert!(body.contains("Internal Error") || body.is_empty());
-    }
+    // Once retries are exhausted, 500 surfaces as ServerError(500).
+    assert!(
+        matches!(result, Err(HttpError::ServerError(500))),
+        "Expected ServerError(500), got: {:?}",
+        result
+    );
 }
 
 // ============================================================================
@@ -138,10 +147,11 @@ async fn test_mock_server_429_exhausts_retries() {
         result.is_err(),
         "Should return error after retries exhausted"
     );
-    // Should have waited for backoff (at least 2x backoff_base_ms = 20ms minimum)
+    // 429 backoff ignores backoff_base_ms: with no Retry-After header the client
+    // defaults to a 1s per-retry delay, so 2 retries wait ~2s total (well over 20ms).
     assert!(
         elapsed.as_millis() >= 20,
-        "Should have waited for backoff, only waited {}ms",
+        "Should have waited through the retry delays, only waited {}ms",
         elapsed.as_millis()
     );
 }
@@ -209,12 +219,13 @@ async fn test_mock_server_503_with_retry_after() {
         .await;
     let elapsed = start.elapsed();
 
-    // Should fail but respect Retry-After header (2 seconds)
+    // Should fail with a server error after retries.
     assert!(result.is_err());
-    // The Retry-After header should influence backoff timing
+    // 5xx retries ignore the Retry-After header and use exponential backoff: the
+    // ~1s wait comes from backoff_base_ms (1000ms * 2^0), not from Retry-After.
     assert!(
         elapsed.as_millis() >= 1000,
-        "Should have waited at least 1s for Retry-After, waited {}ms",
+        "Should have waited at least 1s of backoff, waited {}ms",
         elapsed.as_millis()
     );
 }
