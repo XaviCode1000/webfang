@@ -99,96 +99,368 @@ pub struct InspectionContext {
     pub ignore_waf: bool,
 }
 
-/// Control headers that indicate WAF processing (2026 signatures)
+/// Control headers that indicate WAF processing (REQ-WAF-03).
+///
+/// Every control header is [`WafTier::Fingerprint`] evidence — it NEVER
+/// auto-blocks on mere presence, only when correlated with a WAF status code
+/// (correction B). `x-wordpress` (not a real WAF header) and `x-cdn` (generic
+/// CDN header) were purged as false-positive risks.
 const WAF_CONTROL_HEADERS: &[(&str, &str)] = &[
     ("x-datadome-response", "DataDome"),
     ("cf-mitigated", "Cloudflare"),
     ("x-akamai-edge-auth", "Akamai"),
     ("x-sucuri-id", "Sucuri"),
-    ("x-wordpress", "Wordfence"),
     ("cf-ray", "Cloudflare"),
-    ("x-cdn", "Imperva"),
 ];
 
-/// Merged WAF signatures for body scanning (62 unique patterns).
-/// Combined from legacy `waf.rs` (41) + `waf_engine.rs` (39), deduplicated by pattern string.
-const WAF_BODY_SIGNATURES: &[(&str, &str)] = &[
-    // Cloudflare
-    ("cf-turnstile", "Cloudflare Turnstile"),
-    ("challenge-platform", "Cloudflare JS Challenge"),
-    ("Just a moment...", "Cloudflare"),
-    ("Checking your browser", "Cloudflare"),
-    ("__cf_chl_f_tk", "Cloudflare"),
-    ("cf-browser-verification", "Cloudflare"),
-    ("cf-ray", "Cloudflare"),
-    ("cf-cache-status", "Cloudflare"),
-    ("_cf_chl_opt", "Cloudflare"),
-    ("cloudflare", "Cloudflare"),
-    ("cf-dns", "Cloudflare"),
-    // Google reCAPTCHA
-    ("g-recaptcha", "reCAPTCHA"),
-    ("recaptcha/api.js", "reCAPTCHA"),
-    ("grecaptcha.execute", "reCAPTCHA"),
-    ("recaptcha.net", "reCAPTCHA"),
-    ("recaptcha Enterprise", "reCAPTCHA"),
-    // hCaptcha
-    ("hcaptcha.com", "hCaptcha"),
-    ("h-captcha", "hCaptcha"),
-    ("hcaptcha-api", "hCaptcha"),
-    ("hcaptcha.js", "hCaptcha"),
-    // DataDome
-    ("datadome", "DataDome"),
-    ("dd-captcha", "DataDome"),
-    ("datadome.co", "DataDome"),
-    ("dd=", "DataDome"),
-    ("data-domain", "DataDome"),
-    // PerimeterX / HUMAN Security
-    ("perimeterx", "PerimeterX"),
-    ("_pxCaptcha", "PerimeterX"),
-    ("px-captcha", "PerimeterX"),
-    ("perimeterx.net", "PerimeterX"),
-    ("human-security", "HUMAN"),
-    ("px-init", "PerimeterX"),
-    // Akamai Bot Manager
-    ("_abck", "Akamai Bot Manager"),
-    ("SensorData", "Akamai Bot Manager"),
-    ("akamai-bot-manager", "Akamai Bot Manager"),
-    ("akamai.net", "Akamai"),
-    ("akamai", "Akamai"),
-    // Imperva / Incapsula
-    ("imperva", "Imperva"),
-    ("incapsula", "Imperva"),
-    ("_Incapsula_Resource", "Imperva"),
-    ("visid_incap", "Imperva Incapsula"),
-    ("incap_ses", "Imperva Incapsula"),
-    // Sucuri
-    ("sucuri", "Sucuri"),
-    ("sucuri.net", "Sucuri"),
-    // F5
-    ("_nfv", "F5"),
-    ("BIGipServer", "F5"),
-    // Generic challenges
-    ("Please verify you are a human", "Generic Challenge"),
-    ("verify you are human", "Generic Challenge"),
-    ("bot detection", "Generic Detection"),
-    ("automated requests", "Generic Detection"),
-    ("security check", "Generic Challenge"),
-    ("anti-bot", "Generic Detection"),
-    ("checking your browser", "Browser Verification"),
-    ("attack detected", "Security Firewall"),
-    ("suspicious activity", "Security Firewall"),
-    ("captcha-delivery", "Challenge Delivery"),
-    ("__js_challenge__", "JS Challenge"),
-    // Generic JS/CAPTCHA scripts
-    ("challenge.js", "Generic Challenge"),
-    ("captcha.js", "Generic Challenge"),
-    ("verify.js", "Generic Challenge"),
-    ("bot-check", "Generic Detection"),
-    // AWS WAF (Amazon Web Services WAF)
-    ("awsWafCookieDomainList", "AWS WAF"),
-    ("AwsWafIntegration", "AWS WAF"),
-    ("gokuProps", "AWS WAF"),
-    ("aws-waf-token", "AWS WAF"),
+/// Boundary post-filter mode for a body signature (REQ-WAF-04).
+///
+/// Only [`BoundaryMode::Bare`] patterns (bare vendor names) get the O(1)
+/// adjacent-byte boundary filter. [`BoundaryMode::Exempt`] patterns may match
+/// inside a larger token (cookies/tokens); [`BoundaryMode::Phrase`] patterns
+/// are challenge prose / widget markers that need no filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundaryMode {
+    /// Bare vendor name — apply the boundary post-filter.
+    Bare,
+    /// Boundary-exempt — may match inside a larger token (`[E]`).
+    Exempt,
+    /// Phrase/exact — no filter needed (`—`).
+    Phrase,
+}
+
+/// Unified WAF body signature registry (REQ-WAF-03 PRIMARY, REQ-WAF-10).
+///
+/// Each entry is `(pattern, provider, tier, boundary_mode)`:
+/// - `tier`: [`WafTier::Challenge`] (T1 — blocks any status) or
+///   [`WafTier::Fingerprint`] (T2 — evidence only, blocks with a WAF status).
+/// - `boundary_mode`: [`BoundaryMode::Bare`] → O(1) boundary post-filter
+///   (REQ-WAF-04); `Exempt`/`Phrase` → no filter.
+///
+/// Reclassified per the spec table; the 14 DEL entries are purged; the
+/// `spa_detector` `WAF_MARKERS` are folded in (REQ-WAF-10). Aho-Corasick is
+/// case-sensitive, so case-variant prose ("Checking your browser" vs
+/// "checking your browser") are distinct entries.
+const WAF_BODY_SIGNATURES: &[(&str, &str, WafTier, BoundaryMode)] = &[
+    // ── Cloudflare ──
+    (
+        "cf-turnstile",
+        "Cloudflare Turnstile",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "challenge-platform",
+        "Cloudflare JS Challenge",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "Just a moment...",
+        "Cloudflare",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "Checking your browser",
+        "Cloudflare",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "__cf_chl_f_tk",
+        "Cloudflare",
+        WafTier::Challenge,
+        BoundaryMode::Exempt,
+    ),
+    (
+        "cf-browser-verification",
+        "Cloudflare",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "_cf_chl_opt",
+        "Cloudflare",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "cloudflare",
+        "Cloudflare",
+        WafTier::Fingerprint,
+        BoundaryMode::Bare,
+    ),
+    // ── Google reCAPTCHA ──
+    (
+        "g-recaptcha",
+        "reCAPTCHA",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "recaptcha/api.js",
+        "reCAPTCHA",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "grecaptcha.execute",
+        "reCAPTCHA",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "recaptcha.net",
+        "reCAPTCHA",
+        WafTier::Fingerprint,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "recaptcha Enterprise",
+        "reCAPTCHA",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    // ── hCaptcha ──
+    (
+        "hcaptcha.com",
+        "hCaptcha",
+        WafTier::Fingerprint,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "h-captcha",
+        "hCaptcha",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "hcaptcha-api",
+        "hCaptcha",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "hcaptcha.js",
+        "hCaptcha",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "hcaptcha",
+        "hCaptcha",
+        WafTier::Fingerprint,
+        BoundaryMode::Bare,
+    ), // folded from spa_detector
+    // ── DataDome ──
+    (
+        "datadome",
+        "DataDome",
+        WafTier::Fingerprint,
+        BoundaryMode::Bare,
+    ),
+    (
+        "dd-captcha",
+        "DataDome",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "datadome.co",
+        "DataDome",
+        WafTier::Fingerprint,
+        BoundaryMode::Phrase,
+    ),
+    // ── PerimeterX / HUMAN Security ──
+    (
+        "perimeterx",
+        "PerimeterX",
+        WafTier::Fingerprint,
+        BoundaryMode::Bare,
+    ),
+    (
+        "_pxCaptcha",
+        "PerimeterX",
+        WafTier::Challenge,
+        BoundaryMode::Exempt,
+    ),
+    (
+        "px-captcha",
+        "PerimeterX",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "perimeterx.net",
+        "PerimeterX",
+        WafTier::Fingerprint,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "human-security",
+        "HUMAN",
+        WafTier::Fingerprint,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "px-init",
+        "PerimeterX",
+        WafTier::Fingerprint,
+        BoundaryMode::Phrase,
+    ),
+    // ── Akamai Bot Manager ──
+    (
+        "_abck",
+        "Akamai Bot Manager",
+        WafTier::Fingerprint,
+        BoundaryMode::Exempt,
+    ),
+    (
+        "SensorData",
+        "Akamai Bot Manager",
+        WafTier::Fingerprint,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "akamai-bot-manager",
+        "Akamai Bot Manager",
+        WafTier::Fingerprint,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "akamai.net",
+        "Akamai",
+        WafTier::Fingerprint,
+        BoundaryMode::Phrase,
+    ),
+    ("akamai", "Akamai", WafTier::Fingerprint, BoundaryMode::Bare),
+    // ── Imperva / Incapsula ──
+    (
+        "imperva",
+        "Imperva",
+        WafTier::Fingerprint,
+        BoundaryMode::Bare,
+    ),
+    (
+        "incapsula",
+        "Imperva",
+        WafTier::Fingerprint,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "_Incapsula_Resource",
+        "Imperva",
+        WafTier::Fingerprint,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "visid_incap",
+        "Imperva Incapsula",
+        WafTier::Fingerprint,
+        BoundaryMode::Exempt,
+    ),
+    (
+        "incap_ses",
+        "Imperva Incapsula",
+        WafTier::Fingerprint,
+        BoundaryMode::Exempt,
+    ),
+    // ── Sucuri ──
+    ("sucuri", "Sucuri", WafTier::Fingerprint, BoundaryMode::Bare),
+    (
+        "sucuri.net",
+        "Sucuri",
+        WafTier::Fingerprint,
+        BoundaryMode::Phrase,
+    ),
+    // ── F5 ──
+    (
+        "BIGipServer",
+        "F5",
+        WafTier::Fingerprint,
+        BoundaryMode::Phrase,
+    ),
+    // ── Generic challenge prose / scripts ──
+    (
+        "Please verify you are a human",
+        "Generic Challenge",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "verify you are human",
+        "Generic Challenge",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "checking your browser",
+        "Browser Verification",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "captcha-delivery",
+        "Challenge Delivery",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "__js_challenge__",
+        "JS Challenge",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "challenge.js",
+        "Generic Challenge",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "captcha.js",
+        "Generic Challenge",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "challenge-running",
+        "Cloudflare",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ), // folded from spa_detector
+    (
+        "data-sitekey",
+        "Generic Captcha",
+        WafTier::Fingerprint,
+        BoundaryMode::Phrase,
+    ), // folded from spa_detector
+    // ── AWS WAF ──
+    (
+        "awsWafCookieDomainList",
+        "AWS WAF",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "AwsWafIntegration",
+        "AWS WAF",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "gokuProps",
+        "AWS WAF",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
+    (
+        "aws-waf-token",
+        "AWS WAF",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ),
 ];
 
 /// Shannon entropy threshold for obfuscated WAF detection
@@ -197,11 +469,13 @@ const ENTROPY_THRESHOLD: f64 = 5.5;
 /// Body size threshold (100KB) above which entropy analysis is applied
 const SUSPICIOUS_SIZE_THRESHOLD: usize = 100_000;
 
-/// Aho-Corasick automaton for O(N) multi-pattern body matching
-/// Replaces O(N*M) linear scan in legacy `waf.rs`.
-/// Compiled once via `Lazy`, thread-safe for concurrent reads.
+/// Aho-Corasick automaton for O(N) multi-pattern body matching.
+///
+/// Built once via `Lazy` from [`WAF_BODY_SIGNATURES`] patterns (pattern index
+/// maps back to the registry entry for tier/boundary metadata). Thread-safe
+/// for concurrent reads.
 static WAF_AC: Lazy<AhoCorasick> = Lazy::new(|| {
-    AhoCorasick::new(WAF_BODY_SIGNATURES.iter().map(|(sig, _)| sig))
+    AhoCorasick::new(WAF_BODY_SIGNATURES.iter().map(|(sig, _, _, _)| sig))
         .expect("Failed to build Aho-Corasick automaton")
 });
 
@@ -360,7 +634,8 @@ impl WafInspector {
         let mut providers: Vec<&str> = Vec::new();
         let mut seen: HashSet<&str> = HashSet::new();
 
-        for (_, provider) in WAF_BODY_SIGNATURES {
+        for sig in WAF_BODY_SIGNATURES {
+            let provider = sig.1;
             if !seen.contains(provider) {
                 seen.insert(provider);
                 providers.push(provider);
@@ -474,6 +749,114 @@ mod tests {
             .evidences
             .iter()
             .any(|e| e.tier == WafTier::Fingerprint));
+    }
+
+    // ========================================================================
+    // TASK-02 — Unified registry + reclassification table (REQ-WAF-03, REQ-WAF-10)
+    // ========================================================================
+
+    #[test]
+    fn test_registry_has_no_del_residue() {
+        // REQ-WAF-03: the 14 DEL entries must be purged from the body registry.
+        const DEL: &[&str] = &[
+            "cf-ray",
+            "cf-cache-status",
+            "cf-dns",
+            "dd=",
+            "data-domain",
+            "_nfv",
+            "bot detection",
+            "automated requests",
+            "security check",
+            "anti-bot",
+            "attack detected",
+            "suspicious activity",
+            "verify.js",
+            "bot-check",
+        ];
+        for sig in WAF_BODY_SIGNATURES {
+            assert!(
+                !DEL.contains(&sig.0),
+                "DEL pattern '{}' must not be in the registry",
+                sig.0
+            );
+        }
+    }
+
+    #[test]
+    fn test_registry_patterns_are_unique() {
+        // #1189: dedup by (pattern, tier); no exact pattern duplicates remain.
+        let mut seen: HashSet<&str> = HashSet::new();
+        for sig in WAF_BODY_SIGNATURES {
+            assert!(seen.insert(sig.0), "duplicate pattern '{}'", sig.0);
+        }
+    }
+
+    #[test]
+    fn test_registry_every_entry_has_provider() {
+        for sig in WAF_BODY_SIGNATURES {
+            assert!(!sig.0.is_empty(), "empty pattern in registry");
+            assert!(!sig.1.is_empty(), "pattern '{}' has empty provider", sig.0);
+        }
+    }
+
+    #[test]
+    fn test_registry_case_variant_challenge_prose_both_present() {
+        // #1189: Aho-Corasick is case-sensitive, so "Checking your browser" and
+        // "checking your browser" are distinct patterns and both must remain.
+        let patterns: Vec<&str> = WAF_BODY_SIGNATURES.iter().map(|(p, _, _, _)| *p).collect();
+        assert!(
+            patterns.contains(&"Checking your browser"),
+            "title-case prose missing"
+        );
+        assert!(
+            patterns.contains(&"checking your browser"),
+            "lowercase prose missing"
+        );
+    }
+
+    #[test]
+    fn test_registry_folds_spa_markers() {
+        // REQ-WAF-10: spa_detector WAF_MARKERS fold into the unified registry.
+        let patterns: Vec<&str> = WAF_BODY_SIGNATURES.iter().map(|(p, _, _, _)| *p).collect();
+        assert!(
+            patterns.contains(&"challenge-running"),
+            "challenge-running not folded"
+        );
+        assert!(
+            patterns.contains(&"data-sitekey"),
+            "data-sitekey not folded"
+        );
+        assert!(patterns.contains(&"hcaptcha"), "bare hcaptcha not folded");
+    }
+
+    #[test]
+    fn test_registry_tiers_are_valid() {
+        // Every entry carries an explicit tier (Challenge or Fingerprint).
+        for sig in WAF_BODY_SIGNATURES {
+            assert!(
+                sig.2 == WafTier::Challenge || sig.2 == WafTier::Fingerprint,
+                "pattern '{}' has invalid tier",
+                sig.0
+            );
+        }
+    }
+
+    #[test]
+    fn test_control_headers_purged_of_non_waf() {
+        // REQ-WAF-03: x-wordpress (not a WAF header) and x-cdn (generic CDN) deleted.
+        let names: Vec<&str> = WAF_CONTROL_HEADERS.iter().map(|(n, _)| *n).collect();
+        assert!(
+            !names.contains(&"x-wordpress"),
+            "x-wordpress must be deleted"
+        );
+        assert!(!names.contains(&"x-cdn"), "x-cdn must be deleted");
+        assert!(names.contains(&"x-datadome-response"));
+        assert!(names.contains(&"cf-mitigated"));
+        assert!(names.contains(&"x-akamai-edge-auth"));
+        assert!(names.contains(&"x-sucuri-id"));
+        assert!(names.contains(&"cf-ray"));
+        assert_eq!(names.len(), 5, "exactly 5 control headers expected");
     }
 
     // ========================================================================
