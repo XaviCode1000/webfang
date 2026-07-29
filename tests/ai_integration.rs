@@ -15,10 +15,9 @@
 
 #![cfg(feature = "ai")]
 
-use std::path::PathBuf;
 use webfang_ai::infrastructure_ai::model_downloader::ModelDownloader;
 use webfang_ai::infrastructure_ai::{
-    default_cache_dir, CacheConfig, ModelCache, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO,
+    CacheConfig, ModelCache, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO,
 };
 use webfang_ai::infrastructure_ai::{InferencePool, ModelConfig, SemanticCleanerImpl};
 use webfang_ai::SemanticCleaner;
@@ -89,28 +88,17 @@ fn test_model_config_defaults() {
 
     assert_eq!(config.repo, DEFAULT_MODEL_REPO);
     assert_eq!(config.model_file, DEFAULT_MODEL_FILE);
-    assert!(config.auto_download);
     assert!(!config.offline_mode);
     assert_eq!(config.max_tokens, 32768);
-
-    // Verify cache_dir ends with ai_models
-    assert!(config.cache_dir.to_string_lossy().contains("ai_models"));
 }
 
 /// Test that ModelConfig offline mode is configured correctly
 #[test]
 fn test_semantic_cleaner_offline_mode_config() {
-    let temp_dir = tempfile::tempdir().unwrap();
-
-    let config = ModelConfig::new()
-        .with_cache_dir(temp_dir.path().to_path_buf())
-        .with_auto_download(false)
-        .with_offline_mode(true);
+    let config = ModelConfig::new().with_offline_mode(true);
 
     // Verify configuration
-    assert!(!config.auto_download);
     assert!(config.offline_mode);
-    assert_eq!(config.cache_dir, temp_dir.path());
 }
 
 /// Test that DocumentChunk can be created (verifies domain integration)
@@ -322,13 +310,9 @@ fn test_model_config_with_relevance_threshold() {
 /// Test ModelConfig builder with all options
 #[test]
 fn test_model_config_full_builder() {
-    let temp_dir = tempfile::tempdir().unwrap();
-
     let config = ModelConfig::new()
         .with_repo("sentence-transformers/all-MiniLM-L6-v2")
         .with_file("model.onnx")
-        .with_cache_dir(temp_dir.path().to_path_buf())
-        .with_auto_download(true)
         .with_offline_mode(false)
         .with_max_tokens(512)
         .with_relevance_threshold(0.4)
@@ -336,7 +320,6 @@ fn test_model_config_full_builder() {
 
     assert_eq!(config.repo, "sentence-transformers/all-MiniLM-L6-v2");
     assert_eq!(config.model_file, "model.onnx");
-    assert!(config.auto_download);
     assert!(!config.offline_mode);
     assert_eq!(config.max_tokens, 512);
     assert_eq!(config.relevance_threshold, 0.4);
@@ -609,11 +592,10 @@ async fn test_error_chunk_too_large() {
 /// Test offline mode error
 #[tokio::test]
 async fn test_offline_mode_error() {
-    let temp_cache_dir = PathBuf::from(format!("/tmp/webfang_test_cache_{}", std::process::id()));
-
+    // A bogus repo id is never present in the local hf_hub cache, so offline
+    // resolution fails deterministically with OfflineMode and no network access.
     let config = ModelConfig::new()
-        .with_cache_dir(temp_cache_dir)
-        .with_auto_download(false)
+        .with_repo("nonexistent/fake-repo-for-test")
         .with_offline_mode(true);
 
     let result = SemanticCleanerImpl::new(config).await;
@@ -621,7 +603,7 @@ async fn test_offline_mode_error() {
     assert!(result.is_err());
 
     if let Err(SemanticError::OfflineMode { repo }) = result {
-        assert_eq!(repo, DEFAULT_MODEL_REPO);
+        assert_eq!(repo, "nonexistent/fake-repo-for-test");
     } else {
         panic!("Expected SemanticError::OfflineMode");
     }
