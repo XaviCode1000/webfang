@@ -751,7 +751,7 @@ mod tests {
 mod wiremock_tests {
     use super::*;
     use crate::domain::http_config::HttpClientConfig;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -888,6 +888,38 @@ mod wiremock_tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), expected_body);
+    }
+
+    /// `user_agent: Some(..)` in `HttpClientConfig` must reach the wire as a
+    /// `user-agent` header.
+    ///
+    /// `wreq::Client` does not expose its applied profile or default headers,
+    /// so we verify at the wire: the mock only answers 200 when the request
+    /// carries the exact `user-agent` we configured, and `.expect(1)` plus
+    /// `server.verify()` prove the header matched exactly once. Real network
+    /// I/O to localhost, hence not(miri).
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_custom_user_agent_reaches_wire() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .and(header("user-agent", "custom-ua-test"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let config = HttpClientConfig {
+            user_agent: Some("custom-ua-test".to_string()),
+            ..Default::default()
+        };
+        let client = create_http_client_with_config(&config).unwrap();
+
+        let response = client.get(server.uri()).send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+
+        server.verify().await;
     }
 }
 
