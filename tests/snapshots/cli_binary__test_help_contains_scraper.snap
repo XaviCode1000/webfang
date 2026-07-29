@@ -103,7 +103,7 @@ Options:
           [env: WEBFANG_ADAPTIVE_SELECTORS=]
 
       --force-js-render
-          Force JavaScript rendering for SPA sites (not yet implemented)
+          No-op placeholder for future JavaScript rendering (Phase 2). Use --js-strategy hybrid or --js-strategy full for JS rendering support
           
           [env: WEBFANG_FORCE_JS_RENDER=]
 
