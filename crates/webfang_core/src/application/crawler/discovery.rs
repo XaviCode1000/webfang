@@ -1314,8 +1314,10 @@ work with when computing the document readability score.</p>
             <footer>Footer stuff</footer>
         </body></html>"#;
         let url = Url::parse("https://example.com/page").unwrap();
-        let mut config = ScraperConfig::default();
-        config.selector = ".main-content".to_string();
+        let config = ScraperConfig {
+            selector: ".main-content".to_string(),
+            ..Default::default()
+        };
 
         let result = extract_content(html, &url, &config, None, None).await;
 
