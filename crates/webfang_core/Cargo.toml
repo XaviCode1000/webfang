@@ -237,6 +237,10 @@ path = "../../tests/checkpoint_store_integration.rs"
 name = "downloader_headers_test"
 path = "../../tests/downloader_headers_test.rs"
 
+[[test]]
+name = "http_client_integration"
+path = "../../tests/http_client_integration.rs"
+
 [lints.clippy]
 doc_markdown = "allow"
 uninlined_format_args = "allow"
