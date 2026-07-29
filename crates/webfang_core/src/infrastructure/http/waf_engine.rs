@@ -703,6 +703,51 @@ fn passes_boundary_filter(
     true
 }
 
+/// Content-Type gate / denylist (REQ-WAF-02).
+///
+/// Decides whether the response body should be scanned for WAF signatures:
+/// 1. `application/xhtml+xml` carve-out → scan (it is HTML despite `+xml`).
+/// 2. Skip structured data (`+json`/`+xml` suffix, `application/json`,
+///    `application/xml`, `text/json`, `text/xml`) and binary assets
+///    (`image/*`, `font/*`, `application/wasm`, `application/javascript`).
+/// 3. `text/*`, missing content-type, or anything else not denied → scan
+///    (this is a denylist, not an allowlist).
+///
+/// The `ignore_waf` short-circuit (REQ-WAF-02 step 1) happens in
+/// [`WafInspector::inspect`] before this gate is consulted.
+fn should_scan_body(ctx: &InspectionContext) -> bool {
+    // Missing content-type → scan.
+    let Some(raw) = &ctx.content_type else {
+        return true;
+    };
+    // Strip parameters (e.g. "text/html; charset=utf-8" → "text/html").
+    let mime = raw
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    // Carve-out: XHTML is HTML — scan it (checked before the +xml skip).
+    if mime == "application/xhtml+xml" {
+        return true;
+    }
+    // Denylist: structured data formats are never HTML challenges.
+    let is_json = mime.ends_with("+json") || mime == "application/json" || mime == "text/json";
+    let is_xml = mime.ends_with("+xml") || mime == "application/xml" || mime == "text/xml";
+    if is_json || is_xml {
+        return false;
+    }
+    // Denylist: binary assets.
+    if mime.starts_with("image/") || mime.starts_with("font/") {
+        return false;
+    }
+    if mime == "application/wasm" || mime == "application/javascript" {
+        return false;
+    }
+    // text/* or anything else not denied → scan.
+    true
+}
+
 /// Calculate Shannon entropy of a string
 ///
 /// Used to detect obfuscated JavaScript in challenge pages, which often have
@@ -982,6 +1027,92 @@ mod tests {
             evidences.iter().any(|e| e.matched_pattern == "akamai"),
             "non-ASCII adjacent bytes are boundaries, 'akamai' stands (got {evidences:?})"
         );
+    }
+
+    // ========================================================================
+    // TASK-04 — Content-Type gate / denylist (REQ-WAF-02)
+    // ========================================================================
+
+    #[test]
+    fn test_gate_skips_application_json() {
+        // Fixture 1 gate: 200 application/json is NOT scanned.
+        let ctx = InspectionContext {
+            content_type: Some("application/json".into()),
+            ..Default::default()
+        };
+        assert!(!should_scan_body(&ctx), "application/json must be skipped");
+    }
+
+    #[test]
+    fn test_gate_skips_structured_suffixes() {
+        for ct in [
+            "application/ld+json",
+            "application/vnd.api+json",
+            "application/atom+xml",
+        ] {
+            let ctx = InspectionContext {
+                content_type: Some(ct.into()),
+                ..Default::default()
+            };
+            assert!(!should_scan_body(&ctx), "{ct} must be skipped");
+        }
+    }
+
+    #[test]
+    fn test_gate_scans_xhtml_carve_out() {
+        // application/xhtml+xml is carved out → scanned despite the +xml suffix.
+        let ctx = InspectionContext {
+            content_type: Some("application/xhtml+xml".into()),
+            ..Default::default()
+        };
+        assert!(
+            should_scan_body(&ctx),
+            "xhtml+xml carve-out must be scanned"
+        );
+    }
+
+    #[test]
+    fn test_gate_skips_binary_assets() {
+        for ct in [
+            "image/png",
+            "image/jpeg",
+            "font/woff2",
+            "application/wasm",
+            "application/javascript",
+        ] {
+            let ctx = InspectionContext {
+                content_type: Some(ct.into()),
+                ..Default::default()
+            };
+            assert!(!should_scan_body(&ctx), "{ct} must be skipped");
+        }
+    }
+
+    #[test]
+    fn test_gate_scans_text_and_missing() {
+        // text/* and missing content-type → scanned (denylist, not allowlist).
+        for ct in [Some("text/html"), Some("text/plain"), None] {
+            let ctx = InspectionContext {
+                content_type: ct.map(String::from),
+                ..Default::default()
+            };
+            assert!(should_scan_body(&ctx), "{ct:?} must be scanned");
+        }
+    }
+
+    #[test]
+    fn test_gate_ignores_charset_parameter() {
+        // Parameters after ';' are ignored when classifying the MIME type.
+        let ctx = InspectionContext {
+            content_type: Some("application/json; charset=utf-8".into()),
+            ..Default::default()
+        };
+        assert!(!should_scan_body(&ctx), "json with charset must be skipped");
+        let ctx = InspectionContext {
+            content_type: Some("text/html; charset=utf-8".into()),
+            ..Default::default()
+        };
+        assert!(should_scan_body(&ctx), "html with charset must be scanned");
     }
 
     // ========================================================================
