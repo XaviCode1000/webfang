@@ -186,7 +186,7 @@ pub async fn discover_urls_for_tui(
 /// # Errors
 ///
 /// Returns [`ScraperError::ExtractionFailed`] when fallback content is below
-/// [`MIN_FALLBACK_CONTENT`] bytes.
+/// `MIN_FALLBACK_CONTENT` bytes.
 pub async fn extract_content(
     html: &str,
     url: &Url,
