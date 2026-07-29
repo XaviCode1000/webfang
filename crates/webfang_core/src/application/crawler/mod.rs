@@ -8,6 +8,7 @@ pub mod concurrency_level;
 pub mod crawl_task_ctx;
 pub mod discovery;
 pub mod engine;
+pub mod progress;
 
 pub use collector::{ResultsAdapter, ResultsCollector};
 pub use concurrency_level::{ConcurrencyLevel, SharedConcurrencyLevel};
@@ -18,3 +19,4 @@ pub use discovery::{
 pub use engine::{
     build_fetch_router, crawl_site, crawl_site_with_options, EngineOptions, FetchRouter,
 };
+pub use progress::CrawlProgress;

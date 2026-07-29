@@ -21,6 +21,7 @@ use super::checkpoint::{
 };
 use super::collector::{CrawlMessage, ResultsCollector};
 use super::concurrency_level::{ConcurrencyLevel, SharedConcurrencyLevel};
+use super::progress::CrawlProgress;
 use crate::application::crawler::crawl_task_ctx::CrawlTaskCtx;
 use crate::application::deduplicator::UrlDeduplicator;
 use crate::application::pipeline::{OutputStage, PipelineExecutor, ScrapedItem, StageOutcome};
@@ -534,6 +535,9 @@ impl Engine {
             output_stages: self.output_stages.to_vec(),
         });
 
+        // Progress tracking start (issue #356 Fase 4)
+        let start = std::time::Instant::now();
+
         // Main crawl loop
         while !url_queue.is_empty() || !tasks.is_empty() {
             // Check shutdown signal
@@ -570,6 +574,20 @@ impl Engine {
                 if pages > 0 && pages.is_multiple_of(self.checkpoint_interval) {
                     debug!("Periodic checkpoint save at {pages} pages");
                     self.save_checkpoint().await;
+
+                    // Periodic structured progress log (issue #356 Fase 4)
+                    let progress =
+                        CrawlProgress::new(pages, config_clone.max_pages, start.elapsed());
+                    info!(
+                        pages_crawled = pages,
+                        max_pages = config_clone.max_pages,
+                        progress_pct = progress.progress_pct(),
+                        elapsed_secs = start.elapsed().as_secs(),
+                        pages_per_sec = progress.pages_per_sec(),
+                        eta_secs = progress.eta_secs(),
+                        trace_id = %self.correlation_id.trace_id(),
+                        "crawl progress"
+                    );
                 }
             }
 
@@ -636,7 +654,23 @@ impl Engine {
         let total_pages = collected_urls.len();
         let errors = self.error_count.load(std::sync::atomic::Ordering::SeqCst);
 
-        info!("Crawl complete: {} pages, {} errors", total_pages, errors);
+        // Structured crawl summary (issue #356 Fase 4)
+        let duration = start.elapsed();
+        let succeeded = total_pages.saturating_sub(errors);
+        let summary_rate = if duration.as_secs_f64() > 0.0 {
+            total_pages as f64 / duration.as_secs_f64()
+        } else {
+            0.0
+        };
+        info!(
+            total_pages = total_pages,
+            succeeded = succeeded,
+            errors = errors,
+            duration_secs = duration.as_secs(),
+            pages_per_sec = summary_rate,
+            trace_id = %self.correlation_id.trace_id(),
+            "crawl completed"
+        );
 
         Ok(CrawlResult::new(collected_urls, total_pages, errors))
     }
