@@ -1072,8 +1072,8 @@ mod tests {
         );
         let msg = err.to_string().to_lowercase();
         assert!(
-            msg.contains("timeout") || msg.contains("http error"),
-            "error should mention timeout/http error, got: {msg}"
+            msg.contains("timed out") || msg.contains("timeout"),
+            "expected timeout message, got: {msg}"
         );
     }
 
@@ -1110,10 +1110,16 @@ mod tests {
         let elapsed = start.elapsed();
 
         let err = result.expect_err("TLS blackhole should fail to connect");
-        eprintln!("connect-timeout error variant: {err:?}");
         assert!(
             elapsed < Duration::from_secs(6),
             "2s connect timeout should fire well before 6s, took {elapsed:?}"
+        );
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("client error (connect)")
+                || msg.contains("connection")
+                || msg.contains("connect"),
+            "expected connect-failure message, got: {msg}"
         );
     }
 
