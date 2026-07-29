@@ -8,6 +8,8 @@
 //! - Insufficient static content (body too short)
 //! - WAF challenge pages that impersonate SPAs
 
+use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
+
 /// Signal indicating whether a page is static, an SPA, or WAF-blocked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpaSignal {
@@ -53,18 +55,9 @@ const SPA_MARKERS: &[(&str, &str)] = &[
     ("__REMIX_DATA__", "Remix"),
 ];
 
-/// WAF challenge markers (to avoid false-positive SPA detection).
-///
-/// These indicate the page is a WAF challenge page, not a real SPA.
-const WAF_MARKERS: &[&str] = &[
-    "challenge-running",
-    "Just a moment",
-    "Checking your browser",
-    "cf-browser-verification",
-    "g-recaptcha",
-    "hcaptcha",
-    "data-sitekey",
-];
+// WAF challenge classification is delegated to the shared inspection verdict
+// (REQ-WAF-10) — the former local `WAF_MARKERS` list was folded into the
+// unified signature registry in `waf_engine` and removed here.
 
 /// Detect whether an HTML page is static content, an SPA, or a WAF challenge.
 ///
@@ -88,11 +81,14 @@ const WAF_MARKERS: &[&str] = &[
 /// assert!(matches!(detect_spa(spa), SpaSignal::SpaDetected(_)));
 /// ```
 pub fn detect_spa(html: &str) -> SpaSignal {
-    // Check for WAF markers first — these are not real SPAs
-    for marker in WAF_MARKERS {
-        if html.contains(marker) {
-            return SpaSignal::WafBlocked;
-        }
+    // Check for WAF challenges first via the shared inspection verdict
+    // (REQ-WAF-10) — challenge pages are not real SPAs. Degraded context (no
+    // HTTP status/content-type): only Challenge-tier (T1) markers classify a
+    // challenge, so bare Fingerprint vendor names no longer cause false
+    // positives (issue #346).
+    let verdict = WafInspector::inspect(html, &InspectionContext::default());
+    if verdict.is_blocked {
+        return SpaSignal::WafBlocked;
     }
 
     // Check content length
@@ -235,6 +231,8 @@ mod tests {
 
     #[test]
     fn test_waf_cloudflare_challenge() {
+        // Challenge-tier (T1) markers classify a challenge via the shared
+        // inspection verdict (REQ-WAF-10) — not a real SPA.
         let html = r#"<!DOCTYPE html>
 <html>
 <head><title>Just a moment...</title></head>
@@ -247,6 +245,7 @@ mod tests {
 
     #[test]
     fn test_waf_recaptcha() {
+        // g-recaptcha is a Challenge-tier (T1) widget marker → challenge verdict.
         let html = r#"<!DOCTYPE html>
 <html>
 <body>
@@ -258,6 +257,8 @@ mod tests {
 
     #[test]
     fn test_waf_hcaptcha() {
+        // h-captcha is a Challenge-tier (T1) widget marker → challenge verdict
+        // (data-sitekey alone is only Fingerprint-tier and would not block).
         let html = r#"<!DOCTYPE html>
 <html>
 <body>
@@ -269,7 +270,8 @@ mod tests {
 
     #[test]
     fn test_waf_checked_before_spa() {
-        // WAF markers should be detected even if SPA markers are present
+        // WAF challenges are detected even if SPA markers are present
+        // (now via the shared inspection verdict — REQ-WAF-10).
         let html = r#"<!DOCTYPE html>
 <html>
 <body>
@@ -278,6 +280,15 @@ mod tests {
 </body>
 </html>"#;
         assert_eq!(detect_spa(html), SpaSignal::WafBlocked);
+    }
+
+    #[test]
+    fn test_waf_t2_fingerprint_alone_not_challenge() {
+        // REQ-WAF-10 / #346: a bare Fingerprint-tier marker (a vendor name in
+        // prose) is NOT a challenge in degraded mode — it falls through to normal
+        // static classification instead of a false-positive WafBlocked.
+        let html = r#"<html><body><article><p>This site is protected by cloudflare.</p></article></body></html>"#;
+        assert_eq!(detect_spa(html), SpaSignal::StaticContent);
     }
 
     #[test]
