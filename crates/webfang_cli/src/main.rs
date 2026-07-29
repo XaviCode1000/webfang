@@ -430,7 +430,7 @@ async fn __main() -> CliExit {
     };
 
     #[cfg(feature = "ai")]
-    let ai_cleaner: Option<Arc<dyn SemanticCleaner>> = if opts.ai {
+    let ai_cleaner: Option<Arc<dyn SemanticCleaner>> = if opts.ai && !opts.export.dry_run {
         // Resolve model variant: CLI flag takes precedence over AI_MODEL_ID env var
         let model_variant = if opts.ai_config.model.is_empty() {
             webfang_ai::AiModel::from_env_or_default()
