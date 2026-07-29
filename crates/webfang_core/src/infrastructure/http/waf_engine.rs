@@ -89,6 +89,18 @@ impl WafVerdict {
     pub fn clean() -> Self {
         Self::default()
     }
+
+    /// Spanish user-facing evidence chain for the block error (REQ-WAF-08).
+    ///
+    /// Each evidence renders as `provider (patrón: <pattern>, tier: <label_es>)`,
+    /// joined by `; `. Falls back to a generic label when the verdict carries no
+    /// evidence. Callers that raise a block error (HTTP client, scraper service,
+    /// crawler discovery, MCP) pass this string as the `provider` payload so the
+    /// full chain reaches the user instead of a bare first-hit provider name.
+    #[must_use]
+    pub fn evidence_chain(&self) -> String {
+        format_evidence_chain(&self.evidences)
+    }
 }
 
 /// HTTP context for a WAF inspection (REQ-WAF-01).
@@ -1526,6 +1538,50 @@ mod tests {
     #[test]
     fn test_evidence_chain_empty_fallback() {
         assert_eq!(format_evidence_chain(&[]), "WAF desconocido");
+    }
+
+    // ========================================================================
+    // TASK-10 — Public verdict evidence-chain accessor (REQ-WAF-08)
+    // ========================================================================
+
+    #[test]
+    fn test_verdict_evidence_chain_lists_all_evidences() {
+        // REQ-WAF-08: callers (client/scraper_service/discovery/MCP) format the
+        // Spanish evidence chain straight from the verdict they received.
+        let verdict = WafVerdict {
+            is_blocked: true,
+            evidences: vec![
+                WafEvidence {
+                    provider: "Cloudflare",
+                    tier: WafTier::Challenge,
+                    matched_pattern: "cf-turnstile",
+                },
+                WafEvidence {
+                    provider: "Akamai",
+                    tier: WafTier::Fingerprint,
+                    matched_pattern: "akamai",
+                },
+            ],
+        };
+        let chain = verdict.evidence_chain();
+        assert!(chain.contains("Cloudflare"), "chain: {chain}");
+        assert!(chain.contains("cf-turnstile"), "chain: {chain}");
+        assert!(
+            chain.contains("desafío"),
+            "Challenge Spanish label: {chain}"
+        );
+        assert!(chain.contains("Akamai"), "chain: {chain}");
+        assert!(
+            chain.contains("huella"),
+            "Fingerprint Spanish label: {chain}"
+        );
+    }
+
+    #[test]
+    fn test_verdict_evidence_chain_clean_is_fallback() {
+        // A clean verdict (no evidence) renders the generic fallback label.
+        let verdict = WafVerdict::clean();
+        assert_eq!(verdict.evidence_chain(), "WAF desconocido");
     }
 
     #[test]

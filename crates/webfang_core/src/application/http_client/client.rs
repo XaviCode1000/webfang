@@ -6,7 +6,7 @@ use crate::domain::http_config::HttpClientConfig;
 use crate::domain::http_error::{HttpError, HttpResult};
 use crate::domain::session_port::{SessionId, SessionPort};
 use crate::error::ScraperError;
-use crate::infrastructure::http::waf_engine::WafInspector;
+use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
 use crate::infrastructure::user_agent::UserAgentCache;
 use governor::clock::DefaultClock;
 use governor::state::{InMemoryState, NotKeyed};
@@ -238,43 +238,30 @@ impl HttpClient {
 
             match status.as_u16() {
                 200..=299 => {
+                    // Build the inspection context BEFORE consuming the body
+                    // (headers borrow must end before `.text()`).
+                    // `ignore_waf` is wired to config in TASK-13.
+                    let ctx = inspection_context(status.as_u16(), response.headers(), false);
+
                     let body = response
                         .text()
                         .await
                         .map_err(|e| HttpError::Request(e.to_string()))?;
 
-                    if let Some(provider) = WafInspector::detect_body(&body) {
+                    // Context-aware WAF inspection (REQ-WAF-05). A classified
+                    // block returns immediately — the old fallback ladder
+                    // (~4 requests / ~5s of UA rotation) is gone: with tiered,
+                    // evidence-based detection a block is a genuine challenge
+                    // that UA rotation cannot bypass, and false positives no
+                    // longer reach this branch.
+                    let verdict = WafInspector::inspect(&body, &ctx);
+                    if verdict.is_blocked {
                         warn!(
-                            "WAF challenge detected from {} ({}), attempting fallback strategies",
-                            url, provider
+                            "WAF/CAPTCHA challenge detected from {} ({} evidences); blocking",
+                            url,
+                            verdict.evidences.len()
                         );
-
-                        // Fallback strategy 1: Rotate user agent (up to 3 attempts)
-                        if ua_index < 3 {
-                            ua_index += 1;
-                            // Add small delay to avoid rapid retries
-                            tokio::time::sleep(Duration::from_millis(500)).await;
-                            continue;
-                        }
-
-                        // Fallback strategy 2: Try with minimal headers (remove referer/cache-control)
-                        if ua_index == 3 {
-                            ua_index += 1;
-                            warn!("Trying minimal headers for WAF bypass");
-                            continue; // Will use different headers below
-                        }
-
-                        // Fallback strategy 3: Add random delay (1-3 seconds)
-                        if ua_index == 4 {
-                            use rand::Rng;
-                            ua_index += 1;
-                            let delay_ms = 1000 + (rand::rng().random::<u64>() % 2000);
-                            warn!("Adding random delay {}ms for WAF bypass", delay_ms);
-                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                            continue;
-                        }
-
-                        return Err(HttpError::WafChallenge(provider.to_string()));
+                        return Err(HttpError::WafChallenge(verdict.evidence_chain()));
                     }
 
                     return Ok(body);
@@ -350,6 +337,27 @@ impl HttpClient {
                 500..=599 => {
                     debug!("{} from {}", status, url);
 
+                    // Inspect the initial response BEFORE retrying (REQ-WAF-05).
+                    // Approved behavior change: a 503 Cloudflare challenge is
+                    // classified as a WAF block instead of dying as a generic
+                    // ServerError after exhausting retries. `ignore_waf` is
+                    // wired to config in TASK-13.
+                    let ctx = inspection_context(status.as_u16(), response.headers(), false);
+                    let body = response
+                        .text()
+                        .await
+                        .map_err(|e| HttpError::Request(e.to_string()))?;
+                    let verdict = WafInspector::inspect(&body, &ctx);
+                    if verdict.is_blocked {
+                        warn!(
+                            "WAF/CAPTCHA challenge detected from {} on {} ({} evidences); blocking",
+                            url,
+                            status,
+                            verdict.evidences.len()
+                        );
+                        return Err(HttpError::WafChallenge(verdict.evidence_chain()));
+                    }
+
                     let mut attempt = 0;
                     let ua_for_retry = ua.clone();
                     while attempt < max_attempts {
@@ -402,6 +410,24 @@ impl HttpClient {
                 },
             }
         }
+    }
+}
+
+/// Build a WAF [`InspectionContext`] from an HTTP response's status and headers.
+///
+/// Extracts the content-type for the REQ-WAF-02 gate and clones the headers for
+/// control-header evidence (REQ-WAF-03). `ignore_waf` short-circuits inspection
+/// to a clean verdict (REQ-WAF-07). The header borrow ends when this returns
+/// (the map is cloned), so the caller can still consume the response body.
+fn inspection_context(status: u16, headers: &HeaderMap, ignore_waf: bool) -> InspectionContext {
+    InspectionContext {
+        status: Some(status),
+        content_type: headers
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from),
+        headers: headers.clone(),
+        ignore_waf,
     }
 }
 
@@ -923,6 +949,137 @@ mod waf_detection_tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), normal_body);
+    }
+
+    // ========================================================================
+    // TASK-10 — context-aware inspect() in the 2xx + 5xx branches (REQ-WAF-05/07)
+    // ========================================================================
+
+    /// Approved behavior change: a 503 Cloudflare challenge is classified as a
+    /// WAF block (WafChallenge) instead of dying as a generic ServerError(503)
+    /// after exhausting retries. `.expect(1)` proves the block returns
+    /// immediately — no retry loop, no wasted requests.
+    #[tokio::test]
+    async fn test_503_cloudflare_challenge_returns_waf_error_not_server_error() {
+        let mock_server = MockServer::start().await;
+
+        let challenge_body = r#"<html><head><title>Just a moment...</title></head>
+        <body><div id="challenge-running">Checking your browser...</div></body></html>"#;
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(503)
+                    .insert_header("content-type", "text/html; charset=utf-8")
+                    .set_body_string(challenge_body),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = HttpClientConfig {
+            max_retries: 3,
+            backoff_base_ms: 10,
+            backoff_max_ms: 50,
+            ..Default::default()
+        };
+        let client = HttpClient::new(config).unwrap();
+
+        let result = client.get(&mock_server.uri()).await;
+
+        let err = result.expect_err("503 challenge must be a WAF block, not Ok");
+        assert!(
+            matches!(err, HttpError::WafChallenge(_)),
+            "expected WafChallenge, got {err:?}"
+        );
+        mock_server.verify().await;
+    }
+
+    /// A genuine 5xx error with no WAF signature still surfaces as ServerError
+    /// (triangulation: the 5xx inspection only diverts actual challenges).
+    #[tokio::test]
+    async fn test_503_plain_error_still_returns_server_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(503)
+                    .insert_header("content-type", "text/plain")
+                    .set_body_string("service temporarily unavailable"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let config = HttpClientConfig {
+            max_retries: 1,
+            backoff_base_ms: 10,
+            backoff_max_ms: 50,
+            ..Default::default()
+        };
+        let client = HttpClient::new(config).unwrap();
+
+        let result = client.get(&mock_server.uri()).await;
+
+        assert!(
+            matches!(result.unwrap_err(), HttpError::ServerError(503)),
+            "plain 503 must stay a ServerError"
+        );
+    }
+
+    /// REQ-WAF-02/04/05 at the client boundary: a 200 `application/json` body
+    /// carrying `akamai_hash` (the tls.peet.ws false positive from issue #346)
+    /// passes — the content-type gate skips scanning JSON entirely.
+    #[tokio::test]
+    async fn test_200_json_akamai_hash_passes() {
+        let mock_server = MockServer::start().await;
+
+        let json_body = r#"{"tls":{"peetprint_hash":"abc123","akamai_hash":"def456"}}"#;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_string(json_body),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let config = HttpClientConfig::default();
+        let client = HttpClient::new(config).unwrap();
+
+        let result = client.get(&mock_server.uri()).await;
+
+        assert!(result.is_ok(), "JSON akamai_hash must pass, got {result:?}");
+        assert_eq!(result.unwrap(), json_body);
+    }
+
+    /// A classified 200 challenge returns immediately: `.expect(1)` proves the
+    /// old fallback ladder (~4 requests / ~5s of UA rotation) is gone.
+    #[tokio::test]
+    async fn test_200_classified_block_skips_fallback_ladder() {
+        let mock_server = MockServer::start().await;
+
+        let challenge_body =
+            r#"<html><body><div class="g-recaptcha" data-sitekey="abc"></div></body></html>"#;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/html; charset=utf-8")
+                    .set_body_string(challenge_body),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = HttpClientConfig::default();
+        let client = HttpClient::new(config).unwrap();
+
+        let result = client.get(&mock_server.uri()).await;
+
+        assert!(matches!(result.unwrap_err(), HttpError::WafChallenge(_)));
+        mock_server.verify().await;
     }
 }
 
