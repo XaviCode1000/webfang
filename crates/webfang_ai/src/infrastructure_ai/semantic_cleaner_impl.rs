@@ -170,16 +170,16 @@ impl ModelConfig {
     }
 
     /// Set relevance threshold for filtering
-    #[must_use]
-    pub fn with_relevance_threshold(mut self, threshold: f32) -> Self {
-        // Validate threshold range
-        assert!(
-            (0.0..=1.0).contains(&threshold),
-            "Relevance threshold must be between 0.0 and 1.0, got {}",
-            threshold
-        );
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SemanticError::InvalidThreshold`] if `threshold` is outside [0.0, 1.0].
+    pub fn with_relevance_threshold(mut self, threshold: f32) -> Result<Self, SemanticError> {
+        if !(0.0..=1.0).contains(&threshold) {
+            return Err(SemanticError::InvalidThreshold { value: threshold });
+        }
         self.relevance_threshold = threshold;
-        self
+        Ok(self)
     }
 
     /// Set AI model variant
@@ -716,7 +716,8 @@ mod tests {
             .with_auto_download(false)
             .with_offline_mode(true)
             .with_max_tokens(256)
-            .with_relevance_threshold(0.5);
+            .with_relevance_threshold(0.5)
+            .unwrap();
 
         assert_eq!(config.repo, "test/repo");
         assert_eq!(config.model_file, "test.onnx");
@@ -727,9 +728,15 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Relevance threshold must be between")]
     fn test_model_config_invalid_threshold() {
-        let _ = ModelConfig::new().with_relevance_threshold(1.5);
+        let result = ModelConfig::new().with_relevance_threshold(1.5);
+        assert!(result.is_err());
+        match result {
+            Err(SemanticError::InvalidThreshold { value }) => {
+                assert_eq!(value, 1.5);
+            },
+            _ => panic!("Expected InvalidThreshold error"),
+        }
     }
 
     #[test]
@@ -782,7 +789,9 @@ mod tests {
 
     #[test]
     fn test_model_config_with_relevance_threshold() {
-        let config = ModelConfig::default().with_relevance_threshold(0.5);
+        let config = ModelConfig::default()
+            .with_relevance_threshold(0.5)
+            .unwrap();
         assert_eq!(config.relevance_threshold, 0.5);
     }
 
@@ -797,7 +806,8 @@ mod tests {
             .with_auto_download(false)
             .with_offline_mode(true)
             .with_max_tokens(256)
-            .with_relevance_threshold(0.4);
+            .with_relevance_threshold(0.4)
+            .unwrap();
 
         assert_eq!(config.repo, "test/repo");
         assert_eq!(config.model_file, "test.onnx");

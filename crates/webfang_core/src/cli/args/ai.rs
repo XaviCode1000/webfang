@@ -1,11 +1,23 @@
 use clap::Args;
 
+fn parse_threshold(s: &str) -> Result<f32, String> {
+    let val: f32 = s
+        .parse()
+        .map_err(|_| format!("'{s}' no es un número válido"))?;
+    if !(0.0..=1.0).contains(&val) {
+        return Err(format!(
+            "'{s}' está fuera de rango (rango válido: 0.0 a 1.0)"
+        ));
+    }
+    Ok(val)
+}
+
 /// AI-powered semantic cleaning arguments.
 #[derive(Args, Debug, Default)]
 pub struct AiArgs {
     /// Relevance threshold for AI semantic filtering (0.0-1.0)
     #[cfg(feature = "ai")]
-    #[arg(long, default_value = "0.3", env = "WEBFANG_THRESHOLD")]
+    #[arg(long, default_value = "0.3", env = "WEBFANG_THRESHOLD", value_parser = parse_threshold)]
     #[clap(next_help_heading = "AI Settings")]
     pub threshold: f32,
 

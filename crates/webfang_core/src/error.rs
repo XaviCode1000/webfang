@@ -288,6 +288,17 @@ pub enum SemanticError {
         /// HuggingFace repository
         repo: String,
     },
+
+    /// Relevance threshold out of valid range [0.0, 1.0]
+    ///
+    /// This occurs when:
+    /// - User provides a threshold outside the valid range
+    /// - Programmatic API receives an invalid threshold value
+    #[error("Umbral de relevancia inválido: {value} (rango válido: 0.0 a 1.0)")]
+    InvalidThreshold {
+        /// The invalid threshold value provided
+        value: f32,
+    },
 }
 
 /// Result type alias using ScraperError as the error type.
