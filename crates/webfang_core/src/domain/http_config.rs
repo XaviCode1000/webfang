@@ -7,6 +7,8 @@
 //! consumes it; infrastructure maps domain values (e.g. the TLS profile)
 //! onto a concrete client when building the network stack.
 
+use thiserror::Error;
+
 /// Configuration for HTTP client behavior
 ///
 /// Controls headers, retry behavior, and cookie handling.
@@ -35,13 +37,14 @@ pub struct HttpClientConfig {
     pub connect_timeout_secs: u64,
     /// Rate limit: requests per minute (None for no limit)
     pub rate_limit_rpm: Option<u32>,
-    /// TLS fingerprint emulation preset
+    /// TLS fingerprint emulation preset.
+    ///
+    /// This is the **single source of truth** for the TLS/H2 fingerprint: the
+    /// network stack applies it directly when building the client. Construct it
+    /// from a user-supplied name with [`HttpClientConfig::profile_from_name`].
     pub tls_emulation: wreq_util::Profile,
     /// Custom User-Agent override
     pub user_agent: Option<String>,
-    /// H2/TLS profile name (e.g. "Chrome145", "Chrome131").
-    /// Mapped to `tls_emulation` on construction.
-    pub h2_profile: String,
 }
 
 impl Default for HttpClientConfig {
@@ -60,26 +63,41 @@ impl Default for HttpClientConfig {
             rate_limit_rpm: None,
             tls_emulation: wreq_util::Profile::Chrome145,
             user_agent: None,
-            h2_profile: "Chrome145".to_owned(),
         }
     }
 }
 
 impl HttpClientConfig {
-    /// Resolve an H2 profile name to a `wreq_util::Profile`.
+    /// Parse an H2/TLS profile name into a [`wreq_util::Profile`].
     ///
-    /// Falls back to Chrome145 for unknown names.
-    #[must_use]
-    pub fn resolve_profile(name: &str) -> wreq_util::Profile {
+    /// This is the fallible boundary that converts a user-facing profile name
+    /// (e.g. the `--h2-profile` CLI value) into the typed
+    /// [`Self::tls_emulation`] preset. Unknown names are an error — there is
+    /// **no** silent fallback to a default profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UnknownProfileError`] if `name` is not a recognized profile.
+    pub fn profile_from_name(name: &str) -> Result<wreq_util::Profile, UnknownProfileError> {
         match name {
-            "Chrome131" => wreq_util::Profile::Chrome131,
-            "Chrome145" => wreq_util::Profile::Chrome145,
-            _ => {
-                tracing::warn!("Unknown H2 profile '{name}', falling back to Chrome145");
-                wreq_util::Profile::Chrome145
-            },
+            "Chrome131" => Ok(wreq_util::Profile::Chrome131),
+            "Chrome145" => Ok(wreq_util::Profile::Chrome145),
+            _ => Err(UnknownProfileError {
+                name: name.to_owned(),
+            }),
         }
     }
+}
+
+/// Error returned when an H2/TLS profile name is not recognized.
+///
+/// The user-facing [`Display`](std::fmt::Display) message is in Spanish and
+/// lists the valid options, per the project's user-facing-error convention.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[error("Perfil TLS desconocido: '{name}'. Opciones válidas: Chrome131, Chrome145")]
+pub struct UnknownProfileError {
+    /// The unrecognized profile name supplied by the user.
+    pub name: String,
 }
 
 #[cfg(test)]
@@ -106,7 +124,6 @@ mod tests {
         assert_eq!(config.rate_limit_rpm, None);
         assert_eq!(config.tls_emulation, wreq_util::Profile::Chrome145);
         assert_eq!(config.user_agent, None);
-        assert_eq!(config.h2_profile, "Chrome145");
     }
 
     #[test]
@@ -134,7 +151,6 @@ mod tests {
             rate_limit_rpm: Some(30),
             tls_emulation: wreq_util::Profile::Chrome131,
             user_agent: Some("custom".into()),
-            h2_profile: "Chrome131".to_owned(),
         };
 
         assert_eq!(config.accept_language, "es-ES");
@@ -144,26 +160,38 @@ mod tests {
         assert_eq!(config.connect_timeout_secs, 20);
         assert_eq!(config.rate_limit_rpm, Some(30));
         assert_eq!(config.tls_emulation, wreq_util::Profile::Chrome131);
-        assert_eq!(config.h2_profile, "Chrome131");
     }
 
     #[test]
-    fn test_resolve_profile_known_names() {
+    fn test_profile_from_name_known_names() {
         assert_eq!(
-            HttpClientConfig::resolve_profile("Chrome131"),
+            HttpClientConfig::profile_from_name("Chrome131").unwrap(),
             wreq_util::Profile::Chrome131
         );
         assert_eq!(
-            HttpClientConfig::resolve_profile("Chrome145"),
+            HttpClientConfig::profile_from_name("Chrome145").unwrap(),
             wreq_util::Profile::Chrome145
         );
     }
 
     #[test]
-    fn test_resolve_profile_unknown_falls_back() {
-        assert_eq!(
-            HttpClientConfig::resolve_profile("UnknownProfile"),
-            wreq_util::Profile::Chrome145
-        );
+    fn test_profile_from_name_unknown_returns_err() {
+        let err = HttpClientConfig::profile_from_name("Firefox").unwrap_err();
+        assert_eq!(err.name, "Firefox");
+    }
+
+    #[test]
+    fn test_unknown_profile_error_display_is_spanish() {
+        let err = HttpClientConfig::profile_from_name("Firefox").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Perfil TLS desconocido: 'Firefox'"));
+        assert!(msg.contains("Chrome131"));
+        assert!(msg.contains("Chrome145"));
+    }
+
+    #[test]
+    fn test_unknown_profile_error_is_std_error() {
+        let err = HttpClientConfig::profile_from_name("Firefox").unwrap_err();
+        let _: &dyn std::error::Error = &err;
     }
 }

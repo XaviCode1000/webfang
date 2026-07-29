@@ -101,6 +101,12 @@ pub async fn apply_resume_mode(
 ///
 /// The observer handles quiet/channel logic internally — callers pass
 /// `&NoopObserver` for dry-run or `&LiveProgressObserver` for live output.
+///
+/// # Errors
+///
+/// Returns [`crate::domain::UnknownProfileError`] if the configured H2/TLS
+/// profile name (`opts.network.h2_profile`) is not recognized. This is a
+/// setup failure that aborts the whole batch before any URL is scraped.
 pub async fn scrape_urls(
     urls: &[Url],
     scraper_config: &ScraperConfig,
@@ -108,14 +114,17 @@ pub async fn scrape_urls(
     observer: &dyn ProgressObserver,
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     engine: Option<&AdaptiveSelectorEngine>,
-) -> (
-    Vec<ScrapedContent>,
-    Vec<(String, crate::error::ScraperError)>,
-) {
+) -> Result<
+    (
+        Vec<ScrapedContent>,
+        Vec<(String, crate::error::ScraperError)>,
+    ),
+    crate::domain::UnknownProfileError,
+> {
     // Build the fetch router from the configured JS strategy. `--force-js-render`
     // upgrades a Static strategy to Hybrid so JS-capable fetching is used instead
     // of returning a feature-gated error (issue #303).
-    let http_config = build_http_client_config(opts);
+    let http_config = build_http_client_config(opts)?;
     let effective_strategy =
         if opts.network.force_js_render && matches!(opts.network.js_strategy, JsStrategy::Static) {
             JsStrategy::Hybrid
@@ -197,20 +206,22 @@ pub async fn scrape_urls(
         .on_finished(processing_count, total_successful, total_failed)
         .await;
 
-    (results, failures)
+    Ok((results, failures))
 }
 
-fn build_http_client_config(opts: &CrawlOptions) -> HttpClientConfig {
-    HttpClientConfig {
+fn build_http_client_config(
+    opts: &CrawlOptions,
+) -> Result<HttpClientConfig, crate::domain::UnknownProfileError> {
+    Ok(HttpClientConfig {
         max_retries: opts.network.max_retries,
         backoff_base_ms: opts.network.backoff_base_ms,
         backoff_max_ms: opts.network.backoff_max_ms,
         accept_language: opts.network.accept_language.clone(),
         user_agent: opts.network.user_agent.clone(),
         timeout_secs: opts.network.timeout_secs,
-        h2_profile: opts.network.h2_profile.clone(),
+        tls_emulation: HttpClientConfig::profile_from_name(&opts.network.h2_profile)?,
         ..HttpClientConfig::default()
-    }
+    })
 }
 
 #[cfg(test)]
@@ -229,7 +240,7 @@ mod tests {
         let mut opts = CrawlOptions::default();
         opts.network.timeout_secs = 7;
 
-        let config = build_http_client_config(&opts);
+        let config = build_http_client_config(&opts).unwrap();
 
         assert_eq!(config.timeout_secs, 7);
         assert_eq!(config.max_retries, opts.network.max_retries);
@@ -242,9 +253,29 @@ mod tests {
     fn build_http_client_config_preserves_default_timeout_when_unset() {
         let opts = CrawlOptions::default();
 
-        let config = build_http_client_config(&opts);
+        let config = build_http_client_config(&opts).unwrap();
 
         assert_eq!(config.timeout_secs, 30);
+    }
+
+    #[test]
+    fn build_http_client_config_maps_h2_profile_to_tls_emulation() {
+        let mut opts = CrawlOptions::default();
+        opts.network.h2_profile = "Chrome131".to_owned();
+
+        let config = build_http_client_config(&opts).unwrap();
+
+        assert_eq!(config.tls_emulation, wreq_util::Profile::Chrome131);
+    }
+
+    #[test]
+    fn build_http_client_config_rejects_unknown_profile() {
+        let mut opts = CrawlOptions::default();
+        opts.network.h2_profile = "Firefox".to_owned();
+
+        let err = build_http_client_config(&opts).unwrap_err();
+
+        assert_eq!(err.name, "Firefox");
     }
 
     // ===== robots tests =====

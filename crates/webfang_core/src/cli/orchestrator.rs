@@ -124,7 +124,7 @@ pub async fn run(
     #[cfg(not(feature = "adaptive-selectors"))]
     let engine_ref: Option<&AdaptiveSelectorEngine> = None;
 
-    let (results, failures) = scrape_phase(
+    let (results, failures) = match scrape_phase(
         &urls_to_scrape,
         &prepare.scraper_config,
         &opts,
@@ -135,7 +135,13 @@ pub async fn run(
             .map(|d| d as &dyn crate::domain::ports::AssetDownloaderPort),
         engine_ref,
     )
-    .await;
+    .await
+    {
+        Ok(pair) => pair,
+        // Unknown TLS profile is a config error: surface the Spanish message
+        // and exit 78 rather than silently scraping with a wrong fingerprint.
+        Err(e) => return CliExit::ConfigError(e.to_string()),
+    };
 
     if let Some(ref ingestion) = elastic_ingestion {
         if let Err(e) = run_elastic_ingestion(ingestion, &results).await {
@@ -320,6 +326,11 @@ struct PrepareResult {
 }
 
 /// Run the scraping loop over all URLs with progress events.
+///
+/// # Errors
+///
+/// Returns [`crate::domain::UnknownProfileError`] if the configured H2/TLS
+/// profile name is not recognized (a setup failure, before any URL is scraped).
 async fn scrape_phase(
     urls: &[url::Url],
     scraper_config: &ScraperConfig,
@@ -327,10 +338,13 @@ async fn scrape_phase(
     observer: &dyn crate::application::progress_observer::ProgressObserver,
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     engine: Option<&AdaptiveSelectorEngine>,
-) -> (
-    Vec<domain::ScrapedContent>,
-    Vec<(String, crate::error::ScraperError)>,
-) {
+) -> Result<
+    (
+        Vec<domain::ScrapedContent>,
+        Vec<(String, crate::error::ScraperError)>,
+    ),
+    crate::domain::UnknownProfileError,
+> {
     scrape_urls(urls, scraper_config, opts, observer, downloader, engine).await
 }
 
