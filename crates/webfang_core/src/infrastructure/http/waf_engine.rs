@@ -5,27 +5,29 @@
 //! - Detection by Control Headers (x-datadome-response, cf-mitigated, etc.)
 //! - Entropy analysis for "Silent Challenge" detection
 //! - Efficient O(N) matching using Aho-Corasick for 60+ signatures
-//! - Body-only detection via `detect_body()` for callers that only have the body
+//! - Context-aware, tiered, evidence-based inspection via [`WafInspector::inspect`]
 //!
 //! # Usage
 //!
 //! ```ignore
-//! use webfang_core::infrastructure::http::waf_engine::WafInspector;
+//! use webfang_core::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
 //!
-//! # let response = wreq::header::HeaderMap::new();
+//! # let headers = wreq::header::HeaderMap::new();
 //! # let body = String::new();
-//! // Full integrity check (headers + body)
-//! if let Err(e) = WafInspector::verify_integrity(&response, &body) {
-//!     return Err(e);
-//! }
-//!
-//! // Body-only check (replaces legacy detect_waf_challenge)
-//! if let Some(provider) = WafInspector::detect_body(&body) {
-//!     eprintln!("WAF detected: {provider}");
+//! // Build the inspection context from the HTTP response (status + content-type
+//! // + headers); callers with only the body use the degraded default.
+//! let ctx = InspectionContext {
+//!     status: Some(200),
+//!     content_type: Some("text/html".into()),
+//!     headers,
+//!     ignore_waf: false,
+//! };
+//! let verdict = WafInspector::inspect(&body, &ctx);
+//! if verdict.is_blocked {
+//!     return Err(verdict.evidence_chain());
 //! }
 //! ```
 
-use crate::error::ScraperError;
 use aho_corasick::AhoCorasick;
 use once_cell::sync::Lazy;
 use std::collections::HashSet;
@@ -613,48 +615,6 @@ impl WafInspector {
         }
     }
 
-    /// Scan a body for WAF challenge signatures (body-only callers).
-    ///
-    /// Transitional shim over [`WafInspector::inspect`] in **degraded mode**
-    /// (no HTTP context): returns the first evidence's provider when the verdict
-    /// blocks, or `None` otherwise. In degraded mode only [`WafTier::Challenge`]
-    /// markers block; [`WafTier::Fingerprint`] evidence never blocks (REQ-WAF-05).
-    /// Callers should migrate to `inspect` with a full [`InspectionContext`].
-    #[must_use]
-    pub fn detect_body(body: &str) -> Option<&'static str> {
-        let ctx = InspectionContext::default();
-        let verdict = Self::inspect(body, &ctx);
-        if verdict.is_blocked {
-            verdict.evidences.first().map(|e| e.provider)
-        } else {
-            None
-        }
-    }
-
-    /// Verify response integrity across headers + body (callers with headers).
-    ///
-    /// Transitional shim over [`WafInspector::inspect`] in **degraded mode**
-    /// (headers present, but no status/content-type): returns
-    /// [`ScraperError::WafBlocked`] when the verdict blocks. Control headers are
-    /// [`WafTier::Fingerprint`] evidence and never auto-block on mere presence
-    /// (correction B). Callers should migrate to `inspect` with a full
-    /// [`InspectionContext`].
-    pub fn verify_integrity(headers: &HeaderMap, body: &str) -> Result<(), ScraperError> {
-        let ctx = InspectionContext {
-            headers: headers.clone(),
-            ..Default::default()
-        };
-        let verdict = Self::inspect(body, &ctx);
-        if verdict.is_blocked {
-            Err(ScraperError::waf_blocked(
-                String::new(),
-                format_evidence_chain(&verdict.evidences),
-            ))
-        } else {
-            Ok(())
-        }
-    }
-
     /// Get the list of supported WAF providers
     #[must_use]
     pub fn supported_providers() -> Vec<&'static str> {
@@ -959,6 +919,7 @@ fn is_suspicious_size(body_len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::ScraperError;
 
     // ========================================================================
     // TASK-01 — Domain types + InspectionContext API (REQ-WAF-01)
@@ -1681,17 +1642,13 @@ mod tests {
 
     #[test]
     fn test_verify_integrity_error_carries_evidence_chain() {
-        // REQ-WAF-08: the block error message lists each evidence in Spanish.
-        let result = WafInspector::verify_integrity(&HeaderMap::new(), "Just a moment...");
-        let err = result.expect_err("T1 prose must block");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("WAF/CAPTCHA detectado"),
-            "Spanish prefix: {msg}"
-        );
-        assert!(msg.contains("Cloudflare"), "chain provider: {msg}");
-        assert!(msg.contains("patrón:"), "chain pattern label: {msg}");
-        assert!(msg.contains("tier:"), "chain tier label: {msg}");
+        // REQ-WAF-08: a blocked verdict exposes the Spanish evidence chain.
+        let verdict = WafInspector::inspect("Just a moment...", &InspectionContext::default());
+        assert!(verdict.is_blocked, "T1 prose must block");
+        let chain = verdict.evidence_chain();
+        assert!(chain.contains("Cloudflare"), "chain provider: {chain}");
+        assert!(chain.contains("patrón:"), "chain pattern label: {chain}");
+        assert!(chain.contains("tier:"), "chain tier label: {chain}");
     }
 
     #[test]
@@ -1709,14 +1666,16 @@ mod tests {
     }
 
     // ========================================================================
-    // detect_body() tests — ported from waf.rs (Approval Testing)
+    // Body-only degraded inspection tests (via inspect, ported from waf.rs)
     // ========================================================================
 
     #[test]
     fn test_detect_body_cloudflare_turnstile() {
         let html = r#"<div id="cf-turnstile" data-sitekey="abc123"></div>"#;
+        let verdict = WafInspector::inspect(html, &InspectionContext::default());
+        assert!(verdict.is_blocked);
         assert_eq!(
-            WafInspector::detect_body(html),
+            verdict.evidences.first().map(|e| e.provider),
             Some("Cloudflare Turnstile")
         );
     }
@@ -1724,59 +1683,102 @@ mod tests {
     #[test]
     fn test_detect_body_cloudflare_just_a_moment() {
         let html = "<html><body><h1>Just a moment...</h1></body></html>";
-        assert_eq!(WafInspector::detect_body(html), Some("Cloudflare"));
+        let verdict = WafInspector::inspect(html, &InspectionContext::default());
+        assert!(verdict.is_blocked);
+        assert_eq!(
+            verdict.evidences.first().map(|e| e.provider),
+            Some("Cloudflare")
+        );
     }
 
     #[test]
     fn test_detect_body_cloudflare_checking_browser() {
         let html = "<html><body>Checking your browser before accessing...</body></html>";
-        assert_eq!(WafInspector::detect_body(html), Some("Cloudflare"));
+        let verdict = WafInspector::inspect(html, &InspectionContext::default());
+        assert!(verdict.is_blocked);
+        assert_eq!(
+            verdict.evidences.first().map(|e| e.provider),
+            Some("Cloudflare")
+        );
     }
 
     #[test]
     fn test_detect_body_recaptcha() {
         let html = r#"<script src="https://www.google.com/recaptcha/api.js?render=abc"></script>"#;
-        assert_eq!(WafInspector::detect_body(html), Some("reCAPTCHA"));
+        let verdict = WafInspector::inspect(html, &InspectionContext::default());
+        assert!(verdict.is_blocked);
+        assert_eq!(
+            verdict.evidences.first().map(|e| e.provider),
+            Some("reCAPTCHA")
+        );
     }
 
     #[test]
     fn test_detect_body_g_recaptcha() {
         let html = r#"<div class="g-recaptcha" data-sitekey="abc"></div>"#;
-        assert_eq!(WafInspector::detect_body(html), Some("reCAPTCHA"));
+        let verdict = WafInspector::inspect(html, &InspectionContext::default());
+        assert!(verdict.is_blocked);
+        assert_eq!(
+            verdict.evidences.first().map(|e| e.provider),
+            Some("reCAPTCHA")
+        );
     }
 
     #[test]
     fn test_detect_body_hcaptcha() {
         let html = r#"<div class="h-captcha" data-sitekey="abc"></div>"#;
-        assert_eq!(WafInspector::detect_body(html), Some("hCaptcha"));
+        let verdict = WafInspector::inspect(html, &InspectionContext::default());
+        assert!(verdict.is_blocked);
+        assert_eq!(
+            verdict.evidences.first().map(|e| e.provider),
+            Some("hCaptcha")
+        );
     }
 
     #[test]
     fn test_detect_body_datadome() {
         let html = r#"<script src="https://js.datadome.co/captcha.js"></script>"#;
-        assert_eq!(WafInspector::detect_body(html), Some("DataDome"));
+        let verdict = WafInspector::inspect(html, &InspectionContext::default());
+        assert!(verdict.is_blocked);
+        assert_eq!(
+            verdict.evidences.first().map(|e| e.provider),
+            Some("DataDome")
+        );
     }
 
     #[test]
     fn test_detect_body_perimeterx() {
         let html = r#"<script>var _pxCaptcha = {};</script>"#;
-        assert_eq!(WafInspector::detect_body(html), Some("PerimeterX"));
+        let verdict = WafInspector::inspect(html, &InspectionContext::default());
+        assert!(verdict.is_blocked);
+        assert_eq!(
+            verdict.evidences.first().map(|e| e.provider),
+            Some("PerimeterX")
+        );
     }
 
     #[test]
     fn test_detect_body_akamai() {
-        // `_abck` is a Fingerprint-tier ([E]) marker. In degraded mode (the
-        // detect_body shim) T2 evidence never blocks, so this is no longer
-        // reported as a block — the false positive that motivated issue #346.
-        // (Migrated from old first-hit behavior; TASK-14 verifies the full policy.)
+        // `_abck` is a Fingerprint-tier ([E]) marker. In degraded mode T2
+        // evidence never blocks, so this is not reported as a block — the
+        // false positive that motivated issue #346.
         let html = r#"<input type="hidden" name="_abck" value="xxx">"#;
-        assert_eq!(WafInspector::detect_body(html), None);
+        let verdict = WafInspector::inspect(html, &InspectionContext::default());
+        assert!(
+            !verdict.is_blocked,
+            "T2 evidence must not block in degraded mode"
+        );
     }
 
     #[test]
     fn test_detect_body_generic_challenge() {
         let html = "<p>Please verify you are a human to continue.</p>";
-        assert_eq!(WafInspector::detect_body(html), Some("Generic Challenge"));
+        let verdict = WafInspector::inspect(html, &InspectionContext::default());
+        assert!(verdict.is_blocked);
+        assert_eq!(
+            verdict.evidences.first().map(|e| e.provider),
+            Some("Generic Challenge")
+        );
     }
 
     #[test]
@@ -1792,36 +1794,58 @@ mod tests {
                 </body>
             </html>
         "#;
-        assert_eq!(WafInspector::detect_body(html), None);
+        let verdict = WafInspector::inspect(html, &InspectionContext::default());
+        assert!(!verdict.is_blocked);
     }
 
     #[test]
     fn test_detect_body_empty() {
-        assert_eq!(WafInspector::detect_body(""), None);
+        let verdict = WafInspector::inspect("", &InspectionContext::default());
+        assert!(!verdict.is_blocked);
     }
 
     #[test]
     fn test_detect_body_aws_waf_cookie_domain_list() {
         let html = r#"<script>window.awsWafCookieDomainList = [];</script>"#;
-        assert_eq!(WafInspector::detect_body(html), Some("AWS WAF"));
+        let verdict = WafInspector::inspect(html, &InspectionContext::default());
+        assert!(verdict.is_blocked);
+        assert_eq!(
+            verdict.evidences.first().map(|e| e.provider),
+            Some("AWS WAF")
+        );
     }
 
     #[test]
     fn test_detect_body_aws_waf_integration() {
         let html = r#"<script>AwsWafIntegration.saveReferrer();</script>"#;
-        assert_eq!(WafInspector::detect_body(html), Some("AWS WAF"));
+        let verdict = WafInspector::inspect(html, &InspectionContext::default());
+        assert!(verdict.is_blocked);
+        assert_eq!(
+            verdict.evidences.first().map(|e| e.provider),
+            Some("AWS WAF")
+        );
     }
 
     #[test]
     fn test_detect_body_aws_waf_goku_props() {
         let html = r#"<script>window.gokuProps = {"key":"AQIDAH..."};</script>"#;
-        assert_eq!(WafInspector::detect_body(html), Some("AWS WAF"));
+        let verdict = WafInspector::inspect(html, &InspectionContext::default());
+        assert!(verdict.is_blocked);
+        assert_eq!(
+            verdict.evidences.first().map(|e| e.provider),
+            Some("AWS WAF")
+        );
     }
 
     #[test]
     fn test_detect_body_aws_waf_token() {
         let html = r#"<meta name="aws-waf-token" content="abc123">"#;
-        assert_eq!(WafInspector::detect_body(html), Some("AWS WAF"));
+        let verdict = WafInspector::inspect(html, &InspectionContext::default());
+        assert!(verdict.is_blocked);
+        assert_eq!(
+            verdict.evidences.first().map(|e| e.provider),
+            Some("AWS WAF")
+        );
     }
 
     // ========================================================================
@@ -1861,74 +1885,88 @@ mod tests {
             .cycle()
             .take(104_000)
             .collect();
-        let result = WafInspector::detect_body(&high_entropy_content);
-        assert_eq!(result, Some("Obfuscated WAF"));
+        let verdict = WafInspector::inspect(&high_entropy_content, &InspectionContext::default());
+        assert!(verdict.is_blocked);
+        assert_eq!(
+            verdict.evidences.first().map(|e| e.provider),
+            Some("Obfuscated WAF")
+        );
     }
 
     #[test]
     fn test_detect_body_small_low_entropy() {
         let small_content = "<html><body>Redirecting...</body></html>";
-        assert_eq!(WafInspector::detect_body(small_content), None);
+        let verdict = WafInspector::inspect(small_content, &InspectionContext::default());
+        assert!(!verdict.is_blocked);
     }
 
     // ========================================================================
-    // verify_integrity() tests (existing, unchanged)
+    // Headers + body degraded inspection tests (via inspect)
     // ========================================================================
 
     #[test]
     fn test_waf_control_header_detection() {
         // Control headers are Fingerprint-tier evidence — mere presence never
-        // auto-blocks (correction B). verify_integrity runs in degraded mode (no
-        // status), so a T2 header alone is clean.
-        // (Migrated from old presence-blocks behavior; TASK-14 verifies policy.)
+        // auto-blocks (correction B). Degraded mode (no status), so a T2 header
+        // alone is clean.
         let mut headers = HeaderMap::new();
         headers.insert("x-datadome-response", "blocked".parse().unwrap());
-
-        let result = WafInspector::verify_integrity(&headers, "normal content");
-        assert!(result.is_ok(), "T2 header alone must not block (degraded)");
+        let ctx = InspectionContext {
+            headers,
+            ..Default::default()
+        };
+        let verdict = WafInspector::inspect("normal content", &ctx);
+        assert!(
+            !verdict.is_blocked,
+            "T2 header alone must not block (degraded)"
+        );
 
         // cf-ray alone also doesn't trigger (common in normal requests).
         let mut headers = HeaderMap::new();
         headers.insert("cf-ray", "abc123".parse().unwrap());
-
-        let result = WafInspector::verify_integrity(&headers, "normal content");
-        assert!(result.is_ok());
+        let ctx = InspectionContext {
+            headers,
+            ..Default::default()
+        };
+        let verdict = WafInspector::inspect("normal content", &ctx);
+        assert!(!verdict.is_blocked);
     }
 
     #[test]
     fn test_waf_body_signature_detection() {
         // Test Cloudflare detection
-        let result = WafInspector::verify_integrity(&HeaderMap::new(), "Just a moment...");
-        assert!(result.is_err());
+        let verdict = WafInspector::inspect("Just a moment...", &InspectionContext::default());
+        assert!(verdict.is_blocked);
 
         // Test reCAPTCHA detection
-        let result = WafInspector::verify_integrity(&HeaderMap::new(), "<div class='g-recaptcha'>");
-        assert!(result.is_err());
+        let verdict =
+            WafInspector::inspect("<div class='g-recaptcha'>", &InspectionContext::default());
+        assert!(verdict.is_blocked);
 
         // Test normal content passes
-        let result = WafInspector::verify_integrity(
-            &HeaderMap::new(),
+        let verdict = WafInspector::inspect(
             "<html><body><p>Hello World</p></body></html>",
+            &InspectionContext::default(),
         );
-        assert!(result.is_ok());
+        assert!(!verdict.is_blocked);
     }
 
     #[test]
     fn test_silent_challenge_detection() {
         let body = r#"<html><script></script><script></script><script></script><script></script><script></script><script></script></html>"#;
-        let result = WafInspector::verify_integrity(&HeaderMap::new(), body);
-        assert!(result.is_err());
+        let verdict = WafInspector::inspect(body, &InspectionContext::default());
+        assert!(verdict.is_blocked);
 
         let body = "<html><body><p>Hello</p></body></html>";
-        let result = WafInspector::verify_integrity(&HeaderMap::new(), body);
-        assert!(result.is_ok());
+        let verdict = WafInspector::inspect(body, &InspectionContext::default());
+        assert!(!verdict.is_blocked);
     }
 
     #[test]
     fn test_aho_corasick_performance() {
         let body = "This is a page with Just a moment... and recaptcha/api.js content";
-        let result = WafInspector::verify_integrity(&HeaderMap::new(), body);
-        assert!(result.is_err());
+        let verdict = WafInspector::inspect(body, &InspectionContext::default());
+        assert!(verdict.is_blocked);
     }
 
     #[test]

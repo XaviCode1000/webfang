@@ -1,15 +1,35 @@
 //! Security-focused integration tests for WAF evasion scenarios
 //!
 //! These tests verify that the scraper correctly detects and handles
-//! WAF/CAPTCHA challenges from various providers.
+//! WAF/CAPTCHA challenges from various providers via the shared,
+//! context-aware [`WafInspector::inspect`] (REQ-WAF-01/05). Body-only tests
+//! run in degraded mode ([`InspectionContext::default`]); header tests supply
+//! an [`InspectionContext`] with headers.
 //!
 //! Run with: cargo nextest run --test-threads 2 security_integration
 
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use webfang::infrastructure::http::waf_engine::WafInspector;
+use webfang_core::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
 use wreq::header::HeaderMap;
+
+/// Degraded-mode (no HTTP context) body inspection helper for these tests.
+fn inspect_body(html: &str) -> webfang_core::infrastructure::http::waf_engine::WafVerdict {
+    WafInspector::inspect(html, &InspectionContext::default())
+}
+
+/// Headers + body inspection in degraded mode (no status/content-type).
+fn inspect_with_headers(
+    headers: HeaderMap,
+    html: &str,
+) -> webfang_core::infrastructure::http::waf_engine::WafVerdict {
+    let ctx = InspectionContext {
+        headers,
+        ..Default::default()
+    };
+    WafInspector::inspect(html, &ctx)
+}
 
 // ============================================================================
 // Cloudflare Challenge Detection Tests
@@ -17,7 +37,6 @@ use wreq::header::HeaderMap;
 
 #[tokio::test]
 async fn test_cloudflare_turnstile_detection() {
-    // RED: Test that Cloudflare Turnstile is detected
     let html = r#"
         <!DOCTYPE html>
         <html>
@@ -31,14 +50,17 @@ async fn test_cloudflare_turnstile_detection() {
         </html>
     "#;
 
-    let result = WafInspector::detect_body(html);
-    // AC matches "Just a moment..." in title before "cf-turnstile" in body
-    assert_eq!(result, Some("Cloudflare"));
+    let verdict = inspect_body(html);
+    // "Just a moment..." in the title is the first Challenge-tier evidence.
+    assert!(verdict.is_blocked);
+    assert_eq!(
+        verdict.evidences.first().map(|e| e.provider),
+        Some("Cloudflare")
+    );
 }
 
 #[tokio::test]
 async fn test_cloudflare_js_challenge_detection() {
-    // RED: Test that Cloudflare JS Challenge is detected
     let html = r#"
         <!DOCTYPE html>
         <html>
@@ -54,14 +76,17 @@ async fn test_cloudflare_js_challenge_detection() {
         </html>
     "#;
 
-    let result = WafInspector::detect_body(html);
-    // AC matches "Checking your browser..." in title before "challenge-platform" in body
-    assert_eq!(result, Some("Cloudflare"));
+    let verdict = inspect_body(html);
+    // "Checking your browser" in the title is the first Challenge-tier evidence.
+    assert!(verdict.is_blocked);
+    assert_eq!(
+        verdict.evidences.first().map(|e| e.provider),
+        Some("Cloudflare")
+    );
 }
 
 #[tokio::test]
 async fn test_cloudflare_just_a_moment_detection() {
-    // RED: Test that "Just a moment..." is detected
     let html = r#"
         <!DOCTYPE html>
         <html>
@@ -77,8 +102,12 @@ async fn test_cloudflare_just_a_moment_detection() {
         </html>
     "#;
 
-    let result = WafInspector::detect_body(html);
-    assert_eq!(result, Some("Cloudflare"));
+    let verdict = inspect_body(html);
+    assert!(verdict.is_blocked);
+    assert_eq!(
+        verdict.evidences.first().map(|e| e.provider),
+        Some("Cloudflare")
+    );
 }
 
 // ============================================================================
@@ -87,7 +116,6 @@ async fn test_cloudflare_just_a_moment_detection() {
 
 #[tokio::test]
 async fn test_datadome_silent_challenge_detection() {
-    // RED: Test that DataDome silent challenge is detected
     let html = r#"
         <!DOCTYPE html>
         <html>
@@ -103,13 +131,18 @@ async fn test_datadome_silent_challenge_detection() {
         </html>
     "#;
 
-    let result = WafInspector::detect_body(html);
-    assert_eq!(result, Some("DataDome"));
+    // dd-captcha is a Challenge-tier marker, so the verdict blocks; the first
+    // evidence is the datadome.co fingerprint in the head script.
+    let verdict = inspect_body(html);
+    assert!(verdict.is_blocked);
+    assert_eq!(
+        verdict.evidences.first().map(|e| e.provider),
+        Some("DataDome")
+    );
 }
 
 #[tokio::test]
 async fn test_datadome_high_entropy_detection() {
-    // RED: Test that DataDome high-entropy challenge is detected
     // Create deterministic high-entropy content (>100KB) so CI does not depend on randomness.
     let obfuscated_js: String = (32u8..=126)
         .cycle()
@@ -117,13 +150,13 @@ async fn test_datadome_high_entropy_detection() {
         .map(char::from)
         .collect();
 
-    // With threshold lowered to 5.5, high-entropy content should be detected
-    // UTF-8 encoding of code points 128-255 produces non-uniform bytes (~5.5-6.0 bits)
-    let result = WafInspector::detect_body(&obfuscated_js);
+    // Degraded mode treats unknown status as non-200, so the high-entropy body
+    // (>100KB, >5.5 b/B) blocks as an obfuscated WAF challenge.
+    let verdict = inspect_body(&obfuscated_js);
     assert!(
-        result.is_some(),
+        verdict.is_blocked,
         "High entropy content should be detected, got {:?}",
-        result
+        verdict
     );
 }
 
@@ -133,7 +166,6 @@ async fn test_datadome_high_entropy_detection() {
 
 #[tokio::test]
 async fn test_recaptcha_detection() {
-    // RED: Test that reCAPTCHA is detected
     let html = r#"
         <!DOCTYPE html>
         <html>
@@ -144,13 +176,16 @@ async fn test_recaptcha_detection() {
         </html>
     "#;
 
-    let result = WafInspector::detect_body(html);
-    assert_eq!(result, Some("reCAPTCHA"));
+    let verdict = inspect_body(html);
+    assert!(verdict.is_blocked);
+    assert_eq!(
+        verdict.evidences.first().map(|e| e.provider),
+        Some("reCAPTCHA")
+    );
 }
 
 #[tokio::test]
 async fn test_hcaptcha_detection() {
-    // RED: Test that hCaptcha is detected
     let html = r#"
         <!DOCTYPE html>
         <html>
@@ -161,8 +196,12 @@ async fn test_hcaptcha_detection() {
         </html>
     "#;
 
-    let result = WafInspector::detect_body(html);
-    assert_eq!(result, Some("hCaptcha"));
+    let verdict = inspect_body(html);
+    assert!(verdict.is_blocked);
+    assert_eq!(
+        verdict.evidences.first().map(|e| e.provider),
+        Some("hCaptcha")
+    );
 }
 
 // ============================================================================
@@ -171,7 +210,6 @@ async fn test_hcaptcha_detection() {
 
 #[tokio::test]
 async fn test_rate_limiting_429_detection() {
-    // RED: Test that rate limiting (429) is detected
     let mock_server = MockServer::start().await;
 
     Mock::given(method("GET"))
@@ -194,7 +232,6 @@ async fn test_rate_limiting_429_detection() {
 
 #[tokio::test]
 async fn test_rate_limiting_retry_after_header() {
-    // RED: Test that Retry-After header is respected
     let mock_server = MockServer::start().await;
 
     Mock::given(method("GET"))
@@ -227,7 +264,6 @@ async fn test_rate_limiting_retry_after_header() {
 
 #[tokio::test]
 async fn test_user_agent_rotation_under_waf_pressure() {
-    // RED: Test that user agent is rotated under WAF pressure
     let mock_server = MockServer::start().await;
 
     // First request - normal response
@@ -255,7 +291,6 @@ async fn test_user_agent_rotation_under_waf_pressure() {
 
 #[tokio::test]
 async fn test_tls_fingerprint_emulation() {
-    // RED: Test that TLS fingerprint emulation is applied
     let mock_server = MockServer::start().await;
 
     Mock::given(method("GET"))
@@ -279,7 +314,6 @@ async fn test_tls_fingerprint_emulation() {
 
 #[tokio::test]
 async fn test_waf_inspector_cloudflare_detection() {
-    // RED: Test that WafInspector detects Cloudflare
     let html = r#"
         <html>
         <body>
@@ -289,38 +323,34 @@ async fn test_waf_inspector_cloudflare_detection() {
         </html>
     "#;
 
-    let headers = HeaderMap::new();
-    let result = WafInspector::verify_integrity(&headers, html);
-
-    assert!(result.is_err());
-    if let Err(webfang::error::ScraperError::WafBlocked { provider, .. }) = result {
-        assert!(provider.contains("Cloudflare"));
-    } else {
-        panic!("Expected WafBlocked error");
-    }
+    let verdict = inspect_with_headers(HeaderMap::new(), html);
+    assert!(verdict.is_blocked);
+    assert!(
+        verdict.evidence_chain().contains("Cloudflare"),
+        "chain: {}",
+        verdict.evidence_chain()
+    );
 }
 
 #[tokio::test]
 async fn test_waf_inspector_datadome_header_detection() {
     // Control headers are Fingerprint-tier evidence — mere presence never
-    // auto-blocks without a correlated WAF status (correction B). verify_integrity
-    // runs in degraded mode (no status), so the header alone is clean.
-    // (Migrated from old presence-blocks behavior; TASK-14 verifies the policy.)
+    // auto-blocks without a correlated WAF status (correction B). Degraded mode
+    // (no status), so the header alone is clean.
     let mut headers = HeaderMap::new();
     headers.insert("x-datadome-response", "blocked".parse().unwrap());
 
     let html = "<html><body>Content</body></html>";
-    let result = WafInspector::verify_integrity(&headers, html);
+    let verdict = inspect_with_headers(headers, html);
 
     assert!(
-        result.is_ok(),
+        !verdict.is_blocked,
         "T2 header alone must not block in degraded mode"
     );
 }
 
 #[tokio::test]
 async fn test_waf_inspector_silent_challenge_detection() {
-    // RED: Test that WafInspector detects silent challenges
     let html = r#"
         <html>
         <script></script>
@@ -332,15 +362,13 @@ async fn test_waf_inspector_silent_challenge_detection() {
         </html>
     "#;
 
-    let headers = HeaderMap::new();
-    let result = WafInspector::verify_integrity(&headers, html);
-
-    assert!(result.is_err());
-    if let Err(webfang::error::ScraperError::WafBlocked { provider, .. }) = result {
-        assert!(provider.contains("Silent Challenge"));
-    } else {
-        panic!("Expected WafBlocked error");
-    }
+    let verdict = inspect_with_headers(HeaderMap::new(), html);
+    assert!(verdict.is_blocked);
+    assert!(
+        verdict.evidence_chain().contains("Silent Challenge"),
+        "chain: {}",
+        verdict.evidence_chain()
+    );
 }
 
 // ============================================================================
@@ -349,7 +377,6 @@ async fn test_waf_inspector_silent_challenge_detection() {
 
 #[tokio::test]
 async fn test_normal_content_passes_waf_detection() {
-    // RED: Test that normal content passes WAF detection
     let html = r#"
         <!DOCTYPE html>
         <html>
@@ -366,13 +393,12 @@ async fn test_normal_content_passes_waf_detection() {
         </html>
     "#;
 
-    let result = WafInspector::detect_body(html);
-    assert_eq!(result, None);
+    let verdict = inspect_body(html);
+    assert!(!verdict.is_blocked);
 }
 
 #[tokio::test]
 async fn test_waf_inspector_normal_content_passes() {
-    // RED: Test that WafInspector passes normal content
     let html = r#"
         <html>
         <body>
@@ -382,8 +408,6 @@ async fn test_waf_inspector_normal_content_passes() {
         </html>
     "#;
 
-    let headers = HeaderMap::new();
-    let result = WafInspector::verify_integrity(&headers, html);
-
-    assert!(result.is_ok());
+    let verdict = inspect_with_headers(HeaderMap::new(), html);
+    assert!(!verdict.is_blocked);
 }
