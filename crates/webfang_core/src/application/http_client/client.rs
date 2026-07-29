@@ -240,8 +240,11 @@ impl HttpClient {
                 200..=299 => {
                     // Build the inspection context BEFORE consuming the body
                     // (headers borrow must end before `.text()`).
-                    // `ignore_waf` is wired to config in TASK-13.
-                    let ctx = inspection_context(status.as_u16(), response.headers(), false);
+                    let ctx = inspection_context(
+                        status.as_u16(),
+                        response.headers(),
+                        self.config.ignore_waf,
+                    );
 
                     let body = response
                         .text()
@@ -340,9 +343,12 @@ impl HttpClient {
                     // Inspect the initial response BEFORE retrying (REQ-WAF-05).
                     // Approved behavior change: a 503 Cloudflare challenge is
                     // classified as a WAF block instead of dying as a generic
-                    // ServerError after exhausting retries. `ignore_waf` is
-                    // wired to config in TASK-13.
-                    let ctx = inspection_context(status.as_u16(), response.headers(), false);
+                    // ServerError after exhausting retries.
+                    let ctx = inspection_context(
+                        status.as_u16(),
+                        response.headers(),
+                        self.config.ignore_waf,
+                    );
                     let body = response
                         .text()
                         .await

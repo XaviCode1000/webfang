@@ -449,8 +449,10 @@ pub async fn scrape_single_url_for_tui(
     // Context-aware inspection keeps the silent-challenge intent: a 200+HTML
     // script-dense body is still caught via the entropy rule (REQ-WAF-06), while
     // bare vendor names at 200 no longer block. A block carries the full Spanish
-    // evidence chain (REQ-WAF-08). `ignore_waf` is wired to config in TASK-13.
-    let ctx = InspectionContext::from_lowercase_headers(page.status, &page.headers, false);
+    // evidence chain (REQ-WAF-08). `config.ignore_waf` short-circuits to a clean
+    // verdict (REQ-WAF-07).
+    let ctx =
+        InspectionContext::from_lowercase_headers(page.status, &page.headers, config.ignore_waf);
     let verdict = WafInspector::inspect(&html, &ctx);
     if verdict.is_blocked {
         warn!(

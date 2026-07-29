@@ -360,9 +360,13 @@ pub async fn scrape_with_config(
     // Detect WAF/CAPTCHA challenges disguised as HTTP 200 (REQ-WAF-05).
     // Context-aware inspection: status + content-type + headers drive the
     // tiered verdict, and a block carries the full Spanish evidence chain
-    // (REQ-WAF-08) instead of a bare first-hit provider. `ignore_waf` is
-    // wired to config in TASK-13.
-    let ctx = InspectionContext::from_lowercase_headers(response.status, &response.headers, false);
+    // (REQ-WAF-08) instead of a bare first-hit provider. `config.ignore_waf`
+    // short-circuits to a clean verdict (REQ-WAF-07).
+    let ctx = InspectionContext::from_lowercase_headers(
+        response.status,
+        &response.headers,
+        config.ignore_waf,
+    );
     let verdict = WafInspector::inspect(&html, &ctx);
     if verdict.is_blocked {
         let chain = verdict.evidence_chain();

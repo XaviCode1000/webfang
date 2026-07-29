@@ -228,6 +228,7 @@ fn build_http_client_config(
         user_agent: opts.network.user_agent.clone(),
         timeout_secs: opts.network.timeout_secs,
         tls_emulation: HttpClientConfig::profile_from_name(&opts.network.h2_profile)?,
+        ignore_waf: opts.crawl.ignore_waf,
         ..HttpClientConfig::default()
     })
 }
@@ -262,6 +263,18 @@ mod tests {
         let config = build_http_client_config(&opts).unwrap();
 
         assert_eq!(config.timeout_secs, 30);
+    }
+
+    #[test]
+    fn build_http_client_config_propagates_ignore_waf() {
+        // REQ-WAF-07: the bypass flag flows CrawlOptions -> HttpClientConfig so
+        // the HTTP client builds InspectionContext with ignore_waf set.
+        let mut opts = CrawlOptions::default();
+        opts.crawl.ignore_waf = true;
+
+        let config = build_http_client_config(&opts).unwrap();
+
+        assert!(config.ignore_waf);
     }
 
     #[test]

@@ -53,6 +53,7 @@ async fn inspect_served_fixture(
     body: String,
     status: u16,
     content_type: &str,
+    ignore_waf: bool,
 ) -> WafVerdict {
     let harness = BehavioralTest::new().await;
     Mock::given(method("GET"))
@@ -80,7 +81,7 @@ async fn inspect_served_fixture(
             .and_then(|v| v.to_str().ok())
             .map(String::from),
         headers: response.headers().clone(),
-        ignore_waf: false,
+        ignore_waf,
     };
     let body = response.text().await.expect("read response body");
     WafInspector::inspect(&body, &ctx)
@@ -90,7 +91,7 @@ async fn inspect_served_fixture(
 async fn snapshot_fixture(name: &str, route: &str, status: u16, content_type: &str) {
     let body = std::fs::read_to_string(fixtures_dir().join(name))
         .unwrap_or_else(|e| panic!("read fixture {name}: {e}"));
-    let verdict = inspect_served_fixture(route, body, status, content_type).await;
+    let verdict = inspect_served_fixture(route, body, status, content_type, false).await;
     let summary = verdict_summary(&verdict);
     let snap_name = name.trim_end_matches(".json").trim_end_matches(".html");
     insta::assert_snapshot!(
@@ -133,4 +134,42 @@ async fn fixture_4_news_cloudflare_200_pass() {
 async fn fixture_5_incap_ses_200_pass() {
     // REQ-03 ([E] exempt) + REQ-05 (T2@200): PASS.
     snapshot_fixture("incap_ses_200.html", "/dashboard", 200, "text/html").await;
+}
+
+/// REQ-WAF-07: `--ignore-waf` (ctx.ignore_waf) short-circuits to a clean verdict
+/// on EVERY fixture — including the two that block by default (cloudflare_503,
+/// turnstile_200). One snapshot captures all five verdicts as not-blocked.
+#[tokio::test]
+async fn ignore_waf_yields_clean_verdict_on_all_fixtures() {
+    let fixtures = [
+        (
+            "json_akamai_hash.json",
+            "/api/fingerprint",
+            200u16,
+            "application/json",
+        ),
+        ("cloudflare_503.html", "/challenge", 503, "text/html"),
+        ("turnstile_200.html", "/login", 200, "text/html"),
+        ("news_cloudflare_200.html", "/article", 200, "text/html"),
+        ("incap_ses_200.html", "/dashboard", 200, "text/html"),
+    ];
+    let mut lines = Vec::new();
+    for (name, route, status, ct) in fixtures {
+        let body = std::fs::read_to_string(fixtures_dir().join(name))
+            .unwrap_or_else(|e| panic!("read fixture {name}: {e}"));
+        let verdict = inspect_served_fixture(route, body, status, ct, true).await;
+        assert!(
+            !verdict.is_blocked,
+            "{name} must be clean under ignore_waf, got {verdict:?}"
+        );
+        assert!(
+            verdict.evidences.is_empty(),
+            "{name} must carry no evidence under ignore_waf (short-circuit)"
+        );
+        lines.push(format!("{name}: is_blocked={}", verdict.is_blocked));
+    }
+    insta::assert_snapshot!(
+        "ignore_waf_all_fixtures",
+        redact_nondeterministic(Path::new("__no_temp__"), &lines.join("\n"))
+    );
 }

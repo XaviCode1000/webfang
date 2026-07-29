@@ -294,7 +294,8 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
         .with_output_dir(opts.export.output_dir.clone())
         .with_scraper_concurrency(opts.network.concurrency.resolve())
         .with_max_pages(opts.crawl.max_pages)
-        .with_selector(opts.crawl.selector.clone());
+        .with_selector(opts.crawl.selector.clone())
+        .with_ignore_waf(opts.crawl.ignore_waf);
 
     if opts.network.download_images {
         scraper_config = scraper_config.with_images();

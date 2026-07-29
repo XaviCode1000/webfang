@@ -294,6 +294,11 @@ pub struct CrawlerArgs {
     #[clap(next_help_heading = "Competitive Features")]
     pub ignore_robots: bool,
 
+    /// Bypass WAF/CAPTCHA detection entirely (never block on challenge markers)
+    #[arg(long, default_value = "false", env = "WEBFANG_IGNORE_WAF")]
+    #[clap(next_help_heading = "Competitive Features")]
+    pub ignore_waf: bool,
+
     /// Enable autoscaled concurrency — dynamically adjusts task concurrency based on RAM usage
     #[arg(long, default_value = "false", env = "WEBFANG_AUTOSCALE")]
     #[clap(next_help_heading = "Competitive Features")]
