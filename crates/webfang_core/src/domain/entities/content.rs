@@ -156,8 +156,13 @@ pub struct ScrapedContent {
     /// Downloaded assets (images, documents)
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub assets: Vec<DownloadedAsset>,
-    /// Distributed tracing correlation ID (links to OTel span context)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Distributed tracing correlation ID (internal — not serialized).
+    ///
+    /// Populated natively on every scrape (issue #356) and propagated
+    /// in-memory to `DocumentChunk` for the JSONL export correlation.
+    /// Skipped from `ScrapedContent` serialization to keep the user-facing
+    /// `--format json` output clean and deterministic.
+    #[serde(skip)]
     pub correlation_id: Option<CorrelationId>,
 }
 

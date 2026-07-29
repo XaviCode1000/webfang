@@ -14,7 +14,7 @@ use crate::application::crawler::engine::FetchRouter;
 use crate::application::deduplicator::UrlDeduplicator;
 use crate::application::pipeline::{OutputStage, PipelineExecutor};
 use crate::application::rate_limiter::SharedRateLimiter;
-use crate::domain::CrawlerConfig;
+use crate::domain::{CorrelationId, CrawlerConfig};
 use crate::infrastructure::crawler::RobotsFetcher;
 use crate::infrastructure::crawler::UrlQueue;
 use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
@@ -27,6 +27,9 @@ use crate::infrastructure::network::session_pool::DomainSessionPool;
 pub struct CrawlTaskCtx {
     // --- Shared config (read-only) ---
     pub(crate) config: Arc<CrawlerConfig>,
+    /// Root correlation ID for the crawl — every task derives a child from it
+    /// so all pages share one `trace_id` (issue #356).
+    pub(crate) correlation_id: CorrelationId,
     pub(crate) visited: Arc<UrlDeduplicator>,
     pub(crate) visited_urls: Arc<RwLock<Vec<String>>>,
     pub(crate) queue: Arc<UrlQueue>,
