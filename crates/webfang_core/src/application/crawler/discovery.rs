@@ -14,6 +14,7 @@ use crate::domain::http_config::HttpClientConfig;
 use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl, ScrapedContent, ValidUrl};
 use crate::error::{Result as ScraperResult, ScraperError};
 use crate::infrastructure::crawler::binary_utils::derive_filename_from_response;
+use crate::infrastructure::downloader::{DownloadError, Downloader};
 use crate::infrastructure::crawler::{
     extract_links, is_internal_link, normalize_url, SitemapConfig, SitemapParser,
 };
@@ -195,14 +196,14 @@ pub async fn discover_urls_for_tui(
 /// * `Err(ScraperError)` - Error during scraping
 #[instrument(
     name = "scrape_single_url",
-    skip(client, config, downloader, engine),
+    skip(downloader, config, asset_downloader, engine),
     fields(url = %url)
 )]
 pub async fn scrape_single_url_for_tui(
-    client: &wreq::Client,
+    downloader: &dyn Downloader,
     url: &Url,
     config: &ScraperConfig,
-    downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
+    asset_downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
 ) -> ScraperResult<ScrapedContent> {
     let span = span!(Level::DEBUG, "scrape_single", url = %url);
@@ -210,25 +211,24 @@ pub async fn scrape_single_url_for_tui(
 
     debug!("Scraping: {}", url);
 
-    // Fetch HTML
-    let response = client
-        .get(url.as_str())
-        .send()
-        .await
-        .map_err(|e| ScraperError::Network(Box::new(e)))?;
+    // Fetch the page through the injected downloader (a `FetchRouter` in
+    // production, a mock in tests). Download-level failures are mapped to their
+    // `ScraperError` equivalents so WAF/HTTP semantics survive the conversion.
+    let page = downloader.fetch(url).await.map_err(|e| match e {
+        DownloadError::WafChallenge(provider) => ScraperError::WafBlocked {
+            url: url.to_string(),
+            provider,
+        },
+        DownloadError::Http { status, .. } => ScraperError::http(status, url.as_str()),
+        other => ScraperError::Network(Box::new(other)),
+    })?;
 
-    let status = response.status();
-    if !status.is_success() {
-        return Err(ScraperError::http(status.as_u16(), url.as_str()));
+    if !(200..300).contains(&page.status) {
+        return Err(ScraperError::http(page.status, url.as_str()));
     }
 
     // Check content-type before reading body to handle binary content (PDFs, etc.)
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
+    let content_type = page.headers.get("content-type").cloned().unwrap_or_default();
 
     let is_binary = content_type.contains("application/pdf")
         || content_type.contains("application/octet-stream")
@@ -243,44 +243,40 @@ pub async fn scrape_single_url_for_tui(
 
         // Save binary file when download_documents is enabled
         let saved_path = if config.download_documents {
-            let filename = derive_filename_from_response(response.headers(), url, &content_type);
+            let header_map = headers_to_header_map(&page.headers);
+            let filename = derive_filename_from_response(&header_map, url, &content_type);
             let output_path = config.output_dir.join(&filename);
 
-            match response.bytes().await {
-                Ok(bytes) => {
-                    if let Err(e) = std::fs::create_dir_all(&config.output_dir) {
-                        warn!(
-                            "Failed to create output directory {}: {}",
-                            config.output_dir.display(),
-                            e
-                        );
-                    } else if let Err(e) = std::fs::write(&output_path, &bytes) {
-                        warn!(
-                            "Failed to save binary file {}: {}",
-                            output_path.display(),
-                            e
-                        );
-                    } else {
-                        info!(
-                            "Saved binary file: {} ({} bytes)",
-                            output_path.display(),
-                            bytes.len()
-                        );
-                    }
-                    Some(output_path)
-                },
-                Err(e) => {
-                    warn!("Failed to read binary response for {}: {}", url, e);
-                    None
-                },
+            let bytes = page.html.as_bytes();
+            if let Err(e) = std::fs::create_dir_all(&config.output_dir) {
+                warn!(
+                    "Failed to create output directory {}: {}",
+                    config.output_dir.display(),
+                    e
+                );
+            } else if let Err(e) = std::fs::write(&output_path, bytes) {
+                warn!(
+                    "Failed to save binary file {}: {}",
+                    output_path.display(),
+                    e
+                );
+            } else {
+                info!(
+                    "Saved binary file: {} ({} bytes)",
+                    output_path.display(),
+                    bytes.len()
+                );
             }
+            Some(output_path)
         } else {
-            let _ = response.bytes().await;
             None
         };
 
         let assets = crate::application::scraper_service::download_assets_if_enabled(
-            "", url, config, downloader,
+            "",
+            url,
+            config,
+            asset_downloader,
         )
         .await?;
 
@@ -306,10 +302,7 @@ pub async fn scrape_single_url_for_tui(
         });
     }
 
-    let html = response
-        .text()
-        .await
-        .map_err(|e| ScraperError::Network(Box::new(e)))?;
+    let html = page.html;
 
     // Detect WAF/CAPTCHA challenges disguised as HTTP 200 (H3 fix)
     if let Some(provider) = WafInspector::detect_body(&html) {
@@ -390,7 +383,7 @@ pub async fn scrape_single_url_for_tui(
             CRAWLER_PAGES.add(1, &[opentelemetry::KeyValue::new("method", "readability")]);
 
             let assets = crate::application::scraper_service::download_assets_if_enabled(
-                &html, url, config, downloader,
+                &html, url, config, asset_downloader,
             )
             .await?;
 
@@ -428,7 +421,7 @@ pub async fn scrape_single_url_for_tui(
             }
 
             let assets = crate::application::scraper_service::download_assets_if_enabled(
-                &html, url, config, downloader,
+                &html, url, config, asset_downloader,
             )
             .await?;
 
@@ -451,6 +444,28 @@ pub async fn scrape_single_url_for_tui(
             })
         },
     }
+}
+
+/// Convert lowercased string headers into a wreq [`wreq::header::HeaderMap`]
+/// for helpers that expect the native header type (e.g.
+/// [`derive_filename_from_response`]).
+///
+/// Invalid header names/values are skipped. They cannot occur for headers
+/// captured by the downloaders (already validated via `to_str`), but the guard
+/// keeps this conversion infallible.
+fn headers_to_header_map(
+    headers: &std::collections::HashMap<String, String>,
+) -> wreq::header::HeaderMap {
+    let mut map = wreq::header::HeaderMap::new();
+    for (name, value) in headers {
+        if let (Ok(name), Ok(value)) = (
+            wreq::header::HeaderName::from_bytes(name.as_bytes()),
+            wreq::header::HeaderValue::from_str(value),
+        ) {
+            map.insert(name, value);
+        }
+    }
+    map
 }
 
 // ============================================================================

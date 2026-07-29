@@ -7,14 +7,16 @@ use url::Url;
 use crate::application::crawl_options::CrawlOptions;
 use crate::application::export_factory;
 use crate::application::progress_observer::ProgressObserver;
+use crate::application::crawler::build_fetch_router;
 use crate::application::scrape_single_url_for_tui;
 use crate::domain::entities::progress::{ScrapeError, ScrapeStatus};
+use crate::domain::JsStrategy;
 use crate::domain::ScrapedContent;
 use crate::infrastructure::crawler::robots_utils::{is_allowed_by_robots, new_robots_cache};
+use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
 use crate::infrastructure::export::state_store::StateStore;
-use crate::infrastructure::network::session_pool::DomainSessionPool;
+use crate::HttpClientConfig;
 use crate::ScraperConfig;
-use crate::{HttpClient, HttpClientConfig};
 
 #[cfg(feature = "adaptive-selectors")]
 use crate::application::adaptive_engine::AdaptiveSelectorEngine;
@@ -110,39 +112,19 @@ pub async fn scrape_urls(
     Vec<ScrapedContent>,
     Vec<(String, crate::error::ScraperError)>,
 ) {
-    // Early return if --force-js-render is requested (Phase 2 feature)
-    if opts.network.force_js_render {
-        warn!("--force-js-render no está implementado (Fase 2)");
-        return (
-            Vec::new(),
-            vec![(
-                "force_js_render".into(),
-                crate::error::ScraperError::FeatureGated(
-                    "JavaScript rendering no está implementado. Fase 2 planificada.".into(),
-                ),
-            )],
-        );
-    }
-
+    // Build the fetch router from the configured JS strategy. `--force-js-render`
+    // upgrades a Static strategy to Hybrid so JS-capable fetching is used instead
+    // of returning a feature-gated error (issue #303).
     let http_config = build_http_client_config(opts);
-    let session_pool = std::sync::Arc::new(DomainSessionPool::default_pool());
-    let http_client = match HttpClient::new(http_config).map(|c| {
-        c.with_session_pool(
-            session_pool as std::sync::Arc<dyn crate::domain::session_port::SessionPort>,
-        )
-    }) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("Failed to create HTTP client: {}", e);
-            return (
-                Vec::new(),
-                vec![(
-                    "http_client".into(),
-                    crate::error::ScraperError::Config(e.to_string()),
-                )],
-            );
-        },
+    let effective_strategy = if opts.network.force_js_render
+        && matches!(opts.network.js_strategy, JsStrategy::Static)
+    {
+        JsStrategy::Hybrid
+    } else {
+        opts.network.js_strategy
     };
+    let cookie_bridge = std::sync::Arc::new(std::sync::RwLock::new(CookieBridge::new()));
+    let router = build_fetch_router(&effective_strategy, http_config.timeout_secs, cookie_bridge);
 
     let _total_urls = urls.len();
 
@@ -190,7 +172,7 @@ pub async fn scrape_urls(
             .await;
 
         match scrape_single_url_for_tui(
-            http_client.client(),
+            &router,
             &url,
             scraper_config,
             downloader,
