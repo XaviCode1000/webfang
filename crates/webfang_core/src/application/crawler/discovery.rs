@@ -179,6 +179,160 @@ pub async fn discover_urls_for_tui(
     }
 }
 
+/// Pipeline de extracción de contenido: clean → selector → adaptive → readability/fallback.
+///
+/// Recibe HTML ya fetchado y validado (post-WAF). No conoce el transporte.
+///
+/// # Errors
+///
+/// Returns [`ScraperError::ExtractionFailed`] when fallback content is below
+/// [`MIN_FALLBACK_CONTENT`] bytes.
+pub async fn extract_content(
+    html: &str,
+    url: &Url,
+    config: &ScraperConfig,
+    asset_downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
+    #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
+) -> ScraperResult<ScrapedContent> {
+    #[cfg(feature = "otel-metrics")]
+    {
+        CRAWLER_BANDWIDTH.add(
+            html.len() as u64,
+            &[opentelemetry::KeyValue::new("url", url.to_string())],
+        );
+    }
+
+    // Clean HTML boilerplate (scripts, styles, nav, sidebar, footer) BEFORE
+    // Readability. This helps legible find the main content without being
+    // confused by navigation elements, JavaScript bundles, and CSS.
+    let cleaned_html = crate::infrastructure::converter::html_cleaner::clean_html(html);
+
+    // Apply CSS selector extraction if a non-default selector is configured.
+    let extract_result = crate::application::scraper_service::extract_with_selector(
+        &cleaned_html,
+        &config.selector,
+        None,
+    );
+
+    // Adaptive selector repair (Tier 1 lexical): when extraction falls back and
+    // an engine is wired in, try to find a repaired selector and re-extract.
+    // Mirrors the repair in `scrape_with_config`; this TUI path keeps its own
+    // binary/metrics handling instead of delegating to that function.
+    #[cfg(feature = "adaptive-selectors")]
+    let extract_result = if let ExtractResult::Fallback { html, diagnostic } = extract_result {
+        if let Some(engine) = engine {
+            match engine
+                .select_sync_aware(
+                    html.clone(),
+                    config.selector.clone(),
+                    url.host_str().map(|s| s.to_owned()),
+                )
+                .await
+            {
+                Ok(outcome) => {
+                    let repaired = crate::application::scraper_service::extract_with_selector(
+                        &html,
+                        &outcome.suggestion.selector,
+                        None,
+                    );
+                    if repaired.is_matched() {
+                        info!(
+                            repaired_selector = %outcome.suggestion.selector,
+                            method = ?outcome.status,
+                            "adaptive_repair_resolved"
+                        );
+                        repaired
+                    } else {
+                        ExtractResult::Fallback { html, diagnostic }
+                    }
+                },
+                Err(_) => ExtractResult::Fallback { html, diagnostic },
+            }
+        } else {
+            ExtractResult::Fallback { html, diagnostic }
+        }
+    } else {
+        extract_result
+    };
+
+    let extraction_html = extract_result.as_html().to_owned();
+
+    // Try Readability first, fallback to plain text extraction
+    match readability::parse(&extraction_html, Some(url.as_str())) {
+        Ok(article) => {
+            #[cfg(feature = "otel-metrics")]
+            CRAWLER_PAGES.add(1, &[opentelemetry::KeyValue::new("method", "readability")]);
+
+            let assets = crate::application::scraper_service::download_assets_if_enabled(
+                html,
+                url,
+                config,
+                asset_downloader,
+            )
+            .await?;
+
+            Ok(ScrapedContent {
+                title: crate::application::resolve_title(&article.title, url),
+                content: article.text_content,
+                url: ValidUrl::new(url.clone()),
+                excerpt: article.excerpt,
+                author: article.byline,
+                date: article.published_time,
+                // Store CLEAN HTML from Readability (not raw HTML with nav/ads/footer)
+                html: Some(article.content),
+                assets,
+                correlation_id: None,
+            })
+        },
+        Err(e) => {
+            warn!("Readability failed for {}: {}", url, e);
+            let fallback_content = fallback::extract_text(&extraction_html);
+
+            // Check if fallback produced poor content (likely extraction failure)
+            const MIN_FALLBACK_CONTENT: usize = 100;
+            if fallback_content.len() < MIN_FALLBACK_CONTENT {
+                let msg = format!(
+                    "contenido pobre del fallback: {} bytes (mín {} bytes). Readability: {}",
+                    fallback_content.len(),
+                    MIN_FALLBACK_CONTENT,
+                    e
+                );
+                warn!("{}", msg);
+                return Err(ScraperError::ExtractionFailed {
+                    url: url.to_string(),
+                    reason: msg,
+                });
+            }
+
+            let assets = crate::application::scraper_service::download_assets_if_enabled(
+                html,
+                url,
+                config,
+                asset_downloader,
+            )
+            .await?;
+
+            #[cfg(feature = "otel-metrics")]
+            CRAWLER_PAGES.add(1, &[opentelemetry::KeyValue::new("method", "fallback")]);
+
+            Ok(ScrapedContent {
+                title: url
+                    .host_str()
+                    .ok_or_else(|| ScraperError::invalid_url(format!("URL missing host: {url}")))?
+                    .to_string(),
+                content: fallback_content,
+                url: ValidUrl::new(url.clone()),
+                excerpt: None,
+                author: None,
+                date: None,
+                html: Some(html.to_owned()),
+                assets,
+                correlation_id: None,
+            })
+        },
+    }
+}
+
 /// Scrape a single URL
 ///
 /// Following **own-borrow-over-clone**: Accepts `&Url` not `&String`.
@@ -317,143 +471,7 @@ pub async fn scrape_single_url_for_tui(
         });
     }
 
-    #[cfg(feature = "otel-metrics")]
-    {
-        CRAWLER_BANDWIDTH.add(
-            html.len() as u64,
-            &[opentelemetry::KeyValue::new("url", url.to_string())],
-        );
-    }
-
-    // Clean HTML boilerplate (scripts, styles, nav, sidebar, footer) BEFORE
-    // Readability. This helps legible find the main content without being
-    // confused by navigation elements, JavaScript bundles, and CSS.
-    let cleaned_html = crate::infrastructure::converter::html_cleaner::clean_html(&html);
-
-    // Apply CSS selector extraction if a non-default selector is configured.
-    let extract_result = crate::application::scraper_service::extract_with_selector(
-        &cleaned_html,
-        &config.selector,
-        None,
-    );
-
-    // Adaptive selector repair (Tier 1 lexical): when extraction falls back and
-    // an engine is wired in, try to find a repaired selector and re-extract.
-    // Mirrors the repair in `scrape_with_config`; this TUI path keeps its own
-    // binary/metrics handling instead of delegating to that function.
-    #[cfg(feature = "adaptive-selectors")]
-    let extract_result = if let ExtractResult::Fallback { html, diagnostic } = extract_result {
-        if let Some(engine) = engine {
-            match engine
-                .select_sync_aware(
-                    html.clone(),
-                    config.selector.clone(),
-                    url.host_str().map(|s| s.to_owned()),
-                )
-                .await
-            {
-                Ok(outcome) => {
-                    let repaired = crate::application::scraper_service::extract_with_selector(
-                        &html,
-                        &outcome.suggestion.selector,
-                        None,
-                    );
-                    if repaired.is_matched() {
-                        info!(
-                            repaired_selector = %outcome.suggestion.selector,
-                            method = ?outcome.status,
-                            "adaptive_repair_resolved"
-                        );
-                        repaired
-                    } else {
-                        ExtractResult::Fallback { html, diagnostic }
-                    }
-                },
-                Err(_) => ExtractResult::Fallback { html, diagnostic },
-            }
-        } else {
-            ExtractResult::Fallback { html, diagnostic }
-        }
-    } else {
-        extract_result
-    };
-
-    let extraction_html = extract_result.as_html().to_owned();
-
-    // Try Readability first, fallback to plain text extraction
-    match readability::parse(&extraction_html, Some(url.as_str())) {
-        Ok(article) => {
-            #[cfg(feature = "otel-metrics")]
-            CRAWLER_PAGES.add(1, &[opentelemetry::KeyValue::new("method", "readability")]);
-
-            let assets = crate::application::scraper_service::download_assets_if_enabled(
-                &html,
-                url,
-                config,
-                asset_downloader,
-            )
-            .await?;
-
-            Ok(ScrapedContent {
-                title: crate::application::resolve_title(&article.title, url),
-                content: article.text_content,
-                url: ValidUrl::new(url.clone()),
-                excerpt: article.excerpt,
-                author: article.byline,
-                date: article.published_time,
-                // Store CLEAN HTML from Readability (not raw HTML with nav/ads/footer)
-                html: Some(article.content),
-                assets,
-                correlation_id: None,
-            })
-        },
-        Err(e) => {
-            warn!("Readability failed for {}: {}", url, e);
-            let fallback_content = fallback::extract_text(&extraction_html);
-
-            // Check if fallback produced poor content (likely extraction failure)
-            const MIN_FALLBACK_CONTENT: usize = 100;
-            if fallback_content.len() < MIN_FALLBACK_CONTENT {
-                let msg = format!(
-                    "contenido pobre del fallback: {} bytes (mín {} bytes). Readability: {}",
-                    fallback_content.len(),
-                    MIN_FALLBACK_CONTENT,
-                    e
-                );
-                warn!("{}", msg);
-                return Err(ScraperError::ExtractionFailed {
-                    url: url.to_string(),
-                    reason: msg,
-                });
-            }
-
-            let assets = crate::application::scraper_service::download_assets_if_enabled(
-                &html,
-                url,
-                config,
-                asset_downloader,
-            )
-            .await?;
-
-            #[cfg(feature = "otel-metrics")]
-            CRAWLER_PAGES.add(1, &[opentelemetry::KeyValue::new("method", "fallback")]);
-
-            Ok(ScrapedContent {
-                title: url
-                    .host_str()
-                    .ok_or_else(|| ScraperError::invalid_url(format!("URL missing host: {url}")))?
-                    .to_string(),
-                content: fallback_content,
-                url: ValidUrl::new(url.clone()),
-                excerpt: None,
-                author: None,
-                date: None,
-                html: Some(html),
-                assets,
-                correlation_id: None,
-            })
-        },
-    }
+    extract_content(&html, url, config, asset_downloader, engine).await
 }
 
 /// Convert lowercased string headers into a wreq [`wreq::header::HeaderMap`]
@@ -1251,5 +1269,58 @@ work with when computing the document readability score.</p>
             matches!(err, ScraperError::Http { status: 404, .. }),
             "expected Http(404), got: {err:?}"
         );
+    }
+
+    // ─── extract_content direct tests (no Downloader needed) ───
+
+    #[tokio::test]
+    async fn extract_content_readability_extracts_article() {
+        let html = r#"<html><head><title>Test Page</title></head><body>
+            <article><h1>Hello</h1><p>This is a long enough paragraph of content that readability should be able to extract properly from the DOM structure.</p>
+            <p>Second paragraph with more content to ensure readability has enough material to work with for extraction.</p></article>
+        </body></html>"#;
+        let url = Url::parse("https://example.com/article").unwrap();
+        let config = ScraperConfig::default();
+
+        let result = extract_content(html, &url, &config, None, None).await;
+
+        assert!(result.is_ok());
+        let content = result.unwrap();
+        assert!(!content.content.is_empty());
+        assert_eq!(content.url.as_str(), "https://example.com/article");
+    }
+
+    #[tokio::test]
+    async fn extract_content_fallback_short_content_returns_error() {
+        let html = "<html><body><div></div></body></html>";
+        let url = Url::parse("https://example.com/tiny").unwrap();
+        let config = ScraperConfig::default();
+
+        let result = extract_content(html, &url, &config, None, None).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ScraperError::ExtractionFailed { .. }),
+            "Expected ExtractionFailed, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_content_with_selector_extracts_matching_content() {
+        let html = r#"<html><body>
+            <nav>Navigation stuff</nav>
+            <div class="main-content"><p>This is the main content that should be extracted by the CSS selector we configured.</p></div>
+            <footer>Footer stuff</footer>
+        </body></html>"#;
+        let url = Url::parse("https://example.com/page").unwrap();
+        let mut config = ScraperConfig::default();
+        config.selector = ".main-content".to_string();
+
+        let result = extract_content(html, &url, &config, None, None).await;
+
+        assert!(result.is_ok());
+        let content = result.unwrap();
+        assert!(content.content.contains("main content"));
     }
 }
