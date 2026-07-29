@@ -16,6 +16,8 @@
 use tracing::{debug, instrument, warn};
 use url::Url;
 
+use futures::future::BoxFuture;
+
 use super::resource_governor::ResourceGovernor;
 use super::spa_detector::{detect_spa, SpaSignal};
 use super::{DownloadError, Downloader, FetchedPage};
@@ -78,9 +80,9 @@ impl<L1: Downloader, L2: Downloader, L3: Downloader> HybridRouter<L1, L2, L3> {
     }
 }
 
-impl<L1: Downloader, L2: Downloader, L3: Downloader> Downloader for HybridRouter<L1, L2, L3> {
+impl<L1: Downloader, L2: Downloader, L3: Downloader> HybridRouter<L1, L2, L3> {
     #[instrument(skip(self), fields(url = %url))]
-    async fn fetch(&self, url: &Url) -> Result<FetchedPage, DownloadError> {
+    async fn fetch_inner(&self, url: &Url) -> Result<FetchedPage, DownloadError> {
         // --- Layer 1: fast static HTTP ---
         debug!("Layer 1 (wreq): fetching {url}");
         #[cfg(feature = "otel-metrics")]
@@ -232,6 +234,12 @@ impl<L1: Downloader, L2: Downloader, L3: Downloader> Downloader for HybridRouter
             },
         }
     }
+}
+
+impl<L1: Downloader, L2: Downloader, L3: Downloader> Downloader for HybridRouter<L1, L2, L3> {
+    fn fetch<'a>(&'a self, url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
+        Box::pin(self.fetch_inner(url))
+    }
 
     fn supports_interactions(&self) -> bool {
         self.layer3.supports_interactions()
@@ -299,12 +307,15 @@ mod tests {
     }
 
     impl Downloader for StubDownloader {
-        async fn fetch(&self, url: &Url) -> Result<FetchedPage, DownloadError> {
-            Ok(FetchedPage {
-                url: url.clone(),
-                html: self.html.clone(),
-                status: 200,
-                cookies: vec![],
+        fn fetch<'a>(&'a self, url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
+            Box::pin(async move {
+                Ok(FetchedPage {
+                    url: url.clone(),
+                    html: self.html.clone(),
+                    status: 200,
+                    headers: std::collections::HashMap::new(),
+                    cookies: vec![],
+                })
             })
         }
 
@@ -322,11 +333,13 @@ mod tests {
     }
 
     impl Downloader for FailingDownloader {
-        async fn fetch(&self, _url: &Url) -> Result<FetchedPage, DownloadError> {
-            Err(DownloadError::Network(Box::new(std::io::Error::new(
-                std::io::ErrorKind::ConnectionRefused,
-                self.message.clone(),
-            ))))
+        fn fetch<'a>(&'a self, _url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
+            Box::pin(async move {
+                Err(DownloadError::Network(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    self.message.clone(),
+                ))))
+            })
         }
 
         fn supports_interactions(&self) -> bool {

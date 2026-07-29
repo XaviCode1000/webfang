@@ -18,6 +18,8 @@ use {
 
 use std::sync::Arc;
 use std::sync::RwLock;
+
+use futures::future::BoxFuture;
 use url::Url;
 
 #[cfg(feature = "chromium")]
@@ -61,7 +63,8 @@ impl ChromiumoxideDownloader {
 
 #[cfg(feature = "chromium")]
 impl Downloader for ChromiumoxideDownloader {
-    async fn fetch(&self, url: &Url) -> Result<FetchedPage, DownloadError> {
+    fn fetch<'a>(&'a self, url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
+        Box::pin(async move {
         // 1. Early URL scheme validation
         if !url.scheme().starts_with("http") {
             return Err(DownloadError::InvalidUrl(format!(
@@ -137,7 +140,9 @@ impl Downloader for ChromiumoxideDownloader {
             url: url.clone(),
             html,
             status: 200,
+            headers: std::collections::HashMap::new(),
             cookies: Vec::new(),
+        })
         })
     }
 
@@ -152,10 +157,12 @@ impl Downloader for ChromiumoxideDownloader {
 
 #[cfg(not(feature = "chromium"))]
 impl Downloader for ChromiumoxideDownloader {
-    async fn fetch(&self, _url: &Url) -> Result<FetchedPage, DownloadError> {
-        Err(DownloadError::Internal(
-            "Chromiumoxide not enabled (compile with --features chromium)".to_string(),
-        ))
+    fn fetch<'a>(&'a self, _url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
+        Box::pin(async move {
+            Err(DownloadError::Internal(
+                "Chromiumoxide not enabled (compile with --features chromium)".to_string(),
+            ))
+        })
     }
 
     fn supports_interactions(&self) -> bool {

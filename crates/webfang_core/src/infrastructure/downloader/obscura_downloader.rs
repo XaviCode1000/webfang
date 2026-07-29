@@ -4,9 +4,11 @@
 //! `tokio::task::spawn_blocking` to avoid blocking the async runtime.
 //! Returns raw markdown output for downstream processing.
 
+use std::collections::HashMap;
 use std::process::Command;
 use std::time::Duration;
 
+use futures::future::BoxFuture;
 use tokio::time::timeout;
 use tracing::{debug, instrument, Instrument};
 use url::Url;
@@ -47,9 +49,9 @@ impl Default for ObscuraDownloader {
     }
 }
 
-impl Downloader for ObscuraDownloader {
+impl ObscuraDownloader {
     #[instrument(skip(self), fields(url = %url))]
-    async fn fetch(&self, url: &Url) -> Result<FetchedPage, DownloadError> {
+    async fn fetch_inner(&self, url: &Url) -> Result<FetchedPage, DownloadError> {
         debug!("Obscura fetch: {}", url);
 
         #[cfg(feature = "otel-metrics")]
@@ -89,6 +91,7 @@ impl Downloader for ObscuraDownloader {
                     url: url.clone(),
                     html: markdown,
                     status: 200,
+                    headers: HashMap::new(),
                     cookies: vec![],
                 })
             },
@@ -116,6 +119,12 @@ impl Downloader for ObscuraDownloader {
                 Err(DownloadError::Timeout(self.timeout.as_secs()))
             },
         }
+    }
+}
+
+impl Downloader for ObscuraDownloader {
+    fn fetch<'a>(&'a self, url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
+        Box::pin(self.fetch_inner(url))
     }
 
     fn supports_interactions(&self) -> bool {
