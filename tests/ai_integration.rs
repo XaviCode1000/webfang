@@ -313,7 +313,9 @@ fn test_semantic_cleaner_impl_send_sync() {
 /// Test ModelConfig with relevance threshold
 #[test]
 fn test_model_config_with_relevance_threshold() {
-    let config = ModelConfig::default().with_relevance_threshold(0.5);
+    let config = ModelConfig::default()
+        .with_relevance_threshold(0.5)
+        .unwrap();
     assert_eq!(config.relevance_threshold, 0.5);
 }
 
@@ -329,7 +331,8 @@ fn test_model_config_full_builder() {
         .with_auto_download(true)
         .with_offline_mode(false)
         .with_max_tokens(512)
-        .with_relevance_threshold(0.4);
+        .with_relevance_threshold(0.4)
+        .unwrap();
 
     assert_eq!(config.repo, "sentence-transformers/all-MiniLM-L6-v2");
     assert_eq!(config.model_file, "model.onnx");

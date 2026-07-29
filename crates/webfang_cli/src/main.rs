@@ -444,18 +444,24 @@ async fn __main() -> CliExit {
             }
         };
 
-        match SemanticCleanerImpl::new(
-            ModelConfig::default()
-                .with_model_variant(model_variant)
-                .with_relevance_threshold(opts.ai_config.threshold)
-                .with_max_tokens(opts.ai_config.max_tokens)
-                .with_offline_mode(opts.ai_config.offline),
-        )
-        .await
-        {
-            Ok(cleaner) => Some(Arc::new(cleaner) as Arc<dyn SemanticCleaner>),
+        let model_config = ModelConfig::default()
+            .with_model_variant(model_variant)
+            .with_relevance_threshold(opts.ai_config.threshold)
+            .map(|c| {
+                c.with_max_tokens(opts.ai_config.max_tokens)
+                    .with_offline_mode(opts.ai_config.offline)
+            });
+
+        match model_config {
+            Ok(config) => match SemanticCleanerImpl::new(config).await {
+                Ok(cleaner) => Some(Arc::new(cleaner) as Arc<dyn SemanticCleaner>),
+                Err(e) => {
+                    tracing::warn!("No se pudo inicializar el limpiador semántico AI: {e}");
+                    None
+                },
+            },
             Err(e) => {
-                tracing::warn!("No se pudo inicializar el limpiador semántico AI: {e}");
+                tracing::warn!("Configuración de umbral AI inválida: {e}");
                 None
             },
         }
