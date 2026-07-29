@@ -3,8 +3,6 @@
 //! Functions for discovering URLs from websites via sitemaps or DOM scraping.
 //! Part of the TUI workflow: discover → select → scrape.
 
-use std::time::Duration;
-
 use anyhow::Result;
 use tracing::{debug, info, instrument, span, warn, Level};
 use url::Url;
@@ -560,11 +558,16 @@ async fn crawl_with_sitemap_internal(
 ) -> Result<Vec<DiscoveredUrl>, CrawlError> {
     info!("Crawling with sitemap for {}", base_url);
 
-    let discovery_client = wreq::Client::builder()
-        .emulation(wreq_util::Emulation::Chrome145)
-        .timeout(Duration::from_secs(config.timeout_secs))
-        .connect_timeout(Duration::from_secs(config.timeout_secs.min(10)))
-        .build()
+    // Build the discovery client through the shared factory so sitemap probes
+    // carry the same Chrome Client Hints, pooled user-agent, pool tuning, and
+    // gzip/brotli as the DOM path (#298). Timeouts replicate the #281 policy:
+    // request timeout as configured, connect timeout capped at 10s.
+    let http_config = HttpClientConfig {
+        timeout_secs: config.timeout_secs,
+        connect_timeout_secs: config.timeout_secs.min(10), // #281 policy
+        ..Default::default()
+    };
+    let discovery_client = super::super::create_http_client_with_config(&http_config)
         .map_err(|e| CrawlError::Internal(format!("failed to build discovery client: {e}")))?;
 
     // Use default batch size (10,000) - SitemapConfig handles pagination
@@ -938,6 +941,7 @@ pub fn parse_sitemap(xml_content: &str, base_url: &Url) -> Result<Vec<String>, C
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn test_parse_sitemap_xml() {
