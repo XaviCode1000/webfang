@@ -3,6 +3,7 @@
 //! Configuration for crawling a specific site.
 
 use url::Url;
+use wreq_util::Profile;
 
 use crate::domain::pattern_matching::matches_pattern;
 
@@ -37,6 +38,11 @@ pub struct CrawlerConfig {
     pub sitemap_url: Option<String>,
     /// Skip robots.txt enforcement.
     pub ignore_robots: bool,
+    /// TLS/HTTP2 fingerprint emulation preset applied to the crawl HTTP client.
+    ///
+    /// Threaded from the CLI `--h2-profile` value. Defaults to
+    /// [`Profile::Chrome145`], preserving the historical crawl fingerprint.
+    pub tls_emulation: Profile,
 }
 
 impl CrawlerConfig {
@@ -62,6 +68,7 @@ impl CrawlerConfig {
             use_sitemap: false,
             sitemap_url: None,
             ignore_robots: false,
+            tls_emulation: Profile::Chrome145,
         }
     }
 
@@ -105,6 +112,7 @@ pub struct CrawlerConfigBuilder {
     use_sitemap: bool,
     sitemap_url: Option<String>,
     ignore_robots: bool,
+    tls_emulation: Profile,
 }
 
 impl CrawlerConfigBuilder {
@@ -123,6 +131,7 @@ impl CrawlerConfigBuilder {
             use_sitemap: false,
             sitemap_url: None,
             ignore_robots: false,
+            tls_emulation: Profile::Chrome145,
         }
     }
 
@@ -204,6 +213,12 @@ impl CrawlerConfigBuilder {
         self
     }
 
+    /// Set the TLS/HTTP2 fingerprint emulation preset.
+    pub fn tls_emulation(mut self, profile: Profile) -> Self {
+        self.tls_emulation = profile;
+        self
+    }
+
     /// Build the final [`CrawlerConfig`], consuming this builder.
     #[must_use]
     pub fn build(self) -> CrawlerConfig {
@@ -220,6 +235,7 @@ impl CrawlerConfigBuilder {
             use_sitemap: self.use_sitemap,
             sitemap_url: self.sitemap_url,
             ignore_robots: self.ignore_robots,
+            tls_emulation: self.tls_emulation,
         }
     }
 }
@@ -267,6 +283,7 @@ mod tests {
         assert!(!config.use_sitemap);
         assert!(config.sitemap_url.is_none());
         assert!(!config.ignore_robots);
+        assert_eq!(config.tls_emulation, Profile::Chrome145);
         assert!(config.include_patterns.is_empty());
         assert!(config.exclude_patterns.is_empty());
     }
@@ -385,6 +402,7 @@ mod tests {
             .use_sitemap(true)
             .sitemap_url("https://example.com/sitemap.xml".to_string())
             .ignore_robots(true)
+            .tls_emulation(Profile::Chrome131)
             .include_pattern("/blog/*".to_string())
             .exclude_pattern("/admin/*".to_string())
             .build();
@@ -402,8 +420,22 @@ mod tests {
             Some("https://example.com/sitemap.xml")
         );
         assert!(config.ignore_robots);
+        assert_eq!(config.tls_emulation, Profile::Chrome131);
         assert_eq!(config.include_patterns.len(), 1);
         assert_eq!(config.exclude_patterns.len(), 1);
+    }
+
+    #[test]
+    fn builder_tls_emulation_defaults_to_chrome145_and_is_settable() {
+        let seed = Url::parse("https://example.com").unwrap();
+
+        let default_config = CrawlerConfig::builder(seed.clone()).build();
+        assert_eq!(default_config.tls_emulation, Profile::Chrome145);
+
+        let custom_config = CrawlerConfig::builder(seed)
+            .tls_emulation(Profile::Firefox135)
+            .build();
+        assert_eq!(custom_config.tls_emulation, Profile::Firefox135);
     }
 
     #[test]
