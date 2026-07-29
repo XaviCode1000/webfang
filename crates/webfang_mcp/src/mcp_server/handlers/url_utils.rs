@@ -120,17 +120,12 @@ impl McpHandler {
     ) -> Result<CallToolResult, McpError> {
         let _permit = acquire_semaphore!(self, url_utils);
 
-        let is_internal = match (
-            url::Url::parse(&params.url),
-            url::Url::parse(&params.seed_domain),
-        ) {
-            (Ok(u), Ok(s)) => {
-                let url_host = u.host_str().unwrap_or("");
-                let seed_host = s.host_str().unwrap_or("");
-                url_host == seed_host || url_host.ends_with(&format!(".{seed_host}"))
-            },
-            _ => false,
-        };
+        let seed_host = normalize_seed_host(&params.seed_domain);
+        let is_internal = url::Url::parse(&params.url)
+            .ok()
+            .and_then(|u| u.host_str().map(String::from))
+            .map(|url_host| url_host == seed_host || url_host.ends_with(&format!(".{seed_host}")))
+            .unwrap_or(false);
         Ok(CallToolResult::success(vec![Content::text(
             is_internal.to_string(),
         )]))
@@ -163,6 +158,112 @@ impl McpHandler {
     }
 }
 
+/// Normalize a seed domain input to a bare host string.
+///
+/// Accepts both bare domains (`example.com`) and full URLs (`https://example.com/path`).
+/// For URLs, extracts the host component. For bare domains, strips any path suffix.
+fn normalize_seed_host(seed: &str) -> String {
+    if let Ok(u) = url::Url::parse(seed) {
+        if let Some(host) = u.host_str() {
+            return host.to_string();
+        }
+    }
+    // Bare domain — strip any accidental path component
+    seed.split('/').next().unwrap_or(seed).to_string()
+}
+
 pub fn build_router() -> ToolRouter<McpHandler> {
     McpHandler::tool_router_url_utils()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_seed_host_bare_domain() {
+        assert_eq!(normalize_seed_host("example.com"), "example.com");
+    }
+
+    #[test]
+    fn normalize_seed_host_with_scheme() {
+        assert_eq!(normalize_seed_host("https://example.com"), "example.com");
+    }
+
+    #[test]
+    fn normalize_seed_host_with_scheme_and_path() {
+        assert_eq!(
+            normalize_seed_host("https://example.com/path"),
+            "example.com"
+        );
+    }
+
+    #[test]
+    fn normalize_seed_host_bare_with_path() {
+        assert_eq!(normalize_seed_host("example.com/path"), "example.com");
+    }
+
+    #[test]
+    fn normalize_seed_host_subdomain() {
+        assert_eq!(normalize_seed_host("blog.example.com"), "blog.example.com");
+    }
+
+    #[test]
+    fn normalize_seed_host_with_scheme_subdomain() {
+        assert_eq!(
+            normalize_seed_host("https://blog.example.com"),
+            "blog.example.com"
+        );
+    }
+
+    #[test]
+    fn normalize_seed_host_empty() {
+        assert_eq!(normalize_seed_host(""), "");
+    }
+
+    // --- Integration-style tests for the classification logic ---
+
+    fn classify(url: &str, seed_domain: &str) -> bool {
+        let seed_host = normalize_seed_host(seed_domain);
+        url::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(String::from))
+            .map(|url_host| url_host == seed_host || url_host.ends_with(&format!(".{seed_host}")))
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn internal_link_bare_domain() {
+        assert!(classify("https://example.com/a", "example.com"));
+    }
+
+    #[test]
+    fn internal_link_subdomain_bare() {
+        assert!(classify("https://blog.example.com/x", "example.com"));
+    }
+
+    #[test]
+    fn internal_link_with_scheme() {
+        assert!(classify("https://example.com/a", "https://example.com"));
+    }
+
+    #[test]
+    fn external_link() {
+        assert!(!classify("https://otro.com/a", "example.com"));
+    }
+
+    #[test]
+    fn internal_link_seed_with_path() {
+        assert!(classify("https://example.com/a", "example.com/path"));
+    }
+
+    #[test]
+    fn invalid_url_returns_false() {
+        assert!(!classify("not-a-url", "example.com"));
+    }
+
+    #[test]
+    fn port_in_url_does_not_break() {
+        assert!(classify("https://example.com:8080/a", "example.com"));
+    }
 }
