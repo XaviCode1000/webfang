@@ -6,8 +6,9 @@
 //! "Recompile with --features ai" message that the bug produced.
 //!
 //! The vector is deterministic and network-free: `--clean-ai --offline` with
-//! `HF_HUB_CACHE` pointed at an empty temp dir, so offline resolution fails
-//! fast with `SemanticError::OfflineMode` before any scrape happens.
+//! `HF_HOME` pointed at an empty temp dir (the cleaner resolves its hf_hub
+//! cache via `Cache::from_env()`), so offline resolution fails fast with
+//! `SemanticError::OfflineMode` before any scrape happens.
 //!
 //! Run with: `cargo nextest run --features ai --test ai_error_propagation`
 
@@ -36,7 +37,7 @@ fn clean_ai_offline_empty_cache_surfaces_real_error() {
         .arg("granite-97m")
         .arg("--output")
         .arg(output_dir.path())
-        .env("HF_HUB_CACHE", cache_dir.path())
+        .env("HF_HOME", cache_dir.path())
         .output()
         .expect("run webfang binary");
 
