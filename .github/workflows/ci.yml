@@ -294,19 +294,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [core, domain, infra]
+        group: [core, domain, infra-fast, infra-slow]
         include:
           - group: core
             filter: "-- adapters:: application:: cli:: config:: di:: error::"
           - group: domain
             filter: "-- domain::"
-          - group: infra
-            # Skip FFI-heavy and slow modules under Miri (100x slowdown):
-            # - persistence: SQLite FFI (can't execute under Miri)
-            # - wikilinks: 29 regex-heavy tests (compilation 100x slower)
-            # - observability: otel/tracing init overhead, 0 unsafe code
-            # - syntax_highlight: syntect/onig-sys FFI (can't execute under Miri)
-            filter: "-- infrastructure:: --skip persistence --skip wikilinks --skip syntax_highlight --skip observability"
+          # NOTE: These use positive module filters (-- infrastructure::<module>::)
+          # instead of the previous negative filter (-- infrastructure:: --skip X).
+          # New modules added to infrastructure:: must be explicitly assigned to one
+          # of the two groups below to run under Miri.
+          - group: infra-fast
+            filter: "-- infrastructure::cpu_pool:: -- infrastructure::stream:: -- infrastructure::error:: -- infrastructure::user_agent:: -- infrastructure::bridge:: -- infrastructure::output:: -- infrastructure::config:: -- infrastructure::autotuning:: -- infrastructure::content_processing:: -- infrastructure::scraper::"
+          - group: infra-slow
+            # wikilinks/syntax_highlight explicitly skipped — FFI-heavy, can't execute under Miri
+            filter: "-- infrastructure::crawler:: -- infrastructure::obsidian:: -- infrastructure::export:: -- infrastructure::http:: -- infrastructure::network:: -- infrastructure::converter:: --skip wikilinks --skip syntax_highlight"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
