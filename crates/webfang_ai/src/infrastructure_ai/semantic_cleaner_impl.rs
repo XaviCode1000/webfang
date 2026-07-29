@@ -52,15 +52,16 @@
 //! ```
 
 use std::future::Future;
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::future::try_join_all;
-use tracing::{debug, info, warn};
+use hf_hub::api::tokio::ApiBuilder;
+use hf_hub::{Cache as HfCache, Repo, RepoType};
+use sha2::{Digest, Sha256};
+use tracing::{debug, info};
 
-use crate::infrastructure_ai::cache_config::{default_cache_dir, AiModel, CacheConfig};
-use crate::infrastructure_ai::model_cache::ModelCache;
+use crate::infrastructure_ai::cache_config::AiModel;
 use crate::infrastructure_ai::{
     ContentPruner, HtmlChunker, InferencePool, LegibleContentPruner, MiniLmTokenizer,
     RelevanceScorer,
@@ -90,10 +91,6 @@ pub struct ModelConfig {
     pub repo: String,
     /// Model filename within repository
     pub model_file: String,
-    /// Cache directory for downloaded models
-    pub cache_dir: PathBuf,
-    /// Enable auto-download if model not cached
-    pub auto_download: bool,
     /// Offline mode (fail if not cached)
     pub offline_mode: bool,
     /// Maximum tokens per chunk (model-specific)
@@ -110,8 +107,6 @@ impl Default for ModelConfig {
         Self {
             repo: model_variant.repo_id().to_string(),
             model_file: model_variant.model_file().to_string(),
-            cache_dir: default_cache_dir(),
-            auto_download: true,
             offline_mode: false,
             max_tokens: 32768,        // Granite-97M context window (32K tokens)
             relevance_threshold: 0.3, // Moderate relevance threshold
@@ -138,20 +133,6 @@ impl ModelConfig {
     #[must_use]
     pub fn with_file(mut self, file: impl Into<String>) -> Self {
         self.model_file = file.into();
-        self
-    }
-
-    /// Set cache directory
-    #[must_use]
-    pub fn with_cache_dir(mut self, dir: PathBuf) -> Self {
-        self.cache_dir = dir;
-        self
-    }
-
-    /// Enable/disable auto-download
-    #[must_use]
-    pub fn with_auto_download(mut self, enabled: bool) -> Self {
-        self.auto_download = enabled;
         self
     }
 
@@ -283,97 +264,84 @@ impl SemanticCleanerImpl {
         info!(
             repo = %config.repo,
             file = %config.model_file,
-            cache_dir = ?config.cache_dir,
+            offline_mode = config.offline_mode,
             relevance_threshold = config.relevance_threshold,
             "Initializing semantic cleaner with full RAG pipeline"
         );
 
-        // Create cache manager
-        let cache_config = CacheConfig::new()
-            .with_cache_dir(config.cache_dir.clone())
-            .with_offline_mode(config.offline_mode);
+        // Resolve model + tokenizer paths through the hf_hub cache.
+        // Offline mode resolves strictly from the local cache (no network) and
+        // fails fast with `OfflineMode` when either asset is missing. Online
+        // mode is cache-first: hf_hub returns the cached path when present and
+        // transparently downloads missing assets otherwise.
+        let (model_path, tokenizer_path) = if config.offline_mode {
+            let cache = HfCache::default();
+            let cache_repo = cache.repo(Repo::new(config.repo.clone(), RepoType::Model));
 
-        let cache = ModelCache::new(cache_config.clone());
+            let model_path =
+                cache_repo
+                    .get(&config.model_file)
+                    .ok_or_else(|| SemanticError::OfflineMode {
+                        repo: config.repo.clone(),
+                    })?;
+            let tokenizer_path =
+                cache_repo
+                    .get("tokenizer.json")
+                    .ok_or_else(|| SemanticError::OfflineMode {
+                        repo: config.repo.clone(),
+                    })?;
 
-        // Ensure cache directory exists
-        cache.ensure_cache_dir().await?;
-
-        // Check if model is cached (verify local file exists)
-        // Since the model is manually downloaded, we just verify it exists
-        if cache.is_model_cached(&config.model_file).await? {
-            debug!("Model found in cache");
-        } else if config.offline_mode {
-            return Err(SemanticError::OfflineMode {
-                repo: config.repo.clone(),
-            });
-        } else if config.auto_download {
-            // Try to verify model exists (for manual download scenario)
-            info!("Verifying manually downloaded model...");
-
-            // Just verify file exists - if not found, suggest manual download
-            let model_path = config.cache_dir.join(&config.model_file);
-            if !model_path.exists() {
-                return Err(SemanticError::ModelLoad(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!(
-                        "Model file not found at {}. Please download manually or enable auto-download.",
-                        model_path.display()
-                    ),
-                )));
-            }
+            debug!("Resolved model and tokenizer from offline cache");
+            (model_path, tokenizer_path)
         } else {
-            return Err(SemanticError::OfflineMode {
-                repo: config.repo.clone(),
-            });
+            let api = ApiBuilder::new()
+                .with_progress(false)
+                .build()
+                .map_err(|e| SemanticError::Download {
+                    repo: config.repo.clone(),
+                    cause: format!("Failed to build HuggingFace API client: {}", e),
+                })?;
+
+            let repo = api.model(config.repo.clone());
+
+            // Resolve both assets concurrently (cache-first, downloads if missing).
+            let (model_path, tokenizer_path) =
+                tokio::try_join!(repo.get(&config.model_file), repo.get("tokenizer.json"))
+                    .map_err(|e| SemanticError::Download {
+                        repo: config.repo.clone(),
+                        cause: format!("HuggingFace API error: {}", e),
+                    })?;
+
+            debug!("Resolved model and tokenizer via hf_hub (cache-first)");
+            (model_path, tokenizer_path)
         };
 
-        // Validate model integrity
-        if cache_config.validate_sha256 {
-            debug!("Validating model integrity...");
-            cache
-                .validate_model(&config.model_file, None)
+        // Load the model bytes once and validate SHA256 on the in-memory buffer
+        // (zero extra I/O — the same bytes feed the inference pool below).
+        let model_bytes = Arc::new(
+            tokio::fs::read(&model_path)
                 .await
-                .unwrap_or_else(|e| {
-                    warn!("Model validation failed: {}", e);
-                    // Continue anyway - model might still work
-                });
+                .map_err(SemanticError::ModelLoad)?,
+        );
+
+        debug!("Validating model integrity...");
+        let actual_hash = format!("{:x}", Sha256::digest(model_bytes.as_slice()));
+        if actual_hash != config.model_variant.sha256() {
+            return Err(SemanticError::CacheValidation {
+                repo: config.repo.clone(),
+                expected: config.model_variant.sha256().to_string(),
+                actual: actual_hash,
+            });
         }
+        debug!(sha = %actual_hash, "SHA256 validation passed");
 
-        // Load inference pool
-        let model_path = cache.model_path(&config.model_file);
-        let model_variant = config.model_variant;
-        let model_data = tokio::fs::read(&model_path).await.map_err(|e| {
-            SemanticError::ModelLoad(std::io::Error::other(format!(
-                "Failed to read model file '{}': {}",
-                model_path.display(),
-                e
-            )))
-        })?;
-        let model_bytes = Arc::new(model_data);
-        let inference_pool =
-            Arc::new(InferencePool::new(model_bytes, model_variant).map_err(|e| {
-                SemanticError::ModelLoad(std::io::Error::other(format!(
-                    "Failed to create inference pool: {}",
-                    e
-                )))
-            })?);
-
-        // Load tokenizer
-        let tokenizer_path = config.cache_dir.join("tokenizer.json");
-        let tokenizer = if tokenizer_path.exists() {
-            MiniLmTokenizer::from_file(&tokenizer_path)
-                .await
-                .map_err(|e| SemanticError::Tokenize(format!("Failed to load tokenizer: {}", e)))?
-        } else {
-            return Err(SemanticError::Tokenize(
-                "Tokenizer not found in cache. Run model download first.".to_string(),
-            ));
-        };
-
-        // Create chunker with config
+        // Initialize all pipeline components.
+        let tokenizer = MiniLmTokenizer::from_file(&tokenizer_path).await?;
+        let inference_pool = Arc::new(InferencePool::new(
+            Arc::clone(&model_bytes),
+            config.model_variant,
+        )?);
         let chunker = HtmlChunker::new();
-
-        // Create scorer with relevance threshold
         let scorer = RelevanceScorer::new(config.relevance_threshold);
 
         info!("Semantic cleaner initialized successfully");
@@ -392,18 +360,6 @@ impl SemanticCleanerImpl {
             pruner: LegibleContentPruner::standard(),
             config,
         })
-    }
-
-    /// Get the cache directory
-    #[must_use]
-    pub fn cache_dir(&self) -> &std::path::Path {
-        &self.config.cache_dir
-    }
-
-    /// Check if auto-download is enabled
-    #[must_use]
-    pub fn auto_download_enabled(&self) -> bool {
-        self.config.auto_download
     }
 
     /// Get the relevance threshold
@@ -657,42 +613,6 @@ impl SemanticCleanerImpl {
     }
 }
 
-/// Create a semantic cleaner with the specified configuration
-///
-/// This is the main entry point for creating a [`SemanticCleaner`].
-///
-/// # Arguments
-///
-/// * `config` - Model configuration
-///
-/// # Returns
-///
-/// * `Ok(Box<dyn SemanticCleaner>)` - Successfully created cleaner
-/// * `Err(SemanticError)` - Creation failed
-///
-/// # Examples
-///
-/// ```no_run
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use webfang_ai::{SemanticCleanerImpl, ModelConfig};
-/// use webfang_ai::SemanticCleaner;
-///
-/// let config = ModelConfig::default();
-/// let cleaner = SemanticCleanerImpl::new(config).await?;
-///
-/// let html = "<article><p>Hello World</p></article>";
-/// let chunks = cleaner.clean(html).await?;
-/// # Ok(())
-/// # }
-/// ```
-#[allow(dead_code)]
-pub(crate) async fn create_semantic_cleaner(
-    config: &ModelConfig,
-) -> Result<Box<dyn SemanticCleaner>, SemanticError> {
-    let cleaner = SemanticCleanerImpl::new(config.clone()).await?;
-    Ok(Box::new(cleaner))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,7 +622,6 @@ mod tests {
         let config = ModelConfig::default();
         assert_eq!(config.repo, AiModel::default().repo_id());
         assert_eq!(config.model_file, AiModel::default().model_file());
-        assert!(config.auto_download);
         assert!(!config.offline_mode);
         assert_eq!(config.max_tokens, 32768);
         assert_eq!(config.relevance_threshold, 0.3);
@@ -713,7 +632,6 @@ mod tests {
         let config = ModelConfig::new()
             .with_repo("test/repo")
             .with_file("test.onnx")
-            .with_auto_download(false)
             .with_offline_mode(true)
             .with_max_tokens(256)
             .with_relevance_threshold(0.5)
@@ -721,7 +639,6 @@ mod tests {
 
         assert_eq!(config.repo, "test/repo");
         assert_eq!(config.model_file, "test.onnx");
-        assert!(!config.auto_download);
         assert!(config.offline_mode);
         assert_eq!(config.max_tokens, 256);
         assert_eq!(config.relevance_threshold, 0.5);
@@ -751,15 +668,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_semantic_cleaner_creation_fails_without_model() {
-        // This test verifies that creation fails gracefully when model is not available
-        //
-        // FIX: Use a non-existent cache directory to ensure model is not found
-        let temp_dir = tempfile::tempdir().unwrap();
-        let cache_dir = temp_dir.path().join("non_existent_cache");
-
+        // Creation must fail gracefully when the model is unavailable.
+        // Offline mode + a bogus repo id (never present in the local hf_hub
+        // cache) guarantees a deterministic resolution failure without network.
         let config = ModelConfig::new()
-            .with_cache_dir(cache_dir)
-            .with_auto_download(false)
+            .with_repo("nonexistent/fake-repo-for-test")
             .with_offline_mode(true);
 
         let result = SemanticCleanerImpl::new(config).await;
@@ -768,13 +681,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_semantic_cleaner_offline_mode() {
-        // Test that offline mode fails when model is not cached
-        let temp_dir = tempfile::tempdir().unwrap();
-        let cache_dir = temp_dir.path().join("offline_test");
-
+        // Offline mode must fail with OfflineMode when the model is not cached.
+        // A bogus repo id is never present in the hf_hub cache, so this is
+        // deterministic and requires no network access.
         let config = ModelConfig::new()
-            .with_cache_dir(cache_dir)
-            .with_auto_download(false)
+            .with_repo("nonexistent/fake-repo-for-test")
             .with_offline_mode(true);
 
         let result = SemanticCleanerImpl::new(config).await;
@@ -797,13 +708,9 @@ mod tests {
 
     #[test]
     fn test_model_config_full_builder() {
-        let temp_dir = tempfile::tempdir().unwrap();
-
         let config = ModelConfig::new()
             .with_repo("test/repo")
             .with_file("test.onnx")
-            .with_cache_dir(temp_dir.path().to_path_buf())
-            .with_auto_download(false)
             .with_offline_mode(true)
             .with_max_tokens(256)
             .with_relevance_threshold(0.4)
@@ -811,7 +718,6 @@ mod tests {
 
         assert_eq!(config.repo, "test/repo");
         assert_eq!(config.model_file, "test.onnx");
-        assert!(!config.auto_download);
         assert!(config.offline_mode);
         assert_eq!(config.max_tokens, 256);
         assert_eq!(config.relevance_threshold, 0.4);
@@ -823,8 +729,6 @@ mod tests {
         // This is a compile-time check
         fn _check_fields(cleaner: &SemanticCleanerImpl) {
             let _ = cleaner.relevance_threshold();
-            let _ = cleaner.auto_download_enabled();
-            let _ = cleaner.cache_dir();
         }
     }
 
