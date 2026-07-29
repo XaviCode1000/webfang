@@ -241,6 +241,7 @@ impl Exporter for VectorExporter {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, documents), fields(exporter = "vector", documents = documents.len()))]
     fn export_batch(&self, documents: &[DocumentChunkValidated]) -> ExportResult<()> {
         if documents.is_empty() {
             return Ok(());

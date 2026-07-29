@@ -202,6 +202,7 @@ impl Exporter for FileExporter {
         }
     }
 
+    #[tracing::instrument(skip(self, documents), fields(exporter = "file", documents = documents.len()))]
     fn export_batch(&self, documents: &[DocumentChunkValidated]) -> ExportResult<()> {
         // Default: export one by one
         for doc in documents {
