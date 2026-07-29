@@ -15,7 +15,7 @@ use crate::application::deduplicator::UrlDeduplicator;
 use crate::application::pipeline::{OutputStage, PipelineExecutor};
 use crate::application::rate_limiter::SharedRateLimiter;
 use crate::domain::CrawlerConfig;
-use crate::infrastructure::crawler::RobotsCache;
+use crate::infrastructure::crawler::RobotsFetcher;
 use crate::infrastructure::crawler::UrlQueue;
 use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
 use crate::infrastructure::network::session_pool::DomainSessionPool;
@@ -33,7 +33,7 @@ pub struct CrawlTaskCtx {
     pub(crate) rate_limiter: SharedRateLimiter,
     pub(crate) session_pool: Option<DomainSessionPool>,
     pub(crate) ignore_robots: bool,
-    pub(crate) robots_cache: RobotsCache,
+    pub(crate) robots_fetcher: Arc<RobotsFetcher>,
 
     // --- Per-task mutable (atomics) ---
     pub(crate) error_count: Arc<AtomicUsize>,

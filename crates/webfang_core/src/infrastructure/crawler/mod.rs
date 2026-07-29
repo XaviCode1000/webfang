@@ -27,9 +27,7 @@ pub use link_extractor::{extract_links, is_internal_link, normalize_url};
 pub use resource_downloader::{
     DownloadConfig, DownloadedResource, PermitGuard, ResourceDownloader,
 };
-pub use robots_utils::{
-    get_crawl_delay, is_allowed_by_robots, new_robots_cache, RobotsCache, RobotsRules,
-};
+pub use robots_utils::{RobotsFetcher, RobotsRules};
 pub use sitemap_config::{SitemapConfig, SitemapConfigBuilder};
 pub use sitemap_parser::{resolve_url, SitemapError, SitemapParser};
 pub use url_queue::{UrlQueue, UrlSource};
