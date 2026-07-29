@@ -64,6 +64,14 @@ pub enum FetchRouter {
     Static(Arc<WreqDownloader>),
     /// Hybrid 3-layer: wreq → Obscura → Chromiumoxide.
     Hybrid(Arc<HybridRouter<WreqDownloader, ObscuraDownloader, ChromiumoxideDownloader>>),
+    /// Chrome-direct rendering with RAM-aware concurrency gating.
+    ///
+    /// Bypasses the wreq → Obscura escalation and renders every page in
+    /// Chromiumoxide. A dedicated [`ResourceGovernor`] checks system memory
+    /// before each fetch and holds a semaphore permit for its duration,
+    /// preventing OOM on large crawls. Both fields are `Arc`-wrapped so the
+    /// router stays cheaply cloneable into spawned tasks.
+    Full(Arc<ChromiumoxideDownloader>, Arc<ResourceGovernor>),
 }
 
 /// Build the [`FetchRouter`] for a given JavaScript rendering strategy.
@@ -82,14 +90,19 @@ pub fn build_fetch_router(
         JsStrategy::Static => {
             FetchRouter::Static(Arc::new(WreqDownloader::new(timeout_secs, connect_timeout)))
         },
-        // Hybrid and Full share the 3-layer escalation router; Full differs only
-        // in intent (the router still escalates wreq → obscura → chromiumoxide,
-        // preserving the previous Engine behavior).
-        JsStrategy::Hybrid | JsStrategy::Full => {
+        JsStrategy::Hybrid => {
             let l1 = WreqDownloader::new(timeout_secs, connect_timeout);
             let l2 = ObscuraDownloader::new(timeout_secs);
             let l3 = ChromiumoxideDownloader::new(cookie_bridge);
             FetchRouter::Hybrid(Arc::new(HybridRouter::new(l1, l2, l3)))
+        },
+        // Full renders every page directly in Chrome (no wreq → Obscura
+        // escalation) and gates concurrency on system RAM via its own
+        // ResourceGovernor to prevent OOM on large crawls.
+        JsStrategy::Full => {
+            let dl = ChromiumoxideDownloader::new(cookie_bridge);
+            let governor = ResourceGovernor::new();
+            FetchRouter::Full(Arc::new(dl), Arc::new(governor))
         },
     }
 }
@@ -99,6 +112,11 @@ impl Downloader for FetchRouter {
         match self {
             Self::Static(dl) => dl.fetch(url),
             Self::Hybrid(dl) => dl.fetch(url),
+            Self::Full(dl, governor) => Box::pin(async move {
+                governor.check_resources().map_err(DownloadError::from)?;
+                let _permit = governor.acquire().await?;
+                dl.fetch(url).await
+            }),
         }
     }
 
@@ -106,6 +124,7 @@ impl Downloader for FetchRouter {
         match self {
             Self::Static(dl) => dl.supports_interactions(),
             Self::Hybrid(dl) => dl.supports_interactions(),
+            Self::Full(dl, _) => dl.supports_interactions(),
         }
     }
 
@@ -113,6 +132,7 @@ impl Downloader for FetchRouter {
         match self {
             Self::Static(dl) => dl.memory_cost(),
             Self::Hybrid(dl) => dl.memory_cost(),
+            Self::Full(dl, _) => dl.memory_cost(),
         }
     }
 }
@@ -1077,11 +1097,11 @@ mod router_tests {
     }
 
     #[test]
-    fn build_fetch_router_full_returns_hybrid_variant() {
+    fn build_fetch_router_full_returns_full_variant() {
         let router = build_fetch_router(&JsStrategy::Full, 30, test_cookie_bridge());
         assert!(
-            matches!(router, FetchRouter::Hybrid(_)),
-            "Full strategy shares the Hybrid 3-layer router"
+            matches!(router, FetchRouter::Full(..)),
+            "Full strategy must produce FetchRouter::Full (chrome-direct), not Hybrid"
         );
     }
 }
