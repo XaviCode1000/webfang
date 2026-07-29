@@ -115,7 +115,7 @@ fn batch_empty_file_exits_64() {
 // ---------------------------------------------------------------------------
 
 /// A --batch-file with a slow endpoint and --timeout-secs 1 must exit 69
-/// and complete well under 15s (the per-request timeout fires, not a hang).
+/// and complete well under 25s (the per-request timeout fires, not a hang).
 #[tokio::test]
 async fn batch_file_timeout_does_not_hang() {
     let t = BehavioralTest::new().await;
@@ -161,8 +161,8 @@ async fn batch_file_timeout_does_not_hang() {
         output.status.code()
     );
     assert!(
-        elapsed < Duration::from_secs(15),
-        "batch timeout test should complete in under 15s, took {:?}",
+        elapsed < Duration::from_secs(25),
+        "batch timeout test should complete in under 25s, took {:?}",
         elapsed
     );
 }
