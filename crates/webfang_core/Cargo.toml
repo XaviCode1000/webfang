@@ -226,6 +226,10 @@ path = "../../tests/http_client_integration.rs"
 name = "ai_error_propagation"
 path = "../../tests/ai_error_propagation.rs"
 
+[[test]]
+name = "waf_fixtures_test"
+path = "../../tests/waf_fixtures_test.rs"
+
 # ---------------------------------------------------------------------------
 # Benchmarks (criterion). The bench files live in the root `benches/` tree
 # (outside this crate's directory), so they must be wired explicitly — the
