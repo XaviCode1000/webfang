@@ -338,7 +338,7 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     if: github.event_name == 'workflow_dispatch'
     needs: [test-full]
     steps:
