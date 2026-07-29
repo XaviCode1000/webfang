@@ -125,6 +125,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
+      - name: Pre-build test binary
+        run: cargo build -p webfang_cli --bin webfang
       - name: Unit tests (lib)
         run: cargo nextest run --lib --test-threads 4 --retries 2
       - name: Integration tests
@@ -142,6 +144,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
+      - name: Pre-build test binary
+        run: cargo build -p webfang_cli --bin webfang --all-features
       - run: cargo nextest run --all-features --test-threads 4 --retries 2
 
   # ============================================================================
