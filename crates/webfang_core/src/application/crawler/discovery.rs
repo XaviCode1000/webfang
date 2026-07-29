@@ -14,10 +14,10 @@ use crate::domain::http_config::HttpClientConfig;
 use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl, ScrapedContent, ValidUrl};
 use crate::error::{Result as ScraperResult, ScraperError};
 use crate::infrastructure::crawler::binary_utils::derive_filename_from_response;
-use crate::infrastructure::downloader::{DownloadError, Downloader};
 use crate::infrastructure::crawler::{
     extract_links, is_internal_link, normalize_url, SitemapConfig, SitemapParser,
 };
+use crate::infrastructure::downloader::{DownloadError, Downloader};
 use crate::infrastructure::http::waf_engine::WafInspector;
 use crate::infrastructure::scraper::{fallback, readability};
 use crate::ScraperConfig;
@@ -228,7 +228,11 @@ pub async fn scrape_single_url_for_tui(
     }
 
     // Check content-type before reading body to handle binary content (PDFs, etc.)
-    let content_type = page.headers.get("content-type").cloned().unwrap_or_default();
+    let content_type = page
+        .headers
+        .get("content-type")
+        .cloned()
+        .unwrap_or_default();
 
     let is_binary = content_type.contains("application/pdf")
         || content_type.contains("application/octet-stream")
@@ -383,7 +387,10 @@ pub async fn scrape_single_url_for_tui(
             CRAWLER_PAGES.add(1, &[opentelemetry::KeyValue::new("method", "readability")]);
 
             let assets = crate::application::scraper_service::download_assets_if_enabled(
-                &html, url, config, asset_downloader,
+                &html,
+                url,
+                config,
+                asset_downloader,
             )
             .await?;
 
@@ -421,7 +428,10 @@ pub async fn scrape_single_url_for_tui(
             }
 
             let assets = crate::application::scraper_service::download_assets_if_enabled(
-                &html, url, config, asset_downloader,
+                &html,
+                url,
+                config,
+                asset_downloader,
             )
             .await?;
 
@@ -1080,6 +1090,166 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(6),
             "2s connect timeout should fire well before 6s, took {elapsed:?}"
+        );
+    }
+
+    // ========================================================================
+    // scrape_single_url_for_tui — Downloader-injection unit tests (#303)
+    // ========================================================================
+
+    use crate::infrastructure::downloader::FetchedPage;
+    use futures::future::BoxFuture;
+    use std::collections::HashMap;
+
+    struct StubDownloader {
+        result: std::sync::Mutex<Option<Result<FetchedPage, DownloadError>>>,
+    }
+
+    impl StubDownloader {
+        fn returning(result: Result<FetchedPage, DownloadError>) -> Self {
+            Self {
+                result: std::sync::Mutex::new(Some(result)),
+            }
+        }
+    }
+
+    impl Downloader for StubDownloader {
+        fn fetch<'a>(&'a self, _url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
+            let result = self
+                .result
+                .lock()
+                .expect("stub lock poisoned")
+                .take()
+                .expect("fetch called more than once on StubDownloader");
+            Box::pin(async move { result })
+        }
+
+        fn supports_interactions(&self) -> bool {
+            false
+        }
+
+        fn memory_cost(&self) -> usize {
+            0
+        }
+    }
+
+    fn stub_page(html: &str, status: u16, headers: Vec<(&str, &str)>) -> FetchedPage {
+        FetchedPage {
+            url: Url::parse("https://example.com").expect("valid test URL"),
+            html: html.to_owned(),
+            status,
+            headers: headers
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                .collect::<HashMap<_, _>>(),
+            cookies: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn scrape_single_binary_content_type_returns_early() {
+        let page = stub_page(
+            "%PDF-1.4 fake bytes",
+            200,
+            vec![("content-type", "application/pdf")],
+        );
+        let dl = StubDownloader::returning(Ok(page));
+        let url = Url::parse("https://example.com/doc.pdf").expect("valid URL");
+        let config = ScraperConfig::new();
+
+        let result = scrape_single_url_for_tui(&dl, &url, &config, None, None)
+            .await
+            .expect("binary detection should succeed");
+
+        assert!(
+            result.content.contains("[Binary content:"),
+            "expected binary marker, got: {}",
+            result.content
+        );
+        assert_eq!(result.title, "example.com");
+    }
+
+    #[tokio::test]
+    async fn scrape_single_waf_body_signature_returns_waf_blocked() {
+        let waf_html = r#"<html><body><div id="cf-browser-verification">Checking your browser before accessing the site.</div></body></html>"#;
+        let page = stub_page(waf_html, 200, vec![("content-type", "text/html")]);
+        let dl = StubDownloader::returning(Ok(page));
+        let url = Url::parse("https://example.com").expect("valid URL");
+        let config = ScraperConfig::new();
+
+        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None)
+            .await
+            .expect_err("WAF body should trigger WafBlocked");
+
+        assert!(
+            matches!(err, ScraperError::WafBlocked { .. }),
+            "expected WafBlocked, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn scrape_single_normal_html_extracts_title_and_content() {
+        let html = r#"<html><head><title>Test Article</title></head>
+<body><article><h1>Heading</h1>
+<p>This is a substantial paragraph with enough text for the readability
+algorithm to identify it as the main content of the page and extract it
+properly into the ScrapedContent output structure.</p>
+<p>A second paragraph ensures the extractor has multiple text blocks to
+work with when computing the document readability score.</p>
+</article></body></html>"#;
+        let page = stub_page(html, 200, vec![("content-type", "text/html")]);
+        let dl = StubDownloader::returning(Ok(page));
+        let url = Url::parse("https://example.com/article").expect("valid URL");
+        let config = ScraperConfig::new();
+
+        let result = scrape_single_url_for_tui(&dl, &url, &config, None, None)
+            .await
+            .expect("normal HTML should scrape successfully");
+
+        assert!(
+            !result.title.is_empty(),
+            "title should be extracted from HTML"
+        );
+        assert!(
+            !result.content.is_empty(),
+            "content should be extracted from HTML"
+        );
+    }
+
+    #[tokio::test]
+    async fn scrape_single_download_waf_challenge_maps_to_waf_blocked() {
+        let dl =
+            StubDownloader::returning(Err(DownloadError::WafChallenge("Cloudflare".to_owned())));
+        let url = Url::parse("https://example.com").expect("valid URL");
+        let config = ScraperConfig::new();
+
+        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None)
+            .await
+            .expect_err("WafChallenge download error should propagate");
+
+        match err {
+            ScraperError::WafBlocked { url, provider } => {
+                assert_eq!(provider, "Cloudflare");
+                assert!(url.contains("example.com"));
+            },
+            other => panic!("expected WafBlocked, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn scrape_single_non_2xx_status_returns_http_error() {
+        let page = stub_page("not found", 404, vec![("content-type", "text/html")]);
+        let dl = StubDownloader::returning(Ok(page));
+        let url = Url::parse("https://example.com/missing").expect("valid URL");
+        let config = ScraperConfig::new();
+
+        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None)
+            .await
+            .expect_err("404 status should produce an error");
+
+        assert!(
+            matches!(err, ScraperError::Http { status: 404, .. }),
+            "expected Http(404), got: {err:?}"
         );
     }
 }

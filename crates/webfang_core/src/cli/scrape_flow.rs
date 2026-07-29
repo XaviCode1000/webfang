@@ -5,9 +5,9 @@ use tracing::{info, warn};
 use url::Url;
 
 use crate::application::crawl_options::CrawlOptions;
+use crate::application::crawler::build_fetch_router;
 use crate::application::export_factory;
 use crate::application::progress_observer::ProgressObserver;
-use crate::application::crawler::build_fetch_router;
 use crate::application::scrape_single_url_for_tui;
 use crate::domain::entities::progress::{ScrapeError, ScrapeStatus};
 use crate::domain::JsStrategy;
@@ -116,13 +116,12 @@ pub async fn scrape_urls(
     // upgrades a Static strategy to Hybrid so JS-capable fetching is used instead
     // of returning a feature-gated error (issue #303).
     let http_config = build_http_client_config(opts);
-    let effective_strategy = if opts.network.force_js_render
-        && matches!(opts.network.js_strategy, JsStrategy::Static)
-    {
-        JsStrategy::Hybrid
-    } else {
-        opts.network.js_strategy
-    };
+    let effective_strategy =
+        if opts.network.force_js_render && matches!(opts.network.js_strategy, JsStrategy::Static) {
+            JsStrategy::Hybrid
+        } else {
+            opts.network.js_strategy
+        };
     let cookie_bridge = std::sync::Arc::new(std::sync::RwLock::new(CookieBridge::new()));
     let router = build_fetch_router(&effective_strategy, http_config.timeout_secs, cookie_bridge);
 
@@ -171,15 +170,7 @@ pub async fn scrape_urls(
             .on_status_changed(url_str, ScrapeStatus::Fetching)
             .await;
 
-        match scrape_single_url_for_tui(
-            &router,
-            &url,
-            scraper_config,
-            downloader,
-            engine,
-        )
-        .await
-        {
+        match scrape_single_url_for_tui(&router, &url, scraper_config, downloader, engine).await {
             Ok(content) => {
                 observer
                     .on_status_changed(url_str, ScrapeStatus::Extracting)

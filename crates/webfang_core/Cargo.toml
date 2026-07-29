@@ -233,6 +233,10 @@ path = "../../tests/engine_js_strategy_timeout_test.rs"
 name = "checkpoint_store_integration"
 path = "../../tests/checkpoint_store_integration.rs"
 
+[[test]]
+name = "downloader_headers_test"
+path = "../../tests/downloader_headers_test.rs"
+
 [lints.clippy]
 doc_markdown = "allow"
 uninlined_format_args = "allow"

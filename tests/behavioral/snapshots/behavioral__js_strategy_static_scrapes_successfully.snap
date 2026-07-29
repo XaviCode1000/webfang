@@ -1,0 +1,16 @@
+---
+source: crates/webfang_core/../../tests/behavioral/main.rs
+expression: redacted
+---
+---
+title: JS Strategy Test
+url: http://127.0.0.1:<PORT>/
+date: [DATE]
+excerpt: This content is served via the static wreq downloader path, confirming that the FetchRouter wiring dispatches correctly for --js-strategy static.
+---
+
+## Static Strategy Page
+
+This content is served via the static wreq downloader path, confirming that the FetchRouter wiring dispatches correctly for --js-strategy static.
+
+A second paragraph gives readability enough signal to extract the document body as the primary content region of this test page.
