@@ -1336,6 +1336,104 @@ mod tests {
     }
 
     // ========================================================================
+    // TASK-06 — Entropy rules (REQ-WAF-06)
+    //
+    // The entropy mechanism landed in inspect() in TASK-05 (inseparable: the
+    // silent-challenge / obfuscated-WAF guard rails must stay green the moment
+    // the shims delegate to inspect). These tests provide the dedicated
+    // REQ-WAF-06 status-aware policy coverage — each distinguishes the new
+    // policy from the old "always block on entropy" behavior.
+    // ========================================================================
+
+    #[test]
+    fn test_entropy_silent_challenge_200_html_blocks() {
+        // REQ-WAF-06b: 200 + HTML, <1500B, 6 scripts → BLOCK (silent challenge).
+        // This is the "H3 fix" case discovery.rs depends on — MUST be kept.
+        let body = "<html><script></script><script></script><script></script><script></script><script></script><script></script></html>";
+        let ctx = ctx_with(Some(200), Some("text/html"));
+        let verdict = WafInspector::inspect(body, &ctx);
+        assert!(verdict.is_blocked, "200+HTML silent challenge must block");
+        assert!(verdict
+            .evidences
+            .iter()
+            .any(|e| e.provider == "Silent Challenge"));
+    }
+
+    #[test]
+    fn test_entropy_silent_challenge_200_non_html_passes() {
+        // REQ-WAF-06b: 200 + non-HTML, <1500B, 6 scripts → NOT blocked.
+        let body = "<html><script></script><script></script><script></script><script></script><script></script><script></script></html>";
+        let ctx = ctx_with(Some(200), Some("text/plain"));
+        let verdict = WafInspector::inspect(body, &ctx);
+        assert!(
+            !verdict.is_blocked,
+            "200+non-HTML script density must not block"
+        );
+    }
+
+    #[test]
+    fn test_entropy_silent_challenge_non_2xx_blocks() {
+        // REQ-WAF-06b: non-2xx + <1500B + >5 scripts → BLOCK.
+        let body = "<html><script></script><script></script><script></script><script></script><script></script><script></script></html>";
+        let ctx = ctx_with(Some(503), Some("text/html"));
+        let verdict = WafInspector::inspect(body, &ctx);
+        assert!(verdict.is_blocked, "non-2xx silent challenge must block");
+    }
+
+    #[test]
+    fn test_entropy_obfuscated_200_no_t2_passes() {
+        // REQ-WAF-06a: 200, >100KB, >5.5 b/B, no T2 marker → NOT blocked
+        // (old behavior blocked unconditionally — this is the policy change).
+        let high_entropy: String = (0u8..=255)
+            .map(|b| b as char)
+            .cycle()
+            .take(104_000)
+            .collect();
+        let ctx = ctx_with(Some(200), Some("text/html"));
+        let verdict = WafInspector::inspect(&high_entropy, &ctx);
+        assert!(
+            !verdict.is_blocked,
+            "200 high-entropy without T2 must not block"
+        );
+    }
+
+    #[test]
+    fn test_entropy_obfuscated_non_2xx_blocks() {
+        // REQ-WAF-06a: non-2xx + >100KB + >5.5 b/B → BLOCK.
+        let high_entropy: String = (0u8..=255)
+            .map(|b| b as char)
+            .cycle()
+            .take(104_000)
+            .collect();
+        let ctx = ctx_with(Some(503), Some("text/html"));
+        let verdict = WafInspector::inspect(&high_entropy, &ctx);
+        assert!(verdict.is_blocked, "non-2xx high-entropy must block");
+        assert!(verdict
+            .evidences
+            .iter()
+            .any(|e| e.provider == "Obfuscated WAF"));
+    }
+
+    #[test]
+    fn test_entropy_obfuscated_200_with_t2_blocks() {
+        // REQ-WAF-06a: 200 + >100KB + >5.5 b/B + coexisting T2 marker → BLOCK.
+        // The ascending byte cycle contains no signature, so append a
+        // boundary-clean bare vendor name to force T2 coexistence.
+        let mut high_entropy: String = (0u8..=255)
+            .map(|b| b as char)
+            .cycle()
+            .take(104_000)
+            .collect();
+        high_entropy.push_str(" cloudflare ");
+        let ctx = ctx_with(Some(200), Some("text/html"));
+        let verdict = WafInspector::inspect(&high_entropy, &ctx);
+        assert!(
+            verdict.is_blocked,
+            "200 high-entropy with T2 coexistence must block"
+        );
+    }
+
+    // ========================================================================
     // detect_body() tests — ported from waf.rs (Approval Testing)
     // ========================================================================
 
