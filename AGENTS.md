@@ -56,7 +56,7 @@ You are the **Orchestrator-Engineer**. You decide WHAT to do and WHERE to delega
 
 - Before editing any symbol → GitNexus `impact({direction:"upstream"})`. NEVER edit blind. (CodeDB `callers` is faster for a quick check, but GitNexus gives depth + risk level.)
 - Before renaming → GitNexus MCP `rename` with `dry_run:true` first. NEVER find-and-replace. (CodeDB has no rename tool.)
-- Before commit → GitNexus `detect_changes()`. Before regression review → `detect_changes({scope:"compare", base_ref:"main"})`.
+- Before commit → GitNexus `detect_changes()`. Before regression review → `detect_changes({scope:"compare", base_ref:"main"})`. **In worktrees:** ALWAYS pass the absolute worktree path as `repo` — bare `detect_changes()` or `repo:"webfang"` resolves to the main checkout and the gate fails open (see [GitNexus in worktrees](#gitnexus-in-worktrees-detect_changes-pitfall)).
 - Index stale (`gitnexus://repo/webfang/context`) → STOP. Run `gitnexus analyze --index-only --skip-agents-md` (always `--skip-agents-md` so this file isn't overwritten).
 
 **Legitimate `grep`/`rg` exceptions:** logs, CI output, `.env`/config text, files outside the index — never for source code.
@@ -88,10 +88,10 @@ Every sub-agent that reads/writes code MUST:
 1. `gitnexus_context({name})` before writing any symbol.
 1. `gitnexus_impact({direction:"upstream"})` BEFORE editing any symbol.
 1. Apply `rust-skills` category (see table below).
-1. `gitnexus_detect_changes()` before returning.
+1. `gitnexus_detect_changes()` before returning. **In worktrees:** pass `repo:"<ABSOLUTE_WORKTREE_PATH>"` — bare name resolves to main (#360).
 1. NEVER use `grep`/`rg` for code search — use `query`/`cypher` (GitNexus) or `word`/`symbol`/`search` (CodeDB).
 1. NEVER rename with find-and-replace — use `gitnexus_rename` with `dry_run: true` FIRST, then apply.
-1. NEVER commit without `detect_changes({scope:"compare", base_ref:"main"})` for regression review.
+1. NEVER commit without `detect_changes({scope:"compare", base_ref:"main"})` for regression review. **In worktrees:** add `repo:"<ABSOLUTE_WORKTREE_PATH>"` (#360).
 
 ### rust-skills categories by task type
 
@@ -291,6 +291,8 @@ cp ~/Projects/webfang/.env .         # .env is gitignored, must be copied manual
 gitnexus analyze --index-only --skip-agents-md  # GitNexus index is per-worktree
 ```
 
+> ⚠️ **Restart the editor's MCP connection after `gitnexus analyze`.** The MCP server is long-lived and caches the registry at startup. Without a restart, `detect_changes({repo:"webfang"})` keeps resolving to the main checkout even though the worktree is indexed (#360).
+
 **Cross-branch read access (NO checkout):**
 
 ```bash
@@ -344,6 +346,20 @@ A merge is NOT done until the repo is clean and ready for the next mission. Clea
 | `.gitnexus/` index                             | ❌ Per-worktree    | Each worktree needs its own `gitnexus analyze` (indexes the working tree of CWD, which differs per worktree) |
 | `codedb.snapshot`                              | ❌ Per-worktree    | Each worktree needs its own CodeDB index                                                                     |
 | Git stash (`refs/stash`)                       | ⚠️ Shared (DANGER) | **NEVER use `git stash` in a worktree** — shared storage causes cross-worktree contamination                 |
+
+### GitNexus in worktrees (`detect_changes` pitfall)
+
+GitNexus registers the main checkout and ALL worktrees under the **same name** `webfang` (upstream design #1259). When the MCP server was launched from the main checkout, bare-name resolution picks the main entry — so `detect_changes()` or `detect_changes({repo:"webfang"})` reads the **main checkout's clean tree**, not your worktree. The pre-commit gate fails open: it reports "No changes detected" while your worktree has uncommitted changes.
+
+**In worktrees, ALWAYS use the absolute path:**
+
+```text
+detect_changes({ scope:"compare", base_ref:"main", repo:"/var/home/xavi/Projects/webfang-worktrees/<dir>" })
+```
+
+**NEVER use** `repo:"webfang"` (ambiguous — 4+ registry entries share that name). The absolute path is the official upstream disambiguation (`RegistryAmbiguousTargetError` says "Pass the absolute path instead").
+
+This applies to ALL GitNexus MCP tools that take a `repo` parameter (`impact`, `context`, `query`, `rename`, etc.), not just `detect_changes`.
 
 ### Rebase caveats in worktrees
 
@@ -411,6 +427,7 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 - Access sibling worktrees via relative paths (`../feat-auth/...`)
 - Commit in a worktree whose branch doesn't match the directory name (enforced by pre-commit hook)
 - Modify `.git/worktrees/` metadata manually
+- Use `repo:"webfang"` (bare name) for GitNexus MCP tools in worktrees — ambiguous between main + all worktrees; always use the absolute worktree path (#360)
 
 ---
 
@@ -460,8 +477,8 @@ Base the body on `.github/PULL_REQUEST_TEMPLATE.md` (it already documents these 
 
 - [ ] `cargo check` + `cargo clippy -- -D warnings` + `cargo fmt`
 - [ ] `cargo nextest run` (at least affected module)
-- [ ] `gitnexus_detect_changes()` shows only expected symbols
-- [ ] `gitnexus_detect_changes({scope:"compare", base_ref:"main"})` for regression review
+- [ ] `gitnexus_detect_changes()` shows only expected symbols (**in worktrees:** add `repo:"<ABSOLUTE_WORKTREE_PATH>"`)
+- [ ] `gitnexus_detect_changes({scope:"compare", base_ref:"main"})` for regression review (**in worktrees:** add `repo:"<ABSOLUTE_WORKTREE_PATH>"`)
 - [ ] Error messages in Spanish if user-facing
 - [ ] New public items have doc comments
 - [ ] PR has **exactly one `type:*` label** (see mapping above) — CI rejects it otherwise
@@ -607,3 +624,5 @@ This project is indexed by GitNexus as **webfang** (7778 symbols, 18679 relation
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+> ⚠️ **Worktree override:** The auto-generated GitNexus block above uses bare `detect_changes()`. In worktrees, this resolves to the main checkout and the pre-commit gate fails open. ALWAYS pass the absolute worktree path as `repo` — see [GitNexus in worktrees](#gitnexus-in-worktrees-detect_changes-pitfall). Do not edit the auto-block directly; it is regenerated by `gitnexus analyze`.
