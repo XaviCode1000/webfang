@@ -10,6 +10,7 @@ mod common;
 use url::Url;
 use webfang_core::infrastructure::downloader::wreq_downloader::WreqDownloader;
 use webfang_core::infrastructure::downloader::Downloader;
+use webfang_core::HttpClientConfig;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -28,7 +29,8 @@ async fn wreq_downloader_populates_response_headers() {
         .mount(&server)
         .await;
 
-    let downloader = WreqDownloader::new(10, 5);
+    let downloader = WreqDownloader::new(10, 5, HttpClientConfig::default().tls_emulation)
+        .expect("downloader builds");
     let url = Url::parse(&server.uri()).expect("wiremock URI is valid");
 
     let page = downloader
@@ -69,7 +71,8 @@ async fn wreq_downloader_headers_keys_are_lowercased() {
         .mount(&server)
         .await;
 
-    let downloader = WreqDownloader::new(10, 5);
+    let downloader = WreqDownloader::new(10, 5, HttpClientConfig::default().tls_emulation)
+        .expect("downloader builds");
     let url = Url::parse(&server.uri()).expect("wiremock URI is valid");
 
     let page = downloader.fetch(&url).await.expect("fetch should succeed");

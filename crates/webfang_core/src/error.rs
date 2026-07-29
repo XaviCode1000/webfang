@@ -608,6 +608,23 @@ impl From<crate::infrastructure::error::InfraError> for ScraperError {
     }
 }
 
+impl From<crate::domain::UnknownProfileError> for ScraperError {
+    /// An unrecognized H2/TLS profile name is a configuration error. The
+    /// Spanish user-facing message from `UnknownProfileError` is preserved
+    /// verbatim inside the [`ScraperError::Config`] payload.
+    fn from(e: crate::domain::UnknownProfileError) -> Self {
+        ScraperError::Config(e.to_string())
+    }
+}
+
+impl From<crate::infrastructure::downloader::DownloadError> for ScraperError {
+    /// Page-download failures map to [`ScraperError::Download`], preserving the
+    /// full cause chain (`#[source]`) for `Error::source()` traversal (D4).
+    fn from(e: crate::infrastructure::downloader::DownloadError) -> Self {
+        ScraperError::Download(Box::new(e))
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::io_other_error)]
 mod tests {
@@ -1011,6 +1028,28 @@ mod tests {
         assert!(
             matches!(scraper_err, ScraperError::UrlParse(_)),
             "InfraError::UrlParse must convert to ScraperError::UrlParse"
+        );
+    }
+
+    #[test]
+    fn test_unknown_profile_error_wraps_to_scraper_config() {
+        let profile_err = crate::domain::UnknownProfileError {
+            name: "Firefox".to_string(),
+        };
+        let scraper_err: ScraperError = profile_err.into();
+        assert!(
+            matches!(&scraper_err, ScraperError::Config(msg) if msg.contains("Perfil TLS desconocido: 'Firefox'")),
+            "UnknownProfileError must map to ScraperError::Config preserving the Spanish message, got: {scraper_err}"
+        );
+    }
+
+    #[test]
+    fn test_download_error_wraps_to_scraper_download() {
+        let download_err = crate::infrastructure::downloader::DownloadError::Timeout(30);
+        let scraper_err: ScraperError = download_err.into();
+        assert!(
+            matches!(scraper_err, ScraperError::Download(_)),
+            "DownloadError must map to ScraperError::Download, got: {scraper_err}"
         );
     }
 

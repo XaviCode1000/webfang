@@ -139,8 +139,9 @@ pub async fn run(
     .await
     {
         Ok(pair) => pair,
-        // Unknown TLS profile is a config error: surface the Spanish message
-        // and exit 78 rather than silently scraping with a wrong fingerprint.
+        // Setup failures (unknown TLS profile, HTTP client build error) are
+        // config errors: surface the message and exit 78 rather than silently
+        // scraping with a wrong fingerprint.
         Err(e) => return CliExit::ConfigError(e.to_string()),
     };
 
@@ -336,8 +337,9 @@ struct PrepareResult {
 ///
 /// # Errors
 ///
-/// Returns [`crate::domain::UnknownProfileError`] if the configured H2/TLS
-/// profile name is not recognized (a setup failure, before any URL is scraped).
+/// Returns [`crate::error::ScraperError`] if the configured H2/TLS profile name
+/// is not recognized or the fetch router's HTTP client cannot be built (a setup
+/// failure, before any URL is scraped).
 async fn scrape_phase(
     urls: &[url::Url],
     scraper_config: &ScraperConfig,
@@ -350,7 +352,7 @@ async fn scrape_phase(
         Vec<domain::ScrapedContent>,
         Vec<(String, crate::error::ScraperError)>,
     ),
-    crate::domain::UnknownProfileError,
+    crate::error::ScraperError,
 > {
     scrape_urls(urls, scraper_config, opts, observer, downloader, engine).await
 }
