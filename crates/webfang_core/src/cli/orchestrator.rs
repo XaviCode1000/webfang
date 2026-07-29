@@ -151,6 +151,13 @@ pub async fn run(
         }
     }
 
+    // Release the ingestion pipeline (wreq connection pool + Rayon threads)
+    // while the runtime is still active. Without this, the hyper pool
+    // background task or Rayon thread join can block runtime shutdown.
+    // See issue #335.
+    drop(elastic_ingestion);
+    tokio::task::yield_now().await;
+
     if let Some(exit) = report_phase(&results, &failures) {
         return exit;
     }
