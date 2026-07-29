@@ -601,7 +601,9 @@ async fn crawl_with_sitemap_internal(
 
     // Create sitemap parser with config (including pagination settings)
     // Following api-builder-pattern: builder API
-    let parser = SitemapParser::with_config(
+    // #323: thread the configured TLS/H2 profile so sitemap XML fetches honor
+    // the user's --h2-profile selection instead of a hardcoded Chrome145.
+    let parser = SitemapParser::with_config_and_profile(
         SitemapConfig::builder()
             .gzip_enabled(true)
             .max_depth(3)
@@ -609,6 +611,7 @@ async fn crawl_with_sitemap_internal(
             .batch_size(DEFAULT_BATCH_SIZE)
             .pagination_enabled(true)
             .build(),
+        config.tls_emulation,
     )?;
 
     // Parse sitemap

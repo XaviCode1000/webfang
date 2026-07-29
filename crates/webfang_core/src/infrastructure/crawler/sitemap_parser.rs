@@ -151,31 +151,65 @@ pub struct SitemapParser {
     retry_policy: RetryPolicy,
     memory_manager: MemoryManager,
     batch_processor: BatchProcessor,
+    /// TLS/HTTP2 fingerprint emulation preset applied to the sitemap fetch client.
+    ///
+    /// Threaded from the caller (ultimately the CLI `--h2-profile` value).
+    /// Defaults to [`wreq_util::Profile::Chrome145`], preserving the historical
+    /// sitemap fingerprint (#323).
+    tls_emulation: wreq_util::Profile,
+    /// Shared HTTP client used to fetch sitemap XML.
+    ///
+    /// Built once in the constructor from `tls_emulation` via the shared
+    /// `create_http_client_with_config` factory (#299) and cloned cheaply
+    /// (it is `Arc`-backed) into each retry attempt — no per-retry rebuild (#323).
+    http_client: wreq::Client,
 }
 
 impl SitemapParser {
     /// Create new parser with default config
     ///
+    /// Uses the [`wreq_util::Profile::Chrome145`] TLS fingerprint (historical
+    /// default). For a caller-supplied profile, use
+    /// [`SitemapParser::with_config_and_profile`].
+    ///
     /// # Errors
     ///
-    /// Returns `CrawlError::Internal` if the URL validator's HTTP client fails to build.
+    /// Returns `CrawlError::Internal` if the URL validator's HTTP client or the
+    /// sitemap fetch client fails to build.
     pub fn new() -> std::result::Result<Self, CrawlError> {
-        Ok(Self {
-            config: SitemapConfig::default(),
-            compression_handler: CompressionHandler::new(),
-            url_validator: UrlValidator::new()?,
-            retry_policy: RetryPolicy::new(),
-            memory_manager: MemoryManager::new(),
-            batch_processor: BatchProcessor::new(),
-        })
+        Self::with_config_and_profile(SitemapConfig::default(), wreq_util::Profile::Chrome145)
     }
 
     /// Create new parser with custom config
     ///
+    /// Uses the [`wreq_util::Profile::Chrome145`] TLS fingerprint (historical
+    /// default). For a caller-supplied profile, use
+    /// [`SitemapParser::with_config_and_profile`].
+    ///
     /// # Errors
     ///
-    /// Returns `CrawlError::Internal` if the URL validator's HTTP client fails to build.
+    /// Returns `CrawlError::Internal` if the URL validator's HTTP client or the
+    /// sitemap fetch client fails to build.
     pub fn with_config(config: SitemapConfig) -> std::result::Result<Self, CrawlError> {
+        Self::with_config_and_profile(config, wreq_util::Profile::Chrome145)
+    }
+
+    /// Create new parser with custom config and an explicit TLS/H2 profile.
+    ///
+    /// The sitemap fetch client is built once here (via the shared
+    /// `create_http_client_with_config` factory) from `tls_emulation` and reused
+    /// across every fetch and retry, honoring the caller's `--h2-profile`
+    /// selection instead of a hardcoded preset (#323).
+    ///
+    /// # Errors
+    ///
+    /// Returns `CrawlError::Internal` if the URL validator's HTTP client or the
+    /// sitemap fetch client fails to build.
+    pub fn with_config_and_profile(
+        config: SitemapConfig,
+        tls_emulation: wreq_util::Profile,
+    ) -> std::result::Result<Self, CrawlError> {
+        let http_client = Self::build_client(tls_emulation)?;
         Ok(Self {
             config,
             compression_handler: CompressionHandler::new(),
@@ -183,7 +217,33 @@ impl SitemapParser {
             retry_policy: RetryPolicy::new(),
             memory_manager: MemoryManager::new(),
             batch_processor: BatchProcessor::new(),
+            tls_emulation,
+            http_client,
         })
+    }
+
+    /// Build the sitemap fetch HTTP client for a given TLS/H2 profile.
+    ///
+    /// The request and connect timeouts are pinned to 10s to preserve the
+    /// historical behavior of the previous hardcoded client (which set
+    /// `.timeout(10s)`); only the TLS/H2 profile is now configurable (#323).
+    /// The remaining settings (Chrome Client Hints, pool tuning, compression)
+    /// come from the shared factory defaults (#299).
+    ///
+    /// # Errors
+    ///
+    /// Returns `CrawlError::Internal` if the underlying client fails to build.
+    fn build_client(
+        tls_emulation: wreq_util::Profile,
+    ) -> std::result::Result<wreq::Client, CrawlError> {
+        let http_config = crate::domain::http_config::HttpClientConfig {
+            tls_emulation,
+            timeout_secs: 10,
+            connect_timeout_secs: 10,
+            ..Default::default()
+        };
+        crate::infrastructure::http::create_http_client_with_config(&http_config)
+            .map_err(|e| CrawlError::Internal(format!("failed to build sitemap client: {e}")))
     }
 
     /// Parse sitemap from URL (streaming, zero-allocation)
@@ -212,28 +272,18 @@ impl SitemapParser {
 
         let base_url = Url::parse(url)?;
 
-        // [3.6] RetryPolicy: wrap HTTP request with retry logic
-        let response =
-            self.retry_policy
-                .execute_with_retry(|| {
-                    let url = url.to_string();
-                    async move {
-                        #[allow(clippy::io_other_error)]
-                        let client = wreq::Client::builder()
-                            .emulation(wreq_util::Emulation::Chrome145)
-                            .timeout(std::time::Duration::from_secs(10))
-                            .build()
-                            .map_err(|e| {
-                                std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-                            })?;
-                        #[allow(clippy::io_other_error)]
-                        client.get(&url).send().await.map_err(|e| {
-                            std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-                        })
-                    }
-                })
-                .await
-                .map_err(|e| SitemapError::HttpError(e.to_string()))?;
+        // [3.6] RetryPolicy: wrap HTTP request with retry logic.
+        // The client is built once in the constructor (honoring tls_emulation)
+        // and cloned cheaply (Arc-backed) into each attempt — no per-retry rebuild (#323).
+        let response = self
+            .retry_policy
+            .execute_with_retry(|| {
+                let url = url.to_string();
+                let client = self.http_client.clone();
+                async move { client.get(&url).send().await }
+            })
+            .await
+            .map_err(|e| SitemapError::HttpError(e.to_string()))?;
 
         // Validate content type
         let content_type = response
@@ -433,6 +483,12 @@ impl SitemapParser {
     #[must_use]
     pub fn max_depth(&self) -> u8 {
         self.config.max_depth
+    }
+
+    /// Get the TLS/HTTP2 fingerprint emulation preset used for sitemap fetches.
+    #[must_use]
+    pub fn tls_emulation(&self) -> wreq_util::Profile {
+        self.tls_emulation
     }
 }
 
@@ -741,5 +797,40 @@ mod tests {
     fn test_max_depth_default() {
         let parser = SitemapParser::new().unwrap();
         assert_eq!(parser.max_depth(), 3);
+    }
+
+    // -- #323: tls_emulation is honored, not hardcoded --
+
+    #[test]
+    fn test_new_defaults_to_chrome145_profile() {
+        let parser = SitemapParser::new().unwrap();
+        assert_eq!(parser.tls_emulation(), wreq_util::Profile::Chrome145);
+    }
+
+    #[test]
+    fn test_with_config_defaults_to_chrome145_profile() {
+        let parser = SitemapParser::with_config(SitemapConfig::default()).unwrap();
+        assert_eq!(parser.tls_emulation(), wreq_util::Profile::Chrome145);
+    }
+
+    #[test]
+    fn test_with_config_and_profile_accepts_custom_profile() {
+        let parser = SitemapParser::with_config_and_profile(
+            SitemapConfig::default(),
+            wreq_util::Profile::Chrome131,
+        )
+        .unwrap();
+        assert_eq!(parser.tls_emulation(), wreq_util::Profile::Chrome131);
+    }
+
+    #[test]
+    fn test_with_config_and_profile_accepts_firefox_profile() {
+        let parser = SitemapParser::with_config_and_profile(
+            SitemapConfig::builder().max_depth(2).build(),
+            wreq_util::Profile::Firefox135,
+        )
+        .unwrap();
+        assert_eq!(parser.tls_emulation(), wreq_util::Profile::Firefox135);
+        assert_eq!(parser.max_depth(), 2);
     }
 }
