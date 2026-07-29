@@ -18,7 +18,7 @@ use crate::infrastructure::crawler::{
     extract_links, is_internal_link, normalize_url, SitemapConfig, SitemapParser,
 };
 use crate::infrastructure::downloader::{DownloadError, Downloader};
-use crate::infrastructure::http::waf_engine::WafInspector;
+use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
 use crate::infrastructure::observability::log_scrape_error;
 use crate::infrastructure::scraper::{fallback, readability};
 use crate::ScraperConfig;
@@ -445,13 +445,23 @@ pub async fn scrape_single_url_for_tui(
 
     let html = page.html;
 
-    // Detect WAF/CAPTCHA challenges disguised as HTTP 200 (H3 fix)
-    if let Some(provider) = WafInspector::detect_body(&html) {
-        warn!("WAF challenge detected from {}: {}", url, provider);
-        return Err(ScraperError::WafBlocked {
-            url: url.to_string(),
-            provider: provider.to_string(),
-        });
+    // Detect WAF/CAPTCHA challenges disguised as HTTP 200 (H3 fix, REQ-WAF-05).
+    // Context-aware inspection keeps the silent-challenge intent: a 200+HTML
+    // script-dense body is still caught via the entropy rule (REQ-WAF-06), while
+    // bare vendor names at 200 no longer block. A block carries the full Spanish
+    // evidence chain (REQ-WAF-08). `ignore_waf` is wired to config in TASK-13.
+    let ctx = InspectionContext::from_lowercase_headers(page.status, &page.headers, false);
+    let verdict = WafInspector::inspect(&html, &ctx);
+    if verdict.is_blocked {
+        warn!(
+            "WAF challenge detected from {}: {} evidences",
+            url,
+            verdict.evidences.len()
+        );
+        return Err(ScraperError::waf_blocked(
+            url.to_string(),
+            verdict.evidence_chain(),
+        ));
     }
 
     extract_content(&html, url, config, asset_downloader, engine).await

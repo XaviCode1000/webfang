@@ -122,6 +122,42 @@ pub struct InspectionContext {
     pub ignore_waf: bool,
 }
 
+impl InspectionContext {
+    /// Build a full context from an HTTP status and a lowercased-key header map,
+    /// as captured by the domain `HttpResponse` and infrastructure `FetchedPage`
+    /// types (REQ-WAF-01).
+    ///
+    /// The `content-type` entry is lifted into [`Self::content_type`] for the
+    /// REQ-WAF-02 gate, and the whole map is converted into a wreq
+    /// [`HeaderMap`] for control-header evidence (REQ-WAF-03). Invalid header
+    /// names/values are skipped — they cannot occur for headers already
+    /// validated by the downloaders, but the guard keeps this infallible.
+    /// `ignore_waf` short-circuits inspection to a clean verdict (REQ-WAF-07).
+    #[must_use]
+    pub fn from_lowercase_headers(
+        status: u16,
+        headers: &std::collections::HashMap<String, String>,
+        ignore_waf: bool,
+    ) -> Self {
+        let content_type = headers.get("content-type").cloned();
+        let mut map = HeaderMap::new();
+        for (name, value) in headers {
+            if let (Ok(name), Ok(value)) = (
+                wreq::header::HeaderName::from_bytes(name.as_bytes()),
+                wreq::header::HeaderValue::from_str(value),
+            ) {
+                map.insert(name, value);
+            }
+        }
+        Self {
+            status: Some(status),
+            content_type,
+            headers: map,
+            ignore_waf,
+        }
+    }
+}
+
 /// Control headers that indicate WAF processing (REQ-WAF-03).
 ///
 /// Every control header is [`WafTier::Fingerprint`] evidence — it NEVER
@@ -1582,6 +1618,65 @@ mod tests {
         // A clean verdict (no evidence) renders the generic fallback label.
         let verdict = WafVerdict::clean();
         assert_eq!(verdict.evidence_chain(), "WAF desconocido");
+    }
+
+    // ========================================================================
+    // TASK-11 — InspectionContext from lowercased-key header maps (REQ-WAF-01)
+    // ========================================================================
+
+    #[test]
+    fn test_from_lowercase_headers_builds_full_context() {
+        // scraper_service / discovery capture headers as lowercased-key
+        // HashMaps; the constructor lifts status + content-type and converts
+        // the map into a wreq HeaderMap for control-header evidence.
+        let mut headers = std::collections::HashMap::new();
+        headers.insert(
+            "content-type".to_string(),
+            "text/html; charset=utf-8".to_string(),
+        );
+        headers.insert("cf-mitigated".to_string(), "challenge".to_string());
+
+        let ctx = InspectionContext::from_lowercase_headers(200, &headers, false);
+
+        assert_eq!(ctx.status, Some(200));
+        assert_eq!(
+            ctx.content_type.as_deref(),
+            Some("text/html; charset=utf-8")
+        );
+        assert!(!ctx.ignore_waf);
+        // Both headers survive the conversion (control header is T2 evidence).
+        assert!(ctx.headers.get("cf-mitigated").is_some());
+        assert!(ctx.headers.get("content-type").is_some());
+    }
+
+    #[test]
+    fn test_from_lowercase_headers_missing_content_type_is_none() {
+        // No content-type entry → None (the REQ-WAF-02 gate then scans the body).
+        let headers = std::collections::HashMap::new();
+        let ctx = InspectionContext::from_lowercase_headers(404, &headers, true);
+        assert_eq!(ctx.status, Some(404));
+        assert!(ctx.content_type.is_none());
+        assert!(ctx.ignore_waf, "ignore_waf flag must propagate");
+        assert!(ctx.headers.is_empty());
+    }
+
+    #[test]
+    fn test_from_lowercase_headers_drives_control_header_evidence() {
+        // End-to-end: a control header supplied via the lowercased map is
+        // collected as Fingerprint evidence (never auto-blocking at 200).
+        let mut headers = std::collections::HashMap::new();
+        headers.insert("x-datadome-response".to_string(), "1".to_string());
+        let ctx = InspectionContext::from_lowercase_headers(200, &headers, false);
+
+        let verdict = WafInspector::inspect("<html>clean body</html>", &ctx);
+        assert!(!verdict.is_blocked, "T2 header at 200 must not block");
+        assert!(
+            verdict
+                .evidences
+                .iter()
+                .any(|e| e.matched_pattern == "x-datadome-response"),
+            "control header must be collected as evidence"
+        );
     }
 
     #[test]
