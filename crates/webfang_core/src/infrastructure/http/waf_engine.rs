@@ -31,6 +31,74 @@ use once_cell::sync::Lazy;
 use std::collections::HashSet;
 use wreq::header::HeaderMap;
 
+// ============================================================================
+// TASK-01 — Domain types + Inspection Context API (REQ-WAF-01)
+// ============================================================================
+
+/// WAF signature tier — determines the blocking policy for a matched pattern.
+///
+/// Tier drives the verdict policy in [`WafInspector::inspect`]:
+/// - [`WafTier::Challenge`] blocks at ANY HTTP status, including 200.
+/// - [`WafTier::Fingerprint`] is evidence only; it blocks solely when correlated
+///   with a WAF-associated status code (403 / 429 / 503 / 520–529).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WafTier {
+    /// Unambiguous challenge/captcha markers (widget tokens, challenge prose).
+    Challenge,
+    /// Fingerprint markers (bare vendor names, domains, cookies, control headers).
+    Fingerprint,
+}
+
+/// A single piece of WAF detection evidence collected during inspection.
+///
+/// A verdict carries *all* collected evidences (REQ-WAF-01), enabling an
+/// evidence-chain error message (REQ-WAF-08) instead of a first-hit provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WafEvidence {
+    /// Detected WAF provider (e.g. `"Cloudflare"`, `"DataDome"`).
+    pub provider: &'static str,
+    /// Signature tier that matched.
+    pub tier: WafTier,
+    /// The literal pattern (or rule label) that matched.
+    pub matched_pattern: &'static str,
+}
+
+/// The verdict of a WAF inspection.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WafVerdict {
+    /// Whether the response should be treated as WAF-blocked.
+    pub is_blocked: bool,
+    /// All collected evidence (not just the first hit).
+    pub evidences: Vec<WafEvidence>,
+}
+
+impl WafVerdict {
+    /// A clean verdict: not blocked, no evidence.
+    #[must_use]
+    pub fn clean() -> Self {
+        Self::default()
+    }
+}
+
+/// HTTP context for a WAF inspection (REQ-WAF-01).
+///
+/// [`Default`] is *degraded mode* — no HTTP context (status/content-type
+/// unknown, empty headers, `ignore_waf` false). Callers that only have the
+/// body (e.g. the MCP `detect_waf` tool) use degraded mode, where only
+/// [`WafTier::Challenge`] markers block and [`WafTier::Fingerprint`] evidence
+/// is reported as low-confidence and never blocks (REQ-WAF-05).
+#[derive(Debug, Clone, Default)]
+pub struct InspectionContext {
+    /// HTTP status code, if known.
+    pub status: Option<u16>,
+    /// Content-Type header value, if known.
+    pub content_type: Option<String>,
+    /// Response headers.
+    pub headers: HeaderMap,
+    /// Bypass WAF detection entirely (yields a clean verdict).
+    pub ignore_waf: bool,
+}
+
 /// Control headers that indicate WAF processing (2026 signatures)
 const WAF_CONTROL_HEADERS: &[(&str, &str)] = &[
     ("x-datadome-response", "DataDome"),
@@ -347,6 +415,66 @@ fn is_suspicious_size(body_len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ========================================================================
+    // TASK-01 — Domain types + InspectionContext API (REQ-WAF-01)
+    // ========================================================================
+
+    #[test]
+    fn test_inspection_context_default_is_degraded() {
+        // REQ-WAF-01: Default is degraded mode (all None, ignore_waf=false).
+        let ctx = InspectionContext::default();
+        assert!(ctx.status.is_none(), "degraded mode has no status");
+        assert!(
+            ctx.content_type.is_none(),
+            "degraded mode has no content-type"
+        );
+        assert!(ctx.headers.is_empty(), "degraded mode has no headers");
+        assert!(!ctx.ignore_waf, "degraded mode does not bypass WAF");
+    }
+
+    #[test]
+    fn test_waf_verdict_clean_is_not_blocked() {
+        let verdict = WafVerdict::clean();
+        assert!(!verdict.is_blocked, "clean verdict must not block");
+        assert!(
+            verdict.evidences.is_empty(),
+            "clean verdict carries no evidence"
+        );
+    }
+
+    #[test]
+    fn test_waf_verdict_carries_all_evidences() {
+        // REQ-WAF-01: the verdict carries ALL collected evidences, not first-hit.
+        let verdict = WafVerdict {
+            is_blocked: true,
+            evidences: vec![
+                WafEvidence {
+                    provider: "Cloudflare",
+                    tier: WafTier::Challenge,
+                    matched_pattern: "cf-turnstile",
+                },
+                WafEvidence {
+                    provider: "Akamai",
+                    tier: WafTier::Fingerprint,
+                    matched_pattern: "akamai",
+                },
+            ],
+        };
+        assert_eq!(
+            verdict.evidences.len(),
+            2,
+            "verdict must retain every evidence"
+        );
+        assert!(verdict
+            .evidences
+            .iter()
+            .any(|e| e.tier == WafTier::Challenge));
+        assert!(verdict
+            .evidences
+            .iter()
+            .any(|e| e.tier == WafTier::Fingerprint));
+    }
 
     // ========================================================================
     // detect_body() tests — ported from waf.rs (Approval Testing)
