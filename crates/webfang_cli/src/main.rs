@@ -32,7 +32,7 @@ use inquire::Text;
 #[cfg(any(feature = "ai", feature = "adaptive-selectors"))]
 use std::sync::Arc;
 #[cfg(feature = "ai")]
-use webfang_ai::{ModelConfig, SemanticCleanerImpl};
+use webfang_ai::{ModelConfig, SemanticCleanerImpl, SemanticError};
 #[cfg(feature = "adaptive-selectors")]
 use webfang_core::application::adaptive_engine::{AdaptiveSelectorEngine, AdaptiveSelectorOptions};
 use webfang_core::application::crawl_options::CrawlOptions;
@@ -456,13 +456,15 @@ async fn __main() -> CliExit {
             Ok(config) => match SemanticCleanerImpl::new(config).await {
                 Ok(cleaner) => Some(Arc::new(cleaner) as Arc<dyn SemanticCleaner>),
                 Err(e) => {
-                    tracing::warn!("No se pudo inicializar el limpiador semántico AI: {e}");
-                    None
+                    let msg = format!("No se pudo inicializar el limpiador semántico AI: {e}");
+                    return match e {
+                        SemanticError::Download { .. } => CliExit::NetworkError(msg),
+                        _ => CliExit::ConfigError(msg),
+                    };
                 },
             },
             Err(e) => {
-                tracing::warn!("Configuración de umbral AI inválida: {e}");
-                None
+                return CliExit::ConfigError(format!("Configuración de umbral AI inválida: {e}"));
             },
         }
     } else {
