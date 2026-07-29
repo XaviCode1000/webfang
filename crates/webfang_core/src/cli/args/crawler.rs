@@ -18,6 +18,22 @@ pub(crate) fn parse_download_concurrency(s: &str) -> Result<usize, String> {
     Ok(v)
 }
 
+/// Validate `--timeout-secs`: must be >= 1. A value of 0 makes wreq apply
+/// `Duration::from_secs(0)` as the request timeout, so every request fails
+/// instantly with "operation timed out". Rejecting here gives a clear CLI
+/// error instead of a crawl where every page fails.
+pub(crate) fn parse_timeout_secs(s: &str) -> Result<u64, String> {
+    let v: u64 = s
+        .parse()
+        .map_err(|_| format!("'{s}' no es un número válido para --timeout-secs"))?;
+    if v == 0 {
+        return Err(
+            "--timeout-secs debe ser >= 1 (0 hace que cada request falle al instante)".to_string(),
+        );
+    }
+    Ok(v)
+}
+
 /// Crawler and discovery configuration arguments.
 #[derive(Args, Debug, Default)]
 pub struct CrawlerArgs {
@@ -163,7 +179,12 @@ pub struct CrawlerArgs {
     pub max_depth: u8,
 
     /// Request timeout in seconds
-    #[arg(long, default_value = "30", env = "WEBFANG_TIMEOUT_SECS")]
+    #[arg(
+        long,
+        default_value = "30",
+        env = "WEBFANG_TIMEOUT_SECS",
+        value_parser = parse_timeout_secs
+    )]
     #[clap(next_help_heading = "Crawler Settings")]
     pub timeout_secs: u64,
 
@@ -302,4 +323,29 @@ pub struct CrawlerArgs {
     #[arg(long, default_value = "obscura", env = "WEBFANG_OBSCURA_BINARY")]
     #[clap(next_help_heading = "JS Rendering")]
     pub obscura_binary: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_timeout_secs_accepts_valid_value() {
+        assert_eq!(parse_timeout_secs("30"), Ok(30));
+    }
+
+    #[test]
+    fn parse_timeout_secs_rejects_zero() {
+        let err = parse_timeout_secs("0").unwrap_err();
+        assert_eq!(
+            err,
+            "--timeout-secs debe ser >= 1 (0 hace que cada request falle al instante)"
+        );
+    }
+
+    #[test]
+    fn parse_timeout_secs_rejects_non_numeric() {
+        let err = parse_timeout_secs("abc").unwrap_err();
+        assert_eq!(err, "'abc' no es un número válido para --timeout-secs");
+    }
 }
