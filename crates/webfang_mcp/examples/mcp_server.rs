@@ -310,6 +310,25 @@ async fn main() -> Result<()> {
     let container = Container::from_config(config)
         .await
         .map_err(|e| anyhow::anyhow!("failed to build container: {e}"))?;
+
+    // REQ-07: construct and inject the AI semantic cleaner behind the `ai`
+    // feature, mirroring the CLI (main.rs). The block shadows `container` with
+    // a cleaner-backed one; with the feature off it is absent and the container
+    // carries no cleaner (honest-error paths apply). Shadowing (not `mut`)
+    // keeps the off-build warning-free.
+    #[cfg(feature = "ai")]
+    let container = {
+        let variant = webfang_ai::AiModel::from_env_or_default();
+        let model_config = webfang_ai::ModelConfig::default().with_model_variant(variant);
+        match webfang_ai::SemanticCleanerImpl::new(model_config).await {
+            Ok(cleaner) => container.with_cleaner(std::sync::Arc::new(cleaner)),
+            Err(e) => {
+                tracing::warn!("semantic cleaner unavailable, continuing without AI: {e}");
+                container
+            },
+        }
+    };
+
     let state = McpState::new(container);
     let addr: SocketAddr = DEFAULT_MCP_ADDR.parse()?;
     start_mcp_server(state, addr).await
