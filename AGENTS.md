@@ -308,16 +308,20 @@ These are safe — they read the shared `.git` object store without modifying th
 A merge is NOT done until the repo is clean and ready for the next mission. Cleanup is part of the mission's **definition of done** — not an afterthought. Run from the MAIN repo (`~/Projects/webfang`, always on `main`):
 
 1. **Verify the merge landed** — `gh pr view <N> --json state,mergedAt,mergeCommit`; `state` must be `MERGED`.
-2. **Sync local main (ff-only)** —
+1. **Sync local main (ff-only)** —
+
    ```bash
    git fetch origin              # global fetch.prune=true already drops stale origin/* refs
    git merge --ff-only origin/main
    ```
+
    If `--ff-only` FAILS, local main diverged (local-only commits) — STOP and investigate; never paper over it with a merge commit or a blind reset.
-3. **Remove the mission worktree** — `git worktree remove ~/Projects/webfang-worktrees/<dir>` (no uncommitted tracked changes; gitignored per-worktree files `.env`/`target/`/`.gitnexus/` go with it).
-4. **Delete the local branch** — `git branch -D <type>/<description>`. Squash-merge rewrites history, so the safe `-d` refuses even when merged; the step-1 `MERGED` check is your safety net. Never touch the protected set: `main`, `gh-pages`, `backup/*`, or the currently checked-out branch.
-5. **Prune orphaned metadata** — `git worktree prune`.
-6. **Verify the handoff contract** —
+
+1. **Remove the mission worktree** — `git worktree remove ~/Projects/webfang-worktrees/<dir>` (no uncommitted tracked changes; gitignored per-worktree files `.env`/`target/`/`.gitnexus/` go with it).
+1. **Delete the local branch** — `git branch -D <type>/<description>`. Squash-merge rewrites history, so the safe `-d` refuses even when merged; the step-1 `MERGED` check is your safety net. Never touch the protected set: `main`, `gh-pages`, `backup/*`, or the currently checked-out branch.
+1. **Prune orphaned metadata** — `git worktree prune`.
+1. **Verify the handoff contract** —
+
    ```bash
    git worktree list      # ONLY ~/Projects/webfang [main]
    git branch -vv         # ONLY main, tracking origin/main, in sync
@@ -443,8 +447,8 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 Every PR is validated on open / edit / synchronize / label changes. **All three MUST pass or CI fails:**
 
 1. **Linked issue** — the PR body must contain `Closes #N`, `Fixes #N`, or `Resolves #N` (case-insensitive).
-2. **Exactly one `type:*` label** — the count of labels starting with `type:` must be exactly 1.
-3. **Conventional branch name** — must match `type/description` (regex `^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)/[a-z0-9._-]+$`).
+1. **Exactly one `type:*` label** — the count of labels starting with `type:` must be exactly 1.
+1. **Conventional branch name** — must match `type/description` (regex `^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)/[a-z0-9._-]+$`).
 
 **Valid `type:*` labels** — the label vocabulary is NOT the commit-type vocabulary:
 
@@ -511,13 +515,13 @@ Base the body on `.github/PULL_REQUEST_TEMPLATE.md` (it already documents these 
 
 ### Required for new/changed code
 
-| Situation            | Requirement                                                                                          |
-| :------------------- | :--------------------------------------------------------------------------------------------------- |
-| New hot path / operation | `#[instrument(skip(...), fields(url = %url, ...))]` with the fields that identify the operation     |
-| Error path           | `log_scrape_error(&err, url, stage, correlation_id, "context")` — never a bare `warn!`/`eprintln!` for operational errors |
-| New crawl/batch flow | Generate a `CorrelationId` at entry and propagate it; each unit of work gets `.child()` (shared `trace_id`, unique `span_id`) |
-| Long-running op      | Periodic progress log + a final structured summary (`total`, `succeeded`, `errors`, `duration`, `trace_id`) |
-| Async spans          | Use `.instrument(span)` on futures — never hold a `span.enter()` guard across `.await`               |
+| Situation                | Requirement                                                                                                                   |
+| :----------------------- | :---------------------------------------------------------------------------------------------------------------------------- |
+| New hot path / operation | `#[instrument(skip(...), fields(url = %url, ...))]` with the fields that identify the operation                               |
+| Error path               | `log_scrape_error(&err, url, stage, correlation_id, "context")` — never a bare `warn!`/`eprintln!` for operational errors     |
+| New crawl/batch flow     | Generate a `CorrelationId` at entry and propagate it; each unit of work gets `.child()` (shared `trace_id`, unique `span_id`) |
+| Long-running op          | Periodic progress log + a final structured summary (`total`, `succeeded`, `errors`, `duration`, `trace_id`)                   |
+| Async spans              | Use `.instrument(span)` on futures — never hold a `span.enter()` guard across `.await`                                        |
 
 ### Conventions
 
@@ -611,50 +615,5 @@ Always use `webfang_path()` from `tests/common/cli_harness.rs`, which:
 1. Use `use crate::common::*;` for the shared harness
 1. Use `webfang_path()` for binary resolution, snapshots for output validation
 1. Run `cargo nextest run --test my_new_test` to verify
-
-<!-- gitnexus:start -->
-# GitNexus — Code Intelligence
-
-This project is indexed by GitNexus as **webfang** (7778 symbols, 18679 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
-
-> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
-
-## Always Do
-
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "main"})`.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `query({search_query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
-- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
-
-## Never Do
-
-- NEVER edit a function, class, or method without first running `impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
-- NEVER commit changes without running `detect_changes()` to check affected scope.
-
-## Resources
-
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/webfang/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/webfang/clusters` | All functional areas |
-| `gitnexus://repo/webfang/processes` | All execution flows |
-| `gitnexus://repo/webfang/process/{name}` | Step-by-step execution trace |
-
-## CLI
-
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-
-<!-- gitnexus:end -->
 
 > ⚠️ **Worktree override:** The auto-generated GitNexus block above uses bare `detect_changes()`. In worktrees, this resolves to the main checkout and the pre-commit gate fails open. ALWAYS pass the absolute worktree path as `repo` — see [GitNexus in worktrees](#gitnexus-in-worktrees-detect_changes-pitfall). Do not edit the auto-block directly; it is regenerated by `gitnexus analyze`.
