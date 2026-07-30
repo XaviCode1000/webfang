@@ -380,7 +380,6 @@ pub fn apply_tui_config_args(mut args: Args, config_values: &serde_json::Value) 
             _ => JsStrategy::Static,
         };
     }
-    apply_bool!("force_js_render", args.crawler.force_js_render);
 
     // ========================================================================
     // Download

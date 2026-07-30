@@ -145,12 +145,6 @@ pub struct CrawlerArgs {
     )]
     pub adaptive_selectors: bool,
 
-    /// No-op placeholder for future JavaScript rendering (Phase 2).
-    /// Use --js-strategy hybrid or --js-strategy full for JS rendering support.
-    #[arg(long, default_value = "false", env = "WEBFANG_FORCE_JS_RENDER")]
-    #[clap(next_help_heading = "Behavior")]
-    pub force_js_render: bool,
-
     // ========== Display ==========
     /// Verbosity level: -v (INFO), -vv (DEBUG), -vvv (TRACE)
     #[arg(short, long, action = clap::ArgAction::Count, env = "WEBFANG_VERBOSE")]

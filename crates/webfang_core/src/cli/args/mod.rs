@@ -188,7 +188,6 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
                 backoff_max_ms: args.crawler.backoff_max_ms,
                 download_images: args.crawler.download_images || args.crawler.download_assets,
                 download_documents: args.crawler.download_documents || args.crawler.download_assets,
-                force_js_render: args.crawler.force_js_render,
                 h2_profile: args.crawler.h2_profile,
                 js_strategy: args.crawler.js_strategy,
                 obscura_binary: args.crawler.obscura_binary,

@@ -73,7 +73,6 @@ fn args_with_all_fields_set() -> Args {
             download_images: true,
             download_documents: true,
             clean_ai: true,
-            force_js_render: true,
             verbose: 3,
             quiet: true,
             dry_run: true,
@@ -186,7 +185,6 @@ fn test_args_to_crawl_options_full_parity() {
     assert_eq!(opts.network.backoff_max_ms, 30_000);
     assert!(opts.network.download_images);
     assert!(opts.network.download_documents);
-    assert!(opts.network.force_js_render);
     assert_eq!(opts.network.h2_profile, "Chrome131");
     assert_eq!(
         opts.network.js_strategy,
@@ -345,7 +343,6 @@ fn test_args_to_crawl_options_defaults() {
     assert_eq!(opts.network.backoff_max_ms, 10_000);
     assert!(!opts.network.download_images);
     assert!(!opts.network.download_documents);
-    assert!(!opts.network.force_js_render);
 
     assert_eq!(
         opts.export.output_format,
@@ -421,7 +418,6 @@ proptest! {
         download_documents in proptest::bool::ANY,
         interactive in proptest::bool::ANY,
         config_tui in proptest::bool::ANY,
-        force_js_render in proptest::bool::ANY,
         quiet in proptest::bool::ANY,
         dry_run in proptest::bool::ANY,
         use_sitemap in proptest::bool::ANY,
@@ -447,7 +443,6 @@ proptest! {
                 download_documents,
                 clean_ai,
                 adaptive_selectors: false,
-                force_js_render,
                 verbose: 0,
                 quiet,
                 dry_run,
@@ -512,7 +507,6 @@ proptest! {
         prop_assert_eq!(opts.network.download_images, download_images);
         prop_assert_eq!(opts.network.download_documents, download_documents);
         prop_assert_eq!(opts.crawl.interactive, interactive);
-        prop_assert_eq!(opts.network.force_js_render, force_js_render);
         prop_assert_eq!(opts.quiet, quiet);
         prop_assert_eq!(opts.export.quiet, quiet);
         prop_assert_eq!(opts.export.dry_run, dry_run);
@@ -554,7 +548,6 @@ proptest! {
                 download_documents: false,
                 clean_ai: false,
                 adaptive_selectors: false,
-                force_js_render: false,
                 verbose,
                 quiet: false,
                 dry_run: false,
@@ -639,7 +632,6 @@ proptest! {
                 download_documents: false,
                 clean_ai: false,
                 adaptive_selectors: false,
-                force_js_render: false,
                 verbose: 0,
                 quiet: false,
                 dry_run: false,
@@ -718,7 +710,6 @@ proptest! {
                 download_documents: false,
                 clean_ai: false,
                 adaptive_selectors: false,
-                force_js_render: false,
                 verbose: 0,
                 quiet: false,
                 dry_run: false,
@@ -801,7 +792,6 @@ proptest! {
                 download_documents: false,
                 clean_ai: false,
                 adaptive_selectors: false,
-                force_js_render: false,
                 verbose: 0,
                 quiet: false,
                 dry_run: false,
@@ -876,7 +866,6 @@ proptest! {
                 download_documents: false,
                 clean_ai: false,
                 adaptive_selectors: false,
-                force_js_render: false,
                 verbose: 0,
                 quiet: false,
                 dry_run: false,
@@ -949,7 +938,6 @@ proptest! {
                 download_documents: false,
                 clean_ai: false,
                 adaptive_selectors: false,
-                force_js_render: false,
                 verbose: 0,
                 quiet: false,
                 dry_run: false,
