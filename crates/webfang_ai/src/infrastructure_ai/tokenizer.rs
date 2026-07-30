@@ -116,7 +116,7 @@ impl TokenBatch {
 /// # async fn example() -> anyhow::Result<()> {
 /// use webfang_ai::MiniLmTokenizer;
 ///
-/// let tokenizer = MiniLmTokenizer::load_default().await?;
+/// let tokenizer = MiniLmTokenizer::from_file("tokenizer.json").await?;
 /// let input = tokenizer.tokenize("Hello world")?;
 /// assert_eq!(input.input_ids[0], 101); // [CLS]
 /// assert_eq!(input.attention_mask[0], 1); // Real token
@@ -157,27 +157,6 @@ impl MiniLmTokenizer {
             .map_err(|e| SemanticError::Tokenize(format!("Failed to load tokenizer: {}", e)))?;
 
         Ok(Self::new(tokenizer, DEFAULT_MAX_LENGTH))
-    }
-
-    /// Load default tokenizer (from cache or bundled)
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(MiniLmTokenizer)` - Tokenizer loaded successfully
-    /// * `Err(SemanticError::Tokenize)` - Failed to load
-    pub async fn load_default() -> Result<Self, SemanticError> {
-        // Try to load from cache first
-        let cache_dir = crate::infrastructure_ai::cache_config::default_cache_dir();
-        let tokenizer_path = cache_dir.join("tokenizer.json");
-
-        if tokenizer_path.exists() {
-            Self::from_file(&tokenizer_path).await
-        } else {
-            // For now, return an error - tokenizer should be downloaded first
-            Err(SemanticError::Tokenize(
-                "Tokenizer not found in cache. Run model download first.".to_string(),
-            ))
-        }
     }
 
     /// Tokenize a single text string

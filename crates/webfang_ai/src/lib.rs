@@ -14,7 +14,7 @@ pub use webfang_core::error::SemanticError;
 
 // Re-export key AI types for convenience
 pub use infrastructure_ai::{
-    AiModel, CacheConfig, ChunkId, ContentPruner, HtmlChunker, InferencePool, LegibleContentPruner,
-    MiniLmTokenizer, ModelCache, ModelConfig, ModelDownloader, RelevanceScorer,
-    SemanticCleanerImpl, SentenceSplitter, ThresholdConfig, TokenBatch,
+    AiModel, ChunkId, ContentPruner, HtmlChunker, InferencePool, LegibleContentPruner,
+    MiniLmTokenizer, ModelConfig, RelevanceScorer, SemanticCleanerImpl, SentenceSplitter,
+    ThresholdConfig, TokenBatch,
 };

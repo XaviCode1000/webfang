@@ -15,11 +15,8 @@
 
 #![cfg(feature = "ai")]
 
-use webfang_ai::infrastructure_ai::model_downloader::ModelDownloader;
-use webfang_ai::infrastructure_ai::{
-    CacheConfig, ModelCache, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO,
-};
 use webfang_ai::infrastructure_ai::{InferencePool, ModelConfig, SemanticCleanerImpl};
+use webfang_ai::infrastructure_ai::{DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO};
 use webfang_ai::SemanticCleaner;
 use webfang_ai::SemanticError;
 use webfang_core::domain::DocumentChunk;
@@ -27,59 +24,6 @@ use webfang_core::domain::DocumentChunk;
 // ============================================================================
 // Integration-only tests (not covered by unit tests)
 // ============================================================================
-
-/// Test that the model cache directory logic works correctly
-#[tokio::test]
-async fn test_model_cache_directory_created() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let cache_dir = temp_dir.path().join("test_ai_cache");
-
-    let config = CacheConfig::new().with_cache_dir(cache_dir.clone());
-    let cache = ModelCache::new(config);
-
-    // Directory shouldn't exist yet
-    assert!(!cache_dir.exists());
-
-    // Create it
-    cache.ensure_cache_dir().await.unwrap();
-
-    // Now it should exist
-    assert!(cache_dir.exists());
-    assert!(cache_dir.is_dir());
-
-    // Verify it's the right directory
-    assert_eq!(cache.cache_dir(), &cache_dir);
-}
-
-/// Test that the model download structure is correct
-#[tokio::test]
-#[ignore = "requires network access to HuggingFace"]
-async fn test_model_download_structure() {
-    // Test that ModelDownloader can be constructed with the right API
-    let downloader = ModelDownloader::new()
-        .with_repo(DEFAULT_MODEL_REPO)
-        .with_file(DEFAULT_MODEL_FILE);
-
-    assert_eq!(downloader.repo(), DEFAULT_MODEL_REPO);
-    assert_eq!(downloader.file(), DEFAULT_MODEL_FILE);
-
-    // Test that download_to method exists and has the right signature
-    // (We don't actually download in this test to avoid network dependency)
-    let temp_dir = tempfile::tempdir().unwrap();
-    let result = downloader.download_to(temp_dir.path()).await;
-
-    // This will fail because we're not actually downloading,
-    // but it should fail with a proper error, not a compilation error
-    assert!(result.is_err());
-
-    // Verify the error type is correct
-    if let Err(SemanticError::Download { repo, cause }) = result {
-        assert_eq!(repo, DEFAULT_MODEL_REPO);
-        assert!(!cause.is_empty());
-    } else {
-        panic!("Expected SemanticError::Download");
-    }
-}
 
 /// Test that ModelConfig has the correct default values
 #[test]
@@ -112,80 +56,6 @@ fn test_document_chunk_creation() {
     );
 
     assert_eq!(chunk.url, "https://example.com");
-}
-
-/// Test that ModelCache can check if a model is cached
-#[tokio::test]
-async fn test_model_cache_is_cached() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let cache_dir = temp_dir.path().join("test_cache");
-
-    let config = CacheConfig::new().with_cache_dir(cache_dir.clone());
-    let cache = ModelCache::new(config);
-
-    // Should return false for non-existent file
-    assert!(!cache.is_model_cached("model.onnx").await.unwrap());
-
-    // Create a dummy file
-    tokio::fs::create_dir_all(&cache_dir).await.unwrap();
-    tokio::fs::File::create(cache_dir.join("model.onnx"))
-        .await
-        .unwrap();
-
-    // Should return true now
-    assert!(cache.is_model_cached("model.onnx").await.unwrap());
-}
-
-/// Test that ModelCache can get model path
-#[test]
-fn test_model_cache_model_path() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let cache_dir = temp_dir.path().join("test_cache");
-
-    let config = CacheConfig::new().with_cache_dir(cache_dir.clone());
-    let cache = ModelCache::new(config);
-
-    let model_path = cache.model_path("model.onnx");
-    assert_eq!(model_path, cache_dir.join("model.onnx"));
-}
-
-/// Test that DownloadProgress calculations work correctly
-#[test]
-fn test_download_progress_calculations() {
-    use webfang_ai::infrastructure_ai::DownloadProgress;
-
-    // Test percentage calculation
-    let progress = DownloadProgress {
-        downloaded: 50,
-        total: Some(100),
-        speed: None,
-        eta_seconds: None,
-    };
-
-    assert_eq!(progress.percentage(), Some(50.0));
-    assert!(!progress.is_complete());
-
-    // Test complete download
-    let progress = DownloadProgress {
-        downloaded: 100,
-        total: Some(100),
-        speed: None,
-        eta_seconds: None,
-    };
-
-    assert_eq!(progress.percentage(), Some(100.0));
-    assert!(progress.is_complete());
-
-    // Test no total
-    let progress = DownloadProgress {
-        downloaded: 50,
-        total: None,
-        speed: None,
-        eta_seconds: None,
-    };
-
-    assert!(progress.percentage().is_none());
-    assert!(!progress.is_complete());
 }
 
 /// Test that SemanticError variants are properly defined
