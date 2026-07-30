@@ -1140,3 +1140,74 @@ async fn test_metrics_empty_state_honest_error() {
         "legacy canned text must NOT appear, got: {text}"
     );
 }
+
+// ============================================================================
+// 6. AI tools — honest errors (issue #381 slice 2)
+// ============================================================================
+
+/// REQ-04: search_obsidian returns an honest `CallToolResult::error`
+/// (isError:true, Spanish) stating the capability is not yet implemented and
+/// referencing the follow-up issue — never a false success, never a protocol
+/// error.
+#[tokio::test]
+async fn test_search_obsidian_not_implemented_is_honest_error() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let resp = call_tool(
+        &client,
+        &base_url,
+        &session_id,
+        "search_obsidian",
+        json!({ "query": "rust async patterns" }),
+    )
+    .await;
+
+    let result = resp
+        .get("result")
+        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
+        .clone();
+    assert!(
+        is_tool_error(&result),
+        "search_obsidian must return isError:true, got: {}",
+        tool_text(&result)
+    );
+    let text = tool_text(&result);
+    assert!(
+        text.contains("búsqueda semántica"),
+        "honest Spanish not-implemented error expected, got: {text}"
+    );
+    assert!(
+        text.contains("issue #386"),
+        "error must reference the follow-up issue, got: {text}"
+    );
+}
+
+/// REQ-03: semantic_cleaner rejects a malformed URL with a JSON-RPC
+/// invalid-params error (-32602), regardless of cleaner state — no fetch, no
+/// cleaning. Mirrors `test_export_invalid_format_hard_error`.
+#[tokio::test]
+async fn test_semantic_cleaner_invalid_url_is_invalid_params() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let resp = call_tool(
+        &client,
+        &base_url,
+        &session_id,
+        "semantic_cleaner",
+        json!({ "url": "not a valid url" }),
+    )
+    .await;
+
+    let error = resp
+        .get("error")
+        .unwrap_or_else(|| panic!("invalid URL must return a JSON-RPC error, got: {resp}"));
+    let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+    assert_eq!(
+        code, -32602,
+        "invalid URL must map to JSON-RPC invalid-params (-32602), got: {error}"
+    );
+}
