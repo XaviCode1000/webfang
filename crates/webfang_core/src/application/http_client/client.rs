@@ -1003,6 +1003,10 @@ mod waf_detection_tests {
 
     /// A genuine 5xx error with no WAF signature still surfaces as ServerError
     /// (triangulation: the 5xx inspection only diverts actual challenges).
+    ///
+    /// RES-01: the response carries a `cf-ray` header — present on EVERY
+    /// Cloudflare edge response, including genuine transient origin failures —
+    /// which must NOT turn a plain 503 into a WAF block.
     #[tokio::test]
     async fn test_503_plain_error_still_returns_server_error() {
         let mock_server = MockServer::start().await;
@@ -1012,6 +1016,7 @@ mod waf_detection_tests {
             .respond_with(
                 ResponseTemplate::new(503)
                     .insert_header("content-type", "text/plain")
+                    .insert_header("cf-ray", "abc123-IAD")
                     .set_body_string("service temporarily unavailable"),
             )
             .mount(&mock_server)
@@ -1029,8 +1034,87 @@ mod waf_detection_tests {
 
         assert!(
             matches!(result.unwrap_err(), HttpError::ServerError(503)),
-            "plain 503 must stay a ServerError"
+            "plain 503 with a cf-ray trace header must stay a ServerError"
         );
+    }
+
+    /// RES-01 (real-world case): a genuine transient 503 behind Cloudflare — a
+    /// generic HTML error body plus the ubiquitous `cf-ray` edge header — must
+    /// surface as ServerError after retries, NOT as a WAF block. `cf-ray` rides
+    /// on 100% of Cloudflare traffic and carries zero challenge evidence, so it
+    /// must not correlate with the 503 to fabricate a false positive.
+    #[tokio::test]
+    async fn test_503_cf_ray_generic_error_still_returns_server_error() {
+        let mock_server = MockServer::start().await;
+
+        let error_body = "<html><body><h1>503 Service Unavailable</h1>\
+            <p>The server is temporarily unable to service your request.</p></body></html>";
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(503)
+                    .insert_header("content-type", "text/html; charset=utf-8")
+                    .insert_header("cf-ray", "abc123-IAD")
+                    .set_body_string(error_body),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let config = HttpClientConfig {
+            max_retries: 2,
+            backoff_base_ms: 10,
+            backoff_max_ms: 50,
+            ..Default::default()
+        };
+        let client = HttpClient::new(config).unwrap();
+
+        let result = client.get(&mock_server.uri()).await;
+
+        let err = result.expect_err("generic 503 with cf-ray must not be Ok");
+        assert!(
+            matches!(err, HttpError::ServerError(503)),
+            "expected ServerError(503), got {err:?}"
+        );
+    }
+
+    /// RES-01 guard: purging the ubiquitous trace headers must NOT weaken the
+    /// correlated-mitigation case. A 503 carrying `cf-mitigated` (an active
+    /// Cloudflare mitigation signal, retained in the registry) is still a WAF
+    /// block — the Fingerprint header correlates with the 503 status. `.expect(1)`
+    /// proves the block returns immediately with no retry.
+    #[tokio::test]
+    async fn test_503_cf_mitigated_still_returns_waf_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(503)
+                    .insert_header("content-type", "text/html; charset=utf-8")
+                    .insert_header("cf-mitigated", "challenge")
+                    .set_body_string("<html><body>temporarily unavailable</body></html>"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = HttpClientConfig {
+            max_retries: 3,
+            backoff_base_ms: 10,
+            backoff_max_ms: 50,
+            ..Default::default()
+        };
+        let client = HttpClient::new(config).unwrap();
+
+        let result = client.get(&mock_server.uri()).await;
+
+        let err = result.expect_err("cf-mitigated 503 must be a WAF block, not Ok");
+        assert!(
+            matches!(err, HttpError::WafChallenge(_)),
+            "expected WafChallenge, got {err:?}"
+        );
+        mock_server.verify().await;
     }
 
     /// REQ-WAF-02/04/05 at the client boundary: a 200 `application/json` body

@@ -164,14 +164,23 @@ impl InspectionContext {
 ///
 /// Every control header is [`WafTier::Fingerprint`] evidence — it NEVER
 /// auto-blocks on mere presence, only when correlated with a WAF status code
-/// (correction B). `x-wordpress` (not a real WAF header) and `x-cdn` (generic
-/// CDN header) were purged as false-positive risks.
+/// (correction B). The retained headers correlate with *active* processing or
+/// mitigation: a DataDome response, a Cloudflare mitigation flag, an Akamai
+/// edge-auth challenge — so status-correlated blocking is the intended #346
+/// semantics.
+///
+/// RES-01: `cf-ray` and `x-sucuri-id` were purged. They are ubiquitous trace
+/// headers — present on 100% of Cloudflare / Sucuri-proxied traffic, including
+/// every genuine transient origin failure — so a fingerprint that rides on all
+/// of a vendor's traffic carries zero challenge evidence. Treating them as
+/// Fingerprint evidence block-correlated every real 503 behind those vendors
+/// (instant `WafChallenge`, zero retries). They are noise, not signal.
+/// `x-wordpress` (not a real WAF header) and `x-cdn` (generic CDN header) were
+/// purged earlier as false-positive risks.
 const WAF_CONTROL_HEADERS: &[(&str, &str)] = &[
     ("x-datadome-response", "DataDome"),
     ("cf-mitigated", "Cloudflare"),
     ("x-akamai-edge-auth", "Akamai"),
-    ("x-sucuri-id", "Sucuri"),
-    ("cf-ray", "Cloudflare"),
 ];
 
 /// Boundary post-filter mode for a body signature (REQ-WAF-04).
@@ -1075,18 +1084,32 @@ mod tests {
     #[test]
     fn test_control_headers_purged_of_non_waf() {
         // REQ-WAF-03: x-wordpress (not a WAF header) and x-cdn (generic CDN) deleted.
+        // RES-01: cf-ray and x-sucuri-id purged — ubiquitous trace headers present
+        // on 100% of a vendor's traffic carry zero challenge evidence, so treating
+        // them as Fingerprint evidence block-correlated every genuine transient 503
+        // behind Cloudflare/Sucuri. Only status-correlated control headers remain.
         let names: Vec<&str> = WAF_CONTROL_HEADERS.iter().map(|(n, _)| *n).collect();
         assert!(
             !names.contains(&"x-wordpress"),
             "x-wordpress must be deleted"
         );
         assert!(!names.contains(&"x-cdn"), "x-cdn must be deleted");
+        assert!(
+            !names.contains(&"cf-ray"),
+            "cf-ray trace header must be purged (RES-01)"
+        );
+        assert!(
+            !names.contains(&"x-sucuri-id"),
+            "x-sucuri-id trace header must be purged (RES-01)"
+        );
         assert!(names.contains(&"x-datadome-response"));
         assert!(names.contains(&"cf-mitigated"));
         assert!(names.contains(&"x-akamai-edge-auth"));
-        assert!(names.contains(&"x-sucuri-id"));
-        assert!(names.contains(&"cf-ray"));
-        assert_eq!(names.len(), 5, "exactly 5 control headers expected");
+        assert_eq!(
+            names.len(),
+            3,
+            "exactly 3 correlated control headers expected"
+        );
     }
 
     // ========================================================================
