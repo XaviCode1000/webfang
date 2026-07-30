@@ -505,6 +505,38 @@ Base the body on `.github/PULL_REQUEST_TEMPLATE.md` (it already documents these 
 
 **Avoid:** `adapters/tui/progress_widget.rs` (551 lines), `infrastructure/mcp_server/mod.rs` (1404 lines) — keep new components focused.
 
+## 🔭 Observability (MANDATORY for every change)
+
+**Iron rule:** any new feature, hot path, or behavior change MUST ship with observability. Code that cannot be traced in production is not done. There is no OpenTelemetry (removed in #356) — the stack is the `tracing` crate + the always-available **FileTraceLayer** (`--trace-file out.jsonl`) + native **correlation IDs**.
+
+### Required for new/changed code
+
+| Situation            | Requirement                                                                                          |
+| :------------------- | :--------------------------------------------------------------------------------------------------- |
+| New hot path / operation | `#[instrument(skip(...), fields(url = %url, ...))]` with the fields that identify the operation     |
+| Error path           | `log_scrape_error(&err, url, stage, correlation_id, "context")` — never a bare `warn!`/`eprintln!` for operational errors |
+| New crawl/batch flow | Generate a `CorrelationId` at entry and propagate it; each unit of work gets `.child()` (shared `trace_id`, unique `span_id`) |
+| Long-running op      | Periodic progress log + a final structured summary (`total`, `succeeded`, `errors`, `duration`, `trace_id`) |
+| Async spans          | Use `.instrument(span)` on futures — never hold a `span.enter()` guard across `.await`               |
+
+### Conventions
+
+- **Structured fields, not string soup:** `tracing::info!(pages = n, url = %url, "msg")` — never `format!` data into the message you'll want to query.
+- **Correlation:** every event/span of an operation carries its `trace_id`, so a whole operation is reconstructable with `jq 'select(.fields.trace_id == "...")'`.
+- **User-facing errors stay in Spanish; tracing fields/logs stay in English** (same rule as the rest of the codebase).
+- **No new metrics backends:** do not reintroduce OpenTelemetry or any external collector. Need a metric? Emit a structured tracing event and query it from the JSONL.
+- **Snapshots stay deterministic:** `correlation_id`/`trace_id` are internal and `#[serde(skip)]` on scraped output; redact any new non-deterministic field via `redact_nondeterministic()`.
+
+### Verifying your observability
+
+```bash
+webfang --url https://example.com --trace-file debug.jsonl -vvv
+jq 'select(.fields.trace_id == "0194...")' debug.jsonl   # reconstruct one operation
+jq 'select(.level == "ERROR")' debug.jsonl               # all errors with context
+```
+
+See `docs/debugging.md` and `scripts/analyze-trace.sh` for the full query cookbook. The observability module lives in `crates/webfang_core/src/infrastructure/observability/`.
+
 ## 🧪 Testing — Snapshots, Harness & Conventions
 
 ### Integration test structure

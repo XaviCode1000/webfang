@@ -290,6 +290,7 @@ gitnexus analyze --index-only --skip-agents-md
 | Resource | Covers |
 |----------|--------|
 | [AGENTS.md](AGENTS.md) | AI agent instructions, GitNexus integration |
+| [docs/debugging.md](docs/debugging.md) | Tracing, correlation IDs, `jq` query cookbook (`scripts/analyze-trace.sh`) |
 | [Wiki](https://github.com/XaviCode1000/webfang/wiki) | Architecture, API reference, guides |
 | `webfang --help` | Full CLI reference |
 
