@@ -18,13 +18,6 @@ use std::time::Duration;
 use tracing::{debug, warn};
 use url::Url;
 
-#[cfg(feature = "otel-metrics")]
-use std::time::Instant;
-
-#[cfg(feature = "otel-metrics")]
-use crate::infrastructure::observability::metrics_instruments::{
-    in_flight_dec, in_flight_inc, HTTP_DURATION, HTTP_ERRORS,
-};
 use wreq::header::{HeaderMap, HeaderName, HeaderValue};
 use wreq::Client;
 
@@ -162,34 +155,11 @@ impl HttpClient {
         }
 
         // Track in-flight requests
-        #[cfg(feature = "otel-metrics")]
-        in_flight_inc();
 
         let result = self.get_inner(url).await;
 
         // Report outcome to session pool
         self.report_outcome(&domain, session_id, &result);
-        #[cfg(feature = "otel-metrics")]
-        {
-            in_flight_dec();
-            match &result {
-                Ok(_) => {},
-                Err(e) => {
-                    let error_type = match e {
-                        HttpError::Timeout => "timeout",
-                        HttpError::Forbidden => "forbidden",
-                        HttpError::WafChallenge(_) => "waf_challenge",
-                        HttpError::RateLimited(_) => "rate_limited",
-                        HttpError::ClientError(_) => "client_error",
-                        HttpError::ServerError(_) => "server_error",
-                        HttpError::Connection(_) => "connection",
-                        HttpError::Request(_) => "request",
-                        HttpError::DomainBanned(_) => "domain_banned",
-                    };
-                    HTTP_ERRORS.add(1, &[opentelemetry::KeyValue::new("error_type", error_type)]);
-                },
-            }
-        }
 
         result
     }
@@ -254,15 +224,7 @@ impl HttpClient {
                     .header("Cache-Control", &self.config.cache_control);
             }
 
-            #[cfg(feature = "otel-metrics")]
-            let request_start = Instant::now();
-
             let response = request.send().await.map_err(|e| {
-                #[cfg(feature = "otel-metrics")]
-                {
-                    let elapsed = request_start.elapsed().as_secs_f64();
-                    HTTP_DURATION.record(elapsed, &[opentelemetry::KeyValue::new("method", "GET")]);
-                }
                 if e.is_timeout() {
                     HttpError::Timeout
                 } else if e.is_connect() {
@@ -276,13 +238,6 @@ impl HttpClient {
 
             match status.as_u16() {
                 200..=299 => {
-                    #[cfg(feature = "otel-metrics")]
-                    {
-                        let elapsed = request_start.elapsed().as_secs_f64();
-                        HTTP_DURATION
-                            .record(elapsed, &[opentelemetry::KeyValue::new("method", "GET")]);
-                    }
-
                     let body = response
                         .text()
                         .await
@@ -325,13 +280,6 @@ impl HttpClient {
                     return Ok(body);
                 },
                 403 => {
-                    #[cfg(feature = "otel-metrics")]
-                    {
-                        let elapsed = request_start.elapsed().as_secs_f64();
-                        HTTP_DURATION
-                            .record(elapsed, &[opentelemetry::KeyValue::new("method", "GET")]);
-                    }
-
                     warn!("403 Forbidden from {}", url);
                     if ua_index == 0 {
                         ua_index += 1;
@@ -340,13 +288,6 @@ impl HttpClient {
                     return Err(HttpError::Forbidden);
                 },
                 429 => {
-                    #[cfg(feature = "otel-metrics")]
-                    {
-                        let elapsed = request_start.elapsed().as_secs_f64();
-                        HTTP_DURATION
-                            .record(elapsed, &[opentelemetry::KeyValue::new("method", "GET")]);
-                    }
-
                     let retry_after = response
                         .headers()
                         .get("retry-after")
@@ -407,13 +348,6 @@ impl HttpClient {
                     return Err(HttpError::RateLimited(retry_after));
                 },
                 500..=599 => {
-                    #[cfg(feature = "otel-metrics")]
-                    {
-                        let elapsed = request_start.elapsed().as_secs_f64();
-                        HTTP_DURATION
-                            .record(elapsed, &[opentelemetry::KeyValue::new("method", "GET")]);
-                    }
-
                     debug!("{} from {}", status, url);
 
                     let mut attempt = 0;
@@ -461,21 +395,9 @@ impl HttpClient {
                     return Err(HttpError::ServerError(status.as_u16()));
                 },
                 code if (400..=499).contains(&code) => {
-                    #[cfg(feature = "otel-metrics")]
-                    {
-                        let elapsed = request_start.elapsed().as_secs_f64();
-                        HTTP_DURATION
-                            .record(elapsed, &[opentelemetry::KeyValue::new("method", "GET")]);
-                    }
                     return Err(HttpError::ClientError(code));
                 },
                 code => {
-                    #[cfg(feature = "otel-metrics")]
-                    {
-                        let elapsed = request_start.elapsed().as_secs_f64();
-                        HTTP_DURATION
-                            .record(elapsed, &[opentelemetry::KeyValue::new("method", "GET")]);
-                    }
                     return Err(HttpError::ServerError(code));
                 },
             }

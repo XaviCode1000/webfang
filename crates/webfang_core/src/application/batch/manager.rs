@@ -29,11 +29,6 @@ use super::processor::{BatchError, BatchProcessor, BatchResult};
 use super::{BatchJob, BatchJobStatus};
 use crate::domain::CrawlerConfig;
 
-#[cfg(feature = "otel-metrics")]
-use crate::infrastructure::observability::metrics_instruments::{
-    BATCH_JOBS_COMPLETED, BATCH_JOBS_FAILED, BATCH_JOBS_TOTAL,
-};
-
 /// Queue-based manager for batch crawl jobs
 ///
 /// Holds pending jobs and processes them through [`BatchProcessor`].
@@ -133,20 +128,14 @@ impl BatchManager {
         let mut summary = BatchManagerSummary::default();
 
         for result in &results {
-            #[cfg(feature = "otel-metrics")]
-            BATCH_JOBS_TOTAL.add(1, &[]);
             match result {
                 Ok(r) => {
-                    #[cfg(feature = "otel-metrics")]
-                    BATCH_JOBS_COMPLETED.add(1, &[]);
                     summary.total_urls += r.total;
                     summary.succeeded += r.succeeded;
                     summary.failed += r.failed;
                     summary.errors.extend(r.errors.clone());
                 },
                 Err(e) => {
-                    #[cfg(feature = "otel-metrics")]
-                    BATCH_JOBS_FAILED.add(1, &[]);
                     summary.failed += 1;
                     summary
                         .errors

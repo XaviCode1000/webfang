@@ -9,11 +9,6 @@ use std::pin::Pin;
 use crate::domain::content_processor::ContentProcessor;
 use crate::domain::pipeline_item::{PipelineStage, ScrapedItem, StageOutcome};
 
-#[cfg(feature = "otel-metrics")]
-use crate::infrastructure::observability::metrics_instruments::{
-    CLEAN_REDUCTION_PCT, CLEAN_SPA_DETECTED,
-};
-
 /// Minimum cleaned text length (in characters) to be considered real content.
 /// Items shorter than this are tagged as potential SPA (single-page app)
 /// shells that rendered no meaningful content.
@@ -80,15 +75,10 @@ impl CleanStage {
         item.metadata
             .insert(META_REDUCTION_PCT.into(), reduction_pct.to_string());
 
-        #[cfg(feature = "otel-metrics")]
-        CLEAN_REDUCTION_PCT.record(reduction_pct as f64, &[]);
-
         // Tag potential SPA if cleaned content is too short
         if cleaned_size < MIN_TEXT_LENGTH {
             item.metadata
                 .insert(META_POTENTIAL_SPA.into(), "true".into());
-            #[cfg(feature = "otel-metrics")]
-            CLEAN_SPA_DETECTED.add(1, &[]);
         }
 
         StageOutcome::Continue(item)

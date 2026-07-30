@@ -216,7 +216,6 @@ CLI arguments override config file values.
 | `ui` | Interactive TUI with ratatui | `--features ui` |
 | `mcp` | MCP server for AI agents | `--features mcp` |
 | `persistence` | SQLite checkpoint store | `--features persistence` |
-| `otel` | OpenTelemetry observability | `--features otel` |
 | `console` | Tokio console (debugging) | `--features console` |
 
 ---

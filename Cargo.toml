@@ -100,10 +100,6 @@ sys-info = "0.9"
 
 # Observability
 tracing-tree = "0.4"
-opentelemetry = "0.32"
-opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.32", features = ["http-proto", "reqwest-blocking-client"] }
-tracing-opentelemetry = "0.33"
 
 # MIME detection
 mimetype-detector = "0.3"

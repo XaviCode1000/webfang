@@ -22,13 +22,6 @@ use super::resource_governor::ResourceGovernor;
 use super::spa_detector::{detect_spa, SpaSignal};
 use super::{DownloadError, Downloader, FetchedPage};
 
-#[cfg(feature = "otel-metrics")]
-use crate::infrastructure::observability::metrics_instruments::{
-    DOWNLOADER_ESCALATIONS, DOWNLOADER_LAYER_LATENCY, DOWNLOADER_WAF_BLOCKS,
-};
-#[cfg(feature = "otel-metrics")]
-use std::time::Instant;
-
 /// Three-layer hybrid downloader.
 ///
 /// Type parameters correspond to the three fetch layers:
@@ -85,37 +78,16 @@ impl<L1: Downloader, L2: Downloader, L3: Downloader> HybridRouter<L1, L2, L3> {
     async fn fetch_inner(&self, url: &Url) -> Result<FetchedPage, DownloadError> {
         // --- Layer 1: fast static HTTP ---
         debug!("Layer 1 (wreq): fetching {url}");
-        #[cfg(feature = "otel-metrics")]
-        let l1_start = Instant::now();
         let page = match self.layer1.fetch(url).await {
             Ok(p) => p,
             Err(DownloadError::WafChallenge(msg)) => {
-                #[cfg(feature = "otel-metrics")]
-                {
-                    DOWNLOADER_WAF_BLOCKS.add(1, &[opentelemetry::KeyValue::new("layer", "1")]);
-                    DOWNLOADER_LAYER_LATENCY.record(
-                        l1_start.elapsed().as_secs_f64(),
-                        &[opentelemetry::KeyValue::new("layer", "1")],
-                    );
-                }
                 return Err(DownloadError::WafChallenge(msg));
             },
             Err(e) => {
                 debug!("Layer 1 failed ({e}) — aborting");
-                #[cfg(feature = "otel-metrics")]
-                DOWNLOADER_LAYER_LATENCY.record(
-                    l1_start.elapsed().as_secs_f64(),
-                    &[opentelemetry::KeyValue::new("layer", "1")],
-                );
                 return Err(e);
             },
         };
-
-        #[cfg(feature = "otel-metrics")]
-        DOWNLOADER_LAYER_LATENCY.record(
-            l1_start.elapsed().as_secs_f64(),
-            &[opentelemetry::KeyValue::new("layer", "1")],
-        );
 
         // SPA detected — continue escalation; static content — return early
         if let Some(page) = self.evaluate_fetch(page)? {
@@ -124,14 +96,6 @@ impl<L1: Downloader, L2: Downloader, L3: Downloader> HybridRouter<L1, L2, L3> {
 
         // --- Layer 2: Obscura subprocess ---
         debug!("Layer 2 (Obscura): attempting fetch for {url}");
-        #[cfg(feature = "otel-metrics")]
-        DOWNLOADER_ESCALATIONS.add(
-            1,
-            &[
-                opentelemetry::KeyValue::new("from", "1"),
-                opentelemetry::KeyValue::new("to", "2"),
-            ],
-        );
 
         // Check resources before spawning a subprocess
         if let Err(e) = self.governor.check_resources() {
@@ -141,57 +105,24 @@ impl<L1: Downloader, L2: Downloader, L3: Downloader> HybridRouter<L1, L2, L3> {
             )));
         }
 
-        #[cfg(feature = "otel-metrics")]
-        let l2_start = Instant::now();
         match self.layer2.fetch(url).await {
             Ok(page) if !page.html.is_empty() => {
                 debug!("Layer 2 returned {} bytes", page.html.len());
-                #[cfg(feature = "otel-metrics")]
-                DOWNLOADER_LAYER_LATENCY.record(
-                    l2_start.elapsed().as_secs_f64(),
-                    &[opentelemetry::KeyValue::new("layer", "2")],
-                );
                 return Ok(page);
             },
             Ok(_) => {
                 debug!("Layer 2 returned empty content — will try Layer 3");
-                #[cfg(feature = "otel-metrics")]
-                DOWNLOADER_LAYER_LATENCY.record(
-                    l2_start.elapsed().as_secs_f64(),
-                    &[opentelemetry::KeyValue::new("layer", "2")],
-                );
             },
             Err(DownloadError::WafChallenge(msg)) => {
-                #[cfg(feature = "otel-metrics")]
-                {
-                    DOWNLOADER_WAF_BLOCKS.add(1, &[opentelemetry::KeyValue::new("layer", "2")]);
-                    DOWNLOADER_LAYER_LATENCY.record(
-                        l2_start.elapsed().as_secs_f64(),
-                        &[opentelemetry::KeyValue::new("layer", "2")],
-                    );
-                }
                 return Err(DownloadError::WafChallenge(msg));
             },
             Err(e) => {
                 debug!("Layer 2 failed ({e}) — will try Layer 3");
-                #[cfg(feature = "otel-metrics")]
-                DOWNLOADER_LAYER_LATENCY.record(
-                    l2_start.elapsed().as_secs_f64(),
-                    &[opentelemetry::KeyValue::new("layer", "2")],
-                );
             },
         }
 
         // --- Layer 3: Chromiumoxide CDP ---
         debug!("Layer 3 (Chromiumoxide): attempting fetch for {url}");
-        #[cfg(feature = "otel-metrics")]
-        DOWNLOADER_ESCALATIONS.add(
-            1,
-            &[
-                opentelemetry::KeyValue::new("from", "2"),
-                opentelemetry::KeyValue::new("to", "3"),
-            ],
-        );
 
         if let Err(e) = self.governor.check_resources() {
             warn!("ResourceGovernor denied Layer 3: {e}");
@@ -200,36 +131,16 @@ impl<L1: Downloader, L2: Downloader, L3: Downloader> HybridRouter<L1, L2, L3> {
             )));
         }
 
-        #[cfg(feature = "otel-metrics")]
-        let l3_start = Instant::now();
         match self.layer3.fetch(url).await {
             Ok(page) => {
                 debug!("Layer 3 returned {} bytes", page.html.len());
-                #[cfg(feature = "otel-metrics")]
-                DOWNLOADER_LAYER_LATENCY.record(
-                    l3_start.elapsed().as_secs_f64(),
-                    &[opentelemetry::KeyValue::new("layer", "3")],
-                );
                 return Ok(page);
             },
             Err(DownloadError::WafChallenge(msg)) => {
-                #[cfg(feature = "otel-metrics")]
-                {
-                    DOWNLOADER_WAF_BLOCKS.add(1, &[opentelemetry::KeyValue::new("layer", "3")]);
-                    DOWNLOADER_LAYER_LATENCY.record(
-                        l3_start.elapsed().as_secs_f64(),
-                        &[opentelemetry::KeyValue::new("layer", "3")],
-                    );
-                }
                 return Err(DownloadError::WafChallenge(msg));
             },
             Err(e) => {
                 warn!("All layers exhausted for {url}: {e}");
-                #[cfg(feature = "otel-metrics")]
-                DOWNLOADER_LAYER_LATENCY.record(
-                    l3_start.elapsed().as_secs_f64(),
-                    &[opentelemetry::KeyValue::new("layer", "3")],
-                );
                 return Err(e);
             },
         }
@@ -442,16 +353,5 @@ mod tests {
             StubDownloader::static_page(),
         );
         assert!(!router.supports_interactions());
-    }
-}
-
-#[cfg(test)]
-#[cfg(feature = "otel-metrics")]
-mod metrics_tests {
-    #[test]
-    fn test_hybrid_router_instruments_init() {
-        let _ = &*super::DOWNLOADER_ESCALATIONS;
-        let _ = &*super::DOWNLOADER_LAYER_LATENCY;
-        let _ = &*super::DOWNLOADER_WAF_BLOCKS;
     }
 }

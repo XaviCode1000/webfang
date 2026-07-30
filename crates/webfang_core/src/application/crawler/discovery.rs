@@ -22,11 +22,6 @@ use crate::infrastructure::http::waf_engine::WafInspector;
 use crate::infrastructure::scraper::{fallback, readability};
 use crate::ScraperConfig;
 
-#[cfg(feature = "otel-metrics")]
-use crate::infrastructure::observability::metrics_instruments::{
-    CRAWLER_BANDWIDTH, CRAWLER_PAGES, CRAWLER_URLS,
-};
-
 #[cfg(feature = "adaptive-selectors")]
 use crate::application::adaptive_engine::AdaptiveSelectorEngine;
 #[cfg(feature = "adaptive-selectors")]
@@ -99,9 +94,6 @@ pub async fn discover_urls_for_tui(
             crawl_with_sitemap(base_url, config.sitemap_url.as_deref(), config).await?;
         let urls: Vec<Url> = discovered.into_iter().map(|d| d.url).collect();
 
-        #[cfg(feature = "otel-metrics")]
-        CRAWLER_URLS.add(urls.len() as u64, &[]);
-
         Ok(urls)
     } else {
         // DOM scraping - extract links from single page.
@@ -173,9 +165,6 @@ pub async fn discover_urls_for_tui(
 
         info!("Discovered {} URLs from {}", urls.len(), base_url);
 
-        #[cfg(feature = "otel-metrics")]
-        CRAWLER_URLS.add(urls.len() as u64, &[]);
-
         Ok(urls)
     }
 }
@@ -195,14 +184,6 @@ pub async fn extract_content(
     asset_downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
 ) -> ScraperResult<ScrapedContent> {
-    #[cfg(feature = "otel-metrics")]
-    {
-        CRAWLER_BANDWIDTH.add(
-            html.len() as u64,
-            &[opentelemetry::KeyValue::new("url", url.to_string())],
-        );
-    }
-
     // Clean HTML boilerplate (scripts, styles, nav, sidebar, footer) BEFORE
     // Readability. This helps legible find the main content without being
     // confused by navigation elements, JavaScript bundles, and CSS.
@@ -261,9 +242,6 @@ pub async fn extract_content(
     // Try Readability first, fallback to plain text extraction
     match readability::parse(&extraction_html, Some(url.as_str())) {
         Ok(article) => {
-            #[cfg(feature = "otel-metrics")]
-            CRAWLER_PAGES.add(1, &[opentelemetry::KeyValue::new("method", "readability")]);
-
             let assets = crate::application::scraper_service::download_assets_if_enabled(
                 html,
                 url,
@@ -312,9 +290,6 @@ pub async fn extract_content(
                 asset_downloader,
             )
             .await?;
-
-            #[cfg(feature = "otel-metrics")]
-            CRAWLER_PAGES.add(1, &[opentelemetry::KeyValue::new("method", "fallback")]);
 
             Ok(ScrapedContent {
                 title: url
@@ -671,9 +646,6 @@ async fn crawl_with_sitemap_internal(
             (depth <= max_depth).then(|| DiscoveredUrl::html(url, depth, base.clone()))
         })
         .collect();
-
-    #[cfg(feature = "otel-metrics")]
-    CRAWLER_URLS.add(discovered.len() as u64, &[]);
 
     Ok(discovered)
 }

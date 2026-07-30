@@ -21,11 +21,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
 
-#[cfg(feature = "otel-metrics")]
-use crate::infrastructure::observability::metrics_instruments::{
-    CHECKPOINT_CORRUPTED, CHECKPOINT_LOADS, CHECKPOINT_SAVES,
-};
-
 // ---------------------------------------------------------------------------
 // Sealed trait
 // ---------------------------------------------------------------------------
@@ -252,9 +247,6 @@ impl CheckpointStore for BincodeCheckpoint {
             payload.len()
         );
 
-        #[cfg(feature = "otel-metrics")]
-        CHECKPOINT_SAVES.add(1, &[]);
-
         Ok(())
     }
 
@@ -300,9 +292,6 @@ impl CheckpointStore for BincodeCheckpoint {
                 stored_checksum, computed_checksum
             );
 
-            #[cfg(feature = "otel-metrics")]
-            CHECKPOINT_CORRUPTED.add(1, &[]);
-
             return None;
         }
 
@@ -317,16 +306,10 @@ impl CheckpointStore for BincodeCheckpoint {
                     state.pages_crawled
                 );
 
-                #[cfg(feature = "otel-metrics")]
-                CHECKPOINT_LOADS.add(1, &[]);
-
                 Some(state)
             },
             Err(e) => {
                 warn!("checkpoint deserialization failed: {e}");
-
-                #[cfg(feature = "otel-metrics")]
-                CHECKPOINT_CORRUPTED.add(1, &[]);
 
                 None
             },
@@ -662,66 +645,5 @@ mod tests {
         let cp_path = CheckpointPath::new(&nested);
         cp_path.ensure_dir().unwrap();
         assert!(nested.exists());
-    }
-}
-
-#[cfg(test)]
-#[cfg(feature = "otel-metrics")]
-mod metrics_tests {
-    use super::*;
-
-    #[test]
-    fn test_checkpoint_saves_instrument_init() {
-        let _ = &*CHECKPOINT_SAVES;
-    }
-
-    #[test]
-    fn test_checkpoint_loads_instrument_init() {
-        let _ = &*CHECKPOINT_LOADS;
-    }
-
-    #[test]
-    fn test_checkpoint_corrupted_instrument_init() {
-        let _ = &*CHECKPOINT_CORRUPTED;
-    }
-
-    #[test]
-    fn test_save_records_metric() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("checkpoint.json");
-        let store = BincodeCheckpoint::new();
-        let state = CrawlCheckpoint::new();
-        // Should not panic — metric recording is a no-op side effect
-        store.save(&state, &path).unwrap();
-    }
-
-    #[test]
-    fn test_load_success_records_metric() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("checkpoint.json");
-        let store = BincodeCheckpoint::new();
-        let state = CrawlCheckpoint::new();
-        store.save(&state, &path).unwrap();
-        // Should not panic — metric recording is a no-op side effect
-        let loaded = store.load(&path);
-        assert!(loaded.is_some());
-    }
-
-    #[test]
-    fn test_load_corruption_records_metric() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("checkpoint.json");
-        let store = BincodeCheckpoint::new();
-        let state = CrawlCheckpoint::new();
-        store.save(&state, &path).unwrap();
-
-        // Tamper to trigger corruption
-        let mut data = std::fs::read(&path).unwrap();
-        data[0] ^= 0xFF;
-        std::fs::write(&path, &data).unwrap();
-
-        // Should not panic — metric recording is a no-op side effect
-        let loaded = store.load(&path);
-        assert!(loaded.is_none());
     }
 }
