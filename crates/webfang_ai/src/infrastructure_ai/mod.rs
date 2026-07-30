@@ -1,8 +1,8 @@
 //! AI module — Full RAG Pipeline Integration (Phase 2 + Phase 3)
 //!
 //! This module provides AI-powered semantic cleaning capabilities with full pipeline integration:
-//! - Automatic model download from HuggingFace Hub
-//! - Cache management with SHA256 validation
+//! - Model resolution via hf_hub native cache (cache-first offline via `hf_hub::Cache`,
+//!   `ApiRepo` online, with in-memory SHA256 validation)
 //! - Memory-mapped model loading (zero-copy for HDD optimization)
 //! - ONNX inference for embedding generation (Phase 2)
 //! - Semantic chunking with arena allocator (Phase 3)
@@ -42,7 +42,7 @@
 //! - **Format**: ONNX (optimized for inference)
 //! - **Size**: ~90MB
 //! - **Max Tokens**: 512 per chunk
-//! - **Cache Location**: `~/.cache/webfang/ai_models/`
+//! - **Cache Location**: hf_hub native cache (`~/.cache/huggingface/hub`)
 //!
 //! # Rust-Skills Applied
 //!
@@ -71,9 +71,6 @@
 
 // Core AI infrastructure (Modules 1-2)
 pub mod cache_config;
-pub mod model_cache;
-
-pub mod model_downloader;
 
 pub mod semantic_cleaner_impl;
 
@@ -100,13 +97,8 @@ pub mod granite_dom_inspector;
 
 // Re-exports for convenience (Modules 1-2)
 pub use cache_config::{
-    default_cache_dir, AiModel, CacheConfig, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO,
-    DEFAULT_MODEL_SHA256, MODEL_SELECTION_ENV,
+    AiModel, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO, DEFAULT_MODEL_SHA256, MODEL_SELECTION_ENV,
 };
-
-pub use model_cache::ModelCache;
-
-pub use model_downloader::{DownloadProgress, ModelDownloader};
 
 pub use semantic_cleaner_impl::{ModelConfig, SemanticCleanerImpl};
 
