@@ -412,6 +412,8 @@ Options:
 EXIT CODES:
   0    Success
   2    No URLs discovered
+  3    All scrapers failed
+  64   Bad CLI arguments (usage error)
   69   WAF block or network error
   74   I/O error
   76   Protocol error

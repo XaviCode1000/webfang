@@ -1,5 +1,6 @@
 use clap::Args;
 
+#[cfg(feature = "ai")]
 fn parse_threshold(s: &str) -> Result<f32, String> {
     let val: f32 = s
         .parse()

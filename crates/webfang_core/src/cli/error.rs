@@ -135,6 +135,8 @@ pub enum CliExit {
     ConfigError(String),
     /// Exit 2 — no URLs discovered from sitemaps (technical success, null result)
     EmptyDiscovery(String),
+    /// Exit 3 — all scrapers failed on discovered URLs
+    ScraperFailure(String),
     /// Exit 69 — some URLs succeeded, some failed
     PartialSuccess {
         /// Number of successfully scraped URLs
@@ -171,6 +173,10 @@ impl std::process::Termination for CliExit {
             CliExit::EmptyDiscovery(msg) => {
                 eprintln!("Warning: {msg}");
                 ExitCode::from(EXIT_EMPTY_DISCOVERY)
+            },
+            CliExit::ScraperFailure(msg) => {
+                eprintln!("Error: {msg}");
+                ExitCode::from(EXIT_SCRAPER_FAILURE)
             },
             CliExit::PartialSuccess { .. } => ExitCode::from(EXIT_UNAVAILABLE),
         }
@@ -288,6 +294,7 @@ mod tests {
             (CliExit::ProtocolError("test".into()), EXIT_PROTOCOL),
             (CliExit::ConfigError("test".into()), EXIT_CONFIG),
             (CliExit::EmptyDiscovery("test".into()), EXIT_EMPTY_DISCOVERY),
+            (CliExit::ScraperFailure("test".into()), EXIT_SCRAPER_FAILURE),
             (
                 CliExit::PartialSuccess {
                     success: 1,
