@@ -78,7 +78,8 @@ pub enum FetchRouter {
 /// crawl [`Engine`] and the CLI scrape path. `timeout_secs` drives the wreq
 /// request timeout (connect timeout is clamped to 10s); `tls_emulation` is the
 /// TLS/HTTP2 fingerprint profile applied to the wreq layer; `cookie_bridge` is
-/// shared with the Chromiumoxide layer for cookie injection.
+/// shared with the Chromiumoxide layer for cookie injection. `ignore_waf`
+/// bypasses WAF classification on the hybrid spa-detection path (REQ-WAF-07).
 ///
 /// # Errors
 ///
@@ -88,6 +89,7 @@ pub fn build_fetch_router(
     timeout_secs: u64,
     tls_emulation: Profile,
     cookie_bridge: Arc<RwLock<CookieBridge>>,
+    ignore_waf: bool,
 ) -> Result<FetchRouter, DownloadError> {
     let connect_timeout = timeout_secs.min(10);
     Ok(match strategy {
@@ -100,7 +102,7 @@ pub fn build_fetch_router(
             let l1 = WreqDownloader::new(timeout_secs, connect_timeout, tls_emulation)?;
             let l2 = ObscuraDownloader::new(timeout_secs);
             let l3 = ChromiumoxideDownloader::new(cookie_bridge);
-            FetchRouter::Hybrid(Arc::new(HybridRouter::new(l1, l2, l3)))
+            FetchRouter::Hybrid(Arc::new(HybridRouter::new(l1, l2, l3, ignore_waf)))
         },
         // Full renders every page directly in Chrome (no wreq → Obscura
         // escalation) and gates concurrency on system RAM via its own
@@ -308,7 +310,8 @@ impl Engine {
     /// Set the JavaScript rendering strategy.
     ///
     /// `tls_emulation` is the TLS/HTTP2 fingerprint profile applied to the wreq
-    /// layer of the fetch router.
+    /// layer of the fetch router. `ignore_waf` bypasses WAF classification on
+    /// the hybrid spa-detection path (REQ-WAF-07).
     ///
     /// # Errors
     ///
@@ -317,6 +320,7 @@ impl Engine {
         mut self,
         strategy: JsStrategy,
         tls_emulation: Profile,
+        ignore_waf: bool,
     ) -> Result<Self, DownloadError> {
         let timeout = self.config.timeout_secs;
         let router = build_fetch_router(
@@ -324,6 +328,7 @@ impl Engine {
             timeout,
             tls_emulation,
             Arc::clone(&self.cookie_bridge),
+            ignore_waf,
         )?;
         self.js_strategy = strategy;
         self.fetch_router = Some(router);
@@ -962,6 +967,11 @@ pub struct EngineOptions {
     ///
     /// Defaults to [`Profile::Chrome145`], the historical hardcoded fingerprint.
     pub tls_emulation: Profile,
+    /// Bypass WAF classification on the hybrid spa-detection path (REQ-WAF-07).
+    ///
+    /// Defaults to `false`. When `true`, a genuine T1 challenge is treated per
+    /// normal spa/static logic instead of aborting the fetch.
+    pub ignore_waf: bool,
 }
 
 impl Default for EngineOptions {
@@ -973,6 +983,7 @@ impl Default for EngineOptions {
             js_strategy: JsStrategy::default(),
             autoscale_enabled: false,
             tls_emulation: Profile::Chrome145,
+            ignore_waf: false,
         }
     }
 }
@@ -1147,7 +1158,11 @@ pub async fn crawl_site_with_options(
     }
 
     // Apply JS strategy
-    engine = engine.with_js_strategy(options.js_strategy, options.tls_emulation)?;
+    engine = engine.with_js_strategy(
+        options.js_strategy,
+        options.tls_emulation,
+        options.ignore_waf,
+    )?;
 
     // Apply autoscale if enabled
     if options.autoscale_enabled {
@@ -1177,6 +1192,7 @@ mod router_tests {
             30,
             Profile::Chrome145,
             test_cookie_bridge(),
+            false,
         )
         .expect("static router must build");
         assert!(
@@ -1192,6 +1208,7 @@ mod router_tests {
             30,
             Profile::Chrome145,
             test_cookie_bridge(),
+            false,
         )
         .expect("hybrid router must build");
         assert!(
@@ -1207,6 +1224,7 @@ mod router_tests {
             30,
             Profile::Chrome145,
             test_cookie_bridge(),
+            false,
         )
         .expect("full router must build");
         assert!(

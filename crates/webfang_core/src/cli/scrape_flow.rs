@@ -138,6 +138,7 @@ pub async fn scrape_urls(
         http_config.timeout_secs,
         http_config.tls_emulation,
         cookie_bridge,
+        opts.crawl.ignore_waf,
     )?;
 
     let _total_urls = urls.len();
