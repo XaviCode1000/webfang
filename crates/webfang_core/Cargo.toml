@@ -273,6 +273,11 @@ name = "waf_detection"
 path = "../../benches/waf_detection.rs"
 harness = false
 
+[[bench]]
+name = "tracing_overhead"
+path = "../../benches/tracing_overhead.rs"
+harness = false
+
 [lints.clippy]
 doc_markdown = "allow"
 uninlined_format_args = "allow"
