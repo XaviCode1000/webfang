@@ -349,10 +349,20 @@ impl HttpClient {
                         response.headers(),
                         self.config.ignore_waf,
                     );
-                    let body = response
-                        .text()
-                        .await
-                        .map_err(|e| HttpError::Request(e.to_string()))?;
+                    // Non-critical enrichment (FIX C): a body-transfer failure
+                    // (connection reset mid-body) must not bypass the retry loop
+                    // with a fatal Request error — the base never read the 5xx
+                    // body. Fall back to an empty body so inspection proceeds on
+                    // headers only (cf-mitigated detection still works) and the
+                    // retry loop runs. The 2xx branch keeps its fatal body read:
+                    // there the body IS the scrape content.
+                    let body = match response.text().await {
+                        Ok(b) => b,
+                        Err(e) => {
+                            debug!(url = %url, error = %e, "5xx body read failed; inspecting headers only");
+                            String::new()
+                        },
+                    };
                     let verdict = WafInspector::inspect(&body, &ctx);
                     if verdict.is_blocked {
                         warn!(
