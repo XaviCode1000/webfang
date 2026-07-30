@@ -1,0 +1,9 @@
+---
+source: crates/webfang_core/../../tests/waf_fixtures_test.rs
+expression: "redact_nondeterministic(Path::new(\"__no_temp__\"), &lines.join(\"\\n\"))"
+---
+json_akamai_hash.json: is_blocked=false
+cloudflare_503.html: is_blocked=false
+turnstile_200.html: is_blocked=false
+news_cloudflare_200.html: is_blocked=false
+incap_ses_200.html: is_blocked=false

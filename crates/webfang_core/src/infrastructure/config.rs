@@ -98,6 +98,8 @@ pub struct ScraperConfig {
     pub asset_naming: AssetNamingStrategy,
     /// Enable adaptive CSS selector repair (2-tier cascade)
     pub adaptive_selectors: bool,
+    /// Bypass WAF/CAPTCHA detection entirely (REQ-WAF-07).
+    pub ignore_waf: bool,
 }
 
 impl Default for ScraperConfig {
@@ -117,6 +119,7 @@ impl Default for ScraperConfig {
             asset_exclude_patterns: Vec::new(),
             asset_naming: AssetNamingStrategy::Hash,
             adaptive_selectors: false,
+            ignore_waf: false,
         }
     }
 }
@@ -178,6 +181,13 @@ impl ScraperConfig {
         // D1). Clamp defensively to a minimum of 1 so a programmatic `0` (e.g.
         // from a test or a non-CLI caller) can never reach the downloader.
         self.download_concurrency = concurrency.clamp(1, usize::MAX);
+        self
+    }
+
+    /// Set the WAF/CAPTCHA detection bypass flag (REQ-WAF-07).
+    #[must_use]
+    pub fn with_ignore_waf(mut self, ignore_waf: bool) -> Self {
+        self.ignore_waf = ignore_waf;
         self
     }
 
@@ -506,6 +516,14 @@ mod tests {
         assert!(!config.download_documents);
         assert!(!config.has_downloads());
         assert_eq!(config.scraper_concurrency, 3);
+        assert!(!config.ignore_waf);
+    }
+
+    #[test]
+    fn test_scraper_config_with_ignore_waf() {
+        // REQ-WAF-07: persistent config field + builder for the bypass flag.
+        let config = ScraperConfig::default().with_ignore_waf(true);
+        assert!(config.ignore_waf);
     }
 
     #[test]

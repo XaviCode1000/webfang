@@ -17,7 +17,7 @@ use crate::domain::{
     SelectorErrorKind, ValidUrl,
 };
 use crate::error::{Result, ScraperError};
-use crate::infrastructure::http::waf_engine::WafInspector;
+use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
 use crate::infrastructure::observability::log_scrape_error;
 use crate::ScraperConfig;
 use futures::stream::{self, StreamExt};
@@ -357,19 +357,27 @@ pub async fn scrape_with_config(
     span.record("html_size_bytes", html_size.min(MAX_INSTRUMENTED_BODY_SIZE));
     span.record("html_size_skipped", html_truncated);
 
-    // Detect WAF/CAPTCHA challenges disguised as HTTP 200
-    if let Some(provider) = WafInspector::detect_body(&html) {
+    // Detect WAF/CAPTCHA challenges disguised as HTTP 200 (REQ-WAF-05).
+    // Context-aware inspection: status + content-type + headers drive the
+    // tiered verdict, and a block carries the full Spanish evidence chain
+    // (REQ-WAF-08) instead of a bare first-hit provider. `config.ignore_waf`
+    // short-circuits to a clean verdict (REQ-WAF-07).
+    let ctx = InspectionContext::from_lowercase_headers(
+        response.status,
+        &response.headers,
+        config.ignore_waf,
+    );
+    let verdict = WafInspector::inspect(&html, &ctx);
+    if verdict.is_blocked {
+        let chain = verdict.evidence_chain();
         log_scrape_error(
-            &provider,
+            &chain,
             url.as_str(),
             "fetch",
             None,
             "WAF challenge detected",
         );
-        return Err(ScraperError::WafBlocked {
-            url: url.to_string(),
-            provider: provider.to_string(),
-        });
+        return Err(ScraperError::waf_blocked(url.to_string(), chain));
     }
 
     // H1 FIX: Extract title from original DOM BEFORE any transformation.

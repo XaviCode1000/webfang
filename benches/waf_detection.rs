@@ -1,19 +1,17 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use webfang_core::infrastructure::http::waf_engine::WafInspector;
-use wreq::header::HeaderMap;
+use webfang_core::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
 
-fn bench_waf_verify_integrity(c: &mut Criterion) {
+fn bench_waf_inspect(c: &mut Criterion) {
     // Generate ~500KB HTML body with some WAF signatures embedded
     let body = generate_html_body();
+    let ctx = InspectionContext::default();
 
     let mut group = c.benchmark_group("waf_detection");
     group.throughput(Throughput::Bytes(body.len() as u64));
-    group.bench_function("verify_integrity_500kb", |b| {
+    group.bench_function("inspect_500kb", |b| {
         b.iter(|| {
-            let result =
-                WafInspector::verify_integrity(black_box(&HeaderMap::new()), black_box(&body));
-            assert!(result.is_ok());
-            black_box(result)
+            let verdict = WafInspector::inspect(black_box(&body), &ctx);
+            black_box(verdict)
         })
     });
     group.finish();
@@ -31,7 +29,7 @@ fn generate_html_body() -> String {
 </body></html>"#;
 
     // Repeat the clean template until ~500KB. No WAF signatures are embedded:
-    // `verify_integrity` should scan the whole body and return `Ok`, which
+    // `inspect` should scan the whole body and return a clean verdict, which
     // benchmarks the full clean-scan path (the common case, and the worst case
     // for scanning since nothing short-circuits on an early detection).
     let mut body = String::new();
@@ -41,5 +39,5 @@ fn generate_html_body() -> String {
     body
 }
 
-criterion_group!(benches, bench_waf_verify_integrity);
+criterion_group!(benches, bench_waf_inspect);
 criterion_main!(benches);

@@ -73,6 +73,12 @@ pub fn apply_config_defaults(mut opts: CrawlOptions, config: &ConfigDefaults) ->
         }
     }
 
+    if let Some(v) = config.ignore_waf {
+        if !opts.crawl.ignore_waf && v {
+            opts.crawl.ignore_waf = v;
+        }
+    }
+
     // Obsidian config — trim whitespace from tags
     for tag in opts.export.obsidian_tags.iter_mut() {
         *tag = tag.trim().to_string();
@@ -532,5 +538,34 @@ pub fn icon(emoji: &str, ascii: &str) -> String {
         emoji.to_string()
     } else {
         ascii.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // TASK-13 — persistent ignore_waf merge (REQ-WAF-07)
+    // ========================================================================
+
+    #[test]
+    fn apply_config_defaults_merges_ignore_waf() {
+        let opts = CrawlOptions::default();
+        assert!(!opts.crawl.ignore_waf);
+        let config = ConfigDefaults {
+            ignore_waf: Some(true),
+            ..Default::default()
+        };
+        let merged = apply_config_defaults(opts, &config);
+        assert!(merged.crawl.ignore_waf, "config file ignore_waf must apply");
+    }
+
+    #[test]
+    fn apply_config_defaults_ignore_waf_absent_is_noop() {
+        let opts = CrawlOptions::default();
+        let config = ConfigDefaults::default(); // ignore_waf: None
+        let merged = apply_config_defaults(opts, &config);
+        assert!(!merged.crawl.ignore_waf);
     }
 }

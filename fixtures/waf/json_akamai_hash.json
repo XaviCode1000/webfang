@@ -1,0 +1,11 @@
+{
+  "tls": {
+    "akamai_hash": "5f2a8b3c9d1e4f6a7b8c9d0e1f2a3b4c",
+    "peetprint_hash": "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b",
+    "ja3_hash": "b32309a26951912be7dba376398abc3b"
+  },
+  "http2": {
+    "akamai_fingerprint_hash": "4d7a2f1c8e9b0a3d"
+  },
+  "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+}

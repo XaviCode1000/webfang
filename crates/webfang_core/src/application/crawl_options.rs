@@ -128,6 +128,8 @@ pub struct CrawlLimits {
     pub no_checkpoint: bool,
     /// Skip robots.txt enforcement.
     pub ignore_robots: bool,
+    /// Bypass WAF/CAPTCHA detection entirely (REQ-WAF-07).
+    pub ignore_waf: bool,
     /// Disable session pool health checks.
     pub no_session_health: bool,
     /// Enable autoscaled concurrency based on system RAM.
@@ -232,6 +234,7 @@ impl Default for CrawlLimits {
             checkpoint_interval: 100,
             no_checkpoint: false,
             ignore_robots: false,
+            ignore_waf: false,
             no_session_health: false,
             autoscale_enabled: false,
         }
@@ -350,6 +353,7 @@ mod tests {
         assert!(!limits.no_checkpoint);
         assert!(!limits.ignore_robots);
         assert!(!limits.no_session_health);
+        assert!(!limits.ignore_waf);
     }
 
     #[test]

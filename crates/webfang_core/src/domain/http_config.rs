@@ -45,6 +45,12 @@ pub struct HttpClientConfig {
     pub tls_emulation: wreq_util::Profile,
     /// Custom User-Agent override
     pub user_agent: Option<String>,
+    /// Bypass WAF/CAPTCHA detection entirely (REQ-WAF-07).
+    ///
+    /// When true, the HTTP client builds its WAF `InspectionContext` with
+    /// `ignore_waf` set, short-circuiting inspection to a clean verdict so
+    /// challenge markers never block a response.
+    pub ignore_waf: bool,
 }
 
 impl Default for HttpClientConfig {
@@ -63,6 +69,7 @@ impl Default for HttpClientConfig {
             rate_limit_rpm: None,
             tls_emulation: wreq_util::Profile::Chrome145,
             user_agent: None,
+            ignore_waf: false,
         }
     }
 }
@@ -124,6 +131,7 @@ mod tests {
         assert_eq!(config.rate_limit_rpm, None);
         assert_eq!(config.tls_emulation, wreq_util::Profile::Chrome145);
         assert_eq!(config.user_agent, None);
+        assert!(!config.ignore_waf);
     }
 
     #[test]
@@ -151,6 +159,7 @@ mod tests {
             rate_limit_rpm: Some(30),
             tls_emulation: wreq_util::Profile::Chrome131,
             user_agent: Some("custom".into()),
+            ignore_waf: true,
         };
 
         assert_eq!(config.accept_language, "es-ES");
@@ -160,6 +169,7 @@ mod tests {
         assert_eq!(config.connect_timeout_secs, 20);
         assert_eq!(config.rate_limit_rpm, Some(30));
         assert_eq!(config.tls_emulation, wreq_util::Profile::Chrome131);
+        assert!(config.ignore_waf);
     }
 
     #[test]

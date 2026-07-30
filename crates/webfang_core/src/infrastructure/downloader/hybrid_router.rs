@@ -33,15 +33,21 @@ pub struct HybridRouter<L1: Downloader, L2: Downloader, L3: Downloader> {
     layer2: L2,
     layer3: L3,
     governor: ResourceGovernor,
+    /// Bypass WAF classification on the spa-detection path (REQ-WAF-07, W1).
+    ///
+    /// When `true`, a genuine T1 challenge is treated per normal spa/static
+    /// logic instead of aborting with [`DownloadError::WafChallenge`].
+    ignore_waf: bool,
 }
 
 impl<L1: Downloader, L2: Downloader, L3: Downloader> HybridRouter<L1, L2, L3> {
-    pub(crate) fn new(layer1: L1, layer2: L2, layer3: L3) -> Self {
+    pub(crate) fn new(layer1: L1, layer2: L2, layer3: L3, ignore_waf: bool) -> Self {
         Self {
             layer1,
             layer2,
             layer3,
             governor: ResourceGovernor::new(),
+            ignore_waf,
         }
     }
 
@@ -52,7 +58,7 @@ impl<L1: Downloader, L2: Downloader, L3: Downloader> HybridRouter<L1, L2, L3> {
     /// - `Err(DownloadError)` for WAF or unrecoverable errors
     /// - `None` when SPA detected (caller should try next layer)
     fn evaluate_fetch(&self, page: FetchedPage) -> Result<Option<FetchedPage>, DownloadError> {
-        let signal = detect_spa(&page.html);
+        let signal = detect_spa(&page.html, self.ignore_waf);
 
         match signal {
             SpaSignal::StaticContent => {
@@ -270,6 +276,7 @@ mod tests {
             StubDownloader::static_page(),
             StubDownloader::spa_page(),
             StubDownloader::static_page().with_interactions(true),
+            false,
         );
         let url: Url = "https://example.com".parse().unwrap();
         let page = router.fetch(&url).await.unwrap();
@@ -282,6 +289,7 @@ mod tests {
             StubDownloader::spa_page(),
             StubDownloader::static_page().with_cost(30_000_000),
             StubDownloader::static_page().with_interactions(true),
+            false,
         );
         let url: Url = "https://spa.example.com".parse().unwrap();
         let page = router.fetch(&url).await.unwrap();
@@ -294,10 +302,45 @@ mod tests {
             StubDownloader::waf_page(),
             StubDownloader::static_page(),
             StubDownloader::static_page(),
+            false,
         );
         let url: Url = "https://waf.example.com".parse().unwrap();
         let err = router.fetch(&url).await.unwrap_err();
         assert!(matches!(err, DownloadError::WafChallenge(_)));
+    }
+
+    #[tokio::test]
+    async fn test_ignore_waf_false_t1_challenge_aborts() {
+        // Mirror pinning current behavior: with ignore_waf=false a genuine
+        // T1 challenge still aborts via the spa path (REQ-WAF-07).
+        let router = HybridRouter::new(
+            StubDownloader::waf_page(),
+            StubDownloader::static_page(),
+            StubDownloader::static_page(),
+            false,
+        );
+        let url: Url = "https://waf.example.com".parse().unwrap();
+        let err = router.fetch(&url).await.unwrap_err();
+        assert!(matches!(err, DownloadError::WafChallenge(_)));
+    }
+
+    #[tokio::test]
+    async fn test_ignore_waf_true_t1_challenge_does_not_abort() {
+        // REQ-WAF-07 (W1): with ignore_waf=true the spa path must NOT abort on
+        // a genuine T1 challenge — the WAF classification yields a clean verdict
+        // and the page is treated per normal spa/static logic (here: static).
+        let router = HybridRouter::new(
+            StubDownloader::waf_page(),
+            StubDownloader::static_page(),
+            StubDownloader::static_page(),
+            true,
+        );
+        let url: Url = "https://waf.example.com".parse().unwrap();
+        let page = router
+            .fetch(&url)
+            .await
+            .expect("ignore_waf=true must not abort on a T1 challenge");
+        assert!(page.html.contains("challenge-running"));
     }
 
     #[tokio::test]
@@ -306,6 +349,7 @@ mod tests {
             StubDownloader::spa_page(),
             StubDownloader::empty_page(),
             StubDownloader::static_page().with_interactions(true),
+            false,
         );
         let url: Url = "https://spa.example.com".parse().unwrap();
         let page = router.fetch(&url).await.unwrap();
@@ -320,6 +364,7 @@ mod tests {
             },
             StubDownloader::static_page(),
             StubDownloader::static_page(),
+            false,
         );
         let url: Url = "https://down.example.com".parse().unwrap();
         let err = router.fetch(&url).await.unwrap_err();
@@ -334,6 +379,7 @@ mod tests {
             StubDownloader::static_page()
                 .with_cost(200_000_000)
                 .with_interactions(true),
+            false,
         );
         assert_eq!(router.memory_cost(), 231_000_000);
     }
@@ -344,6 +390,7 @@ mod tests {
             StubDownloader::static_page(),
             StubDownloader::static_page(),
             StubDownloader::static_page().with_interactions(true),
+            false,
         );
         assert!(router.supports_interactions());
 
@@ -351,6 +398,7 @@ mod tests {
             StubDownloader::static_page(),
             StubDownloader::static_page(),
             StubDownloader::static_page(),
+            false,
         );
         assert!(!router.supports_interactions());
     }

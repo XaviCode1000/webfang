@@ -174,6 +174,7 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
                 checkpoint_interval: args.crawler.checkpoint_interval,
                 no_checkpoint: args.crawler.no_checkpoint,
                 ignore_robots: args.crawler.ignore_robots,
+                ignore_waf: args.crawler.ignore_waf,
                 no_session_health: args.crawler.no_session_health,
                 autoscale_enabled: args.crawler.autoscale,
             },
@@ -240,4 +241,39 @@ fn build_ai_config(args: &Args) -> crate::application::crawl_options::AiConfig {
 #[cfg(not(feature = "ai"))]
 fn build_ai_config(_args: &Args) -> crate::application::crawl_options::AiConfig {
     crate::application::crawl_options::AiConfig::default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    // ========================================================================
+    // TASK-13 — --ignore-waf flag + propagation (REQ-WAF-07)
+    // ========================================================================
+
+    #[test]
+    fn ignore_waf_flag_defaults_to_false() {
+        let args =
+            Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
+        assert!(!args.crawler.ignore_waf, "ignore_waf defaults to false");
+    }
+
+    #[test]
+    fn ignore_waf_flag_parses() {
+        let args = Args::try_parse_from(["webfang", "-u", "https://example.com", "--ignore-waf"])
+            .expect("valid args");
+        assert!(args.crawler.ignore_waf, "--ignore-waf sets the flag");
+    }
+
+    #[test]
+    fn ignore_waf_maps_into_crawl_options() {
+        let args = Args::try_parse_from(["webfang", "-u", "https://example.com", "--ignore-waf"])
+            .expect("valid args");
+        let opts = crate::application::crawl_options::CrawlOptions::from(args);
+        assert!(
+            opts.crawl.ignore_waf,
+            "ignore_waf must propagate Args -> CrawlOptions"
+        );
+    }
 }

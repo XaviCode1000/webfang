@@ -34,6 +34,8 @@ pub struct ConfigDefaults {
     pub obsidian_relative_assets: Option<bool>,
     /// Default Obsidian vault path
     pub vault_path: Option<String>,
+    /// Bypass WAF/CAPTCHA detection by default (REQ-WAF-07)
+    pub ignore_waf: Option<bool>,
 }
 
 impl ConfigDefaults {
@@ -132,6 +134,22 @@ max_pages = 20
         assert_eq!(config.log_level, Some("debug".to_string()));
         assert_eq!(config.max_pages, Some(20));
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_load_ignore_waf_from_toml() {
+        // REQ-WAF-07: persistent ignore_waf config field round-trips via TOML.
+        let tmp = std::env::temp_dir().join("webfang_test_config_ignore_waf.toml");
+        std::fs::write(&tmp, "ignore_waf = true\n").unwrap();
+        let config = ConfigDefaults::load(&tmp);
+        assert_eq!(config.ignore_waf, Some(true));
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_ignore_waf_defaults_to_none() {
+        let config = ConfigDefaults::load(Path::new("/nonexistent/path/config.toml"));
+        assert!(config.ignore_waf.is_none());
     }
 
     #[test]

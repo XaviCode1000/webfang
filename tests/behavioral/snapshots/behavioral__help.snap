@@ -223,6 +223,11 @@ Options:
           
           [env: WEBFANG_IGNORE_ROBOTS=]
 
+      --ignore-waf
+          Bypass WAF/CAPTCHA detection entirely (never block on challenge markers)
+          
+          [env: WEBFANG_IGNORE_WAF=]
+
       --autoscale
           Enable autoscaled concurrency — dynamically adjusts task concurrency based on RAM usage
           

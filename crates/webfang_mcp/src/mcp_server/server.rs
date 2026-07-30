@@ -159,19 +159,22 @@ mod tests {
 
     #[test]
     fn test_waf_detector_logic() {
+        use webfang_core::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
         let clean_html = "<html><body>Normal content</body></html>";
-        let result =
-            webfang_core::infrastructure::http::waf_engine::WafInspector::detect_body(clean_html);
-        assert!(result.is_none());
+        let verdict = WafInspector::inspect(clean_html, &InspectionContext::default());
+        assert!(!verdict.is_blocked);
     }
 
     #[test]
     fn test_waf_detector_cloudflare() {
+        use webfang_core::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
         let cf_html = "<div id=\"cf-turnstile\" data-sitekey=\"abc123\"></div>";
-        let result =
-            webfang_core::infrastructure::http::waf_engine::WafInspector::detect_body(cf_html);
-        assert!(result.is_some());
-        assert!(result.unwrap().contains("Cloudflare"));
+        let verdict = WafInspector::inspect(cf_html, &InspectionContext::default());
+        assert!(verdict.is_blocked);
+        assert!(verdict
+            .evidences
+            .first()
+            .is_some_and(|e| e.provider.contains("Cloudflare")));
     }
 
     #[test]

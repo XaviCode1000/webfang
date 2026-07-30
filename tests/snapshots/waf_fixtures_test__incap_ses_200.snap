@@ -1,0 +1,6 @@
+---
+source: crates/webfang_core/../../tests/waf_fixtures_test.rs
+expression: "redact_nondeterministic(Path::new(\"__no_temp__\"), &summary)"
+---
+is_blocked: false
+  - Imperva Incapsula (patrón: incap_ses, tier: huella)
