@@ -159,27 +159,6 @@ impl MiniLmTokenizer {
         Ok(Self::new(tokenizer, DEFAULT_MAX_LENGTH))
     }
 
-    /// Load default tokenizer (from cache or bundled)
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(MiniLmTokenizer)` - Tokenizer loaded successfully
-    /// * `Err(SemanticError::Tokenize)` - Failed to load
-    pub async fn load_default() -> Result<Self, SemanticError> {
-        // Try to load from cache first
-        let cache_dir = crate::infrastructure_ai::cache_config::default_cache_dir();
-        let tokenizer_path = cache_dir.join("tokenizer.json");
-
-        if tokenizer_path.exists() {
-            Self::from_file(&tokenizer_path).await
-        } else {
-            // For now, return an error - tokenizer should be downloaded first
-            Err(SemanticError::Tokenize(
-                "Tokenizer not found in cache. Run model download first.".to_string(),
-            ))
-        }
-    }
-
     /// Tokenize a single text string
     ///
     /// Takes text and returns ModelInput with:
