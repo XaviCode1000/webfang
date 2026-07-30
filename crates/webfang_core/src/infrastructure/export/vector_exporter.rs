@@ -179,11 +179,12 @@ impl VectorExporter {
             let mut dim_guard = self.dimensions.lock().expect("lock poisoned");
             if let Some(exp) = *dim_guard {
                 if embeddings.len() != exp {
-                    // Log warning and serialize without embeddings
-                    tracing::warn!(
+                    // Dimension mismatch: the document is degraded (no embeddings in output).
+                    // error! because --output-vectors implies embeddings are the point.
+                    tracing::error!(
                         expected_dimensions = exp,
                         actual_dimensions = embeddings.len(),
-                        "Dimension mismatch detected — serializing without embeddings"
+                        "Dimension mismatch — document serialized WITHOUT embeddings"
                     );
                     // Create a copy without embeddings
                     let mut doc_without_embeddings = doc.clone();
