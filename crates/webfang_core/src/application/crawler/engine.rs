@@ -44,6 +44,7 @@ use crate::infrastructure::downloader::{DownloadError, Downloader, FetchedPage};
 use crate::infrastructure::network::session_pool::{
     DomainSessionPool, SessionManager, SessionPoolConfig,
 };
+use crate::infrastructure::observability::log_scrape_error;
 
 #[cfg(feature = "otel-metrics")]
 use crate::infrastructure::observability::metrics_instruments::{
@@ -751,9 +752,23 @@ async fn run_crawl_task(
                         }
                     }
                 }
+                log_scrape_error(
+                    &msg,
+                    &url_str,
+                    "fetch",
+                    Some(&page_correlation),
+                    "WAF challenge detected",
+                );
                 return Err(DownloadError::WafChallenge(msg).into());
             },
             Err(e) => {
+                log_scrape_error(
+                    &e,
+                    &url_str,
+                    "fetch",
+                    Some(&page_correlation),
+                    "page fetch failed",
+                );
                 return Err(e.into());
             },
         }
@@ -779,6 +794,13 @@ async fn run_crawl_task(
                         }
                     }
                 }
+                log_scrape_error(
+                    &e,
+                    &url_str,
+                    "fetch",
+                    Some(&page_correlation),
+                    "page fetch failed",
+                );
                 return Err(e);
             },
         }
