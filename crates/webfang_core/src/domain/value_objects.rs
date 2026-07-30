@@ -64,6 +64,32 @@ impl CorrelationId {
         Self { trace_id, span_id }
     }
 
+    /// Create a child correlation ID: same `trace_id`, fresh `span_id`.
+    ///
+    /// Used to correlate multiple operations under a single trace while
+    /// giving each its own span identity — e.g. every page of a crawl shares
+    /// the crawl's `trace_id` but gets a unique `span_id`, so the whole crawl
+    /// can be reconstructed by `trace_id` while each page stays distinguishable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use webfang_core::domain::value_objects::CorrelationId;
+    ///
+    /// let crawl = CorrelationId::new();
+    /// let page = crawl.child();
+    /// assert_eq!(crawl.trace_id(), page.trace_id());
+    /// assert_ne!(crawl.span_id(), page.span_id());
+    /// ```
+    pub fn child(&self) -> Self {
+        use rand::Rng;
+        let mut rng = rand::rng();
+        Self {
+            trace_id: self.trace_id,
+            span_id: rng.random(),
+        }
+    }
+
     /// Generate W3C traceparent header value
     ///
     /// Returns format: `00-{trace_id}-{span_id}-01`
@@ -343,6 +369,40 @@ mod tests {
         assert_eq!(corr.trace_id(), cloned.trace_id());
         assert_eq!(corr.span_id(), cloned.span_id());
         assert_eq!(corr.to_traceparent(), cloned.to_traceparent());
+    }
+
+    #[test]
+    fn test_correlation_id_child_shares_trace_id() {
+        // Fase 1b (issue #356): a child correlation ID must keep the parent's
+        // trace_id (so all pages of a crawl share one trace) while getting a
+        // fresh span_id (so each page is a distinct span).
+        let parent = CorrelationId::new();
+        let child = parent.child();
+
+        assert_eq!(
+            parent.trace_id(),
+            child.trace_id(),
+            "child must share the parent's trace_id"
+        );
+        assert_ne!(
+            parent.span_id(),
+            child.span_id(),
+            "child must get a fresh span_id"
+        );
+    }
+
+    #[test]
+    fn test_correlation_id_children_share_trace_id() {
+        // Multiple children of the same parent all share the trace_id but have
+        // distinct span_ids — this lets a whole crawl be reconstructed by
+        // trace_id while keeping each page distinguishable.
+        let parent = CorrelationId::new();
+        let c1 = parent.child();
+        let c2 = parent.child();
+
+        assert_eq!(c1.trace_id(), c2.trace_id());
+        assert_eq!(c1.trace_id(), parent.trace_id());
+        assert_ne!(c1.span_id(), c2.span_id(), "siblings must differ");
     }
 
     #[test]

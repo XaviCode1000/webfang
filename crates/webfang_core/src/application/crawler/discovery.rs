@@ -9,7 +9,9 @@ use url::Url;
 
 use crate::application::url_filter::is_allowed;
 use crate::domain::http_config::HttpClientConfig;
-use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl, ScrapedContent, ValidUrl};
+use crate::domain::{
+    CorrelationId, CrawlError, CrawlerConfig, DiscoveredUrl, ScrapedContent, ValidUrl,
+};
 use crate::error::{Result as ScraperResult, ScraperError};
 use crate::infrastructure::crawler::binary_utils::derive_filename_from_response;
 use crate::infrastructure::crawler::{
@@ -280,7 +282,7 @@ pub async fn extract_content(
                 // Store CLEAN HTML from Readability (not raw HTML with nav/ads/footer)
                 html: Some(article.content),
                 assets,
-                correlation_id: None,
+                correlation_id: Some(CorrelationId::new()),
             })
         },
         Err(e) => {
@@ -326,7 +328,7 @@ pub async fn extract_content(
                 date: None,
                 html: Some(html.to_owned()),
                 assets,
-                correlation_id: None,
+                correlation_id: Some(CorrelationId::new()),
             })
         },
     }
@@ -455,7 +457,7 @@ pub async fn scrape_single_url_for_tui(
             date: None,
             html: None,
             assets,
-            correlation_id: None,
+            correlation_id: Some(CorrelationId::new()),
         });
     }
 
@@ -1339,5 +1341,30 @@ work with when computing the document readability score.</p>
         assert!(result.is_ok());
         let content = result.unwrap();
         assert!(content.content.contains("main content"));
+    }
+
+    #[tokio::test]
+    async fn extract_content_populates_correlation_id_natively() {
+        // Fase 1 (issue #356): correlation_id must be populated natively,
+        // WITHOUT requiring the `otel` feature. Every scraped page must be
+        // correlatable with its own logs/traces out of the box.
+        let html = r#"<html><head><title>Test Page</title></head><body>
+            <article><h1>Hello</h1><p>This is a long enough paragraph of content that readability should be able to extract properly from the DOM structure.</p>
+            <p>Second paragraph with more content to ensure readability has enough material to work with for extraction.</p></article>
+        </body></html>"#;
+        let url = Url::parse("https://example.com/article").unwrap();
+        let config = ScraperConfig::default();
+
+        let result = extract_content(html, &url, &config, None, None).await;
+
+        assert!(result.is_ok());
+        let content = result.unwrap();
+        assert!(
+            content.correlation_id.is_some(),
+            "correlation_id must be populated natively (without the `otel` feature)"
+        );
+        // Must be a valid W3C traceparent: 00-{trace_id}-{span_id}-01
+        let corr = content.correlation_id.unwrap();
+        assert!(corr.to_traceparent().starts_with("00-"));
     }
 }

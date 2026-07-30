@@ -27,7 +27,9 @@ use crate::application::pipeline::{OutputStage, PipelineExecutor, ScrapedItem, S
 use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::application::url_filter::is_allowed;
 use crate::domain::clock::SystemClock;
-use crate::domain::{CrawlError, CrawlResult, CrawlerConfig, DiscoveredUrl, JsStrategy};
+use crate::domain::{
+    CorrelationId, CrawlError, CrawlResult, CrawlerConfig, DiscoveredUrl, JsStrategy,
+};
 use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
 use crate::infrastructure::crawler::{
     extract_links, fetch_url, is_internal_link, UrlQueue, UrlSource,
@@ -151,6 +153,8 @@ impl Downloader for FetchRouter {
 /// `UrlDeduplicator`. Results collected via mpsc channel.
 pub struct Engine {
     config: Arc<CrawlerConfig>,
+    /// Root correlation ID for this crawl — all pages share its `trace_id`.
+    correlation_id: CorrelationId,
     collector: Option<ResultsCollector>,
     visited: Arc<UrlDeduplicator>,
     /// String URLs for checkpoint persistence (mirrors `visited` hashes).
@@ -231,6 +235,7 @@ impl Engine {
 
         Ok(Self {
             config,
+            correlation_id: CorrelationId::new(),
             collector: Some(collector),
             visited,
             visited_urls,
@@ -255,6 +260,15 @@ impl Engine {
             autoscale_level: None,
             signal_handle: None,
         })
+    }
+
+    /// Override the crawl's root correlation ID.
+    ///
+    /// Used by `crawl_site` / `crawl_site_with_options` to make the entry-point
+    /// tracing span share the same `trace_id` as the engine and all its pages.
+    fn with_correlation_id(mut self, correlation_id: CorrelationId) -> Self {
+        self.correlation_id = correlation_id;
+        self
     }
 
     /// Enable checkpoint persistence with the given interval and base directory.
@@ -501,6 +515,7 @@ impl Engine {
         // Build shared task context once — all spawned tasks share this Arc
         let task_ctx = Arc::new(CrawlTaskCtx {
             config: Arc::clone(&self.config),
+            correlation_id: self.correlation_id.clone(),
             visited: Arc::clone(&self.visited),
             visited_urls: Arc::clone(&self.visited_urls),
             queue: Arc::clone(&self.queue),
@@ -677,6 +692,20 @@ async fn run_crawl_task(
     let url_str = discovered_url.url.as_str().to_string();
     let url_depth = discovered_url.depth;
     let parent_url = discovered_url.url.clone();
+
+    // Per-page correlation (issue #356): share the crawl's trace_id, fresh
+    // span_id. Lets a whole crawl be reconstructed by trace_id while each
+    // page stays distinguishable by span_id.
+    let page_correlation = ctx.correlation_id.child();
+    let page_span = span!(
+        Level::DEBUG,
+        "crawl_page",
+        correlation_id = %page_correlation,
+        trace_id = %page_correlation.trace_id(),
+        url = %url_str,
+        depth = url_depth
+    );
+    let _page_guard = page_span.enter();
 
     // Session pool: check if domain is healthy before fetching
     let mut session_id = None;
@@ -954,9 +983,12 @@ impl Default for EngineOptions {
     )
 )]
 pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError> {
+    let correlation_id = CorrelationId::new();
     let span = span!(
         Level::INFO,
         "crawl_site",
+        correlation_id = %correlation_id,
+        trace_id = %correlation_id.trace_id(),
         seed_url = %config.seed_url,
         max_depth = config.max_depth,
         max_pages = config.max_pages
@@ -969,7 +1001,7 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
     );
 
     let ignore_robots = config.ignore_robots;
-    let mut engine = Engine::new(config, ignore_robots)?;
+    let mut engine = Engine::new(config, ignore_robots)?.with_correlation_id(correlation_id);
     let result = engine.run().await;
     engine.shutdown().await;
     result
@@ -1037,9 +1069,12 @@ pub async fn crawl_site_with_options(
     config: CrawlerConfig,
     options: EngineOptions,
 ) -> Result<CrawlResult, CrawlError> {
+    let correlation_id = CorrelationId::new();
     let span = span!(
         Level::INFO,
         "crawl_site_with_options",
+        correlation_id = %correlation_id,
+        trace_id = %correlation_id.trace_id(),
         seed_url = %config.seed_url,
         max_depth = config.max_depth,
         max_pages = config.max_pages
@@ -1056,7 +1091,8 @@ pub async fn crawl_site_with_options(
         options.ignore_robots
     );
 
-    let mut engine = Engine::new(config, options.ignore_robots)?;
+    let mut engine =
+        Engine::new(config, options.ignore_robots)?.with_correlation_id(correlation_id);
 
     // Apply checkpoint if path provided
     if let Some(ref path) = options.checkpoint_path {
