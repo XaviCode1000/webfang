@@ -279,9 +279,6 @@ impl CollapsibleConfig {
             .option("full", "Full (Chromiumoxide)")
             .initial_value("static")
             .done()
-            .checkbox("force_js_render", "Force JS Rendering")
-            .checked(false)
-            .done()
             .build()
     }
 

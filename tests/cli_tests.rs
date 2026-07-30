@@ -60,7 +60,6 @@ fn test_args_defaults() {
     assert!(!args.single_page);
     assert!(!args.resume);
     assert!(!args.clean_ai);
-    assert!(!args.force_js_render);
     assert!(!args.dry_run);
     assert!(!args.quiet);
     assert!(!args.obsidian_wiki_links);
@@ -392,7 +391,6 @@ fn test_args_boolean_flags_default_false() {
     assert!(!args.interactive);
     assert!(!args.resume);
     assert!(!args.clean_ai);
-    assert!(!args.force_js_render);
     assert!(!args.dry_run);
     assert!(!args.quiet);
     assert!(!args.quick_save);

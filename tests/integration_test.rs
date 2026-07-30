@@ -86,7 +86,6 @@ fn test_args_has_required_fields() {
         resume: false,
         state_dir: None,
         clean_ai: false,
-        force_js_render: false,
         dry_run: false,
         trace_file: None,
         quiet: false,

@@ -737,14 +737,6 @@ fn apply_tui_config_sets_js_strategy_static() {
     assert_eq!(result.js_strategy, JsStrategy::Static);
 }
 
-#[test]
-fn apply_tui_config_sets_force_js_render() {
-    let args = default_args();
-    let json = config_json(&[("force_js_render", serde_json::json!(true))]);
-    let result = apply_tui_config_args(args, &json);
-    assert!(result.force_js_render);
-}
-
 // --- Download fields ---
 
 #[test]
@@ -1217,13 +1209,6 @@ fn args_exclude_patterns_comma_separated() {
     let args = Args::try_parse_from(["webfang", "--exclude-pattern", "*/admin/*"])
         .expect("--exclude-pattern must parse");
     assert_eq!(args.exclude_patterns, vec!["*/admin/*"]);
-}
-
-#[test]
-fn args_force_js_render_flag() {
-    let args = Args::try_parse_from(["webfang", "--force-js-render"])
-        .expect("--force-js-render must parse");
-    assert!(args.force_js_render);
 }
 
 // ============================================================================

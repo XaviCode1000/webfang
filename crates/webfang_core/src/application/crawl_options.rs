@@ -157,8 +157,6 @@ pub struct NetworkOptions {
     pub download_images: bool,
     /// Download documents from the page.
     pub download_documents: bool,
-    /// Force JavaScript rendering for SPA sites.
-    pub force_js_render: bool,
     /// TLS/HTTP2 profile name (e.g. Chrome145).
     pub h2_profile: String,
     /// JavaScript rendering strategy (static, hybrid, full).
@@ -253,7 +251,6 @@ impl Default for NetworkOptions {
             backoff_max_ms: 10000,
             download_images: false,
             download_documents: false,
-            force_js_render: false,
             h2_profile: "Chrome145".to_owned(),
             js_strategy: JsStrategy::default(),
             obscura_binary: "obscura".to_owned(),
@@ -368,7 +365,6 @@ mod tests {
         assert_eq!(net.backoff_max_ms, 10000);
         assert!(!net.download_images);
         assert!(!net.download_documents);
-        assert!(!net.force_js_render);
         assert_eq!(net.h2_profile, "Chrome145");
         assert_eq!(net.js_strategy, JsStrategy::Static);
         assert_eq!(net.obscura_binary, "obscura");
