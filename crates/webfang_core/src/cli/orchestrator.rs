@@ -96,7 +96,10 @@ pub async fn run(
     };
 
     let (urls_to_scrape, state_store) =
-        apply_resume_mode(prepare.urls_to_scrape, &opts, opts.url.as_str()).await;
+        match apply_resume_mode(prepare.urls_to_scrape, &opts, opts.url.as_str()).await {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
 
     let elastic_ingestion = match build_elastic_ingestion(&opts).await {
         Ok(v) => v,

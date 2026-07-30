@@ -4,8 +4,6 @@
 
 use std::path::Path;
 
-use tracing::warn;
-
 /// Default configuration values that can be overridden by a TOML file.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
@@ -41,13 +39,15 @@ pub struct ConfigDefaults {
 impl ConfigDefaults {
     /// Load configuration from a TOML file, falling back to defaults.
     ///
-    /// Returns defaults if the file doesn't exist or can't be parsed.
+    /// Returns defaults if the file doesn't exist (normal — no config yet).
+    /// A malformed existing file logs `error!` and falls back to defaults —
+    /// the user's entire configuration is silently lost, so this must be loud.
     pub fn load(path: &Path) -> Self {
         let Ok(content) = std::fs::read_to_string(path) else {
             return Self::default();
         };
         toml::from_str(&content).unwrap_or_else(|e| {
-            warn!(path = %path.display(), error = %e, "Failed to parse config, using defaults");
+            tracing::error!(path = %path.display(), error = %e, "Malformed config file — all settings ignored, using defaults");
             Self::default()
         })
     }

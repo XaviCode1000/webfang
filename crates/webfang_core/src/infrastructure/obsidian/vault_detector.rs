@@ -76,7 +76,9 @@ pub fn detect_vault(
 }
 
 /// Check if a path is a valid Obsidian vault (contains `.obsidian/` directory).
-fn is_valid_vault(path: &Path) -> bool {
+/// Check whether a path is a valid Obsidian vault (directory with `.obsidian/` marker).
+#[must_use]
+pub fn is_valid_vault(path: &Path) -> bool {
     path.is_dir() && path.join(".obsidian").is_dir()
 }
 

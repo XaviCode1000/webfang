@@ -383,8 +383,7 @@ async fn __main() -> CliExit {
             match opts.ai_config.model.parse::<webfang_ai::AiModel>() {
                 Ok(variant) => variant,
                 Err(e) => {
-                    tracing::warn!("Parsing error para --ai-model: {}", e);
-                    webfang_ai::AiModel::from_env_or_default()
+                    return CliExit::UsageError(format!("Modelo AI inválido para --ai-model: {e}"));
                 },
             }
         };
