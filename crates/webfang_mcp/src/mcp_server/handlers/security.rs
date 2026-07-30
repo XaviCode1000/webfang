@@ -4,6 +4,7 @@
 //! get_scrape_metrics
 
 use super::McpHandler;
+use crate::mcp_server::metrics::MetricsSnapshot;
 use crate::mcp_server::params::*;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -101,13 +102,7 @@ impl McpHandler {
     async fn get_scrape_metrics(&self) -> Result<CallToolResult, McpError> {
         let _permit = acquire_semaphore!(self, security);
 
-        let metrics = serde_json::json!({
-            "message": "Metrics collection requires active scraping session",
-            "status": "available"
-        });
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&metrics).unwrap(),
-        )]))
+        Ok(render_metrics(&self.state.metrics_snapshot()))
     }
 }
 
@@ -153,6 +148,27 @@ fn verify_waf_verdict(
         ignore_waf: false,
     };
     WafInspector::inspect(html, &ctx)
+}
+
+/// Render a metrics snapshot as the `get_scrape_metrics` tool result.
+///
+/// Empty accumulator (`total_events == 0`, DD-12) → honest Spanish
+/// pre-condition error (`isError:true`, REQ-05). Populated → the snapshot as
+/// pretty JSON via `CallToolResult::success` (REQ-04). A serialization failure
+/// maps to an honest Spanish error, never a panic (REQ-10). Mirrors the
+/// `load_results_from` honest-error pattern in `export.rs`.
+fn render_metrics(snapshot: &MetricsSnapshot) -> CallToolResult {
+    if snapshot.total_events == 0 {
+        return CallToolResult::error(vec![Content::text(
+            "no hay métricas disponibles: todavía no se registró ninguna operación de scraping",
+        )]);
+    }
+    match serde_json::to_string_pretty(snapshot) {
+        Ok(json) => CallToolResult::success(vec![Content::text(json)]),
+        Err(e) => CallToolResult::error(vec![Content::text(format!(
+            "no se pudieron serializar las métricas: {e}"
+        ))]),
+    }
 }
 
 #[cfg(test)]
@@ -242,5 +258,91 @@ mod tests {
             Default::default(),
         );
         assert!(!verdict.is_blocked, "T2 + 200 must pass");
+    }
+
+    // ========================================================================
+    // get_scrape_metrics — render_metrics honest rendering (REQ-04/05/10)
+    // ========================================================================
+
+    /// REQ-05/REQ-10: an empty accumulator renders an honest Spanish
+    /// pre-condition error (isError:true) — NOT the legacy canned success JSON.
+    #[test]
+    fn render_metrics_empty_is_honest_spanish_error() {
+        use crate::mcp_server::metrics::ScrapeMetrics;
+
+        let snapshot = ScrapeMetrics::default().snapshot();
+        assert_eq!(snapshot.total_events, 0, "fresh accumulator is empty");
+        let result = render_metrics(&snapshot);
+
+        // Serialize exactly as the MCP transport would, then assert the honest
+        // error contract (mirrors export.rs load_results_from_none test).
+        let json = serde_json::to_value(&result).expect("CallToolResult must serialize");
+        assert_eq!(
+            json.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "empty metrics must set isError:true, got: {json}"
+        );
+        let text = json
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|first| first.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or_default();
+        assert!(
+            text.contains("no hay métricas disponibles"),
+            "honest Spanish empty-state error expected, got: {text}"
+        );
+        assert!(
+            !text.contains("Metrics collection requires active scraping session"),
+            "legacy canned text must be gone, got: {text}"
+        );
+    }
+
+    /// REQ-04: a populated snapshot renders as a JSON success (isError not
+    /// true) carrying the real counts and per-domain breakdown.
+    #[test]
+    fn render_metrics_populated_is_json_success() {
+        use crate::mcp_server::metrics::{Outcome, ScrapeEvent, ScrapeMetrics};
+        use std::time::Duration;
+
+        let mut metrics = ScrapeMetrics::default();
+        metrics.record(ScrapeEvent {
+            tool: "scrape_url",
+            domain: "example.com".to_string(),
+            outcome: Outcome::Success,
+            count: 4,
+            duration: Duration::from_millis(100),
+        });
+        let snapshot = metrics.snapshot();
+        let result = render_metrics(&snapshot);
+
+        let json = serde_json::to_value(&result).expect("CallToolResult must serialize");
+        assert_ne!(
+            json.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "populated metrics must not be an error, got: {json}"
+        );
+        let text = json
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|first| first.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or_default();
+        let parsed: serde_json::Value =
+            serde_json::from_str(text).expect("content text must be valid JSON");
+        assert_eq!(
+            parsed.get("total_events").and_then(|v| v.as_u64()),
+            Some(1),
+            "real total_events expected, got: {parsed}"
+        );
+        assert!(
+            parsed
+                .get("domains")
+                .and_then(|d| d.get("example.com"))
+                .is_some(),
+            "per-domain breakdown expected, got: {parsed}"
+        );
     }
 }
