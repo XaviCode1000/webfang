@@ -226,6 +226,58 @@ path = "../../tests/http_client_integration.rs"
 name = "ai_error_propagation"
 path = "../../tests/ai_error_propagation.rs"
 
+# ---------------------------------------------------------------------------
+# Benchmarks (criterion). The bench files live in the root `benches/` tree
+# (outside this crate's directory), so they must be wired explicitly — the
+# workspace root is virtual (no `[package]`) and won't auto-discover them.
+# `harness = false` because criterion provides its own `main` via
+# `criterion_main!`.
+# ---------------------------------------------------------------------------
+[[bench]]
+name = "cosine_similarity"
+path = "../../benches/cosine_similarity.rs"
+harness = false
+
+[[bench]]
+name = "export"
+path = "../../benches/export.rs"
+harness = false
+
+[[bench]]
+name = "html_conversion"
+path = "../../benches/html_conversion.rs"
+harness = false
+
+[[bench]]
+name = "link_extraction"
+path = "../../benches/link_extraction.rs"
+harness = false
+
+[[bench]]
+name = "readability"
+path = "../../benches/readability.rs"
+harness = false
+
+[[bench]]
+name = "sitemap_parsing"
+path = "../../benches/sitemap_parsing.rs"
+harness = false
+
+[[bench]]
+name = "url_parsing"
+path = "../../benches/url_parsing.rs"
+harness = false
+
+[[bench]]
+name = "waf_detection"
+path = "../../benches/waf_detection.rs"
+harness = false
+
+[[bench]]
+name = "tracing_overhead"
+path = "../../benches/tracing_overhead.rs"
+harness = false
+
 [lints.clippy]
 doc_markdown = "allow"
 uninlined_format_args = "allow"

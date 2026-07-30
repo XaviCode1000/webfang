@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use webfang::infrastructure::converter::html_to_markdown::convert_to_markdown;
+use webfang_core::infrastructure::converter::html_to_markdown::convert_to_markdown;
 
 fn realistic_html() -> String {
     r#"<!DOCTYPE html>

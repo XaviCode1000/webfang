@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use webfang::validate_and_parse_url;
 use url::Url;
+use webfang_core::validate_and_parse_url;
 
 fn bench_url_parse(c: &mut Criterion) {
     // Standard URLs

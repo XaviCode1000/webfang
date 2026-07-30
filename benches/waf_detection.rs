@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use webfang::infrastructure::http::waf_engine::WafInspector;
+use webfang_core::infrastructure::http::waf_engine::WafInspector;
 use wreq::header::HeaderMap;
 
 fn bench_waf_verify_integrity(c: &mut Criterion) {
@@ -30,25 +30,13 @@ fn generate_html_body() -> String {
 </div>
 </body></html>"#;
 
-    // Include some WAF signatures for realistic detection
-    let signatures = [
-        "cf-turnstile",
-        "Just a moment...",
-        "g-recaptcha",
-        "datadome",
-        "challenge-platform",
-    ];
-
+    // Repeat the clean template until ~500KB. No WAF signatures are embedded:
+    // `verify_integrity` should scan the whole body and return `Ok`, which
+    // benchmarks the full clean-scan path (the common case, and the worst case
+    // for scanning since nothing short-circuits on an early detection).
     let mut body = String::new();
-    // Repeat until ~500KB
     while body.len() < 500_000 {
         body.push_str(template);
-        // Insert a signature every 10 templates for realism
-        if body.len() % (template.len() * 10) < template.len() {
-            if let Some(sig) = signatures.get((body.len() / template.len()) % signatures.len()) {
-                body.push_str(&format!("<div class=\"waf-marker\">{}</div>", sig));
-            }
-        }
     }
     body
 }

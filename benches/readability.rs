@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use webfang::infrastructure::converter::html_cleaner::clean_html;
-use webfang::infrastructure::scraper::readability;
+use webfang_core::infrastructure::converter::html_cleaner::clean_html;
+use webfang_core::infrastructure::scraper::readability;
 
 fn realistic_html() -> String {
     r##"<!DOCTYPE html>
