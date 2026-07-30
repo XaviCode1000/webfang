@@ -9,7 +9,7 @@ use tracing::info;
 
 use crate::application::crawl_options::CrawlOptions;
 use crate::cli::error::CliExit;
-use crate::infrastructure::obsidian::detect_vault;
+use crate::infrastructure::obsidian::{detect_vault, is_valid_vault};
 
 /// Common preflight checks for all commands
 #[allow(dead_code)] // pub(crate) Phase 0 triage — internal API surface
@@ -39,6 +39,16 @@ pub async fn preflight(opts: &CrawlOptions) -> Result<PreflightContext, CliExit>
 
     // Vault detection
     let config_defaults = crate::cli::config::ConfigDefaults::load(&config_path);
+
+    // Explicit --vault must be valid; cascade only applies when no flag is set
+    if let Some(ref explicit_vault) = opts.export.obsidian_vault {
+        if !is_valid_vault(explicit_vault) {
+            return Err(CliExit::UsageError(format!(
+                "La ruta de vault indicada con --vault no es válida (debe ser un directorio con .obsidian/): {}",
+                explicit_vault.display()
+            )));
+        }
+    }
 
     let vault_path = detect_vault(
         opts.export.obsidian_vault.as_deref(),
