@@ -11,6 +11,9 @@
 //! # Build and run (release recommended — BoringSSL takes ~45s debug)
 //! cargo run --example mcp_server --release -p webfang_mcp
 //!
+//! # With AI semantic cleaning (opt-in; downloads the ONNX model on first run)
+//! WEBFANG_MCP_AI=1 cargo run --example mcp_server --release -p webfang_mcp --features ai
+//!
 //! # Verify with curl (see testing section below)
 //! ```
 //!
@@ -312,20 +315,29 @@ async fn main() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to build container: {e}"))?;
 
     // REQ-07: construct and inject the AI semantic cleaner behind the `ai`
-    // feature, mirroring the CLI (main.rs). The block shadows `container` with
-    // a cleaner-backed one; with the feature off it is absent and the container
-    // carries no cleaner (honest-error paths apply). Shadowing (not `mut`)
-    // keeps the off-build warning-free.
+    // feature, mirroring the CLI (main.rs). Construction is OPT-IN via
+    // `WEBFANG_MCP_AI=1` so a plain `--all-features` smoke run (e.g. the CI
+    // MCP handshake) does not download the ~390 MB ONNX model at startup:
+    // the server binds immediately and the AI tools answer with honest
+    // feature-gated errors until a cleaner is injected. The block shadows
+    // `container` with a cleaner-backed one; shadowing (not `mut`) keeps the
+    // off-build warning-free.
     #[cfg(feature = "ai")]
     let container = {
-        let variant = webfang_ai::AiModel::from_env_or_default();
-        let model_config = webfang_ai::ModelConfig::default().with_model_variant(variant);
-        match webfang_ai::SemanticCleanerImpl::new(model_config).await {
-            Ok(cleaner) => container.with_cleaner(std::sync::Arc::new(cleaner)),
-            Err(e) => {
-                tracing::warn!("semantic cleaner unavailable, continuing without AI: {e}");
-                container
-            },
+        let ai_enabled = std::env::var("WEBFANG_MCP_AI")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+        if ai_enabled {
+            let variant = webfang_ai::AiModel::from_env_or_default();
+            let model_config = webfang_ai::ModelConfig::default().with_model_variant(variant);
+            match webfang_ai::SemanticCleanerImpl::new(model_config).await {
+                Ok(cleaner) => container.with_cleaner(std::sync::Arc::new(cleaner)),
+                Err(e) => {
+                    tracing::warn!("semantic cleaner unavailable, continuing without AI: {e}");
+                    container
+                },
+            }
+        } else {
+            container
         }
     };
 
