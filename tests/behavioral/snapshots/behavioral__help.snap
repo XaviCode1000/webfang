@@ -102,11 +102,6 @@ Options:
           
           [env: WEBFANG_ADAPTIVE_SELECTORS=]
 
-      --force-js-render
-          No-op placeholder for future JavaScript rendering (Phase 2). Use --js-strategy hybrid or --js-strategy full for JS rendering support
-          
-          [env: WEBFANG_FORCE_JS_RENDER=]
-
   -v, --verbose...
           Verbosity level: -v (INFO), -vv (DEBUG), -vvv (TRACE)
           
