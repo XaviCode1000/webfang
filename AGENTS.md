@@ -365,6 +365,23 @@ detect_changes({ scope:"compare", base_ref:"main", repo:"/var/home/xavi/Projects
 
 This applies to ALL GitNexus MCP tools that take a `repo` parameter (`impact`, `context`, `query`, `rename`, etc.), not just `detect_changes`.
 
+### Bounded Review (4R) in worktrees (`GENTLE_AI_REVIEW_CWD` pitfall)
+
+The gentle-ai bounded review (lenses `review-risk` / `review-resilience` / `review-readability` / `review-reliability`) is captured by the OpenCode managed hook `review-result-artifacts.ts`. The hook resolves the target repo from the OpenCode **session CWD** (`captureCwd()`: `GENTLE_AI_REVIEW_CWD` env override, else `worktree || directory`).
+
+**The pitfall:** when the session is launched from the **main checkout** but the changes live in a **worktree**, `gentle-ai review start --cwd <worktree>` registers the review authority under the worktree, while the hook's capture preflight resolves to **main** → `capture binding does not match the current reviewing authority` → every lens refuses to launch ("reviewer was not launched, exactly-once preserved"). The binding accepts ONLY `lens`/`lineage`/`order`/`target` (no `cwd` field), so it cannot be fixed per-launch.
+
+**How to run the 4R review correctly in a worktree:**
+
+- **Option A (proper):** set `GENTLE_AI_REVIEW_CWD=<absolute worktree path>` in the OpenCode **server** environment BEFORE starting the session (e.g. the `env` block of `opencode.json`). The hook then resolves the worktree. Run `gentle-ai review start --cwd <worktree> --workspace-overlay --base-ref main` and launch the `review-*` lenses normally.
+- **Option B (no restart):** launch the lenses as `general` agents — the hook only intercepts `review-*` agent types AND a `GENTLE_AI_REVIEW_BINDING` prompt prefix, so `general` agents bypass it. Run a fresh-context adversarial review and either capture manually with `gentle-ai review capture-result --cwd <worktree> --lineage <l> --target <t> --lens <lens> --order <n> --input <file>`, or treat it as the protocol's "tool unavailable → closest fresh-context audit."
+
+**Notes:**
+
+- The project's PR workflow (this file + `pr-validation.yml`) does **NOT** require a gentle-ai review receipt — only cargo gates, `detect_changes`, linked issue, one `type:*` label, conventional branch. A blocked receipt never blocks the PR.
+- A preflight failure preserves exactly-once ("reviewer was not launched"), so relaunching after fixing the cwd is safe.
+- Doc-only / config-only changes are low-risk: no lens needed (and they skip the Intelligence Gate).
+
 ### Rebase caveats in worktrees
 
 - **`rebase.updaterefs=true`** (enabled in global config) does NOT auto-update branches that are checked out in other worktrees. If you have stacked branches across worktrees, rebase each one sequentially.
