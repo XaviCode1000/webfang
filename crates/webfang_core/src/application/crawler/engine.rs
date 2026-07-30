@@ -271,10 +271,19 @@ impl Engine {
     }
 
     /// Enable checkpoint persistence with the given interval and base directory.
+    ///
+    /// If the checkpoint directory cannot be created, checkpointing is disabled
+    /// and an error is logged — the engine will NOT silently pretend to
+    /// checkpoint while every save fails.
     pub fn with_checkpoint(mut self, interval: u64, base_dir: PathBuf) -> Self {
         let cp_path = CheckpointPath::new(&base_dir);
         if let Err(e) = cp_path.ensure_dir() {
-            warn!("Failed to create checkpoint dir: {e}");
+            tracing::error!(
+                error = %e,
+                path = %base_dir.display(),
+                "checkpoint dir creation failed — disabling checkpoint"
+            );
+            return self;
         }
 
         match self.checkpoint_store.load(&cp_path.file()) {
@@ -417,9 +426,20 @@ impl Engine {
             // Save on blocking thread to avoid blocking the event loop
             let store = BincodeCheckpoint::new();
             let path = path.clone();
-            let _ = tokio::task::spawn_blocking(move || store.save(&state, &path))
+            match tokio::task::spawn_blocking(move || store.save(&state, &path))
                 .in_current_span()
-                .await;
+                .await
+            {
+                Ok(Ok(())) => {
+                    tracing::debug!("checkpoint saved successfully");
+                },
+                Ok(Err(e)) => {
+                    tracing::error!(error = %e, "checkpoint save failed");
+                },
+                Err(join_err) => {
+                    tracing::error!(error = %join_err, "checkpoint save task panicked");
+                },
+            }
         }
     }
 
