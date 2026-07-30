@@ -4,5 +4,3 @@ expression: "redact_nondeterministic(Path::new(\"__no_temp__\"), &summary)"
 ---
 is_blocked: true
   - Cloudflare (patrón: Just a moment..., tier: desafío)
-  - Cloudflare (patrón: Checking your browser, tier: desafío)
-  - Cloudflare JS Challenge (patrón: challenge-platform, tier: desafío)

@@ -4,4 +4,3 @@ expression: "redact_nondeterministic(Path::new(\"__no_temp__\"), &summary)"
 ---
 is_blocked: true
   - Cloudflare Turnstile (patrón: cf-turnstile, tier: desafío)
-  - Generic Captcha (patrón: data-sitekey, tier: huella)

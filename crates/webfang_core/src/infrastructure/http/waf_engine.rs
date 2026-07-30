@@ -545,16 +545,19 @@ const SILENT_CHALLENGE_MAX_BYTES: usize = 1500;
 /// Minimum `<script>` tag count to flag a silent challenge (REQ-WAF-06b)
 const SILENT_CHALLENGE_MIN_SCRIPTS: usize = 5;
 
-/// Maximum number of body-signature matches examined per inspection pass
+/// Maximum number of Fingerprint (T2) evidences accumulated per inspection pass
 /// (RISK-01 — DoS-hardening bound on the evidence allocation).
 ///
-/// This caps the allocation, NOT detection sensitivity: a verdict needs at most
-/// one [`WafTier::Challenge`] marker (blocks any status) or one
-/// [`WafTier::Fingerprint`] marker correlated with a WAF status, and 64 is far
-/// beyond any real challenge page's signal count. Without the cap the
-/// all-evidence collector materialized every Aho-Corasick match into an uncapped
-/// `Vec` (~3-4x body size on adversarial text/html under concurrency); the old
-/// first-hit detector was O(1). This bound keeps the worst case bounded-linear.
+/// This caps the T2 allocation, NOT detection sensitivity: the whole body is
+/// scanned, and a [`WafTier::Challenge`] (T1) marker short-circuits the pass the
+/// moment it survives the boundary filter, so a T1 marker past this many earlier
+/// T2 matches is still detected (see [`collect_body_evidence`]). A verdict needs
+/// at most one T1 marker (blocks any status) or one [`WafTier::Fingerprint`]
+/// marker correlated with a WAF status, and 64 is far beyond any real challenge
+/// page's signal count. Without the cap the all-evidence collector materialized
+/// every Aho-Corasick match into an uncapped `Vec` (~3-4x body size on
+/// adversarial text/html under concurrency); the old first-hit detector was
+/// O(1). This bound keeps the worst case bounded-linear.
 const MAX_EVIDENCE_PER_BODY: usize = 64;
 
 /// Aho-Corasick automaton for O(N) multi-pattern body matching.
@@ -658,25 +661,46 @@ impl WafInspector {
 /// Collect body-signature evidence in a single Aho-Corasick pass, applying the
 /// boundary post-filter (REQ-WAF-04) to Fingerprint `[B]` matches.
 ///
-/// Returns every match that survives the filter (not just the first), so the
-/// verdict can carry all collected evidence (REQ-WAF-01) and reason about tier
-/// coexistence (REQ-WAF-06). The match iterator is bounded by
-/// [`MAX_EVIDENCE_PER_BODY`] (RISK-01) — a DoS-hardening cap on the evidence
-/// allocation, not a detection limit: a verdict needs at most one T1 marker or
-/// one correlated T2 marker, and the cap is far beyond any real challenge page's
-/// signal count.
+/// The whole body is scanned: [`MAX_EVIDENCE_PER_BODY`] caps only the
+/// *Fingerprint* (T2) accumulation (RISK-01 DoS hardening), never detection. A
+/// [`WafTier::Challenge`] (T1) marker is a definitive verdict — the moment one
+/// survives the filter it clears any accumulated T2 noise and short-circuits the
+/// pass, so a T1 marker past 64 earlier T2 matches is still seen (the cap is not
+/// a detection limit). T2 matches keep accumulating (bounded by the cap) and the
+/// scan continues past the cap so a later T1 marker is still examined. A verdict
+/// needs at most one T1 marker or one correlated T2 marker, and the T2 cap is far
+/// beyond any real challenge page's signal count.
 fn collect_body_evidence(body: &str) -> Vec<WafEvidence> {
     let mut evidences = Vec::new();
-    for mat in WAF_AC.find_iter(body).take(MAX_EVIDENCE_PER_BODY) {
+    for mat in WAF_AC.find_iter(body) {
         let sig = &WAF_BODY_SIGNATURES[mat.pattern()];
         if !passes_boundary_filter(body, &mat, sig.2, sig.3) {
             continue;
         }
-        evidences.push(WafEvidence {
-            provider: sig.1,
-            tier: sig.2,
-            matched_pattern: sig.0,
-        });
+        match sig.2 {
+            // T1 is a definitive verdict that noise density cannot hide: drop any
+            // accumulated T2 noise and short-circuit on the first T1 marker.
+            WafTier::Challenge => {
+                evidences.clear();
+                evidences.push(WafEvidence {
+                    provider: sig.1,
+                    tier: sig.2,
+                    matched_pattern: sig.0,
+                });
+                break;
+            },
+            // T2 accumulation is capped (RISK-01); keep scanning past the cap so a
+            // later T1 marker is still examined.
+            WafTier::Fingerprint => {
+                if evidences.len() < MAX_EVIDENCE_PER_BODY {
+                    evidences.push(WafEvidence {
+                        provider: sig.1,
+                        tier: sig.2,
+                        matched_pattern: sig.0,
+                    });
+                }
+            },
+        }
     }
     evidences
 }
@@ -1227,6 +1251,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_t1_marker_visible_past_evidence_cap() {
+        // Regression (cap-vs-tier false negative): MAX_EVIDENCE_PER_BODY bounds
+        // T2 accumulation, NOT detection. A body carrying a full cap of T2
+        // matches FOLLOWED BY a T1 marker must still block at status 200 — the
+        // T1 is a definitive verdict that noise density cannot hide. The old
+        // code applied `.take(MAX)` to the raw Aho-Corasick iterator, so a T1
+        // marker past 64 earlier matches was never examined → false negative.
+        let body = format!(
+            "{} cf-turnstile ",
+            " cloudflare ".repeat(MAX_EVIDENCE_PER_BODY)
+        );
+        let ctx = ctx_with(Some(200), Some("text/html"));
+        let verdict = WafInspector::inspect(&body, &ctx);
+        assert!(
+            verdict.is_blocked,
+            "T1 marker past the T2 cap must still block at 200 (got {verdict:?})"
+        );
+        assert!(
+            verdict
+                .evidences
+                .iter()
+                .any(|e| e.tier == WafTier::Challenge),
+            "the surviving evidence must be the T1 marker (got {:?})",
+            verdict.evidences
+        );
+    }
+
     // ========================================================================
     // TASK-04 — Content-Type gate / denylist (REQ-WAF-02)
     // ========================================================================
@@ -1456,16 +1508,16 @@ mod tests {
 
     #[test]
     fn test_inspect_collects_all_evidences() {
-        // REQ-WAF-01: the verdict carries ALL evidences, not first-hit.
+        // REQ-WAF-01: the verdict carries ALL collected evidences, not first-hit.
+        // T2-only body (a T1 marker would short-circuit the pass): every
+        // boundary-clean fingerprint is collected.
         let ctx = ctx_with(Some(503), Some("text/html"));
-        let verdict = WafInspector::inspect(
-            "Just a moment... protected by cloudflare and datadome",
-            &ctx,
-        );
+        let verdict =
+            WafInspector::inspect("protected by cloudflare and datadome and perimeterx", &ctx);
         assert!(verdict.is_blocked);
         assert!(
-            verdict.evidences.len() >= 2,
-            "multiple evidences collected (got {:?})",
+            verdict.evidences.len() >= 3,
+            "multiple T2 evidences collected (got {:?})",
             verdict.evidences
         );
     }
@@ -1807,7 +1859,11 @@ mod tests {
 
     #[test]
     fn test_detect_body_datadome() {
-        let html = r#"<script src="https://js.datadome.co/captcha.js"></script>"#;
+        // DataDome's own T1 marker (dd-captcha) is the decisive evidence. The old
+        // fixture mixed `captcha.js` (a Generic Challenge T1) with DataDome T2
+        // names; the T1 short-circuit reports the decisive challenge marker, so
+        // the body uses a DataDome-specific T1 to assert DataDome attribution.
+        let html = r#"<div id="dd-captcha">challenge</div>"#;
         let verdict = WafInspector::inspect(html, &InspectionContext::default());
         assert!(verdict.is_blocked);
         assert_eq!(
