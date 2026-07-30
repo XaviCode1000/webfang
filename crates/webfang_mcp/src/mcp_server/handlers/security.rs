@@ -38,7 +38,7 @@ impl McpHandler {
 
     /// Multi-layer WAF inspection (headers + body + entropy analysis)
     #[tool(
-        description = "Multi-layer WAF inspection: checks control headers, body signatures via Aho-Corasick, and entropy analysis for silent challenges. Optionally pass status and content_type for context-aware detection (fingerprint evidence then blocks only on correlated WAF statuses 403/429/503/520-529); without them, runs backward-compatible degraded mode."
+        description = "Multi-layer WAF inspection: checks control headers, body signatures via Aho-Corasick, and entropy analysis for silent challenges. Optionally pass status and content_type for context-aware detection (fingerprint evidence then blocks only on correlated WAF statuses 403/429/503/520-529); without them, runs degraded mode where only unambiguous challenge markers block and fingerprint/control-header evidence never blocks on mere presence. The status/content_type params are additive (tool signature backward compatible); control-header verdict semantics intentionally changed per issue #346 — mere-presence blocking was the bug."
     )]
     #[instrument(skip(self), fields(params = ?params))]
     async fn verify_waf_integrity(
@@ -59,8 +59,12 @@ impl McpHandler {
                 }
             }
         }
-        // Additive optional context (REQ-WAF-09): without status/content_type
-        // this is degraded mode — identical to the prior verify_integrity.
+        // Additive optional context (REQ-WAF-09): the status/content_type params
+        // are backward compatible (tool signature unchanged). The verdict is NOT
+        // unchanged, though — without them this is degraded mode, where control
+        // header (Fingerprint) evidence never blocks on mere presence. That is the
+        // intentional #346 / REQ-WAF-05 fix (mere-presence blocking was the bug),
+        // so degraded verdicts deliberately differ from the pre-#346 verify_integrity.
         let verdict = verify_waf_verdict(html, params.status, params.content_type, header_map);
         if verdict.is_blocked {
             Ok(CallToolResult::success(vec![Content::text(format!(
@@ -128,10 +132,14 @@ fn detect_waf_provider(html: &str) -> Option<&'static str> {
 
 /// Run the `verify_waf_integrity` inspection (REQ-WAF-09).
 ///
-/// `status` and `content_type` are additive optional context. When both are
-/// absent the inspection runs degraded — identical to the pre-REQ-WAF-09
-/// behavior (headers + body, no status correlation), so existing callers are
-/// backward compatible.
+/// `status` and `content_type` are additive optional context, so the API shape
+/// (tool signature) is backward compatible. The verdict semantics are NOT
+/// unchanged, though: when both are absent the inspection runs degraded mode,
+/// where only Challenge-tier (T1) markers block and control-header / fingerprint
+/// evidence never blocks on mere presence. That is the intentional fix for
+/// issue #346 / REQ-WAF-05 — mere-presence blocking of control headers was the
+/// bug — so degraded-mode verdicts deliberately differ from the pre-#346
+/// `verify_integrity`.
 fn verify_waf_verdict(
     html: &str,
     status: Option<u16>,
@@ -184,9 +192,12 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn verify_waf_verdict_without_context_is_backward_compatible() {
-        // No status / content-type → degraded: identical to the pre-REQ-WAF-09
-        // verify_integrity behavior. A T2 control header alone never blocks.
+    fn verify_waf_degraded_mode_does_not_block_on_control_headers_without_status() {
+        // REL-01: the name states exactly what is pinned. No status / content-type
+        // → degraded mode, where a T2 control header alone never blocks on mere
+        // presence. This is the intentional #346 / REQ-WAF-05 verdict change (the
+        // pre-#346 verify_integrity DID block on mere presence — that was the bug);
+        // only the additive optional params are backward compatible, not verdicts.
         let mut headers = wreq::header::HeaderMap::new();
         headers.insert("x-datadome-response", "1".parse().unwrap());
         let verdict = verify_waf_verdict("<html>clean</html>", None, None, headers);

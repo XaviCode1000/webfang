@@ -545,6 +545,18 @@ const SILENT_CHALLENGE_MAX_BYTES: usize = 1500;
 /// Minimum `<script>` tag count to flag a silent challenge (REQ-WAF-06b)
 const SILENT_CHALLENGE_MIN_SCRIPTS: usize = 5;
 
+/// Maximum number of body-signature matches examined per inspection pass
+/// (RISK-01 — DoS-hardening bound on the evidence allocation).
+///
+/// This caps the allocation, NOT detection sensitivity: a verdict needs at most
+/// one [`WafTier::Challenge`] marker (blocks any status) or one
+/// [`WafTier::Fingerprint`] marker correlated with a WAF status, and 64 is far
+/// beyond any real challenge page's signal count. Without the cap the
+/// all-evidence collector materialized every Aho-Corasick match into an uncapped
+/// `Vec` (~3-4x body size on adversarial text/html under concurrency); the old
+/// first-hit detector was O(1). This bound keeps the worst case bounded-linear.
+const MAX_EVIDENCE_PER_BODY: usize = 64;
+
 /// Aho-Corasick automaton for O(N) multi-pattern body matching.
 ///
 /// Built once via `Lazy` from [`WAF_BODY_SIGNATURES`] patterns (pattern index
@@ -643,15 +655,19 @@ impl WafInspector {
     }
 }
 
-/// Collect all body-signature evidence in a single Aho-Corasick pass, applying
-/// the boundary post-filter (REQ-WAF-04) to Fingerprint `[B]` matches.
+/// Collect body-signature evidence in a single Aho-Corasick pass, applying the
+/// boundary post-filter (REQ-WAF-04) to Fingerprint `[B]` matches.
 ///
 /// Returns every match that survives the filter (not just the first), so the
-/// verdict can carry all collected evidence (REQ-WAF-01) and reason about
-/// tier coexistence (REQ-WAF-06).
+/// verdict can carry all collected evidence (REQ-WAF-01) and reason about tier
+/// coexistence (REQ-WAF-06). The match iterator is bounded by
+/// [`MAX_EVIDENCE_PER_BODY`] (RISK-01) — a DoS-hardening cap on the evidence
+/// allocation, not a detection limit: a verdict needs at most one T1 marker or
+/// one correlated T2 marker, and the cap is far beyond any real challenge page's
+/// signal count.
 fn collect_body_evidence(body: &str) -> Vec<WafEvidence> {
     let mut evidences = Vec::new();
-    for mat in WAF_AC.find_iter(body) {
+    for mat in WAF_AC.find_iter(body).take(MAX_EVIDENCE_PER_BODY) {
         let sig = &WAF_BODY_SIGNATURES[mat.pattern()];
         if !passes_boundary_filter(body, &mat, sig.2, sig.3) {
             continue;
@@ -1177,6 +1193,37 @@ mod tests {
         assert!(
             evidences.iter().any(|e| e.matched_pattern == "akamai"),
             "non-ASCII adjacent bytes are boundaries, 'akamai' stands (got {evidences:?})"
+        );
+    }
+
+    // ========================================================================
+    // RISK-01 — Evidence allocation cap (DoS hardening)
+    // ========================================================================
+
+    #[test]
+    fn test_body_evidence_capped_at_max_per_body() {
+        // RISK-01: adversarial text/html cannot materialize unbounded evidence.
+        // Twice-the-cap boundary-clean bare "cloudflare" matches collapse to the
+        // cap (the old code returned every match — an uncapped Vec).
+        let body = " cloudflare ".repeat(MAX_EVIDENCE_PER_BODY * 2);
+        let evidences = collect_body_evidence(&body);
+        assert_eq!(
+            evidences.len(),
+            MAX_EVIDENCE_PER_BODY,
+            "evidence must be capped at MAX_EVIDENCE_PER_BODY"
+        );
+    }
+
+    #[test]
+    fn test_body_evidence_below_cap_collects_all() {
+        // Triangulation: the cap is an upper bound, not a target — a body with
+        // fewer matches than the cap still collects every one of them.
+        let body = " cloudflare  datadome  sucuri ";
+        let evidences = collect_body_evidence(body);
+        assert_eq!(
+            evidences.len(),
+            3,
+            "all sub-cap matches collected (got {evidences:?})"
         );
     }
 
