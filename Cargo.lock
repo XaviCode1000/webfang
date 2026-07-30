@@ -6202,6 +6202,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "url-normalize",
+ "webfang_ai",
  "webfang_core",
  "wiremock",
  "wreq",

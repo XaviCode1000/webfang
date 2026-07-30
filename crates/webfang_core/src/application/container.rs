@@ -26,6 +26,7 @@ use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::domain::credentials::CredentialStore;
 use crate::domain::ports::HttpClientPort;
 use crate::domain::repository::DynVectorRepository;
+use crate::domain::semantic_cleaner::SemanticCleaner;
 use crate::domain::{repositories::CrawlResultRepository, CrawlerConfig};
 use crate::infrastructure::autotuning::ElasticConfig;
 use crate::infrastructure::bridge::CpuBridge;
@@ -77,6 +78,13 @@ pub struct Container {
     /// the SQLite repo (`persistence` feature) or the headless `StreamRepository`
     /// JSONL sink.
     pub elastic_ingestion: Option<Arc<ElasticIngestion<DynVectorRepository>>>,
+
+    // --- Optional domain ports (injected post-construction) ---
+    /// AI semantic cleaner (optional). `None` when the `ai` feature is off or
+    /// no cleaner was injected; MCP tools map this absence to an honest error.
+    /// Stored as `Arc<dyn SemanticCleaner>` — the trait is a domain port like
+    /// `HttpClientPort`, always compiled (no `#[cfg(feature = "ai")]`).
+    cleaner: Option<Arc<dyn SemanticCleaner>>,
 }
 
 impl Container {
@@ -141,6 +149,7 @@ impl Container {
             state_store: None,
             crawl_result_repo,
             elastic_ingestion: None,
+            cleaner: None,
         })
     }
 
@@ -183,6 +192,14 @@ impl Container {
         self.crawl_result_repo.clone()
     }
 
+    /// Get the semantic cleaner port, if one was injected.
+    ///
+    /// Clones the `Arc` (cheap) so callers can hold the cleaner across an
+    /// `.await` without borrowing the container (`async-clone-before-await`).
+    pub fn cleaner(&self) -> Option<Arc<dyn SemanticCleaner>> {
+        self.cleaner.clone()
+    }
+
     /// Access the elastic ingestion pipeline, if activated.
     #[must_use]
     pub fn elastic_ingestion(&self) -> Option<&ElasticIngestion<DynVectorRepository>> {
@@ -208,6 +225,16 @@ impl Container {
     /// Set a pre-configured credential store.
     pub fn with_credential_store(mut self, store: CredentialStore) -> Self {
         self.credential_store = Arc::new(store);
+        self
+    }
+
+    /// Inject an AI semantic cleaner (domain port).
+    ///
+    /// Takes `Arc<dyn SemanticCleaner>` directly — mirrors the CLI construction
+    /// `Arc::new(cleaner) as Arc<dyn SemanticCleaner>` and the
+    /// `McpState::with_inspector` precedent. Absence (`None`) stays the default.
+    pub fn with_cleaner(mut self, cleaner: Arc<dyn SemanticCleaner>) -> Self {
+        self.cleaner = Some(cleaner);
         self
     }
 
@@ -407,5 +434,64 @@ mod tests {
             container.http_client(),
             container2.http_client()
         ));
+    }
+
+    // --- Tests for the optional semantic-cleaner port (REQ-05) ---
+
+    /// In-crate fake cleaner — the defining crate may implement its own sealed
+    /// trait (`private::Sealed`), which external crates cannot. Enables a CI
+    /// test of the Container cleaner port without loading an ONNX model.
+    struct FakeCleaner;
+
+    impl crate::domain::semantic_cleaner::private::Sealed for FakeCleaner {}
+
+    impl crate::domain::semantic_cleaner::SemanticCleaner for FakeCleaner {
+        fn clean<'a>(
+            &'a self,
+            _html: &'a str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            Vec<crate::domain::DocumentChunk>,
+                            crate::error::SemanticError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn max_tokens(&self) -> usize {
+            512
+        }
+
+        fn is_ready(&self) -> bool {
+            true
+        }
+    }
+
+    /// REQ-05 (absence): a freshly built container reports no cleaner.
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[tokio::test]
+    async fn cleaner_absent_by_default() {
+        let (_tmp, container) = make_test_container().await;
+        assert!(
+            container.cleaner().is_none(),
+            "cleaner() must be None when no cleaner was injected"
+        );
+    }
+
+    /// REQ-05 (injection): `with_cleaner` makes the accessor report present.
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[tokio::test]
+    async fn with_cleaner_sets_cleaner() {
+        let (_tmp, container) = make_test_container().await;
+        let container = container.with_cleaner(Arc::new(FakeCleaner));
+        assert!(
+            container.cleaner().is_some(),
+            "cleaner() must be Some after with_cleaner injection"
+        );
     }
 }

@@ -2,8 +2,10 @@
 //!
 //! Tools: semantic_cleaner, search_obsidian
 //!
-//! Tool functions are always registered. The ai feature is not available
-//! in webfang_mcp — these always return a "not implemented" error.
+//! Tool functions are always registered. `semantic_cleaner` runs when a
+//! semantic cleaner is injected into the `Container` (constructed behind the
+//! `ai` feature); without one it returns an honest feature-gated error.
+//! `search_obsidian` is not yet implemented (honest error, see issue #386).
 
 use super::McpHandler;
 use crate::mcp_server::params::*;
@@ -13,6 +15,33 @@ use rmcp::tool;
 use rmcp::tool_router;
 use rmcp::{model::CallToolResult, model::Content, ErrorData as McpError};
 use tracing::instrument;
+use webfang_core::domain::DocumentChunk;
+
+/// Build an honest tool error (`isError:true`) carrying a Spanish message.
+///
+/// Shared by the AI handlers so feature-gated and operational failures are
+/// reported as `CallToolResult::error` — never an MCP protocol error, never a
+/// false success. Mirrors the slice-1 export handlers (see `export.rs`).
+fn honest_error(message: impl Into<String>) -> CallToolResult {
+    CallToolResult::error(vec![Content::text(message.into())])
+}
+
+/// Success envelope for `semantic_cleaner` (REQ-01).
+///
+/// Embeddings are inline and full — each chunk carries its vector (truncating
+/// would violate REQ-01). The summary fields give a quick overview without
+/// scanning `documents`.
+#[derive(serde::Serialize)]
+struct SemanticCleanResponse {
+    /// The URL that was fetched and cleaned.
+    url: String,
+    /// Number of semantic chunks produced.
+    chunks: usize,
+    /// Embedding dimensionality (0 when the cleaner produced no embeddings).
+    embedding_dim: usize,
+    /// The cleaned chunks, each with its embedding populated.
+    documents: Vec<DocumentChunk>,
+}
 
 #[tool_router(router = tool_router_ai, vis = "pub")]
 impl McpHandler {
@@ -30,16 +59,54 @@ impl McpHandler {
     ) -> Result<CallToolResult, McpError> {
         let _permit = acquire_semaphore!(self, ai);
 
+        // REQ-03: reject malformed URLs first (invalid-params), regardless of
+        // cleaner presence — no fetch, no cleaning.
         let _url = url::Url::parse(&params.url).map_err(|e| {
             McpError::invalid_params(
-                format!("invalid URL: {e}"),
+                format!("URL inválida: {e}"),
                 Some(serde_json::Value::String("url".to_string())),
             )
         })?;
 
-        Ok(CallToolResult::error(vec![Content::text(
-            "AI feature not available in webfang_mcp. Rebuild webfang_cli with --features ai instead.".to_string(),
-        )]))
+        // REQ-02: absent cleaner (ai feature off) -> honest Spanish error.
+        let Some(cleaner) = self.state.container.cleaner() else {
+            return Ok(honest_error(
+                "funcionalidad no disponible: limpieza semántica con IA. Reconstruye con --features ai para habilitarla.",
+            ));
+        };
+
+        // REQ-01: fetch the page via the existing HTTP port, then clean it.
+        // Operational failures map to honest errors — never a false success.
+        let response = match self.state.container.http_client().get(&params.url).await {
+            Ok(resp) => resp,
+            Err(e) => return Ok(honest_error(format!("no se pudo obtener la página: {e}"))),
+        };
+        let documents = match cleaner.clean(&response.body).await {
+            Ok(docs) => docs,
+            Err(e) => return Ok(honest_error(format!("error al limpiar el contenido: {e}"))),
+        };
+
+        let chunks = documents.len();
+        let embedding_dim = documents
+            .first()
+            .and_then(|doc| doc.embeddings.as_ref())
+            .map(Vec::len)
+            .unwrap_or(0);
+        let envelope = SemanticCleanResponse {
+            url: params.url.clone(),
+            chunks,
+            embedding_dim,
+            documents,
+        };
+        let payload = match serde_json::to_string(&envelope) {
+            Ok(json) => json,
+            Err(e) => {
+                return Ok(honest_error(format!(
+                    "error al serializar la respuesta: {e}"
+                )))
+            },
+        };
+        Ok(CallToolResult::success(vec![Content::text(payload)]))
     }
 
     /// Semantic search over Obsidian vault using embeddings
@@ -53,12 +120,49 @@ impl McpHandler {
     ) -> Result<CallToolResult, McpError> {
         let _permit = acquire_semaphore!(self, obsidian);
 
-        Ok(CallToolResult::error(vec![Content::text(
-            "AI feature not available in webfang_mcp. Rebuild webfang_cli with --features ai instead.".to_string(),
-        )]))
+        // Deferred capability (follow-up issue #386): semantic vault search
+        // needs an embed/rank surface beyond the `SemanticCleaner` trait.
+        // Report an honest error — never a false success (REQ-04).
+        Ok(honest_error(
+            "funcionalidad no disponible: la búsqueda semántica en Obsidian aún no está implementada. Seguimiento en el issue #386.",
+        ))
     }
 }
 
 pub fn build_router() -> ToolRouter<McpHandler> {
     McpHandler::tool_router_ai()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// REQ-02/04 contract: `honest_error` produces a `CallToolResult` that
+    /// serializes with `isError:true` and carries the exact Spanish text —
+    /// never a protocol error, never a false success. Mirrors the slice-1
+    /// export-handler test (export.rs).
+    #[test]
+    fn honest_error_sets_is_error_and_spanish_text() {
+        let result = honest_error("funcionalidad no disponible: prueba");
+
+        // Serialize exactly as the MCP transport would, then assert the honest
+        // error contract: isError:true plus the Spanish message.
+        let json = serde_json::to_value(&result).expect("CallToolResult must serialize");
+        assert_eq!(
+            json.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "honest_error must set isError:true, got: {json}"
+        );
+        let text = json
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|first| first.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or_default();
+        assert!(
+            text.contains("funcionalidad no disponible"),
+            "honest Spanish error text expected, got: {text}"
+        );
+    }
 }
