@@ -1211,3 +1211,80 @@ async fn test_semantic_cleaner_invalid_url_is_invalid_params() {
         "invalid URL must map to JSON-RPC invalid-params (-32602), got: {error}"
     );
 }
+
+/// REQ-02: with no cleaner injected (bare container, `ai` feature off),
+/// `semantic_cleaner` returns an honest `CallToolResult::error` (isError:true,
+/// Spanish) for a valid URL — never a protocol error, never a false success,
+/// and no fetch is attempted.
+#[tokio::test]
+async fn test_semantic_cleaner_without_cleaner_is_honest_error() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let resp = call_tool(
+        &client,
+        &base_url,
+        &session_id,
+        "semantic_cleaner",
+        json!({ "url": "https://example.com" }),
+    )
+    .await;
+
+    let result = resp
+        .get("result")
+        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
+        .clone();
+    assert!(
+        is_tool_error(&result),
+        "absent cleaner must return isError:true, got: {}",
+        tool_text(&result)
+    );
+    let text = tool_text(&result);
+    assert!(
+        text.contains("limpieza semántica"),
+        "honest Spanish absent-cleaner error expected, got: {text}"
+    );
+}
+
+/// REQ-06: with the `ai` feature off, the MCP server still registers the AI
+/// tools (`semantic_cleaner` + `search_obsidian`). Registration is
+/// unconditional; the tools report honest errors when invoked without a cleaner.
+#[tokio::test]
+async fn test_mcp_handler_construction_without_ai() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let body = mcp_request("tools/list", json!({}));
+    let resp = client
+        .post(format!("{}/mcp", base_url))
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("mcp-session-id", &session_id)
+        .json(&body)
+        .send()
+        .await
+        .expect("tools/list should succeed");
+    let text = resp.text().await.expect("read body");
+    let parsed = extract_json(&text).expect("tools/list must parse");
+
+    let tools = parsed
+        .get("result")
+        .and_then(|r| r.get("tools"))
+        .and_then(|t| t.as_array())
+        .unwrap_or_else(|| panic!("tools/list must return a tools array, got: {parsed}"));
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t.get("name")?.as_str())
+        .collect();
+
+    assert!(
+        names.contains(&"semantic_cleaner"),
+        "semantic_cleaner must be registered with ai off, got: {names:?}"
+    );
+    assert!(
+        names.contains(&"search_obsidian"),
+        "search_obsidian must be registered with ai off, got: {names:?}"
+    );
+}
