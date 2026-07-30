@@ -16,7 +16,6 @@ webfang_core = { workspace = true }
 ratatui = { workspace = true }
 ratatui-form = { workspace = true }
 crossterm = { workspace = true }
-inquire = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
@@ -38,7 +37,6 @@ futures = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
-insta = { workspace = true }
 tempfile = { workspace = true }
 walkdir = { workspace = true }
 

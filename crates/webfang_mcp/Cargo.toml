@@ -39,7 +39,6 @@ tracing-subscriber = { workspace = true }
 
 # Utilities
 url = { workspace = true }
-url-normalize = { workspace = true }
 wreq = { workspace = true }
 
 [dev-dependencies]
