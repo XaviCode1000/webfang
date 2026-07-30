@@ -353,62 +353,7 @@ async fn __main() -> CliExit {
         }
     });
 
-    // OpenTelemetry tracing + metrics (feature-gated)
-    #[cfg(feature = "otel-metrics")]
-    let _otel_guard = {
-        let config = webfang_core::infrastructure::observability::otel::OtelConfig::from_env();
-        match webfang_core::infrastructure::observability::otel::init_otel_metrics(config) {
-            Ok((_meter, guard, layer)) => {
-                init_logging_dual(
-                    log_level,
-                    opts.export.quiet,
-                    no_color,
-                    file_trace_layer,
-                    Some(layer),
-                );
-                Some(guard)
-            },
-            Err(e) => {
-                eprintln!("Warning: OTel metrics init failed: {e}");
-                init_logging_dual(
-                    log_level,
-                    opts.export.quiet,
-                    no_color,
-                    file_trace_layer,
-                    None,
-                );
-                None
-            },
-        }
-    };
-    #[cfg(all(feature = "otel", not(feature = "otel-metrics")))]
-    let _otel_guard = {
-        let config = webfang_core::infrastructure::observability::otel::OtelConfig::from_env();
-        match webfang_core::infrastructure::observability::otel::init_otel_tracing(config) {
-            Ok((guard, layer)) => {
-                init_logging_dual(
-                    log_level,
-                    opts.export.quiet,
-                    no_color,
-                    file_trace_layer,
-                    Some(layer),
-                );
-                Some(guard)
-            },
-            Err(e) => {
-                eprintln!("Warning: OTel tracing init failed: {e}");
-                init_logging_dual(
-                    log_level,
-                    opts.export.quiet,
-                    no_color,
-                    file_trace_layer,
-                    None,
-                );
-                None
-            },
-        }
-    };
-    #[cfg(not(feature = "otel"))]
+    // Initialize logging (stderr + optional JSONL file trace layer)
     #[allow(clippy::let_unit_value)]
     let _guard = init_logging_dual(log_level, opts.export.quiet, no_color, file_trace_layer);
 
@@ -479,19 +424,6 @@ async fn __main() -> CliExit {
     let result = orchestrator::run(opts, adaptive_engine).await;
     #[cfg(all(not(feature = "ai"), not(feature = "adaptive-selectors")))]
     let result = orchestrator::run(opts).await;
-
-    // Flush OpenTelemetry while the Tokio runtime is still alive.
-    // The batch processor and periodic reader tasks need a live reactor
-    // to drain their buffers — if we rely on Drop, the runtime may already
-    // be gone, causing "there is no reactor running" panics.
-    #[cfg(feature = "otel-metrics")]
-    if let Some(ref guard) = _otel_guard {
-        guard.flush().await;
-    }
-    #[cfg(all(feature = "otel", not(feature = "otel-metrics")))]
-    if let Some(ref guard) = _otel_guard {
-        guard.flush().await;
-    }
 
     result
 }

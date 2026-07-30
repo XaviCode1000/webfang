@@ -6,10 +6,9 @@
 //!
 //! The file is **truncated** on creation — each run produces a clean trace file.
 //! Structured fields from `tracing::info!(key = value, ...)` are captured in the
-//! `fields` object. `trace_id` is a **logical** identifier: when the `otel`
-//! feature is active it uses the real W3C trace ID from the OpenTelemetry span
-//! context; otherwise it falls back to the root span's ID (stable across worker
-//! threads) and finally to a stable per-invocation seed. This replaces the old
+//! `fields` object. `trace_id` is a **logical** identifier: it uses the root
+//! span's ID (stable across worker threads) and finally a stable per-invocation
+//! seed. This replaces the old
 //! thread-ID-based `trace_id`, which fragmented across threads. `parent_id` is
 //! also emitted so the logical trace tree is reconstructable from the JSONL.
 //!
@@ -168,14 +167,9 @@ where
             }
         }
 
-        // trace_id: logical identifier that survives thread hops (D3).
-        // 1) OTel W3C trace ID when `otel` is active and a valid OTel context
-        //    exists; 2) the root span's ID (stable for the whole run, survives
-        //    worker-thread hops); 3) a stable per-invocation seed fallback.
-        #[cfg(feature = "otel")]
-        let trace_id =
-            otel_trace_id().unwrap_or_else(|| logical_trace_id(self.trace_id_seed, &ctx));
-        #[cfg(not(feature = "otel"))]
+        // trace_id: logical identifier that survives thread hops (D3). Uses the
+        // root span's ID (stable for the whole run, survives worker-thread hops)
+        // with a stable per-invocation seed fallback.
         let trace_id = logical_trace_id(self.trace_id_seed, &ctx);
         record["trace_id"] = json!(trace_id);
 
@@ -237,21 +231,6 @@ fn make_trace_seed() -> u64 {
     nanos.hash(&mut hasher);
     std::process::id().hash(&mut hasher);
     hasher.finish()
-}
-
-/// Extract the real W3C trace ID from the OpenTelemetry span context, if the
-/// `otel` feature is active and a valid OTel context is present.
-#[cfg(feature = "otel")]
-fn otel_trace_id() -> Option<String> {
-    use opentelemetry::trace::TraceContextExt;
-    use tracing_opentelemetry::OpenTelemetrySpanExt;
-    let cx = tracing::Span::current().context();
-    let span_ref = cx.span();
-    let sc = span_ref.span_context();
-    if sc.is_valid() {
-        return Some(format!("{:032x}", sc.trace_id()));
-    }
-    None
 }
 
 /// Single-pass event recorder. Captures ALL fields (including `message`) in one

@@ -8,11 +8,6 @@ use std::pin::Pin;
 
 use crate::domain::pipeline_item::{PipelineStage, ScrapedItem, StageOutcome};
 
-#[cfg(feature = "otel-metrics")]
-use crate::infrastructure::observability::metrics_instruments::VALIDATE_REJECTS;
-#[cfg(feature = "otel-metrics")]
-use opentelemetry::KeyValue;
-
 /// Patterns in URLs that indicate non-content pages.
 const SKIP_PATHS: &[&str] = &[
     "/robots.txt",
@@ -49,8 +44,6 @@ impl PipelineStage for ValidateStage {
 fn validate(item: ScrapedItem) -> StageOutcome {
     // 1. URL must be non-empty
     if item.url.is_empty() {
-        #[cfg(feature = "otel-metrics")]
-        VALIDATE_REJECTS.add(1, &[KeyValue::new("reason", "empty_url")]);
         return StageOutcome::Reject("URL is empty".into());
     }
 
@@ -58,8 +51,6 @@ fn validate(item: ScrapedItem) -> StageOutcome {
     let parsed = match url::Url::parse(&item.url) {
         Ok(u) => u,
         Err(_) => {
-            #[cfg(feature = "otel-metrics")]
-            VALIDATE_REJECTS.add(1, &[KeyValue::new("reason", "invalid_url")]);
             return StageOutcome::Reject(format!("URL is not valid: {}", item.url));
         },
     };
@@ -67,8 +58,6 @@ fn validate(item: ScrapedItem) -> StageOutcome {
     match parsed.scheme() {
         "http" | "https" => {},
         scheme => {
-            #[cfg(feature = "otel-metrics")]
-            VALIDATE_REJECTS.add(1, &[KeyValue::new("reason", "unsupported_scheme")]);
             return StageOutcome::Reject(format!(
                 "URL scheme '{scheme}' is not supported (requires http or https)"
             ));
@@ -76,8 +65,6 @@ fn validate(item: ScrapedItem) -> StageOutcome {
     }
 
     if parsed.host_str().is_none() {
-        #[cfg(feature = "otel-metrics")]
-        VALIDATE_REJECTS.add(1, &[KeyValue::new("reason", "no_host")]);
         return StageOutcome::Reject("URL has no host".into());
     }
 
@@ -89,8 +76,6 @@ fn validate(item: ScrapedItem) -> StageOutcome {
 
     // 4. Status code must be in 200..=399
     if !(200..=399).contains(&item.status_code) {
-        #[cfg(feature = "otel-metrics")]
-        VALIDATE_REJECTS.add(1, &[KeyValue::new("reason", "bad_status")]);
         return StageOutcome::Reject(format!(
             "HTTP status {} indicates an error",
             item.status_code
@@ -99,8 +84,6 @@ fn validate(item: ScrapedItem) -> StageOutcome {
 
     // 5. raw_html must not be empty
     if item.raw_html.trim().is_empty() {
-        #[cfg(feature = "otel-metrics")]
-        VALIDATE_REJECTS.add(1, &[KeyValue::new("reason", "empty_content")]);
         return StageOutcome::Reject("Content is empty".into());
     }
 

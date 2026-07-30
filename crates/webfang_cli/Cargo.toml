@@ -20,8 +20,6 @@ mcp = ["dep:webfang_mcp", "webfang_core/mcp"]
 persistence = ["webfang_core/persistence"]
 console = ["webfang_core/console"]
 dev-tracing = ["webfang_core/dev-tracing"]
-otel = ["webfang_core/otel"]
-otel-metrics = ["webfang_core/otel-metrics"]
 
 [[bin]]
 name = "webfang"
@@ -61,10 +59,6 @@ serde_json = { workspace = true }
 
 # Observability
 tracing-tree = { workspace = true, optional = true }
-opentelemetry = { workspace = true, optional = true }
-opentelemetry_sdk = { workspace = true, optional = true }
-opentelemetry-otlp = { workspace = true, optional = true }
-tracing-opentelemetry = { workspace = true, optional = true }
 
 
 [lints.clippy]

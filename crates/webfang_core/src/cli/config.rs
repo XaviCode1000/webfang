@@ -64,15 +64,8 @@ pub fn should_emit_emoji() -> bool {
 }
 
 /// Initialize logging with configurable level, routing ALL output to stderr.
-#[cfg(not(feature = "otel"))]
 pub fn init_logging(level: &str) {
     init_logging_dual(level, false, is_no_color(), None);
-}
-
-/// Initialize logging with configurable level (otel-enabled variant).
-#[cfg(feature = "otel")]
-pub fn init_logging(level: &str) {
-    init_logging_dual(level, false, is_no_color(), None, None);
 }
 
 /// Dual-mode logging: forces stderr, supports quiet mode and NO_COLOR.
@@ -83,7 +76,6 @@ pub fn init_logging(level: &str) {
 /// * `quiet` - If true, only warn+level output is shown
 /// * `no_color` - If true, ANSI colors are disabled
 /// * `file_trace_layer` - Optional file trace layer for JSONL output
-#[cfg(not(feature = "otel"))]
 pub fn init_logging_dual(
     level: &str,
     quiet: bool,
@@ -108,48 +100,6 @@ pub fn init_logging_dual(
         .with(file_trace_layer)
         .with(fmt_layer)
         .with(filter)
-        .try_init()
-        .ok();
-}
-
-/// Dual-mode logging with optional file trace layer and optional OTel layer.
-#[cfg(feature = "otel")]
-pub fn init_logging_dual(
-    level: &str,
-    quiet: bool,
-    no_color: bool,
-    file_trace_layer: Option<crate::infrastructure::observability::FileTraceLayer>,
-    otel_layer: Option<
-        tracing_opentelemetry::OpenTelemetryLayer<
-            tracing_subscriber::Registry,
-            opentelemetry_sdk::trace::Tracer,
-        >,
-    >,
-) {
-    use tracing_subscriber::{fmt, prelude::*};
-
-    let filter = if quiet {
-        tracing_subscriber::EnvFilter::new("webfang=warn,tokio=warn,reqwest=warn")
-    } else {
-        tracing_subscriber::EnvFilter::new(format!("webfang={level},tokio=warn,reqwest=warn"))
-    };
-
-    let fmt_layer = fmt::layer()
-        .with_writer(std::io::stderr)
-        .with_ansi(!no_color)
-        .with_target(true)
-        .pretty();
-
-    // OTel layer must be added directly on Registry, before EnvFilter.
-    // trace_correlation injects trace_id/span_id into JSON log events —
-    // available whenever otel is active (not just otel-metrics).
-    use crate::infrastructure::observability::trace_correlation::trace_correlation_layer;
-    tracing_subscriber::registry()
-        .with(otel_layer)
-        .with(trace_correlation_layer())
-        .with(file_trace_layer)
-        .with(filter)
-        .with(fmt_layer)
         .try_init()
         .ok();
 }
@@ -194,23 +144,5 @@ max_pages = 20
     #[test]
     fn test_should_emit_emoji_default() {
         assert!(should_emit_emoji());
-    }
-
-    #[cfg(feature = "otel")]
-    mod otel_layer {
-        use super::*;
-
-        #[test]
-        fn test_init_logging_dual_accepts_none_layers() {
-            init_logging_dual("info", false, false, None, None);
-        }
-
-        #[test]
-        fn test_init_logging_dual_accepts_some_otel_layer() {
-            let config = crate::infrastructure::observability::otel::OtelConfig::from_env();
-            let (_guard, layer) =
-                crate::infrastructure::observability::otel::init_otel_tracing(config).unwrap();
-            init_logging_dual("info", false, false, None, Some(layer));
-        }
     }
 }

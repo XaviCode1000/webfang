@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ⚠️ Breaking Changes
 
+#### OpenTelemetry removal (observability roadmap Fase 5, #356)
+- **Removed the `otel` and `otel-metrics` features** along with the `opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp`, and `tracing-opentelemetry` dependencies.
+- OTel targets distributed systems; WebFang is a single-binary CLI. The always-available **FileTraceLayer** (`--trace-file`) plus native **correlation IDs** cover tracing/correlation without external infrastructure.
+- Builds using `--features otel` / `--features otel-metrics` must drop those flags. Use `--trace-file debug.jsonl` for offline JSONL traces and correlate operations by `trace_id`.
+
 #### Exit Code Fix for Empty Discovery (C1+C4)
 - **Exit code 2** now returned when sitemap discovery finds zero URLs (was exit 0). Scripts checking `$? == 0` must update to handle `$? == 2`.
 - **Exit code 69** now returned when sitemap fetch fails with timeout/network error (was silently swallowed as exit 0).

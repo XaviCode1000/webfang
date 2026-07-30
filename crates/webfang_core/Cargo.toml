@@ -16,19 +16,6 @@ documents = ["dep:mimetype-detector"]
 persistence = ["dep:rusqlite", "dep:deadpool-sqlite", "dep:sys-info"]
 console = ["dep:console-subscriber"]
 dev-tracing = ["dep:tracing-tree"]
-otel = [
-    "dep:opentelemetry",
-    "dep:opentelemetry_sdk",
-    "dep:opentelemetry-otlp",
-    "dep:tracing-opentelemetry",
-]
-otel-metrics = [
-    "otel",
-    "opentelemetry/metrics",
-    "opentelemetry_sdk/metrics",
-    "opentelemetry_sdk/rt-tokio",
-    "opentelemetry-otlp/metrics",
-]
 # Marker features for backward-compatible cfg gates.
 # These are activated by dependent crates (ai, tui, mcp) to preserve
 # existing cfg(feature) gates in core during the transition period.
@@ -75,12 +62,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-tree = { workspace = true, optional = true }
-
-# OpenTelemetry
-opentelemetry = { workspace = true, optional = true }
-opentelemetry_sdk = { workspace = true, optional = true }
-opentelemetry-otlp = { workspace = true, optional = true }
-tracing-opentelemetry = { workspace = true, optional = true }
 
 # tokio-console
 console-subscriber = { workspace = true, optional = true }

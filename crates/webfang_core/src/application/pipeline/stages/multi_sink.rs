@@ -6,11 +6,6 @@ use std::pin::Pin;
 use crate::application::pipeline::stages::output::{OutputError, OutputStage};
 use crate::domain::pipeline_item::ScrapedItem;
 
-#[cfg(feature = "otel-metrics")]
-use crate::infrastructure::observability::metrics_instruments::OUTPUT_SINK_ERRORS;
-#[cfg(feature = "otel-metrics")]
-use opentelemetry::KeyValue;
-
 /// Output stage that writes to all inner sinks sequentially.
 ///
 /// If a sink fails, the error is logged and remaining sinks are still attempted.
@@ -55,11 +50,6 @@ impl OutputStage for MultiSinkOutput {
                     Ok(()) => any_ok = true,
                     Err(e) => {
                         tracing::error!(sink = %sink.name(), error = %e, "sink failed");
-                        #[cfg(feature = "otel-metrics")]
-                        {
-                            let sink_name = sink.name().to_owned();
-                            OUTPUT_SINK_ERRORS.add(1, &[KeyValue::new("sink", sink_name)]);
-                        }
                         if last_err.is_none() {
                             last_err = Some(e);
                         }

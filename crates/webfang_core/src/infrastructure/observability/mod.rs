@@ -2,15 +2,8 @@
 //!
 //! Production-grade observability infrastructure:
 //! - Structured JSON logging with file rotation
-//! - OpenTelemetry tracing and metrics (feature-gated)
+//! - FileTraceLayer: JSONL span/event traces for offline debugging
 //! - Tokio console for runtime debugging
-//!
-//! # Features
-//!
-//! | Feature | Description |
-//! |---------|-------------|
-//! | `otel` | OpenTelemetry distributed tracing via OTLP HTTP/protobuf |
-//! | `otel-metrics` | Extends `otel` with metric instruments and OTLP metric export |
 //!
 //! # Tokio Console (Optional)
 //!
@@ -28,14 +21,6 @@
 pub mod error_logging;
 pub mod file_trace_layer;
 pub mod logging;
-#[cfg(feature = "otel")]
-pub mod otel;
-
-#[cfg(feature = "otel-metrics")]
-pub mod metrics_instruments;
-
-#[cfg(feature = "otel")]
-pub mod trace_correlation;
 
 /// Initialize tokio-console for runtime debugging
 ///
@@ -60,12 +45,3 @@ pub fn init_console() {
 pub use error_logging::log_scrape_error;
 pub use file_trace_layer::FileTraceLayer;
 pub use logging::{init_json_logging, init_json_logging_dual, LogFormat, LogGuard};
-
-#[cfg(feature = "otel")]
-pub use otel::{OtelConfig, OtelGuard};
-
-#[cfg(feature = "otel-metrics")]
-pub use otel::init_otel_metrics;
-
-#[cfg(feature = "otel")]
-pub use trace_correlation::trace_correlation_layer;
