@@ -42,6 +42,28 @@ pub trait CrawlResultRepository: Send + Sync {
     /// * `Ok(Vec<String>)` - List of crawled URLs
     /// * `Err(CrawlError)` - Query error
     fn get_all_urls(&self) -> Result<Vec<String>, CrawlError>;
+
+    /// Load all persisted content in bulk.
+    ///
+    /// Returns every saved [`ScrapedContent`] item. This is the bulk
+    /// alternative to the `get_all_urls` → `find_by_url` loop, avoiding an
+    /// N+1 query pattern for consumers that need the whole result set
+    /// (e.g. the MCP export tools).
+    ///
+    /// The default implementation iterates `get_all_urls` and resolves each
+    /// URL via `find_by_url`. Implementations with direct storage access
+    /// SHOULD override this with a single sequential scan for efficiency.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Vec<ScrapedContent>)` - All persisted content
+    /// * `Err(CrawlError)` - Query error
+    fn load_all(&self) -> Result<Vec<ScrapedContent>, CrawlError> {
+        self.get_all_urls()?
+            .into_iter()
+            .filter_map(|url| self.find_by_url(&url).transpose())
+            .collect()
+    }
 }
 
 #[cfg(test)]
