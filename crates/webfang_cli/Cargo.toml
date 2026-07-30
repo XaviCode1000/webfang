@@ -33,7 +33,6 @@ webfang_mcp = { workspace = true, optional = true }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
-clap_complete = "4"
 
 # Async
 tokio = { workspace = true }
@@ -42,11 +41,7 @@ tokio = { workspace = true }
 inquire = { workspace = true, optional = true }
 
 # Error handling
-anyhow = { workspace = true }
-
-# Config
 dirs = { workspace = true }
-toml = "0.8"
 
 # Logging
 tracing = { workspace = true }
