@@ -990,3 +990,153 @@ async fn test_export_uncreatable_output_dir_honest_error() {
         "no file may be written to an uncreatable output_dir"
     );
 }
+
+// ============================================================================
+// 5. Scrape metrics — real accumulated metrics (issue #382, mcp-real-metrics)
+// ============================================================================
+
+/// Minimal article HTML that Readability extracts deterministically (mirrors
+/// `tests/scraper_service_test.rs`), so `scrape_url` records a success event.
+const METRICS_ARTICLE_HTML: &str = r#"<!DOCTYPE html>
+<html>
+<head><title>Test Page</title></head>
+<body>
+<article>
+<h1>Main Heading</h1>
+<p>This is the content of the article. It has enough text to be extracted by Readability.</p>
+</article>
+</body>
+</html>"#;
+
+/// REQ-04/06/08: a scrape recorded through ONE session is visible via
+/// `get_scrape_metrics` from a DIFFERENT session (shared `Arc` accumulator),
+/// returning real JSON — `total_events`, the scraped domain, and a timing field.
+#[tokio::test]
+async fn test_scrape_then_metrics_reflects_it_cross_session() {
+    // Arrange: wiremock answers GET / with article HTML Readability can extract.
+    let mock = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(METRICS_ARTICLE_HTML))
+        .mount(&mock)
+        .await;
+
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+
+    // Session A performs the scrape (records one event after instrumentation).
+    let session_a = init_session(&client, &base_url).await;
+    let scrape_resp = call_tool(
+        &client,
+        &base_url,
+        &session_a,
+        "scrape_url",
+        json!({ "url": mock.uri() }),
+    )
+    .await;
+    let scrape_result = scrape_resp
+        .get("result")
+        .unwrap_or_else(|| panic!("expected scrape result, got: {scrape_resp}"))
+        .clone();
+    assert!(
+        !is_tool_error(&scrape_result),
+        "scrape_url should succeed against wiremock: {}",
+        tool_text(&scrape_result)
+    );
+
+    // Session B (DIFFERENT) reads the metrics — the accumulator is shared (REQ-06).
+    let session_b = init_session(&client, &base_url).await;
+    assert_ne!(session_a, session_b, "sessions must be distinct");
+    let metrics_resp = call_tool(
+        &client,
+        &base_url,
+        &session_b,
+        "get_scrape_metrics",
+        json!({}),
+    )
+    .await;
+    let metrics_result = metrics_resp
+        .get("result")
+        .unwrap_or_else(|| panic!("expected metrics result, got: {metrics_resp}"))
+        .clone();
+
+    // REQ-04: populated read is a success (isError not true) with real JSON.
+    assert!(
+        !is_tool_error(&metrics_result),
+        "get_scrape_metrics must succeed after a scrape: {}",
+        tool_text(&metrics_result)
+    );
+    let text = tool_text(&metrics_result);
+    let parsed: Value = serde_json::from_str(&text).expect("metrics must be valid JSON");
+
+    let total = parsed
+        .get("total_events")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    assert!(
+        total >= 1,
+        "total_events must reflect the scrape, got: {text}"
+    );
+
+    // host_str() strips the wiremock port → stable "127.0.0.1" domain key.
+    let domains = parsed
+        .get("domains")
+        .and_then(|v| v.as_object())
+        .expect("domains object present");
+    assert!(
+        domains.contains_key("127.0.0.1"),
+        "domains must contain the scraped host 127.0.0.1, got: {text}"
+    );
+    assert!(
+        parsed.get("average_duration_ms").is_some(),
+        "average_duration_ms must be present, got: {text}"
+    );
+
+    // REQ-08: the redacted snapshot is byte-stable across runs.
+    insta::with_settings!({
+        filters => vec![
+            (r#""average_duration_ms":\s*[\d.]+"#, "[DURATION]"),
+            (r"127\.0\.0\.1:\d+", "127.0.0.1:[PORT]"),
+        ],
+    }, {
+        insta::assert_snapshot!("scrape_metrics_cross_session", &text);
+    });
+}
+
+/// REQ-05: a fresh server with NO recorded scrapes returns an honest Spanish
+/// pre-condition error (isError:true) — never the legacy canned success JSON.
+#[tokio::test]
+async fn test_metrics_empty_state_honest_error() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    // Read metrics FIRST, before any scrape, on a fresh server.
+    let resp = call_tool(
+        &client,
+        &base_url,
+        &session_id,
+        "get_scrape_metrics",
+        json!({}),
+    )
+    .await;
+    let result = resp
+        .get("result")
+        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
+        .clone();
+
+    assert!(
+        is_tool_error(&result),
+        "empty metrics must return isError:true, got: {}",
+        tool_text(&result)
+    );
+    let text = tool_text(&result);
+    assert!(
+        text.contains("no hay métricas disponibles"),
+        "honest Spanish empty-state error expected, got: {text}"
+    );
+    assert!(
+        !text.contains("Metrics collection requires active scraping session"),
+        "legacy canned text must NOT appear, got: {text}"
+    );
+}

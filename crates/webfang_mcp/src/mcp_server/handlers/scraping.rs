@@ -4,6 +4,7 @@
 //! crawl_with_sitemap, discover_urls, discover_sitemap, detect_spa
 
 use super::McpHandler;
+use crate::mcp_server::metrics::{domain_of, Outcome, ScrapeEvent};
 use crate::mcp_server::params::*;
 use crate::mcp_server::selector_service;
 use rmcp::handler::server::tool::ToolRouter;
@@ -11,6 +12,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool;
 use rmcp::tool_router;
 use rmcp::{model::CallToolResult, model::Content, ErrorData as McpError};
+use std::time::Instant;
 use tracing::instrument;
 
 #[tool_router(router = tool_router_scraping, vis = "pub")]
@@ -33,16 +35,34 @@ impl McpHandler {
             )
         })?;
 
+        let start = Instant::now();
         let client = self.state.container.http_client().as_ref();
         match webfang_core::application::scraper_service::scrape_with_readability(client, &url)
             .await
         {
             Ok(results) => {
+                let count = results.len();
+                self.state.record_scrape(ScrapeEvent {
+                    tool: "scrape_url",
+                    domain: domain_of(&params.url),
+                    outcome: Outcome::Success,
+                    count,
+                    duration: start.elapsed(),
+                });
                 let content = serde_json::to_string_pretty(&results)
                     .unwrap_or_else(|_| "failed to serialize".into());
                 Ok(CallToolResult::success(vec![Content::text(content)]))
             },
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+            Err(e) => {
+                self.state.record_scrape(ScrapeEvent {
+                    tool: "scrape_url",
+                    domain: domain_of(&params.url),
+                    outcome: Outcome::Error,
+                    count: 0,
+                    duration: start.elapsed(),
+                });
+                Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
+            },
         }
     }
 
@@ -79,6 +99,7 @@ impl McpHandler {
             config.selector = sel.clone();
         }
 
+        let start = Instant::now();
         let client = self.state.container.http_client().as_ref();
         let dl = self
             .state
@@ -92,6 +113,14 @@ impl McpHandler {
         .await
         {
             Ok(outcome) => {
+                let count = outcome.results.len();
+                self.state.record_scrape(ScrapeEvent {
+                    tool: "scrape_with_options",
+                    domain: domain_of(&params.url),
+                    outcome: Outcome::Success,
+                    count,
+                    duration: start.elapsed(),
+                });
                 let response = selector_service::build_scrape_response(
                     outcome.results,
                     &outcome.extract_result,
@@ -101,7 +130,16 @@ impl McpHandler {
                     .unwrap_or_else(|_| "failed to serialize".into());
                 Ok(CallToolResult::success(vec![Content::text(content)]))
             },
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+            Err(e) => {
+                self.state.record_scrape(ScrapeEvent {
+                    tool: "scrape_with_options",
+                    domain: domain_of(&params.url),
+                    outcome: Outcome::Error,
+                    count: 0,
+                    duration: start.elapsed(),
+                });
+                Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
+            },
         }
     }
 
@@ -131,6 +169,14 @@ impl McpHandler {
             )]));
         }
 
+        let start = Instant::now();
+        let domain = urls
+            .first()
+            .and_then(|u| u.host_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| "unknown".to_string());
+        let count = urls.len();
+
         let mut config = webfang_core::infrastructure::config::ScraperConfig::default();
         if let Some(c) = params.concurrency {
             config.scraper_concurrency = c;
@@ -148,12 +194,26 @@ impl McpHandler {
         .await
         {
             Ok(results) => {
+                self.state.record_scrape(ScrapeEvent {
+                    tool: "scrape_batch",
+                    domain,
+                    outcome: Outcome::Success,
+                    count,
+                    duration: start.elapsed(),
+                });
                 tracing::info!("batch scrape complete: {} pages", results.len());
                 let content = serde_json::to_string_pretty(&results)
                     .unwrap_or_else(|_| "failed to serialize".into());
                 Ok(CallToolResult::success(vec![Content::text(content)]))
             },
             Err(e) => {
+                self.state.record_scrape(ScrapeEvent {
+                    tool: "scrape_batch",
+                    domain,
+                    outcome: Outcome::Error,
+                    count,
+                    duration: start.elapsed(),
+                });
                 tracing::error!("batch scrape failed: {}", e);
                 Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
             },
@@ -178,6 +238,7 @@ impl McpHandler {
             )
         })?;
 
+        let start = Instant::now();
         let crawler_config = webfang_core::domain::CrawlerConfig::builder(seed_url)
             .max_depth(params.max_depth.unwrap_or(3))
             .max_pages(params.max_pages.unwrap_or(100) as usize)
@@ -185,6 +246,14 @@ impl McpHandler {
 
         match webfang_core::application::crawler::crawl_site(crawler_config).await {
             Ok(result) => {
+                let count = result.total_pages;
+                self.state.record_scrape(ScrapeEvent {
+                    tool: "crawl_site",
+                    domain: domain_of(&params.url),
+                    outcome: Outcome::Success,
+                    count,
+                    duration: start.elapsed(),
+                });
                 let urls: Vec<String> = result.urls.iter().map(|u| u.url.to_string()).collect();
                 let json = serde_json::json!({
                     "urls": urls,
@@ -195,7 +264,16 @@ impl McpHandler {
                     serde_json::to_string_pretty(&json).unwrap(),
                 )]))
             },
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+            Err(e) => {
+                self.state.record_scrape(ScrapeEvent {
+                    tool: "crawl_site",
+                    domain: domain_of(&params.url),
+                    outcome: Outcome::Error,
+                    count: 0,
+                    duration: start.elapsed(),
+                });
+                Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
+            },
         }
     }
 
@@ -220,6 +298,7 @@ impl McpHandler {
                 Some(serde_json::Value::String("url".to_string())),
             )
         })?;
+        let start = Instant::now();
         let config = webfang_core::domain::CrawlerConfig::new(seed_url);
         match webfang_core::application::crawler::crawl_with_sitemap(
             &params.url,
@@ -229,6 +308,14 @@ impl McpHandler {
         .await
         {
             Ok(urls) => {
+                let count = urls.len();
+                self.state.record_scrape(ScrapeEvent {
+                    tool: "crawl_with_sitemap",
+                    domain: domain_of(&params.url),
+                    outcome: Outcome::Success,
+                    count,
+                    duration: start.elapsed(),
+                });
                 tracing::info!("sitemap crawl complete: {} urls found", urls.len());
                 let url_strings: Vec<String> = urls.iter().map(|u| u.url.to_string()).collect();
                 Ok(CallToolResult::success(vec![Content::text(
@@ -236,6 +323,13 @@ impl McpHandler {
                 )]))
             },
             Err(e) => {
+                self.state.record_scrape(ScrapeEvent {
+                    tool: "crawl_with_sitemap",
+                    domain: domain_of(&params.url),
+                    outcome: Outcome::Error,
+                    count: 0,
+                    duration: start.elapsed(),
+                });
                 tracing::error!("sitemap crawl failed: {}", e);
                 Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
             },
@@ -253,22 +347,49 @@ impl McpHandler {
     ) -> Result<CallToolResult, McpError> {
         let _permit = acquire_semaphore!(self, scraping);
 
+        let start = Instant::now();
         let port = self.state.container.http_client();
         match port.get(&params.url).await {
             Ok(resp) => {
                 let html = resp.body;
                 match webfang_core::infrastructure::crawler::extract_links(&html, &params.url) {
                     Ok(links) => {
+                        let count = links.len();
+                        self.state.record_scrape(ScrapeEvent {
+                            tool: "discover_urls",
+                            domain: domain_of(&params.url),
+                            outcome: Outcome::Success,
+                            count,
+                            duration: start.elapsed(),
+                        });
                         let content = serde_json::to_string_pretty(&links)
                             .unwrap_or_else(|_| "failed to serialize".into());
                         Ok(CallToolResult::success(vec![Content::text(content)]))
                     },
-                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                    Err(e) => {
+                        self.state.record_scrape(ScrapeEvent {
+                            tool: "discover_urls",
+                            domain: domain_of(&params.url),
+                            outcome: Outcome::Error,
+                            count: 0,
+                            duration: start.elapsed(),
+                        });
+                        Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
+                    },
                 }
             },
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "HTTP error: {e}"
-            ))])),
+            Err(e) => {
+                self.state.record_scrape(ScrapeEvent {
+                    tool: "discover_urls",
+                    domain: domain_of(&params.url),
+                    outcome: Outcome::Error,
+                    count: 0,
+                    duration: start.elapsed(),
+                });
+                Ok(CallToolResult::error(vec![Content::text(format!(
+                    "HTTP error: {e}"
+                ))]))
+            },
         }
     }
 
@@ -289,6 +410,7 @@ impl McpHandler {
                 Some(serde_json::Value::String("url".to_string())),
             )
         })?;
+        let start = Instant::now();
         let crawler_config = webfang_core::domain::CrawlerConfig::new(seed);
 
         match webfang_core::application::crawler::crawl_with_sitemap(
@@ -299,12 +421,29 @@ impl McpHandler {
         .await
         {
             Ok(discovered) => {
+                let count = discovered.len();
+                self.state.record_scrape(ScrapeEvent {
+                    tool: "discover_sitemap",
+                    domain: domain_of(&params.url),
+                    outcome: Outcome::Success,
+                    count,
+                    duration: start.elapsed(),
+                });
                 let urls: Vec<String> = discovered.into_iter().map(|d| d.url.to_string()).collect();
                 let content = serde_json::to_string_pretty(&urls)
                     .unwrap_or_else(|_| "failed to serialize".into());
                 Ok(CallToolResult::success(vec![Content::text(content)]))
             },
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+            Err(e) => {
+                self.state.record_scrape(ScrapeEvent {
+                    tool: "discover_sitemap",
+                    domain: domain_of(&params.url),
+                    outcome: Outcome::Error,
+                    count: 0,
+                    duration: start.elapsed(),
+                });
+                Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
+            },
         }
     }
 
@@ -319,9 +458,17 @@ impl McpHandler {
     ) -> Result<CallToolResult, McpError> {
         let _permit = acquire_semaphore!(self, scraping);
 
+        let start = Instant::now();
         let port = self.state.container.http_client();
         match port.get(&params.url).await {
             Ok(resp) => {
+                self.state.record_scrape(ScrapeEvent {
+                    tool: "detect_spa",
+                    domain: domain_of(&params.url),
+                    outcome: Outcome::Success,
+                    count: 1,
+                    duration: start.elapsed(),
+                });
                 let html = resp.body;
                 let text = webfang_core::infrastructure::scraper::fallback::extract_text(&html);
                 match webfang_core::application::scraper_service::detect_spa_content(
@@ -344,9 +491,18 @@ impl McpHandler {
                     )])),
                 }
             },
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "HTTP error: {e}"
-            ))])),
+            Err(e) => {
+                self.state.record_scrape(ScrapeEvent {
+                    tool: "detect_spa",
+                    domain: domain_of(&params.url),
+                    outcome: Outcome::Error,
+                    count: 0,
+                    duration: start.elapsed(),
+                });
+                Ok(CallToolResult::error(vec![Content::text(format!(
+                    "HTTP error: {e}"
+                ))]))
+            },
         }
     }
 }

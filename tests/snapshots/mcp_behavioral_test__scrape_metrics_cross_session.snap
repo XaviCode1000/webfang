@@ -1,0 +1,20 @@
+---
+source: crates/webfang_mcp/../../tests/mcp_behavioral_test.rs
+expression: "&text"
+---
+{
+  "total_events": 1,
+  "success_count": 1,
+  "error_count": 0,
+  "domains": {
+    "127.0.0.1": {
+      "events": 1,
+      "pages": 1,
+      "errors": 0
+    }
+  },
+  "tools": {
+    "scrape_url": 1
+  },
+  [DURATION]
+}

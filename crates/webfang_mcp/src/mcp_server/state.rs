@@ -5,8 +5,10 @@
 //! per tool category, protecting the 8GB RAM / HDD hardware.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use tokio::sync::Semaphore;
 
+use crate::mcp_server::metrics::{MetricsSnapshot, ScrapeEvent, ScrapeMetrics};
 use webfang_core::adapters::downloader::Downloader;
 use webfang_core::di::Container;
 use webfang_core::domain::DomInspectorPort;
@@ -64,6 +66,9 @@ pub struct McpState {
     pub downloader: Option<Arc<Downloader>>,
     /// DOM inspector for CSS selector diagnostics (None = no diagnostics)
     pub inspector: Option<Arc<dyn DomInspectorPort>>,
+    /// Process-lifetime scrape metrics, shared across all per-session clones
+    /// (REQ-06). Locked only in short synchronous sections (REQ-07).
+    pub metrics: Arc<Mutex<ScrapeMetrics>>,
 }
 
 /// Semaphore instances for each tool category.
@@ -90,6 +95,7 @@ impl McpState {
             semaphores,
             downloader: None,
             inspector: None,
+            metrics: Arc::new(Mutex::new(ScrapeMetrics::default())),
         }
     }
 
@@ -103,6 +109,7 @@ impl McpState {
             semaphores,
             downloader: None,
             inspector: None,
+            metrics: Arc::new(Mutex::new(ScrapeMetrics::default())),
         }
     }
 
@@ -122,6 +129,31 @@ impl McpState {
     pub fn with_inspector(mut self, inspector: Arc<dyn DomInspectorPort>) -> Self {
         self.inspector = Some(inspector);
         self
+    }
+
+    /// Record a scrape event into the shared accumulator.
+    ///
+    /// REQ-07: short synchronous critical section — the lock is acquired and
+    /// dropped entirely within this call (the tracing event emitted inside
+    /// `record` is synchronous), so it is never held across an `.await`.
+    /// REQ-10: a poisoned mutex is recovered via `into_inner`, never a panic.
+    pub fn record_scrape(&self, event: ScrapeEvent) {
+        self.metrics
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .record(event);
+    }
+
+    /// Produce a point-in-time metrics snapshot from the shared accumulator.
+    ///
+    /// REQ-07: lock → clone snapshot → release. REQ-10: poison recovery, never
+    /// a panic.
+    #[must_use]
+    pub fn metrics_snapshot(&self) -> MetricsSnapshot {
+        self.metrics
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .snapshot()
     }
 }
 
@@ -210,5 +242,36 @@ mod tests {
             state.inspector.is_none(),
             "inspector must default to None in with_limits"
         );
+    }
+
+    /// REQ-06: the metrics accumulator is shared across per-session clones
+    /// (`server.rs` clones `McpState` per session). Mirrors the `Arc::ptr_eq`
+    /// pattern from `server.rs::test_mcp_state_with_downloader`.
+    #[tokio::test]
+    async fn metrics_shared_across_clones() {
+        use crate::mcp_server::metrics::Outcome;
+        use std::time::Duration;
+
+        let (_tmp, container) = test_container().await;
+        let state = McpState::new(container);
+        let state2 = state.clone();
+
+        assert!(
+            Arc::ptr_eq(&state.metrics, &state2.metrics),
+            "cloned McpState must share the same metrics Arc"
+        );
+
+        // A scrape recorded through one clone is visible from the other.
+        state.record_scrape(ScrapeEvent {
+            tool: "scrape_url",
+            domain: "a.com".to_string(),
+            outcome: Outcome::Success,
+            count: 2,
+            duration: Duration::from_millis(10),
+        });
+
+        let snap = state2.metrics_snapshot();
+        assert_eq!(snap.total_events, 1, "record-through-clone is visible");
+        assert_eq!(snap.success_count, 1, "success bucket recorded");
     }
 }
