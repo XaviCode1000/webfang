@@ -2809,22 +2809,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jzon-rs"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b8607f9aa775c9c06d43e3cf72bb53c3eb816caf0e9a57198af18b9e4976e27"
-
-[[package]]
-name = "jzon-rs-serde"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94c9e582fa60c25c556ad5f93cb9a1606f115f9f3a88d71fbcb481ebda2389b6"
-dependencies = [
- "jzon-rs",
- "serde",
-]
-
-[[package]]
 name = "kv-log-macro"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6155,7 +6139,6 @@ dependencies = [
  "html-to-markdown-rs",
  "indicatif 0.17.11",
  "insta",
- "jzon-rs-serde",
  "legible",
  "lol_html",
  "mimetype-detector",

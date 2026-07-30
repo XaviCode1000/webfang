@@ -125,7 +125,6 @@ tower-http = { version = "0.6", features = ["trace"] }
 schemars = "1.0"
 
 # Competitive Features
-jzon-rs-serde = "0.3"
 crc32fast = "1"
 robotstxt = "0.3"
 secrecy = { version = "0.8", features = ["serde"] }

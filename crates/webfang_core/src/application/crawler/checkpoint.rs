@@ -1,7 +1,7 @@
 //! Checkpoint persistence for crawl state — Application layer
 //!
 //! Saves and loads crawl state (visited URLs, queued URLs, pages crawled)
-//! using jzon-rs JSON serialization with CRC32 integrity checks and atomic writes.
+//! using JSON serialization with CRC32 integrity checks and atomic writes.
 //!
 //! # Design Decisions
 //!
@@ -200,7 +200,7 @@ impl From<OldCheckpointSchema> for CrawlCheckpoint {
     }
 }
 
-/// Checkpoint store using jzon-rs JSON serialization with CRC32 integrity.
+/// Checkpoint store using JSON serialization with CRC32 integrity.
 ///
 /// File format: `[4-byte CRC32][JSON payload]`
 ///
@@ -214,7 +214,7 @@ impl CheckpointStore for BincodeCheckpoint {
     #[instrument(skip(self, state), fields(path = %path.display()))]
     fn save(&self, state: &CrawlCheckpoint, path: &Path) -> Result<(), String> {
         // Serialize to JSON
-        let payload = jzon_serde::to_string(state)
+        let payload = serde_json::to_string(state)
             .map_err(|e| format!("checkpoint serialization failed: {e}"))?
             .into_bytes();
 
@@ -277,7 +277,7 @@ impl CheckpointStore for BincodeCheckpoint {
         if stored_checksum != computed_checksum {
             // CRC mismatch — try old-format fallback (pure JSON, no CRC32 header).
             // Old JSON starts with `{` (0x7B), which is never a valid CRC32+JSON combo.
-            if let Ok(old) = jzon_serde::from_slice::<OldCheckpointSchema>(&data) {
+            if let Ok(old) = serde_json::from_slice::<OldCheckpointSchema>(&data) {
                 info!(
                     "migrated old-format checkpoint: {} (visited={}, pages={})",
                     path.display(),
@@ -296,7 +296,7 @@ impl CheckpointStore for BincodeCheckpoint {
         }
 
         // Deserialize from JSON
-        match jzon_serde::from_slice::<CrawlCheckpoint>(payload) {
+        match serde_json::from_slice::<CrawlCheckpoint>(payload) {
             Ok(state) => {
                 info!(
                     "checkpoint loaded: {} (visited={}, queued={}, pages={})",

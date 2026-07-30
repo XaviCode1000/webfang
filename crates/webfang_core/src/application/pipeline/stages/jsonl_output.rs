@@ -51,7 +51,7 @@ impl OutputStage for JsonlOutputStage {
         item: &'a ScrapedItem,
     ) -> Pin<Box<dyn Future<Output = Result<(), OutputError>> + Send + 'a>> {
         Box::pin(async {
-            let json = jzon_serde::to_string(item)
+            let json = serde_json::to_string(item)
                 .map_err(|e| OutputError::Serialization(e.to_string()))?;
             let mut file = self
                 .file

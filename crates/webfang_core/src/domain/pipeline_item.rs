@@ -169,17 +169,17 @@ mod tests {
     }
 
     #[test]
-    fn test_scraped_item_jzon_roundtrip() {
+    fn test_scraped_item_json_roundtrip() {
         let item = ScrapedItem {
-            url: "https://jzon.test".into(),
+            url: "https://roundtrip.test".into(),
             raw_html: "<html></html>".into(),
             text_content: Some("content".into()),
             metadata: std::collections::HashMap::new(),
             status_code: 200,
             embeddings: Some(vec![1.0]),
         };
-        let json = jzon_serde::to_string(&item).unwrap();
-        let restored: ScrapedItem = jzon_serde::from_str(&json).unwrap();
+        let json = serde_json::to_string(&item).unwrap();
+        let restored: ScrapedItem = serde_json::from_str(&json).unwrap();
         assert_eq!(item.url, restored.url);
         assert_eq!(item.embeddings, restored.embeddings);
     }
