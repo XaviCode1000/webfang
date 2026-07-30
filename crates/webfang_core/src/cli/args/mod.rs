@@ -41,7 +41,7 @@ use clap::Parser;
 #[command(name = "webfang", version)]
 #[command(
     about = "High-performance web scraper with WAF evasion and AI-powered content cleaning",
-    after_help = "EXIT CODES:\n  0    Success\n  2    No URLs discovered\n  69   WAF block or network error\n  74   I/O error\n  76   Protocol error\n  78   Configuration error\n\nEXAMPLES:\n  webfang -u https://example.com\n  webfang -u https://example.com --ai\n  webfang -u https://example.com -f jsonl\n  webfang -u https://example.com -v\n  webfang -u https://example.com -vv  # DEBUG\n  webfang --url-list urls.txt --resume"
+    after_help = "EXIT CODES:\n  0    Success\n  2    No URLs discovered\n  3    All scrapers failed\n  64   Bad CLI arguments (usage error)\n  69   WAF block or network error\n  74   I/O error\n  76   Protocol error\n  78   Configuration error\n\nEXAMPLES:\n  webfang -u https://example.com\n  webfang -u https://example.com --ai\n  webfang -u https://example.com -f jsonl\n  webfang -u https://example.com -v\n  webfang -u https://example.com -vv  # DEBUG\n  webfang --url-list urls.txt --resume"
 )]
 #[command(args_conflicts_with_subcommands = true)]
 pub struct Args {
