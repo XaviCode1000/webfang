@@ -18,9 +18,11 @@ use rmcp::tool;
 use rmcp::tool_router;
 use rmcp::{model::CallToolResult, model::Content, ErrorData as McpError};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tracing::instrument;
 use webfang_core::application::export_factory::{create_exporter, process_results};
 use webfang_core::domain::entities::ExportFormat;
+use webfang_core::domain::CrawlResultRepository;
 use webfang_core::domain::DocumentChunkUnvalidated;
 use webfang_core::domain::ScrapedContent;
 
@@ -70,6 +72,38 @@ fn resolve_export_path(output_dir: &Path, filename: &str, format: ExportFormat) 
     }
 }
 
+/// Resolve persisted crawl results from an optional repository, mapping every
+/// operational failure to an honest `CallToolResult::error` (isError:true,
+/// Spanish).
+///
+/// Extracted from [`McpHandler::load_results`] as a free function so the
+/// `None`-repository branch — unreachable through `Container::new`, which
+/// always attempts to wire a repository and tolerates log corruption — can be
+/// unit-tested directly (REQ-MCP-EXPORT-05).
+fn load_results_from(
+    repo: Option<Arc<dyn CrawlResultRepository>>,
+) -> Result<Vec<ScrapedContent>, CallToolResult> {
+    let repo = match repo {
+        Some(repo) => repo,
+        None => {
+            return Err(CallToolResult::error(vec![Content::text(
+                "no hay repositorio de resultados disponible",
+            )]))
+        },
+    };
+    let results = repo.load_all().map_err(|e| {
+        CallToolResult::error(vec![Content::text(format!(
+            "no se pudieron cargar los resultados: {e}"
+        ))])
+    })?;
+    if results.is_empty() {
+        return Err(CallToolResult::error(vec![Content::text(
+            "no hay resultados disponibles para exportar",
+        )]));
+    }
+    Ok(results)
+}
+
 impl McpHandler {
     /// Load all persisted crawl results, mapping operational failures to an
     /// honest `CallToolResult::error` (isError:true, Spanish).
@@ -78,25 +112,7 @@ impl McpHandler {
     /// load fails, or the repository holds zero results; callers propagate
     /// this directly.
     async fn load_results(&self) -> Result<Vec<ScrapedContent>, CallToolResult> {
-        let repo = match self.state.container.crawl_result_repository() {
-            Some(repo) => repo,
-            None => {
-                return Err(CallToolResult::error(vec![Content::text(
-                    "no hay repositorio de resultados disponible",
-                )]))
-            },
-        };
-        let results = repo.load_all().map_err(|e| {
-            CallToolResult::error(vec![Content::text(format!(
-                "no se pudieron cargar los resultados: {e}"
-            ))])
-        })?;
-        if results.is_empty() {
-            return Err(CallToolResult::error(vec![Content::text(
-                "no hay resultados disponibles para exportar",
-            )]));
-        }
-        Ok(results)
+        load_results_from(self.state.container.crawl_result_repository())
     }
 }
 
@@ -270,4 +286,42 @@ impl McpHandler {
 
 pub fn build_router() -> ToolRouter<McpHandler> {
     McpHandler::tool_router_export()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// REQ-MCP-EXPORT-05 (repository unavailable): when no repository is wired,
+    /// the loader must return an honest `CallToolResult::error` (isError:true)
+    /// carrying the Spanish "no hay repositorio" message — never a fake success.
+    ///
+    /// This branch is unreachable through `Container::new` (which always
+    /// attempts to wire a repository and tolerates log corruption), so it is
+    /// exercised directly through the extracted `load_results_from` free
+    /// function by passing `None`.
+    #[test]
+    fn load_results_from_none_repository_is_honest_error() {
+        let err = load_results_from(None).expect_err("None repository must be an error");
+
+        // Serialize exactly as the MCP transport would, then assert the honest
+        // error contract: isError:true plus the Spanish message.
+        let json = serde_json::to_value(&err).expect("CallToolResult must serialize");
+        assert_eq!(
+            json.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "None-repository path must set isError:true, got: {json}"
+        );
+        let text = json
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|first| first.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or_default();
+        assert!(
+            text.contains("no hay repositorio de resultados disponible"),
+            "honest Spanish no-repository error expected, got: {text}"
+        );
+    }
 }

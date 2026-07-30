@@ -941,3 +941,52 @@ async fn test_export_invalid_format_hard_error() {
         "no silent Jsonl fallback file may be written"
     );
 }
+
+/// REQ-MCP-EXPORT-07 (uncreatable output_dir): an output directory that cannot
+/// be created yields an honest CallToolResult::error (isError:true, Spanish) —
+/// never a fake success. The directory is made uncreatable by routing it
+/// through an existing regular file, so `create_dir_all` fails inside the
+/// exporter (ExporterError::DirectoryCreation) and surfaces via process_results.
+#[tokio::test]
+async fn test_export_uncreatable_output_dir_honest_error() {
+    // Seed one result so load_results succeeds and the tool reaches the export
+    // (directory-creation) path rather than the empty-repository early return.
+    let (base_url, _handle, _container_tmp) = start_seeded_server(1).await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    // Build an output_dir that cannot be created: a path descending through an
+    // existing regular file. `create_dir_all` on this fails (NotADirectory).
+    let blocker_tmp = tempfile::TempDir::new().unwrap();
+    let blocker_file = blocker_tmp.path().join("blocker.txt");
+    std::fs::write(&blocker_file, "a regular file, not a directory").unwrap();
+    let uncreatable_dir = blocker_file.join("nested").join("output");
+
+    let resp = call_tool(
+        &client,
+        &base_url,
+        &session_id,
+        "export_jsonl",
+        json!({ "output_dir": uncreatable_dir.to_string_lossy(), "filename": "export" }),
+    )
+    .await;
+
+    let result = resp
+        .get("result")
+        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
+        .clone();
+    assert!(
+        is_tool_error(&result),
+        "uncreatable output_dir must return isError:true, got: {}",
+        tool_text(&result)
+    );
+    let text = tool_text(&result);
+    assert!(
+        text.contains("error al exportar"),
+        "honest Spanish export error expected, got: {text}"
+    );
+    assert!(
+        !uncreatable_dir.join("export.jsonl").exists(),
+        "no file may be written to an uncreatable output_dir"
+    );
+}
