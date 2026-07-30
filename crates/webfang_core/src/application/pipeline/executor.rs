@@ -1,4 +1,5 @@
 use super::{PipelineStage, ScrapedItem, StageOutcome};
+use tracing::{instrument, Instrument};
 
 #[cfg(feature = "otel-metrics")]
 use crate::infrastructure::observability::metrics_instruments::{
@@ -29,9 +30,18 @@ impl PipelineExecutor {
     /// Returns [`StageOutcome::Continue`] with the final item if every stage
     /// passes. Returns early on the first [`StageOutcome::Skip`] or
     /// [`StageOutcome::Reject`].
+    #[instrument(skip(self, item), fields(stages = self.stages.len(), url = %item.url))]
     pub async fn execute(&self, mut item: ScrapedItem) -> StageOutcome {
         for stage in &self.stages {
-            match stage.process(item).await {
+            // Per-stage span (issue #356): makes stage-level timing visible in
+            // traces. `.instrument()` is async-safe (no enter-guard across await).
+            let stage_span = tracing::info_span!(
+                "pipeline_stage",
+                stage = %stage.name(),
+                url = %item.url
+            );
+            let outcome = stage.process(item).instrument(stage_span).await;
+            match outcome {
                 StageOutcome::Continue(updated) => item = updated,
                 StageOutcome::Reject(reason) => {
                     #[cfg(feature = "otel-metrics")]
@@ -76,6 +86,70 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    // ─── Span-capture test helper (Fase 2, issue #356) ───
+
+    /// MakeWriter that appends tracing output to a shared buffer so tests can
+    /// assert which spans were emitted.
+    #[derive(Clone)]
+    struct SharedWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedWriter {
+        type Writer = SharedWriterGuard;
+        fn make_writer(&'a self) -> Self::Writer {
+            SharedWriterGuard(self.0.clone())
+        }
+    }
+
+    struct SharedWriterGuard(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SharedWriterGuard {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_emits_pipeline_spans() {
+        use tracing_subscriber::fmt::format::FmtSpan;
+
+        let buf = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let writer = SharedWriter(buf.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer)
+            .with_span_events(FmtSpan::NEW)
+            .with_ansi(false)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let mut executor = PipelineExecutor::new();
+        executor.add_stage(Box::new(TransformStage));
+        let item = ScrapedItem {
+            url: "https://example.com/traced".into(),
+            raw_html: "<p>content</p>".into(),
+            status_code: 200,
+            ..Default::default()
+        };
+        let _ = executor.execute(item).await;
+
+        let out = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
+        assert!(
+            out.contains("execute"),
+            "execute span should be emitted, got: {out}"
+        );
+        assert!(
+            out.contains("pipeline_stage"),
+            "pipeline_stage span should be emitted, got: {out}"
+        );
+        assert!(
+            out.contains("https://example.com/traced"),
+            "url field should be recorded, got: {out}"
+        );
+    }
 
     struct CountingStage {
         name: String,

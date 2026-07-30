@@ -575,6 +575,14 @@ pub async fn scrape_with_config(
 ///
 /// # Note
 /// Failed URLs are logged but don't stop the entire batch.
+#[instrument(
+    name = "scrape_multiple_with_limit",
+    skip(client, urls, config, downloader),
+    fields(
+        urls = urls.len(),
+        concurrency = config.scraper_concurrency
+    )
+)]
 pub async fn scrape_multiple_with_limit(
     client: &dyn HttpClientPort,
     urls: &[url::Url],

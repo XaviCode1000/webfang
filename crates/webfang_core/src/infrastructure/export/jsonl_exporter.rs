@@ -159,6 +159,7 @@ impl crate::domain::exporter::Exporter for JsonlExporter {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, documents), fields(exporter = "jsonl", documents = documents.len()))]
     fn export_batch(&self, documents: &[DocumentChunkValidated]) -> ExportResult<()> {
         let count = documents.len();
         let mut writer = self.writer()?;
