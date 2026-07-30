@@ -227,10 +227,12 @@ fn discover_urls_params_deserialize() {
 
 #[test]
 fn export_file_params_deserialize() {
-    let json = r#"{"output_dir": "/tmp", "filename": "test", "format": "markdown"}"#;
+    let json =
+        r#"{"output_dir": "/tmp", "filename": "test", "format": "jsonl", "content": "hello"}"#;
     let params: webfang_mcp::mcp_server::params::ExportFileParams =
         serde_json::from_str(json).unwrap();
-    assert_eq!(params.format, "markdown");
+    assert_eq!(params.format, "jsonl");
+    assert_eq!(params.content, "hello");
 }
 
 #[test]

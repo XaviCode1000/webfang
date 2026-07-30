@@ -188,6 +188,71 @@ impl CrawlResultRepository for CrawlResultRepositoryImpl {
     fn get_all_urls(&self) -> Result<Vec<String>, CrawlError> {
         Ok(self.index.iter().map(|entry| entry.key().clone()).collect())
     }
+
+    /// Load all persisted content with a single sequential log scan.
+    ///
+    /// Overrides the default N+1 (`get_all_urls` → `find_by_url`) loop with
+    /// one forward pass over the append-only log, reusing the same record
+    /// framing as `Self::recover_index`: `[4-byte LE length][JSON payload]
+    /// [\n]`. A partial trailing record (torn write) stops the scan cleanly
+    /// instead of erroring, preserving crash-safety.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrawlError::Storage`] if the log cannot be opened, a record
+    /// length/payload cannot be read (mid-record corruption), or a payload
+    /// fails to deserialize.
+    fn load_all(&self) -> Result<Vec<ScrapedContent>, CrawlError> {
+        use std::io::Read;
+
+        // A fresh repository has no log file yet (the background writer
+        // creates it asynchronously). No file means nothing persisted —
+        // return empty, matching the default trait method's behavior for an
+        // empty index.
+        if !self.log_path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let file = std::fs::File::open(&self.log_path)
+            .map_err(|e| CrawlError::Storage(format!("no se pudo abrir log: {e}")))?;
+        let mut reader = std::io::BufReader::new(file);
+        let mut results = Vec::with_capacity(self.index.len());
+        let mut offset: u64 = 0;
+
+        loop {
+            let mut len_buf = [0u8; 4];
+            match reader.read_exact(&mut len_buf) {
+                Ok(()) => {},
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => {
+                    return Err(CrawlError::Storage(format!(
+                        "lectura corrupta en offset {offset}: {e}"
+                    )))
+                },
+            }
+
+            let len = u32::from_le_bytes(len_buf) as usize;
+
+            // A trailing record shorter than its declared length is a torn
+            // write — stop cleanly (crash-safe) rather than erroring.
+            let mut payload = vec![0u8; len];
+            if reader.read_exact(&mut payload).is_err() {
+                break;
+            }
+
+            // Skip the newline terminator.
+            let mut newline = [0u8; 1];
+            let _ = reader.read_exact(&mut newline);
+
+            let content: ScrapedContent = serde_json::from_slice(&payload)
+                .map_err(|e| CrawlError::Storage(format!("deserialización fallida: {e}")))?;
+            results.push(content);
+
+            offset += 4 + len as u64 + 1;
+        }
+
+        Ok(results)
+    }
 }
 
 /// Background writer task that processes write commands sequentially.
@@ -360,6 +425,44 @@ mod tests {
             urls,
             vec!["https://a.com/", "https://b.com/", "https://c.com/"]
         );
+    }
+
+    #[tokio::test]
+    async fn test_load_all_returns_all_saved() {
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("crawl_results.bin");
+        let repo = CrawlResultRepositoryImpl::new(log_path, 64).unwrap();
+
+        repo.save(&make_content("https://a.com", "A")).unwrap();
+        repo.save(&make_content("https://b.com", "B")).unwrap();
+        repo.save(&make_content("https://c.com", "C")).unwrap();
+
+        // Wait for all three writes to be indexed
+        wait_for_index(&repo, "https://a.com/").await;
+        wait_for_index(&repo, "https://b.com/").await;
+        wait_for_index(&repo, "https://c.com/").await;
+
+        let all = repo.load_all().unwrap();
+        assert_eq!(all.len(), 3, "load_all should return all 3 saved items");
+
+        let mut titles: Vec<String> = all.iter().map(|c| c.title.clone()).collect();
+        titles.sort();
+        assert_eq!(titles, vec!["A", "B", "C"]);
+
+        // Content integrity: each item carries its expected body
+        for item in &all {
+            assert_eq!(item.content, format!("Content for {}", item.title));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_load_all_empty_repository_returns_empty_vec() {
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("crawl_results.bin");
+        let repo = CrawlResultRepositoryImpl::new(log_path, 64).unwrap();
+
+        let all = repo.load_all().unwrap();
+        assert!(all.is_empty(), "load_all on fresh repo should be empty");
     }
 
     #[tokio::test]
