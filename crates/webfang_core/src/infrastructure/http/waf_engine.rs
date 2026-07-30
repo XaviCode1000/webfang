@@ -62,6 +62,22 @@ impl WafTier {
     }
 }
 
+/// Where a piece of WAF evidence was observed (FIX B).
+///
+/// Drives the 5xx body-vs-header carve-out in the verdict policy: on a 5xx
+/// response a bare vendor mention sourced from the BODY ([`EvidenceSource::Body`])
+/// is ubiquitous diagnostic noise and does not block, whereas the same Fingerprint
+/// tier sourced from a control HEADER ([`EvidenceSource::Header`], e.g.
+/// `cf-mitigated`) signals active mitigation and still blocks. Internal to the
+/// verdict — it is deliberately NOT part of the Spanish evidence chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceSource {
+    /// Evidence matched in the response body (signatures or entropy).
+    Body,
+    /// Evidence matched in a response control header.
+    Header,
+}
+
 /// A single piece of WAF detection evidence collected during inspection.
 ///
 /// A verdict carries *all* collected evidences (REQ-WAF-01), enabling an
@@ -74,6 +90,10 @@ pub struct WafEvidence {
     pub tier: WafTier,
     /// The literal pattern (or rule label) that matched.
     pub matched_pattern: &'static str,
+    /// Where the evidence was observed (body or header) — drives the 5xx
+    /// body-vs-header carve-out in the verdict policy; not surfaced in the
+    /// Spanish evidence chain.
+    pub source: EvidenceSource,
 }
 
 /// The verdict of a WAF inspection.
@@ -686,6 +706,7 @@ fn collect_body_evidence(body: &str) -> Vec<WafEvidence> {
                     provider: sig.1,
                     tier: sig.2,
                     matched_pattern: sig.0,
+                    source: EvidenceSource::Body,
                 });
                 break;
             },
@@ -697,6 +718,7 @@ fn collect_body_evidence(body: &str) -> Vec<WafEvidence> {
                         provider: sig.1,
                         tier: sig.2,
                         matched_pattern: sig.0,
+                        source: EvidenceSource::Body,
                     });
                 }
             },
@@ -798,6 +820,7 @@ fn collect_header_evidence(headers: &HeaderMap) -> Vec<WafEvidence> {
                 provider,
                 tier: WafTier::Fingerprint,
                 matched_pattern: name,
+                source: EvidenceSource::Header,
             });
         }
     }
@@ -811,6 +834,14 @@ fn collect_header_evidence(headers: &HeaderMap) -> Vec<WafEvidence> {
 ///   response (403 / 429 / 503 / 520–529); degraded mode (no status) never
 ///   blocks on Fingerprint evidence (reported low-confidence).
 ///
+/// FIX B (body-vs-header granularity): on a 5xx response a Fingerprint match
+/// sourced from the BODY ([`EvidenceSource::Body`]) is ubiquitous diagnostic
+/// noise — the body analog of the purged `cf-ray` header — and does NOT block,
+/// so a genuine transient 5xx retries. Fingerprint evidence sourced from a
+/// control HEADER ([`EvidenceSource::Header`], e.g. `cf-mitigated`) signals
+/// active mitigation and still blocks on 5xx (RES-01). The distinction is by
+/// evidence source, not status — [`is_t2_blocking_status`] is unchanged.
+///
 /// Entropy challenges are emitted as [`WafTier::Challenge`] evidence only when
 /// their own policy (REQ-WAF-06) already decided to block, so they short-circuit
 /// here like any other Challenge marker.
@@ -819,9 +850,17 @@ fn decide(evidences: &[WafEvidence], ctx: &InspectionContext) -> bool {
         match ev.tier {
             WafTier::Challenge => return true,
             WafTier::Fingerprint => {
-                if is_t2_blocking_status(ctx.status) {
-                    return true;
+                if !is_t2_blocking_status(ctx.status) {
+                    continue;
                 }
+                // RES-01 extension: on 5xx a bare vendor mention in the BODY is
+                // ubiquitous diagnostic noise (the body analog of the purged
+                // cf-ray header) — not blocking. Header-sourced T2 (cf-mitigated
+                // etc.) signals active mitigation and still blocks.
+                if is_5xx(ctx.status) && ev.source == EvidenceSource::Body {
+                    continue;
+                }
+                return true;
             },
         }
     }
@@ -832,6 +871,12 @@ fn decide(evidences: &[WafEvidence], ctx: &InspectionContext) -> bool {
 #[inline]
 fn is_t2_blocking_status(status: Option<u16>) -> bool {
     matches!(status, Some(403 | 429 | 503 | 520..=529))
+}
+
+/// Whether an HTTP status is a 5xx server error (FIX B body-vs-header carve-out).
+#[inline]
+fn is_5xx(status: Option<u16>) -> bool {
+    matches!(status, Some(500..=599))
 }
 
 /// Entropy-based challenge detection (REQ-WAF-06).
@@ -857,6 +902,7 @@ fn entropy_evidence(
                     provider: "Obfuscated WAF",
                     tier: WafTier::Challenge,
                     matched_pattern: "high-entropy body (>100KB, >5.5 b/B)",
+                    source: EvidenceSource::Body,
                 });
             }
             // Informational detection (REQ-WAF-08): high entropy at status 200
@@ -883,6 +929,7 @@ fn entropy_evidence(
                     provider: "Silent Challenge",
                     tier: WafTier::Challenge,
                     matched_pattern: "script-density (<1500B, >5 <script>)",
+                    source: EvidenceSource::Body,
                 });
             }
         }
@@ -1007,11 +1054,13 @@ mod tests {
                     provider: "Cloudflare",
                     tier: WafTier::Challenge,
                     matched_pattern: "cf-turnstile",
+                    source: EvidenceSource::Body,
                 },
                 WafEvidence {
                     provider: "Akamai",
                     tier: WafTier::Fingerprint,
                     matched_pattern: "akamai",
+                    source: EvidenceSource::Body,
                 },
             ],
         };
@@ -1407,26 +1456,94 @@ mod tests {
     }
 
     #[test]
-    fn test_inspect_t2_at_503_blocks() {
-        // T2 evidence with a correlated WAF status → BLOCK.
+    fn test_inspect_t2_body_at_503_does_not_block() {
+        // FIX B: on 5xx a bare vendor mention in the BODY is ubiquitous diagnostic
+        // noise (the body analog of the purged cf-ray header) — NOT blocking, so a
+        // genuine transient 503 retries instead of dying as an instant WafChallenge.
         let ctx = ctx_with(Some(503), Some("text/html"));
         let verdict = WafInspector::inspect("served by cloudflare", &ctx);
-        assert!(verdict.is_blocked, "T2 at 503 must block");
+        assert!(
+            !verdict.is_blocked,
+            "bare body vendor mention (T2 Body) at 503 must NOT block (got {verdict:?})"
+        );
+        assert!(
+            !verdict.evidences.is_empty(),
+            "T2 evidence is still collected (informational)"
+        );
+    }
+
+    #[test]
+    fn test_inspect_t2_body_at_403_blocks() {
+        // FIX B: 403 is NOT 5xx, so a bare body vendor mention (T2 Body) still
+        // blocks — the body-vs-header carve-out applies only to 5xx.
+        let ctx = ctx_with(Some(403), Some("text/html"));
+        let verdict = WafInspector::inspect("served by cloudflare", &ctx);
+        assert!(
+            verdict.is_blocked,
+            "bare body vendor mention (T2 Body) at 403 must block (got {verdict:?})"
+        );
     }
 
     #[test]
     fn test_inspect_t2_blocking_status_set() {
-        // Only 403/429/503/520-529 correlate with T2 evidence.
+        // Only 403/429/503/520-529 correlate with T2 evidence. Exercised via a
+        // control HEADER (cf-mitigated): header-sourced T2 blocks on every
+        // correlated status, including the 5xx ones (RES-01), so this validates
+        // is_t2_blocking_status directly. Body-sourced T2 at 5xx is carved out
+        // by FIX B — see test_inspect_t2_body_at_503_does_not_block.
         for status in [403u16, 429, 503, 520, 525, 529] {
-            let ctx = ctx_with(Some(status), Some("text/html"));
-            let verdict = WafInspector::inspect("perimeterx protected", &ctx);
-            assert!(verdict.is_blocked, "T2 at {status} must block");
+            let mut headers = HeaderMap::new();
+            headers.insert("cf-mitigated", "challenge".parse().unwrap());
+            let ctx = InspectionContext {
+                status: Some(status),
+                content_type: Some("text/html".into()),
+                headers,
+                ..Default::default()
+            };
+            let verdict = WafInspector::inspect("ordinary body", &ctx);
+            assert!(verdict.is_blocked, "T2 header at {status} must block");
         }
         for status in [200u16, 201, 301, 404, 500, 519, 530] {
-            let ctx = ctx_with(Some(status), Some("text/html"));
-            let verdict = WafInspector::inspect("perimeterx protected", &ctx);
-            assert!(!verdict.is_blocked, "T2 at {status} must NOT block");
+            let mut headers = HeaderMap::new();
+            headers.insert("cf-mitigated", "challenge".parse().unwrap());
+            let ctx = InspectionContext {
+                status: Some(status),
+                content_type: Some("text/html".into()),
+                headers,
+                ..Default::default()
+            };
+            let verdict = WafInspector::inspect("ordinary body", &ctx);
+            assert!(!verdict.is_blocked, "T2 header at {status} must NOT block");
         }
+    }
+
+    #[test]
+    fn test_collect_body_evidence_source_is_body() {
+        // FIX B: body-signature evidence is tagged EvidenceSource::Body so the
+        // verdict can carve out 5xx body noise from header-sourced mitigation.
+        let evidences = collect_body_evidence("an article mentioning cloudflare in prose");
+        assert!(
+            !evidences.is_empty(),
+            "expected body evidence (got {evidences:?})"
+        );
+        assert!(
+            evidences.iter().all(|e| e.source == EvidenceSource::Body),
+            "body evidence must be tagged Body (got {evidences:?})"
+        );
+    }
+
+    #[test]
+    fn test_collect_header_evidence_source_is_header() {
+        // FIX B: control-header evidence is tagged EvidenceSource::Header so it
+        // still blocks on 5xx (active mitigation) unlike body-sourced T2.
+        let mut headers = HeaderMap::new();
+        headers.insert("cf-mitigated", "challenge".parse().unwrap());
+        let evidences = collect_header_evidence(&headers);
+        assert_eq!(evidences.len(), 1, "expected one header evidence");
+        assert!(
+            evidences.iter().all(|e| e.source == EvidenceSource::Header),
+            "header evidence must be tagged Header (got {evidences:?})"
+        );
     }
 
     #[test]
@@ -1509,9 +1626,10 @@ mod tests {
     #[test]
     fn test_inspect_collects_all_evidences() {
         // REQ-WAF-01: the verdict carries ALL collected evidences, not first-hit.
-        // T2-only body (a T1 marker would short-circuit the pass): every
-        // boundary-clean fingerprint is collected.
-        let ctx = ctx_with(Some(503), Some("text/html"));
+        // T2-only body at 403 (a T1 marker would short-circuit the pass; a 5xx
+        // status would carve out body-sourced T2 per FIX B): every boundary-clean
+        // fingerprint is collected and correlates with the non-5xx WAF status.
+        let ctx = ctx_with(Some(403), Some("text/html"));
         let verdict =
             WafInspector::inspect("protected by cloudflare and datadome and perimeterx", &ctx);
         assert!(verdict.is_blocked);
@@ -1631,11 +1749,13 @@ mod tests {
                 provider: "Cloudflare",
                 tier: WafTier::Challenge,
                 matched_pattern: "cf-turnstile",
+                source: EvidenceSource::Body,
             },
             WafEvidence {
                 provider: "Akamai",
                 tier: WafTier::Fingerprint,
                 matched_pattern: "akamai",
+                source: EvidenceSource::Body,
             },
         ];
         let chain = format_evidence_chain(&evidences);
@@ -1674,11 +1794,13 @@ mod tests {
                     provider: "Cloudflare",
                     tier: WafTier::Challenge,
                     matched_pattern: "cf-turnstile",
+                    source: EvidenceSource::Body,
                 },
                 WafEvidence {
                     provider: "Akamai",
                     tier: WafTier::Fingerprint,
                     matched_pattern: "akamai",
+                    source: EvidenceSource::Body,
                 },
             ],
         };
@@ -1782,6 +1904,7 @@ mod tests {
                 provider: "Cloudflare",
                 tier: WafTier::Challenge,
                 matched_pattern: "cf-turnstile",
+                source: EvidenceSource::Body,
             }]),
         );
         assert_eq!(err.classify(), crate::error::ErrorClass::PermanentFatal);

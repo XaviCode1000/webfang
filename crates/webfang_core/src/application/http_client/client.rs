@@ -1117,6 +1117,42 @@ mod waf_detection_tests {
         mock_server.verify().await;
     }
 
+    /// FIX B (body-vs-header granularity): a genuine transient 503 whose BODY
+    /// merely mentions a vendor (bare "cloudflare", T2 Body) is ubiquitous
+    /// diagnostic noise — NOT a WAF block. It must surface as `ServerError(503)`
+    /// after retries, not as an instant `WafChallenge`. A control HEADER such as
+    /// `cf-mitigated` would still block (see
+    /// `test_503_cf_mitigated_still_returns_waf_error`).
+    #[tokio::test]
+    async fn test_503_bare_body_vendor_mention_retries_then_server_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(503)
+                    .insert_header("content-type", "text/html; charset=utf-8")
+                    .set_body_string("<html><body>served by cloudflare</body></html>"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let config = HttpClientConfig {
+            max_retries: 2,
+            backoff_base_ms: 10,
+            backoff_max_ms: 50,
+            ..Default::default()
+        };
+        let client = HttpClient::new(config).unwrap();
+
+        let result = client.get(&mock_server.uri()).await;
+
+        assert!(
+            matches!(result.unwrap_err(), HttpError::ServerError(503)),
+            "bare body vendor mention at 503 must stay a ServerError (retries), not a WAF block"
+        );
+    }
+
     /// REQ-WAF-02/04/05 at the client boundary: a 200 `application/json` body
     /// carrying `akamai_hash` (the tls.peet.ws false positive from issue #346)
     /// passes — the content-type gate skips scanning JSON entirely.
