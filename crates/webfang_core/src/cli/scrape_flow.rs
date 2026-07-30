@@ -7,9 +7,9 @@ use url::Url;
 use crate::application::crawl_options::CrawlOptions;
 use crate::application::crawler::build_fetch_router;
 use crate::application::export_factory;
-use crate::cli::error::CliExit;
 use crate::application::progress_observer::ProgressObserver;
 use crate::application::scrape_single_url_for_tui;
+use crate::cli::error::CliExit;
 use crate::domain::entities::progress::{ScrapeError, ScrapeStatus};
 use crate::domain::ScrapedContent;
 use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
@@ -334,10 +334,9 @@ mod tests {
             ..Default::default()
         };
 
-        let (filtered, state_store) =
-            apply_resume_mode(urls.clone(), &opts, "https://example.com")
-                .await
-                .expect("resume disabled should not fail");
+        let (filtered, state_store) = apply_resume_mode(urls.clone(), &opts, "https://example.com")
+            .await
+            .expect("resume disabled should not fail");
 
         assert_eq!(filtered.len(), 2);
         assert!(state_store.is_none());
@@ -411,10 +410,9 @@ mod tests {
             ..Default::default()
         };
 
-        let (filtered, state_store) =
-            apply_resume_mode(urls.clone(), &opts, "https://example.com")
-                .await
-                .expect("corrupted state file should not prevent store creation");
+        let (filtered, state_store) = apply_resume_mode(urls.clone(), &opts, "https://example.com")
+            .await
+            .expect("corrupted state file should not prevent store creation");
 
         // Corrupted state → fallback to all URLs (graceful degradation)
         assert_eq!(
