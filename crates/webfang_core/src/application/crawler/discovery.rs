@@ -455,15 +455,15 @@ pub async fn scrape_single_url_for_tui(
         InspectionContext::from_lowercase_headers(page.status, &page.headers, config.ignore_waf);
     let verdict = WafInspector::inspect(&html, &ctx);
     if verdict.is_blocked {
-        warn!(
-            "WAF challenge detected from {}: {} evidences",
-            url,
-            verdict.evidences.len()
+        let chain = verdict.evidence_chain();
+        log_scrape_error(
+            &chain,
+            url.as_str(),
+            "fetch",
+            None,
+            "WAF challenge detected",
         );
-        return Err(ScraperError::waf_blocked(
-            url.to_string(),
-            verdict.evidence_chain(),
-        ));
+        return Err(ScraperError::waf_blocked(url.to_string(), chain));
     }
 
     extract_content(&html, url, config, asset_downloader, engine).await

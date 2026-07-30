@@ -637,10 +637,12 @@ impl WafInspector {
 
         let is_blocked = decide(&evidences, ctx);
 
-        // Observability (REQ-WAF-08): warn on a block with its evidence count;
-        // debug on every informational (non-blocking) detection.
+        // Observability (REQ-WAF-08): the engine inspects silently — both the
+        // blocking and the informational path log at debug. The decision site
+        // (HTTP client / scraper service / crawler discovery) owns the WARN or
+        // structured error, so a block is not double-logged here.
         if is_blocked {
-            tracing::warn!(
+            tracing::debug!(
                 status = ?ctx.status,
                 evidences = evidences.len(),
                 "WAF/CAPTCHA challenge detected; blocking response"

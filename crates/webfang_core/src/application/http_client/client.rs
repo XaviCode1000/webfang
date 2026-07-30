@@ -260,9 +260,10 @@ impl HttpClient {
                     let verdict = WafInspector::inspect(&body, &ctx);
                     if verdict.is_blocked {
                         warn!(
-                            "WAF/CAPTCHA challenge detected from {} ({} evidences); blocking",
-                            url,
-                            verdict.evidences.len()
+                            url = %url,
+                            status = %status,
+                            evidences = verdict.evidences.len(),
+                            "WAF/CAPTCHA challenge detected; blocking"
                         );
                         return Err(HttpError::WafChallenge(verdict.evidence_chain()));
                     }
@@ -366,10 +367,10 @@ impl HttpClient {
                     let verdict = WafInspector::inspect(&body, &ctx);
                     if verdict.is_blocked {
                         warn!(
-                            "WAF/CAPTCHA challenge detected from {} on {} ({} evidences); blocking",
-                            url,
-                            status,
-                            verdict.evidences.len()
+                            url = %url,
+                            status = %status,
+                            evidences = verdict.evidences.len(),
+                            "WAF/CAPTCHA challenge detected; blocking"
                         );
                         return Err(HttpError::WafChallenge(verdict.evidence_chain()));
                     }
