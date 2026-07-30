@@ -116,7 +116,7 @@ impl TokenBatch {
 /// # async fn example() -> anyhow::Result<()> {
 /// use webfang_ai::MiniLmTokenizer;
 ///
-/// let tokenizer = MiniLmTokenizer::load_default().await?;
+/// let tokenizer = MiniLmTokenizer::from_file("tokenizer.json").await?;
 /// let input = tokenizer.tokenize("Hello world")?;
 /// assert_eq!(input.input_ids[0], 101); // [CLS]
 /// assert_eq!(input.attention_mask[0], 1); // Real token
