@@ -18,6 +18,7 @@ use crate::domain::{
 };
 use crate::error::{Result, ScraperError};
 use crate::infrastructure::http::waf_engine::WafInspector;
+use crate::infrastructure::observability::log_scrape_error;
 use crate::ScraperConfig;
 use futures::stream::{self, StreamExt};
 use tracing::{debug, info, instrument, warn};
@@ -326,7 +327,10 @@ pub async fn scrape_with_config(
 
     let response = match client.get(url.as_str()).await {
         Ok(resp) => resp,
-        Err(e) => return Err(scraper_error_from_http(e, url.as_str())),
+        Err(e) => {
+            log_scrape_error(&e, url.as_str(), "fetch", None, "HTTP request failed");
+            return Err(scraper_error_from_http(e, url.as_str()));
+        },
     };
 
     if !(200..300).contains(&response.status) {
@@ -355,7 +359,13 @@ pub async fn scrape_with_config(
 
     // Detect WAF/CAPTCHA challenges disguised as HTTP 200
     if let Some(provider) = WafInspector::detect_body(&html) {
-        warn!("WAF challenge detected from {}: {}", url, provider);
+        log_scrape_error(
+            &provider,
+            url.as_str(),
+            "fetch",
+            None,
+            "WAF challenge detected",
+        );
         return Err(ScraperError::WafBlocked {
             url: url.to_string(),
             provider: provider.to_string(),

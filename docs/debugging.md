@@ -140,13 +140,9 @@ This opens an interactive TUI showing live tasks, their states, and poll times.
 
 ## Troubleshooting
 
-| Symptom | First query / check |
-| :--- | :--- |
-| "The crawl is slow" | Slowest-spans query above; check `pipeline_stage` distribution and `export_batch` timings |
-| "Pages are failing silently" | `select(.level == "ERROR")` — every error path logs `url` + `stage` + `trace_id` |
-| "I can't tell which logs belong to one page" | Filter by `trace_id` (one per operation) or the per-page `crawl_page` span |
-| "WAF / blocks" | `select(.fields.message? == "WAF challenge detected")` and banned-domain warnings |
-| "Non-deterministic snapshot in tests" | The field must be redacted via `redact_nondeterministic()`; `correlation_id`/`trace_id` are already `#[serde(skip)]` on scraped output |
+See [troubleshooting.md](troubleshooting.md) for common problems (slow
+crawls, silent page failures, WAF blocks, async deadlocks, poor content)
+and how to diagnose each with the trace queries above.
 
 ---
 

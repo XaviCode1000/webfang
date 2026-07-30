@@ -19,6 +19,7 @@ use crate::infrastructure::crawler::{
 };
 use crate::infrastructure::downloader::{DownloadError, Downloader};
 use crate::infrastructure::http::waf_engine::WafInspector;
+use crate::infrastructure::observability::log_scrape_error;
 use crate::infrastructure::scraper::{fallback, readability};
 use crate::ScraperConfig;
 
@@ -276,7 +277,13 @@ pub async fn extract_content(
                     MIN_FALLBACK_CONTENT,
                     e
                 );
-                warn!("{}", msg);
+                log_scrape_error(
+                    &msg,
+                    url.as_str(),
+                    "extract",
+                    None,
+                    "content extraction failed",
+                );
                 return Err(ScraperError::ExtractionFailed {
                     url: url.to_string(),
                     reason: msg,

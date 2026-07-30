@@ -102,6 +102,24 @@ webfang --url https://example.com --export-format jsonl
 webfang --url https://example.com --export-format vector
 ```
 
+### Debugging & tracing
+
+Every run can emit a JSONL trace (no external collector needed). Each
+operation shares a `trace_id`; each page gets its own `span_id`.
+
+```bash
+# Emit a trace + verbose logs
+webfang --url https://example.com --trace-file debug.jsonl -vvv
+
+# Reconstruct one operation, list errors, find the slowest spans
+scripts/analyze-trace.sh debug.jsonl trace <trace_id>
+scripts/analyze-trace.sh debug.jsonl errors
+scripts/analyze-trace.sh debug.jsonl slow 20
+```
+
+See [docs/debugging.md](docs/debugging.md) for the full query cookbook and
+[docs/troubleshooting.md](docs/troubleshooting.md) for common problems.
+
 ### AI cleaning
 
 ```bash
