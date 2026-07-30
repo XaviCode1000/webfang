@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use webfang::domain::entities::ScrapedContent;
-use webfang::domain::value_objects::ValidUrl;
+use webfang_core::domain::entities::ScrapedContent;
+use webfang_core::domain::value_objects::ValidUrl;
 
 fn sample_chunks(count: usize) -> Vec<ScrapedContent> {
     (0..count)
@@ -32,14 +32,14 @@ fn bench_export(c: &mut Criterion) {
     let chunks_100: Vec<_> = sample_chunks(100)
         .into_iter()
         .map(|sc| {
-            let chunk: webfang::domain::DocumentChunk = sc.into();
+            let chunk: webfang_core::domain::DocumentChunk = sc.into();
             chunk
         })
         .collect();
     let chunks_1000: Vec<_> = sample_chunks(1000)
         .into_iter()
         .map(|sc| {
-            let chunk: webfang::domain::DocumentChunk = sc.into();
+            let chunk: webfang_core::domain::DocumentChunk = sc.into();
             chunk
         })
         .collect();
@@ -137,7 +137,7 @@ fn bench_export(c: &mut Criterion) {
         b.iter(|| {
             let mut count = 0;
             for line in black_box(&jsonl_data).lines() {
-                let _: webfang::domain::DocumentChunk = serde_json::from_str(line).unwrap();
+                let _: webfang_core::domain::DocumentChunk = serde_json::from_str(line).unwrap();
                 count += 1;
             }
             assert_eq!(count, 1000);

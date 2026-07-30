@@ -1,10 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use webfang_core::infrastructure::export::vector_exporter::cosine_similarity;
 
-// Only compile with ai feature
-#[cfg(feature = "ai")]
-use webfang::infrastructure::ai::embedding_ops::cosine_similarity;
-
-#[cfg(feature = "ai")]
 fn bench_cosine_similarity(c: &mut Criterion) {
     let dims = 384;
     // Deterministic data — no rand crate needed
@@ -13,9 +9,9 @@ fn bench_cosine_similarity(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("cosine_similarity");
     group.throughput(Throughput::Elements(1));
-    group.bench_function("simd_384d", |bencher| {
+    group.bench_function("384d", |bencher| {
         bencher.iter(|| {
-            let result = cosine_similarity(black_box(&a), black_box(&b));
+            let result = cosine_similarity(black_box(&a), black_box(&b)).expect("equal dimensions");
             assert!((-1.0..=1.0).contains(&result));
             black_box(result)
         })
@@ -23,14 +19,5 @@ fn bench_cosine_similarity(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(feature = "ai")]
 criterion_group!(benches, bench_cosine_similarity);
-
-#[cfg(feature = "ai")]
 criterion_main!(benches);
-
-// Placeholder when ai feature is disabled
-#[cfg(not(feature = "ai"))]
-fn main() {
-    println!("Benchmarks require --features ai");
-}
