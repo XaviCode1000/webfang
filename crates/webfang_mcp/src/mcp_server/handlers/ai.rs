@@ -2,8 +2,10 @@
 //!
 //! Tools: semantic_cleaner, search_obsidian
 //!
-//! Tool functions are always registered. The ai feature is not available
-//! in webfang_mcp — these always return a "not implemented" error.
+//! Tool functions are always registered. `semantic_cleaner` runs when a
+//! semantic cleaner is injected into the `Container` (constructed behind the
+//! `ai` feature); without one it returns an honest feature-gated error.
+//! `search_obsidian` is not yet implemented (honest error, see issue #386).
 
 use super::McpHandler;
 use crate::mcp_server::params::*;
