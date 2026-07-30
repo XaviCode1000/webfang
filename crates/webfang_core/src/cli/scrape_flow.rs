@@ -7,6 +7,7 @@ use url::Url;
 use crate::application::crawl_options::CrawlOptions;
 use crate::application::crawler::build_fetch_router;
 use crate::application::export_factory;
+use crate::cli::error::CliExit;
 use crate::application::progress_observer::ProgressObserver;
 use crate::application::scrape_single_url_for_tui;
 use crate::domain::entities::progress::{ScrapeError, ScrapeStatus};
@@ -25,11 +26,17 @@ use crate::application::adaptive_engine::AdaptiveSelectorEngine;
 type AdaptiveSelectorEngine = ();
 
 /// Apply resume mode filtering.
+///
+/// # Errors
+///
+/// Returns `CliExit::IoError` when `--resume` is active and the state store
+/// cannot be created. Without a working store the crawl would silently
+/// re-scrape every URL, defeating the purpose of resume mode.
 pub async fn apply_resume_mode(
     urls_to_scrape: Vec<Url>,
     opts: &CrawlOptions,
     target_url: &str,
-) -> (Vec<Url>, Option<StateStore>) {
+) -> Result<(Vec<Url>, Option<StateStore>), CliExit> {
     let state_store: Option<StateStore> = if opts.crawl.resume {
         info!("Resume mode enabled - tracking processed URLs");
         let state_dir = opts.crawl.state_dir.clone().unwrap_or_else(|| {
@@ -48,8 +55,10 @@ pub async fn apply_resume_mode(
         match export_factory::create_state_store(state_dir, &domain) {
             Ok(store) => Some(store),
             Err(e) => {
-                warn!("Failed to create state store: {}", e);
-                None
+                tracing::error!(error = %e, "state store creation failed with --resume active");
+                return Err(CliExit::IoError(format!(
+                    "No se pudo crear el almacén de estado para --resume: {e}"
+                )));
             },
         }
     } else {
@@ -93,7 +102,7 @@ pub async fn apply_resume_mode(
         urls_to_scrape
     };
 
-    (filtered, state_store)
+    Ok((filtered, state_store))
 }
 
 /// Scrape all URLs, reporting progress via the provided observer.
@@ -326,7 +335,9 @@ mod tests {
         };
 
         let (filtered, state_store) =
-            apply_resume_mode(urls.clone(), &opts, "https://example.com").await;
+            apply_resume_mode(urls.clone(), &opts, "https://example.com")
+                .await
+                .expect("resume disabled should not fail");
 
         assert_eq!(filtered.len(), 2);
         assert!(state_store.is_none());
@@ -359,7 +370,9 @@ mod tests {
             ..Default::default()
         };
 
-        let (filtered, state_store) = apply_resume_mode(urls, &opts, "https://example.com").await;
+        let (filtered, state_store) = apply_resume_mode(urls, &opts, "https://example.com")
+            .await
+            .expect("valid state dir should not fail");
 
         // URL "a" was already processed, should be skipped
         assert_eq!(filtered.len(), 2, "should skip 1 already-processed URL");
@@ -399,7 +412,9 @@ mod tests {
         };
 
         let (filtered, state_store) =
-            apply_resume_mode(urls.clone(), &opts, "https://example.com").await;
+            apply_resume_mode(urls.clone(), &opts, "https://example.com")
+                .await
+                .expect("corrupted state file should not prevent store creation");
 
         // Corrupted state → fallback to all URLs (graceful degradation)
         assert_eq!(
@@ -426,7 +441,9 @@ mod tests {
             ..Default::default()
         };
 
-        let (filtered, state_store) = apply_resume_mode(urls, &opts, "https://example.com").await;
+        let (filtered, state_store) = apply_resume_mode(urls, &opts, "https://example.com")
+            .await
+            .expect("custom state dir should not fail");
 
         assert_eq!(filtered.len(), 1);
         assert!(
