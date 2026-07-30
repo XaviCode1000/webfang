@@ -148,8 +148,10 @@ pub struct ExportFileParams {
     pub output_dir: String,
     /// Filename (without extension)
     pub filename: String,
-    /// Export format: markdown, text, json, jsonl, vector
+    /// Export format: jsonl, vector, auto
     pub format: String,
+    /// Content to export (written to the output file)
+    pub content: String,
 }
 
 #[derive(Deserialize, JsonSchema, Debug)]

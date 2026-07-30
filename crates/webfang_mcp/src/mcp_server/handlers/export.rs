@@ -1,7 +1,14 @@
-//! Export tools — 4 tools for output format conversion
+//! Export tools — 4 tools for real output format conversion
 //!
 //! Tools: export_file, export_jsonl, export_vector,
 //! process_export_pipeline
+//!
+//! Every tool performs a REAL export via the existing `webfang_core`
+//! `export_factory` surface (jsonl/vector/auto) and reports honest
+//! success/error. Operational failures (no repository, empty results,
+//! missing content, I/O errors) map to `CallToolResult::error`
+//! (isError:true, Spanish). Invalid parameters (bad format) map to a
+//! protocol-level `McpError::invalid_params` — never a silent fallback.
 
 use super::McpHandler;
 use crate::mcp_server::params::*;
@@ -10,14 +17,94 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool;
 use rmcp::tool_router;
 use rmcp::{model::CallToolResult, model::Content, ErrorData as McpError};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::instrument;
+use webfang_core::application::export_factory::{create_exporter, process_results};
+use webfang_core::domain::entities::ExportFormat;
+use webfang_core::domain::DocumentChunkUnvalidated;
+use webfang_core::domain::ScrapedContent;
+
+/// Run a real export of persisted results to the given format.
+///
+/// Maps operational [`ExporterError`](webfang_core::domain::exporter::ExporterError)s
+/// to an honest `CallToolResult::error` (isError:true, Spanish) and reports the
+/// real written path on success.
+fn export_results(
+    results: &[ScrapedContent],
+    output_dir: PathBuf,
+    format: ExportFormat,
+    filename: &str,
+) -> Result<CallToolResult, McpError> {
+    let count = results.len();
+    match process_results(results, output_dir.clone(), format, filename, None, false) {
+        Ok(_) => {
+            let path = resolve_export_path(&output_dir, filename, format);
+            tracing::info!(documents = count, path = %path.display(), "export completed");
+            Ok(CallToolResult::success(vec![Content::text(format!(
+                "Exportación completada: {count} documentos → {}",
+                path.display()
+            ))]))
+        },
+        Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+            "error al exportar: {e}"
+        ))])),
+    }
+}
+
+/// Compute the real on-disk path an export wrote to.
+///
+/// For concrete formats this is `{output_dir}/{filename}.{ext}`. For `Auto`
+/// the concrete extension is resolved from what actually exists (jsonl
+/// preferred, then json), so the reported path is always truthful.
+fn resolve_export_path(output_dir: &Path, filename: &str, format: ExportFormat) -> PathBuf {
+    match format {
+        ExportFormat::Auto => {
+            let jsonl = output_dir.join(format!("{filename}.jsonl"));
+            if jsonl.exists() {
+                jsonl
+            } else {
+                output_dir.join(format!("{filename}.json"))
+            }
+        },
+        concrete => output_dir.join(format!("{filename}.{}", concrete.extension())),
+    }
+}
+
+impl McpHandler {
+    /// Load all persisted crawl results, mapping operational failures to an
+    /// honest `CallToolResult::error` (isError:true, Spanish).
+    ///
+    /// Returns `Err(CallToolResult)` when no repository is wired, the bulk
+    /// load fails, or the repository holds zero results; callers propagate
+    /// this directly.
+    async fn load_results(&self) -> Result<Vec<ScrapedContent>, CallToolResult> {
+        let repo = match self.state.container.crawl_result_repository() {
+            Some(repo) => repo,
+            None => {
+                return Err(CallToolResult::error(vec![Content::text(
+                    "no hay repositorio de resultados disponible",
+                )]))
+            },
+        };
+        let results = repo.load_all().map_err(|e| {
+            CallToolResult::error(vec![Content::text(format!(
+                "no se pudieron cargar los resultados: {e}"
+            ))])
+        })?;
+        if results.is_empty() {
+            return Err(CallToolResult::error(vec![Content::text(
+                "no hay resultados disponibles para exportar",
+            )]));
+        }
+        Ok(results)
+    }
+}
 
 #[tool_router(router = tool_router_export, vis = "pub")]
 impl McpHandler {
-    /// Save scraped content as a file (Markdown, Text, or JSON)
+    /// Save caller-provided content as a structured export file (jsonl/vector)
     #[tool(
-        description = "Save scraped content as a file in Markdown, Text, or JSON format with YAML frontmatter."
+        description = "Save caller-provided content to a structured export file. Supported formats: jsonl, vector, auto. Reports the real written path."
     )]
     #[instrument(skip(self), fields(filename = %params.filename, format = %params.format))]
     async fn export_file(
@@ -26,76 +113,158 @@ impl McpHandler {
     ) -> Result<CallToolResult, McpError> {
         let _permit = acquire_semaphore!(self, export);
 
-        let format = webfang_core::domain::entities::ExportFormat::parse_str(&params.format)
-            .unwrap_or(webfang_core::domain::entities::ExportFormat::Jsonl);
+        // Honest error on empty content (REQ-MCP-EXPORT-05).
+        if params.content.trim().is_empty() {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "el contenido no puede estar vacío",
+            )]));
+        }
+
+        // Invalid format is a protocol-level invalid-params error, never a
+        // silent fallback (REQ-MCP-EXPORT-07).
+        let format = ExportFormat::parse_str(&params.format).map_err(|e| {
+            McpError::invalid_params(
+                format!("formato inválido: {e}"),
+                Some(serde_json::Value::String("format".to_string())),
+            )
+        })?;
 
         let output_dir = PathBuf::from(&params.output_dir);
-        match tokio::fs::create_dir_all(&output_dir).await {
-            Ok(_) => {
-                let path = output_dir.join(format!("{}.{}", params.filename, format.extension()));
+        let filename = params.filename.clone();
+
+        // Build a validated document chunk from the caller content. The chunk
+        // id/timestamp are generated internally; the synthetic URL satisfies
+        // validation (any parseable scheme) and scopes the doc to this tool.
+        let url = url::Url::parse(&format!("https://webfang.local/{filename}")).map_err(|e| {
+            McpError::invalid_params(
+                format!("nombre de archivo inválido: {e}"),
+                Some(serde_json::Value::String("filename".to_string())),
+            )
+        })?;
+        let scraped = ScrapedContent {
+            title: filename.clone(),
+            content: params.content.clone(),
+            url: webfang_core::domain::ValidUrl::new(url),
+            excerpt: None,
+            author: None,
+            date: None,
+            html: None,
+            assets: vec![],
+            correlation_id: None,
+        };
+        let validated = match DocumentChunkUnvalidated::from_scraped_content(&scraped).validate() {
+            Ok(v) => v,
+            Err(e) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "contenido inválido: {e}"
+                ))]))
+            },
+        };
+
+        let exporter = match create_exporter(output_dir.clone(), &filename, format) {
+            Ok(exporter) => exporter,
+            Err(e) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "no se pudo crear el exportador: {e}"
+                ))]))
+            },
+        };
+
+        match exporter.export(validated) {
+            Ok(()) => {
+                let path = resolve_export_path(&output_dir, &filename, format);
+                tracing::info!(documents = 1, path = %path.display(), "export completed");
                 Ok(CallToolResult::success(vec![Content::text(format!(
-                    "File ready at: {}",
+                    "Exportación completada: 1 documentos → {}",
                     path.display()
                 ))]))
             },
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "failed to create directory: {e}"
+                "error al exportar: {e}"
             ))])),
         }
     }
 
-    /// Export scraped content to JSONL format (one JSON object per line, RAG-ready)
+    /// Export persisted crawl results to JSONL format (one JSON object per line)
     #[tool(
-        description = "Export content to JSONL format (one JSON object per line). Optimal for RAG pipeline ingestion."
+        description = "Export persisted crawl results to JSONL format (one JSON object per line). Optimal for RAG pipeline ingestion. Reports the real written path."
     )]
-    #[instrument(skip(self), fields(params = ?params))]
+    #[instrument(skip(self), fields(filename, format = "jsonl", results))]
     async fn export_jsonl(
         &self,
         Parameters(params): Parameters<ExportJsonlParams>,
     ) -> Result<CallToolResult, McpError> {
         let _permit = acquire_semaphore!(self, export);
 
-        let output_dir = params.output_dir.as_deref().unwrap_or("./output");
-        let filename = params.filename.as_deref().unwrap_or("export");
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "JSONL exporter ready at: {output_dir}/{filename}.jsonl"
-        ))]))
+        let output_dir = PathBuf::from(params.output_dir.as_deref().unwrap_or("./output"));
+        let filename = params.filename.as_deref().unwrap_or("export").to_string();
+
+        let results = match self.load_results().await {
+            Ok(results) => results,
+            Err(err) => return Ok(err),
+        };
+        let span = tracing::Span::current();
+        span.record("filename", filename.as_str());
+        span.record("results", results.len());
+
+        export_results(&results, output_dir, ExportFormat::Jsonl, &filename)
     }
 
-    /// Export content with embeddings for vector database ingestion
+    /// Export persisted crawl results with embeddings for vector database ingestion
     #[tool(
-        description = "Export content with embeddings to JSON format for vector database ingestion. Includes metadata header."
+        description = "Export persisted crawl results to JSON format for vector database ingestion. Includes a metadata header. Reports the real written path."
     )]
-    #[instrument(skip(self), fields(params = ?params))]
+    #[instrument(skip(self), fields(filename, format = "vector", results))]
     async fn export_vector(
         &self,
         Parameters(params): Parameters<ExportVectorParams>,
     ) -> Result<CallToolResult, McpError> {
         let _permit = acquire_semaphore!(self, export);
 
-        let output_dir = params.output_dir.as_deref().unwrap_or("./output");
-        let filename = params.filename.as_deref().unwrap_or("export");
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Vector exporter ready at: {output_dir}/{filename}.json"
-        ))]))
+        let output_dir = PathBuf::from(params.output_dir.as_deref().unwrap_or("./output"));
+        let filename = params.filename.as_deref().unwrap_or("export").to_string();
+
+        let results = match self.load_results().await {
+            Ok(results) => results,
+            Err(err) => return Ok(err),
+        };
+        let span = tracing::Span::current();
+        span.record("filename", filename.as_str());
+        span.record("results", results.len());
+
+        export_results(&results, output_dir, ExportFormat::Vector, &filename)
     }
 
-    /// Full export pipeline: scrape → chunk → validate → export
+    /// Full export pipeline: load persisted results → export synchronously
     #[tool(
-        description = "Run the full export pipeline: scrape content, chunk it, validate, and export to the specified format."
+        description = "Run the export pipeline synchronously: load persisted crawl results and export them to the specified format (jsonl, vector, or auto; default jsonl). Reports the real written path; never queues."
     )]
-    #[instrument(skip(self), fields(params = ?params))]
+    #[instrument(skip(self), fields(format, results))]
     async fn process_export_pipeline(
         &self,
         Parameters(params): Parameters<ProcessExportPipelineParams>,
     ) -> Result<CallToolResult, McpError> {
         let _permit = acquire_semaphore!(self, export);
 
-        let url = params.url.as_deref().unwrap_or("");
-        let format = params.format.as_deref().unwrap_or("jsonl");
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Pipeline queued for: {url} → [{format}]"
-        ))]))
+        let format_str = params.format.as_deref().unwrap_or("jsonl");
+        let format = ExportFormat::parse_str(format_str).map_err(|e| {
+            McpError::invalid_params(
+                format!("formato inválido: {e}"),
+                Some(serde_json::Value::String("format".to_string())),
+            )
+        })?;
+
+        let results = match self.load_results().await {
+            Ok(results) => results,
+            Err(err) => return Ok(err),
+        };
+        let span = tracing::Span::current();
+        span.record("format", format_str);
+        span.record("results", results.len());
+
+        // The pipeline exports to the container's configured output directory.
+        let output_dir = self.state.container.scraper_config.output_dir.clone();
+        export_results(&results, output_dir, format, "export")
     }
 }
 

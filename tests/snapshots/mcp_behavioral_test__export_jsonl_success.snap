@@ -1,0 +1,5 @@
+---
+source: crates/webfang_mcp/../../tests/mcp_behavioral_test.rs
+expression: "redact_path(&text, out.path())"
+---
+Exportación completada: 1 documentos → [OUT_DIR]/export.jsonl
