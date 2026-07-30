@@ -47,7 +47,7 @@ pub struct HttpClientConfig {
     pub user_agent: Option<String>,
     /// Bypass WAF/CAPTCHA detection entirely (REQ-WAF-07).
     ///
-    /// When true, the HTTP client builds its WAF [`InspectionContext`] with
+    /// When true, the HTTP client builds its WAF `InspectionContext` with
     /// `ignore_waf` set, short-circuiting inspection to a clean verdict so
     /// challenge markers never block a response.
     pub ignore_waf: bool,
