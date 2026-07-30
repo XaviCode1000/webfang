@@ -193,7 +193,7 @@ impl CrawlResultRepository for CrawlResultRepositoryImpl {
     ///
     /// Overrides the default N+1 (`get_all_urls` → `find_by_url`) loop with
     /// one forward pass over the append-only log, reusing the same record
-    /// framing as [`Self::recover_index`]: `[4-byte LE length][JSON payload]
+    /// framing as `Self::recover_index`: `[4-byte LE length][JSON payload]
     /// [\n]`. A partial trailing record (torn write) stops the scan cleanly
     /// instead of erroring, preserving crash-safety.
     ///
