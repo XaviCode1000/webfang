@@ -10,6 +10,8 @@
 //! use common::{sample_html, sample_sitemap, TestHttpServer};
 //! ```
 
+#![allow(dead_code, unused_imports)]
+
 pub mod cli_harness;
 pub mod fixtures;
 pub mod mock_http;

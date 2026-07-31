@@ -49,6 +49,7 @@ schemars = { workspace = true }
 insta = { workspace = true }
 scraper = { workspace = true }
 wiremock = { workspace = true }
+proptest = { workspace = true }
 
 
 
