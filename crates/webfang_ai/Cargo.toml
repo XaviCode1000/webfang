@@ -44,13 +44,11 @@ uuid = { workspace = true }
 
 [[test]]
 name = "ai_integration"
-required-features = ["ai"]
 path = "../../tests/ai_integration.rs"
 
 [[test]]
 name = "chunker_regression"
 path = "../../tests/chunker_regression.rs"
-required-features = ["ai"]
 
 [lints]
 workspace = true

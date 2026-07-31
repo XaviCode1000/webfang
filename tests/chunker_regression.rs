@@ -8,6 +8,8 @@
 //! (webfang_core cannot depend on webfang_ai as a dev-dep since webfang_ai
 //! depends on webfang_core).
 
+#![cfg(feature = "ai")]
+
 use webfang_ai::HtmlChunker;
 
 #[test]
