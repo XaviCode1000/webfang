@@ -1,0 +1,49 @@
+name: Production Bug Discovery
+on:
+  schedule:
+    - cron: "0 6 * * *"  # Diario 6AM
+  workflow_dispatch: {}
+  pull_request:
+    paths: ["crates/**", "tests/**"]
+
+jobs:
+  poisoned-env:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      WEBFANG_URL: "POISON_TRASH"
+      WEBFANG_OUTPUT: "POISON_TRASH"
+      WEBFANG_SINGLE_PAGE: "true"
+      WEBFANG_THRESHOLD: "0.99"
+      WEBFANG_SELECTOR: "POISON"
+      AI_MODEL_ID: "POISON"
+      WEBFANG_OBSIDIAN_WIKI_LINKS: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://poison:4317"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - name: Run tests with poisoned environment
+        run: cargo nextest run --workspace --all-features --no-fail-fast
+      - name: Publish results
+        if: always()
+        run: |
+          echo "## Poisoned Env Results" >> $GITHUB_STEP_SUMMARY
+          echo "Tests that FAIL with poisoned env are NOT hermetic." >> $GITHUB_STEP_SUMMARY
+
+  ignored-tests:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - name: Run ignored tests (bug discovery)
+        run: cargo nextest run --workspace --all-features --run-ignored only --no-fail-fast
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Production Bug Discovery" >> $GITHUB_STEP_SUMMARY
+          echo "Failures here = potential production bugs." >> $GITHUB_STEP_SUMMARY
