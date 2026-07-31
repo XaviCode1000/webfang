@@ -63,8 +63,7 @@ impl ThresholdConfig {
     pub fn with_min_threshold(mut self, threshold: f32) -> Self {
         assert!(
             (0.0..=1.0).contains(&threshold),
-            "Min threshold must be between 0.0 and 1.0, got {}",
-            threshold
+            "Min threshold must be between 0.0 and 1.0, got {threshold}"
         );
         self.min_threshold = threshold;
         self
@@ -83,8 +82,7 @@ impl ThresholdConfig {
     pub fn with_max_threshold(mut self, threshold: f32) -> Self {
         assert!(
             (0.0..=1.0).contains(&threshold),
-            "Max threshold must be between 0.0 and 1.0, got {}",
-            threshold
+            "Max threshold must be between 0.0 and 1.0, got {threshold}"
         );
         self.max_threshold = threshold;
         self
@@ -103,8 +101,7 @@ impl ThresholdConfig {
     pub fn with_default_threshold(mut self, threshold: f32) -> Self {
         assert!(
             (0.0..=1.0).contains(&threshold),
-            "Default threshold must be between 0.0 and 1.0, got {}",
-            threshold
+            "Default threshold must be between 0.0 and 1.0, got {threshold}"
         );
         self.default_threshold = threshold;
         self

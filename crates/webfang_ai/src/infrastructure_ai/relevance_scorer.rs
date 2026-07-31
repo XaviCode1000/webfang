@@ -41,8 +41,7 @@ impl RelevanceScorer {
     pub fn new(threshold: f32) -> Self {
         assert!(
             (0.0..=1.0).contains(&threshold),
-            "Threshold must be between 0.0 and 1.0, got {}",
-            threshold
+            "Threshold must be between 0.0 and 1.0, got {threshold}"
         );
 
         Self {
@@ -89,8 +88,7 @@ impl RelevanceScorer {
     pub fn set_threshold(&mut self, threshold: f32) {
         assert!(
             (0.0..=1.0).contains(&threshold),
-            "Threshold must be between 0.0 and 1.0, got {}",
-            threshold
+            "Threshold must be between 0.0 and 1.0, got {threshold}"
         );
         self.threshold = threshold;
     }
