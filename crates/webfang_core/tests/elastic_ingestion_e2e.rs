@@ -20,18 +20,16 @@
 
 use std::sync::Arc;
 
+use tempfile::TempDir;
 use webfang::application::elastic_ingestion::ElasticIngestion;
 use webfang::infrastructure::bridge::CpuBridge;
 use webfang::infrastructure::config::AutotuningConfig;
 use webfang::infrastructure::content_processing::AggressiveProcessor;
 use webfang::infrastructure::cpu_pool::RayonCpuPool;
-use webfang::infrastructure::crawler::resource_downloader::{
-    DownloadConfig, ResourceDownloader,
-};
+use webfang::infrastructure::crawler::resource_downloader::{DownloadConfig, ResourceDownloader};
 use webfang::infrastructure::persistence::sqlite::{
     create_pool, setup_schema, SqliteVectorRepository,
 };
-use tempfile::TempDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

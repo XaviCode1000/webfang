@@ -5,11 +5,11 @@
 
 #![cfg(feature = "persistence")]
 
+use tempfile::TempDir;
 use webfang::domain::VectorRepository;
 use webfang::infrastructure::persistence::sqlite::{
     create_memory_pool, create_pool, setup_schema, SqliteVectorRepository,
 };
-use tempfile::TempDir;
 
 // ===== SCHEMA INITIALIZATION =====
 

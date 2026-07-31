@@ -5,11 +5,11 @@
 
 #![cfg(feature = "persistence")]
 
+use tempfile::TempDir;
 use webfang::application::container::Container;
 use webfang::domain::CrawlerConfig;
 use webfang::infrastructure::autotuning::ElasticOverrides;
 use webfang::infrastructure::config::ScraperConfig;
-use tempfile::TempDir;
 
 #[ignore = "resurrected: pending triage"]
 #[tokio::test]

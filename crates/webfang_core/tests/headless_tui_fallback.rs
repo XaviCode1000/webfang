@@ -13,8 +13,7 @@ use assert_cmd::Command;
 const EXPECTED_MSG: &str = "TUI no disponible: compilar con --features ui";
 
 fn webfang_core() -> Command {
-    Command::cargo_bin("webfang_core")
-        .expect("webfang_core binary must be built for this test")
+    Command::cargo_bin("webfang_core").expect("webfang_core binary must be built for this test")
 }
 
 #[ignore = "resurrected: pending triage"]
