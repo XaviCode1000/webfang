@@ -6204,6 +6204,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "webfang_test_utils"
+version = "2.0.0"
+dependencies = [
+ "regex",
+ "tempfile",
+]
+
+[[package]]
 name = "webfang_tui"
 version = "2.0.0"
 dependencies = [
