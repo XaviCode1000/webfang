@@ -15,7 +15,7 @@
 
 #![cfg(feature = "ai")]
 
-use webfang_ai::infrastructure_ai::{InferencePool, ModelConfig, SemanticCleanerImpl};
+use webfang_ai::infrastructure_ai::{ModelConfig, SemanticCleanerImpl};
 use webfang_ai::infrastructure_ai::{DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO};
 use webfang_ai::SemanticCleaner;
 use webfang_ai::SemanticError;
