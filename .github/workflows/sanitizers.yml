@@ -17,6 +17,11 @@ jobs:
           MIRIFLAGS="-Zmiri-disable-isolation" \
           cargo +nightly miri test -p webfang_core -- infrastructure::bridge infrastructure::network --test-threads=1
         continue-on-error: true
+      - name: Publish Miri Summary
+        if: always()
+        run: |
+          echo "## Miri Results" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
 
   tsan:
     runs-on: ubuntu-latest
@@ -28,6 +33,11 @@ jobs:
           RUSTFLAGS="-Zsanitizer=thread" \
           cargo +nightly test -p webfang_core --target x86_64-unknown-linux-gnu -- --test-threads=4
         continue-on-error: true
+      - name: Publish TSan Summary
+        if: always()
+        run: |
+          echo "## ThreadSanitizer Results" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
 
   lsan:
     runs-on: ubuntu-latest
@@ -39,3 +49,8 @@ jobs:
           RUSTFLAGS="-Zsanitizer=leak" \
           cargo +nightly test -p webfang_core --target x86_64-unknown-linux-gnu
         continue-on-error: true
+      - name: Publish LSan Summary
+        if: always()
+        run: |
+          echo "## LeakSanitizer Results" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
