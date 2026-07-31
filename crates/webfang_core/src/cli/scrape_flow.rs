@@ -453,8 +453,7 @@ mod tests {
         let state_path = store.get_state_path();
         assert!(
             state_path.starts_with(&state_dir),
-            "state path should be under custom state_dir: {:?}",
-            state_path
+            "state path should be under custom state_dir: {state_path:?}"
         );
     }
 }

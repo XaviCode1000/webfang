@@ -44,7 +44,7 @@ impl ProgressObserver for LiveProgressObserver {
                     url: url.to_string(),
                 });
             } else {
-                eprintln!("Status: {} [Started]", url);
+                eprintln!("Status: {url} [Started]");
             }
         })
     }
@@ -64,7 +64,7 @@ impl ProgressObserver for LiveProgressObserver {
                     status,
                 });
             } else {
-                eprintln!("Status: {} [{:?}]", url, status);
+                eprintln!("Status: {url} [{status:?}]");
             }
         })
     }
@@ -84,7 +84,7 @@ impl ProgressObserver for LiveProgressObserver {
                     chars,
                 });
             } else {
-                eprintln!("Status: {} [Completed, {} chars]", url, chars);
+                eprintln!("Status: {url} [Completed, {chars} chars]");
             }
         })
     }
@@ -104,7 +104,7 @@ impl ProgressObserver for LiveProgressObserver {
                     error: error.clone(),
                 });
             } else {
-                eprintln!("Status: {} [Failed: {}]", url, error);
+                eprintln!("Status: {url} [Failed: {error}]");
             }
         })
     }
@@ -145,7 +145,7 @@ impl ProgressObserver for LiveProgressObserver {
                     error: ScrapeError::Other("blocked by robots.txt".into()),
                 });
             } else {
-                eprintln!("Status: {} [Blocked by robots.txt]", url);
+                eprintln!("Status: {url} [Blocked by robots.txt]");
             }
         })
     }

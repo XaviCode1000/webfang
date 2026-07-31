@@ -307,10 +307,7 @@ mod tests {
 
         for i in 0..5 {
             collector
-                .send(CrawlMessage::success(make_url(&format!(
-                    "https://{}.com",
-                    i
-                ))))
+                .send(CrawlMessage::success(make_url(&format!("https://{i}.com"))))
                 .await
                 .unwrap();
         }
@@ -330,7 +327,7 @@ mod tests {
             let collector = collector.clone();
             set.spawn(async move {
                 for j in 0..5 {
-                    let url = make_url(&format!("https://worker{}-{}.com", i, j));
+                    let url = make_url(&format!("https://worker{i}-{j}.com"));
                     collector.send(CrawlMessage::success(url)).await.ok();
                 }
             });
@@ -433,10 +430,8 @@ mod tests {
         // Rapidly fill the buffer with try_sends
         let mut filled = 0;
         for i in 0..10 {
-            let result = collector.try_send(CrawlMessage::success(make_url(&format!(
-                "https://{}.com",
-                i
-            ))));
+            let result =
+                collector.try_send(CrawlMessage::success(make_url(&format!("https://{i}.com"))));
             if result.is_ok() {
                 filled += 1;
             } else {
@@ -528,7 +523,7 @@ mod tests {
         let adapter = ResultsAdapter::new(100);
 
         for i in 0..5 {
-            let url = make_url(&format!("https://{}.com", i));
+            let url = make_url(&format!("https://{i}.com"));
             adapter.add_success(url).await.unwrap();
         }
 

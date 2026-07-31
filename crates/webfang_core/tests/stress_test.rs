@@ -35,24 +35,23 @@ async fn stress_test_task_starvation() {
     eprintln!("\n{}", "=".repeat(50));
     eprintln!("tokio-console STRESS TEST METRICS");
     eprintln!("{}", "=".repeat(50));
-    eprintln!("Total tasks:       {}", total_tasks);
-    eprintln!("Worker threads:  {}", worker_threads);
-    eprintln!("Duration:       {:?}", elapsed);
-    eprintln!("Throughput:     {:.2} tasks/sec", tasks_per_sec);
+    eprintln!("Total tasks:       {total_tasks}");
+    eprintln!("Worker threads:  {worker_threads}");
+    eprintln!("Duration:       {elapsed:?}");
+    eprintln!("Throughput:     {tasks_per_sec:.2} tasks/sec");
 
     // Análisis de resultados
     let successful = results.iter().filter(|r| r.is_ok()).count();
     let failed = results.iter().filter(|r| r.is_err()).count();
 
     eprintln!("\nResults:");
-    eprintln!("  Successful:    {}", successful);
-    eprintln!("  Failed:      {}", failed);
+    eprintln!("  Successful:    {successful}");
+    eprintln!("  Failed:      {failed}");
     eprintln!("{}", "=".repeat(50));
 
     assert!(
         results.iter().all(|r| r.is_ok()),
-        "Some tasks failed: {} errors",
-        failed
+        "Some tasks failed: {failed} errors"
     );
 }
 
@@ -91,17 +90,17 @@ async fn stress_test_cpu_work() {
     eprintln!("\n{}", "=".repeat(50));
     eprintln!("tokio-console CPU STRESS TEST");
     eprintln!("{}", "=".repeat(50));
-    eprintln!("Total tasks:       {}", total);
+    eprintln!("Total tasks:       {total}");
     eprintln!("Worker threads:  4");
-    eprintln!("Duration:       {:?}", elapsed);
-    eprintln!("Throughput:     {:.2} tasks/sec", tasks_per_sec);
+    eprintln!("Duration:       {elapsed:?}");
+    eprintln!("Throughput:     {tasks_per_sec:.2} tasks/sec");
     eprintln!("Completed:      {}", completed.load(Ordering::Relaxed));
     eprintln!("{}", "=".repeat(50));
 
     // Verificar que ningún task panickeara
     for (i, result) in results.iter().enumerate() {
         if let Err(e) = result {
-            eprintln!("Task {} failed: {}", i, e);
+            eprintln!("Task {i} failed: {e}");
         }
     }
 
@@ -148,17 +147,13 @@ async fn stress_test_memory() {
     eprintln!("\n{}", "=".repeat(50));
     eprintln!("tokio-console MEMORY STRESS TEST");
     eprintln!("{}", "=".repeat(50));
-    eprintln!("Total tasks:       {}", total_allocations);
+    eprintln!("Total tasks:       {total_allocations}");
     eprintln!("Worker threads:  2");
-    eprintln!("Duration:       {:?}", elapsed);
-    eprintln!("Throughput:     {:.2} tasks/sec", tasks_per_sec);
+    eprintln!("Duration:       {elapsed:?}");
+    eprintln!("Throughput:     {tasks_per_sec:.2} tasks/sec");
     eprintln!("{}", "=".repeat(50));
 
     // Este test principalmente mide que no hubo crashes por memory pressure
     // El throughput debería ser razonable
-    assert!(
-        tasks_per_sec > 100.0,
-        "Throughput too low: {}",
-        tasks_per_sec
-    );
+    assert!(tasks_per_sec > 100.0, "Throughput too low: {tasks_per_sec}");
 }

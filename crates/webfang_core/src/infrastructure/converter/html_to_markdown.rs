@@ -79,11 +79,7 @@ mod tests {
     fn test_code_block_uses_backticks() {
         let html = "<pre><code>fn main() {}</code></pre>";
         let md = convert_to_markdown(html);
-        assert!(
-            md.contains("```"),
-            "Expected fenced code blocks, got: {}",
-            md
-        );
+        assert!(md.contains("```"), "Expected fenced code blocks, got: {md}");
     }
 
     #[test]

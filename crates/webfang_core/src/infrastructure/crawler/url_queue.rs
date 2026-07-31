@@ -284,13 +284,13 @@ mod tests {
     use url::Url;
 
     fn create_test_url(path: &str) -> DiscoveredUrl {
-        let url = Url::parse(&format!("https://example.com{}", path)).unwrap();
+        let url = Url::parse(&format!("https://example.com{path}")).unwrap();
         let parent = Url::parse("https://example.com/").unwrap();
         DiscoveredUrl::html(url, 0, parent)
     }
 
     fn create_test_url_with_depth(path: &str, depth: u8) -> DiscoveredUrl {
-        let url = Url::parse(&format!("https://example.com{}", path)).unwrap();
+        let url = Url::parse(&format!("https://example.com{path}")).unwrap();
         let parent = Url::parse("https://example.com/").unwrap();
         DiscoveredUrl::html(url, depth, parent)
     }
@@ -363,7 +363,7 @@ mod tests {
         let queue = UrlQueue::new();
 
         for i in 0..10 {
-            let url = create_test_url(&format!("/page{}", i));
+            let url = create_test_url(&format!("/page{i}"));
             assert!(queue.push(url).await);
         }
 

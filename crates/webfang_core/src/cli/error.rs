@@ -308,8 +308,7 @@ mod tests {
             assert_eq!(
                 code,
                 ExitCode::from(expected_code),
-                "Expected exit code {}",
-                expected_code
+                "Expected exit code {expected_code}"
             );
         }
     }

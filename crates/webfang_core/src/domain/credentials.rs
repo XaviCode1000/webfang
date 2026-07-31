@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn test_api_key_debug_shows_redacted() {
         let key = ApiKey::new("sk-secret123");
-        let debug_str = format!("{:?}", key);
+        let debug_str = format!("{key:?}");
         assert_eq!(debug_str, "[REDACTED]");
     }
 
@@ -393,7 +393,7 @@ mod tests {
     #[test]
     fn test_access_token_debug_shows_redacted() {
         let token = AccessToken::new("ghp_token123");
-        let debug_str = format!("{:?}", token);
+        let debug_str = format!("{token:?}");
         assert_eq!(debug_str, "[REDACTED]");
     }
 
@@ -450,7 +450,7 @@ mod tests {
     #[test]
     fn test_sensitive_string_debug() {
         let sensitive = SensitiveString::new("secret-data".to_string());
-        assert_eq!(format!("{:?}", sensitive), "[REDACTED]");
+        assert_eq!(format!("{sensitive:?}"), "[REDACTED]");
     }
 
     #[test]

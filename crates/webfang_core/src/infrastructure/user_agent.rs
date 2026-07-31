@@ -271,8 +271,7 @@ mod tests {
         for agent in &agents {
             assert!(
                 agent.contains("Chrome/13") || agent.contains("Firefox/"),
-                "Agent '{}' should contain Chrome/13x or Firefox/",
-                agent
+                "Agent '{agent}' should contain Chrome/13x or Firefox/"
             );
         }
     }

@@ -675,7 +675,7 @@ mod tests {
         let config = SitemapConfig::builder().max_depth(0).build();
         assert_eq!(config.max_depth, 0);
         let err = SitemapError::MaxDepthExceeded;
-        assert_eq!(format!("{}", err), "maximum recursion depth exceeded");
+        assert_eq!(format!("{err}"), "maximum recursion depth exceeded");
     }
 
     #[test]

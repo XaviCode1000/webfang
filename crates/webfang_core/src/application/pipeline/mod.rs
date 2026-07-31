@@ -45,7 +45,7 @@ mod integration_tests {
                 assert!(item.metadata.contains_key("original_size"));
                 assert!(item.metadata.contains_key("cleaned_size"));
             },
-            other => panic!("expected Continue, got {:?}", other),
+            other => panic!("expected Continue, got {other:?}"),
         }
     }
 

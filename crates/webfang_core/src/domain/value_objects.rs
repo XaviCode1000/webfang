@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn test_valid_url_display() {
         let url = ValidUrl::parse("https://example.com").unwrap();
-        assert_eq!(format!("{}", url), "https://example.com/");
+        assert_eq!(format!("{url}"), "https://example.com/");
     }
 
     #[test]
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn test_correlation_id_display() {
         let corr = CorrelationId::new();
-        let display = format!("{}", corr);
+        let display = format!("{corr}");
 
         assert!(display.starts_with("00-"));
         assert_eq!(display, corr.to_traceparent());
