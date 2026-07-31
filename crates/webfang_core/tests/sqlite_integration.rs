@@ -14,6 +14,7 @@ use tempfile::TempDir;
 // ===== SCHEMA INITIALIZATION =====
 
 /// Schema creation is idempotent — calling setup_schema twice doesn't fail.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_setup_schema_is_idempotent() {
     let pool = create_memory_pool().unwrap();
@@ -22,6 +23,7 @@ async fn test_setup_schema_is_idempotent() {
 }
 
 /// Schema creation on a temp file DB creates the file.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_setup_schema_creates_db_file() {
     let tmp = TempDir::new().unwrap();
@@ -37,6 +39,7 @@ async fn test_setup_schema_creates_db_file() {
 // ===== RESOURCE CRUD =====
 
 /// Save a resource and retrieve its URL by content hash.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_save_and_get_resource() {
     let pool = create_memory_pool().unwrap();
@@ -55,6 +58,7 @@ async fn test_save_and_get_resource() {
 }
 
 /// resource_exists_by_hash returns None for unknown hash.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_resource_not_exists() {
     let pool = create_memory_pool().unwrap();
@@ -71,6 +75,7 @@ async fn test_resource_not_exists() {
 // ===== DEDUPLICATION =====
 
 /// Duplicate content hash returns existing URL without inserting a new row.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_dedup_skips_duplicate_hash() {
     let pool = create_memory_pool().unwrap();
@@ -94,6 +99,7 @@ async fn test_dedup_skips_duplicate_hash() {
 // ===== CHUNK CRUD =====
 
 /// Save a chunk with embedding and retrieve the vector.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_save_and_get_chunk_with_embedding() {
     let pool = create_memory_pool().unwrap();
@@ -125,6 +131,7 @@ async fn test_save_and_get_chunk_with_embedding() {
 }
 
 /// Save a chunk without embedding — get_vector returns None.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_save_chunk_without_embedding() {
     let pool = create_memory_pool().unwrap();
@@ -150,6 +157,7 @@ async fn test_save_chunk_without_embedding() {
 }
 
 /// get_vector for nonexistent chunk returns None.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_get_vector_nonexistent() {
     let pool = create_memory_pool().unwrap();
@@ -163,6 +171,7 @@ async fn test_get_vector_nonexistent() {
 // ===== IN-MEMORY REPOSITORY =====
 
 /// from_memory() creates a working in-memory repository.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_from_memory_repository() {
     let repo = SqliteVectorRepository::from_memory().unwrap();

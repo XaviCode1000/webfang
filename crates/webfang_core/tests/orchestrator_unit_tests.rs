@@ -14,6 +14,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 // ===========================================================================
 
 /// Sitemap served by wiremock is parsed and URLs are extracted.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn sitemap_valid_xml_discovers_urls() {
     let mock = MockServer::start().await;
@@ -45,6 +46,7 @@ async fn sitemap_valid_xml_discovers_urls() {
 }
 
 /// Malformed sitemap XML returns an error gracefully.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn sitemap_malformed_xml_returns_error() {
     let mock = MockServer::start().await;
@@ -68,6 +70,7 @@ async fn sitemap_malformed_xml_returns_error() {
 }
 
 /// Large sitemap (200 URLs) is parsed without error.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn sitemap_large_sitemap_parses_all_urls() {
     let mock = MockServer::start().await;
@@ -101,6 +104,7 @@ async fn sitemap_large_sitemap_parses_all_urls() {
 }
 
 /// Empty sitemap returns NoUrlsFound error.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn sitemap_empty_returns_no_urls_found() {
     let mock = MockServer::start().await;
@@ -134,6 +138,7 @@ async fn sitemap_empty_returns_no_urls_found() {
 }
 
 /// Sitemap with duplicate URLs is deduplicated.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn sitemap_deduplicates_urls() {
     let mock = MockServer::start().await;

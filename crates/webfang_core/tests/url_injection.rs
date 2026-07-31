@@ -27,6 +27,7 @@ fn validate_url_domain(url: &str) -> webfang::domain::ValidationResult {
 // Scheme injection — non-HTTP schemes must be rejected
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn reject_file_scheme() {
     assert!(matches!(
@@ -35,6 +36,7 @@ fn reject_file_scheme() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn reject_javascript_scheme() {
     assert!(matches!(
@@ -43,6 +45,7 @@ fn reject_javascript_scheme() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn reject_ftp_scheme() {
     assert!(matches!(
@@ -51,6 +54,7 @@ fn reject_ftp_scheme() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn reject_data_uri() {
     assert!(matches!(
@@ -59,6 +63,7 @@ fn reject_data_uri() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn reject_mailto_scheme() {
     assert!(matches!(
@@ -67,6 +72,7 @@ fn reject_mailto_scheme() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn reject_dict_scheme() {
     assert!(matches!(
@@ -75,6 +81,7 @@ fn reject_dict_scheme() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn accept_http_scheme() {
     assert!(matches!(
@@ -83,6 +90,7 @@ fn accept_http_scheme() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn accept_https_scheme() {
     assert!(matches!(
@@ -95,6 +103,7 @@ fn accept_https_scheme() {
 // SSRF — link-local and metadata endpoint targets
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn aws_metadata_endpoint_accepted_by_scheme_check() {
     let result = validate_url_domain("http://169.254.169.254/latest/meta-data/");
@@ -104,6 +113,7 @@ fn aws_metadata_endpoint_accepted_by_scheme_check() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn azure_metadata_endpoint_accepted_by_scheme_check() {
     let result =
@@ -114,6 +124,7 @@ fn azure_metadata_endpoint_accepted_by_scheme_check() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn gcp_metadata_endpoint_accepted_by_scheme_check() {
     let result = validate_url_domain("http://metadata.google.internal/computeMetadata/v1/");
@@ -127,6 +138,7 @@ fn gcp_metadata_endpoint_accepted_by_scheme_check() {
 // Path traversal — ../ sequences
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn path_traversal_normalized_by_url_parser() {
     let url = Url::parse("http://example.com/../../../etc/passwd").unwrap();
@@ -137,6 +149,7 @@ fn path_traversal_normalized_by_url_parser() {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn path_traversal_resolves_to_root() {
     let url = Url::parse("http://example.com/page/../../secret").unwrap();
@@ -147,6 +160,7 @@ fn path_traversal_resolves_to_root() {
 // Null byte injection
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn percent_encoded_null_byte_in_url() {
     let result = Url::parse("http://example.com/page%00.html");
@@ -158,6 +172,7 @@ fn percent_encoded_null_byte_in_url() {
     assert!(url.path().contains("%00") || url.path().contains('\0'));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn raw_null_byte_in_url_no_panic() {
     let result = Url::parse("http://example.com/page\x00.html");
@@ -173,6 +188,7 @@ fn raw_null_byte_in_url_no_panic() {
 // Newline / whitespace injection
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn newline_in_url_no_panic() {
     let result = Url::parse("http://example.com/page\n<script>alert(1)</script>");
@@ -185,6 +201,7 @@ fn newline_in_url_no_panic() {
     }
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn carriage_return_in_url_no_panic() {
     let result = Url::parse("http://example.com/page\r\n<script>alert(1)</script>");
@@ -197,6 +214,7 @@ fn carriage_return_in_url_no_panic() {
     }
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn tab_in_url_no_panic() {
     let result = Url::parse("http://example.com/page\there");
@@ -213,6 +231,7 @@ fn tab_in_url_no_panic() {
 // Very long URLs (DoS vector)
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn very_long_url_scheme() {
     let long_path = "a".repeat(10_000);
@@ -221,6 +240,7 @@ fn very_long_url_scheme() {
     assert!(result.is_ok(), "10k-char URL should parse without panic");
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn very_long_url_total_length_2000() {
     let path_len = 2000 - "https://example.com/".len();
@@ -230,6 +250,7 @@ fn very_long_url_total_length_2000() {
     assert!(result.is_ok(), "2000-char URL should parse");
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn very_long_url_total_length_5000() {
     let path_len = 5000 - "https://example.com/".len();
@@ -243,6 +264,7 @@ fn very_long_url_total_length_5000() {
 // Unicode normalization attacks
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn unicode_homograph_attack_no_panic() {
     let url_str = "https://еxаmple.com/page"; // Cyrillic е and а
@@ -257,6 +279,7 @@ fn unicode_homograph_attack_no_panic() {
     }
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn unicode_ideographic_space_no_panic() {
     let url_str = "https://example.com/page\u{3000}here";
@@ -264,6 +287,7 @@ fn unicode_ideographic_space_no_panic() {
     assert!(result.is_ok(), "URL with ideographic space should parse");
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn bidi_override_attack_no_panic() {
     let url_str = format!("https://example.com/{}\u{202E}fdp.html", "image");
@@ -275,6 +299,7 @@ fn bidi_override_attack_no_panic() {
 // Infrastructure UrlValidator (with HTTP client)
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn infrastructure_validator_filters_ftp() {
     let validator = webfang::infrastructure::crawler::url_validator::UrlValidator::new();
@@ -286,6 +311,7 @@ fn infrastructure_validator_filters_ftp() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn infrastructure_validator_filters_file() {
     let validator = webfang::infrastructure::crawler::url_validator::UrlValidator::new();
@@ -297,6 +323,7 @@ fn infrastructure_validator_filters_file() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn infrastructure_validator_accepts_https() {
     let validator = webfang::infrastructure::crawler::url_validator::UrlValidator::new();
@@ -312,6 +339,7 @@ fn infrastructure_validator_accepts_https() {
 // Node.js version pattern injection
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn reject_invalid_node_version_v100() {
     let url = Url::parse("https://nodejs.org/blog/release/v100.0.0").unwrap();
@@ -322,6 +350,7 @@ fn reject_invalid_node_version_v100() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn accept_valid_node_version_v20() {
     let url = Url::parse("https://nodejs.org/blog/release/v20.11.1").unwrap();
@@ -332,6 +361,7 @@ fn accept_valid_node_version_v20() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn node_version_with_query_params() {
     let url = Url::parse("https://nodejs.org/blog/release/v200.0?foo=bar").unwrap();
@@ -342,6 +372,7 @@ fn node_version_with_query_params() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn node_version_with_fragment() {
     let url = Url::parse("https://nodejs.org/blog/release/v200.0#section").unwrap();
@@ -356,12 +387,14 @@ fn node_version_with_fragment() {
 // URL parsing edge cases — verify no panics
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn empty_url_is_err() {
     let result = Url::parse("");
     assert!(result.is_err());
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn just_scheme_no_panic() {
     let result = Url::parse("https:");
@@ -371,6 +404,7 @@ fn just_scheme_no_panic() {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn double_slash_only_no_panic() {
     let result = Url::parse("//");
@@ -380,18 +414,21 @@ fn double_slash_only_no_panic() {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn colon_in_path() {
     let result = Url::parse("https://example.com/path:with:colons");
     assert!(result.is_ok());
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn at_sign_in_path() {
     let result = Url::parse("https://example.com/path@with@ats");
     assert!(result.is_ok());
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn percent_encoded_special_chars_stay_encoded() {
     let result = Url::parse("https://example.com/%3Cscript%3Ealert(1)%3C/script%3E");

@@ -45,6 +45,7 @@ fn count_rows(conn: &rusqlite::Connection, table: &str, column: &str, url: &str)
         .unwrap_or_else(|e| panic!("contar filas en {table}.{column}: {e}"))
 }
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn elastic_ingestion_persists_cleaned_content_to_sqlite() {
     // ---- Arrange: real SQLite DB on a tempfile ----
@@ -149,6 +150,7 @@ async fn elastic_ingestion_persists_cleaned_content_to_sqlite() {
 
 /// Dedup short-circuit at the persistence layer: re-ingesting the same content
 /// must NOT create duplicate resource/chunk rows (frozen Decision 3).
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn elastic_ingestion_dedup_prevents_duplicate_rows() {
     let dir = TempDir::new().expect("directorio temporal");

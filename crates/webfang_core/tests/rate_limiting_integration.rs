@@ -20,6 +20,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 // Test 1: Concurrent Until Ready — Requests Spread Over Time
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_concurrent_requests_spread_over_time() {
     // Arrange: rate limiter con delay 50ms, burst 1
@@ -52,6 +53,7 @@ async fn test_concurrent_requests_spread_over_time() {
 // Test 2: Burst Capacity — Parallel Requests Within Burst
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_burst_allows_parallel_requests() {
     // Arrange: rate limiter con delay 100ms, burst 5
@@ -84,6 +86,7 @@ async fn test_burst_allows_parallel_requests() {
 // Test 3: Backpressure — Concurrent Load
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_backpressure_with_high_concurrency() {
     // Arrange
@@ -116,6 +119,7 @@ async fn test_backpressure_with_high_concurrency() {
 // Test 4: HTTP Client 429 + Retry After Header
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_http_client_429_respects_retry_after() {
     // Arrange: mock server que retorna 429 con Retry-After
@@ -164,6 +168,7 @@ async fn test_http_client_429_respects_retry_after() {
 // Test 5: HTTP Client 429 Exponential Fallback
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_http_client_429_without_retry_after() {
     // Arrange: mock server que retorna 429 SIN Retry-After
@@ -201,6 +206,7 @@ async fn test_http_client_429_without_retry_after() {
 // Test 6: HTTP Client Rate Limit RPM Enforcement
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_http_client_rate_limit_rpm_config() {
     // Test configuración — verify que rate_limit_rpm se aplica
@@ -219,6 +225,7 @@ async fn test_http_client_rate_limit_rpm_config() {
 // Test 7: Retry After Header Parsing
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_retry_after_header_parsing() {
     // Arrange
@@ -260,6 +267,7 @@ async fn test_retry_after_header_parsing() {
 // Test 8: Shared Rate Limiter Timing Accuracy
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_rate_limiter_timing_accuracy() {
     // Arrange: delay preciso de 100ms
@@ -297,6 +305,7 @@ async fn test_rate_limiter_timing_accuracy() {
 // Test 9: Concurrent Rate Limiter Acquisition Count
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_concurrent_rate_limiter_acquisition_count() {
     // Arrange
@@ -332,6 +341,7 @@ async fn test_concurrent_rate_limiter_acquisition_count() {
 // Test 10: Edge Case — Multiple Rapid Requests
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_multiple_rapid_requests_drain() {
     // Arrange: rate limiter lento

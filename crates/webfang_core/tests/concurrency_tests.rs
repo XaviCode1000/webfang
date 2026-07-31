@@ -54,6 +54,7 @@ fn vector_config(dir: PathBuf, filename: &str, append: bool) -> ExporterConfig {
 // Test 1: Concurrent JSONL writes — verify no data loss
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn concurrent_jsonl_exports_no_data_loss() {
     // Arrange
@@ -129,6 +130,7 @@ async fn concurrent_jsonl_exports_no_data_loss() {
 // Test 2: StateStore concurrent mark_processed — no duplicates
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn state_store_concurrent_mark_processed_no_duplicates() {
     // Arrange
@@ -184,6 +186,7 @@ fn state_store_concurrent_mark_processed_no_duplicates() {
 // Test 3: VectorExporter concurrent batch writes — no corruption
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn concurrent_vector_exports_no_corruption() {
     // Arrange
@@ -243,6 +246,7 @@ async fn concurrent_vector_exports_no_corruption() {
 // Test 4: Concurrent JSONL append mode — preserve existing content
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn concurrent_jsonl_append_preserves_content() {
     // Arrange

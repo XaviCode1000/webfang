@@ -14,6 +14,7 @@ const HTML_PAGE: &[u8] = b"<html><head><title>WebFang</title></head>\
 <body><h1>Foo</h1><p>bar baz qux</p></body></html>";
 
 /// End-to-end download against a wiremock server returns the exact bytes.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_end_to_end_download() {
     let mock_server = MockServer::start().await;

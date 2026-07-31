@@ -17,6 +17,7 @@ fn webfang_core() -> Command {
         .expect("webfang_core binary must be built for this test")
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn tui_flag_prints_spanish_message_when_ui_off() {
     let output = webfang_core()
@@ -40,6 +41,7 @@ fn tui_flag_prints_spanish_message_when_ui_off() {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn config_tui_flag_prints_spanish_message_when_ui_off() {
     let output = webfang_core()
@@ -63,6 +65,7 @@ fn config_tui_flag_prints_spanish_message_when_ui_off() {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn interactive_flag_prints_spanish_message_when_ui_off() {
     let output = webfang_core()

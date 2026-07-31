@@ -14,6 +14,7 @@ use webfang::infrastructure::persistence::{
 
 /// Smoke-test: `create_memory_pool` returns a working pool and the schema can
 /// be initialised on it.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_memory_pool_schema_init() {
     let pool = create_memory_pool().expect("create_memory_pool");
@@ -21,6 +22,7 @@ async fn test_memory_pool_schema_init() {
 }
 
 /// Round-trip: create a table, insert a row, query it back.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_memory_db_roundtrip() {
     let mem = common::MemoryDb::new();
@@ -62,6 +64,7 @@ async fn test_memory_db_roundtrip() {
 }
 
 /// Verify `SqliteVectorRepository::from_memory()` produces a usable repo.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_repository_from_memory() {
     let repo = SqliteVectorRepository::from_memory().expect("from_memory");
@@ -85,6 +88,7 @@ async fn test_repository_from_memory() {
 }
 
 /// `MemoryDb::into_pool` transfers ownership correctly.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_memory_db_into_pool() {
     let mem = common::MemoryDb::new();

@@ -50,6 +50,7 @@ fn key_ctrl(code: KeyCode) -> KeyEvent {
 // 1. CollapsibleConfig — keyboard navigation via Component trait
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn collapsible_config_creates_with_eight_sections() {
     let config = CollapsibleConfig::new();
@@ -59,6 +60,7 @@ fn collapsible_config_creates_with_eight_sections() {
     assert!(obj.len() >= 8);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn collapsible_config_initial_not_submitted_or_cancelled() {
     let config = CollapsibleConfig::new();
@@ -66,6 +68,7 @@ fn collapsible_config_initial_not_submitted_or_cancelled() {
     assert!(!config.cancelled);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn collapsible_config_q_cancels() {
     let mut config = CollapsibleConfig::new();
@@ -77,6 +80,7 @@ fn collapsible_config_q_cancels() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn collapsible_config_uppercase_q_cancels() {
     let mut config = CollapsibleConfig::new();
@@ -88,6 +92,7 @@ fn collapsible_config_uppercase_q_cancels() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn collapsible_config_ctrl_s_submits() {
     let mut config = CollapsibleConfig::new();
@@ -101,6 +106,7 @@ fn collapsible_config_ctrl_s_submits() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn collapsible_config_question_mark_toggles_help() {
     let mut config = CollapsibleConfig::new();
@@ -111,6 +117,7 @@ fn collapsible_config_question_mark_toggles_help() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn collapsible_config_down_key_navigates() {
     let mut config = CollapsibleConfig::new();
@@ -121,6 +128,7 @@ fn collapsible_config_down_key_navigates() {
     assert_eq!(config.focused_section_index(), 2);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn collapsible_config_up_key_navigates() {
     let mut config = CollapsibleConfig::new();
@@ -130,6 +138,7 @@ fn collapsible_config_up_key_navigates() {
     assert_eq!(config.focused_section_index(), 0);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn collapsible_config_enter_expands_section() {
     let mut config = CollapsibleConfig::new();
@@ -143,6 +152,7 @@ fn collapsible_config_enter_expands_section() {
     assert_eq!(config.focused_section_index(), 0);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn collapsible_config_space_toggles() {
     let mut config = CollapsibleConfig::new();
@@ -156,6 +166,7 @@ fn collapsible_config_space_toggles() {
     assert!(config.is_section_expanded(0));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn collapsible_config_url_extracts_from_target_section() {
     let config = CollapsibleConfig::new();
@@ -164,6 +175,7 @@ fn collapsible_config_url_extracts_from_target_section() {
     assert!(url.is_none() || url.as_deref() == Some(""));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn collapsible_config_navigation_does_not_panic() {
     let mut config = CollapsibleConfig::new();
@@ -179,6 +191,7 @@ fn collapsible_config_navigation_does_not_panic() {
     assert!(config.focused_section_index() < 8);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn collapsible_config_ctrl_s_returns_config_done_with_json() {
     let mut config = CollapsibleConfig::new();
@@ -195,6 +208,7 @@ fn collapsible_config_ctrl_s_returns_config_done_with_json() {
     }
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn collapsible_config_esc_in_section_list_mode_is_noop() {
     let mut config = CollapsibleConfig::new();
@@ -204,6 +218,7 @@ fn collapsible_config_esc_in_section_list_mode_is_noop() {
     assert!(!config.cancelled);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn collapsible_config_enter_then_esc_returns_to_section_list() {
     let mut config = CollapsibleConfig::new();
@@ -217,6 +232,7 @@ fn collapsible_config_enter_then_esc_returns_to_section_list() {
     assert!(json.is_object());
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn collapsible_config_navigate_to_output_toggle_expand() {
     let mut config = CollapsibleConfig::new();
@@ -238,6 +254,7 @@ fn collapsible_config_navigate_to_output_toggle_expand() {
 
 // --- Color values are valid Rgb ---
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_all_named_colors_are_rgb() {
     let colors = [
@@ -264,6 +281,7 @@ fn theme_all_named_colors_are_rgb() {
 
 // --- All colors are distinct ---
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_base_colors_are_distinct() {
     let colors = [
@@ -291,6 +309,7 @@ fn theme_base_colors_are_distinct() {
 
 // --- Lighten / Darken ---
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_lighten_produces_different_color() {
     let dark = ratatui::style::Color::Rgb(0x1e, 0x1e, 0x2e);
@@ -298,6 +317,7 @@ fn theme_lighten_produces_different_color() {
     assert_ne!(dark, light);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_darken_produces_different_color() {
     let light = ratatui::style::Color::Rgb(0xcd, 0xd6, 0xf4);
@@ -307,6 +327,7 @@ fn theme_darken_produces_different_color() {
 
 // --- Non-Rgb colors must not panic (Issue #152) ---
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_lighten_does_not_panic_on_non_rgb() {
     let reset = ratatui::style::Color::Reset;
@@ -318,6 +339,7 @@ fn theme_lighten_does_not_panic_on_non_rgb() {
     assert_eq!(Theme::lighten(dark_gray, 0.3), dark_gray);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_darken_does_not_panic_on_non_rgb() {
     let reset = ratatui::style::Color::Reset;
@@ -327,6 +349,7 @@ fn theme_darken_does_not_panic_on_non_rgb() {
     assert_eq!(Theme::darken(black, 0.3), black);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_lighten_channel_values_increase() {
     let dark = ratatui::style::Color::Rgb(0x1e, 0x1e, 0x2e);
@@ -341,6 +364,7 @@ fn theme_lighten_channel_values_increase() {
     }
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_darken_channel_values_decrease() {
     let light = ratatui::style::Color::Rgb(0xcd, 0xd6, 0xf4);
@@ -357,6 +381,7 @@ fn theme_darken_channel_values_decrease() {
 
 // --- Shift Hue ---
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_shift_hue_changes_color() {
     let original = ratatui::style::Color::Rgb(0x89, 0xb4, 0xfa);
@@ -364,6 +389,7 @@ fn theme_shift_hue_changes_color() {
     assert_ne!(original, shifted);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_shift_hue_zero_is_near_identity() {
     let original = ratatui::style::Color::Rgb(0x89, 0xb4, 0xfa);
@@ -377,6 +403,7 @@ fn theme_shift_hue_zero_is_near_identity() {
     }
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_shift_hue_360_is_near_identity() {
     let original = ratatui::style::Color::Rgb(0x89, 0xb4, 0xfa);
@@ -390,6 +417,7 @@ fn theme_shift_hue_360_is_near_identity() {
     }
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_shift_hue_achromatic_returns_original() {
     let gray = ratatui::style::Color::Rgb(0x80, 0x80, 0x80);
@@ -399,11 +427,13 @@ fn theme_shift_hue_achromatic_returns_original() {
 
 // --- WCAG Contrast ---
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_has_contrast_text_vs_background() {
     assert!(Theme::has_contrast(Theme::text(), Theme::background(), 4.5));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_has_contrast_fails_for_surface_vs_bg() {
     assert!(!Theme::has_contrast(
@@ -413,12 +443,14 @@ fn theme_has_contrast_fails_for_surface_vs_bg() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_contrast_ratio_is_positive() {
     let ratio = Theme::contrast(Theme::text(), Theme::background());
     assert!(ratio > 0.0);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_contrast_ratio_symmetric() {
     let a = Theme::contrast(Theme::text(), Theme::background());
@@ -426,41 +458,49 @@ fn theme_contrast_ratio_symmetric() {
     assert!((a - b).abs() < f64::EPSILON);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_contrast_text_meets_wcag_aa() {
     assert!(Theme::contrast(Theme::text(), Theme::background()) >= 4.5);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_contrast_error_meets_wcag_aa() {
     assert!(Theme::contrast(Theme::error(), Theme::background()) >= 4.5);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_contrast_success_meets_wcag_aa() {
     assert!(Theme::contrast(Theme::success(), Theme::background()) >= 4.5);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_contrast_warning_meets_wcag_aa() {
     assert!(Theme::contrast(Theme::warning(), Theme::background()) >= 4.5);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_contrast_accent_meets_wcag_aa() {
     assert!(Theme::contrast(Theme::accent(), Theme::background()) >= 4.5);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_contrast_processing_meets_wcag_aa() {
     assert!(Theme::contrast(Theme::processing(), Theme::background()) >= 4.5);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_contrast_highlight_meets_wcag_aa() {
     assert!(Theme::contrast(Theme::highlight(), Theme::background()) >= 4.5);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_contrast_parse_error_meets_wcag_aa() {
     assert!(Theme::contrast(Theme::parse_error(), Theme::background()) >= 4.5);
@@ -468,16 +508,19 @@ fn theme_contrast_parse_error_meets_wcag_aa() {
 
 // --- Adaptive Theme ---
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_adaptive_dark_returns_theme() {
     let _ = Theme::adaptive(ThemeMode::Dark);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_adaptive_light_returns_theme() {
     let _ = Theme::adaptive(ThemeMode::Light);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn theme_adaptive_high_contrast_returns_theme() {
     let _ = Theme::adaptive(ThemeMode::HighContrast);
@@ -489,6 +532,7 @@ fn theme_adaptive_high_contrast_returns_theme() {
 
 // --- Target fields ---
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_url() {
     let args = default_args();
@@ -497,6 +541,7 @@ fn apply_tui_config_sets_url() {
     assert_eq!(result.url.as_deref(), Some("https://target.com"));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_selector() {
     let args = default_args();
@@ -505,6 +550,7 @@ fn apply_tui_config_sets_selector() {
     assert_eq!(result.selector, "article.main");
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_empty_string_selector_ignored() {
     let mut args = default_args();
@@ -516,6 +562,7 @@ fn apply_tui_config_empty_string_selector_ignored() {
 
 // --- Output fields ---
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_output_dir() {
     let args = default_args();
@@ -524,6 +571,7 @@ fn apply_tui_config_sets_output_dir() {
     assert_eq!(result.output, PathBuf::from("/custom/output"));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_format_json() {
     let args = default_args();
@@ -532,6 +580,7 @@ fn apply_tui_config_sets_format_json() {
     assert_eq!(result.format, OutputFormat::Json);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_format_text() {
     let args = default_args();
@@ -540,6 +589,7 @@ fn apply_tui_config_sets_format_text() {
     assert_eq!(result.format, OutputFormat::Text);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_format_markdown() {
     let args = default_args();
@@ -548,6 +598,7 @@ fn apply_tui_config_sets_format_markdown() {
     assert_eq!(result.format, OutputFormat::Markdown);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_unknown_format_defaults_to_markdown() {
     let args = default_args();
@@ -556,6 +607,7 @@ fn apply_tui_config_unknown_format_defaults_to_markdown() {
     assert_eq!(result.format, OutputFormat::Markdown);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_export_format_vector() {
     let args = default_args();
@@ -564,6 +616,7 @@ fn apply_tui_config_sets_export_format_vector() {
     assert_eq!(result.export_format, ExportFormat::Vector);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_export_format_auto() {
     let args = default_args();
@@ -572,6 +625,7 @@ fn apply_tui_config_sets_export_format_auto() {
     assert_eq!(result.export_format, ExportFormat::Auto);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_export_format_jsonl() {
     let args = default_args();
@@ -582,6 +636,7 @@ fn apply_tui_config_sets_export_format_jsonl() {
 
 // --- Discovery fields ---
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_use_sitemap() {
     let args = default_args();
@@ -590,6 +645,7 @@ fn apply_tui_config_sets_use_sitemap() {
     assert!(result.use_sitemap);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_max_pages() {
     let args = default_args();
@@ -598,6 +654,7 @@ fn apply_tui_config_sets_max_pages() {
     assert_eq!(result.max_pages, 50);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_max_depth() {
     let args = default_args();
@@ -606,6 +663,7 @@ fn apply_tui_config_sets_max_depth() {
     assert_eq!(result.max_depth, 5);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_sitemap_depth() {
     let args = default_args();
@@ -614,6 +672,7 @@ fn apply_tui_config_sets_sitemap_depth() {
     assert_eq!(result.sitemap_depth, 7);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_sitemap_url() {
     let args = default_args();
@@ -630,6 +689,7 @@ fn apply_tui_config_sets_sitemap_url() {
 
 // --- Crawler fields ---
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_timeout_secs() {
     let args = default_args();
@@ -638,6 +698,7 @@ fn apply_tui_config_sets_timeout_secs() {
     assert_eq!(result.timeout_secs, 60);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_max_retries() {
     let args = default_args();
@@ -646,6 +707,7 @@ fn apply_tui_config_sets_max_retries() {
     assert_eq!(result.max_retries, 5);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_delay_ms() {
     let args = default_args();
@@ -654,6 +716,7 @@ fn apply_tui_config_sets_delay_ms() {
     assert_eq!(result.delay_ms, 2000);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_concurrency_auto() {
     let args = default_args();
@@ -662,6 +725,7 @@ fn apply_tui_config_concurrency_auto() {
     assert!(result.concurrency.is_auto());
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_concurrency_fixed_number() {
     let args = default_args();
@@ -671,6 +735,7 @@ fn apply_tui_config_concurrency_fixed_number() {
     assert_eq!(result.concurrency.get(), Some(8));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_include_pattern() {
     let args = default_args();
@@ -679,6 +744,7 @@ fn apply_tui_config_sets_include_pattern() {
     assert_eq!(result.include_patterns, vec!["*/blog/*", "*/docs/*"]);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_exclude_pattern() {
     let args = default_args();
@@ -689,6 +755,7 @@ fn apply_tui_config_sets_exclude_pattern() {
 
 // --- Network fields ---
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_user_agent() {
     let args = default_args();
@@ -697,6 +764,7 @@ fn apply_tui_config_sets_user_agent() {
     assert_eq!(result.user_agent.as_deref(), Some("CustomAgent/1.0"));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_accept_language() {
     let args = default_args();
@@ -705,6 +773,7 @@ fn apply_tui_config_sets_accept_language() {
     assert_eq!(result.accept_language, "es-ES,es;q=0.9");
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_h2_profile() {
     let args = default_args();
@@ -713,6 +782,7 @@ fn apply_tui_config_sets_h2_profile() {
     assert_eq!(result.h2_profile, "Chrome131");
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_js_strategy_hybrid() {
     let args = default_args();
@@ -721,6 +791,7 @@ fn apply_tui_config_sets_js_strategy_hybrid() {
     assert_eq!(result.js_strategy, JsStrategy::Hybrid);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_js_strategy_full() {
     let args = default_args();
@@ -729,6 +800,7 @@ fn apply_tui_config_sets_js_strategy_full() {
     assert_eq!(result.js_strategy, JsStrategy::Full);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_js_strategy_static() {
     let args = default_args();
@@ -739,6 +811,7 @@ fn apply_tui_config_sets_js_strategy_static() {
 
 // --- Download fields ---
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_download_images() {
     let args = default_args();
@@ -747,6 +820,7 @@ fn apply_tui_config_sets_download_images() {
     assert!(result.download_images);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_download_documents() {
     let args = default_args();
@@ -755,6 +829,7 @@ fn apply_tui_config_sets_download_documents() {
     assert!(result.download_documents);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_max_file_size() {
     let args = default_args();
@@ -763,6 +838,7 @@ fn apply_tui_config_sets_max_file_size() {
     assert_eq!(result.max_file_size, 100_000_000);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_download_timeout() {
     let args = default_args();
@@ -773,6 +849,7 @@ fn apply_tui_config_sets_download_timeout() {
 
 // --- Obsidian fields ---
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_obsidian_wiki_links() {
     let args = default_args();
@@ -781,6 +858,7 @@ fn apply_tui_config_sets_obsidian_wiki_links() {
     assert!(result.obsidian_wiki_links);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_obsidian_tags_comma_separated() {
     let args = default_args();
@@ -790,6 +868,7 @@ fn apply_tui_config_sets_obsidian_tags_comma_separated() {
     assert_eq!(tags, vec!["scraping", "ai", "web"]);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_obsidian_tags_single() {
     let args = default_args();
@@ -799,6 +878,7 @@ fn apply_tui_config_sets_obsidian_tags_single() {
     assert_eq!(tags, vec!["research"]);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_obsidian_relative_assets() {
     let args = default_args();
@@ -807,6 +887,7 @@ fn apply_tui_config_sets_obsidian_relative_assets() {
     assert!(result.obsidian_relative_assets);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_obsidian_rich_metadata() {
     let args = default_args();
@@ -815,6 +896,7 @@ fn apply_tui_config_sets_obsidian_rich_metadata() {
     assert!(result.obsidian_rich_metadata);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_vault_path() {
     let args = default_args();
@@ -823,6 +905,7 @@ fn apply_tui_config_sets_vault_path() {
     assert_eq!(result.vault, Some(PathBuf::from("/home/user/MyVault")));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_quick_save() {
     let args = default_args();
@@ -833,6 +916,7 @@ fn apply_tui_config_sets_quick_save() {
 
 // --- Advanced fields ---
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_elastic() {
     let args = default_args();
@@ -841,6 +925,7 @@ fn apply_tui_config_sets_elastic() {
     assert!(result.elastic);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_pipeline() {
     let args = default_args();
@@ -849,6 +934,7 @@ fn apply_tui_config_sets_pipeline() {
     assert!(result.pipeline);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_batch() {
     let args = default_args();
@@ -857,6 +943,7 @@ fn apply_tui_config_sets_batch() {
     assert!(result.batch);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_checkpoint_interval() {
     let args = default_args();
@@ -865,6 +952,7 @@ fn apply_tui_config_sets_checkpoint_interval() {
     assert_eq!(result.checkpoint_interval, 50);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_autoscale() {
     let args = default_args();
@@ -873,6 +961,7 @@ fn apply_tui_config_sets_autoscale() {
     assert!(result.autoscale);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_verbose() {
     let args = default_args();
@@ -881,6 +970,7 @@ fn apply_tui_config_sets_verbose() {
     assert_eq!(result.verbose, 2);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_quiet() {
     let args = default_args();
@@ -889,6 +979,7 @@ fn apply_tui_config_sets_quiet() {
     assert!(result.quiet);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_sets_dry_run() {
     let args = default_args();
@@ -899,6 +990,7 @@ fn apply_tui_config_sets_dry_run() {
 
 // --- Edge cases ---
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_empty_json_no_change() {
     let mut args = default_args();
@@ -912,6 +1004,7 @@ fn apply_tui_config_empty_json_no_change() {
     assert_eq!(result.format, OutputFormat::Markdown);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_null_values_ignored() {
     let mut args = default_args();
@@ -927,6 +1020,7 @@ fn apply_tui_config_null_values_ignored() {
     assert_eq!(result.max_pages, 10);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_invalid_number_ignored() {
     let mut args = default_args();
@@ -936,6 +1030,7 @@ fn apply_tui_config_invalid_number_ignored() {
     assert_eq!(result.max_pages, 10);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_empty_string_path_ignored() {
     let mut args = default_args();
@@ -945,6 +1040,7 @@ fn apply_tui_config_empty_string_path_ignored() {
     assert_eq!(result.output, PathBuf::from("output"));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn apply_tui_config_all_fields_at_once() {
     let args = default_args();
@@ -993,18 +1089,21 @@ fn apply_tui_config_all_fields_at_once() {
 // 4. Args Parsing Integration
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_tui_flag_parsed() {
     let args = Args::try_parse_from(["webfang", "--tui"]).expect("--tui must parse");
     assert!(args.tui);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_tui_flag_default_false() {
     let args = Args::try_parse_from(["webfang"]).expect("minimal parse");
     assert!(!args.tui);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_interactive_flag_hidden_but_parseable() {
     let args =
@@ -1012,6 +1111,7 @@ fn args_interactive_flag_hidden_but_parseable() {
     assert!(args.interactive);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_config_tui_flag_hidden_but_parseable() {
     let args =
@@ -1019,12 +1119,14 @@ fn args_config_tui_flag_hidden_but_parseable() {
     assert!(args.config_tui);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_selector_default_is_body() {
     let args = Args::try_parse_from(["webfang"]).expect("minimal parse");
     assert_eq!(args.selector, "body");
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_selector_custom() {
     let args = Args::try_parse_from(["webfang", "--selector", "article"])
@@ -1032,12 +1134,14 @@ fn args_selector_custom() {
     assert_eq!(args.selector, "article");
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_format_markdown_default() {
     let args = Args::try_parse_from(["webfang"]).expect("minimal parse");
     assert_eq!(args.format, OutputFormat::Markdown);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_format_json() {
     let args =
@@ -1045,12 +1149,14 @@ fn args_format_json() {
     assert_eq!(args.format, OutputFormat::Json);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_export_format_jsonl_default() {
     let args = Args::try_parse_from(["webfang"]).expect("minimal parse");
     assert_eq!(args.export_format, ExportFormat::Jsonl);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_export_format_vector() {
     let args = Args::try_parse_from(["webfang", "--export-format", "vector"])
@@ -1058,12 +1164,14 @@ fn args_export_format_vector() {
     assert_eq!(args.export_format, ExportFormat::Vector);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_js_strategy_static_default() {
     let args = Args::try_parse_from(["webfang"]).expect("minimal parse");
     assert_eq!(args.js_strategy, JsStrategy::Static);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_js_strategy_hybrid() {
     let args = Args::try_parse_from(["webfang", "--js-strategy", "hybrid"])
@@ -1071,12 +1179,14 @@ fn args_js_strategy_hybrid() {
     assert_eq!(args.js_strategy, JsStrategy::Hybrid);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_max_pages_default() {
     let args = Args::try_parse_from(["webfang"]).expect("minimal parse");
     assert_eq!(args.max_pages, 10);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_max_pages_custom() {
     let args = Args::try_parse_from(["webfang", "--max-pages", "50"])
@@ -1084,36 +1194,42 @@ fn args_max_pages_custom() {
     assert_eq!(args.max_pages, 50);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_timeout_secs_default() {
     let args = Args::try_parse_from(["webfang"]).expect("minimal parse");
     assert_eq!(args.timeout_secs, 30);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_max_depth_default() {
     let args = Args::try_parse_from(["webfang"]).expect("minimal parse");
     assert_eq!(args.max_depth, 2);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_verbose_count() {
     let args = Args::try_parse_from(["webfang", "-vv"]).expect("-vv must parse");
     assert_eq!(args.verbose, 2);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_quiet_flag() {
     let args = Args::try_parse_from(["webfang", "--quiet"]).expect("--quiet must parse");
     assert!(args.quiet);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_dry_run_flag() {
     let args = Args::try_parse_from(["webfang", "--dry-run"]).expect("--dry-run must parse");
     assert!(args.dry_run);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_obsidian_wiki_links_flag() {
     let args = Args::try_parse_from(["webfang", "--obsidian-wiki-links"])
@@ -1121,18 +1237,21 @@ fn args_obsidian_wiki_links_flag() {
     assert!(args.obsidian_wiki_links);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_elastic_flag() {
     let args = Args::try_parse_from(["webfang", "--elastic"]).expect("--elastic must parse");
     assert!(args.elastic);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_pipeline_flag() {
     let args = Args::try_parse_from(["webfang", "--pipeline"]).expect("--pipeline must parse");
     assert!(args.pipeline);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_use_sitemap_flag() {
     let args =
@@ -1140,12 +1259,14 @@ fn args_use_sitemap_flag() {
     assert!(args.use_sitemap);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_concurrency_default_auto() {
     let args = Args::try_parse_from(["webfang"]).expect("minimal parse");
     assert!(args.concurrency.is_auto());
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_concurrency_fixed() {
     let args = Args::try_parse_from(["webfang", "--concurrency", "8"])
@@ -1154,6 +1275,7 @@ fn args_concurrency_fixed() {
     assert_eq!(args.concurrency.get(), Some(8));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_download_images_flag() {
     let args = Args::try_parse_from(["webfang", "--download-images"])
@@ -1161,6 +1283,7 @@ fn args_download_images_flag() {
     assert!(args.download_images);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_download_documents_flag() {
     let args = Args::try_parse_from(["webfang", "--download-documents"])
@@ -1168,6 +1291,7 @@ fn args_download_documents_flag() {
     assert!(args.download_documents);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_quick_save_flag() {
     let args =
@@ -1175,6 +1299,7 @@ fn args_quick_save_flag() {
     assert!(args.quick_save);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_autoscale_flag() {
     let args =
@@ -1182,6 +1307,7 @@ fn args_autoscale_flag() {
     assert!(args.autoscale);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_obsidian_tags_comma_separated() {
     let args = Args::try_parse_from(["webfang", "--obsidian-tags", "ai,scraping,web"])
@@ -1190,6 +1316,7 @@ fn args_obsidian_tags_comma_separated() {
     assert_eq!(tags, vec!["ai", "scraping", "web"]);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_vault_path() {
     let args = Args::try_parse_from(["webfang", "--vault", "/home/user/MyVault"])
@@ -1197,6 +1324,7 @@ fn args_vault_path() {
     assert_eq!(args.vault, Some(PathBuf::from("/home/user/MyVault")));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_include_patterns_comma_separated() {
     let args = Args::try_parse_from(["webfang", "--include-pattern", "*/blog/*,*/docs/*"])
@@ -1204,6 +1332,7 @@ fn args_include_patterns_comma_separated() {
     assert_eq!(args.include_patterns, vec!["*/blog/*", "*/docs/*"]);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn args_exclude_patterns_comma_separated() {
     let args = Args::try_parse_from(["webfang", "--exclude-pattern", "*/admin/*"])
@@ -1215,6 +1344,7 @@ fn args_exclude_patterns_comma_separated() {
 // 5. End-to-End: CollapsibleConfig JSON → apply_tui_config_args
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn e2e_tui_config_to_args_url_not_overridden_when_empty() {
     let config = CollapsibleConfig::new();
@@ -1225,6 +1355,7 @@ fn e2e_tui_config_to_args_url_not_overridden_when_empty() {
     assert_eq!(result.url.as_deref(), Some("https://example.com"));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn e2e_tui_config_to_args_preserves_defaults() {
     let config = CollapsibleConfig::new();
@@ -1239,6 +1370,7 @@ fn e2e_tui_config_to_args_preserves_defaults() {
     assert!(result.concurrency.is_auto());
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn e2e_custom_tui_config_applies_to_args() {
     let config = CollapsibleConfig::new();

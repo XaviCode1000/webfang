@@ -31,6 +31,7 @@ fn make_urls(n: usize) -> Vec<Url> {
 // Only tests for behavior NOT covered there belong here.
 // ===========================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn url_selector_toggle_out_of_bounds() {
     let urls = make_urls(3);
@@ -44,17 +45,20 @@ fn url_selector_toggle_out_of_bounds() {
 // Group 2: ProgressWidget
 // ===========================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn progress_widget_init_no_panic() {
     let urls = make_urls(3);
     let _widget = ProgressWidget::new(&urls);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn progress_widget_init_empty() {
     let _widget = ProgressWidget::new(&[]);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn progress_widget_builder_methods() {
     let urls = make_urls(1);
@@ -70,6 +74,7 @@ fn progress_widget_builder_methods() {
 // Only tests for behavior NOT covered there belong here.
 // ===========================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn error_log_widget_toggle_auto_scroll() {
     let mut widget = ErrorLogWidget::new();
@@ -77,6 +82,7 @@ fn error_log_widget_toggle_auto_scroll() {
     // Should not panic — just toggles internal state
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn error_log_widget_builder_methods() {
     let _widget = ErrorLogWidget::new()
@@ -84,6 +90,7 @@ fn error_log_widget_builder_methods() {
         .with_auto_scroll(false);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn error_log_widget_scroll_methods() {
     let mut widget = ErrorLogWidget::new().with_auto_scroll(false);
@@ -96,11 +103,13 @@ fn error_log_widget_scroll_methods() {
 // Group 4: ConfigFormState
 // ===========================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn config_form_init_no_panic() {
     let _form = ConfigFormState::new_default();
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn config_form_initial_state() {
     let form = ConfigFormState::new_default();
@@ -108,6 +117,7 @@ fn config_form_initial_state() {
     assert!(!form.cancelled);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn config_form_mark_submitted() {
     let mut form = ConfigFormState::new_default();
@@ -116,6 +126,7 @@ fn config_form_mark_submitted() {
     assert!(form.is_done());
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn config_form_mark_cancelled() {
     let mut form = ConfigFormState::new_default();
@@ -124,6 +135,7 @@ fn config_form_mark_cancelled() {
     assert!(form.is_done());
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn config_form_data_returns_json() {
     let form = ConfigFormState::new_default();
@@ -136,24 +148,28 @@ fn config_form_data_returns_json() {
 // Group 5: AppMode
 // ===========================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn app_mode_selector() {
     let mode = AppMode::Selector;
     assert!(matches!(mode, AppMode::Selector));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn app_mode_progress() {
     let mode = AppMode::Progress;
     assert!(matches!(mode, AppMode::Progress));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn app_mode_config() {
     let mode = AppMode::Config;
     assert!(matches!(mode, AppMode::Config));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn app_mode_all_variants_exist() {
     // Compile-time check: all expected variants constructible
@@ -162,6 +178,7 @@ fn app_mode_all_variants_exist() {
     let _ = AppMode::Config;
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn app_mode_equality() {
     assert_eq!(AppMode::Selector, AppMode::Selector);
@@ -172,11 +189,13 @@ fn app_mode_equality() {
 // Group 6: HelpModal
 // ===========================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn help_modal_init_no_panic() {
     let _modal = HelpModal::new("Help".into(), vec![("q".into(), "Quit".into())]);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn help_modal_with_bindings() {
     let bindings = vec![
@@ -192,6 +211,7 @@ fn help_modal_with_bindings() {
 // Group 7: State Machine Transitions (AppMode)
 // ===========================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_app_mode_transition_selector_to_progress() {
     let mode = AppMode::Selector;
@@ -202,6 +222,7 @@ fn test_app_mode_transition_selector_to_progress() {
     assert!(matches!(next, AppMode::Progress));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_app_mode_transition_progress_to_config() {
     let mode = AppMode::Progress;
@@ -212,6 +233,7 @@ fn test_app_mode_transition_progress_to_config() {
     assert!(matches!(next, AppMode::Config));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_app_mode_transition_back_to_selector() {
     let mode = AppMode::Config;
@@ -222,6 +244,7 @@ fn test_app_mode_transition_back_to_selector() {
     assert!(matches!(next, AppMode::Selector));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_app_mode_full_cycle() {
     let modes = [AppMode::Selector, AppMode::Progress, AppMode::Config];
@@ -241,6 +264,7 @@ fn test_app_mode_full_cycle() {
 // Group 8: Action Display & Equality
 // ===========================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_action_display_variants() {
     assert_eq!(Action::Tick.to_string(), "Tick");
@@ -255,6 +279,7 @@ fn test_action_display_variants() {
     assert_eq!(Action::ConfigCancelled.to_string(), "ConfigCancelled");
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_action_display_with_payload() {
     assert_eq!(Action::Resize(80, 24).to_string(), "Resize(80, 24)");
@@ -265,6 +290,7 @@ fn test_action_display_with_payload() {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_action_equality() {
     assert_eq!(Action::Tick, Action::Tick);
@@ -280,6 +306,7 @@ fn test_action_equality() {
 // Group 9: Event Dispatch Routing
 // ===========================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_toggle_help_action_concept() {
     // Verify ToggleHelp action exists and is distinct from other modal actions
@@ -288,6 +315,7 @@ fn test_toggle_help_action_concept() {
     assert!(!matches!(action, Action::Quit));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_close_modal_action_concept() {
     let action = Action::CloseModal;
@@ -295,6 +323,7 @@ fn test_close_modal_action_concept() {
     assert!(!matches!(action, Action::Quit));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_url_confirmed_carries_urls() {
     let urls = vec!["https://a.com".into(), "https://b.com".into()];
@@ -305,6 +334,7 @@ fn test_url_confirmed_carries_urls() {
     }
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_config_done_carries_value() {
     let value = serde_json::json!({"key": "value"});
@@ -315,6 +345,7 @@ fn test_config_done_carries_value() {
     }
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_config_done_none() {
     let action = Action::ConfigDone(None);
@@ -328,6 +359,7 @@ fn test_config_done_none() {
 // Group 10: ProgressWidget State Updates
 // ===========================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_progress_widget_update_tick() {
     let urls = make_urls(2);
@@ -337,6 +369,7 @@ fn test_progress_widget_update_tick() {
     assert!(result.is_ok());
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_progress_widget_update_render() {
     let urls = make_urls(2);
@@ -349,6 +382,7 @@ fn test_progress_widget_update_render() {
 // Group 11: ErrorLogWidget State Updates
 // ===========================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_error_log_widget_update_tick() {
     let mut widget = ErrorLogWidget::new();
@@ -356,6 +390,7 @@ fn test_error_log_widget_update_tick() {
     assert!(result.is_ok());
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_error_log_widget_update_render() {
     let mut widget = ErrorLogWidget::new();

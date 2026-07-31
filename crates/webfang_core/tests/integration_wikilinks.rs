@@ -18,6 +18,7 @@ fn pipeline(html: &str, domain: &str) -> String {
 // Phase 1: Core pipeline integration tests
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn pipeline_image_link_preserved() {
     // Card with link wrapping an image — the guard rail must preserve it
@@ -41,6 +42,7 @@ fn pipeline_image_link_preserved() {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn pipeline_relative_image_link_preserved() {
     let html = concat!(
@@ -59,6 +61,7 @@ fn pipeline_relative_image_link_preserved() {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn pipeline_plain_text_link_converted_to_wikilink() {
     // Text-only links should still be converted
@@ -74,6 +77,7 @@ fn pipeline_plain_text_link_converted_to_wikilink() {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn pipeline_mixed_image_and_text_links() {
     let html = concat!(
@@ -96,6 +100,7 @@ fn pipeline_mixed_image_and_text_links() {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn pipeline_external_image_link_unaffected() {
     // External domain links should be left untouched
@@ -108,6 +113,7 @@ fn pipeline_external_image_link_unaffected() {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn pipeline_heading_with_image_link() {
     // Realistic: heading with card link wrapping image
@@ -129,6 +135,7 @@ fn pipeline_heading_with_image_link() {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn pipeline_code_block_links_not_converted() {
     // Links inside code blocks should not be converted

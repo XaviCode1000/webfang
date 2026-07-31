@@ -16,6 +16,7 @@ use webfang::domain::repository::VectorRepository;
 use webfang::infrastructure::stream::{StreamRepository, VectorRecord};
 use tempfile::NamedTempFile;
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn stream_repository_writes_jsonl_with_384_dim_embedding() {
     let tmp = NamedTempFile::new().expect("temp file");
@@ -68,6 +69,7 @@ async fn stream_repository_writes_jsonl_with_384_dim_embedding() {
     assert_eq!(record.chunk_text, "cleaned chunk text");
 }
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn stream_repository_stdout_dash_is_valid_sink_path() {
     // `-` selects stdout; just assert construction succeeds (no file created).

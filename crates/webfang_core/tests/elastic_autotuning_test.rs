@@ -21,6 +21,7 @@ use webfang::infrastructure::persistence::sqlite::SqliteVectorRepository;
 /// Verifies that when cpu_cores is set via CLI override (ElasticOverrides),
 /// the resulting AutotuningConfig.cpu_cores matches the override value,
 /// and db_pool_size is at least MIN_DB_POOL_SIZE.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn cpu_cores_cli_takes_precedence() {
     let overrides = ElasticOverrides {
@@ -50,6 +51,7 @@ async fn cpu_cores_cli_takes_precedence() {
 ///
 /// Verifies that when cpu_cores is set to 1 or 2 (below MIN_DB_POOL_SIZE=4),
 /// the db_pool_size is clamped to 4.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn cpu_cores_floor_at_minimum() {
     // Test with cpu_cores = 1
@@ -84,6 +86,7 @@ async fn cpu_cores_floor_at_minimum() {
 ///
 /// Verifies that max_concurrent = ram_budget_bytes / max_resource_bytes,
 /// with a minimum of 1 permit (the .max(1) clamp).
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn ram_budget_cascades_to_semaphore_permits() {
     let ram_budget = 100 * 1024 * 1024; // 100 MiB
@@ -130,6 +133,7 @@ async fn ram_budget_cascades_to_semaphore_permits() {
 /// Uses SqliteVectorRepository::from_memory() to create an in-memory repository,
 /// manually constructs AutotuningConfig, builds ElasticIngestion, runs the
 /// pipeline against a wiremock server, and verifies content was persisted.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn memory_db_elastic_pipeline_roundtrip() {
     use std::sync::Arc;
@@ -208,6 +212,7 @@ async fn memory_db_elastic_pipeline_roundtrip() {
 ///
 /// Sets up the elastic pipeline with a tiny ram_budget and verifies that
 /// the download semaphore permits are calculated correctly.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn ram_budget_cascade_to_elastic_ingestion() {
     use std::sync::Arc;

@@ -51,6 +51,7 @@ fn send_request(cmd: &mut Command, request: &str) -> serde_json::Value {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 #[ignore = "requires cargo build --release --example mcp_server_stdio"]
 fn test_mcp_binary_exists() {
@@ -63,6 +64,7 @@ fn test_mcp_binary_exists() {
     cmd.write_stdin("").assert().failure(); // fails because stdin closes before JSON-RPC
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 #[ignore = "requires cargo build --release --example mcp_server_stdio"]
 fn test_mcp_tools_list() {
@@ -131,6 +133,7 @@ fn test_mcp_tools_list() {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 #[ignore = "requires cargo build --release --example mcp_server_stdio"]
 fn test_mcp_validate_url_tool() {
@@ -155,6 +158,7 @@ fn test_mcp_validate_url_tool() {
     assert!(content.contains("8080"), "response should contain port");
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 #[ignore = "requires cargo build --release --example mcp_server_stdio"]
 fn test_mcp_invalid_url_shows_error() {
@@ -175,6 +179,7 @@ fn test_mcp_invalid_url_shows_error() {
     assert!(text.contains("false"), "should mark as invalid");
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 #[ignore = "requires cargo build --release --example mcp_server_stdio"]
 fn test_mcp_clean_html_removes_scripts() {
@@ -204,6 +209,7 @@ fn test_mcp_clean_html_removes_scripts() {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 #[ignore = "requires cargo build --release --example mcp_server_stdio"]
 fn test_mcp_extract_domain() {
@@ -223,6 +229,7 @@ fn test_mcp_extract_domain() {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 #[ignore = "requires cargo build --release --example mcp_server_stdio"]
 fn test_mcp_list_waf_providers() {

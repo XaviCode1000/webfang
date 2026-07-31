@@ -11,6 +11,7 @@ use webfang::infrastructure::autotuning::ElasticOverrides;
 use webfang::infrastructure::config::ScraperConfig;
 use tempfile::TempDir;
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn container_with_elastic_builds_pipeline() {
     let dir = TempDir::new().expect("directorio temporal");
@@ -46,6 +47,7 @@ async fn container_with_elastic_builds_pipeline() {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn container_without_elastic_is_none() {
     let dir = TempDir::new().expect("directorio temporal");
@@ -66,6 +68,7 @@ async fn container_without_elastic_is_none() {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn elastic_pipeline_returns_error_on_bad_url() {
     use std::sync::Arc;

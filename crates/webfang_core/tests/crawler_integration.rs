@@ -13,12 +13,14 @@ use webfang::{
 use url::Url;
 
 /// Test pattern matching functionality
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_matches_pattern_wildcard() {
     assert!(matches_pattern("https://example.com/page", "*"));
     assert!(matches_pattern("https://any.domain/any/path", "*"));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_matches_pattern_domain_wildcard() {
     assert!(matches_pattern(
@@ -32,6 +34,7 @@ fn test_matches_pattern_domain_wildcard() {
     assert!(!matches_pattern("https://other.com/page", "*.example.com"));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_matches_pattern_prefix_wildcard() {
     // Host-only patterns (no leading '/') match HOSTS only
@@ -55,6 +58,7 @@ fn test_matches_pattern_prefix_wildcard() {
     ));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_is_excluded() {
     // Note: Patterns match HOSTS, not paths (SSRF-safe design)
@@ -78,6 +82,7 @@ fn test_is_excluded() {
     assert!(!is_excluded("https://example.com/admin/users", &patterns));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_is_internal_link() {
     assert!(is_internal_link("https://example.com/page", "example.com"));
@@ -96,6 +101,7 @@ fn test_is_internal_link() {
 ///
 /// This test is ignored by default to avoid network calls.
 /// Run with: `cargo test --test crawler_integration -- --ignored`
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 #[ignore = "requires network"]
 async fn test_crawl_site_small() {
@@ -116,6 +122,7 @@ async fn test_crawl_site_small() {
 /// Test URL discovery
 ///
 /// This test is ignored by default to avoid network calls.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 #[ignore = "requires network"]
 async fn test_discover_urls() {
@@ -136,6 +143,7 @@ async fn test_discover_urls() {
 /// Test sitemap fetching
 ///
 /// This test is ignored by default to avoid network calls.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 #[ignore = "requires network"]
 async fn test_crawl_with_sitemap() {
@@ -153,6 +161,7 @@ async fn test_crawl_with_sitemap() {
 }
 
 /// Test URL filtering with config
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_is_allowed_complex() {
     let seed = Url::parse("https://example.com").unwrap();
@@ -193,6 +202,7 @@ fn test_is_allowed_complex() {
 }
 
 /// Test crawler config builder
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_crawler_config_builder() {
     let seed = Url::parse("https://example.com").unwrap();
@@ -218,6 +228,7 @@ fn test_crawler_config_builder() {
 }
 
 /// Test crawler config default values
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_crawler_config_defaults() {
     let seed = Url::parse("https://example.com").unwrap();

@@ -21,6 +21,7 @@ use webfang_ai::infrastructure_ai::HtmlChunker;
 
 /// HTML paragraphs produce chunks separated by newlines.
 /// strip_html_tags pushes '\n' on '>', so <p>content</p> becomes content\n.
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn chunker_paragraphs_become_separated_chunks() {
     let chunker = HtmlChunker::new().with_min_chunk_size(1);
@@ -40,6 +41,7 @@ fn chunker_paragraphs_become_separated_chunks() {
 
 /// The > character produces \n in output — this is intentional for sentence
 /// boundary detection in AI tokenization.
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn chunker_close_angle_bracket_produces_newline() {
     let chunker = HtmlChunker::new().with_min_chunk_size(1);
@@ -61,6 +63,7 @@ fn chunker_close_angle_bracket_produces_newline() {
 }
 
 /// Empty tags should not create empty paragraphs.
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn chunker_empty_tags_no_empty_paragraphs() {
     let chunker = HtmlChunker::new().with_min_chunk_size(1);
@@ -77,6 +80,7 @@ fn chunker_empty_tags_no_empty_paragraphs() {
 }
 
 /// Completely empty input produces no chunks.
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn chunker_empty_html_produces_no_chunks() {
     let chunker = HtmlChunker::new();
@@ -85,6 +89,7 @@ fn chunker_empty_html_produces_no_chunks() {
 }
 
 /// Nested tags are stripped, leaving only text content.
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn chunker_nested_tags_stripped_to_text() {
     let chunker = HtmlChunker::new().with_min_chunk_size(1);

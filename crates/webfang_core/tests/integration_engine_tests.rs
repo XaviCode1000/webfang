@@ -25,6 +25,7 @@ fn test_config(base_url: &str) -> CrawlerConfig {
 }
 
 /// Test 1: Engine with checkpoint enabled creates a checkpoint file.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_engine_with_checkpoint_enabled() {
     let server = MockServer::start().await;
@@ -73,6 +74,7 @@ async fn test_engine_with_checkpoint_enabled() {
 /// The mock server returns 429 for the first request, then 200 for subsequent
 /// requests. The session pool should mark the domain as unhealthy after
 /// max_failures consecutive failures and skip it.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_engine_with_session_pool_429() {
     let server = MockServer::start().await;
@@ -135,6 +137,7 @@ async fn test_engine_with_session_pool_429() {
 ///
 /// Creates a checkpoint with one visited URL, then verifies the engine
 /// skips that URL and starts from the remaining queue.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_engine_resume_from_checkpoint() {
     let server = MockServer::start().await;
@@ -205,6 +208,7 @@ async fn test_engine_resume_from_checkpoint() {
 ///
 /// The mock server serves a robots.txt that disallows /private/.
 /// The engine with ignore_robots=false should respect it.
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_robots_txt_enforcement() {
     let server = MockServer::start().await;

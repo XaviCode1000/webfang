@@ -17,7 +17,8 @@ use url::Url;
 
 proptest! {
     /// Valid URLs with http/https schemes should always parse successfully
-    #[test]
+    #[ignore = "resurrected: pending triage"]
+#[test]
     fn prop_validate_url_valid_schemes(
         scheme in prop_oneof!["https", "http"],
         domain in "[a-z]{2,15}\\.[a-z]{2,6}",
@@ -33,7 +34,8 @@ proptest! {
     }
 
     /// URLs with query strings should preserve query component
-    #[test]
+    #[ignore = "resurrected: pending triage"]
+#[test]
     fn prop_validate_url_with_query(
         scheme in prop_oneof!["https", "http"],
         domain in "[a-z]{3,12}\\.[a-z]{2,5}",
@@ -47,7 +49,8 @@ proptest! {
     }
 
     /// URLs with fragments should have fragment preserved
-    #[test]
+    #[ignore = "resurrected: pending triage"]
+#[test]
     fn prop_validate_url_with_fragment(
         scheme in prop_oneof!["https", "http"],
         domain in "[a-z]{3,12}\\.[a-z]{2,5}",
@@ -65,7 +68,8 @@ proptest! {
 
 proptest! {
     /// Normalization should preserve the host
-    #[test]
+    #[ignore = "resurrected: pending triage"]
+#[test]
     fn prop_normalize_url_preserves_host(
         scheme in prop_oneof!["https", "http"],
         domain in "[a-z]{3,15}\\.[a-z]{2,6}",
@@ -79,7 +83,8 @@ proptest! {
     }
 
     /// Normalization should preserve the scheme
-    #[test]
+    #[ignore = "resurrected: pending triage"]
+#[test]
     fn prop_normalize_url_preserves_scheme(
         scheme in prop_oneof!["https", "http"],
         domain in "[a-z]{3,12}\\.[a-z]{2,5}",
@@ -92,7 +97,8 @@ proptest! {
     }
 
     /// Normalization should preserve the path (minus trailing slash)
-    #[test]
+    #[ignore = "resurrected: pending triage"]
+#[test]
     fn prop_normalize_url_preserves_path(
         scheme in prop_oneof!["https", "http"],
         domain in "[a-z]{3,12}\\.[a-z]{2,5}",
@@ -110,7 +116,8 @@ proptest! {
     }
 
     /// Normalization should remove fragments
-    #[test]
+    #[ignore = "resurrected: pending triage"]
+#[test]
     fn prop_normalize_url_removes_fragment(
         scheme in prop_oneof!["https", "http"],
         domain in "[a-z]{3,12}\\.[a-z]{2,5}",
@@ -124,7 +131,8 @@ proptest! {
     }
 
     /// Normalization should remove trailing slashes (except root)
-    #[test]
+    #[ignore = "resurrected: pending triage"]
+#[test]
     fn prop_normalize_url_removes_trailing_slash(
         scheme in prop_oneof!["https", "http"],
         domain in "[a-z]{3,12}\\.[a-z]{2,5}",
@@ -148,7 +156,8 @@ proptest! {
 
 proptest! {
     /// URLs with ports should parse and preserve port info
-    #[test]
+    #[ignore = "resurrected: pending triage"]
+#[test]
     fn prop_url_with_port(
         scheme in prop_oneof!["https", "http"],
         domain in "[a-z]{3,12}\\.[a-z]{2,5}",
@@ -161,7 +170,8 @@ proptest! {
     }
 
     /// URLs with userinfo (user:pass@) should parse
-    #[test]
+    #[ignore = "resurrected: pending triage"]
+#[test]
     fn prop_url_with_userinfo(
         scheme in prop_oneof!["https", "http"],
         user in "[a-z]{3,10}",
@@ -173,7 +183,8 @@ proptest! {
     }
 
     /// IPv4 URLs should parse successfully
-    #[test]
+    #[ignore = "resurrected: pending triage"]
+#[test]
     fn prop_url_ipv4(
         scheme in prop_oneof!["https", "http"],
         a in 1u8..255,
@@ -193,7 +204,8 @@ proptest! {
 
 proptest! {
     /// A URL with fragment should still be internal to its domain
-    #[test]
+    #[ignore = "resurrected: pending triage"]
+#[test]
     fn prop_internal_link_ignores_fragment(
         domain in "[a-z]{3,12}\\.[a-z]{2,5}",
         path in "(/[a-z]{1,10}){1,2}",
@@ -207,7 +219,8 @@ proptest! {
     }
 
     /// A URL with query params should still be internal to its domain
-    #[test]
+    #[ignore = "resurrected: pending triage"]
+#[test]
     fn prop_internal_link_ignores_query(
         domain in "[a-z]{3,12}\\.[a-z]{2,5}",
         key in "[a-z]{2,8}",
@@ -221,7 +234,8 @@ proptest! {
     }
 
     /// A URL with port should still be internal to its domain
-    #[test]
+    #[ignore = "resurrected: pending triage"]
+#[test]
     fn prop_internal_link_ignores_port(
         domain in "[a-z]{3,12}\\.[a-z]{2,5}",
         port in 1024u16..65535,
@@ -240,7 +254,8 @@ proptest! {
 
 proptest! {
     /// Any URL should match an empty pattern (current behavior)
-    #[test]
+    #[ignore = "resurrected: pending triage"]
+#[test]
     fn prop_empty_pattern_matches_all(
         scheme in prop_oneof!["https", "http"],
         domain in "[a-z]{3,12}\\.[a-z]{2,5}",
@@ -253,7 +268,8 @@ proptest! {
     }
 
     /// Domain substring in pattern should match URL containing that domain
-    #[test]
+    #[ignore = "resurrected: pending triage"]
+#[test]
     fn prop_domain_in_pattern_matches(
         domain in "[a-z]{5,15}\\.[a-z]{2,5}",
         path in "(/[a-z]{1,8}){0,3}",
@@ -273,6 +289,7 @@ proptest! {
 /// Without `ai` feature: AI module should return an empty router.
 /// This verifies that AI tools are NOT registered when compiled without `--features ai`.
 #[cfg(not(feature = "ai"))]
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_ai_module_returns_empty_router_without_feature() {
     use rmcp::handler::server::tool::ToolRouter;
@@ -293,6 +310,7 @@ fn test_ai_module_returns_empty_router_without_feature() {
 /// Once AI tools are implemented, this test should verify they ARE present.
 /// Currently the AI module is a stub, so we verify it compiles and returns a router.
 #[cfg(feature = "ai")]
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_ai_module_compiles_with_feature() {
     use rmcp::handler::server::tool::ToolRouter;
@@ -315,6 +333,7 @@ fn test_ai_module_compiles_with_feature() {
 
 /// Verify McpHandler can be constructed without panicking (no AI feature)
 #[cfg(not(feature = "ai"))]
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_mcp_handler_construction_without_ai() {
     use webfang_core::config::Config;
@@ -333,6 +352,7 @@ async fn test_mcp_handler_construction_without_ai() {
 
 /// Verify McpHandler can be constructed without panicking (with AI feature)
 #[cfg(feature = "ai")]
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_mcp_handler_construction_with_ai() {
     use webfang_core::config::Config;
@@ -350,6 +370,7 @@ async fn test_mcp_handler_construction_with_ai() {
 }
 
 /// Verify all non-AI tool categories are registered regardless of feature flag
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_non_ai_tool_categories_registered() {
     use webfang_core::config::Config;

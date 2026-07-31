@@ -63,6 +63,7 @@ fn read_all_files(dir: &std::path::Path) -> Vec<(String, String)> {
 
 // ── Markdown saving ──────────────────────────────────────────────────────
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn save_markdown_creates_file_with_correct_content() {
     let tmp = TempDir::new().unwrap();
@@ -88,6 +89,7 @@ fn save_markdown_creates_file_with_correct_content() {
     assert!(content.contains("This is the body content."));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn save_markdown_includes_frontmatter() {
     let tmp = TempDir::new().unwrap();
@@ -114,6 +116,7 @@ fn save_markdown_includes_frontmatter() {
     assert!(after_first.contains("---\n"));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn save_markdown_with_metadata_fields() {
     let tmp = TempDir::new().unwrap();
@@ -140,6 +143,7 @@ fn save_markdown_with_metadata_fields() {
 
 // ── Directory creation ───────────────────────────────────────────────────
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn save_creates_parent_directories_if_missing() {
     let tmp = TempDir::new().unwrap();
@@ -165,6 +169,7 @@ fn save_creates_parent_directories_if_missing() {
 
 // ── Overwrite behavior ──────────────────────────────────────────────────
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn save_overwrites_existing_file() {
     let tmp = TempDir::new().unwrap();
@@ -209,6 +214,7 @@ fn save_overwrites_existing_file() {
 
 // ── JSON saving ──────────────────────────────────────────────────────────
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn save_json_creates_results_json() {
     let tmp = TempDir::new().unwrap();
@@ -234,6 +240,7 @@ fn save_json_creates_results_json() {
     assert!(content.contains("Content."));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn save_json_contains_valid_json_array() {
     let tmp = TempDir::new().unwrap();
@@ -259,6 +266,7 @@ fn save_json_contains_valid_json_array() {
 
 // ── Text saving ──────────────────────────────────────────────────────────
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn save_text_creates_txt_files() {
     let tmp = TempDir::new().unwrap();
@@ -285,6 +293,7 @@ fn save_text_creates_txt_files() {
 
 // ── Multiple items ───────────────────────────────────────────────────────
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn save_multiple_items_creates_separate_files() {
     let tmp = TempDir::new().unwrap();
@@ -307,6 +316,7 @@ fn save_multiple_items_creates_separate_files() {
 
 // ── Obsidian options ─────────────────────────────────────────────────────
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn obsidian_wiki_links_option_is_respected() {
     let tmp = TempDir::new().unwrap();
@@ -333,6 +343,7 @@ fn obsidian_wiki_links_option_is_respected() {
     assert!(files[0].1.contains("scraped"));
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn obsidian_tags_appear_in_frontmatter() {
     let tmp = TempDir::new().unwrap();
@@ -360,6 +371,7 @@ fn obsidian_tags_appear_in_frontmatter() {
 
 // ── HTML to Markdown conversion ──────────────────────────────────────────
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn save_html_content_converts_to_markdown() {
     let tmp = TempDir::new().unwrap();

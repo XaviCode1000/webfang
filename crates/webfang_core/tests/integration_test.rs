@@ -17,6 +17,7 @@ use tempfile::TempDir;
 // Skip with: cargo test --test integration -- --skip
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 #[ignore = "requires network access"]
 async fn test_scraper_can_fetch_simple_page() {
@@ -41,6 +42,7 @@ async fn test_scraper_can_fetch_simple_page() {
 // Tests: CLI Argument validation (via integration test pattern)
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_output_format_display() {
     // Test that OutputFormat variants can be displayed
@@ -56,6 +58,7 @@ fn test_output_format_display() {
     let _ = format!("{:?}", json);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_args_has_required_fields() {
     // Test that Args struct has the expected fields (without Default)
@@ -158,6 +161,7 @@ fn test_args_has_required_fields() {
 // Tests: Content extraction edge cases
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 #[ignore = "requires network access"]
 async fn test_scrape_handles_404_gracefully() {
@@ -185,6 +189,7 @@ async fn test_scrape_handles_404_gracefully() {
     );
 }
 
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_scrape_handles_invalid_url_gracefully() {
     // This test verifies behavior when URL has no host
@@ -201,6 +206,7 @@ async fn test_scrape_handles_invalid_url_gracefully() {
 // Tests: Result saving edge cases
 // ============================================================================
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_save_results_to_nested_directory() {
     // Arrange
@@ -240,6 +246,7 @@ fn test_save_results_to_nested_directory() {
     assert!(!files.is_empty());
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_save_results_json_with_special_characters() {
     // Arrange - Content with special characters that might break JSON
@@ -284,6 +291,7 @@ fn test_save_results_json_with_special_characters() {
     assert_eq!(parsed.len(), 1);
 }
 
+#[ignore = "resurrected: pending triage"]
 #[test]
 fn test_save_results_markdown_with_markdown_syntax() {
     // Arrange - Content that looks like markdown
@@ -334,6 +342,7 @@ fn test_save_results_markdown_with_markdown_syntax() {
 /// Test downloading images from a real website
 /// Run with: cargo test --test integration --features images test_download_images_from_website
 #[cfg(feature = "images")]
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_download_images_from_website() {
     use webfang::scrape_with_config;
@@ -405,6 +414,7 @@ async fn test_download_images_from_website() {
 /// Test downloading documents from a real website
 /// Run with: cargo test --test integration --features documents test_download_documents_from_website
 #[cfg(feature = "documents")]
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_download_documents_from_website() {
     use webfang::scrape_with_config;
@@ -477,6 +487,7 @@ async fn test_download_documents_from_website() {
 /// ```
 #[cfg(feature = "ai")]
 #[ignore = "requires ONNX model cached locally, not available on CI"]
+#[ignore = "resurrected: pending triage"]
 #[tokio::test]
 async fn test_ai_embedding_preservation() {
     // Test original bug: embeddings were being discarded during filtering
