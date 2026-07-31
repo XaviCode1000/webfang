@@ -1,0 +1,94 @@
+# Mutation Testing — Hot Path Verification
+#
+# Stopping criterion #3 of the mega test remediation plan:
+# "cargo-mutants: hot path mutants die".
+#
+# Runs cargo-mutants on critical hot paths and reports survivors.
+# Prevents new code from introducing untested logic branches.
+#
+# Gate policy:
+#   Phase 1 (current): continue-on-error + report survivors as warnings
+#   Phase 2: remove continue-on-error → hard gate after fixing known survivors
+#
+# Performance: matrix runs 4 targets in parallel (~20 min each).
+# --timeout=60 per mutant prevents infinite-loop mutants from stalling.
+# -- --lib limits test execution to unit tests (fast, no subprocess).
+# Estimated total: ~25 min wall-clock (parallel matrix).
+
+name: Mutation Testing
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"  # Mondays 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "Directory or file to mutate (default: hot paths)"
+        required: false
+        default: ""
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Forces v4 actions (checkout, cache, upload-artifact) to run on Node 24
+  # instead of deprecated Node 20. Remove when all actions migrate to v5+.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # CI optimizations: disable debuginfo + incremental for faster builds
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_DEV_INCREMENTAL: "false"
+
+jobs:
+  mutants:
+    name: "cargo-mutants (${{ matrix.target }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # Phase 1: report survivors as warnings, don't block CI
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - crates/webfang_core/src/extractor
+          - crates/webfang_core/src/infrastructure/bridge.rs
+          - crates/webfang_core/src/infrastructure/network
+          - crates/webfang_core/src/application/pipeline
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cmake
+        run: sudo apt-get install -y cmake
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@cargo-mutants
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run mutation testing
+        run: |
+          cargo mutants -p webfang_core \
+            -d "${{ matrix.target }}" \
+            --timeout=60 \
+            -- --lib \
+            2>&1 | tee mutants-output.txt
+
+      - name: Check for survivors
+        run: |
+          if grep -q "MISSED" mutants-output.txt; then
+            echo "::warning::Surviving mutants detected in ${{ matrix.target }}"
+            grep "MISSED" mutants-output.txt
+          fi
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants-${{ strategy.job-index }}
+          path: mutants-output.txt
