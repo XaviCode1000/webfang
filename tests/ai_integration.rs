@@ -436,7 +436,7 @@ async fn test_error_chunk_too_large() {
 
     if let Ok(cleaner) = cleaner {
         let long_content = "Test. ".repeat(2000);
-        let html = format!("<p>{}</p>", long_content);
+        let html = format!("<p>{long_content}</p>");
 
         let result = cleaner.clean(&html).await;
 
@@ -451,7 +451,7 @@ async fn test_error_chunk_too_large() {
                 eprintln!("Correctly detected chunk too large");
             },
             Err(e) => {
-                eprintln!("Other error (acceptable): {}", e);
+                eprintln!("Other error (acceptable): {e}");
             },
         }
     } else {

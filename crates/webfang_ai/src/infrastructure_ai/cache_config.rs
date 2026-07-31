@@ -131,10 +131,7 @@ impl std::str::FromStr for AiModel {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         AiModel::parse(s).ok_or_else(|| {
-            format!(
-                "Unknown AI model '{}'. Valid values: granite-97m, granite-311m",
-                s
-            )
+            format!("Unknown AI model '{s}'. Valid values: granite-97m, granite-311m")
         })
     }
 }
@@ -232,8 +229,7 @@ mod tests {
         let model = AiModel::from_env_or_default();
         assert!(
             model == AiModel::Granite97M || model == AiModel::Granite311M,
-            "from_env_or_default() should return a valid model, got {:?}",
-            model
+            "from_env_or_default() should return a valid model, got {model:?}"
         );
     }
 }

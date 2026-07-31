@@ -25,7 +25,7 @@ async fn test_mock_server_200() {
     let client = HttpClient::new(config).unwrap();
 
     let result = client.get(&mock_server.uri()).await;
-    assert!(result.is_ok(), "Should succeed: {:?}", result);
+    assert!(result.is_ok(), "Should succeed: {result:?}");
 }
 
 /// Test HTTP 404 with mock server: the client maps 4xx responses to a `ClientError`.
@@ -47,8 +47,7 @@ async fn test_mock_server_404() {
     // HttpClient maps 404 to ClientError(404); 4xx responses are not retried.
     assert!(
         matches!(result, Err(HttpError::ClientError(404))),
-        "Expected ClientError(404), got: {:?}",
-        result
+        "Expected ClientError(404), got: {result:?}"
     );
 }
 
@@ -76,8 +75,7 @@ async fn test_mock_server_500() {
     // Once retries are exhausted, 500 surfaces as ServerError(500).
     assert!(
         matches!(result, Err(HttpError::ServerError(500))),
-        "Expected ServerError(500), got: {:?}",
-        result
+        "Expected ServerError(500), got: {result:?}"
     );
 }
 
@@ -114,8 +112,7 @@ async fn test_mock_server_429_rate_limit() {
     // After retry, should still fail with RateLimited error
     assert!(
         result.is_err(),
-        "Should return error for 429, got: {:?}",
-        result
+        "Should return error for 429, got: {result:?}"
     );
 }
 
@@ -185,8 +182,7 @@ async fn test_mock_server_503_service_unavailable() {
     // After retry, should fail with ServerError(503)
     assert!(
         result.is_err(),
-        "Should return error for 503, got: {:?}",
-        result
+        "Should return error for 503, got: {result:?}"
     );
 }
 
@@ -264,8 +260,7 @@ async fn test_mock_server_handles_slow_response() {
     // Should succeed but take at least 500ms
     assert!(
         result.is_ok(),
-        "Should handle slow response, got: {:?}",
-        result
+        "Should handle slow response, got: {result:?}"
     );
     assert!(
         elapsed.as_millis() >= 500,
@@ -305,8 +300,7 @@ async fn test_mock_server_timeout_on_slow_response() {
     // Should timeout/fail
     assert!(
         result.is_err(),
-        "Should timeout on slow response, got: {:?}",
-        result
+        "Should timeout on slow response, got: {result:?}"
     );
     // But should have waited at least close to timeout
     assert!(
@@ -338,11 +332,7 @@ async fn test_mock_server_empty_body() {
     let result = client.get(&url).await;
 
     // Should succeed but return empty string
-    assert!(
-        result.is_ok(),
-        "Should handle empty body, got: {:?}",
-        result
-    );
+    assert!(result.is_ok(), "Should handle empty body, got: {result:?}");
     let body = result.unwrap();
-    assert!(body.is_empty(), "Body should be empty, got: '{}'", body);
+    assert!(body.is_empty(), "Body should be empty, got: '{body}'");
 }

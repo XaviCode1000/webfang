@@ -165,8 +165,8 @@ async fn test_valid_sitemap_returns_exit_0() {
         .mount(&mock_server)
         .await;
 
-    let base_url = format!("{}/", server_uri);
-    let sitemap_url = format!("{}/sitemap.xml", server_uri);
+    let base_url = format!("{server_uri}/");
+    let sitemap_url = format!("{server_uri}/sitemap.xml");
 
     cmd()
         .arg("--url")

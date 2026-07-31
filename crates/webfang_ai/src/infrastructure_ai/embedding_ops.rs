@@ -335,7 +335,7 @@ mod tests {
         let normalization = 1.0f32 / 8.0f32.sqrt();
         let vec = vec![normalization; 8];
         let sim = cosine_similarity(&vec, &vec);
-        assert!((sim - 1.0).abs() < 0.001, "Expected ~1.0, got {}", sim);
+        assert!((sim - 1.0).abs() < 0.001, "Expected ~1.0, got {sim}");
     }
 
     #[test]
@@ -343,7 +343,7 @@ mod tests {
         let a = vec![1.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         let b = vec![0.0f32, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         let sim = cosine_similarity(&a, &b);
-        assert!(sim.abs() < 0.001, "Expected ~0.0, got {}", sim);
+        assert!(sim.abs() < 0.001, "Expected ~0.0, got {sim}");
     }
 
     #[test]
@@ -351,7 +351,7 @@ mod tests {
         let a = vec![1.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         let b = vec![-1.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         let sim = cosine_similarity(&a, &b);
-        assert!((sim + 1.0).abs() < 0.001, "Expected ~-1.0, got {}", sim);
+        assert!((sim + 1.0).abs() < 0.001, "Expected ~-1.0, got {sim}");
     }
 
     #[test]

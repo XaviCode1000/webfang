@@ -11,7 +11,7 @@ homepage.workspace = true
 
 [features]
 mcp = ["webfang_core/mcp"]
-ai = ["dep:webfang_ai", "webfang_core/ai"]
+ai = ["dep:webfang_ai", "webfang_ai/ai", "webfang_core/ai"]
 
 [dependencies]
 webfang_core = { workspace = true }

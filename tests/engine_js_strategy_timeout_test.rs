@@ -72,8 +72,7 @@ async fn engine_js_strategy_respects_config_timeout() {
 
     assert!(
         elapsed < Duration::from_secs(10),
-        "engine with JS strategy should time out near 2s, took {:?}",
-        elapsed
+        "engine with JS strategy should time out near 2s, took {elapsed:?}"
     );
 
     match result {

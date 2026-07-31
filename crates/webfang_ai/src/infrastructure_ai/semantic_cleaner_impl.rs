@@ -299,7 +299,7 @@ impl SemanticCleanerImpl {
                 .build()
                 .map_err(|e| SemanticError::Download {
                     repo: config.repo.clone(),
-                    cause: format!("Failed to build HuggingFace API client: {}", e),
+                    cause: format!("Failed to build HuggingFace API client: {e}"),
                 })?;
 
             let repo = api.model(config.repo.clone());
@@ -309,7 +309,7 @@ impl SemanticCleanerImpl {
                 tokio::try_join!(repo.get(&config.model_file), repo.get("tokenizer.json"))
                     .map_err(|e| SemanticError::Download {
                         repo: config.repo.clone(),
-                        cause: format!("HuggingFace API error: {}", e),
+                        cause: format!("HuggingFace API error: {e}"),
                     })?;
 
             debug!("Resolved model and tokenizer via hf_hub (cache-first)");
@@ -380,8 +380,7 @@ impl SemanticCleanerImpl {
     pub fn set_relevance_threshold(&mut self, threshold: f32) {
         assert!(
             (0.0..=1.0).contains(&threshold),
-            "Relevance threshold must be between 0.0 and 1.0, got {}",
-            threshold
+            "Relevance threshold must be between 0.0 and 1.0, got {threshold}"
         );
         self.config.relevance_threshold = threshold;
         self.scorer.set_threshold(threshold);
@@ -417,7 +416,7 @@ impl SemanticCleaner for SemanticCleanerImpl {
             let chunks = self
                 .chunker
                 .chunk(effective_html)
-                .map_err(|e| SemanticError::Tokenize(format!("Chunking failed: {}", e)))?;
+                .map_err(|e| SemanticError::Tokenize(format!("Chunking failed: {e}")))?;
 
             if chunks.is_empty() {
                 debug!("No chunks produced from HTML");
@@ -431,7 +430,7 @@ impl SemanticCleaner for SemanticCleanerImpl {
             let mut token_buffers = Vec::with_capacity(chunks.len());
             for chunk in &chunks {
                 let input = self.tokenizer.tokenize(&chunk.content).map_err(|e| {
-                    SemanticError::Tokenize(format!("Tokenization failed for chunk: {}", e))
+                    SemanticError::Tokenize(format!("Tokenization failed for chunk: {e}"))
                 })?;
 
                 // Validate token count
@@ -461,7 +460,7 @@ impl SemanticCleaner for SemanticCleanerImpl {
             }))
             .await
             .map_err(|e| {
-                SemanticError::Inference(format!("Concurrent embedding generation failed: {}", e))
+                SemanticError::Inference(format!("Concurrent embedding generation failed: {e}"))
             })?;
 
             debug!(
@@ -537,7 +536,7 @@ impl SemanticCleanerImpl {
     /// ```no_run
     /// # #[cfg(feature = "ai")]
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// use webfang_ai::{SemanticCleaner, SemanticCleanerImpl, ModelConfig};
+    /// use webfang_ai::{SemanticCleaner, SemanticCleanerImpl, ModelConfig, SemanticError};
     ///
     /// // Create semantic cleaner (requires --features ai)
     /// let config = ModelConfig::default();
@@ -551,7 +550,7 @@ impl SemanticCleanerImpl {
     /// let has_embeddings = chunks.first()
     ///     .map(|c| c.embeddings.is_some())
     ///     .ok_or_else(|| SemanticError::Inference(
-    ///         "No chunks returned from semantic cleaner. Check HTML content and AI model availability."
+    ///         "No chunks returned from semantic cleaner. Check HTML content and AI model availability.".to_string()
     ///     ))?;
     /// assert!(has_embeddings, "embeddings should not be None after fix");
     ///

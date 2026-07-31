@@ -39,10 +39,9 @@ async fn sitemap_url_scrapes_listed_urls() {
         .respond_with(ResponseTemplate::new(200).set_body_string(format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-    <url><loc>{}/page-a</loc></url>
-    <url><loc>{}/page-b</loc></url>
+    <url><loc>{base}/page-a</loc></url>
+    <url><loc>{base}/page-b</loc></url>
 </urlset>"#,
-            base, base,
         )))
         .mount(&server)
         .await;

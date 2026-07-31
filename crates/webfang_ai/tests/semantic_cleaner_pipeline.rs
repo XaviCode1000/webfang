@@ -4,6 +4,8 @@
 //! `SemanticCleanerImpl::clean()`, without requiring the ONNX model.
 //! Covers the audit gap: zero tests for the main cleaning pipeline.
 
+#![cfg(feature = "ai")]
+
 use webfang_ai::infrastructure_ai::chunker::HtmlChunker;
 use webfang_ai::infrastructure_ai::content_pruner::{ContentPruner, LegibleContentPruner};
 

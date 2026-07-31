@@ -154,7 +154,7 @@ impl MiniLmTokenizer {
         debug!(path = ?path, "Loading tokenizer from file");
 
         let tokenizer = HfTokenizer::from_file(path)
-            .map_err(|e| SemanticError::Tokenize(format!("Failed to load tokenizer: {}", e)))?;
+            .map_err(|e| SemanticError::Tokenize(format!("Failed to load tokenizer: {e}")))?;
 
         Ok(Self::new(tokenizer, DEFAULT_MAX_LENGTH))
     }
@@ -185,7 +185,7 @@ impl MiniLmTokenizer {
         let encoding = self
             .inner
             .encode(text, true)
-            .map_err(|e| SemanticError::Tokenize(format!("Tokenization failed: {}", e)))?;
+            .map_err(|e| SemanticError::Tokenize(format!("Tokenization failed: {e}")))?;
 
         // Extract token IDs with capacity pre-allocation
         let mut input_ids = Vec::with_capacity(encoding.len().min(self.max_length));
@@ -254,7 +254,7 @@ impl MiniLmTokenizer {
             let encoding = self
                 .inner
                 .encode(text, true)
-                .map_err(|e| SemanticError::Tokenize(format!("Tokenization failed: {}", e)))?;
+                .map_err(|e| SemanticError::Tokenize(format!("Tokenization failed: {e}")))?;
 
             // Extract token IDs
             let ids: Vec<i64> = encoding

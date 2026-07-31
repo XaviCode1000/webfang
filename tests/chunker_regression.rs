@@ -8,6 +8,8 @@
 //! (webfang_core cannot depend on webfang_ai as a dev-dep since webfang_ai
 //! depends on webfang_core).
 
+#![cfg(feature = "ai")]
+
 use webfang_ai::HtmlChunker;
 
 #[test]
@@ -81,8 +83,7 @@ fn large_html_respects_max_chunk_size() {
     let paragraphs: Vec<String> = (0..10)
         .map(|i| {
             format!(
-                "<p>Paragraph {} has enough text to be chunked properly for the AI tokenizer to process correctly.</p>",
-                i
+                "<p>Paragraph {i} has enough text to be chunked properly for the AI tokenizer to process correctly.</p>"
             )
         })
         .collect();

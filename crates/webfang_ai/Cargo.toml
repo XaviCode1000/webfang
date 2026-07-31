@@ -16,11 +16,11 @@ webfang_core = { workspace = true }
 tokio = { workspace = true }
 
 # AI features
-tokenizers = { workspace = true }
+tokenizers = { workspace = true, optional = true }
 unicode-segmentation = { workspace = true }
 smallvec = { workspace = true }
 wide = { workspace = true }
-ort = { workspace = true }
+ort = { workspace = true, optional = true }
 ndarray = "0.17"
 hf-hub = { workspace = true }
 
@@ -44,7 +44,6 @@ uuid = { workspace = true }
 
 [[test]]
 name = "ai_integration"
-required-features = ["ai"]
 path = "../../tests/ai_integration.rs"
 
 [[test]]
@@ -59,4 +58,4 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-ai = []
+ai = ["dep:ort", "dep:tokenizers"]

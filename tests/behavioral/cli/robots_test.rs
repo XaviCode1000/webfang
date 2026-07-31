@@ -31,14 +31,13 @@ async fn robots_txt_disallow_prevents_fetching() {
     // (default discovery is sitemap-based); robots.txt enforcement must still
     // block /private/page at scrape time.
     let base = t.server.uri();
-    let sitemap_url = format!("{}/sitemap.xml", base);
+    let sitemap_url = format!("{base}/sitemap.xml");
     let sitemap_xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-    <url><loc>{}/</loc></url>
-    <url><loc>{}/private/page</loc></url>
-</urlset>"#,
-        base, base
+    <url><loc>{base}/</loc></url>
+    <url><loc>{base}/private/page</loc></url>
+</urlset>"#
     );
     crate::common::mock_sitemap(&t.server, &sitemap_url, &sitemap_xml).await;
 
@@ -69,12 +68,10 @@ async fn robots_txt_disallow_prevents_fetching() {
 
     assert_eq!(
         private_requests, 0,
-        "expected 0 requests to /private (disallowed by robots.txt), got {}",
-        private_requests
+        "expected 0 requests to /private (disallowed by robots.txt), got {private_requests}"
     );
     assert_eq!(
         seed_requests, 1,
-        "expected 1 request to seed /, got {}",
-        seed_requests
+        "expected 1 request to seed /, got {seed_requests}"
     );
 }

@@ -29,11 +29,11 @@ fn test_progress_updates_within_200ms() {
 
     for i in 1..=3 {
         state.update(ScrapeProgress::Started {
-            url: format!("https://example.com/{}", i),
+            url: format!("https://example.com/{i}"),
         });
 
         state.update(ScrapeProgress::Completed {
-            url: format!("https://example.com/{}", i),
+            url: format!("https://example.com/{i}"),
             chars: 1000 * i,
         });
     }
@@ -157,7 +157,7 @@ async fn test_progress_channel_timing() {
 #[tokio::test]
 async fn test_concurrent_progress_updates() {
     let url_strings: Vec<String> = (1..=10)
-        .map(|i| format!("https://example.com/{}", i))
+        .map(|i| format!("https://example.com/{i}"))
         .collect();
 
     let mut state = ProgressState::new(url_strings.clone());
@@ -205,7 +205,7 @@ async fn test_concurrent_progress_updates() {
 #[test]
 fn test_batch_error_processing_timing() {
     let url_strings: Vec<String> = (1..=10)
-        .map(|i| format!("https://example.com/{}", i))
+        .map(|i| format!("https://example.com/{i}"))
         .collect();
 
     let mut state = ProgressState::new(url_strings);
@@ -215,8 +215,8 @@ fn test_batch_error_processing_timing() {
     // Add multiple errors
     for i in 1..=10 {
         state.update(ScrapeProgress::Failed {
-            url: format!("https://example.com/{}", i),
-            error: ScrapeError::Other(format!("Error {}", i)),
+            url: format!("https://example.com/{i}"),
+            error: ScrapeError::Other(format!("Error {i}")),
         });
     }
 
@@ -262,7 +262,7 @@ fn test_error_entry_structure_for_widget() {
 #[test]
 fn test_error_ordering_for_display() {
     let url_strings: Vec<String> = (1..=5)
-        .map(|i| format!("https://example.com/{}", i))
+        .map(|i| format!("https://example.com/{i}"))
         .collect();
 
     let mut state = ProgressState::new(url_strings);
@@ -271,7 +271,7 @@ fn test_error_ordering_for_display() {
     let urls = ["3", "1", "5", "2", "4"];
     for url_num in urls {
         state.update(ScrapeProgress::Failed {
-            url: format!("https://example.com/{}", url_num),
+            url: format!("https://example.com/{url_num}"),
             error: ScrapeError::Network("Connection refused".to_string()),
         });
     }
@@ -291,7 +291,7 @@ fn test_error_ordering_for_display() {
 #[test]
 fn test_percentage_calculation_timing() {
     let url_strings: Vec<String> = (1..=100)
-        .map(|i| format!("https://example.com/{}", i))
+        .map(|i| format!("https://example.com/{i}"))
         .collect();
 
     let mut state = ProgressState::new(url_strings);
@@ -299,14 +299,14 @@ fn test_percentage_calculation_timing() {
     // Add 50 completed, 50 failed
     for i in 1..=50 {
         state.update(ScrapeProgress::Completed {
-            url: format!("https://example.com/{}", i),
+            url: format!("https://example.com/{i}"),
             chars: 1000,
         });
     }
 
     for i in 51..=100 {
         state.update(ScrapeProgress::Failed {
-            url: format!("https://example.com/{}", i),
+            url: format!("https://example.com/{i}"),
             error: ScrapeError::Other("Error".to_string()),
         });
     }

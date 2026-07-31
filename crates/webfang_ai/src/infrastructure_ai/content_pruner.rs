@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn prune_debug_impl() {
         let pruner = LegibleContentPruner::standard();
-        let debug = format!("{:?}", pruner);
+        let debug = format!("{pruner:?}");
         assert!(debug.contains("LegibleContentPruner"));
         assert!(debug.contains("Standard"));
     }

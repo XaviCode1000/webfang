@@ -528,8 +528,7 @@ mod tests {
         let norm: f32 = normalized.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!(
             (norm - 1.0).abs() < 1e-5,
-            "L2 norm should be 1.0, got {}",
-            norm
+            "L2 norm should be 1.0, got {norm}"
         );
     }
 }
