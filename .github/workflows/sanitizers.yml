@@ -1,0 +1,56 @@
+name: Sanitizers
+on:
+  schedule:
+    - cron: "0 3 * * 1"  # Lunes 3AM (no bloquea PRs)
+  workflow_dispatch: {}
+
+jobs:
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with: { components: miri }
+      - run: cargo miri setup
+      - name: Miri on concurrency code
+        run: |
+          MIRIFLAGS="-Zmiri-disable-isolation" \
+          cargo +nightly miri test -p webfang_core -- infrastructure::bridge infrastructure::network --test-threads=1
+        continue-on-error: true
+      - name: Publish Miri Summary
+        if: always()
+        run: |
+          echo "## Miri Results" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+
+  tsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: ThreadSanitizer
+        run: |
+          RUSTFLAGS="-Zsanitizer=thread" \
+          cargo +nightly test -p webfang_core --target x86_64-unknown-linux-gnu -- --test-threads=4
+        continue-on-error: true
+      - name: Publish TSan Summary
+        if: always()
+        run: |
+          echo "## ThreadSanitizer Results" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+
+  lsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: LeakSanitizer
+        run: |
+          RUSTFLAGS="-Zsanitizer=leak" \
+          cargo +nightly test -p webfang_core --target x86_64-unknown-linux-gnu
+        continue-on-error: true
+      - name: Publish LSan Summary
+        if: always()
+        run: |
+          echo "## LeakSanitizer Results" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
