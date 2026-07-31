@@ -6,9 +6,12 @@
 #
 # Pipeline flow:
 #   toolchain (15s) → fmt (30s) → clippy (2min) → test-core (3min) → test-full (5min)
+#   toolchain also runs dead-test detection (scripts/check_dead_tests.sh)
 #   test-core runs: unit tests (--lib) then integration/behavioral tests (--test '*')
 #   security runs in parallel with tests (no Rust compile)
+#   feature-matrix runs after clippy (cargo-hack --each-feature, catches broken feature combos)
 #   mcp smoke runs after test-full
+#   coverage runs on PRs + dispatch (llvm-cov + Codecov)
 #   release runs after all gates pass (main only)
 #   miri runs on schedule/dispatch only
 #
@@ -69,6 +72,10 @@ jobs:
             echo "ERROR: Rust $INSTALLED is below minimum $REQUIRED"
             exit 1
           fi
+      # Regression guard for Wave 3 (#402): all tests must be crate-local.
+      # Fails if anyone re-adds a .rs file under root tests/ (dead test).
+      - name: Dead test detection
+        run: bash scripts/check_dead_tests.sh
 
   # ============================================================================
   # TIER 1: FORMAT GATE (30-60 seconds)
@@ -198,6 +205,26 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       - name: Doctests
         run: cargo test --doc -p webfang_core -p webfang_ai --all-features
+
+  # ============================================================================
+  # FEATURE MATRIX: cargo-hack checks each feature in isolation (Wave 4, #403).
+  # Catches broken feature combinations — e.g. a feature that fails to compile
+  # without another, or dead code behind an untested flag. Runs after clippy so
+  # already-broken code doesn't burn compute. taiki-e/install-action provides a
+  # prebuilt cargo-hack (matches the nextest/llvm-cov/deny pattern, no source build).
+  # ============================================================================
+  feature-matrix:
+    name: Feature matrix
+    needs: [clippy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-hack
+      - name: Feature matrix check
+        run: cargo hack check --each-feature --workspace --no-dev-deps
 
   # ============================================================================
   # MCP SMOKE: After full tests pass
@@ -333,13 +360,15 @@ jobs:
           cargo miri test --lib -- --skip downloader ${{ matrix.filter }}
 
   # ============================================================================
-  # COVERAGE: Manual trigger only
+  # COVERAGE: PR gate + manual trigger
+  # Measures and reports coverage on every PR (Wave 4, #403); uploads to Codecov.
+  # fail_ci_if_error: false — coverage is informational, never blocks the PR.
   # ============================================================================
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
     needs: [test-full]
     steps:
       - uses: actions/checkout@v4
@@ -348,6 +377,10 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage
         run: cargo llvm-cov --all-features --lcov --output-path lcov.info -- --skip test_mcp
+      - name: Report coverage
+        run: |
+          cargo llvm-cov report --lcov | tail -5
+          echo "Coverage report generated successfully"
       - name: Upload to Codecov
         uses: codecov/codecov-action@v4
         with:
