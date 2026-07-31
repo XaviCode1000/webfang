@@ -152,9 +152,7 @@ async fn test_full_lifecycle_init_notify_list_call() {
         .expect("notifications/initialized should succeed");
 
     let notify_status = notify_response.status();
-    println!(
-        "Step 2: notifications/initialized → status {notify_status}"
-    );
+    println!("Step 2: notifications/initialized → status {notify_status}");
     // 202 Accepted is the expected response for notifications
     assert!(
         notify_status.is_success() || notify_status.as_u16() == 202,

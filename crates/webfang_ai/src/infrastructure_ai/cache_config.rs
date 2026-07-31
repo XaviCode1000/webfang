@@ -131,9 +131,7 @@ impl std::str::FromStr for AiModel {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         AiModel::parse(s).ok_or_else(|| {
-            format!(
-                "Unknown AI model '{s}'. Valid values: granite-97m, granite-311m"
-            )
+            format!("Unknown AI model '{s}'. Valid values: granite-97m, granite-311m")
         })
     }
 }

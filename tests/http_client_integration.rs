@@ -332,10 +332,7 @@ async fn test_mock_server_empty_body() {
     let result = client.get(&url).await;
 
     // Should succeed but return empty string
-    assert!(
-        result.is_ok(),
-        "Should handle empty body, got: {result:?}"
-    );
+    assert!(result.is_ok(), "Should handle empty body, got: {result:?}");
     let body = result.unwrap();
     assert!(body.is_empty(), "Body should be empty, got: '{body}'");
 }
