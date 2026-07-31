@@ -150,7 +150,7 @@ impl BehavioralTest {
     /// Build a `Command` with `--elastic` flag, `--url`, and a fresh SQLite
     /// temp directory for the elastic output path.
     pub fn elastic_cmd(&self) -> assert_cmd::Command {
-        let mut cmd = Command::new(webfang_path());
+        let mut cmd = sanitize_env(Command::new(webfang_path()));
         cmd.arg("--elastic")
             .arg("--url")
             .arg(self.server.uri())
@@ -162,7 +162,7 @@ impl BehavioralTest {
     /// Build a `Command` with `--resume` flag, `--url`, and the existing
     /// output directory (resume reads from a prior crawl state).
     pub fn resume_cmd(&self) -> assert_cmd::Command {
-        let mut cmd = Command::new(webfang_path());
+        let mut cmd = sanitize_env(Command::new(webfang_path()));
         cmd.arg("--resume")
             .arg("--url")
             .arg(self.server.uri())
@@ -177,7 +177,7 @@ impl BehavioralTest {
     /// (`~/.cache/webfang/state`), which collides across wiremock runs because
     /// the state file is keyed by host without the port (`127.0.0.1.json`).
     pub fn state_dir_cmd(&self, state_dir: &Path) -> assert_cmd::Command {
-        let mut cmd = Command::new(webfang_path());
+        let mut cmd = sanitize_env(Command::new(webfang_path()));
         cmd.arg("--resume")
             .arg("--state-dir")
             .arg(state_dir)
