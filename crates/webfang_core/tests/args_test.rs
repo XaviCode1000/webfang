@@ -4,8 +4,23 @@ use std::path::{Path, PathBuf};
 use webfang_core::cli::args::{AiArgs, Args, CrawlerArgs, ExportArgs, ObsidianArgs, TuiArgs};
 use webfang_core::infrastructure::autotuning::ElasticOverrides;
 
+/// Remove poisoned env vars once before any arg-parsing test runs.
+static ENV_GUARD: std::sync::Once = std::sync::Once::new();
+fn clean_env() {
+    ENV_GUARD.call_once(|| {
+        let poisoned: Vec<String> = std::env::vars()
+            .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")
+            .map(|(k, _)| k)
+            .collect();
+        for key in poisoned {
+            std::env::remove_var(&key);
+        }
+    });
+}
+
 #[test]
 fn test_elastic_flags_parsed_from_cli() {
+    clean_env();
     let args = Args::try_parse_from([
         "webfang",
         "--cpu-cores",
@@ -31,6 +46,7 @@ fn test_elastic_flags_parsed_from_cli() {
 
 #[test]
 fn test_elastic_flags_default_to_none() {
+    clean_env();
     let args = Args::try_parse_from(["webfang"]).expect("minimal parse must succeed");
     assert_eq!(args.export.cpu_cores, None);
     assert_eq!(args.export.ram_budget, None);
@@ -41,6 +57,7 @@ fn test_elastic_flags_default_to_none() {
 
 #[test]
 fn test_ram_budget_accepts_plain_bytes_and_suffixes() {
+    clean_env();
     let args = Args::try_parse_from(["webfang", "--ram-budget", "2048MB"])
         .expect("suffixed ram-budget must parse");
     assert_eq!(
@@ -138,6 +155,7 @@ fn args_with_all_fields_set() -> Args {
 
 #[test]
 fn test_args_to_crawl_options_full_parity() {
+    clean_env();
     let args = args_with_all_fields_set();
     let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
 
@@ -250,6 +268,7 @@ fn test_args_to_crawl_options_full_parity() {
 #[cfg(feature = "ai")]
 #[test]
 fn test_ai_config_parity_with_flags() {
+    clean_env();
     use webfang_core::application::crawl_options::AiConfig;
 
     let args = Args::try_parse_from([
@@ -282,6 +301,7 @@ fn test_ai_config_parity_with_flags() {
 #[cfg(feature = "ai")]
 #[test]
 fn test_ai_config_parity_no_flags() {
+    clean_env();
     use webfang_core::application::crawl_options::AiConfig;
 
     let _guard = webfang_test_utils::EnvGuard::clean(&[
@@ -309,6 +329,7 @@ fn test_ai_config_parity_no_flags() {
 #[cfg(not(feature = "ai"))]
 #[test]
 fn test_ai_config_defaults_without_ai_feature() {
+    clean_env();
     use webfang_core::application::crawl_options::AiConfig;
 
     let args = Args::try_parse_from(["webfang"]).expect("minimal parse must succeed");
@@ -321,6 +342,7 @@ fn test_ai_config_defaults_without_ai_feature() {
 /// Tests `CrawlOptions::default()` directly — hermetic, no env reads, no CLI parsing.
 #[test]
 fn test_args_to_crawl_options_defaults() {
+    clean_env();
     let opts = webfang_core::application::crawl_options::CrawlOptions::default();
 
     // url defaults to example.com when None
@@ -383,6 +405,7 @@ fn test_args_to_crawl_options_defaults() {
 
 #[test]
 fn test_obsidian_tags_none_maps_to_empty_vec() {
+    clean_env();
     let args = Args {
         obsidian: ObsidianArgs {
             obsidian_tags: None,
@@ -396,6 +419,7 @@ fn test_obsidian_tags_none_maps_to_empty_vec() {
 
 #[test]
 fn test_url_none_falls_back_to_example_com() {
+    clean_env();
     let args = Args {
         crawler: CrawlerArgs {
             url: None,

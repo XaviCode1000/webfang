@@ -72,6 +72,24 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
+    // ─── Global subscriber guard (issue #417) ───
+
+    static GLOBAL_SUBSCRIBER_INIT: std::sync::Once = std::sync::Once::new();
+
+    /// Set a global fmt subscriber that writes to sink. This ensures every
+    /// callsite registers with `Interest::always()` instead of the
+    /// `Interest::never()` that `Dispatch::none()` would cache when concurrent
+    /// tests hit instrumentation callsites without a subscriber (issue #417).
+    fn ensure_global_subscriber() {
+        GLOBAL_SUBSCRIBER_INIT.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(
+                tracing_subscriber::fmt()
+                    .with_writer(std::io::sink)
+                    .finish(),
+            );
+        });
+    }
+
     // ─── Span-capture test helper (Fase 2, issue #356) ───
 
     /// MakeWriter that appends tracing output to a shared buffer so tests can
@@ -98,9 +116,25 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_execute_emits_pipeline_spans() {
+    /// Span-capture test for pipeline span emission (issue #417).
+    ///
+    /// Root cause of flakiness: `tracing` caches per-callsite `Interest`
+    /// process-wide via a one-time `compare_exchange`. When a concurrent test
+    /// thread hits the `pipeline_stage` callsite with no subscriber active,
+    /// `Dispatch::none()` registers `Interest::never()`, permanently disabling
+    /// span creation at that callsite for ALL threads — including ours.
+    ///
+    /// Fix: a module-level `Once` sets a global fmt subscriber (writing to sink)
+    /// that returns `Interest::always()` from `register_callsite()`. This ensures
+    /// every callsite is registered as always-enabled before any test can poison
+    /// it with `never()`. Per-test `with_default` still overrides the global for
+    /// actual span capture.
+    #[test]
+    fn test_execute_emits_pipeline_spans() {
         use tracing_subscriber::fmt::format::FmtSpan;
+
+        // Ensure the global subscriber is set (poison-proof callsite interest).
+        ensure_global_subscriber();
 
         let buf = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
         let writer = SharedWriter(buf.clone());
@@ -109,17 +143,24 @@ mod tests {
             .with_span_events(FmtSpan::NEW)
             .with_ansi(false)
             .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
 
-        let mut executor = PipelineExecutor::new();
-        executor.add_stage(Box::new(TransformStage));
-        let item = ScrapedItem {
-            url: "https://example.com/traced".into(),
-            raw_html: "<p>content</p>".into(),
-            status_code: 200,
-            ..Default::default()
-        };
-        let _ = executor.execute(item).await;
+        tracing::subscriber::with_default(subscriber, || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            rt.block_on(async {
+                let mut executor = PipelineExecutor::new();
+                executor.add_stage(Box::new(TransformStage));
+                let item = ScrapedItem {
+                    url: "https://example.com/traced".into(),
+                    raw_html: "<p>content</p>".into(),
+                    status_code: 200,
+                    ..Default::default()
+                };
+                let _ = executor.execute(item).await;
+            });
+        });
 
         let out = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
         assert!(

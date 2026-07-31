@@ -52,7 +52,17 @@ fn webfang_path() -> PathBuf {
 }
 
 fn cmd() -> Command {
-    Command::new(webfang_path())
+    let mut c = Command::new(webfang_path());
+    // Hermeticity: remove all WEBFANG_* and AI_MODEL_ID env vars so poisoned
+    // CI environments (bug-discovery workflow) don't affect arg parsing.
+    let poisoned: Vec<String> = std::env::vars()
+        .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")
+        .map(|(k, _)| k)
+        .collect();
+    for key in poisoned {
+        c.env_remove(&key);
+    }
+    c
 }
 
 // ============================================================================

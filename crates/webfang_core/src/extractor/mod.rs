@@ -279,6 +279,32 @@ mod tests {
 
     #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
     #[test]
+    fn test_extract_documents_excludes_invalid_hrefs() {
+        // Base URL has a document-like path so that empty/fragment hrefs
+        // resolve to a URL whose path ends in .pdf. This ensures the guard
+        // at line 111 (&&) is the ONLY thing preventing extraction —
+        // killing the `&& -> ||` mutants.
+        let html = r##"<html><body>
+            <a href="">Empty</a>
+            <a href="#section">Fragment</a>
+            <a href="javascript:void(0)">JS</a>
+            <a href="data:text/html;base64,PGh0bWw+">Data URI</a>
+            <a href="/docs/valid.pdf">Valid</a>
+        </body></html>"##;
+
+        let base = url::Url::parse("https://example.com/report.pdf").unwrap();
+        let document = Html::parse_document(html);
+        let docs = extract_documents(&document, &base);
+
+        // Only the explicit /docs/valid.pdf link should be extracted.
+        // Empty and fragment hrefs resolve to the base path (/report.pdf)
+        // which IS a document — the line-111 guard must reject them.
+        assert_eq!(docs.len(), 1);
+        assert!(docs[0].url.ends_with("valid.pdf"));
+    }
+
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
+    #[test]
     fn test_extract_all_assets_single_parse() {
         let html = r#"<html><body>
             <img src="/images/photo.jpg" alt="A photo">
