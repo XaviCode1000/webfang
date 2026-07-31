@@ -43,14 +43,13 @@ async fn max_depth_zero_only_scrapes_seed() {
         .await;
 
     let base = t.server.uri();
-    let sitemap_url = format!("{}/sitemap.xml", base);
+    let sitemap_url = format!("{base}/sitemap.xml");
     let sitemap_xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-    <url><loc>{}/</loc></url>
-    <url><loc>{}/page-a</loc></url>
-</urlset>"#,
-        base, base
+    <url><loc>{base}/</loc></url>
+    <url><loc>{base}/page-a</loc></url>
+</urlset>"#
     );
     crate::common::mock_sitemap(&t.server, &sitemap_url, &sitemap_xml).await;
 
@@ -83,13 +82,11 @@ async fn max_depth_zero_only_scrapes_seed() {
 
     assert_eq!(
         seed_requests, 1,
-        "expected 1 request to seed /, got {}",
-        seed_requests
+        "expected 1 request to seed /, got {seed_requests}"
     );
     assert_eq!(
         page_a_requests, 0,
-        "expected 0 requests to /page-a with max-depth 0, got {}",
-        page_a_requests
+        "expected 0 requests to /page-a with max-depth 0, got {page_a_requests}"
     );
 
     let md_files = t.find_files("md");
@@ -114,11 +111,10 @@ async fn mount_subpath_scenario(server: &wiremock::MockServer) -> String {
     let main_xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-    <url><loc>{}/about</loc></url>
-</urlset>"#,
-        base
+    <url><loc>{base}/about</loc></url>
+</urlset>"#
     );
-    crate::common::mock_sitemap(server, &format!("{}/sitemap.xml", base), &main_xml).await;
+    crate::common::mock_sitemap(server, &format!("{base}/sitemap.xml"), &main_xml).await;
 
     // The fallback probes candidates with HEAD before parsing them with GET.
     Mock::given(method("HEAD"))
@@ -130,12 +126,11 @@ async fn mount_subpath_scenario(server: &wiremock::MockServer) -> String {
     let subpath_xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-    <url><loc>{}/blog/post-1</loc></url>
-    <url><loc>{}/blog/post-2</loc></url>
-</urlset>"#,
-        base, base
+    <url><loc>{base}/blog/post-1</loc></url>
+    <url><loc>{base}/blog/post-2</loc></url>
+</urlset>"#
     );
-    crate::common::mock_sitemap(server, &format!("{}/blog/sitemap.xml", base), &subpath_xml).await;
+    crate::common::mock_sitemap(server, &format!("{base}/blog/sitemap.xml"), &subpath_xml).await;
 
     Mock::given(method("GET"))
         .and(path("/blog/post-1"))
@@ -168,9 +163,9 @@ async fn subpath_sitemap_max_depth_zero_skips_content() {
 
     let output = cmd()
         .arg("--url")
-        .arg(format!("{}/blog/", base))
+        .arg(format!("{base}/blog/"))
         .arg("--sitemap-url")
-        .arg(format!("{}/sitemap.xml", base))
+        .arg(format!("{base}/sitemap.xml"))
         .arg("--use-sitemap")
         .arg("--max-depth")
         .arg("0")
@@ -198,13 +193,11 @@ async fn subpath_sitemap_max_depth_zero_skips_content() {
         .count();
     assert_eq!(
         post1, 0,
-        "expected 0 requests to /blog/post-1 with max-depth 0, got {}",
-        post1
+        "expected 0 requests to /blog/post-1 with max-depth 0, got {post1}"
     );
     assert_eq!(
         post2, 0,
-        "expected 0 requests to /blog/post-2 with max-depth 0, got {}",
-        post2
+        "expected 0 requests to /blog/post-2 with max-depth 0, got {post2}"
     );
 }
 
@@ -218,9 +211,9 @@ async fn subpath_sitemap_max_depth_one_scrapes_content() {
 
     let output = cmd()
         .arg("--url")
-        .arg(format!("{}/blog/", base))
+        .arg(format!("{base}/blog/"))
         .arg("--sitemap-url")
-        .arg(format!("{}/sitemap.xml", base))
+        .arg(format!("{base}/sitemap.xml"))
         .arg("--use-sitemap")
         .arg("--max-depth")
         .arg("1")
@@ -247,13 +240,11 @@ async fn subpath_sitemap_max_depth_one_scrapes_content() {
         .count();
     assert!(
         post1 >= 1,
-        "expected >=1 request to /blog/post-1 with max-depth 1, got {}",
-        post1
+        "expected >=1 request to /blog/post-1 with max-depth 1, got {post1}"
     );
     assert!(
         post2 >= 1,
-        "expected >=1 request to /blog/post-2 with max-depth 1, got {}",
-        post2
+        "expected >=1 request to /blog/post-2 with max-depth 1, got {post2}"
     );
 }
 
@@ -320,18 +311,17 @@ async fn max_pages_limits_crawl_output() {
         .await;
 
     let base = t.server.uri();
-    let sitemap_url = format!("{}/sitemap.xml", base);
+    let sitemap_url = format!("{base}/sitemap.xml");
     let sitemap_xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-    <url><loc>{}/</loc></url>
-    <url><loc>{}/page-a</loc></url>
-    <url><loc>{}/page-b</loc></url>
-    <url><loc>{}/page-c</loc></url>
-    <url><loc>{}/page-d</loc></url>
-    <url><loc>{}/page-e</loc></url>
-</urlset>"#,
-        base, base, base, base, base, base
+    <url><loc>{base}/</loc></url>
+    <url><loc>{base}/page-a</loc></url>
+    <url><loc>{base}/page-b</loc></url>
+    <url><loc>{base}/page-c</loc></url>
+    <url><loc>{base}/page-d</loc></url>
+    <url><loc>{base}/page-e</loc></url>
+</urlset>"#
     );
     crate::common::mock_sitemap(&t.server, &sitemap_url, &sitemap_xml).await;
 
@@ -395,15 +385,14 @@ async fn exclude_pattern_skips_matching_urls() {
         .await;
 
     let base = t.server.uri();
-    let sitemap_url = format!("{}/sitemap.xml", base);
+    let sitemap_url = format!("{base}/sitemap.xml");
     let sitemap_xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-    <url><loc>{}/</loc></url>
-    <url><loc>{}/page-a</loc></url>
-    <url><loc>{}/page-b</loc></url>
-</urlset>"#,
-        base, base, base
+    <url><loc>{base}/</loc></url>
+    <url><loc>{base}/page-a</loc></url>
+    <url><loc>{base}/page-b</loc></url>
+</urlset>"#
     );
     crate::common::mock_sitemap(&t.server, &sitemap_url, &sitemap_xml).await;
 
@@ -439,13 +428,11 @@ async fn exclude_pattern_skips_matching_urls() {
 
     assert_eq!(
         page_a_requests, 1,
-        "expected 1 request to /page-a, got {}",
-        page_a_requests
+        "expected 1 request to /page-a, got {page_a_requests}"
     );
     assert_eq!(
         page_b_requests, 0,
-        "expected 0 requests to /page-b (excluded), got {}",
-        page_b_requests
+        "expected 0 requests to /page-b (excluded), got {page_b_requests}"
     );
 
     // Seed `/` and `/page-a` both produce a .md file; `/page-b` is excluded.
@@ -490,15 +477,14 @@ async fn include_pattern_only_scrapes_matching_urls() {
         .await;
 
     let base = t.server.uri();
-    let sitemap_url = format!("{}/sitemap.xml", base);
+    let sitemap_url = format!("{base}/sitemap.xml");
     let sitemap_xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-    <url><loc>{}/</loc></url>
-    <url><loc>{}/page-a</loc></url>
-    <url><loc>{}/page-b</loc></url>
-</urlset>"#,
-        base, base, base
+    <url><loc>{base}/</loc></url>
+    <url><loc>{base}/page-a</loc></url>
+    <url><loc>{base}/page-b</loc></url>
+</urlset>"#
     );
     crate::common::mock_sitemap(&t.server, &sitemap_url, &sitemap_xml).await;
 
@@ -534,13 +520,11 @@ async fn include_pattern_only_scrapes_matching_urls() {
 
     assert_eq!(
         page_a_requests, 1,
-        "expected 1 request to /page-a, got {}",
-        page_a_requests
+        "expected 1 request to /page-a, got {page_a_requests}"
     );
     assert_eq!(
         page_b_requests, 0,
-        "expected 0 requests to /page-b (not included), got {}",
-        page_b_requests
+        "expected 0 requests to /page-b (not included), got {page_b_requests}"
     );
 
     // In sitemap mode the include pattern filters discovery results:
@@ -620,8 +604,7 @@ async fn crawl_js_strategy_respects_timeout_secs() {
     let elapsed = start.elapsed();
     assert!(
         elapsed < Duration::from_secs(10),
-        "JS strategy timeout test should complete in under 10s, took {:?}",
-        elapsed
+        "JS strategy timeout test should complete in under 10s, took {elapsed:?}"
     );
     assert!(
         !output.status.success(),

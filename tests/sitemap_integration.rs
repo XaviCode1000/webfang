@@ -134,8 +134,7 @@ async fn test_parse_empty_sitemap_returns_error() {
 
     assert!(
         matches!(result, Err(SitemapError::NoUrlsFound)),
-        "expected NoUrlsFound, got {:?}",
-        result
+        "expected NoUrlsFound, got {result:?}"
     );
 }
 
@@ -165,8 +164,7 @@ async fn test_parse_malformed_xml_returns_error() {
             result,
             Err(SitemapError::XmlError(_)) | Err(SitemapError::NoUrlsFound)
         ),
-        "expected XmlError or NoUrlsFound for garbage bytes, got {:?}",
-        result
+        "expected XmlError or NoUrlsFound for garbage bytes, got {result:?}"
     );
 }
 
@@ -191,8 +189,7 @@ async fn test_parse_non_xml_content_type_returns_error() {
 
     assert!(
         matches!(result, Err(SitemapError::InvalidContentType(_))),
-        "expected InvalidContentType, got {:?}",
-        result
+        "expected InvalidContentType, got {result:?}"
     );
 }
 
@@ -212,8 +209,7 @@ async fn test_parse_http_404_returns_no_urls() {
 
     assert!(
         matches!(result, Err(SitemapError::NoUrlsFound)),
-        "expected NoUrlsFound for 404 body, got {:?}",
-        result
+        "expected NoUrlsFound for 404 body, got {result:?}"
     );
 }
 

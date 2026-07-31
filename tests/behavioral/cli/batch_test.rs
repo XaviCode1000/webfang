@@ -162,8 +162,7 @@ async fn batch_file_timeout_does_not_hang() {
     );
     assert!(
         elapsed < Duration::from_secs(25),
-        "batch timeout test should complete in under 25s, took {:?}",
-        elapsed
+        "batch timeout test should complete in under 25s, took {elapsed:?}"
     );
 }
 
@@ -185,7 +184,7 @@ async fn batch_file_timeout_reports_failures() {
 
     let batch_file = t.out.path().join("urls.txt");
     let slow_url = format!("{}/slow", t.server.uri());
-    std::fs::write(&batch_file, format!("{}\n", slow_url)).unwrap();
+    std::fs::write(&batch_file, format!("{slow_url}\n")).unwrap();
 
     let output = timeout(
         Duration::from_secs(30),
@@ -215,12 +214,10 @@ async fn batch_file_timeout_reports_failures() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains(&slow_url),
-        "stderr should contain the failed URL, got: {}",
-        stderr
+        "stderr should contain the failed URL, got: {stderr}"
     );
     assert!(
         stderr.to_lowercase().contains("timeout") || stderr.to_lowercase().contains("timed out"),
-        "stderr should mention timeout, got: {}",
-        stderr
+        "stderr should mention timeout, got: {stderr}"
     );
 }

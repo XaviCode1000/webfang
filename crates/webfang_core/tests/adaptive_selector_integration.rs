@@ -129,7 +129,7 @@ async fn test_no_suggestions_returns_error() {
 
     match result.unwrap_err() {
         webfang_core::domain::dom_inspector::SelectorErrorKind::RepairInconclusive(_) => {},
-        other => panic!("expected RepairInconclusive, got {:?}", other),
+        other => panic!("expected RepairInconclusive, got {other:?}"),
     }
 }
 

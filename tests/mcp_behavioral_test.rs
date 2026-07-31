@@ -50,7 +50,7 @@ async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let handle = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -162,7 +162,7 @@ async fn start_seeded_server(n: usize) -> (String, tokio::task::JoinHandle<()>, 
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let handle = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -190,7 +190,7 @@ async fn init_session(client: &Client, base_url: &str) -> String {
         }),
     );
     let resp = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .json(&init_body)
@@ -205,7 +205,7 @@ async fn init_session(client: &Client, base_url: &str) -> String {
         .expect("initialize must return mcp-session-id");
 
     let _ = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .header("mcp-session-id", &session_id)
@@ -226,7 +226,7 @@ async fn call_tool(
 ) -> Value {
     let body = mcp_request("tools/call", json!({ "name": name, "arguments": args }));
     let resp = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .header("mcp-session-id", session_id)
@@ -281,7 +281,7 @@ async fn test_initialize_returns_server_info() {
     );
 
     let response = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .json(&request_body)
@@ -358,7 +358,7 @@ async fn test_tools_list_returns_available_tools() {
     );
 
     let init_response = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .json(&init_body)
@@ -375,7 +375,7 @@ async fn test_tools_list_returns_available_tools() {
 
     // Send initialized notification
     let _ = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .json(&json!({
@@ -389,7 +389,7 @@ async fn test_tools_list_returns_available_tools() {
     let tools_body = mcp_request("tools/list", json!({}));
 
     let mut tools_req = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream");
 
@@ -478,7 +478,7 @@ async fn test_invalid_session_returns_error() {
     let tools_body = mcp_request("tools/list", json!({}));
 
     let response = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .header("mcp-session-id", "invalid-session-id-12345")
@@ -510,7 +510,7 @@ async fn test_no_session_id_handled() {
     let tools_body = mcp_request("tools/list", json!({}));
 
     let response = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         // No mcp-session-id header
@@ -543,7 +543,7 @@ async fn test_unknown_method_returns_error() {
     let request_body = mcp_request("unknown/method", json!({}));
 
     let response = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .json(&request_body)
@@ -1258,7 +1258,7 @@ async fn test_mcp_handler_construction_without_ai() {
 
     let body = mcp_request("tools/list", json!({}));
     let resp = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .header("mcp-session-id", &session_id)

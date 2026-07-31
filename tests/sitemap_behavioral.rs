@@ -98,7 +98,7 @@ async fn sitemap_partially_malformed_xml() {
     match result {
         Ok(urls) => assert!(!urls.is_empty(), "parsed URLs should not be empty"),
         Err(e) => assert!(
-            format!("{}", e).contains("XML") || format!("{}", e).contains("no URLs"),
+            format!("{e}").contains("XML") || format!("{e}").contains("no URLs"),
             "error should be XML-related: {e}"
         ),
     }
@@ -141,8 +141,7 @@ async fn sitemap_large_1000_plus_urls() {
     // Performance budget: 1500-URL sitemap should parse in under 2 seconds
     assert!(
         elapsed.as_secs() < 2,
-        "parsing 1500 URLs took {:?}, expected < 2s",
-        elapsed
+        "parsing 1500 URLs took {elapsed:?}, expected < 2s"
     );
 }
 
@@ -174,8 +173,7 @@ async fn sitemap_empty_returns_error() {
             result,
             Err(webfang_core::infrastructure::crawler::SitemapError::NoUrlsFound)
         ),
-        "expected NoUrlsFound, got {:?}",
-        result
+        "expected NoUrlsFound, got {result:?}"
     );
 }
 
@@ -269,7 +267,6 @@ async fn sitemap_non_xml_content_type_returns_error() {
             result,
             Err(webfang_core::infrastructure::crawler::SitemapError::InvalidContentType(_))
         ),
-        "expected InvalidContentType, got {:?}",
-        result
+        "expected InvalidContentType, got {result:?}"
     );
 }

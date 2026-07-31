@@ -85,8 +85,7 @@ async fn run_unified_tui() -> Result<Option<serde_json::Value>, CliExit> {
         Err(e) => {
             tracing::error!(error = %e, "Error al crear la aplicación TUI");
             return Err(CliExit::UsageError(format!(
-                "Error creando la aplicación: {}",
-                e
+                "Error creando la aplicación: {e}"
             )));
         },
     }
@@ -199,7 +198,7 @@ async fn __main() -> CliExit {
                 e.print().ok();
                 return CliExit::Success;
             }
-            eprintln!("{}", e);
+            eprintln!("{e}");
             return CliExit::UsageError("invalid arguments".into());
         },
     };

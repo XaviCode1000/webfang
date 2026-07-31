@@ -46,7 +46,7 @@ async fn discover_sitemap_returns_urls_from_fake_sitemap() {
     // Pass explicit sitemap URL to avoid auto-discovery (which would
     // need robots.txt or fallback logic). This isolates the test to
     // the sitemap parsing + URL extraction path.
-    let sitemap_url = format!("{}/sitemap.xml", base_url);
+    let sitemap_url = format!("{base_url}/sitemap.xml");
 
     let discovered = webfang_core::crawl_with_sitemap(&base_url, Some(&sitemap_url), &config)
         .await
@@ -62,13 +62,11 @@ async fn discover_sitemap_returns_urls_from_fake_sitemap() {
     let urls: Vec<String> = discovered.iter().map(|d| d.url.to_string()).collect();
     assert!(
         urls.contains(&"https://example.com/page1".to_string()),
-        "should contain page1, got: {:?}",
-        urls
+        "should contain page1, got: {urls:?}"
     );
     assert!(
         urls.contains(&"https://example.com/page2".to_string()),
-        "should contain page2, got: {:?}",
-        urls
+        "should contain page2, got: {urls:?}"
     );
 
     // Verify JSON serialization preserves Vec<String> shape (MCP contract)
@@ -114,10 +112,9 @@ async fn discover_sitemap_auto_discovers_via_robots_txt() {
     let auto_sitemap = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-    <url><loc>{}</loc></url>
-    <url><loc>{}</loc></url>
-</urlset>"#,
-        page1, page2
+    <url><loc>{page1}</loc></url>
+    <url><loc>{page2}</loc></url>
+</urlset>"#
     );
 
     Mock::given(method("GET"))
@@ -175,7 +172,7 @@ async fn discover_sitemap_errors_on_empty_sitemap() {
     let base_url = mock.uri();
     let seed = url::Url::parse(&base_url).expect("valid mock URL");
     let config = webfang_core::domain::CrawlerConfig::new(seed);
-    let sitemap_url = format!("{}/sitemap.xml", base_url);
+    let sitemap_url = format!("{base_url}/sitemap.xml");
 
     let result = webfang_core::crawl_with_sitemap(&base_url, Some(&sitemap_url), &config).await;
 

@@ -33,7 +33,7 @@ async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let handle = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -95,7 +95,7 @@ async fn test_full_lifecycle_init_notify_list_call() {
     });
 
     let init_response = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .json(&init_body)
@@ -106,8 +106,7 @@ async fn test_full_lifecycle_init_notify_list_call() {
     let init_status = init_response.status();
     assert!(
         init_status.is_success(),
-        "initialize should return 2xx, got {}",
-        init_status
+        "initialize should return 2xx, got {init_status}"
     );
 
     // Extract session ID from response headers
@@ -118,7 +117,7 @@ async fn test_full_lifecycle_init_notify_list_call() {
         .map(String::from)
         .expect("initialize response must include mcp-session-id header");
 
-    println!("Step 1: session_id = {}", session_id);
+    println!("Step 1: session_id = {session_id}");
     assert!(!session_id.is_empty(), "session ID must not be empty");
 
     // Parse initialize response
@@ -143,7 +142,7 @@ async fn test_full_lifecycle_init_notify_list_call() {
     });
 
     let notify_response = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .header("mcp-session-id", &session_id)
@@ -154,14 +153,12 @@ async fn test_full_lifecycle_init_notify_list_call() {
 
     let notify_status = notify_response.status();
     println!(
-        "Step 2: notifications/initialized → status {}",
-        notify_status
+        "Step 2: notifications/initialized → status {notify_status}"
     );
     // 202 Accepted is the expected response for notifications
     assert!(
         notify_status.is_success() || notify_status.as_u16() == 202,
-        "notifications/initialized should return 2xx or 202, got {}",
-        notify_status
+        "notifications/initialized should return 2xx or 202, got {notify_status}"
     );
 
     // ── Step 3: tools/list (WITH session ID) ──────────────────────────
@@ -173,7 +170,7 @@ async fn test_full_lifecycle_init_notify_list_call() {
     });
 
     let list_response = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .header("mcp-session-id", &session_id)
@@ -184,7 +181,7 @@ async fn test_full_lifecycle_init_notify_list_call() {
 
     let list_status = list_response.status();
     let list_body = list_response.text().await.unwrap();
-    println!("Step 3: tools/list → status {}", list_status);
+    println!("Step 3: tools/list → status {list_status}");
 
     assert!(
         list_status.is_success(),
@@ -233,7 +230,7 @@ async fn test_full_lifecycle_init_notify_list_call() {
     });
 
     let call_response = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .header("mcp-session-id", &session_id)
@@ -244,7 +241,7 @@ async fn test_full_lifecycle_init_notify_list_call() {
 
     let call_status = call_response.status();
     let call_body = call_response.text().await.unwrap();
-    println!("Step 4: tools/call validate_url → status {}", call_status);
+    println!("Step 4: tools/call validate_url → status {call_status}");
 
     assert!(
         call_status.is_success(),
@@ -268,8 +265,7 @@ async fn test_full_lifecycle_init_notify_list_call() {
 
     assert!(
         call_text.contains("example.com"),
-        "validate_url should return host info, got: {}",
-        call_text
+        "validate_url should return host info, got: {call_text}"
     );
     println!("  result: {}", &call_text[..call_text.len().min(200)]);
 
@@ -287,7 +283,7 @@ async fn test_full_lifecycle_init_notify_list_call() {
     });
 
     let call2_response = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .header("mcp-session-id", &session_id)
@@ -298,7 +294,7 @@ async fn test_full_lifecycle_init_notify_list_call() {
 
     let call2_status = call2_response.status();
     let call2_body = call2_response.text().await.unwrap();
-    println!("Step 5: tools/call clean_html → status {}", call2_status);
+    println!("Step 5: tools/call clean_html → status {call2_status}");
 
     assert!(
         call2_status.is_success(),
@@ -322,13 +318,11 @@ async fn test_full_lifecycle_init_notify_list_call() {
 
     assert!(
         !call2_text.contains("<script>"),
-        "clean_html should remove scripts, got: {}",
-        call2_text
+        "clean_html should remove scripts, got: {call2_text}"
     );
     assert!(
         call2_text.contains("Hello World"),
-        "clean_html should preserve content, got: {}",
-        call2_text
+        "clean_html should preserve content, got: {call2_text}"
     );
 
     println!("\n✓ Full lifecycle test passed: init → notify → list → call (x2)");
@@ -358,7 +352,7 @@ async fn test_session_works_without_initialized_notification() {
     });
 
     let init_response = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .json(&init_body)
@@ -384,7 +378,7 @@ async fn test_session_works_without_initialized_notification() {
     });
 
     let list_response = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .header("mcp-session-id", &session_id)
@@ -425,7 +419,7 @@ async fn test_no_session_id_returns_422() {
     });
 
     let response = client
-        .post(format!("{}/mcp", base_url))
+        .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .json(&body)
@@ -445,7 +439,6 @@ async fn test_no_session_id_returns_422() {
     );
     assert!(
         body.contains("initialize"),
-        "error message should mention initialize, got: {}",
-        body
+        "error message should mention initialize, got: {body}"
     );
 }

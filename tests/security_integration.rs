@@ -155,8 +155,7 @@ async fn test_datadome_high_entropy_detection() {
     let verdict = inspect_body(&obfuscated_js);
     assert!(
         verdict.is_blocked,
-        "High entropy content should be detected, got {:?}",
-        verdict
+        "High entropy content should be detected, got {verdict:?}"
     );
 }
 

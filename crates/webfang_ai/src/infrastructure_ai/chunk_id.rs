@@ -62,7 +62,7 @@ mod tests {
     #[test]
     fn test_chunk_id_display() {
         let id = ChunkId(42);
-        assert_eq!(format!("{}", id), "chunk-42");
+        assert_eq!(format!("{id}"), "chunk-42");
     }
 
     #[test]
