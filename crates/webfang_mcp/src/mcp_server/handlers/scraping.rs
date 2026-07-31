@@ -486,7 +486,7 @@ impl McpHandler {
                         });
                         Ok(CallToolResult::success(vec![Content::text(
                             serde_json::to_string_pretty(&json)
-                        .expect("serializing JSON to a string cannot fail"),
+                                .expect("serializing JSON to a string cannot fail"),
                         )]))
                     },
                     None => Ok(CallToolResult::success(vec![Content::text(
