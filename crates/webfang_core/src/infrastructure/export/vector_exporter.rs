@@ -411,8 +411,7 @@ mod tests {
         let result = exporter.serialize_document(&doc2);
         assert!(
             result.is_ok(),
-            "dimension mismatch should serialize without embeddings, got: {:?}",
-            result
+            "dimension mismatch should serialize without embeddings, got: {result:?}"
         );
 
         let json_str = result.unwrap();

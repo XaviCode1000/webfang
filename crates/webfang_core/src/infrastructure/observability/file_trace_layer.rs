@@ -216,7 +216,7 @@ where
             return format!("{:016x}", root.id().into_u64());
         }
     }
-    format!("{:016x}", seed)
+    format!("{seed:016x}")
 }
 
 /// Build a stable per-invocation seed used as the fallback `trace_id` when no

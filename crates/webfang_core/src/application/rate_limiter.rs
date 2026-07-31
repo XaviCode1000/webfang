@@ -265,8 +265,7 @@ mod tests {
         let elapsed = start.elapsed();
         assert!(
             elapsed >= std::time::Duration::from_millis(500),
-            "Rate limiter should enforce 500ms delay, got {:?}",
-            elapsed
+            "Rate limiter should enforce 500ms delay, got {elapsed:?}"
         );
     }
 
@@ -286,8 +285,7 @@ mod tests {
 
         assert!(
             elapsed >= std::time::Duration::from_millis(100),
-            "Third request should be delayed by 100ms, got {:?}",
-            elapsed
+            "Third request should be delayed by 100ms, got {elapsed:?}"
         );
     }
 

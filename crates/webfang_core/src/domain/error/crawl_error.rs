@@ -298,8 +298,7 @@ mod tests {
         let error = CrawlError::Storage("archivo corrupto".to_string());
         assert!(
             error.to_string().contains("error de almacenamiento"),
-            "expected Storage display to contain 'error de almacenamiento', got: {}",
-            error
+            "expected Storage display to contain 'error de almacenamiento', got: {error}"
         );
         assert!(error.to_string().contains("archivo corrupto"));
     }

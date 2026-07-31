@@ -410,7 +410,7 @@ impl Downloader {
                     if !slug_ext.is_empty() && slug_ext != name {
                         sanitize_filename(&name)
                     } else {
-                        format!("{}.{}", name, extension)
+                        format!("{name}.{extension}")
                     }
                 }
             },
@@ -752,8 +752,7 @@ mod tests {
         );
         assert!(
             filename.ends_with(".png"),
-            "Expected .png but got: {}",
-            filename
+            "Expected .png but got: {filename}"
         );
         assert!(
             filename.starts_with("abc123def456"),
@@ -764,8 +763,7 @@ mod tests {
             downloader.generate_filename("https://example.com/file", "xyz789abc123456", None, None);
         assert!(
             filename.ends_with(".bin"),
-            "Expected .bin but got: {}",
-            filename
+            "Expected .bin but got: {filename}"
         );
     }
 

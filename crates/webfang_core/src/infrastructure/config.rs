@@ -568,10 +568,10 @@ mod tests {
     #[test]
     fn test_concurrency_config_display() {
         let auto = ConcurrencyConfig::auto();
-        assert_eq!(format!("{}", auto), "auto");
+        assert_eq!(format!("{auto}"), "auto");
 
         let explicit = ConcurrencyConfig::new(5);
-        assert_eq!(format!("{}", explicit), "5");
+        assert_eq!(format!("{explicit}"), "5");
     }
 
     #[test]

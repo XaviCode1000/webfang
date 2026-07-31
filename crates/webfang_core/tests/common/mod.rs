@@ -155,8 +155,7 @@ impl MockVault {
 
         let vault_fs_path = vault_path.to_string_lossy();
         let obsidian_json = format!(
-            r#"{{"vault":{{"fsPath":"{}","id":"test-vault-id","name":"TestVault"}}}}"#,
-            vault_fs_path
+            r#"{{"vault":{{"fsPath":"{vault_fs_path}","id":"test-vault-id","name":"TestVault"}}}}"#
         );
         std::fs::write(obsidian_dir.join("obsidian.json"), &obsidian_json)
             .expect("failed to create obsidian.json");

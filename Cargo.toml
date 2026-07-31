@@ -157,10 +157,6 @@ unexpected_cfgs = { level = "deny", check-cfg = ["cfg(tokio_unstable)"] }
 unsafe_code = "deny"
 
 [workspace.lints.clippy]
-# TODO: Remove this allow and inline all format args (tracking issue needed).
-# Local toolchain doesn't detect this lint but CI does — mechanical fix
-# requires CI-driven iteration or a clippy version that supports --fix for it.
-uninlined_format_args = "allow"
 
 [profile.dev]
 opt-level = 0

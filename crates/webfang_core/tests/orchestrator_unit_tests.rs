@@ -132,8 +132,7 @@ async fn sitemap_empty_returns_no_urls_found() {
             result,
             Err(webfang_core::infrastructure::crawler::SitemapError::NoUrlsFound)
         ),
-        "expected NoUrlsFound, got {:?}",
-        result
+        "expected NoUrlsFound, got {result:?}"
     );
 }
 

@@ -740,7 +740,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             SelectorErrorKind::RepairInconclusive(_) => {},
-            other => panic!("expected RepairInconclusive, got {:?}", other),
+            other => panic!("expected RepairInconclusive, got {other:?}"),
         }
     }
 
@@ -907,7 +907,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             SelectorErrorKind::RepairInconclusive(_) => {},
-            other => panic!("expected RepairInconclusive, got {:?}", other),
+            other => panic!("expected RepairInconclusive, got {other:?}"),
         }
     }
 }

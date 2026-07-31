@@ -189,7 +189,7 @@ mod tests {
         let manager = MemoryManager::with_disk_swap(temp_dir.path().to_path_buf());
 
         let urls: Vec<Url> = (0..15_000)
-            .map(|i| Url::parse(&format!("https://example.com/page{}", i)).unwrap())
+            .map(|i| Url::parse(&format!("https://example.com/page{i}")).unwrap())
             .collect();
 
         // Should write chunks to disk
@@ -212,7 +212,7 @@ mod tests {
                                                            // 525 URLs * 2000 bytes = 1,050,000 bytes >= 1,048,576 bytes (1MB)
         let url_count_that_exceeds = 525;
         let urls: Vec<Url> = (0..url_count_that_exceeds)
-            .map(|i| Url::parse(&format!("https://example.com/page{}", i)).unwrap())
+            .map(|i| Url::parse(&format!("https://example.com/page{i}")).unwrap())
             .collect();
 
         // Should fail due to memory limit when disk swap disabled
