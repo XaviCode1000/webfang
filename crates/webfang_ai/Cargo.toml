@@ -41,6 +41,7 @@ tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 futures = { workspace = true }
 uuid = { workspace = true }
+webfang_test_utils = { workspace = true }
 
 [[test]]
 name = "ai_integration"

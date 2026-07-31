@@ -28,6 +28,8 @@ use webfang_core::domain::DocumentChunk;
 /// Test that ModelConfig has the correct default values
 #[test]
 fn test_model_config_defaults() {
+    let _guard = webfang_test_utils::EnvGuard::clean(&["AI_MODEL_ID"]);
+
     let config = ModelConfig::default();
 
     assert_eq!(config.repo, DEFAULT_MODEL_REPO);

@@ -14,4 +14,4 @@ pub use metadata::{
     ObsidianRichMetadata,
 };
 pub use uri::{build_obsidian_uri, extract_vault_name, open_in_obsidian, open_note};
-pub use vault_detector::{detect_vault, is_valid_vault};
+pub use vault_detector::{detect_vault, detect_vault_with_root, is_valid_vault};

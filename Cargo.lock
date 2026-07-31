@@ -6084,6 +6084,7 @@ dependencies = [
  "unicode-segmentation",
  "uuid",
  "webfang_core",
+ "webfang_test_utils",
  "wide",
 ]
 
@@ -6173,6 +6174,7 @@ dependencies = [
  "url-normalize",
  "uuid",
  "walkdir",
+ "webfang_test_utils",
  "whatlang",
  "wiremock",
  "wreq",
