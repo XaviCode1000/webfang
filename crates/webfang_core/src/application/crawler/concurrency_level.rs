@@ -51,7 +51,6 @@ impl SharedConcurrencyLevel {
             ConcurrencyLevel::Critical => 2,
         };
 
-        #[cfg(not(feature = "otel-metrics"))]
         self.level.store(val, Ordering::Relaxed);
     }
 
