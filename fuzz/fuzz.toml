@@ -16,6 +16,10 @@ jobs = 1
 
 # Per-target overrides
 [[target]]
+name = "fuzz_parse_html"
+max_len = 16384  # HTML can be large
+
+[[target]]
 name = "fuzz_html_cleaner"
 max_len = 16384  # HTML can be large
 

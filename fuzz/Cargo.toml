@@ -23,6 +23,13 @@ path = "../crates/webfang_core"
 # --- TIER 1: Core HTML pipeline (processes raw web content) ---
 
 [[bin]]
+name = "fuzz_parse_html"
+path = "fuzz_targets/fuzz_parse_html.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "fuzz_html_cleaner"
 path = "fuzz_targets/fuzz_html_cleaner.rs"
 test = false
