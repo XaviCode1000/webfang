@@ -23,21 +23,53 @@ jobs:
           echo "## Miri Results" >> $GITHUB_STEP_SUMMARY
           echo "Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
 
+  # ThreadSanitizer with full std instrumentation (-Zbuild-std).
+  # Without -Zbuild-std, ABI mismatch between instrumented and non-instrumented
+  # crates produces unreliable warnings. With it, results are trustworthy.
+  # Phase 1: continue-on-error (advisory). Phase 2: hard gate after triage.
+  # Build time ~15 min (compiles std from source) + BoringSSL ~10 min.
   tsan:
+    name: "ThreadSanitizer (bridge + session_pool)"
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Phase 1: advisory — report warnings but don't block CI
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
-      - name: ThreadSanitizer
+      - name: Install nightly + rust-src
+        run: rustup toolchain install nightly --component rust-src
+      - name: Install cmake
+        run: sudo apt-get install -y cmake
+      - name: Run TSan on concurrency modules
         run: |
           RUSTFLAGS="-Zsanitizer=thread" \
-          cargo +nightly test -p webfang_core --target x86_64-unknown-linux-gnu -- --test-threads=4
-        continue-on-error: true
+          cargo +nightly test -Zbuild-std \
+            --target x86_64-unknown-linux-gnu \
+            -p webfang_core --lib \
+            -- infrastructure::bridge infrastructure::network::session_pool \
+            --test-threads=1 \
+            2>&1 | tee tsan-output.txt
+      - name: Check for warnings
+        if: always()
+        run: |
+          if grep -qi "WARNING: ThreadSanitizer" tsan-output.txt; then
+            echo "::warning::TSan warnings detected — review tsan-output.txt"
+            grep -c "WARNING: ThreadSanitizer" tsan-output.txt || true
+          else
+            echo "No TSan warnings — clean run."
+          fi
       - name: Publish TSan Summary
         if: always()
         run: |
-          echo "## ThreadSanitizer Results" >> $GITHUB_STEP_SUMMARY
+          echo "## ThreadSanitizer Results (-Zbuild-std)" >> $GITHUB_STEP_SUMMARY
+          echo "Scope: infrastructure::bridge + infrastructure::network::session_pool" >> $GITHUB_STEP_SUMMARY
           echo "Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+      - name: Upload TSan output
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tsan-output
+          path: tsan-output.txt
 
   lsan:
     runs-on: ubuntu-latest
