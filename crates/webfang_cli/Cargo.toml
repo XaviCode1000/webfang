@@ -56,6 +56,5 @@ serde_json = { workspace = true }
 tracing-tree = { workspace = true, optional = true }
 
 
-[lints.clippy]
-doc_markdown = "allow"
-uninlined_format_args = "allow"
+[lints]
+workspace = true

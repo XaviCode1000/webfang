@@ -62,6 +62,5 @@ path = "../../tests/mcp_behavioral_test.rs"
 name = "mcp_lifecycle_test"
 path = "../../tests/mcp_lifecycle_test.rs"
 
-[lints.clippy]
-doc_markdown = "allow"
-uninlined_format_args = "allow"
+[lints]
+workspace = true
