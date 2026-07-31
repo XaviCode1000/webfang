@@ -461,21 +461,21 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "SIMD precision varies across CPU architectures, CI runner vs local"]
     fn test_mean_pool_excludes_padding() {
         // 2 real tokens + 2 padding (seq_len=4, embedding_dim=2)
+        // Row-major: token0=[1,2], token1=[3,4], token2=[10,20], token3=[30,40]
         let data = vec![1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0];
         let mask = vec![1i64, 1, 0, 0];
         let pooled = mean_pool(&data, 4, 2, &mask);
-        // Mean of first 2 rows: [(1+10)/2, (2+20)/2] = [5.5, 11.0]
+        // Mean of unmasked rows 0,1: [(1+3)/2, (2+4)/2] = [2.0, 3.0]
         assert!(
-            (pooled[0] - 5.5).abs() < 0.1,
-            "expected 5.5, got {}",
+            (pooled[0] - 2.0).abs() < 0.1,
+            "expected 2.0, got {}",
             pooled[0]
         );
         assert!(
-            (pooled[1] - 11.0).abs() < 0.1,
-            "expected 11.0, got {}",
+            (pooled[1] - 3.0).abs() < 0.1,
+            "expected 3.0, got {}",
             pooled[1]
         );
     }

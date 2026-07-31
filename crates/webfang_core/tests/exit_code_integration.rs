@@ -52,7 +52,11 @@ fn webfang_path() -> PathBuf {
 }
 
 fn cmd() -> Command {
-    Command::new(webfang_path())
+    let mut c = Command::new(webfang_path());
+    // Hermeticity: remove env vars with strict value_parser that cause hard
+    // parse failures (exit 64) when poisoned by CI bug-discovery workflow.
+    c.env_remove("AI_MODEL_ID");
+    c
 }
 
 // ============================================================================
