@@ -284,6 +284,13 @@ fn test_ai_config_parity_with_flags() {
 fn test_ai_config_parity_no_flags() {
     use webfang_core::application::crawl_options::AiConfig;
 
+    let _guard = webfang_test_utils::EnvGuard::clean(&[
+        "WEBFANG_THRESHOLD",
+        "WEBFANG_MAX_TOKENS",
+        "WEBFANG_OFFLINE",
+        "AI_MODEL_ID",
+    ]);
+
     let args = Args::try_parse_from(["webfang"]).expect("minimal parse must succeed");
     let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
 
@@ -311,10 +318,10 @@ fn test_ai_config_defaults_without_ai_feature() {
     assert_eq!(opts.ai_config, AiConfig::default());
 }
 
+/// Tests `CrawlOptions::default()` directly — hermetic, no env reads, no CLI parsing.
 #[test]
 fn test_args_to_crawl_options_defaults() {
-    let args = Args::try_parse_from(["webfang"]).expect("minimal parse must succeed");
-    let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
+    let opts = webfang_core::application::crawl_options::CrawlOptions::default();
 
     // url defaults to example.com when None
     assert_eq!(opts.url.as_str(), "https://example.com/");

@@ -142,6 +142,7 @@ proptest = { workspace = true }
 criterion = { version = "0.5", features = ["html_reports"] }
 insta = { workspace = true }
 regex = { workspace = true }
+webfang_test_utils = { workspace = true }
 
 # ---------------------------------------------------------------------------
 # Wiring for the previously-orphaned root `tests/` suite.
