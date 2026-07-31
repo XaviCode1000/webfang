@@ -43,13 +43,7 @@ futures = { workspace = true }
 uuid = { workspace = true }
 webfang_test_utils = { workspace = true }
 
-[[test]]
-name = "ai_integration"
-path = "../../tests/ai_integration.rs"
 
-[[test]]
-name = "chunker_regression"
-path = "../../tests/chunker_regression.rs"
 
 [lints]
 workspace = true

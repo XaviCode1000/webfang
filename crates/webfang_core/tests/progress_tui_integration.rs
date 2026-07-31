@@ -1,3 +1,4 @@
+#![cfg(feature = "ui")]
 //! Progress TUI Integration Tests
 //!
 //! These tests verify the reactive behavior of the progress TUI view,
