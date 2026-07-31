@@ -537,7 +537,7 @@ impl SemanticCleanerImpl {
     /// ```no_run
     /// # #[cfg(feature = "ai")]
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// use webfang_ai::{SemanticCleaner, SemanticCleanerImpl, ModelConfig};
+    /// use webfang_ai::{SemanticCleaner, SemanticCleanerImpl, ModelConfig, SemanticError};
     ///
     /// // Create semantic cleaner (requires --features ai)
     /// let config = ModelConfig::default();
@@ -551,7 +551,7 @@ impl SemanticCleanerImpl {
     /// let has_embeddings = chunks.first()
     ///     .map(|c| c.embeddings.is_some())
     ///     .ok_or_else(|| SemanticError::Inference(
-    ///         "No chunks returned from semantic cleaner. Check HTML content and AI model availability."
+    ///         "No chunks returned from semantic cleaner. Check HTML content and AI model availability.".to_string()
     ///     ))?;
     /// assert!(has_embeddings, "embeddings should not be None after fix");
     ///
