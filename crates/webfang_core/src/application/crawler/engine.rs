@@ -404,7 +404,10 @@ impl Engine {
     async fn save_checkpoint(&self) {
         if let Some(path) = &self.checkpoint_path {
             let visited_set: HashSet<String> = {
-                let urls = self.visited_urls.read().unwrap();
+                let urls = self
+                    .visited_urls
+                    .read()
+                    .expect("visited_urls RwLock poisoned");
                 urls.iter().cloned().collect()
             };
             let pages = self
@@ -541,7 +544,11 @@ impl Engine {
             robots_fetcher: Arc::clone(&self.robots_fetcher),
             error_count: Arc::clone(&self.error_count),
             pages_crawled: Arc::clone(&self.pages_crawled),
-            collector: self.collector.as_ref().unwrap().clone(),
+            collector: self
+                .collector
+                .as_ref()
+                .expect("collector initialized before crawl")
+                .clone(),
             cookie_bridge: Arc::clone(&self.cookie_bridge),
             banned_domains: Arc::clone(&self.banned_domains),
             fetch_router: self.fetch_router.clone(),
@@ -565,7 +572,7 @@ impl Engine {
             if self
                 .collector
                 .as_ref()
-                .unwrap()
+                .expect("collector initialized before crawl")
                 .is_full(config_clone.max_pages)
             {
                 info!("Reached max pages limit: {}", config_clone.max_pages);
@@ -664,7 +671,12 @@ impl Engine {
 
         // Collect results via mpsc channel — now all Senders are dropped,
         // so the receiver worker will drain and terminate.
-        let collected_urls = self.collector.take().unwrap().collect().await;
+        let collected_urls = self
+            .collector
+            .take()
+            .expect("collector present at end of crawl")
+            .collect()
+            .await;
         let total_pages = collected_urls.len();
         let errors = self.error_count.load(std::sync::atomic::Ordering::SeqCst);
 

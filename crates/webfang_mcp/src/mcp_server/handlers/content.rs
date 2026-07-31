@@ -153,7 +153,7 @@ impl McpHandler {
             "reading_time_minutes": reading_time,
         });
         Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&meta).unwrap(),
+            serde_json::to_string_pretty(&meta).expect("serializing JSON to a string cannot fail"),
         )]))
     }
 }

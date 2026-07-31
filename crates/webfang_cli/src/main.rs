@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 //! WebFang - Production-ready web scraper with Clean Architecture
 //!
 //! Extracts clean, structured content from web pages using readability algorithm.

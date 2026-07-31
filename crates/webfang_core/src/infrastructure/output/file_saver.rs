@@ -180,8 +180,10 @@ fn rewrite_image_urls_to_relative(content: &str, _md_file_dir: &Path) -> String 
     use regex::Regex;
 
     // Match ![alt text](url) where url is absolute
-    static RE: std::sync::LazyLock<Regex> =
-        std::sync::LazyLock::new(|| Regex::new(r"!\[([^\]]*)\]\((https?://[^)]+)\)").unwrap());
+    static RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"!\[([^\]]*)\]\((https?://[^)]+)\)")
+            .expect("static image-markdown regex is valid")
+    });
 
     RE.replace_all(content, |caps: &regex::Captures| {
         let alt = &caps[1];

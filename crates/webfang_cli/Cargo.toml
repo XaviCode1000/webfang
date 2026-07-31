@@ -14,7 +14,7 @@ default = ["images", "documents"]
 images = ["webfang_core/images"]
 documents = ["webfang_core/documents"]
 ui = ["dep:webfang_tui", "dep:inquire", "webfang_core/ui"]
-ai = ["dep:webfang_ai", "webfang_core/ai"]
+ai = ["dep:webfang_ai", "webfang_ai/ai", "webfang_core/ai"]
 adaptive-selectors = ["webfang_core/adaptive-selectors"]
 mcp = ["dep:webfang_mcp", "webfang_core/mcp"]
 persistence = ["webfang_core/persistence"]
@@ -56,6 +56,5 @@ serde_json = { workspace = true }
 tracing-tree = { workspace = true, optional = true }
 
 
-[lints.clippy]
-doc_markdown = "allow"
-uninlined_format_args = "allow"
+[lints]
+workspace = true

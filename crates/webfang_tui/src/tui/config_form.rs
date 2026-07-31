@@ -105,17 +105,6 @@ impl ConfigFormState {
             .checked(false)
             .done();
 
-        // ========================================
-        // AI Section (clean_ai) — feature-gated
-        // ========================================
-        #[cfg(feature = "ai")]
-        {
-            builder = builder
-                .checkbox("clean_ai", "AI Cleaning")
-                .checked(false)
-                .done();
-        }
-
         builder.build()
     }
 

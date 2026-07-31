@@ -261,7 +261,8 @@ impl McpHandler {
                     "errors": result.errors,
                 });
                 Ok(CallToolResult::success(vec![Content::text(
-                    serde_json::to_string_pretty(&json).unwrap(),
+                    serde_json::to_string_pretty(&json)
+                        .expect("serializing JSON to a string cannot fail"),
                 )]))
             },
             Err(e) => {
@@ -319,7 +320,8 @@ impl McpHandler {
                 tracing::info!("sitemap crawl complete: {} urls found", urls.len());
                 let url_strings: Vec<String> = urls.iter().map(|u| u.url.to_string()).collect();
                 Ok(CallToolResult::success(vec![Content::text(
-                    serde_json::to_string_pretty(&url_strings).unwrap(),
+                    serde_json::to_string_pretty(&url_strings)
+                        .expect("serializing JSON to a string cannot fail"),
                 )]))
             },
             Err(e) => {
@@ -483,7 +485,8 @@ impl McpHandler {
                             "has_spa_markers": info.has_spa_markers,
                         });
                         Ok(CallToolResult::success(vec![Content::text(
-                            serde_json::to_string_pretty(&json).unwrap(),
+                            serde_json::to_string_pretty(&json)
+                                .expect("serializing JSON to a string cannot fail"),
                         )]))
                     },
                     None => Ok(CallToolResult::success(vec![Content::text(

@@ -36,13 +36,15 @@ impl McpHandler {
                     "query": u.query().unwrap_or(""),
                 });
                 Ok(CallToolResult::success(vec![Content::text(
-                    serde_json::to_string_pretty(&info).unwrap(),
+                    serde_json::to_string_pretty(&info)
+                        .expect("serializing JSON to a string cannot fail"),
                 )]))
             },
             Err(e) => {
                 let info = serde_json::json!({"valid": false, "error": e.to_string()});
                 Ok(CallToolResult::success(vec![Content::text(
-                    serde_json::to_string_pretty(&info).unwrap(),
+                    serde_json::to_string_pretty(&info)
+                        .expect("serializing JSON to a string cannot fail"),
                 )]))
             },
         }
@@ -150,7 +152,8 @@ impl McpHandler {
                     "domain": output_path.domain().to_string(),
                 });
                 Ok(CallToolResult::success(vec![Content::text(
-                    serde_json::to_string_pretty(&info).unwrap(),
+                    serde_json::to_string_pretty(&info)
+                        .expect("serializing JSON to a string cannot fail"),
                 )]))
             },
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),

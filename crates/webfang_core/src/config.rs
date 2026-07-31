@@ -42,7 +42,12 @@ impl Config {
     pub fn new() -> Self {
         Self {
             scraper: ScraperConfig::default(),
-            crawler: CrawlerConfig::builder("https://example.com".parse().unwrap()).build(),
+            crawler: CrawlerConfig::builder(
+                "https://example.com"
+                    .parse()
+                    .expect("example.com is a valid URL"),
+            )
+            .build(),
             http: HttpClientConfig::default(),
             obsidian: ObsidianOptions::default(),
             ai: AiConfig {

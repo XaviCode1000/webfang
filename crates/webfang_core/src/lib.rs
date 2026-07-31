@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 //! WebFang Core — Core scraping library
 //!
 //! Contains domain, application, and infrastructure layers for web scraping.

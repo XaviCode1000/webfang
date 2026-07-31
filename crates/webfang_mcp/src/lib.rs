@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 //! WebFang MCP — Model Context Protocol server
 //!
 //! Exposes scraper tools to AI agents via MCP protocol.
