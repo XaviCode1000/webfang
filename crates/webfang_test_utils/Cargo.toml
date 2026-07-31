@@ -1,0 +1,9 @@
+[package]
+name = "webfang_test_utils"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+tempfile = { workspace = true }
+regex = { workspace = true }

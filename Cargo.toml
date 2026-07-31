@@ -6,6 +6,7 @@ members = [
     "crates/webfang_tui",
     "crates/webfang_mcp",
     "crates/webfang_cli",
+    "crates/webfang_test_utils",
 ]
 exclude = ["fuzz"]
 
@@ -25,6 +26,7 @@ webfang_ai = { path = "crates/webfang_ai" }
 webfang_tui = { path = "crates/webfang_tui" }
 webfang_mcp = { path = "crates/webfang_mcp" }
 webfang_cli = { path = "crates/webfang_cli" }
+webfang_test_utils = { path = "crates/webfang_test_utils" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
