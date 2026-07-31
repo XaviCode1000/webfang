@@ -82,7 +82,20 @@ pub(crate) fn webfang_path() -> std::path::PathBuf {
 
 /// Shared binary command builder for tests that don't need a mock server.
 pub(crate) fn cmd() -> Command {
-    Command::new(webfang_path())
+    sanitize_env(Command::new(webfang_path()))
+}
+
+/// Remove all `WEBFANG_*` and `AI_MODEL_ID` env vars from a command so tests
+/// are hermetic even when CI bug-discovery workflows poison the environment.
+fn sanitize_env(mut cmd: Command) -> Command {
+    let poisoned: Vec<String> = std::env::vars()
+        .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")
+        .map(|(k, _)| k)
+        .collect();
+    for key in poisoned {
+        cmd.env_remove(&key);
+    }
+    cmd
 }
 
 /// Shared test harness: one mock server + one temp output directory.
@@ -103,7 +116,7 @@ impl BehavioralTest {
     /// Build a `Command` for the `webfang` binary with `--url` and
     /// `--output` pre-filled to this harness's server and temp dir.
     pub fn scraper_cmd(&self) -> assert_cmd::Command {
-        let mut cmd = Command::new(webfang_path());
+        let mut cmd = sanitize_env(Command::new(webfang_path()));
         cmd.arg("--url")
             .arg(self.server.uri())
             .arg("--output")

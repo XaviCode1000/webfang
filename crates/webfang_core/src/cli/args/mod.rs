@@ -248,12 +248,29 @@ mod tests {
     use super::*;
     use clap::Parser;
 
+    /// Remove poisoned env vars once before any arg-parsing test runs.
+    /// CI bug-discovery sets WEBFANG_*=POISON / AI_MODEL_ID=POISON which
+    /// clap reads via `env = "..."` attributes, breaking hermeticity.
+    static ENV_GUARD: std::sync::Once = std::sync::Once::new();
+    fn clean_env() {
+        ENV_GUARD.call_once(|| {
+            let poisoned: Vec<String> = std::env::vars()
+                .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")
+                .map(|(k, _)| k)
+                .collect();
+            for key in poisoned {
+                std::env::remove_var(&key);
+            }
+        });
+    }
+
     // ========================================================================
     // TASK-13 — --ignore-waf flag + propagation (REQ-WAF-07)
     // ========================================================================
 
     #[test]
     fn ignore_waf_flag_defaults_to_false() {
+        clean_env();
         let args =
             Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
         assert!(!args.crawler.ignore_waf, "ignore_waf defaults to false");
@@ -261,6 +278,7 @@ mod tests {
 
     #[test]
     fn ignore_waf_flag_parses() {
+        clean_env();
         let args = Args::try_parse_from(["webfang", "-u", "https://example.com", "--ignore-waf"])
             .expect("valid args");
         assert!(args.crawler.ignore_waf, "--ignore-waf sets the flag");
@@ -268,6 +286,7 @@ mod tests {
 
     #[test]
     fn ignore_waf_maps_into_crawl_options() {
+        clean_env();
         let args = Args::try_parse_from(["webfang", "-u", "https://example.com", "--ignore-waf"])
             .expect("valid args");
         let opts = crate::application::crawl_options::CrawlOptions::from(args);
