@@ -190,7 +190,7 @@ pub async fn discover_urls_for_tui(
 /// * `Err(ScraperError)` - Error during scraping
 #[instrument(
     name = "scrape_single_url",
-    skip(downloader, config, asset_downloader, engine),
+    skip(downloader, config, asset_downloader, engine, binary_writer),
     fields(url = %url)
 )]
 pub async fn scrape_single_url_for_tui(
@@ -199,6 +199,7 @@ pub async fn scrape_single_url_for_tui(
     config: &ScraperConfig,
     asset_downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
+    binary_writer: Option<&dyn crate::domain::ports::BinaryWriterPort>,
 ) -> ScraperResult<ScrapedContent> {
     let span = span!(Level::DEBUG, "scrape_single", url = %url);
     let _guard = span.enter();
@@ -239,31 +240,31 @@ pub async fn scrape_single_url_for_tui(
     if is_binary {
         debug!("Binary content type detected: {} for {}", content_type, url);
 
-        // Save binary file when download_documents is enabled
+        // Save binary file when download_documents is enabled. Filesystem I/O is
+        // routed through the injected BinaryWriterPort (or the FsBinaryWriter
+        // fallback) so the application layer never touches std::fs directly
+        // (#442 layer-violation fix). Observable behavior is unchanged: the same
+        // bytes land in the same file under `config.output_dir`.
         let saved_path = if config.download_documents {
             let header_map = headers_to_header_map(&page.headers);
             let filename = derive_filename_from_response(&header_map, url, &content_type);
             let output_path = config.output_dir.join(&filename);
 
             let bytes = page.html.as_bytes();
-            if let Err(e) = std::fs::create_dir_all(&config.output_dir) {
-                warn!(
-                    "Failed to create output directory {}: {}",
-                    config.output_dir.display(),
-                    e
-                );
-            } else if let Err(e) = std::fs::write(&output_path, bytes) {
-                warn!(
-                    "Failed to save binary file {}: {}",
-                    output_path.display(),
-                    e
-                );
-            } else {
-                info!(
+            let fallback_writer = crate::infrastructure::crawler::FsBinaryWriter::new();
+            let writer: &dyn crate::domain::ports::BinaryWriterPort =
+                binary_writer.unwrap_or(&fallback_writer);
+            match writer.write_bytes(&output_path, bytes) {
+                Ok(()) => info!(
                     "Saved binary file: {} ({} bytes)",
                     output_path.display(),
                     bytes.len()
-                );
+                ),
+                Err(e) => warn!(
+                    "Failed to save binary file {}: {}",
+                    output_path.display(),
+                    e
+                ),
             }
             Some(output_path)
         } else {
@@ -595,7 +596,7 @@ mod tests {
         let url = Url::parse("https://example.com/doc.pdf").expect("valid URL");
         let config = ScraperConfig::new();
 
-        let result = scrape_single_url_for_tui(&dl, &url, &config, None, None)
+        let result = scrape_single_url_for_tui(&dl, &url, &config, None, None, None)
             .await
             .expect("binary detection should succeed");
 
@@ -615,7 +616,7 @@ mod tests {
         let url = Url::parse("https://example.com").expect("valid URL");
         let config = ScraperConfig::new();
 
-        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None)
+        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None, None)
             .await
             .expect_err("WAF body should trigger WafBlocked");
 
@@ -640,7 +641,7 @@ work with when computing the document readability score.</p>
         let url = Url::parse("https://example.com/article").expect("valid URL");
         let config = ScraperConfig::new();
 
-        let result = scrape_single_url_for_tui(&dl, &url, &config, None, None)
+        let result = scrape_single_url_for_tui(&dl, &url, &config, None, None, None)
             .await
             .expect("normal HTML should scrape successfully");
 
@@ -661,7 +662,7 @@ work with when computing the document readability score.</p>
         let url = Url::parse("https://example.com").expect("valid URL");
         let config = ScraperConfig::new();
 
-        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None)
+        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None, None)
             .await
             .expect_err("WafChallenge download error should propagate");
 
@@ -681,7 +682,7 @@ work with when computing the document readability score.</p>
         let url = Url::parse("https://example.com/missing").expect("valid URL");
         let config = ScraperConfig::new();
 
-        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None)
+        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None, None)
             .await
             .expect_err("404 status should produce an error");
 
