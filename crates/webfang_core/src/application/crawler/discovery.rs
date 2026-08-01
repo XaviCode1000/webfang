@@ -251,12 +251,17 @@ pub async fn extract_content(
             )
             .await?;
 
+            let author = crate::infrastructure::scraper::author_extractor::extract_author(
+                html,
+                article.byline.as_deref(),
+            );
+
             Ok(ScrapedContent {
                 title: crate::application::resolve_title(&article.title, url),
                 content: article.text_content,
                 url: ValidUrl::new(url.clone()),
                 excerpt: article.excerpt,
-                author: article.byline,
+                author,
                 date: article.published_time,
                 // Store CLEAN HTML from Readability (not raw HTML with nav/ads/footer)
                 html: Some(article.content),
