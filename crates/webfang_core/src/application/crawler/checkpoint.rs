@@ -646,4 +646,28 @@ mod tests {
         cp_path.ensure_dir().unwrap();
         assert!(nested.exists());
     }
+
+    /// `ensure_dir` must surface a filesystem failure as `Err` instead of
+    /// panicking, so `Engine::with_checkpoint` can disable checkpointing and
+    /// keep crawling (#393). Here the base directory sits *under a regular
+    /// file*, a location that can never be created as a directory.
+    #[test]
+    fn test_ensure_dir_returns_err_when_base_dir_is_under_a_file() {
+        // Arrange: a regular file where a directory component would need to be.
+        let tmp = TempDir::new().expect("tempdir should be created");
+        let blocker = tmp.path().join("not_a_dir");
+        fs::write(&blocker, "i am a file, not a directory")
+            .expect("blocker file should be written");
+
+        // Act: try to ensure a directory nested under the file.
+        let cp_path = CheckpointPath::new(blocker.join("nested"));
+        let result = cp_path.ensure_dir();
+
+        // Assert: the failure is reported as Err (not a panic), with context.
+        let err = result.expect_err("ensure_dir must fail when the path is under a regular file");
+        assert!(
+            err.contains("failed to create checkpoint dir"),
+            "error should carry creation context, got: {err}"
+        );
+    }
 }

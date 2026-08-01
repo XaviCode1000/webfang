@@ -163,4 +163,60 @@ max_pages = 20
     fn test_should_emit_emoji_default() {
         assert!(should_emit_emoji());
     }
+
+    /// A malformed TOML file must not crash the CLI: `ConfigDefaults::load`
+    /// logs an `error!` and falls back to all-default settings (#393). Because
+    /// the user's entire configuration is silently lost on a parse failure, the
+    /// fallback to defaults — not the parse error itself — is the behavioral
+    /// invariant this test pins.
+    #[test]
+    fn test_load_malformed_toml_falls_back_to_defaults() {
+        // Arrange: an existing file whose contents are not valid TOML.
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "this is [[[ not valid toml")
+            .expect("config file should be written");
+
+        // Act
+        let config = ConfigDefaults::load(&config_path);
+
+        // Assert: every field falls back to its default (None); nothing crashes.
+        assert!(config.format.is_none(), "format must fall back to default");
+        assert!(
+            config.export_format.is_none(),
+            "export_format must fall back to default"
+        );
+        assert!(
+            config.concurrency.is_none(),
+            "concurrency must fall back to default"
+        );
+        assert!(
+            config.selector.is_none(),
+            "selector must fall back to default"
+        );
+        assert!(
+            config.max_pages.is_none(),
+            "max_pages must fall back to default"
+        );
+        assert!(
+            config.delay_ms.is_none(),
+            "delay_ms must fall back to default"
+        );
+        assert!(
+            config.log_level.is_none(),
+            "log_level must fall back to default"
+        );
+        assert!(
+            config.use_sitemap.is_none(),
+            "use_sitemap must fall back to default"
+        );
+        assert!(
+            config.ignore_waf.is_none(),
+            "ignore_waf must fall back to default"
+        );
+        assert!(
+            config.vault_path.is_none(),
+            "vault_path must fall back to default"
+        );
+    }
 }
