@@ -49,6 +49,14 @@ impl ObscuraDownloader {
 
         let url_string = url.to_string();
 
+        // Defense in depth: a typed Url always carries a scheme (e.g. https://) so it can
+        // never be mistaken for an obscura flag; reject defensively anyway.
+        if url_string.starts_with('-') {
+            return Err(DownloadError::Internal(
+                "URL inválida: no puede comenzar con '-'".to_string(),
+            ));
+        }
+
         let result = timeout(
             self.timeout,
             tokio::task::spawn_blocking(move || {
