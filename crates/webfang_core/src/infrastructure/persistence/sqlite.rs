@@ -465,8 +465,7 @@ impl NoteRepository for SqliteVectorRepository {
 
     fn load_all_vectors(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<NoteChunkVector>, ScraperError>> + Send + '_>>
-    {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<NoteChunkVector>, ScraperError>> + Send + '_>> {
         Box::pin(async move {
             let conn = self.pool.get().await.map_err(|e| {
                 ScraperError::persistence(format!("obtener conexión del pool: {e}"))
@@ -490,7 +489,9 @@ impl NoteRepository for SqliteVectorRepository {
                     rows.collect::<Result<Vec<_>, _>>()
                 })
                 .await
-                .map_err(|e| ScraperError::persistence(format!("load_all_vectors (interact): {e}")))?
+                .map_err(|e| {
+                    ScraperError::persistence(format!("load_all_vectors (interact): {e}"))
+                })?
                 .map_err(|e| ScraperError::persistence(format!("load_all_vectors: {e}")))?;
 
             let mut result = Vec::with_capacity(rows.len());
@@ -567,16 +568,14 @@ impl NoteRepository for SqliteVectorRepository {
 
     fn list_indexed_notes(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<IndexedNoteMeta>, ScraperError>> + Send + '_>>
-    {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<IndexedNoteMeta>, ScraperError>> + Send + '_>> {
         Box::pin(async move {
             let conn = self.pool.get().await.map_err(|e| {
                 ScraperError::persistence(format!("obtener conexión del pool: {e}"))
             })?;
             let rows: Result<Vec<IndexedNoteMeta>, ScraperError> = conn
                 .interact(|c| {
-                    let mut stmt =
-                        c.prepare("SELECT path, content_hash, mtime_secs FROM notes")?;
+                    let mut stmt = c.prepare("SELECT path, content_hash, mtime_secs FROM notes")?;
                     let rows = stmt.query_map([], |row| {
                         Ok(IndexedNoteMeta {
                             path: row.get::<_, String>(0)?,

@@ -73,10 +73,7 @@ impl HtmlChunker {
     ///
     /// A new HtmlChunker instance
     #[must_use]
-    pub fn with_config(
-        min_chunk_size: usize,
-        max_chunk_size: usize,
-    ) -> Self {
+    pub fn with_config(min_chunk_size: usize, max_chunk_size: usize) -> Self {
         Self {
             min_chunk_size,
             max_chunk_size,

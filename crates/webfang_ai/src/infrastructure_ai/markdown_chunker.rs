@@ -147,7 +147,7 @@ impl MarkdownChunker {
         // Find the closing `---` after the opening one.
         if let Some(end) = trimmed[3..].find("\n---") {
             let after = &trimmed[3 + end + 4..]; // skip past "\n---"
-            // Skip the rest of the closing line.
+                                                 // Skip the rest of the closing line.
             after.strip_prefix('\n').unwrap_or(after)
         } else {
             md // Malformed frontmatter — treat as regular content.
@@ -166,10 +166,7 @@ impl MarkdownChunker {
             if Self::is_heading(line) {
                 // Flush previous section.
                 if !current_lines.is_empty() || !current_heading.is_empty() {
-                    sections.push((
-                        current_heading.clone(),
-                        current_lines.join("\n"),
-                    ));
+                    sections.push((current_heading.clone(), current_lines.join("\n")));
                     current_lines.clear();
                 }
                 current_heading = line.trim_start_matches('#').trim().to_owned();
@@ -189,11 +186,7 @@ impl MarkdownChunker {
     /// Check if a line is a Markdown heading (`# ...`).
     fn is_heading(line: &str) -> bool {
         let trimmed = line.trim_start();
-        trimmed.starts_with('#')
-            && trimmed
-                .chars()
-                .nth(1)
-                .is_some_and(|c| c == '#' || c == ' ')
+        trimmed.starts_with('#') && trimmed.chars().nth(1).is_some_and(|c| c == '#' || c == ' ')
     }
 
     /// Extract callout blocks (`> [!type]`) as atomic units.
@@ -316,10 +309,10 @@ impl MarkdownChunker {
                         result.push(prev);
                         pending = Some(chunk);
                     }
-                }
+                },
                 None => {
                     pending = Some(chunk);
-                }
+                },
             }
         }
 
@@ -402,9 +395,7 @@ mod tests {
         let chunks = chunker.chunk(md).expect("chunking should succeed");
         assert!(!chunks.is_empty(), "must produce at least one chunk");
         // Check heading metadata is preserved.
-        let has_heading = chunks
-            .iter()
-            .any(|c| c.metadata.contains_key("heading"));
+        let has_heading = chunks.iter().any(|c| c.metadata.contains_key("heading"));
         assert!(has_heading, "at least one chunk must have heading metadata");
     }
 

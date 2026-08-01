@@ -172,10 +172,8 @@ impl McpHandler {
                         "error al serializar la respuesta: {e}"
                     ))),
                 }
-            }
-            Err(e) => Ok(honest_error(format!(
-                "error en la búsqueda semántica: {e}"
-            ))),
+            },
+            Err(e) => Ok(honest_error(format!("error en la búsqueda semántica: {e}"))),
         }
     }
 }

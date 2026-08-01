@@ -116,7 +116,11 @@ impl VaultSearchService {
             .collect();
 
         // Sort descending by score.
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Step 4: Truncate to limit.
         scored.truncate(limit);

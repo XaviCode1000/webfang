@@ -88,10 +88,7 @@ mod tests {
     }
 
     impl EmbeddingPort for MockEmbedder {
-        fn embed<'a>(
-            &'a self,
-            text: &'a str,
-        ) -> BoxFuture<'a, Result<Vec<f32>, SemanticError>> {
+        fn embed<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<Vec<f32>, SemanticError>> {
             Box::pin(async move {
                 let mut v = vec![0.0f32; self.dim];
                 // Deterministic: use text length mod dim as the hot index.
