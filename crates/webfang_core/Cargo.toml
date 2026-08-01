@@ -54,7 +54,6 @@ scraper = { workspace = true }
 lol_html = { workspace = true }
 
 # Error handling
-anyhow = { workspace = true }
 thiserror = { workspace = true }
 
 # Logging

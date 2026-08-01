@@ -9,6 +9,7 @@ use url::Url;
 use crate::application::crawl_options::CrawlOptions;
 use crate::application::discover_urls_for_tui;
 use crate::cli::SelectedUrls;
+use crate::error::Result as ScraperResult;
 use crate::CrawlerConfig;
 
 /// Discover URLs with progress bar.
@@ -17,7 +18,7 @@ use crate::CrawlerConfig;
 pub async fn discover_urls(
     crawler_config: &CrawlerConfig,
     opts: &CrawlOptions,
-) -> anyhow::Result<Vec<Url>> {
+) -> ScraperResult<Vec<Url>> {
     let discovery_pb = if !opts.export.quiet {
         let pb = ProgressBar::new_spinner();
         pb.set_draw_target(ProgressDrawTarget::stderr());

@@ -177,7 +177,7 @@ impl StateStore {
     /// use webfang_core::infrastructure::export::StateStore;
     /// use webfang_core::domain::ExportState;
     ///
-    /// # fn main() -> anyhow::Result<()> {
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let store = StateStore::new("example.com");
     /// let mut state = ExportState::new("example.com");
     /// state.mark_processed("https://example.com/page1");

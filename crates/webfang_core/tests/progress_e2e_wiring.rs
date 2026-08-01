@@ -1,7 +1,7 @@
 //! End-to-end test for channel plumbing: observer → channel → receiver.
 
 #[tokio::test]
-async fn test_full_pipeline_event_flow() -> anyhow::Result<()> {
+async fn test_full_pipeline_event_flow() -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::Arc;
     use webfang_core::application::progress_observer::LiveProgressObserver;
     use webfang_core::domain::entities::progress::{ScrapeProgress, ScrapeStatus};
