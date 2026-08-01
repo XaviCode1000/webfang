@@ -94,6 +94,24 @@ pub trait AssetDownloaderPort: Send + Sync {
     >;
 }
 
+/// Port trait for writing binary payloads (PDFs, images, archives) to disk.
+///
+/// Abstracts filesystem persistence so application use cases never call
+/// `std::fs` directly — Clean Architecture keeps the application layer free of
+/// filesystem specifics (issue #442). The production adapter
+/// [`FsBinaryWriter`](crate::infrastructure::crawler::FsBinaryWriter) creates
+/// the parent directory tree and writes the bytes; tests inject a temp-dir or
+/// in-memory implementation.
+pub trait BinaryWriterPort: Send + Sync {
+    /// Write `bytes` to `path`, creating parent directories as needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScraperError::Io`](crate::error::ScraperError::Io) when parent
+    /// directory creation or the write itself fails.
+    fn write_bytes(&self, path: &std::path::Path, bytes: &[u8]) -> crate::error::Result<()>;
+}
+
 /// Port trait for real-time progress reporting during scraping.
 ///
 /// Implementations receive structured progress events as the scraper

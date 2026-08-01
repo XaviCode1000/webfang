@@ -188,7 +188,9 @@ pub async fn scrape_urls(
             .on_status_changed(url_str, ScrapeStatus::Fetching)
             .await;
 
-        match scrape_single_url_for_tui(&router, &url, scraper_config, downloader, engine).await {
+        match scrape_single_url_for_tui(&router, &url, scraper_config, downloader, engine, None)
+            .await
+        {
             Ok(content) => {
                 observer
                     .on_status_changed(url_str, ScrapeStatus::Extracting)

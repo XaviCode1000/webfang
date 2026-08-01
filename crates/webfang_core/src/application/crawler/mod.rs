@@ -9,6 +9,7 @@ pub mod crawl_task_ctx;
 pub mod discovery;
 pub mod engine;
 pub mod progress;
+pub mod sitemap_discovery;
 
 pub use collector::{ResultsAdapter, ResultsCollector};
 pub use concurrency_level::{ConcurrencyLevel, SharedConcurrencyLevel};

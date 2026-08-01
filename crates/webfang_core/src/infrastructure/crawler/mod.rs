@@ -9,6 +9,7 @@
 
 pub mod batch_processor;
 pub mod binary_utils;
+pub mod binary_writer;
 pub mod compression_handler;
 pub mod http_client;
 pub mod link_extractor;
@@ -22,6 +23,7 @@ pub mod url_queue;
 pub mod url_validator;
 
 pub use binary_utils::{derive_filename_from_response, parse_content_disposition, percent_decode};
+pub use binary_writer::FsBinaryWriter;
 pub use http_client::{create_rate_limited_client, fetch_url};
 pub use link_extractor::{extract_links, is_internal_link, normalize_url};
 pub use resource_downloader::{
@@ -29,5 +31,5 @@ pub use resource_downloader::{
 };
 pub use robots_utils::{RobotsFetcher, RobotsRules};
 pub use sitemap_config::{SitemapConfig, SitemapConfigBuilder};
-pub use sitemap_parser::{resolve_url, SitemapError, SitemapParser};
+pub use sitemap_parser::{parse_sitemap, resolve_url, SitemapError, SitemapParser};
 pub use url_queue::{UrlQueue, UrlSource};

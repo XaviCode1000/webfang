@@ -7,10 +7,21 @@
 use crate::application::diagnostic::build_diagnostic;
 use crate::application::http_client::HttpClientPort;
 use crate::application::scraper_service::scrape_with_config;
-use crate::domain::{DomInspectorPort, ExtractResult, ScrapedContent, SelectorErrorKind};
-use crate::error::Result;
+use crate::domain::{
+    CorrelationId, DomInspectorPort, ExtractResult, ScrapedContent, SelectorErrorKind, ValidUrl,
+};
+use crate::error::{Result, ScraperError};
+use crate::infrastructure::observability::log_scrape_error;
+use crate::infrastructure::scraper::{fallback, readability};
 use crate::ScraperConfig;
 use tracing::{debug, warn};
+
+#[cfg(feature = "adaptive-selectors")]
+use crate::application::adaptive_engine::AdaptiveSelectorEngine;
+
+/// Placeholder when `adaptive-selectors` feature is disabled.
+#[cfg(not(feature = "adaptive-selectors"))]
+type AdaptiveSelectorEngine = ();
 
 /// Extract HTML content using a CSS selector.
 ///
@@ -128,6 +139,177 @@ pub async fn scrape_with_readability(
     let outcome =
         scrape_with_config(client, url, &ScraperConfig::default(), None, None, None).await?;
     Ok(outcome.results)
+}
+
+/// Canonical adaptive selector repair (Tier 1 lexical cascade).
+///
+/// Single home for the "extraction fell back → ask the adaptive engine for a
+/// repaired selector → re-extract" use case, shared by [`extract_content`] and
+/// `scrape_with_config` (issue #442 — previously duplicated in both). When the
+/// engine yields a selector that matches, the repaired [`ExtractResult`] is
+/// returned; otherwise the original fallback is preserved unchanged.
+///
+/// `inspector` is threaded through to [`extract_with_selector`] for diagnostics
+/// (`scrape_with_config` passes its inspector; [`extract_content`] passes
+/// `None`).
+#[cfg(feature = "adaptive-selectors")]
+pub(crate) async fn adaptive_selector_repair(
+    extract_result: ExtractResult,
+    engine: Option<&AdaptiveSelectorEngine>,
+    selector: &str,
+    host: Option<&str>,
+    inspector: Option<&dyn DomInspectorPort>,
+) -> ExtractResult {
+    if let ExtractResult::Fallback { html, diagnostic } = extract_result {
+        if let Some(engine) = engine {
+            match engine
+                .select_sync_aware(
+                    html.clone(),
+                    selector.to_owned(),
+                    host.map(|s| s.to_owned()),
+                )
+                .await
+            {
+                Ok(outcome) => {
+                    let repaired =
+                        extract_with_selector(&html, &outcome.suggestion.selector, inspector);
+                    if repaired.is_matched() {
+                        tracing::info!(
+                            repaired_selector = %outcome.suggestion.selector,
+                            method = ?outcome.status,
+                            "adaptive_repair_resolved"
+                        );
+                        repaired
+                    } else {
+                        ExtractResult::Fallback { html, diagnostic }
+                    }
+                },
+                Err(_) => ExtractResult::Fallback { html, diagnostic },
+            }
+        } else {
+            ExtractResult::Fallback { html, diagnostic }
+        }
+    } else {
+        extract_result
+    }
+}
+
+/// Pipeline de extracción de contenido: clean → selector → adaptive → readability/fallback.
+///
+/// Recibe HTML ya fetchado y validado (post-WAF). No conoce el transporte.
+///
+/// # Errors
+///
+/// Returns [`ScraperError::ExtractionFailed`] when fallback content is below
+/// `MIN_FALLBACK_CONTENT` bytes.
+pub async fn extract_content(
+    html: &str,
+    url: &url::Url,
+    config: &ScraperConfig,
+    asset_downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
+    #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
+) -> Result<ScrapedContent> {
+    // Clean HTML boilerplate (scripts, styles, nav, sidebar, footer) BEFORE
+    // Readability. This helps legible find the main content without being
+    // confused by navigation elements, JavaScript bundles, and CSS.
+    let cleaned_html = crate::infrastructure::converter::html_cleaner::clean_html(html);
+
+    // Apply CSS selector extraction if a non-default selector is configured.
+    let extract_result = extract_with_selector(&cleaned_html, &config.selector, None);
+    // Adaptive selector repair (Tier 1 lexical): delegate to the canonical
+    // shared helper (#442). This TUI path passes no inspector and keeps its own
+    // binary/metrics handling instead of delegating to `scrape_with_config`.
+    #[cfg(feature = "adaptive-selectors")]
+    let extract_result = adaptive_selector_repair(
+        extract_result,
+        engine,
+        &config.selector,
+        url.host_str(),
+        None,
+    )
+    .await;
+
+    let extraction_html = extract_result.as_html().to_owned();
+
+    // Try Readability first, fallback to plain text extraction
+    match readability::parse(&extraction_html, Some(url.as_str())) {
+        Ok(article) => {
+            let assets = crate::application::asset_download::download_assets_if_enabled(
+                html,
+                url,
+                config,
+                asset_downloader,
+            )
+            .await?;
+
+            let author = crate::infrastructure::scraper::author_extractor::extract_author(
+                html,
+                article.byline.as_deref(),
+            );
+
+            Ok(ScrapedContent {
+                title: crate::application::resolve_title(&article.title, url),
+                content: article.text_content,
+                url: ValidUrl::new(url.clone()),
+                excerpt: article.excerpt,
+                author,
+                date: article.published_time,
+                // Store CLEAN HTML from Readability (not raw HTML with nav/ads/footer)
+                html: Some(article.content),
+                assets,
+                correlation_id: Some(CorrelationId::new()),
+            })
+        },
+        Err(e) => {
+            warn!("Readability failed for {}: {}", url, e);
+            let fallback_content = fallback::extract_text(&extraction_html);
+
+            // Check if fallback produced poor content (likely extraction failure)
+            const MIN_FALLBACK_CONTENT: usize = 100;
+            if fallback_content.len() < MIN_FALLBACK_CONTENT {
+                let msg = format!(
+                    "contenido pobre del fallback: {} bytes (mín {} bytes). Readability: {}",
+                    fallback_content.len(),
+                    MIN_FALLBACK_CONTENT,
+                    e
+                );
+                log_scrape_error(
+                    &msg,
+                    url.as_str(),
+                    "extract",
+                    None,
+                    "content extraction failed",
+                );
+                return Err(ScraperError::ExtractionFailed {
+                    url: url.to_string(),
+                    reason: msg,
+                });
+            }
+
+            let assets = crate::application::asset_download::download_assets_if_enabled(
+                html,
+                url,
+                config,
+                asset_downloader,
+            )
+            .await?;
+
+            Ok(ScrapedContent {
+                title: url
+                    .host_str()
+                    .ok_or_else(|| ScraperError::invalid_url(format!("URL missing host: {url}")))?
+                    .to_string(),
+                content: fallback_content,
+                url: ValidUrl::new(url.clone()),
+                excerpt: None,
+                author: None,
+                date: None,
+                html: Some(html.to_owned()),
+                assets,
+                correlation_id: Some(CorrelationId::new()),
+            })
+        },
+    }
 }
 
 #[cfg(test)]

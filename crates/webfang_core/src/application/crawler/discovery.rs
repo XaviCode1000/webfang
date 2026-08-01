@@ -1,36 +1,39 @@
-//! Discovery module — URL discovery and sitemap parsing
+//! Discovery module — URL discovery and single-URL scraping
 //!
-//! Functions for discovering URLs from websites via sitemaps or DOM scraping.
-//! Part of the TUI workflow: discover → select → scrape.
+//! Functions for discovering URLs from websites (DOM link extraction) and the
+//! TUI single-URL scraping use case. Part of the TUI workflow:
+//! discover → select → scrape. Sitemap crawling lives in `sitemap_discovery.rs`
+//! and sitemap XML parsing in the infrastructure layer (issue #442); both are
+//! re-exported here so existing import paths keep resolving.
 
-use anyhow::Result;
 use tracing::{debug, info, instrument, span, warn, Level};
 use url::Url;
 
 use crate::application::url_filter::is_allowed;
 use crate::domain::http_config::HttpClientConfig;
-use crate::domain::{
-    CorrelationId, CrawlError, CrawlerConfig, DiscoveredUrl, ScrapedContent, ValidUrl,
-};
+use crate::domain::{CorrelationId, CrawlerConfig, ScrapedContent, ValidUrl};
 use crate::error::{Result as ScraperResult, ScraperError};
 use crate::infrastructure::crawler::binary_utils::derive_filename_from_response;
-use crate::infrastructure::crawler::{
-    extract_links, is_internal_link, normalize_url, SitemapConfig, SitemapParser,
-};
+use crate::infrastructure::crawler::{extract_links, is_internal_link, normalize_url};
 use crate::infrastructure::downloader::{DownloadError, Downloader};
 use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
 use crate::infrastructure::observability::log_scrape_error;
-use crate::infrastructure::scraper::{fallback, readability};
 use crate::ScraperConfig;
 
 #[cfg(feature = "adaptive-selectors")]
 use crate::application::adaptive_engine::AdaptiveSelectorEngine;
-#[cfg(feature = "adaptive-selectors")]
-use crate::domain::ExtractResult;
 
 /// Placeholder when `adaptive-selectors` feature is disabled.
 #[cfg(not(feature = "adaptive-selectors"))]
 type AdaptiveSelectorEngine = ();
+
+// Sitemap discovery was extracted to `sitemap_discovery.rs` and sitemap XML
+// parsing moved to the infrastructure layer (#442). Both are re-exported here so
+// `discovery::crawl_with_sitemap` / `discovery::parse_sitemap` (and the `crawler`
+// facade that imports them from this module) keep resolving unchanged.
+pub use crate::application::crawler::sitemap_discovery::crawl_with_sitemap;
+pub use crate::application::extraction::extract_content;
+pub use crate::infrastructure::crawler::parse_sitemap;
 
 // ============================================================================
 // TUI Support — Discover/Scrape Use Cases
@@ -170,157 +173,6 @@ pub async fn discover_urls_for_tui(
     }
 }
 
-/// Pipeline de extracción de contenido: clean → selector → adaptive → readability/fallback.
-///
-/// Recibe HTML ya fetchado y validado (post-WAF). No conoce el transporte.
-///
-/// # Errors
-///
-/// Returns [`ScraperError::ExtractionFailed`] when fallback content is below
-/// `MIN_FALLBACK_CONTENT` bytes.
-pub async fn extract_content(
-    html: &str,
-    url: &Url,
-    config: &ScraperConfig,
-    asset_downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
-    #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
-) -> ScraperResult<ScrapedContent> {
-    // Clean HTML boilerplate (scripts, styles, nav, sidebar, footer) BEFORE
-    // Readability. This helps legible find the main content without being
-    // confused by navigation elements, JavaScript bundles, and CSS.
-    let cleaned_html = crate::infrastructure::converter::html_cleaner::clean_html(html);
-
-    // Apply CSS selector extraction if a non-default selector is configured.
-    let extract_result = crate::application::scraper_service::extract_with_selector(
-        &cleaned_html,
-        &config.selector,
-        None,
-    );
-
-    // Adaptive selector repair (Tier 1 lexical): when extraction falls back and
-    // an engine is wired in, try to find a repaired selector and re-extract.
-    // Mirrors the repair in `scrape_with_config`; this TUI path keeps its own
-    // binary/metrics handling instead of delegating to that function.
-    #[cfg(feature = "adaptive-selectors")]
-    let extract_result = if let ExtractResult::Fallback { html, diagnostic } = extract_result {
-        if let Some(engine) = engine {
-            match engine
-                .select_sync_aware(
-                    html.clone(),
-                    config.selector.clone(),
-                    url.host_str().map(|s| s.to_owned()),
-                )
-                .await
-            {
-                Ok(outcome) => {
-                    let repaired = crate::application::scraper_service::extract_with_selector(
-                        &html,
-                        &outcome.suggestion.selector,
-                        None,
-                    );
-                    if repaired.is_matched() {
-                        info!(
-                            repaired_selector = %outcome.suggestion.selector,
-                            method = ?outcome.status,
-                            "adaptive_repair_resolved"
-                        );
-                        repaired
-                    } else {
-                        ExtractResult::Fallback { html, diagnostic }
-                    }
-                },
-                Err(_) => ExtractResult::Fallback { html, diagnostic },
-            }
-        } else {
-            ExtractResult::Fallback { html, diagnostic }
-        }
-    } else {
-        extract_result
-    };
-
-    let extraction_html = extract_result.as_html().to_owned();
-
-    // Try Readability first, fallback to plain text extraction
-    match readability::parse(&extraction_html, Some(url.as_str())) {
-        Ok(article) => {
-            let assets = crate::application::scraper_service::download_assets_if_enabled(
-                html,
-                url,
-                config,
-                asset_downloader,
-            )
-            .await?;
-
-            let author = crate::infrastructure::scraper::author_extractor::extract_author(
-                html,
-                article.byline.as_deref(),
-            );
-
-            Ok(ScrapedContent {
-                title: crate::application::resolve_title(&article.title, url),
-                content: article.text_content,
-                url: ValidUrl::new(url.clone()),
-                excerpt: article.excerpt,
-                author,
-                date: article.published_time,
-                // Store CLEAN HTML from Readability (not raw HTML with nav/ads/footer)
-                html: Some(article.content),
-                assets,
-                correlation_id: Some(CorrelationId::new()),
-            })
-        },
-        Err(e) => {
-            warn!("Readability failed for {}: {}", url, e);
-            let fallback_content = fallback::extract_text(&extraction_html);
-
-            // Check if fallback produced poor content (likely extraction failure)
-            const MIN_FALLBACK_CONTENT: usize = 100;
-            if fallback_content.len() < MIN_FALLBACK_CONTENT {
-                let msg = format!(
-                    "contenido pobre del fallback: {} bytes (mín {} bytes). Readability: {}",
-                    fallback_content.len(),
-                    MIN_FALLBACK_CONTENT,
-                    e
-                );
-                log_scrape_error(
-                    &msg,
-                    url.as_str(),
-                    "extract",
-                    None,
-                    "content extraction failed",
-                );
-                return Err(ScraperError::ExtractionFailed {
-                    url: url.to_string(),
-                    reason: msg,
-                });
-            }
-
-            let assets = crate::application::scraper_service::download_assets_if_enabled(
-                html,
-                url,
-                config,
-                asset_downloader,
-            )
-            .await?;
-
-            Ok(ScrapedContent {
-                title: url
-                    .host_str()
-                    .ok_or_else(|| ScraperError::invalid_url(format!("URL missing host: {url}")))?
-                    .to_string(),
-                content: fallback_content,
-                url: ValidUrl::new(url.clone()),
-                excerpt: None,
-                author: None,
-                date: None,
-                html: Some(html.to_owned()),
-                assets,
-                correlation_id: Some(CorrelationId::new()),
-            })
-        },
-    }
-}
-
 /// Scrape a single URL
 ///
 /// Following **own-borrow-over-clone**: Accepts `&Url` not `&String`.
@@ -338,7 +190,7 @@ pub async fn extract_content(
 /// * `Err(ScraperError)` - Error during scraping
 #[instrument(
     name = "scrape_single_url",
-    skip(downloader, config, asset_downloader, engine),
+    skip(downloader, config, asset_downloader, engine, binary_writer),
     fields(url = %url)
 )]
 pub async fn scrape_single_url_for_tui(
@@ -347,6 +199,7 @@ pub async fn scrape_single_url_for_tui(
     config: &ScraperConfig,
     asset_downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
+    binary_writer: Option<&dyn crate::domain::ports::BinaryWriterPort>,
 ) -> ScraperResult<ScrapedContent> {
     let span = span!(Level::DEBUG, "scrape_single", url = %url);
     let _guard = span.enter();
@@ -387,31 +240,31 @@ pub async fn scrape_single_url_for_tui(
     if is_binary {
         debug!("Binary content type detected: {} for {}", content_type, url);
 
-        // Save binary file when download_documents is enabled
+        // Save binary file when download_documents is enabled. Filesystem I/O is
+        // routed through the injected BinaryWriterPort (or the FsBinaryWriter
+        // fallback) so the application layer never touches std::fs directly
+        // (#442 layer-violation fix). Observable behavior is unchanged: the same
+        // bytes land in the same file under `config.output_dir`.
         let saved_path = if config.download_documents {
             let header_map = headers_to_header_map(&page.headers);
             let filename = derive_filename_from_response(&header_map, url, &content_type);
             let output_path = config.output_dir.join(&filename);
 
             let bytes = page.html.as_bytes();
-            if let Err(e) = std::fs::create_dir_all(&config.output_dir) {
-                warn!(
-                    "Failed to create output directory {}: {}",
-                    config.output_dir.display(),
-                    e
-                );
-            } else if let Err(e) = std::fs::write(&output_path, bytes) {
-                warn!(
-                    "Failed to save binary file {}: {}",
-                    output_path.display(),
-                    e
-                );
-            } else {
-                info!(
+            let fallback_writer = crate::infrastructure::crawler::FsBinaryWriter::new();
+            let writer: &dyn crate::domain::ports::BinaryWriterPort =
+                binary_writer.unwrap_or(&fallback_writer);
+            match writer.write_bytes(&output_path, bytes) {
+                Ok(()) => info!(
                     "Saved binary file: {} ({} bytes)",
                     output_path.display(),
                     bytes.len()
-                );
+                ),
+                Err(e) => warn!(
+                    "Failed to save binary file {}: {}",
+                    output_path.display(),
+                    e
+                ),
             }
             Some(output_path)
         } else {
@@ -494,451 +347,6 @@ fn headers_to_header_map(
         }
     }
     map
-}
-
-// ============================================================================
-// Sitemap Discovery
-// ============================================================================
-
-/// Crawl site using sitemap (preferred method - FASE 3)
-///
-/// Following **err-anyhow-for-applications**: Uses anyhow::Result.
-/// Following **own-borrow-over-clone**: Accepts `&str` not `&String`.
-/// Following **api-builder-pattern**: Uses SitemapConfig builder.
-///
-/// # Arguments
-///
-/// * `base_url` - Base URL of the website
-/// * `sitemap_url` - Optional explicit sitemap URL (auto-discovers if None)
-/// * `config` - Crawler configuration
-///
-/// # Returns
-///
-/// * `Ok(Vec<DiscoveredUrl>)` - URLs discovered from sitemap
-/// * `Err(CrawlError)` - Error during sitemap fetch or parse
-///
-/// # Examples
-///
-/// ```no_run
-/// use webfang_core::application::crawl_with_sitemap;
-/// use webfang_core::domain::CrawlerConfig;
-/// use url::Url;
-///
-/// # #[tokio::main]
-/// # async fn main() -> anyhow::Result<()> {
-/// let seed = Url::parse("https://example.com")?;
-/// let config = CrawlerConfig::new(seed);
-///
-/// let urls = crawl_with_sitemap("https://example.com", None, &config).await?;
-/// println!("Found {} URLs from sitemap", urls.len());
-/// # Ok(())
-/// # }
-/// ```
-pub async fn crawl_with_sitemap(
-    base_url: &str,
-    sitemap_url: Option<&str>,
-    config: &CrawlerConfig,
-) -> Result<Vec<DiscoveredUrl>, CrawlError> {
-    let span = span!(Level::INFO, "crawl_with_sitemap", base_url = base_url);
-    let _guard = span.enter();
-
-    crawl_with_sitemap_internal(base_url, sitemap_url, config).await
-}
-
-/// Crawl with sitemap (internal version with progress tracking)
-///
-/// This is the internal implementation that supports optional progress tracking.
-/// The public `crawl_with_sitemap` function calls this one.
-///
-/// Following **own-borrow-over-clone**: Accepts `&str` not `&String`.
-/// Following **err-anyhow-for-applications**: Uses Result with anyhow.
-#[allow(unused_variables)]
-async fn crawl_with_sitemap_internal(
-    base_url: &str,
-    sitemap_url: Option<&str>,
-    config: &CrawlerConfig,
-) -> Result<Vec<DiscoveredUrl>, CrawlError> {
-    info!("Crawling with sitemap for {}", base_url);
-
-    // Build the discovery client through the shared factory so sitemap probes
-    // carry the same Chrome Client Hints, pooled user-agent, pool tuning, and
-    // gzip/brotli as the DOM path (#298). Timeouts replicate the #281 policy:
-    // request timeout as configured, connect timeout capped at 10s.
-    let http_config = HttpClientConfig {
-        timeout_secs: config.timeout_secs,
-        connect_timeout_secs: config.timeout_secs.min(10), // #281 policy
-        tls_emulation: config.tls_emulation,               // #312 honor configured profile
-        ..Default::default()
-    };
-    let discovery_client = super::super::create_http_client_with_config(&http_config)
-        .map_err(|e| CrawlError::Internal(format!("failed to build discovery client: {e}")))?;
-
-    // Use default batch size (10,000) - SitemapConfig handles pagination
-    // CrawlerConfig doesn't have batch_size, we use SitemapConfig for that
-    const DEFAULT_BATCH_SIZE: usize = 10_000;
-
-    // Auto-discover sitemap URL if not provided
-    let sitemap_url = match sitemap_url {
-        Some(url) if !url.is_empty() => {
-            tracing::info!("Sitemap URL provided: {}", url);
-            url.to_string()
-        },
-        _ => {
-            tracing::info!("Auto-discovering sitemap URL for {}", base_url);
-            match discover_sitemap_url(base_url, &discovery_client).await {
-                Ok(url) => {
-                    tracing::info!("Discovered sitemap URL: {}", url);
-                    url
-                },
-                Err(CrawlError::SitemapNotFound(url)) => {
-                    return Err(CrawlError::SitemapNotFound(url));
-                },
-                Err(e) => return Err(e),
-            }
-        },
-    };
-
-    tracing::info!("Using sitemap: {}", sitemap_url);
-
-    // Create sitemap parser with config (including pagination settings)
-    // Following api-builder-pattern: builder API
-    // #323: thread the configured TLS/H2 profile so sitemap XML fetches honor
-    // the user's --h2-profile selection instead of a hardcoded Chrome145.
-    let parser = SitemapParser::with_config_and_profile(
-        SitemapConfig::builder()
-            .gzip_enabled(true)
-            .max_depth(3)
-            .concurrency(5)
-            .batch_size(DEFAULT_BATCH_SIZE)
-            .pagination_enabled(true)
-            .build(),
-        config.tls_emulation,
-    )?;
-
-    // Parse sitemap
-    let urls = parser.parse_from_url(&sitemap_url).await.map_err(|e| {
-        tracing::error!("Failed to parse sitemap {}: {}", sitemap_url, e);
-        CrawlError::Parse(e.to_string())
-    })?;
-
-    let total_urls = urls.len();
-    tracing::info!("Parsed {} total URLs from sitemap", total_urls);
-
-    // Validate sitemap relevance: check if any URLs share a path prefix
-    // with the target URL. This handles cases where robots.txt points to
-    // an unrelated sitemap (e.g. blog sitemap for a docs site).
-    let base = Url::parse(base_url).map_err(|e| CrawlError::InvalidUrl(e.to_string()))?;
-    let target_path = base.path().to_string();
-    let relevant_urls: Vec<_> = urls
-        .into_iter()
-        .filter(|url| url.path().starts_with(&target_path))
-        .collect();
-
-    // If no relevant URLs found, try sub-path sitemaps as fallback
-    if relevant_urls.is_empty() {
-        tracing::warn!(
-            "sitemap {} no tiene URLs que coincidan con la ruta objetivo {}, intentando sitemaps de subruta",
-            sitemap_url,
-            target_path
-        );
-        return crawl_with_subpath_sitemaps(
-            base_url,
-            &base,
-            &parser,
-            3,
-            0,
-            config.max_depth,
-            &discovery_client,
-        )
-        .await;
-    }
-
-    // Following own-borrow-over-clone: use Url directly, not String
-    // Apply include/exclude patterns from config (Fix: sitemap URLs were bypassing filters).
-    //
-    // Depth assignment: the seed itself is depth 0; every other sitemap URL is one
-    // hop from the seed, hence depth 1. Filtering by `depth <= max_depth` enforces
-    // the CLI contract "0 = only seed URL" here, because the CLI scrape flow scrapes
-    // whatever discovery returns verbatim — there is no later depth gate (the Engine's
-    // `run_crawl_task` check is a separate, non-CLI code path).
-    let max_depth = config.max_depth;
-    let discovered: Vec<DiscoveredUrl> = relevant_urls
-        .into_iter()
-        .filter(|url| is_allowed(url.as_str(), config))
-        .filter_map(|url| {
-            let depth = if url == base { 0 } else { 1 };
-            (depth <= max_depth).then(|| DiscoveredUrl::html(url, depth, base.clone()))
-        })
-        .collect();
-
-    Ok(discovered)
-}
-
-/// Try sub-path sitemaps when the discovered sitemap has no relevant URLs
-///
-/// For nested sites like `https://example.com/docs/en/`, this tries
-/// `/docs/sitemap.xml`, `/docs/en/sitemap.xml`, etc.
-/// Follows nested sitemaps recursively up to `sitemap_max_depth` levels.
-///
-/// `crawl_max_depth` is the crawl's configured max depth (CLI `--max-depth`),
-/// distinct from the sitemap-index recursion depth above. Sub-path sitemap URLs
-/// are one hop from the seed (depth 1), so when `crawl_max_depth` is 0 ("only
-/// the seed URL") none of them qualify and an empty list is returned — mirroring
-/// the `depth <= max_depth` gate in `crawl_with_sitemap_internal`.
-///
-/// Following **own-borrow-over-clone**: Accepts `&Url` not `&String`.
-/// Following **err-no-unwrap-prod**: Proper error handling throughout.
-async fn crawl_with_subpath_sitemaps(
-    base_url: &str,
-    base: &Url,
-    parser: &SitemapParser,
-    sitemap_max_depth: usize,
-    sitemap_current_depth: usize,
-    crawl_max_depth: u8,
-    client: &wreq::Client,
-) -> Result<Vec<DiscoveredUrl>, CrawlError> {
-    if sitemap_current_depth >= sitemap_max_depth {
-        tracing::warn!(
-            "sitemap recursion depth {} reached max {}, stopping",
-            sitemap_current_depth,
-            sitemap_max_depth
-        );
-        return Ok(Vec::new());
-    }
-
-    // Sub-path sitemap URLs are depth 1; with a crawl max_depth of 0 none pass
-    // the gate, so short-circuit before probing the network.
-    if crawl_max_depth == 0 {
-        tracing::info!(
-            "crawl max_depth is 0, skipping sub-path sitemap URLs for {}",
-            base_url
-        );
-        return Ok(Vec::new());
-    }
-
-    let path = base.path();
-    let segments: Vec<_> = path.split('/').filter(|s| !s.is_empty()).collect();
-    let mut all_urls = Vec::new();
-
-    // Try up to 3 path levels: /docs, /docs/en, /docs/en/quickstart
-    for i in 1..=segments.len().min(3) {
-        let sub_path = segments[..i].join("/");
-        for sitemap_name in &["sitemap.xml", "sitemap_index.xml"] {
-            let candidate = format!("/{sub_path}/{sitemap_name}");
-            if let Ok(sitemap_url) = base.join(&candidate) {
-                let sitemap_str = sitemap_url.as_str();
-                tracing::debug!("Trying sub-path sitemap: {}", sitemap_str);
-                if let Ok(response) = client.head(sitemap_str).send().await {
-                    if response.status().is_success() {
-                        tracing::info!("Found sub-path sitemap: {}", sitemap_str);
-                        if let Ok(urls) = parser.parse_from_url(sitemap_str).await {
-                            tracing::info!(
-                                "Parsed {} URLs from sub-path sitemap {}",
-                                urls.len(),
-                                sitemap_str
-                            );
-                            all_urls.extend(urls);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if all_urls.is_empty() {
-        tracing::warn!("no se encontraron sitemaps de subruta para {}", base_url);
-        Ok(Vec::new())
-    } else {
-        // Sub-path sitemap URLs are at depth 1 (one hop from seed)
-        Ok(all_urls
-            .into_iter()
-            .map(|url| DiscoveredUrl::html(url, 1, base.clone()))
-            .collect())
-    }
-}
-
-/// Auto-discover sitemap URL from robots.txt or fallback
-///
-/// Following **own-borrow-over-clone**: Accepts `&str`.
-/// Following **security-no-unwrap-in-prod**: Proper error handling.
-///
-/// # Arguments
-///
-/// * `base_url` - Base URL of the website
-///
-/// # Returns
-///
-/// * `Ok(String)` - Discovered sitemap URL
-/// * `Err(CrawlError)` - Error during discovery
-async fn discover_sitemap_url(base_url: &str, client: &wreq::Client) -> Result<String, CrawlError> {
-    let base = Url::parse(base_url).map_err(|e| CrawlError::InvalidUrl(e.to_string()))?;
-
-    // Try robots.txt first
-    let robots_url = base
-        .join("/robots.txt")
-        .map_err(|e| CrawlError::InvalidUrl(e.to_string()))?;
-
-    tracing::info!("Checking robots.txt: {}", robots_url);
-    if let Ok(response) = client.get(robots_url.as_str()).send().await {
-        tracing::info!("robots.txt status: {}", response.status());
-        if response.status().is_success() {
-            if let Ok(content) = response.text().await {
-                tracing::info!(
-                    "robots.txt content (first 500 chars):\n{}",
-                    &content[..content.len().min(500)]
-                );
-                // Extract Sitemap: directive
-                for line in content.lines() {
-                    if line.to_lowercase().starts_with("sitemap:") {
-                        if let Some(sitemap) = line
-                            .strip_prefix("Sitemap:")
-                            .or_else(|| line.strip_prefix("sitemap:"))
-                        {
-                            let sitemap = sitemap.trim();
-                            // Resolve relative URLs from robots.txt against base
-                            let resolved = if sitemap.starts_with("http://")
-                                || sitemap.starts_with("https://")
-                            {
-                                Url::parse(sitemap).ok()
-                            } else {
-                                base.join(sitemap).ok()
-                            };
-                            if let Some(url) = resolved {
-                                tracing::debug!("Found sitemap in robots.txt: {}", url);
-                                return Ok(url.to_string());
-                            } else {
-                                tracing::warn!("Invalid sitemap URL in robots.txt: {}", sitemap);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    tracing::debug!("No sitemap found in robots.txt, trying fallback locations");
-
-    // Fallback: try common sitemap locations
-    let fallback_urls = [
-        "/sitemap.xml",
-        "/sitemap_index.xml",
-        "/sitemap.xml.gz",
-        "/sitemap/sitemap.xml",
-    ];
-
-    for path in &fallback_urls {
-        let sitemap_url = base
-            .join(path)
-            .map_err(|e| CrawlError::InvalidUrl(e.to_string()))?;
-        let sitemap_str = sitemap_url.as_str();
-
-        // Quick HEAD request to check if exists
-        tracing::info!("Trying fallback sitemap: {}", sitemap_str);
-        if let Ok(response) = client.head(sitemap_str).send().await {
-            tracing::info!("  Status: {}", response.status());
-            if response.status().is_success() {
-                tracing::debug!("Found sitemap at fallback location: {}", sitemap_str);
-                return Ok(sitemap_str.to_string());
-            }
-        }
-    }
-
-    // GAP 5 (Bug #30): Try sub-path sitemaps for nested sites
-    // e.g. https://example.com/docs/en/ → /docs/sitemap.xml, /docs/en/sitemap.xml
-    let path = base.path();
-    let segments: Vec<_> = path.split('/').filter(|s| !s.is_empty()).collect();
-    for i in 1..=segments.len().min(3) {
-        let sub_path = segments[..i].join("/");
-        for sitemap_name in &["sitemap.xml", "sitemap_index.xml"] {
-            let candidate = format!("/{sub_path}/{sitemap_name}");
-            if let Ok(sitemap_url) = base.join(&candidate) {
-                let sitemap_str = sitemap_url.as_str();
-                tracing::debug!("Trying sub-path sitemap: {}", sitemap_str);
-                if let Ok(response) = client.head(sitemap_str).send().await {
-                    if response.status().is_success() {
-                        tracing::info!("Found sitemap at sub-path: {}", sitemap_str);
-                        return Ok(sitemap_str.to_string());
-                    }
-                }
-            }
-        }
-    }
-    // No sitemap found - return error instead of guessing
-    tracing::warn!("no sitemap found for {}", base_url);
-    Err(CrawlError::SitemapNotFound(base_url.to_string()))
-}
-
-/// Parse sitemap XML content using quick-xml (streaming parser)
-///
-/// Following **xml-no-regex**: Uses quick-xml instead of regex for XML parsing.
-/// Following **mem-stream-processing**: Streaming approach avoids loading entire DOM.
-///
-/// # Arguments
-///
-/// * `xml_content` - XML content of the sitemap
-///
-/// # Returns
-///
-/// * `Ok(Vec<String>)` - List of URLs
-/// * `Err(CrawlError)` - Parse error
-pub fn parse_sitemap(xml_content: &str, base_url: &Url) -> Result<Vec<String>, CrawlError> {
-    use quick_xml::events::Event;
-    use quick_xml::Reader;
-
-    let mut reader = Reader::from_str(xml_content);
-    let mut buf = Vec::new();
-    let mut urls = Vec::new();
-    let mut in_loc = false;
-
-    loop {
-        buf.clear();
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e) | Event::Empty(ref e)) if e.name().as_ref() == b"loc" => {
-                in_loc = true;
-            },
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"loc" => {
-                in_loc = false;
-            },
-            Ok(Event::Text(ref e)) if in_loc => {
-                let text = e.decode().map_err(|e| CrawlError::Parse(e.to_string()))?;
-                let url_str = text.trim();
-                if !url_str.is_empty() {
-                    // Resolve relative URLs against base_url
-                    // Following url-join-relative: use base_url.join() for relative paths
-                    let resolved =
-                        if url_str.starts_with("http://") || url_str.starts_with("https://") {
-                            Url::parse(url_str).ok()
-                        } else {
-                            base_url.join(url_str).ok()
-                        };
-                    if let Some(url) = resolved {
-                        urls.push(url.to_string());
-                    }
-                }
-            },
-            Ok(Event::CData(ref e)) if in_loc => {
-                // Handle CDATA sections - BytesCData derefs to [u8]
-                let url_str = String::from_utf8_lossy(e).trim().to_string();
-                if !url_str.is_empty() {
-                    // Resolve relative URLs against base_url
-                    let resolved =
-                        if url_str.starts_with("http://") || url_str.starts_with("https://") {
-                            Url::parse(&url_str).ok()
-                        } else {
-                            base_url.join(&url_str).ok()
-                        };
-                    if let Some(url) = resolved {
-                        urls.push(url.to_string());
-                    }
-                }
-            },
-            Ok(Event::Eof) => break,
-            Err(e) => return Err(CrawlError::Parse(e.to_string())),
-            _ => {},
-        }
-    }
-
-    Ok(urls)
 }
 
 #[cfg(test)]
@@ -1188,7 +596,7 @@ mod tests {
         let url = Url::parse("https://example.com/doc.pdf").expect("valid URL");
         let config = ScraperConfig::new();
 
-        let result = scrape_single_url_for_tui(&dl, &url, &config, None, None)
+        let result = scrape_single_url_for_tui(&dl, &url, &config, None, None, None)
             .await
             .expect("binary detection should succeed");
 
@@ -1208,7 +616,7 @@ mod tests {
         let url = Url::parse("https://example.com").expect("valid URL");
         let config = ScraperConfig::new();
 
-        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None)
+        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None, None)
             .await
             .expect_err("WAF body should trigger WafBlocked");
 
@@ -1233,7 +641,7 @@ work with when computing the document readability score.</p>
         let url = Url::parse("https://example.com/article").expect("valid URL");
         let config = ScraperConfig::new();
 
-        let result = scrape_single_url_for_tui(&dl, &url, &config, None, None)
+        let result = scrape_single_url_for_tui(&dl, &url, &config, None, None, None)
             .await
             .expect("normal HTML should scrape successfully");
 
@@ -1254,7 +662,7 @@ work with when computing the document readability score.</p>
         let url = Url::parse("https://example.com").expect("valid URL");
         let config = ScraperConfig::new();
 
-        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None)
+        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None, None)
             .await
             .expect_err("WafChallenge download error should propagate");
 
@@ -1274,7 +682,7 @@ work with when computing the document readability score.</p>
         let url = Url::parse("https://example.com/missing").expect("valid URL");
         let config = ScraperConfig::new();
 
-        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None)
+        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None, None)
             .await
             .expect_err("404 status should produce an error");
 
