@@ -5,7 +5,9 @@
 //! Tool functions are always registered. `semantic_cleaner` runs when a
 //! semantic cleaner is injected into the `Container` (constructed behind the
 //! `ai` feature); without one it returns an honest feature-gated error.
-//! `search_obsidian` is not yet implemented (honest error, see issue #386).
+//! `search_obsidian` requires `embedding_port`, `note_repository`, and
+//! `text_chunker` to be injected (#386); without them it returns an honest
+//! feature-gated error.
 
 use super::McpHandler;
 use crate::mcp_server::params::*;
@@ -15,6 +17,7 @@ use rmcp::tool;
 use rmcp::tool_router;
 use rmcp::{model::CallToolResult, model::Content, ErrorData as McpError};
 use tracing::instrument;
+use webfang_core::application::vault_search::{VaultSearchResult, VaultSearchService};
 use webfang_core::domain::DocumentChunk;
 
 /// Build an honest tool error (`isError:true`) carrying a Spanish message.
@@ -41,6 +44,17 @@ struct SemanticCleanResponse {
     embedding_dim: usize,
     /// The cleaned chunks, each with its embedding populated.
     documents: Vec<DocumentChunk>,
+}
+
+/// Success envelope for `search_obsidian` (#386).
+#[derive(serde::Serialize)]
+struct VaultSearchResponse {
+    /// The search query.
+    query: String,
+    /// Number of results returned.
+    results: usize,
+    /// The matching note chunks, sorted by descending relevance.
+    documents: Vec<VaultSearchResult>,
 }
 
 #[tool_router(router = tool_router_ai, vis = "pub")]
@@ -110,6 +124,11 @@ impl McpHandler {
     }
 
     /// Semantic search over Obsidian vault using embeddings
+    ///
+    /// Searches indexed vault notes by embedding the query and ranking
+    /// against pre-computed chunk embeddings via cosine similarity.
+    /// Requires `embedding_port`, `note_repository`, and `text_chunker`
+    /// to be injected into the Container (#386).
     #[tool(
         description = "Semantic search over Obsidian vault using ONNX Runtime embeddings. Returns top matching notes by cosine similarity. Requires --features ai."
     )]
@@ -120,12 +139,42 @@ impl McpHandler {
     ) -> Result<CallToolResult, McpError> {
         let _permit = acquire_semaphore!(self, obsidian);
 
-        // Deferred capability (follow-up issue #386): semantic vault search
-        // needs an embed/rank surface beyond the `SemanticCleaner` trait.
-        // Report an honest error — never a false success (REQ-04).
-        Ok(honest_error(
-            "funcionalidad no disponible: la búsqueda semántica en Obsidian aún no está implementada. Seguimiento en el issue #386.",
-        ))
+        // Check all three required ports are available.
+        let Some(embedding) = self.state.container.embedding_port() else {
+            return Ok(honest_error(
+                "funcionalidad no disponible: búsqueda semántica en Obsidian. Reconstruye con --features ai para habilitarla.",
+            ));
+        };
+        let Some(repo) = self.state.container.note_repository() else {
+            return Ok(honest_error(
+                "funcionalidad no disponible: no hay repositorio de notas configurado. Verifica la configuración de persistencia.",
+            ));
+        };
+        let Some(chunker) = self.state.container.text_chunker() else {
+            return Ok(honest_error(
+                "funcionalidad no disponible: no hay chunker de texto configurado. Reconstruye con --features ai.",
+            ));
+        };
+
+        let service = VaultSearchService::new(embedding, repo, chunker);
+        let limit = params.limit.unwrap_or(10);
+
+        match service.search(&params.query, limit).await {
+            Ok(results) => {
+                let envelope = VaultSearchResponse {
+                    query: params.query.clone(),
+                    results: results.len(),
+                    documents: results,
+                };
+                match serde_json::to_string(&envelope) {
+                    Ok(json) => Ok(CallToolResult::success(vec![Content::text(json)])),
+                    Err(e) => Ok(honest_error(format!(
+                        "error al serializar la respuesta: {e}"
+                    ))),
+                }
+            },
+            Err(e) => Ok(honest_error(format!("error en la búsqueda semántica: {e}"))),
+        }
     }
 }
 

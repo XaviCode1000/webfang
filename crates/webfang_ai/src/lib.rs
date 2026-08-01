@@ -21,6 +21,6 @@ pub use webfang_core::error::SemanticError;
 #[cfg(feature = "ai")]
 pub use infrastructure_ai::{
     AiModel, ChunkId, ContentPruner, HtmlChunker, InferencePool, LegibleContentPruner,
-    MiniLmTokenizer, ModelConfig, RelevanceScorer, SemanticCleanerImpl, SentenceSplitter,
-    ThresholdConfig, TokenBatch,
+    MarkdownChunker, MiniLmTokenizer, ModelConfig, RelevanceScorer, SemanticCleanerImpl,
+    SentenceSplitter, ThresholdConfig, TokenBatch,
 };

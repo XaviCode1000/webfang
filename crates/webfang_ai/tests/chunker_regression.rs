@@ -51,7 +51,7 @@ fn empty_tags_no_empty_paragraphs() {
 #[test]
 fn whitespace_not_normalized() {
     // Chunker does NOT normalize whitespace — it preserves original spacing
-    let chunker = HtmlChunker::with_config(10, 500, 0.5);
+    let chunker = HtmlChunker::with_config(10, 500);
     let html = "<p>Hello   World</p>";
     let chunks = chunker.chunk(html).expect("chunking must succeed");
     if let Some(chunk) = chunks.first() {
@@ -65,7 +65,7 @@ fn whitespace_not_normalized() {
 
 #[test]
 fn chunk_text_adds_metadata() {
-    let chunker = HtmlChunker::with_config(10, 500, 0.5);
+    let chunker = HtmlChunker::with_config(10, 500);
     let text =
         "This is a test paragraph with enough text to be chunked properly for AI processing.";
     let chunks = chunker
@@ -79,7 +79,7 @@ fn chunk_text_adds_metadata() {
 
 #[test]
 fn large_html_respects_max_chunk_size() {
-    let chunker = HtmlChunker::with_config(50, 200, 0.5);
+    let chunker = HtmlChunker::with_config(50, 200);
     let paragraphs: Vec<String> = (0..10)
         .map(|i| {
             format!(
@@ -109,7 +109,7 @@ fn empty_html_returns_empty() {
 
 #[test]
 fn plain_text_without_tags() {
-    let chunker = HtmlChunker::with_config(10, 500, 0.5);
+    let chunker = HtmlChunker::with_config(10, 500);
     let text = "Just plain text without any HTML tags at all, should still work.";
     let chunks = chunker.chunk(text).expect("chunking must succeed");
     // Plain text should be processed (tags stripped is identity)

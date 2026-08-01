@@ -43,8 +43,11 @@ pub mod url_validator;
 pub mod value_objects;
 
 pub mod content_processor;
+pub mod embedding_port;
+pub mod note_repository;
 pub mod semantic_cleaner;
 pub mod semantic_inspector;
+pub mod text_chunker;
 
 // Re-exports for backward compatibility (crate::domain::X)
 pub use clock::{Clock, MockClock, MockUtcClock, SystemClock, SystemUtcClock, UtcClock};
@@ -56,9 +59,12 @@ pub use dom_inspector::{
     DomInspectorPort, DomStructureReport, ExtractResult, RepairFailureDiagnostic,
     SelectorDiagnostic, SelectorErrorKind, SelectorSuggestion,
 };
+pub use embedding_port::EmbeddingPort;
+pub use note_repository::{IndexedNoteMeta, NoteChunkVector, NoteRepository};
 pub use semantic_inspector::{
     BoxFuture, SemanticContext, SemanticInspectorPort, SemanticMatch, TierSource,
 };
+pub use text_chunker::TextChunker;
 
 pub use entities::{
     DocumentChunk, DocumentChunkExported, DocumentChunkUnvalidated, DocumentChunkValidated,

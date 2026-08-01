@@ -24,9 +24,12 @@ use crate::application::elastic_ingestion::ElasticIngestion;
 use crate::application::http_client::{HttpClient, HttpClientConfig};
 use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::domain::credentials::CredentialStore;
+use crate::domain::embedding_port::EmbeddingPort;
+use crate::domain::note_repository::NoteRepository;
 use crate::domain::ports::HttpClientPort;
 use crate::domain::repository::DynVectorRepository;
 use crate::domain::semantic_cleaner::SemanticCleaner;
+use crate::domain::text_chunker::TextChunker;
 use crate::domain::{repositories::CrawlResultRepository, CrawlerConfig};
 use crate::infrastructure::autotuning::ElasticConfig;
 use crate::infrastructure::bridge::CpuBridge;
@@ -85,6 +88,18 @@ pub struct Container {
     /// Stored as `Arc<dyn SemanticCleaner>` — the trait is a domain port like
     /// `HttpClientPort`, always compiled (no `#[cfg(feature = "ai")]`).
     cleaner: Option<Arc<dyn SemanticCleaner>>,
+
+    /// Embedding port for text vectorization (#386). `None` when the `ai`
+    /// feature is off. Always compiled — the trait is a domain port.
+    embedding_port: Option<Arc<dyn EmbeddingPort>>,
+
+    /// Note repository for vault search persistence (#386). `None` when
+    /// vault search is not configured.
+    note_repository: Option<Arc<dyn NoteRepository>>,
+
+    /// Text chunker for Markdown segmentation (#386). `None` when the `ai`
+    /// feature is off. Always compiled — the trait is a domain port.
+    text_chunker: Option<Arc<dyn TextChunker>>,
 }
 
 impl Container {
@@ -150,6 +165,9 @@ impl Container {
             crawl_result_repo,
             elastic_ingestion: None,
             cleaner: None,
+            embedding_port: None,
+            note_repository: None,
+            text_chunker: None,
         })
     }
 
@@ -200,6 +218,24 @@ impl Container {
         self.cleaner.clone()
     }
 
+    /// Get the embedding port, if one was injected (#386).
+    ///
+    /// Clones the `Arc` (cheap) so callers can hold the port across an
+    /// `.await` without borrowing the container.
+    pub fn embedding_port(&self) -> Option<Arc<dyn EmbeddingPort>> {
+        self.embedding_port.clone()
+    }
+
+    /// Get the note repository, if one was injected (#386).
+    pub fn note_repository(&self) -> Option<Arc<dyn NoteRepository>> {
+        self.note_repository.clone()
+    }
+
+    /// Get the text chunker, if one was injected (#386).
+    pub fn text_chunker(&self) -> Option<Arc<dyn TextChunker>> {
+        self.text_chunker.clone()
+    }
+
     /// Access the elastic ingestion pipeline, if activated.
     #[must_use]
     pub fn elastic_ingestion(&self) -> Option<&ElasticIngestion<DynVectorRepository>> {
@@ -235,6 +271,27 @@ impl Container {
     /// `McpState::with_inspector` precedent. Absence (`None`) stays the default.
     pub fn with_cleaner(mut self, cleaner: Arc<dyn SemanticCleaner>) -> Self {
         self.cleaner = Some(cleaner);
+        self
+    }
+
+    /// Inject an embedding port for text vectorization (#386).
+    ///
+    /// Takes `Arc<dyn EmbeddingPort>` — the concrete `InferencePool` wrapper
+    /// is constructed in the CLI/MCP layer and injected here.
+    pub fn with_embedding_port(mut self, port: Arc<dyn EmbeddingPort>) -> Self {
+        self.embedding_port = Some(port);
+        self
+    }
+
+    /// Inject a note repository for vault search persistence (#386).
+    pub fn with_note_repository(mut self, repo: Arc<dyn NoteRepository>) -> Self {
+        self.note_repository = Some(repo);
+        self
+    }
+
+    /// Inject a text chunker for Markdown segmentation (#386).
+    pub fn with_text_chunker(mut self, chunker: Arc<dyn TextChunker>) -> Self {
+        self.text_chunker = Some(chunker);
         self
     }
 

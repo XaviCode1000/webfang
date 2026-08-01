@@ -26,6 +26,7 @@ pub mod spa_detection;
 /// Resolve extracted page titles to guaranteed non-empty strings.
 pub mod title_resolver;
 pub mod url_filter;
+pub mod vault_search;
 
 #[cfg(feature = "adaptive-selectors")]
 pub mod adaptive_engine;
