@@ -33,6 +33,9 @@ pub enum SelectorErrorKind {
     EmptyDocument,
     /// Both Tier 1 and Tier 2 repair failed — diagnostic details enclosed.
     RepairInconclusive(Box<RepairFailureDiagnostic>),
+    /// A blocking task (DOM parse / structural hash / suggestion) panicked or
+    /// was cancelled while running on the blocking thread pool.
+    BlockingTaskFailed(String),
 }
 
 /// A closest-match selector suggestion computed via Jaro-Winkler similarity.

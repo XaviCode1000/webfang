@@ -17,6 +17,10 @@ use crate::domain::dom_inspector::{
 };
 use crate::domain::semantic_inspector::{SemanticContext, SemanticInspectorPort};
 
+mod cache;
+
+use cache::{CachedEntry, FnvHasher};
+
 /// Whether the repair succeeded and how.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RepairStatus {
@@ -100,12 +104,6 @@ impl Default for AdaptiveSelectorOptions {
     }
 }
 
-/// Cached repair entry with expiration.
-struct CachedEntry {
-    outcome: AdaptiveRepairOutcome,
-    expires_at: Instant,
-}
-
 /// 2-tier adaptive CSS selector repair engine.
 ///
 /// Combines lexical (Tier 1) and semantic (Tier 2) selector suggestions
@@ -178,22 +176,11 @@ impl AdaptiveSelectorEngine {
             hasher.finish()
         })
         .await
-        .expect("Tier 1 hash computation panicked");
+        .map_err(|e| {
+            SelectorErrorKind::BlockingTaskFailed(format!("tier1 structural hash task failed: {e}"))
+        })?;
 
-        // 2. Check cache
-        let cache_key = self.cache_key(&selector, structural_hash);
-        if let Some(entry) = self.cache.get(&cache_key) {
-            if entry.expires_at > Instant::now() {
-                let mut outcome = entry.outcome.clone();
-                if let Some(ref mut trace) = outcome.trace {
-                    trace.cache_hit = true;
-                }
-                debug!(cache_hit = true, "returning cached repair outcome");
-                return Ok(outcome);
-            }
-        }
-
-        // 3. Tier 1: lexical via spawn_blocking (HTML parsing is !Sync)
+        // 2. Tier 1: lexical via spawn_blocking (HTML parsing is !Sync)
         let inspector = Arc::clone(&self.inspector);
         let html_for_t1 = html_raw.clone();
 
@@ -202,7 +189,9 @@ impl AdaptiveSelectorEngine {
             inspector.suggest(&document, &selector_clone)
         })
         .await
-        .expect("Tier 1 suggestion panicked");
+        .map_err(|e| {
+            SelectorErrorKind::BlockingTaskFailed(format!("tier1 suggestion task failed: {e}"))
+        })?;
 
         let best_tier1 = t1_suggestions.into_iter().max_by(|a, b| {
             a.score
@@ -211,57 +200,8 @@ impl AdaptiveSelectorEngine {
         });
 
         let tier1_score = best_tier1.as_ref().map(|s| s.score).unwrap_or(0.0);
-        debug!(score = tier1_score, "tier1_evaluated");
 
-        // 4. Fast path: high confidence → return immediately
-        if tier1_score > self.options.lexical_threshold {
-            if let Some(best) = best_tier1 {
-                let trace = CascadeTrace {
-                    tier1_score,
-                    tier2_score: None,
-                    tier2_latency_ms: 0,
-                    cache_hit: false,
-                };
-                let outcome = AdaptiveRepairOutcome::repaired(best, trace);
-                self.cache_insert(cache_key, outcome.clone());
-                info!(new_selector = %outcome.suggestion.selector, method = "tier1_lexical", "repair_resolved");
-                return Ok(outcome);
-            }
-        }
-
-        // 5. Tier 2: semantic (if available)
-        let semantic = match &self.semantic {
-            Some(s) => s,
-            None => {
-                return self
-                    .handle_tier1_only(best_tier1, tier1_score, structural_hash, cache_key)
-                    .await;
-            },
-        };
-
-        // Check Tier 2 availability — skip if inference pool is saturated
-        let _permit = match tokio::time::timeout(
-            Duration::from_millis(100),
-            self.inference_semaphore.acquire(),
-        )
-        .await
-        {
-            Ok(Ok(permit)) => permit,
-            Ok(Err(_)) => {
-                warn!("inference semaphore closed, skipping tier2");
-                return self
-                    .handle_tier1_only(best_tier1, tier1_score, structural_hash, cache_key)
-                    .await;
-            },
-            Err(_) => {
-                warn!("tier2 inference pool saturated (semaphore timeout), skipping tier2");
-                return self
-                    .handle_tier1_only(best_tier1, tier1_score, structural_hash, cache_key)
-                    .await;
-            },
-        };
-
-        // 6. Extract DOM fragments via spawn_blocking (HTML parsing is !Sync)
+        // 3. Extract DOM fragments via spawn_blocking (HTML parsing is !Sync)
         let inspector = Arc::clone(&self.inspector);
         let html_for_fragments = html_raw.clone();
 
@@ -276,65 +216,20 @@ impl AdaptiveSelectorEngine {
                 .collect::<Vec<_>>()
         })
         .await
-        .expect("DOM fragment extraction panicked");
+        .map_err(|e| {
+            SelectorErrorKind::BlockingTaskFailed(format!(
+                "dom fragment extraction task failed: {e}"
+            ))
+        })?;
 
-        // 7. Build semantic context and run Tier 2
+        // 4. Run the shared cascade
         let ctx = SemanticContext {
             target_text: html_raw,
             dom_fragments,
             domain_hint: domain,
         };
-
-        let tier2_start = Instant::now();
-        let tier2_result = semantic.find_semantic_match(ctx).await;
-        let tier2_latency_ms = tier2_start.elapsed().as_millis() as u64;
-
-        match tier2_result {
-            Ok(Some(sem_match)) => {
-                debug!(confidence = sem_match.confidence, "tier2_escalated");
-
-                let trace = CascadeTrace {
-                    tier1_score,
-                    tier2_score: Some(sem_match.confidence),
-                    tier2_latency_ms,
-                    cache_hit: false,
-                };
-
-                let suggestion = SelectorSuggestion {
-                    selector: sem_match.selector,
-                    score: sem_match.confidence as f64,
-                };
-
-                let status = if sem_match.confidence >= self.options.semantic_threshold {
-                    RepairStatus::Repaired
-                } else {
-                    RepairStatus::Degraded
-                };
-
-                let outcome = AdaptiveRepairOutcome {
-                    suggestion,
-                    status,
-                    trace: Some(trace),
-                };
-                self.cache_insert(cache_key, outcome.clone());
-                info!(
-                    new_selector = %outcome.suggestion.selector,
-                    final_score = sem_match.confidence,
-                    method = "tier2_semantic",
-                    "repair_resolved"
-                );
-                Ok(outcome)
-            },
-            Ok(None) => {
-                self.handle_tier1_only(best_tier1, tier1_score, structural_hash, cache_key)
-                    .await
-            },
-            Err(e) => {
-                warn!(error = ?e, "tier2 inference failed");
-                self.handle_tier1_only(best_tier1, tier1_score, structural_hash, cache_key)
-                    .await
-            },
-        }
+        self.cascade(&selector, structural_hash, best_tier1, tier1_score, ctx)
+            .await
     }
 
     /// Compute a structural hash from DOM tag counts for cache keying.
@@ -373,11 +268,9 @@ impl AdaptiveSelectorEngine {
 
         // Check cache first
         let cache_key = self.cache_key(failed_selector, structural_hash);
-        if let Some(entry) = self.cache.get(&cache_key) {
-            if entry.expires_at > Instant::now() {
-                debug!(cache_hit = true, "returning cached repair outcome");
-                return Some(entry.outcome.clone());
-            }
+        if let Some(outcome) = self.cache_get(cache_key) {
+            debug!(cache_hit = true, "returning cached repair outcome");
+            return Some(outcome);
         }
 
         let suggestions = self.inspector.suggest(document, failed_selector);
@@ -416,6 +309,10 @@ impl AdaptiveSelectorEngine {
 
     /// Full async repair cascade: Tier 1 + optional Tier 2.
     ///
+    /// Thin wrapper over the private `cascade` method: computes the structural
+    /// hash, the Tier 1 suggestions, and the DOM fragments synchronously from
+    /// the already-parsed `document`, then delegates the shared cascade.
+    ///
     /// # Errors
     ///
     /// Returns `SelectorErrorKind::RepairInconclusive` if both tiers fail.
@@ -429,19 +326,6 @@ impl AdaptiveSelectorEngine {
     ) -> Result<AdaptiveRepairOutcome, SelectorErrorKind> {
         let structural_hash = self.structural_hash(document);
 
-        // Check cache
-        let cache_key = self.cache_key(failed_selector, structural_hash);
-        if let Some(entry) = self.cache.get(&cache_key) {
-            if entry.expires_at > Instant::now() {
-                let mut outcome = entry.outcome.clone();
-                if let Some(ref mut trace) = outcome.trace {
-                    trace.cache_hit = true;
-                }
-                debug!(cache_hit = true, "returning cached repair outcome");
-                return Ok(outcome);
-            }
-        }
-
         // Tier 1: lexical
         let suggestions = self.inspector.suggest(document, failed_selector);
         let best_tier1 = suggestions.into_iter().max_by(|a, b| {
@@ -449,8 +333,54 @@ impl AdaptiveSelectorEngine {
                 .partial_cmp(&b.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-
         let tier1_score = best_tier1.as_ref().map(|s| s.score).unwrap_or(0.0);
+
+        let dom_fragments = self.extract_dom_fragments(document);
+
+        let ctx = SemanticContext {
+            target_text: html.to_owned(),
+            dom_fragments,
+            domain_hint: domain.map(|d| d.to_owned()),
+        };
+        self.cascade(
+            failed_selector,
+            structural_hash,
+            best_tier1,
+            tier1_score,
+            ctx,
+        )
+        .await
+    }
+
+    /// Shared repair cascade: cache → fast path → semaphore-gated Tier 2 →
+    /// Tier 1 fallback.
+    ///
+    /// Both public entry points ([`Self::select_sync_aware`] and
+    /// [`Self::repair`]) precompute the Tier 1 result and the Tier 2
+    /// [`SemanticContext`] — each in its own way — and delegate the identical
+    /// cascade logic here.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SelectorErrorKind::RepairInconclusive` if both tiers fail.
+    async fn cascade(
+        &self,
+        selector: &str,
+        structural_hash: u64,
+        best_tier1: Option<SelectorSuggestion>,
+        tier1_score: f64,
+        ctx: SemanticContext,
+    ) -> Result<AdaptiveRepairOutcome, SelectorErrorKind> {
+        // Check cache
+        let cache_key = self.cache_key(selector, structural_hash);
+        if let Some(mut outcome) = self.cache_get(cache_key) {
+            if let Some(ref mut trace) = outcome.trace {
+                trace.cache_hit = true;
+            }
+            debug!(cache_hit = true, "returning cached repair outcome");
+            return Ok(outcome);
+        }
+
         debug!(score = tier1_score, "tier1_evaluated");
 
         // Fast path: high confidence → return immediately
@@ -469,11 +399,10 @@ impl AdaptiveSelectorEngine {
             }
         }
 
-        // Tier 2: semantic (if available and in ambiguity zone)
+        // Tier 2: semantic (if available)
         let semantic = match &self.semantic {
             Some(s) => s,
             None => {
-                // No semantic provider — return Tier 1 best or fail
                 return self
                     .handle_tier1_only(best_tier1, tier1_score, structural_hash, cache_key)
                     .await;
@@ -502,13 +431,7 @@ impl AdaptiveSelectorEngine {
             },
         };
 
-        // Build semantic context
-        let ctx = SemanticContext {
-            target_text: html.to_owned(),
-            dom_fragments: self.extract_dom_fragments(document),
-            domain_hint: domain.map(|d| d.to_owned()),
-        };
-
+        // Run Tier 2 on the precomputed semantic context
         let tier2_start = Instant::now();
         let tier2_result = semantic.find_semantic_match(ctx).await;
         let tier2_latency_ms = tier2_start.elapsed().as_millis() as u64;
@@ -550,7 +473,6 @@ impl AdaptiveSelectorEngine {
                 Ok(outcome)
             },
             Ok(None) => {
-                // Tier 2 found nothing — use Tier 1 best or fail
                 self.handle_tier1_only(best_tier1, tier1_score, structural_hash, cache_key)
                     .await
             },
@@ -602,58 +524,6 @@ impl AdaptiveSelectorEngine {
             .map(|(class, _)| class.clone())
             .chain(report.common_ids.iter().map(|(id, _)| id.clone()))
             .collect()
-    }
-
-    /// Compute cache key from selector + structural hash.
-    fn cache_key(&self, selector: &str, structural_hash: u64) -> u64 {
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = FnvHasher::default();
-        selector.hash(&mut hasher);
-        structural_hash.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    /// Insert into cache with lazy eviction when at capacity.
-    fn cache_insert(&self, key: u64, outcome: AdaptiveRepairOutcome) {
-        // Lazy eviction: if at capacity, remove expired entries
-        if self.cache.len() >= self.options.max_cache_entries {
-            let now = Instant::now();
-            self.cache.retain(|_, entry| entry.expires_at > now);
-        }
-
-        self.cache.insert(
-            key,
-            CachedEntry {
-                outcome,
-                expires_at: Instant::now() + self.options.cache_ttl,
-            },
-        );
-    }
-
-    /// Get the number of cached entries (for monitoring).
-    #[must_use]
-    pub fn cache_len(&self) -> usize {
-        self.cache.len()
-    }
-}
-
-/// Minimal FNV-1a hasher for deterministic cache key computation.
-#[derive(Default)]
-struct FnvHasher(u64);
-
-impl std::hash::Hasher for FnvHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for &b in bytes {
-            h ^= b as u64;
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        self.0 = h;
     }
 }
 
