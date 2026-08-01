@@ -85,6 +85,8 @@ pub mod sentence;
 
 pub mod chunker;
 
+pub mod markdown_chunker;
+
 pub mod embedding_ops;
 
 pub mod relevance_scorer;
@@ -114,6 +116,8 @@ pub use chunk_id::ChunkId;
 pub use sentence::SentenceSplitter;
 
 pub use chunker::HtmlChunker;
+
+pub use markdown_chunker::MarkdownChunker;
 
 pub use relevance_scorer::RelevanceScorer;
 
