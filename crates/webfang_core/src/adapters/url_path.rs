@@ -178,24 +178,38 @@ impl UrlPath {
             return String::new();
         }
         let path_trimmed = self.raw.trim_start_matches('/');
-        // Find the parent directory (everything before the last /)
         if let Some(last_slash) = path_trimmed.rfind('/') {
-            format!("{}/", &path_trimmed[..last_slash])
+            let dir = &path_trimmed[..last_slash];
+            // Sanitize each component (defense in depth): neutralizes exotic chars
+            // and dot-segments so a hostile path cannot escape the output folder even
+            // if upstream URL normalization is bypassed.
+            let sanitized = dir
+                .split('/')
+                .map(|component| {
+                    if component == "." || component == ".." {
+                        "_".to_string()
+                    } else {
+                        Self::sanitize_path_segment(component)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("/");
+            format!("{sanitized}/")
         } else {
             String::new()
         }
     }
 
     fn sanitize_path_segment(s: &str) -> String {
-        const INVALID: &[char] = &['\\', ':', '*', '?', '"', '<', '>', '|', ' '];
+        // Whitelist: only alphanumeric + '-' '_' '.' survive. Everything else
+        // (including path separators '/', '\\', and shell metacharacters) maps to '_'.
+        // Defense in depth — callers also pre-replace '/', so this guards reuse.
         s.chars()
             .map(|c| {
                 if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
                     c
-                } else if INVALID.contains(&c) {
-                    '_'
                 } else {
-                    c
+                    '_'
                 }
             })
             .collect()
@@ -530,5 +544,29 @@ mod tests {
         let url2 = UrlPath::from_url_path("/config");
         let filename2 = url2.to_safe_filename();
         assert_eq!(filename2, "config.md");
+    }
+
+    #[test]
+    fn test_filename_never_contains_path_separator() {
+        for input in ["/a/b/c", "/docs/page%20x", "/con/x"] {
+            let path = UrlPath::from_url_path(input);
+            let filename = path.to_safe_filename();
+            assert!(
+                !filename.contains('/'),
+                "separator leaked for {input}: {filename}"
+            );
+            assert!(
+                !filename.contains('\\'),
+                "backslash leaked for {input}: {filename}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_directory_neutralizes_traversal() {
+        let path = UrlPath::from_url_path("/a/../b/leaf");
+        let dir = path.to_directory();
+        assert!(!dir.contains(".."), "traversal segment leaked: {dir}");
+        assert_eq!(dir, "a/_/b/");
     }
 }
