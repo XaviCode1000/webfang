@@ -37,6 +37,7 @@
 //! ```
 
 mod client;
+mod factory;
 pub mod port;
 mod retry;
 
