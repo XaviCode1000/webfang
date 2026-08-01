@@ -2,7 +2,10 @@
 //!
 //! Represents the outcome of a crawling operation.
 
+use std::collections::BTreeMap;
+
 use crate::domain::crawl_job::DiscoveredUrl;
+use crate::domain::CrawlErrorCategory;
 
 /// Crawl result containing discovered URLs
 ///
@@ -17,15 +20,23 @@ pub struct CrawlResult {
     pub total_pages: usize,
     /// Number of errors encountered
     pub errors: usize,
+    /// Error counts by category (issue #374)
+    pub error_breakdown: BTreeMap<CrawlErrorCategory, usize>,
 }
 
 impl CrawlResult {
     /// Create a new crawl result
-    pub fn new(urls: Vec<DiscoveredUrl>, total_pages: usize, errors: usize) -> Self {
+    pub fn new(
+        urls: Vec<DiscoveredUrl>,
+        total_pages: usize,
+        errors: usize,
+        error_breakdown: BTreeMap<CrawlErrorCategory, usize>,
+    ) -> Self {
         Self {
             urls,
             total_pages,
             errors,
+            error_breakdown,
         }
     }
 
@@ -53,6 +64,7 @@ mod tests {
         assert!(result.is_empty());
         assert_eq!(result.total_pages, 0);
         assert_eq!(result.errors, 0);
+        assert!(result.error_breakdown.is_empty());
     }
 
     #[test]
@@ -60,11 +72,25 @@ mod tests {
         let url = Url::parse("https://example.com").unwrap();
         let parent = Url::parse("https://example.com/").unwrap();
         let discovered = DiscoveredUrl::html(url, 0, parent);
-        let result = CrawlResult::new(vec![discovered], 1, 0);
+        let result = CrawlResult::new(vec![discovered], 1, 0, BTreeMap::new());
 
         assert!(!result.is_empty());
         assert_eq!(result.total_pages, 1);
         assert_eq!(result.errors, 0);
         assert_eq!(result.urls.len(), 1);
+        assert!(result.error_breakdown.is_empty());
+    }
+
+    #[test]
+    fn test_crawl_result_with_breakdown() {
+        let mut breakdown = BTreeMap::new();
+        breakdown.insert(CrawlErrorCategory::Waf, 3);
+        breakdown.insert(CrawlErrorCategory::Timeout, 2);
+        let result = CrawlResult::new(vec![], 10, 5, breakdown);
+
+        assert_eq!(result.errors, 5);
+        assert_eq!(result.error_breakdown.len(), 2);
+        assert_eq!(result.error_breakdown[&CrawlErrorCategory::Waf], 3);
+        assert_eq!(result.error_breakdown[&CrawlErrorCategory::Timeout], 2);
     }
 }

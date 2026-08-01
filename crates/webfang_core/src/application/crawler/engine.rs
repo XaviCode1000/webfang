@@ -29,7 +29,8 @@ use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::application::url_filter::is_allowed;
 use crate::domain::clock::SystemClock;
 use crate::domain::{
-    CorrelationId, CrawlError, CrawlResult, CrawlerConfig, DiscoveredUrl, JsStrategy,
+    CorrelationId, CrawlError, CrawlErrorCategory, CrawlResult, CrawlerConfig, DiscoveredUrl,
+    JsStrategy,
 };
 use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
 use crate::infrastructure::crawler::{
@@ -161,6 +162,8 @@ pub struct Engine {
     queue: Arc<UrlQueue>,
     rate_limiter: SharedRateLimiter,
     error_count: Arc<AtomicUsize>,
+    /// Per-category error counters indexed by `CrawlErrorCategory::index()` (issue #374).
+    error_breakdown: Arc<[AtomicUsize; 8]>,
     /// Checkpoint store for persistence (stateless — always available).
     checkpoint_store: BincodeCheckpoint,
     /// Loaded checkpoint state for crash recovery (`None` = fresh start).
@@ -222,6 +225,7 @@ impl Engine {
         // Results collector via mpsc channel
         let collector = ResultsCollector::new(config_clone.max_pages, Some(config_clone.max_pages));
         let error_count = Arc::new(AtomicUsize::new(0));
+        let error_breakdown = Arc::new(std::array::from_fn(|_| AtomicUsize::new(0)));
         let pages_crawled = Arc::new(AtomicU64::new(0));
         let shutdown = Arc::new(AtomicBool::new(false));
 
@@ -241,6 +245,7 @@ impl Engine {
             queue,
             rate_limiter,
             error_count,
+            error_breakdown,
             checkpoint_store: BincodeCheckpoint::new(),
             checkpoint_state: None,
             checkpoint_path: None,
@@ -543,6 +548,7 @@ impl Engine {
             ignore_robots: self.ignore_robots,
             robots_fetcher: Arc::clone(&self.robots_fetcher),
             error_count: Arc::clone(&self.error_count),
+            error_breakdown: Arc::clone(&self.error_breakdown),
             pages_crawled: Arc::clone(&self.pages_crawled),
             collector: self
                 .collector
@@ -581,7 +587,7 @@ impl Engine {
 
             // Process completed tasks FIRST (non-blocking)
             while let Some(result) = tasks.try_join_next() {
-                handle_crawl_result(result, &self.error_count);
+                handle_crawl_result(result, &self.error_count, &self.error_breakdown);
             }
 
             // Drain discovered links from the deduplicated UrlQueue
@@ -651,14 +657,14 @@ impl Engine {
                 .unwrap_or(config_clone.concurrency);
             if tasks.len() >= max_concurrent && !url_queue.is_empty() {
                 if let Some(result) = tasks.join_next().await {
-                    handle_crawl_result(result, &self.error_count);
+                    handle_crawl_result(result, &self.error_count, &self.error_breakdown);
                 }
             }
         }
 
         // Wait for remaining tasks
         while let Some(result) = tasks.join_next().await {
-            handle_crawl_result(result, &self.error_count);
+            handle_crawl_result(result, &self.error_count, &self.error_breakdown);
         }
 
         // Drop task_ctx so all cloned Senders inside CrawlTaskCtx are released.
@@ -680,7 +686,17 @@ impl Engine {
         let total_pages = collected_urls.len();
         let errors = self.error_count.load(std::sync::atomic::Ordering::SeqCst);
 
-        // Structured crawl summary (issue #356 Fase 4)
+        let breakdown: std::collections::BTreeMap<CrawlErrorCategory, usize> =
+            CrawlErrorCategory::ALL
+                .iter()
+                .filter_map(|cat| {
+                    let count =
+                        self.error_breakdown[cat.index()].load(std::sync::atomic::Ordering::SeqCst);
+                    (count > 0).then_some((*cat, count))
+                })
+                .collect();
+
+        // Structured crawl summary (issue #356 Fase 4, error breakdown #374)
         let duration = start.elapsed();
         let succeeded = total_pages.saturating_sub(errors);
         let summary_rate = if duration.as_secs_f64() > 0.0 {
@@ -692,13 +708,34 @@ impl Engine {
             total_pages = total_pages,
             succeeded = succeeded,
             errors = errors,
+            errors_waf = self.error_breakdown[CrawlErrorCategory::Waf.index()]
+                .load(std::sync::atomic::Ordering::SeqCst),
+            errors_http = self.error_breakdown[CrawlErrorCategory::Http.index()]
+                .load(std::sync::atomic::Ordering::SeqCst),
+            errors_timeout = self.error_breakdown[CrawlErrorCategory::Timeout.index()]
+                .load(std::sync::atomic::Ordering::SeqCst),
+            errors_network = self.error_breakdown[CrawlErrorCategory::Network.index()]
+                .load(std::sync::atomic::Ordering::SeqCst),
+            errors_rate_limit = self.error_breakdown[CrawlErrorCategory::RateLimit.index()]
+                .load(std::sync::atomic::Ordering::SeqCst),
+            errors_extraction = self.error_breakdown[CrawlErrorCategory::Extraction.index()]
+                .load(std::sync::atomic::Ordering::SeqCst),
+            errors_internal = self.error_breakdown[CrawlErrorCategory::Internal.index()]
+                .load(std::sync::atomic::Ordering::SeqCst),
+            errors_panic = self.error_breakdown[CrawlErrorCategory::Panic.index()]
+                .load(std::sync::atomic::Ordering::SeqCst),
             duration_secs = duration.as_secs(),
             pages_per_sec = summary_rate,
             trace_id = %self.correlation_id.trace_id(),
             "crawl completed"
         );
 
-        Ok(CrawlResult::new(collected_urls, total_pages, errors))
+        Ok(CrawlResult::new(
+            collected_urls,
+            total_pages,
+            errors,
+            breakdown,
+        ))
     }
 
     /// Graceful shutdown — drop the collector sender, receiver drains remaining items
@@ -722,18 +759,23 @@ impl Engine {
 fn handle_crawl_result(
     result: std::result::Result<Result<(), CrawlError>, tokio::task::JoinError>,
     error_count: &Arc<AtomicUsize>,
+    error_breakdown: &Arc<[AtomicUsize; 8]>,
 ) {
     match result {
         Ok(Ok(())) => {
             // Task completed successfully
         },
         Ok(Err(e)) => {
+            let category = CrawlErrorCategory::from(&e);
             warn!("Task error: {}", e);
             error_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            error_breakdown[category.index()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         },
         Err(e) => {
             warn!("Task panicked: {}", e);
             error_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            error_breakdown[CrawlErrorCategory::Panic.index()]
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         },
     }
 }
@@ -967,6 +1009,8 @@ async fn run_crawl_task(
                 warn!("Failed to extract links from {}: {}", url_str, e);
                 ctx.error_count
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                ctx.error_breakdown[CrawlErrorCategory::Extraction.index()]
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             },
         }
     }
