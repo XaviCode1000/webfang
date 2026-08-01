@@ -11,12 +11,9 @@
 //! - **config-externalize**: Concurrency is configurable via ScraperConfig
 //! - **async-concurrency-limit**: Uses buffer_unordered for concurrency control
 
-use crate::application::diagnostic::build_diagnostic;
 use crate::application::error_mapping::scraper_error_from_http;
 use crate::application::http_client::HttpClientPort;
-use crate::domain::{
-    DomInspectorPort, DownloadedAsset, ExtractResult, ScrapedContent, SelectorErrorKind, ValidUrl,
-};
+use crate::domain::{DomInspectorPort, DownloadedAsset, ExtractResult, ScrapedContent, ValidUrl};
 use crate::error::{Result, ScraperError};
 use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
 use crate::infrastructure::observability::log_scrape_error;
@@ -34,6 +31,7 @@ type AdaptiveSelectorEngine = ();
 // Re-exports preserve the historical `scraper_service::*` public paths after
 // the #443 decomposition into focused application modules. Callers (MCP
 // handlers, `crawler::discovery`, integration tests) keep resolving unchanged.
+pub use crate::application::extraction::{extract_with_selector, scrape_with_readability};
 pub use crate::application::spa_detection::{
     detect_spa_content, SpaDetectionResult, MIN_CONTENT_CHARS,
 };
@@ -41,124 +39,6 @@ pub use crate::application::spa_detection::{
 /// Maximum HTML body size to log/instrument (1MB)
 /// Bodies larger than this are skipped to avoid performance issues
 pub const MAX_INSTRUMENTED_BODY_SIZE: usize = 1_048_576;
-
-/// Extract HTML content using a CSS selector.
-///
-/// When `selector` is not "body", parses the HTML and extracts all elements
-/// matching the selector. Returns the outer HTML of matched elements wrapped
-/// in a `<div>` for Readability processing. If no elements match or the
-/// selector is invalid, returns [`ExtractResult::Fallback`] with the full
-/// HTML and an optional diagnostic (when an inspector is provided).
-///
-/// # Arguments
-/// * `html` - The HTML document to extract from
-/// * `selector` - CSS selector string (use `"body"` to skip extraction)
-/// * `inspector` - Optional DOM inspector for diagnostics on failure paths
-pub fn extract_with_selector(
-    html: &str,
-    selector: &str,
-    inspector: Option<&dyn DomInspectorPort>,
-) -> ExtractResult {
-    if selector == "body" {
-        return ExtractResult::Matched(html.to_owned());
-    }
-
-    // Early check: empty or whitespace-only HTML. `scraper::Html::parse_document("")`
-    // creates 3 implicit elements (html, head, body), so without this check the
-    // selector matching would fall through to ZeroMatches instead of
-    // EmptyDocument — leaving SelectorErrorKind::EmptyDocument as dead code.
-    if html.trim().is_empty() {
-        warn!(
-            "HTML document is empty or whitespace-only, falling back with EmptyDocument diagnostic"
-        );
-        let document = scraper::Html::parse_document(html);
-        return ExtractResult::Fallback {
-            html: html.to_owned(),
-            diagnostic: build_diagnostic(
-                inspector,
-                &document,
-                SelectorErrorKind::EmptyDocument,
-                selector,
-            ),
-        };
-    }
-
-    let document = scraper::Html::parse_document(html);
-    let sel = match scraper::Selector::parse(selector) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(
-                "Invalid CSS selector '{}': {}, falling back to full HTML",
-                selector, e
-            );
-            return ExtractResult::Fallback {
-                html: html.to_owned(),
-                diagnostic: build_diagnostic(
-                    inspector,
-                    &document,
-                    SelectorErrorKind::InvalidSelector(e.to_string()),
-                    selector,
-                ),
-            };
-        },
-    };
-
-    let matched: Vec<String> = document.select(&sel).map(|el| el.html()).collect();
-
-    if matched.is_empty() {
-        warn!(
-            "CSS selector '{}' matched 0 elements, falling back to full HTML",
-            selector
-        );
-        return ExtractResult::Fallback {
-            html: html.to_owned(),
-            diagnostic: build_diagnostic(
-                inspector,
-                &document,
-                SelectorErrorKind::ZeroMatches,
-                selector,
-            ),
-        };
-    }
-
-    debug!(
-        "CSS selector '{}' matched {} elements",
-        selector,
-        matched.len()
-    );
-
-    ExtractResult::Matched(format!(
-        "<div id=\"selector-extracted\">{}</div>",
-        matched.join("\n")
-    ))
-}
-
-/// Scrape a URL using Readability algorithm for clean content extraction
-///
-/// This is the 2026 best practice approach — uses the same algorithm as
-/// Firefox Reader View to extract only meaningful content.
-///
-/// # Examples
-///
-/// ```no_run
-/// use webfang_core::application::{create_http_client, scrape_with_readability};
-///
-/// # #[tokio::main]
-/// # async fn main() -> anyhow::Result<()> {
-/// let client = create_http_client()?;
-/// let url = url::Url::parse("https://example.com")?;
-/// let results = scrape_with_readability(&client, &url).await?;
-/// # Ok(())
-/// # }
-/// ```
-pub async fn scrape_with_readability(
-    client: &dyn HttpClientPort,
-    url: &url::Url,
-) -> Result<Vec<ScrapedContent>> {
-    let outcome =
-        scrape_with_config(client, url, &ScraperConfig::default(), None, None, None).await?;
-    Ok(outcome.results)
-}
 
 /// Outcome of a scrape operation, including selector extraction metadata.
 ///
