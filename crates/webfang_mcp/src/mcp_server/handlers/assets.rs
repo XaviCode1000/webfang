@@ -13,9 +13,9 @@ use tracing::instrument;
 
 #[tool_router(router = tool_router_assets, vis = "pub")]
 impl McpHandler {
-    /// Download images and documents from HTML
+    /// Download images and documents from HTML (NOT YET IMPLEMENTED — see #170)
     #[tool(
-        description = "Download images (PNG, JPG, GIF, WEBP, SVG, BMP) and/or documents (PDF, DOCX, XLSX, PPTX) from HTML content. Uses SHA256-hashed filenames."
+        description = "NOT YET IMPLEMENTED (see #170). Download images and/or documents referenced in HTML content. Parameters 'images' and 'documents' are boolean toggles, not URL lists. Use scrape_url with download_images=true as a working alternative."
     )]
     #[instrument(skip(self), fields(base_url = %params.base_url, images = params.images.unwrap_or(true), documents = params.documents.unwrap_or(false)))]
     async fn download_assets(
