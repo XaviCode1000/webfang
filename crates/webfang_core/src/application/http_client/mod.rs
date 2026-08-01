@@ -37,7 +37,9 @@
 //! ```
 
 mod client;
+mod factory;
 pub mod port;
+mod retry;
 
 pub use crate::domain::http_config::HttpClientConfig;
 pub use crate::domain::http_error::{HttpError, HttpResult};

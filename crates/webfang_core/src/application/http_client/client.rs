@@ -2,6 +2,8 @@
 //!
 //! Wraps `wreq::Client` with retry logic, UA rotation, and WAF detection.
 
+use super::factory::build_wreq_client;
+use super::retry::{retry_with_backoff, RetryPolicy};
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::http_error::{HttpError, HttpResult};
 use crate::domain::session_port::{SessionId, SessionPort};
@@ -11,22 +13,16 @@ use crate::infrastructure::user_agent::UserAgentCache;
 use governor::clock::DefaultClock;
 use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter};
-use rand;
 use std::num::NonZeroU32;
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::{debug, warn};
 use url::Url;
-
-use wreq::header::{HeaderMap, HeaderName, HeaderValue};
+use wreq::header::HeaderMap;
 use wreq::Client;
 
-/// Client Hints headers for Chrome 145 (2026 Standard)
-/// These headers must match the TLS fingerprint to avoid "Headless Spoofing" detection
-const CLIENT_HINTS_SEC_CH_UA: &str =
-    "\"Google Chrome\";v=\"145\", \"Chromium\";v=\"145\", \"Not=A?Brand\";v=\"99\"";
-const CLIENT_HINTS_SEC_CH_UA_MOBILE: &str = "?0";
-const CLIENT_HINTS_SEC_CH_UA_PLATFORM: &str = "\"Linux\"";
+pub use super::factory::{
+    create_http_client, create_http_client_with_config, get_random_user_agent_from_pool,
+};
 
 /// HTTP client wrapper with configurable retry behavior
 ///
@@ -195,7 +191,6 @@ impl HttpClient {
 
     async fn get_inner(&self, url: &str) -> HttpResult<String> {
         let mut ua_index = 0;
-        let max_attempts = self.config.max_retries;
 
         loop {
             if ua_index >= self.user_agents.len() && ua_index > 0 {
@@ -288,55 +283,19 @@ impl HttpClient {
 
                     debug!("429 Rate Limited, retry after {}s", retry_after);
 
-                    let mut attempt = 0;
-                    let ua_for_retry = ua.clone();
-                    while attempt < max_attempts {
-                        attempt += 1;
-
-                        let delay_ms = if retry_after > 0 {
-                            retry_after * 1000
-                        } else {
-                            let exponent = attempt.saturating_sub(1);
-                            let delay = self.config.backoff_base_ms * (2_u64.pow(exponent));
-                            delay.min(self.config.backoff_max_ms)
-                        };
-
-                        debug!("429 retry attempt {} after {}ms", attempt, delay_ms);
-                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-
-                        let request = self
-                            .client
-                            .get(url)
-                            .header("Accept-Language", &self.config.accept_language)
-                            .header("Accept", &self.config.accept)
-                            .header("Referer", &self.config.referer)
-                            .header("Cache-Control", &self.config.cache_control)
-                            .header("User-Agent", &ua_for_retry);
-
-                        match request.send().await {
-                            Ok(resp) => {
-                                if resp.status().is_success() {
-                                    return resp
-                                        .text()
-                                        .await
-                                        .map_err(|e| HttpError::Request(e.to_string()));
-                                } else if resp.status().as_u16() == 429
-                                    || resp.status().is_server_error()
-                                {
-                                    continue;
-                                } else {
-                                    return Err(HttpError::ClientError(resp.status().as_u16()));
-                                }
-                            },
-                            Err(e) => {
-                                if e.is_timeout() {
-                                    return Err(HttpError::Timeout);
-                                }
-                                continue;
-                            },
-                        }
-                    }
-                    return Err(HttpError::RateLimited(retry_after));
+                    return retry_with_backoff(
+                        &self.client,
+                        url,
+                        &self.config,
+                        &ua,
+                        RetryPolicy {
+                            retry_after_secs: Some(retry_after),
+                            retryable: |code: u16| code == 429 || (500..=599).contains(&code),
+                            exhausted: HttpError::RateLimited(retry_after),
+                            label: "429",
+                        },
+                    )
+                    .await;
                 },
                 500..=599 => {
                     debug!("{} from {}", status, url);
@@ -375,49 +334,19 @@ impl HttpClient {
                         return Err(HttpError::WafChallenge(verdict.evidence_chain()));
                     }
 
-                    let mut attempt = 0;
-                    let ua_for_retry = ua.clone();
-                    while attempt < max_attempts {
-                        attempt += 1;
-
-                        let exponent = attempt.saturating_sub(1);
-                        let delay = self.config.backoff_base_ms * (2_u64.pow(exponent));
-                        let delay_ms = delay.min(self.config.backoff_max_ms);
-
-                        debug!("5xx retry attempt {} after {}ms", attempt, delay_ms);
-                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-
-                        let request = self
-                            .client
-                            .get(url)
-                            .header("Accept-Language", &self.config.accept_language)
-                            .header("Accept", &self.config.accept)
-                            .header("Referer", &self.config.referer)
-                            .header("Cache-Control", &self.config.cache_control)
-                            .header("User-Agent", &ua_for_retry);
-
-                        match request.send().await {
-                            Ok(resp) => {
-                                if resp.status().is_success() {
-                                    return resp
-                                        .text()
-                                        .await
-                                        .map_err(|e| HttpError::Request(e.to_string()));
-                                } else if resp.status().is_server_error() {
-                                    continue;
-                                } else {
-                                    return Err(HttpError::ClientError(resp.status().as_u16()));
-                                }
-                            },
-                            Err(e) => {
-                                if e.is_timeout() {
-                                    return Err(HttpError::Timeout);
-                                }
-                                continue;
-                            },
-                        }
-                    }
-                    return Err(HttpError::ServerError(status.as_u16()));
+                    return retry_with_backoff(
+                        &self.client,
+                        url,
+                        &self.config,
+                        &ua,
+                        RetryPolicy {
+                            retry_after_secs: None,
+                            retryable: |code: u16| (500..=599).contains(&code),
+                            exhausted: HttpError::ServerError(status.as_u16()),
+                            label: "5xx",
+                        },
+                    )
+                    .await;
                 },
                 code if (400..=499).contains(&code) => {
                     return Err(HttpError::ClientError(code));
@@ -448,134 +377,40 @@ fn inspection_context(status: u16, headers: &HeaderMap, ignore_waf: bool) -> Ins
     }
 }
 
-/// Build the inner `wreq::Client` shared by `HttpClient::new` and the
-/// bare-client factories.
-///
-/// Applies the Chrome Client Hints + Sec-Fetch default headers (these MUST
-/// match the TLS fingerprint to avoid "Headless Spoofing" detection), the
-/// resolved H2/TLS profile, request/connect timeouts, connection-pool tuning,
-/// compression, cookie storage, and a bounded redirect policy.
-///
-/// When `user_agent` is `Some`, it is set as the build-time `User-Agent`;
-/// when `None`, no build-time UA is applied (callers such as `HttpClient`
-/// set the UA per request instead).
-///
-/// # Errors
-///
-/// Returns `ScraperError::Config` if the underlying client fails to build.
-fn build_wreq_client(
-    config: &HttpClientConfig,
-    user_agent: Option<String>,
-) -> Result<Client, ScraperError> {
-    let pool_size = std::cmp::max(6, num_cpus::get() - 1);
-
-    // Build Client Hints headers for Chrome 145 (2026 Standard)
-    // These MUST match the TLS fingerprint to avoid "Headless Spoofing" detection
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        HeaderName::from_static("sec-ch-ua"),
-        HeaderValue::from_static(CLIENT_HINTS_SEC_CH_UA),
-    );
-    headers.insert(
-        HeaderName::from_static("sec-ch-ua-mobile"),
-        HeaderValue::from_static(CLIENT_HINTS_SEC_CH_UA_MOBILE),
-    );
-    headers.insert(
-        HeaderName::from_static("sec-ch-ua-platform"),
-        HeaderValue::from_static(CLIENT_HINTS_SEC_CH_UA_PLATFORM),
-    );
-    // Additional security headers (Sec-Fetch)
-    headers.insert(
-        HeaderName::from_static("sec-fetch-dest"),
-        HeaderValue::from_static("document"),
-    );
-    headers.insert(
-        HeaderName::from_static("sec-fetch-mode"),
-        HeaderValue::from_static("navigate"),
-    );
-    headers.insert(
-        HeaderName::from_static("sec-fetch-site"),
-        HeaderValue::from_static("none"),
-    );
-    headers.insert(
-        HeaderName::from_static("sec-fetch-user"),
-        HeaderValue::from_static("?1"),
-    );
-    headers.insert(
-        HeaderName::from_static("upgrade-insecure-requests"),
-        HeaderValue::from_static("1"),
-    );
-
-    let mut builder = Client::builder()
-        .emulation(config.tls_emulation)
-        .default_headers(headers)
-        .timeout(Duration::from_secs(config.timeout_secs))
-        .connect_timeout(Duration::from_secs(config.connect_timeout_secs))
-        .pool_max_idle_per_host(pool_size)
-        .pool_idle_timeout(Duration::from_secs(60))
-        .gzip(true)
-        .brotli(true)
-        .cookie_store(true)
-        .redirect(wreq::redirect::Policy::limited(10));
-
-    if let Some(ua) = user_agent {
-        builder = builder.user_agent(ua);
-    }
-
-    builder
-        .build()
-        .map_err(|e| ScraperError::Config(format!("failed to create http client: {e}")))
-}
-
-/// Create a bare `wreq::Client` that honors the given domain config.
-///
-/// This is the config-driven counterpart of `HttpClient::new`: it returns the
-/// raw inner client (no retry middleware) for callers that manage requests
-/// themselves, while still applying the Chrome Client Hints headers, the
-/// resolved H2/TLS profile, request/connect timeouts, and pool tuning from
-/// `config`.
-///
-/// User-agent resolution: `config.user_agent` is used when set; otherwise a
-/// random agent is drawn from the fallback pool, preserving the historical
-/// rotation behavior of `create_http_client`.
-///
-/// # Errors
-///
-/// Returns `ScraperError::Config` if the underlying client fails to build.
-pub fn create_http_client_with_config(config: &HttpClientConfig) -> Result<Client, ScraperError> {
-    let user_agent = match config.user_agent.clone() {
-        Some(ua) => ua,
-        None => get_random_user_agent_from_pool(&UserAgentCache::fallback_agents()),
-    };
-
-    tracing::debug!("Using user agent: {}", user_agent);
-
-    build_wreq_client(config, Some(user_agent))
-}
-
-// Legacy function - simplified, returns wreq::Client directly
-/// Create configured HTTP client
-///
-/// Equivalent to `create_http_client_with_config(&HttpClientConfig::default())`:
-/// a Chrome145 client with a random pooled user agent, a 30s request timeout,
-/// and a 10s connect timeout, plus the Chrome Client Hints default headers.
-/// For more control, use `HttpClient::new()` with `HttpClientConfig`.
-pub fn create_http_client() -> Result<Client, ScraperError> {
-    create_http_client_with_config(&HttpClientConfig::default())
-}
-
-/// Get random user agent from pool (legacy function)
-pub fn get_random_user_agent_from_pool(pool: &[String]) -> String {
-    use rand::Rng;
-    let mut rng = rand::rng();
-    let index = rng.random_range(0..pool.len());
-    pool[index].clone()
-}
-
 // ============================================================================
 // HttpClientPort implementation for HttpClient
 // ============================================================================
 
+/// Raw, single-shot [`HttpClientPort`] implementation for [`HttpClient`].
+///
+/// # Why this path is deliberately raw
+///
+/// [`HttpClient`] exposes two request paths with different contracts, and they
+/// are intentionally **not** unified:
+///
+/// - The hardened path — `HttpClient::get` / `get_inner` — returns only the
+///   response body as a `String`, after applying rate limiting, per-domain
+///   session gating, status-specific retries (429 / 5xx), user-agent rotation
+///   on 403, and WAF/CAPTCHA inspection. Non-2xx outcomes are surfaced as
+///   [`HttpError`] variants.
+/// - This port implementation returns a full [`HttpResponse`]
+///   (`status` + `headers` + `body`) for a **single** GET with no retry, no
+///   user-agent rotation and no WAF inspection, reporting non-2xx as data in
+///   `status` rather than as an error. It exists for callers that depend on the
+///   domain port and manage their own request lifecycle.
+///
+/// Routing this impl through the hardened path would change its observable
+/// behavior — it would start retrying, rotating user agents, and turning
+/// 5xx/429 responses into [`HttpError`]s instead of returning the status — so
+/// the divergence is preserved and documented here rather than collapsed
+/// (see #444). The bare-client factories (e.g. [`create_http_client`]) are raw
+/// for the same reason.
+///
+/// [`HttpClientPort`]: crate::domain::http_port::HttpClientPort
+/// [`HttpClient`]: crate::application::http_client::HttpClient
+/// [`HttpResponse`]: crate::domain::http_port::HttpResponse
+/// [`HttpError`]: crate::domain::http_error::HttpError
+/// [`create_http_client`]: crate::application::http_client::create_http_client
 impl crate::domain::http_port::HttpClientPort for HttpClient {
     fn get(
         &self,
