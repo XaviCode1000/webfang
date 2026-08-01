@@ -5,6 +5,6 @@ expression: "redact_nondeterministic(output_dir.path(), &stderr)"
   <TIMESTAMP>  WARN webfang_core::cli::scrape_flow: Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: request timed out after 1s
     at crates/webfang_core/src/cli/scrape_flow.rs:<LINE>
 
-Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: request timed out after 1s  ← request timed out after 1s
+Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: request timed out after 1s
 No pages were successfully scraped
 Error: No pages were successfully scraped
