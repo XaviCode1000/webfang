@@ -283,6 +283,9 @@ impl Default for CrawlOptions {
     fn default() -> Self {
         // Use a safe default URL for the default impl.
         // In practice, CrawlOptions is always built from Args where url is validated.
+        // The hardcoded URL is a compile-time constant that cannot fail to parse;
+        // `default` returns `Self`, so the error cannot be propagated.
+        #[allow(clippy::expect_used)]
         let url = Url::parse("https://example.com").expect("hardcoded default URL must parse");
         Self {
             url,

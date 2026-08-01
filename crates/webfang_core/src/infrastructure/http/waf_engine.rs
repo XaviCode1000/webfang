@@ -585,6 +585,9 @@ const MAX_EVIDENCE_PER_BODY: usize = 64;
 /// Built once via `Lazy` from [`WAF_BODY_SIGNATURES`] patterns (pattern index
 /// maps back to the registry entry for tier/boundary metadata). Thread-safe
 /// for concurrent reads.
+///
+/// The patterns are hardcoded constants, so building the automaton cannot fail.
+#[allow(clippy::expect_used)]
 static WAF_AC: Lazy<AhoCorasick> = Lazy::new(|| {
     AhoCorasick::new(WAF_BODY_SIGNATURES.iter().map(|(sig, _, _, _)| sig))
         .expect("Failed to build Aho-Corasick automaton")

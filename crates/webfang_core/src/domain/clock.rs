@@ -101,23 +101,37 @@ impl MockClock {
     }
 
     /// Advance the clock by the given duration.
+    ///
+    /// `MockClock` is a test utility; mutex poisoning indicates a test bug,
+    /// not a recoverable runtime error.
+    #[allow(clippy::expect_used)]
     pub fn advance(&self, duration: std::time::Duration) {
         *self.now.lock().expect("mock clock poisoned") += duration;
     }
 
     /// Set the clock to a specific instant.
+    ///
+    /// `MockClock` is a test utility; mutex poisoning indicates a test bug,
+    /// not a recoverable runtime error.
+    #[allow(clippy::expect_used)]
     pub fn set_now(&self, now: Instant) {
         *self.now.lock().expect("mock clock poisoned") = now;
     }
 }
 
 impl Clock for MockClock {
+    // `MockClock` is a test utility; mutex poisoning indicates a test bug,
+    // not a recoverable runtime error.
+    #[allow(clippy::expect_used)]
     fn now(&self) -> Instant {
         *self.now.lock().expect("mock clock poisoned")
     }
 }
 
 impl Clock for Mutex<Instant> {
+    // `MockClock` is a test utility; mutex poisoning indicates a test bug,
+    // not a recoverable runtime error.
+    #[allow(clippy::expect_used)]
     fn now(&self) -> Instant {
         *self.lock().expect("mock clock poisoned")
     }

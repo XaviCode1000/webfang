@@ -440,9 +440,17 @@ async fn run_batch(opts: CrawlOptions) -> CliExit {
         // spawn_blocking: stdin read is blocking I/O that must not run on the
         // Tokio async runtime thread pool — it would block other tasks.
         let concurrency = opts.batch.concurrency;
-        tokio::task::spawn_blocking(move || BatchManager::from_stdin(crawler_config, concurrency))
-            .await
-            .expect("spawn_blocking panicked")
+        match tokio::task::spawn_blocking(move || {
+            BatchManager::from_stdin(crawler_config, concurrency)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(join_err) => {
+                error!(error = %join_err, "stdin read task panicked");
+                return CliExit::NetworkError(format!("Failed to read URLs: {join_err}"));
+            },
+        }
     };
 
     let manager = match manager_result {

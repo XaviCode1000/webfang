@@ -13,6 +13,9 @@ use syntect::parsing::SyntaxSet;
 /// Regex for finding code blocks: ```language\ncode\n```
 /// Uses (?s) flag for dot-all mode (matches newlines) - more idiomatic than [\s\S]
 /// Compiled once at startup (err-no-unwrap-prod)
+///
+/// Compile-time-constant pattern; `Regex::new` cannot fail.
+#[allow(clippy::expect_used)]
 static CODE_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?s)```(\w*)\n(.*?)```").expect("BUG: invalid regex for code blocks")
 });

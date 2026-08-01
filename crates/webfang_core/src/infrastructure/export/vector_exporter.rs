@@ -153,6 +153,8 @@ impl VectorExporter {
         } else {
             // New file or overwrite mode - write complete header
             let timestamp = Utc::now().to_rfc3339();
+            // Mutex poisoning indicates a bug in the calling code, not a recoverable error.
+            #[allow(clippy::expect_used)]
             let dimensions_json = self
                 .dimensions
                 .lock()
@@ -176,6 +178,8 @@ impl VectorExporter {
     fn serialize_document(&self, doc: &DocumentChunkValidated) -> ExportResult<String> {
         // Validate embedding dimensions if present
         if let Some(ref embeddings) = doc.embeddings {
+            // Mutex poisoning indicates a bug in the calling code, not a recoverable error.
+            #[allow(clippy::expect_used)]
             let mut dim_guard = self.dimensions.lock().expect("lock poisoned");
             if let Some(exp) = *dim_guard {
                 if embeddings.len() != exp {

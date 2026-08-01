@@ -22,11 +22,12 @@ pub async fn discover_urls(
         let pb = ProgressBar::new_spinner();
         pb.set_draw_target(ProgressDrawTarget::stderr());
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner} {msg}")
-                .expect("valid spinner template"),
-        );
+        // The spinner template is a hardcoded constant; parsing cannot fail.
+        #[allow(clippy::expect_used)]
+        let style = ProgressStyle::default_spinner()
+            .template("{spinner} {msg}")
+            .expect("valid spinner template");
+        pb.set_style(style);
         pb.set_message("Discovering URLs...");
         Some(pb)
     } else {

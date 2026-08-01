@@ -118,7 +118,11 @@ impl RelevanceScorer {
     ///
     /// Panics if no reference is provided and none is stored
     #[must_use]
+    #[allow(clippy::expect_used)]
     pub fn score(&self, embedding: &[f32], reference: Option<&[f32]>) -> f32 {
+        // Documented panic contract (see `# Panics`): `score` returns `f32`, so
+        // a missing reference cannot be propagated as an error. Callers needing
+        // a non-panicking path use `score_stored`, which returns `Option<f32>`.
         let reference = reference
             .or(self.reference.as_deref())
             .expect("No reference embedding provided or stored");
