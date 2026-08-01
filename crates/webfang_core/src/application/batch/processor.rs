@@ -11,7 +11,7 @@
 //! use url::Url;
 //!
 //! # #[tokio::main]
-//! # async fn main() -> anyhow::Result<()> {
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let config = CrawlerConfig::new(Url::parse("https://example.com")?);
 //! let job = BatchJob::new(
 //!     "batch-1".to_string(),

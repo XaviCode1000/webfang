@@ -1088,7 +1088,7 @@ impl Default for EngineOptions {
 /// use url::Url;
 ///
 /// # #[tokio::main]
-/// # async fn main() -> anyhow::Result<()> {
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let seed = Url::parse("https://example.com")?;
 /// let config = CrawlerConfig::builder(seed)
 ///     .max_depth(2)
@@ -1162,7 +1162,7 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
 /// use url::Url;
 ///
 /// # #[tokio::main]
-/// # async fn main() -> anyhow::Result<()> {
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let seed = Url::parse("https://example.com")?;
 /// let config = CrawlerConfig::builder(seed)
 ///     .max_depth(2)
