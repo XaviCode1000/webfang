@@ -492,6 +492,85 @@ impl SitemapParser {
     }
 }
 
+/// Parse sitemap XML content using quick-xml (streaming parser)
+///
+/// Standalone streaming parser for sitemap `<loc>` entries, extracted from the
+/// application layer (issue #442): XML parsing is an infrastructure concern and
+/// lives here alongside [`SitemapParser`]. Relative URLs are resolved against
+/// `base_url`.
+///
+/// Following **xml-no-regex**: Uses quick-xml instead of regex for XML parsing.
+/// Following **mem-stream-processing**: Streaming approach avoids loading entire DOM.
+///
+/// # Arguments
+///
+/// * `xml_content` - XML content of the sitemap
+/// * `base_url` - Base URL to resolve relative `<loc>` entries against
+///
+/// # Returns
+///
+/// * `Ok(Vec<String>)` - List of URLs
+/// * `Err(CrawlError)` - Parse error
+pub fn parse_sitemap(
+    xml_content: &str,
+    base_url: &Url,
+) -> std::result::Result<Vec<String>, CrawlError> {
+    let mut reader = Reader::from_str(xml_content);
+    let mut buf = Vec::new();
+    let mut urls = Vec::new();
+    let mut in_loc = false;
+
+    loop {
+        buf.clear();
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e) | Event::Empty(ref e)) if e.name().as_ref() == b"loc" => {
+                in_loc = true;
+            },
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"loc" => {
+                in_loc = false;
+            },
+            Ok(Event::Text(ref e)) if in_loc => {
+                let text = e.decode().map_err(|e| CrawlError::Parse(e.to_string()))?;
+                let url_str = text.trim();
+                if !url_str.is_empty() {
+                    // Resolve relative URLs against base_url
+                    // Following url-join-relative: use base_url.join() for relative paths
+                    let resolved =
+                        if url_str.starts_with("http://") || url_str.starts_with("https://") {
+                            Url::parse(url_str).ok()
+                        } else {
+                            base_url.join(url_str).ok()
+                        };
+                    if let Some(url) = resolved {
+                        urls.push(url.to_string());
+                    }
+                }
+            },
+            Ok(Event::CData(ref e)) if in_loc => {
+                // Handle CDATA sections - BytesCData derefs to [u8]
+                let url_str = String::from_utf8_lossy(e).trim().to_string();
+                if !url_str.is_empty() {
+                    // Resolve relative URLs against base_url
+                    let resolved =
+                        if url_str.starts_with("http://") || url_str.starts_with("https://") {
+                            Url::parse(&url_str).ok()
+                        } else {
+                            base_url.join(&url_str).ok()
+                        };
+                    if let Some(url) = resolved {
+                        urls.push(url.to_string());
+                    }
+                }
+            },
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(CrawlError::Parse(e.to_string())),
+            _ => {},
+        }
+    }
+
+    Ok(urls)
+}
+
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;

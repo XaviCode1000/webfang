@@ -1,15 +1,17 @@
-//! Discovery module — URL discovery and sitemap parsing
+//! Discovery module — URL discovery and single-URL scraping
 //!
-//! Functions for discovering URLs from websites via sitemaps or DOM scraping.
-//! Part of the TUI workflow: discover → select → scrape.
+//! Functions for discovering URLs from websites (DOM link extraction) and the
+//! TUI single-URL scraping use case. Part of the TUI workflow:
+//! discover → select → scrape. Sitemap crawling lives in `sitemap_discovery.rs`
+//! and sitemap XML parsing in the infrastructure layer (issue #442); both are
+//! re-exported here so existing import paths keep resolving.
 
-use anyhow::Result;
 use tracing::{debug, info, instrument, span, warn, Level};
 use url::Url;
 
 use crate::application::url_filter::is_allowed;
 use crate::domain::http_config::HttpClientConfig;
-use crate::domain::{CorrelationId, CrawlError, CrawlerConfig, ScrapedContent, ValidUrl};
+use crate::domain::{CorrelationId, CrawlerConfig, ScrapedContent, ValidUrl};
 use crate::error::{Result as ScraperResult, ScraperError};
 use crate::infrastructure::crawler::binary_utils::derive_filename_from_response;
 use crate::infrastructure::crawler::{extract_links, is_internal_link, normalize_url};
@@ -28,10 +30,12 @@ use crate::domain::ExtractResult;
 #[cfg(not(feature = "adaptive-selectors"))]
 type AdaptiveSelectorEngine = ();
 
-// Sitemap discovery was extracted to `sitemap_discovery.rs` (#442). Re-exported
-// here so `discovery::crawl_with_sitemap` (and the `crawler` facade that imports
-// it from this module) keeps resolving unchanged.
+// Sitemap discovery was extracted to `sitemap_discovery.rs` and sitemap XML
+// parsing moved to the infrastructure layer (#442). Both are re-exported here so
+// `discovery::crawl_with_sitemap` / `discovery::parse_sitemap` (and the `crawler`
+// facade that imports them from this module) keep resolving unchanged.
 pub use crate::application::crawler::sitemap_discovery::crawl_with_sitemap;
+pub use crate::infrastructure::crawler::parse_sitemap;
 
 // ============================================================================
 // TUI Support — Discover/Scrape Use Cases
@@ -490,79 +494,6 @@ fn headers_to_header_map(
         }
     }
     map
-}
-
-/// Parse sitemap XML content using quick-xml (streaming parser)
-///
-/// Following **xml-no-regex**: Uses quick-xml instead of regex for XML parsing.
-/// Following **mem-stream-processing**: Streaming approach avoids loading entire DOM.
-///
-/// # Arguments
-///
-/// * `xml_content` - XML content of the sitemap
-///
-/// # Returns
-///
-/// * `Ok(Vec<String>)` - List of URLs
-/// * `Err(CrawlError)` - Parse error
-pub fn parse_sitemap(xml_content: &str, base_url: &Url) -> Result<Vec<String>, CrawlError> {
-    use quick_xml::events::Event;
-    use quick_xml::Reader;
-
-    let mut reader = Reader::from_str(xml_content);
-    let mut buf = Vec::new();
-    let mut urls = Vec::new();
-    let mut in_loc = false;
-
-    loop {
-        buf.clear();
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e) | Event::Empty(ref e)) if e.name().as_ref() == b"loc" => {
-                in_loc = true;
-            },
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"loc" => {
-                in_loc = false;
-            },
-            Ok(Event::Text(ref e)) if in_loc => {
-                let text = e.decode().map_err(|e| CrawlError::Parse(e.to_string()))?;
-                let url_str = text.trim();
-                if !url_str.is_empty() {
-                    // Resolve relative URLs against base_url
-                    // Following url-join-relative: use base_url.join() for relative paths
-                    let resolved =
-                        if url_str.starts_with("http://") || url_str.starts_with("https://") {
-                            Url::parse(url_str).ok()
-                        } else {
-                            base_url.join(url_str).ok()
-                        };
-                    if let Some(url) = resolved {
-                        urls.push(url.to_string());
-                    }
-                }
-            },
-            Ok(Event::CData(ref e)) if in_loc => {
-                // Handle CDATA sections - BytesCData derefs to [u8]
-                let url_str = String::from_utf8_lossy(e).trim().to_string();
-                if !url_str.is_empty() {
-                    // Resolve relative URLs against base_url
-                    let resolved =
-                        if url_str.starts_with("http://") || url_str.starts_with("https://") {
-                            Url::parse(&url_str).ok()
-                        } else {
-                            base_url.join(&url_str).ok()
-                        };
-                    if let Some(url) = resolved {
-                        urls.push(url.to_string());
-                    }
-                }
-            },
-            Ok(Event::Eof) => break,
-            Err(e) => return Err(CrawlError::Parse(e.to_string())),
-            _ => {},
-        }
-    }
-
-    Ok(urls)
 }
 
 #[cfg(test)]

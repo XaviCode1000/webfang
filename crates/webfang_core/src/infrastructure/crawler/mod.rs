@@ -29,5 +29,5 @@ pub use resource_downloader::{
 };
 pub use robots_utils::{RobotsFetcher, RobotsRules};
 pub use sitemap_config::{SitemapConfig, SitemapConfigBuilder};
-pub use sitemap_parser::{resolve_url, SitemapError, SitemapParser};
+pub use sitemap_parser::{parse_sitemap, resolve_url, SitemapError, SitemapParser};
 pub use url_queue::{UrlQueue, UrlSource};
