@@ -54,7 +54,7 @@ pub fn build_obsidian_uri(vault_name: &str, file_path: &str) -> String {
 
 /// Validate Obsidian URI inputs, rejecting ASCII control characters.
 ///
-/// Shell metacharacters are neutralized by [`encode_obsidian_param`] (percent-encoded),
+/// Shell metacharacters are neutralized by `encode_obsidian_param` (percent-encoded),
 /// so they are safe in the URI. Control characters (newline, null byte, etc.) have no
 /// legitimate place in a vault name or note path and are rejected outright as a signal
 /// of malformed or hostile input.
