@@ -19,6 +19,7 @@ pub mod pipeline;
 pub mod progress_observer;
 pub mod rate_limiter;
 pub mod scraper_service;
+pub mod spa_detection;
 /// Resolve extracted page titles to guaranteed non-empty strings.
 pub mod title_resolver;
 pub mod url_filter;

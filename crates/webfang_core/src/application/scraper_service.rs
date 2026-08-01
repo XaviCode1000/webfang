@@ -31,13 +31,16 @@ use crate::application::adaptive_engine::AdaptiveSelectorEngine;
 #[cfg(not(feature = "adaptive-selectors"))]
 type AdaptiveSelectorEngine = ();
 
+// Re-exports preserve the historical `scraper_service::*` public paths after
+// the #443 decomposition into focused application modules. Callers (MCP
+// handlers, `crawler::discovery`, integration tests) keep resolving unchanged.
+pub use crate::application::spa_detection::{
+    detect_spa_content, SpaDetectionResult, MIN_CONTENT_CHARS,
+};
+
 /// Maximum HTML body size to log/instrument (1MB)
 /// Bodies larger than this are skipped to avoid performance issues
 pub const MAX_INSTRUMENTED_BODY_SIZE: usize = 1_048_576;
-
-/// Minimum character threshold for considering content "substantial".
-/// Pages below this threshold after extraction likely require JS rendering.
-pub const MIN_CONTENT_CHARS: usize = 50;
 
 /// Extract HTML content using a CSS selector.
 ///
@@ -146,63 +149,6 @@ fn build_diagnostic(
         error_kind,
         report: insp.inspect(document),
         suggestions: insp.suggest(document, failed_selector),
-    })
-}
-
-/// Result of SPA content detection analysis.
-///
-/// Contains diagnostic information about why a page was flagged
-/// as potentially requiring JavaScript rendering.
-#[derive(Debug, Clone)]
-pub struct SpaDetectionResult {
-    /// The URL that was analyzed
-    pub url: String,
-    /// Character count of the extracted content
-    pub char_count: usize,
-    /// Whether the HTML contains common SPA indicators
-    pub has_spa_markers: bool,
-}
-
-/// Detect whether a page likely requires JavaScript rendering (SPA detection).
-///
-/// Analyzes extracted content to identify pages that returned minimal content
-/// after readability/fallback extraction, which is a common symptom of
-/// Single Page Applications that render client-side.
-///
-/// # Arguments
-///
-/// * `url` - The URL that was scraped
-/// * `text_content` - The extracted text content (used for char count threshold)
-/// * `raw_html` - The raw HTML source (used for SPA marker detection)
-///
-/// # Returns
-///
-/// * `Some(SpaDetectionResult)` if the page appears to be an SPA
-/// * `None` if the content appears substantial enough
-///
-/// # Detection Heuristics
-///
-/// A page is flagged as potentially SPA-dependent when:
-/// - Extracted content is below `MIN_CONTENT_CHARS` (50 chars)
-pub fn detect_spa_content(
-    url: &str,
-    text_content: &str,
-    raw_html: &str,
-) -> Option<SpaDetectionResult> {
-    let char_count = text_content.chars().count();
-
-    if char_count >= MIN_CONTENT_CHARS {
-        return None;
-    }
-
-    // Check for common SPA mount point markers in raw HTML (not stripped text)
-    let has_spa_markers =
-        raw_html.contains("<div id=\"root\">") || raw_html.contains("<div id=\"app\">");
-
-    Some(SpaDetectionResult {
-        url: url.to_string(),
-        char_count,
-        has_spa_markers,
     })
 }
 
