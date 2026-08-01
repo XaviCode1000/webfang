@@ -4,6 +4,7 @@
 //! - Readability algorithm wrapper
 //! - Fallback text extraction
 
+pub mod author_extractor;
 pub mod dom_inspector;
 pub mod fallback;
 pub mod readability;
