@@ -35,7 +35,7 @@ use super::sentence::SentenceSplitter;
 /// use webfang_ai::MarkdownChunker;
 ///
 /// let chunker = MarkdownChunker::new();
-/// let md = "# Title\n\nFirst section content.\n\n## Subtitle\n\nSecond section.";
+/// let md = "# Title\n\nThis is the first section with enough content to exceed the minimum chunk size threshold.\n\n## Subtitle\n\nSecond section also has sufficient length to pass the minimum size filter.";
 /// let chunks = chunker.chunk(md).expect("chunking should succeed");
 /// assert!(!chunks.is_empty());
 /// ```
