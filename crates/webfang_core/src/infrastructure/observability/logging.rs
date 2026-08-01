@@ -11,6 +11,8 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+use crate::error::Result as ScraperResult;
+
 /// Guard for JSON logging - ensures flush on drop (RAII)
 ///
 /// Dropping this guard ensures all pending log writes are flushed
@@ -94,7 +96,7 @@ pub fn init_json_logging(
     level: &str,
     log_dir: Option<&Path>,
     app_name: &str,
-) -> anyhow::Result<LogGuard> {
+) -> ScraperResult<LogGuard> {
     init_json_logging_dual(level, false, false, log_dir, app_name)
 }
 
@@ -113,7 +115,7 @@ pub fn init_json_logging_dual(
     no_color: bool,
     log_dir: Option<&Path>,
     app_name: &str,
-) -> anyhow::Result<LogGuard> {
+) -> ScraperResult<LogGuard> {
     let filter = if quiet {
         EnvFilter::new("webfang=warn,tokio=warn,reqwest=warn")
     } else {

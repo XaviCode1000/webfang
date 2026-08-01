@@ -125,7 +125,7 @@ pub fn extract_with_selector(
 /// use webfang_core::application::{create_http_client, scrape_with_readability};
 ///
 /// # #[tokio::main]
-/// # async fn main() -> anyhow::Result<()> {
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let client = create_http_client()?;
 /// let url = url::Url::parse("https://example.com")?;
 /// let results = scrape_with_readability(&client, &url).await?;

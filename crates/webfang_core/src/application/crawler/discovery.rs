@@ -47,7 +47,6 @@ pub use crate::infrastructure::crawler::parse_sitemap;
 /// 3. User selects which URLs to scrape
 ///
 /// Following **own-borrow-over-clone**: Accepts `&str` not `&String`.
-/// Following **err-anyhow-for-applications**: Uses anyhow::Result.
 ///
 /// # Arguments
 ///
@@ -57,7 +56,7 @@ pub use crate::infrastructure::crawler::parse_sitemap;
 /// # Returns
 ///
 /// * `Ok(Vec<Url>)` - Discovered URLs (owned)
-/// * `Err(anyhow::Error)` - Error during discovery
+/// * `Err(ScraperError)` - Error during discovery
 ///
 /// # Examples
 ///
@@ -66,7 +65,7 @@ pub use crate::infrastructure::crawler::parse_sitemap;
 /// use url::Url;
 ///
 /// # #[tokio::main]
-/// # async fn main() -> anyhow::Result<()> {
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let seed = Url::parse("https://example.com")?;
 /// let config = CrawlerConfig::new(seed);
 ///
@@ -86,7 +85,7 @@ pub use crate::infrastructure::crawler::parse_sitemap;
 pub async fn discover_urls_for_tui(
     base_url: &str,
     config: &CrawlerConfig,
-) -> anyhow::Result<Vec<Url>> {
+) -> ScraperResult<Vec<Url>> {
     let span = span!(Level::INFO, "discover_urls", base_url = base_url);
     let _guard = span.enter();
 
@@ -114,11 +113,7 @@ pub async fn discover_urls_for_tui(
         let client = super::super::create_http_client_with_config(&http_config)?;
 
         info!("Fetching {} for link extraction", base_url);
-        let response = client
-            .get(base_url)
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("HTTP error: {e}"))?;
+        let response = client.get(base_url).send().await?;
 
         let status = response.status();
         let content_type = response
@@ -137,18 +132,14 @@ pub async fn discover_urls_for_tui(
             status, content_type, content_length
         );
 
-        let html = response
-            .text()
-            .await
-            .map_err(|e| anyhow::anyhow!("Network error: {e}"))?;
+        let html = response.text().await?;
 
         debug!("Received HTML: {} bytes", html.len());
 
-        let base = Url::parse(base_url).map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
+        let base = Url::parse(base_url)?;
 
         // Extract links
-        let links =
-            extract_links(&html, base_url).map_err(|e| anyhow::anyhow!("Parse error: {e}"))?;
+        let links = extract_links(&html, base_url)?;
 
         // Filter and normalize URLs
         let mut urls = Vec::new();
@@ -176,7 +167,6 @@ pub async fn discover_urls_for_tui(
 /// Scrape a single URL
 ///
 /// Following **own-borrow-over-clone**: Accepts `&Url` not `&String`.
-/// Following **err-anyhow-for-applications**: Uses anyhow::Result.
 ///
 /// # Arguments
 ///

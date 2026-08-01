@@ -6112,7 +6112,6 @@ version = "2.0.0"
 dependencies = [
  "ahash",
  "aho-corasick",
- "anyhow",
  "assert_cmd",
  "async-compression",
  "built",

@@ -3,6 +3,7 @@
 //! Provides helper functions for creating exporters and state stores
 //! based on CLI configuration.
 
+use crate::error::Result as ScraperResult;
 use crate::infrastructure::export::StateStore;
 use std::path::PathBuf;
 use tracing::info;
@@ -56,7 +57,7 @@ pub fn domain_from_url(url: &str) -> String {
 ///     "https://example.com"
 /// ).unwrap();
 /// ```
-pub fn create_state_store(state_dir: PathBuf, url: &str) -> anyhow::Result<StateStore> {
+pub fn create_state_store(state_dir: PathBuf, url: &str) -> ScraperResult<StateStore> {
     let domain = domain_from_url(url);
     let mut store = StateStore::new(&domain);
 
