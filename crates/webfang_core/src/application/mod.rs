@@ -3,6 +3,7 @@
 //! This layer contains the business logic that orchestrates the domain objects
 //! using infrastructure services. It depends on both domain and infrastructure.
 
+pub mod asset_download;
 pub mod batch;
 pub mod container;
 pub mod crawl_options;
@@ -10,14 +11,18 @@ pub mod crawl_result_repository;
 pub mod crawler;
 pub mod crawler_service;
 pub mod deduplicator;
+pub mod diagnostic;
 pub mod elastic_ingestion;
+pub mod error_mapping;
 pub mod export_factory;
 pub mod export_utils;
+pub mod extraction;
 pub mod http_client;
 pub mod pipeline;
 pub mod progress_observer;
 pub mod rate_limiter;
 pub mod scraper_service;
+pub mod spa_detection;
 /// Resolve extracted page titles to guaranteed non-empty strings.
 pub mod title_resolver;
 pub mod url_filter;
