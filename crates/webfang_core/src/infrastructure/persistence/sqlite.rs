@@ -17,6 +17,7 @@ use std::pin::Pin;
 
 use deadpool_sqlite::{Config, Hook, HookError, Manager, Pool, Runtime};
 
+use crate::domain::note_repository::{IndexedNoteMeta, NoteChunkVector, NoteRepository};
 use crate::domain::repository::VectorRepository;
 use crate::error::ScraperError;
 
@@ -54,7 +55,25 @@ CREATE TABLE IF NOT EXISTS chunks (\
     created_at TEXT\
 );\
 CREATE INDEX IF NOT EXISTS idx_chunks_resource ON chunks(resource_url);\
-CREATE INDEX IF NOT EXISTS idx_resources_content_hash ON resources(content_hash);";
+CREATE INDEX IF NOT EXISTS idx_resources_content_hash ON resources(content_hash);\
+CREATE TABLE IF NOT EXISTS notes (\
+    id INTEGER PRIMARY KEY AUTOINCREMENT,\
+    path TEXT UNIQUE NOT NULL,\
+    content_hash TEXT NOT NULL,\
+    mtime_secs INTEGER NOT NULL,\
+    created_at TEXT,\
+    updated_at TEXT\
+);\
+CREATE TABLE IF NOT EXISTS note_chunks (\
+    id INTEGER PRIMARY KEY AUTOINCREMENT,\
+    note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,\
+    chunk_index INTEGER NOT NULL,\
+    content TEXT NOT NULL,\
+    embedding_vector BLOB,\
+    created_at TEXT\
+);\
+CREATE INDEX IF NOT EXISTS idx_note_chunks_note ON note_chunks(note_id);\
+CREATE INDEX IF NOT EXISTS idx_notes_path ON notes(path);";
 
 // ============================================================================
 // Pool construction
@@ -370,6 +389,209 @@ impl VectorRepository for SqliteVectorRepository {
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 Err(e) => Err(ScraperError::persistence(format!("get_vector: {e}"))),
             }
+        })
+    }
+}
+
+// ============================================================================
+// NoteRepository impl (#386): vault note chunk persistence
+// ============================================================================
+
+impl NoteRepository for SqliteVectorRepository {
+    fn save_note<'a>(
+        &'a self,
+        path: &'a str,
+        content_hash: &'a str,
+        mtime_secs: i64,
+    ) -> Pin<Box<dyn Future<Output = Result<i64, ScraperError>> + Send + 'a>> {
+        Box::pin(async move {
+            let path_owned = path.to_string();
+            let hash_owned = content_hash.to_string();
+
+            let conn = self.pool.get().await.map_err(|e| {
+                ScraperError::persistence(format!("obtener conexión del pool: {e}"))
+            })?;
+            conn.interact(move |c| {
+                // UPSERT: insert or update on path conflict, return the row id.
+                c.execute(
+                    "INSERT INTO notes (path, content_hash, mtime_secs, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, datetime('now'), datetime('now')) \
+                     ON CONFLICT(path) DO UPDATE SET \
+                       content_hash = excluded.content_hash, \
+                       mtime_secs = excluded.mtime_secs, \
+                       updated_at = datetime('now')",
+                    rusqlite::params![path_owned, hash_owned, mtime_secs],
+                )?;
+                // Retrieve the id (last_insert_rowid works for both INSERT and UPDATE).
+                c.query_row(
+                    "SELECT id FROM notes WHERE path = ?1",
+                    rusqlite::params![path_owned],
+                    |row| row.get::<_, i64>(0),
+                )
+            })
+            .await
+            .map_err(|e| ScraperError::persistence(format!("save_note (interact): {e}")))?
+            .map_err(|e| ScraperError::persistence(format!("save_note: {e}")))
+        })
+    }
+
+    fn save_note_chunk<'a>(
+        &'a self,
+        note_id: i64,
+        chunk_index: i64,
+        content: &'a str,
+        embedding: Option<&'a [f32]>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ScraperError>> + Send + 'a>> {
+        Box::pin(async move {
+            let blob: Option<Vec<u8>> = embedding.map(f32_slice_to_bytes);
+            let content = content.to_string();
+
+            let conn = self.pool.get().await.map_err(|e| {
+                ScraperError::persistence(format!("obtener conexión del pool: {e}"))
+            })?;
+            conn.interact(move |c| {
+                c.execute(
+                    "INSERT INTO note_chunks (note_id, chunk_index, content, embedding_vector, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, datetime('now'))",
+                    rusqlite::params![note_id, chunk_index, content, blob.as_deref()],
+                )
+            })
+            .await
+            .map_err(|e| ScraperError::persistence(format!("save_note_chunk (interact): {e}")))?
+            .map_err(|e| ScraperError::persistence(format!("save_note_chunk: {e}")))?;
+            Ok(())
+        })
+    }
+
+    fn load_all_vectors(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<NoteChunkVector>, ScraperError>> + Send + '_>>
+    {
+        Box::pin(async move {
+            let conn = self.pool.get().await.map_err(|e| {
+                ScraperError::persistence(format!("obtener conexión del pool: {e}"))
+            })?;
+            let rows: Result<Vec<(String, String, i64, Vec<u8>)>, ScraperError> = conn
+                .interact(|c| {
+                    let mut stmt = c.prepare(
+                        "SELECT n.path, nc.content, nc.chunk_index, nc.embedding_vector \
+                         FROM note_chunks nc \
+                         JOIN notes n ON n.id = nc.note_id \
+                         WHERE nc.embedding_vector IS NOT NULL",
+                    )?;
+                    let rows = stmt.query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, Vec<u8>>(3)?,
+                        ))
+                    })?;
+                    rows.collect::<Result<Vec<_>, _>>()
+                })
+                .await
+                .map_err(|e| ScraperError::persistence(format!("load_all_vectors (interact): {e}")))?
+                .map_err(|e| ScraperError::persistence(format!("load_all_vectors: {e}")))?;
+
+            let mut result = Vec::with_capacity(rows.len());
+            for (path, content, chunk_index, bytes) in rows {
+                result.push(NoteChunkVector {
+                    note_path: path,
+                    content,
+                    chunk_index,
+                    embedding: bytes_to_f32_vec(&bytes)?,
+                });
+            }
+            Ok(result)
+        })
+    }
+
+    fn note_needs_reindex<'a>(
+        &'a self,
+        path: &'a str,
+        content_hash: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, ScraperError>> + Send + 'a>> {
+        Box::pin(async move {
+            let path_owned = path.to_string();
+            let hash_owned = content_hash.to_string();
+
+            let conn = self.pool.get().await.map_err(|e| {
+                ScraperError::persistence(format!("obtener conexión del pool: {e}"))
+            })?;
+            let row: rusqlite::Result<String> = conn
+                .interact(move |c| {
+                    c.query_row(
+                        "SELECT content_hash FROM notes WHERE path = ?1 LIMIT 1",
+                        rusqlite::params![path_owned],
+                        |row| row.get::<_, String>(0),
+                    )
+                })
+                .await
+                .map_err(|e| {
+                    ScraperError::persistence(format!("note_needs_reindex (interact): {e}"))
+                })?;
+            match row {
+                Ok(stored_hash) => Ok(stored_hash != hash_owned),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(true), // not indexed
+                Err(e) => Err(ScraperError::persistence(format!(
+                    "note_needs_reindex: {e}"
+                ))),
+            }
+        })
+    }
+
+    fn delete_note<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ScraperError>> + Send + 'a>> {
+        Box::pin(async move {
+            let path_owned = path.to_string();
+
+            let conn = self.pool.get().await.map_err(|e| {
+                ScraperError::persistence(format!("obtener conexión del pool: {e}"))
+            })?;
+            conn.interact(move |c| {
+                // Enable FK cascades for this connection, then delete.
+                c.execute_batch("PRAGMA foreign_keys = ON;")?;
+                c.execute(
+                    "DELETE FROM notes WHERE path = ?1",
+                    rusqlite::params![path_owned],
+                )
+            })
+            .await
+            .map_err(|e| ScraperError::persistence(format!("delete_note (interact): {e}")))?
+            .map_err(|e| ScraperError::persistence(format!("delete_note: {e}")))?;
+            Ok(())
+        })
+    }
+
+    fn list_indexed_notes(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<IndexedNoteMeta>, ScraperError>> + Send + '_>>
+    {
+        Box::pin(async move {
+            let conn = self.pool.get().await.map_err(|e| {
+                ScraperError::persistence(format!("obtener conexión del pool: {e}"))
+            })?;
+            let rows: Result<Vec<IndexedNoteMeta>, ScraperError> = conn
+                .interact(|c| {
+                    let mut stmt =
+                        c.prepare("SELECT path, content_hash, mtime_secs FROM notes")?;
+                    let rows = stmt.query_map([], |row| {
+                        Ok(IndexedNoteMeta {
+                            path: row.get::<_, String>(0)?,
+                            content_hash: row.get::<_, String>(1)?,
+                            mtime_secs: row.get::<_, i64>(2)?,
+                        })
+                    })?;
+                    rows.collect::<Result<Vec<_>, _>>()
+                })
+                .await
+                .map_err(|e| {
+                    ScraperError::persistence(format!("list_indexed_notes (interact): {e}"))
+                })?
+                .map_err(|e| ScraperError::persistence(format!("list_indexed_notes: {e}")))?;
+            Ok(rows)
         })
     }
 }
