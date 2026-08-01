@@ -1,7 +1,7 @@
 //! HTML chunker
 //!
-//! Implements semantic chunking following 2026 best practices:
-//! - Two-pass approach: structural boundaries → embedding refinement
+//! Implements size-based chunking with structural boundaries:
+//! - Two-pass approach: structural boundaries → size-based merge/split
 //! - SmallVec optimization for small collections (`mem-smallvec`)
 //!
 //! # Thread Safety
@@ -20,7 +20,7 @@ use super::sentence::SentenceSplitter;
 ///
 /// Chunks HTML content into semantic segments using a two-pass approach:
 /// 1. **Structural boundaries**: Split by paragraphs and HTML elements
-/// 2. **Embedding-based refinement**: Merge/split based on semantic similarity
+/// 2. **Size-based merge/split**: Merge small chunks, split large ones
 ///
 /// # Examples
 ///
@@ -42,9 +42,6 @@ pub struct HtmlChunker {
     min_chunk_size: usize,
     /// Maximum chunk size in characters
     max_chunk_size: usize,
-    /// Similarity threshold for merging chunks (0.0-1.0)
-    /// Chunks with similarity > threshold are merged
-    similarity_threshold: f32,
     /// Sentence splitter for structural boundaries
     sentence_splitter: SentenceSplitter,
 }
@@ -56,13 +53,11 @@ impl HtmlChunker {
     ///
     /// - `min_chunk_size`: 100 characters
     /// - `max_chunk_size`: 512 characters (model token limit safe zone)
-    /// - `similarity_threshold`: 0.5 (cosine similarity)
     #[must_use]
     pub fn new() -> Self {
         Self {
             min_chunk_size: 100,
             max_chunk_size: 512,
-            similarity_threshold: 0.5,
             sentence_splitter: SentenceSplitter,
         }
     }
@@ -73,7 +68,6 @@ impl HtmlChunker {
     ///
     /// * `min_chunk_size` - Minimum characters per chunk
     /// * `max_chunk_size` - Maximum characters per chunk
-    /// * `similarity_threshold` - Threshold for merging (0.0-1.0)
     ///
     /// # Returns
     ///
@@ -82,12 +76,10 @@ impl HtmlChunker {
     pub fn with_config(
         min_chunk_size: usize,
         max_chunk_size: usize,
-        similarity_threshold: f32,
     ) -> Self {
         Self {
             min_chunk_size,
             max_chunk_size,
-            similarity_threshold,
             sentence_splitter: SentenceSplitter,
         }
     }
@@ -106,13 +98,6 @@ impl HtmlChunker {
         self
     }
 
-    /// Set the similarity threshold
-    #[must_use]
-    pub fn with_similarity_threshold(mut self, threshold: f32) -> Self {
-        self.similarity_threshold = threshold;
-        self
-    }
-
     /// Get the minimum chunk size
     #[must_use]
     pub fn min_chunk_size(&self) -> usize {
@@ -123,12 +108,6 @@ impl HtmlChunker {
     #[must_use]
     pub fn max_chunk_size(&self) -> usize {
         self.max_chunk_size
-    }
-
-    /// Get the similarity threshold
-    #[must_use]
-    pub fn similarity_threshold(&self) -> f32 {
-        self.similarity_threshold
     }
 
     /// Chunk HTML into semantic segments
@@ -383,28 +362,23 @@ mod tests {
         let chunker = HtmlChunker::new();
         assert!(chunker.min_chunk_size() > 0);
         assert!(chunker.max_chunk_size() > 0);
-        assert!(chunker.similarity_threshold() > 0.0);
-        assert!(chunker.similarity_threshold() <= 1.0);
     }
 
     #[test]
     fn test_chunker_with_config() {
-        let chunker = HtmlChunker::with_config(50, 300, 0.7);
+        let chunker = HtmlChunker::with_config(50, 300);
         assert_eq!(chunker.min_chunk_size(), 50);
         assert_eq!(chunker.max_chunk_size(), 300);
-        assert_eq!(chunker.similarity_threshold(), 0.7);
     }
 
     #[test]
     fn test_chunker_builder_pattern() {
         let chunker = HtmlChunker::new()
             .with_min_chunk_size(80)
-            .with_max_chunk_size(400)
-            .with_similarity_threshold(0.6);
+            .with_max_chunk_size(400);
 
         assert_eq!(chunker.min_chunk_size(), 80);
         assert_eq!(chunker.max_chunk_size(), 400);
-        assert_eq!(chunker.similarity_threshold(), 0.6);
     }
 
     #[test]
