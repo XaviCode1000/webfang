@@ -1,0 +1,131 @@
+//! Elastic vector ingestion pipeline wiring.
+//!
+//! Builds and runs the optional vector ingestion pipeline (Elasticsearch-backed
+//! or dependency-free JSONL stream) that the orchestrator drives after a scrape.
+
+use tokio::task::JoinSet;
+use tracing::warn;
+
+use crate::application::crawl_options::CrawlOptions;
+use crate::cli::error::CliExit;
+use crate::domain::repository::DynVectorRepository;
+use crate::error::ScraperError;
+use crate::CrawlerConfig;
+use crate::ScraperConfig;
+
+/// Run the elastic ingestion pipeline on all scraped results.
+///
+/// Each URL is processed concurrently via a bounded `JoinSet` with
+/// concurrency limited by the elastic config's CPU core count.
+///
+/// Fail-fast (frozen Decision 3 + D2): the first ingestion error — including a
+/// broken pipe / `WriteZero` while streaming JSONL — propagates immediately and
+/// aborts the crawl, rather than being swallowed as a warning.
+pub(super) async fn run_elastic_ingestion(
+    ingestion: &std::sync::Arc<
+        crate::application::elastic_ingestion::ElasticIngestion<DynVectorRepository>,
+    >,
+    results: &[crate::domain::ScrapedContent],
+) -> Result<(), ScraperError> {
+    if results.is_empty() {
+        return Ok(());
+    }
+
+    let mut join_set = JoinSet::new();
+    let concurrency = num_cpus::get().max(4); // bounded concurrency
+
+    for result in results {
+        let ing = std::sync::Arc::clone(ingestion);
+        let url = result.url.clone();
+
+        while join_set.len() >= concurrency {
+            match join_set.join_next().await {
+                // `T` is `Result<(), ScraperError>` (the spawned task's output).
+                Some(Ok(Ok(()))) => {},            // success
+                Some(Ok(Err(e))) => return Err(e), // ingestion error (D2 fail-fast)
+                Some(Err(_join_err)) => {
+                    return Err(ScraperError::ingestion(
+                        "tarea de ingesta elástica cancelada",
+                    ));
+                },
+                None => break,
+            }
+        }
+
+        join_set.spawn(async move {
+            let url_str = url.to_string();
+            ing.run(&url_str).await
+        });
+    }
+
+    // Await remaining tasks (propagate the first error — D2 fail-fast).
+    while let Some(result) = join_set.join_next().await {
+        if let Ok(Err(e)) = result {
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+/// Build the elastic ingestion pipeline for the run.
+///
+/// - `persistence` ON + `--elastic` → SQLite-backed `SqliteVectorRepository`.
+/// - `--output-vectors <path|->` → dependency-free `StreamRepository` JSONL sink
+///   (available in every build, including the lightweight core binary).
+/// - otherwise → `None` (no ingestion).
+pub(super) async fn build_elastic_ingestion(
+    opts: &CrawlOptions,
+) -> Result<
+    Option<
+        std::sync::Arc<
+            crate::application::elastic_ingestion::ElasticIngestion<DynVectorRepository>,
+        >,
+    >,
+    CliExit,
+> {
+    let container = match crate::application::container::Container::new(
+        CrawlerConfig::new(opts.url.clone()),
+        ScraperConfig::default(),
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            if opts.elastic.enabled || opts.elastic.output_vectors.is_some() {
+                return Err(CliExit::IoError(format!(
+                    "no se pudo crear el contenedor para ingesta elástica: {e}"
+                )));
+            }
+            warn!("no se pudo crear el contenedor para ingesta elástica: {e}");
+            return Ok(None);
+        },
+    };
+
+    let built = {
+        #[cfg(feature = "persistence")]
+        {
+            if opts.elastic.enabled {
+                container.with_elastic(opts).await
+            } else if let Some(ref path) = opts.elastic.output_vectors {
+                container.with_stream(opts, path)
+            } else {
+                Ok(container)
+            }
+        }
+        #[cfg(not(feature = "persistence"))]
+        {
+            if let Some(ref path) = opts.elastic.output_vectors {
+                container.with_stream(opts, path)
+            } else {
+                Ok(container)
+            }
+        }
+    };
+
+    match built {
+        Ok(c) => Ok(c.elastic_ingestion),
+        Err(e) => Err(CliExit::IoError(format!(
+            "no se pudo inicializar la ingesta de vectores: {e}"
+        ))),
+    }
+}

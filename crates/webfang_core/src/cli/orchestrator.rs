@@ -2,26 +2,27 @@
 //!
 //! Orchestrates URL discovery, scraping, and export phases.
 
-use tokio::task::JoinSet;
-use tracing::{error, info, instrument, warn};
+use tracing::{error, info, instrument};
+
+#[cfg(not(feature = "ai"))]
+use tracing::warn;
 
 use crate::application::crawl_options::CrawlOptions;
-use crate::cli::completions::generate_completions;
+use crate::cli::elastic::{build_elastic_ingestion, run_elastic_ingestion};
 use crate::cli::error::CliExit;
 use crate::cli::export_flow::{run_export, save_files, ExportConfig};
+use crate::cli::parse::parse_asset_naming;
 use crate::cli::scrape_flow::{apply_resume_mode, scrape_urls};
 use crate::cli::url_discovery::discover_urls;
 use crate::domain::http_config::HttpClientConfig;
-use crate::domain::repository::DynVectorRepository;
-use crate::error::ScraperError;
-use crate::Args;
 use crate::CrawlerConfig;
 use crate::ScraperConfig;
 
 use crate::domain;
 use crate::infrastructure::export::state_store::StateStore;
 use crate::infrastructure::output::file_saver::ObsidianOptions;
-use crate::Shell;
+
+pub use crate::cli::parse::handle_completions;
 
 #[cfg(feature = "ai")]
 use crate::domain::semantic_cleaner::SemanticCleaner;
@@ -32,20 +33,6 @@ use crate::application::adaptive_engine::AdaptiveSelectorEngine;
 /// Placeholder when `adaptive-selectors` feature is disabled.
 #[cfg(not(feature = "adaptive-selectors"))]
 type AdaptiveSelectorEngine = ();
-
-/// Handle shell completion generation.
-pub fn handle_completions(shell: Shell) -> CliExit {
-    let clap_shell = match shell {
-        Shell::Bash => clap_complete::Shell::Bash,
-        Shell::Elvish => clap_complete::Shell::Elvish,
-        Shell::Fish => clap_complete::Shell::Fish,
-        Shell::PowerShell => clap_complete::Shell::PowerShell,
-        Shell::Zsh => clap_complete::Shell::Zsh,
-    };
-    generate_completions::<Args>(clap_shell)
-        .map(|_| CliExit::Success)
-        .unwrap_or_else(|_| CliExit::UsageError("completion generation failed".into()))
-}
 
 /// Create an unbounded channel and a `LiveProgressObserver` wired to it.
 ///
@@ -418,123 +405,6 @@ fn report_phase(
     None
 }
 
-/// Run the elastic ingestion pipeline on all scraped results.
-///
-/// Each URL is processed concurrently via a bounded `JoinSet` with
-/// concurrency limited by the elastic config's CPU core count.
-///
-/// Fail-fast (frozen Decision 3 + D2): the first ingestion error — including a
-/// broken pipe / `WriteZero` while streaming JSONL — propagates immediately and
-/// aborts the crawl, rather than being swallowed as a warning.
-async fn run_elastic_ingestion(
-    ingestion: &std::sync::Arc<
-        crate::application::elastic_ingestion::ElasticIngestion<DynVectorRepository>,
-    >,
-    results: &[crate::domain::ScrapedContent],
-) -> Result<(), ScraperError> {
-    if results.is_empty() {
-        return Ok(());
-    }
-
-    let mut join_set = JoinSet::new();
-    let concurrency = num_cpus::get().max(4); // bounded concurrency
-
-    for result in results {
-        let ing = std::sync::Arc::clone(ingestion);
-        let url = result.url.clone();
-
-        while join_set.len() >= concurrency {
-            match join_set.join_next().await {
-                // `T` is `Result<(), ScraperError>` (the spawned task's output).
-                Some(Ok(Ok(()))) => {},            // success
-                Some(Ok(Err(e))) => return Err(e), // ingestion error (D2 fail-fast)
-                Some(Err(_join_err)) => {
-                    return Err(ScraperError::ingestion(
-                        "tarea de ingesta elástica cancelada",
-                    ));
-                },
-                None => break,
-            }
-        }
-
-        join_set.spawn(async move {
-            let url_str = url.to_string();
-            ing.run(&url_str).await
-        });
-    }
-
-    // Await remaining tasks (propagate the first error — D2 fail-fast).
-    while let Some(result) = join_set.join_next().await {
-        if let Ok(Err(e)) = result {
-            return Err(e);
-        }
-    }
-    Ok(())
-}
-
-/// Build the elastic ingestion pipeline for the run.
-///
-/// - `persistence` ON + `--elastic` → SQLite-backed `SqliteVectorRepository`.
-/// - `--output-vectors <path|->` → dependency-free `StreamRepository` JSONL sink
-///   (available in every build, including the lightweight core binary).
-/// - otherwise → `None` (no ingestion).
-async fn build_elastic_ingestion(
-    opts: &CrawlOptions,
-) -> Result<
-    Option<
-        std::sync::Arc<
-            crate::application::elastic_ingestion::ElasticIngestion<DynVectorRepository>,
-        >,
-    >,
-    CliExit,
-> {
-    let container = match crate::application::container::Container::new(
-        CrawlerConfig::new(opts.url.clone()),
-        ScraperConfig::default(),
-    )
-    .await
-    {
-        Ok(c) => c,
-        Err(e) => {
-            if opts.elastic.enabled || opts.elastic.output_vectors.is_some() {
-                return Err(CliExit::IoError(format!(
-                    "no se pudo crear el contenedor para ingesta elástica: {e}"
-                )));
-            }
-            warn!("no se pudo crear el contenedor para ingesta elástica: {e}");
-            return Ok(None);
-        },
-    };
-
-    let built = {
-        #[cfg(feature = "persistence")]
-        {
-            if opts.elastic.enabled {
-                container.with_elastic(opts).await
-            } else if let Some(ref path) = opts.elastic.output_vectors {
-                container.with_stream(opts, path)
-            } else {
-                Ok(container)
-            }
-        }
-        #[cfg(not(feature = "persistence"))]
-        {
-            if let Some(ref path) = opts.elastic.output_vectors {
-                container.with_stream(opts, path)
-            } else {
-                Ok(container)
-            }
-        }
-    };
-
-    match built {
-        Ok(c) => Ok(c.elastic_ingestion),
-        Err(e) => Err(CliExit::IoError(format!(
-            "no se pudo inicializar la ingesta de vectores: {e}"
-        ))),
-    }
-}
-
 /// Run batch processing mode: crawl multiple URLs from stdin or file
 async fn run_batch(opts: CrawlOptions) -> CliExit {
     use crate::application::batch::BatchManager;
@@ -641,16 +511,6 @@ fn plan_urls(
             urls.insert(0, seed_url);
         }
         urls
-    }
-}
-
-/// Parse asset naming strategy from CLI string.
-fn parse_asset_naming(s: &str) -> crate::adapters::downloader::AssetNamingStrategy {
-    use crate::adapters::downloader::AssetNamingStrategy;
-    match s.to_lowercase().as_str() {
-        "slug" => AssetNamingStrategy::Slug,
-        "content-disposition" => AssetNamingStrategy::ContentDisposition,
-        _ => AssetNamingStrategy::Hash,
     }
 }
 
