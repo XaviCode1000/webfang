@@ -55,11 +55,11 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use futures::future::try_join_all;
+use futures::future::{try_join, try_join_all};
 use hf_hub::api::tokio::ApiBuilder;
 use hf_hub::{Cache as HfCache, Repo, RepoType};
 use sha2::{Digest, Sha256};
-use tracing::{debug, info};
+use tracing::{debug, info, Instrument};
 
 use crate::infrastructure_ai::cache_config::AiModel;
 use crate::infrastructure_ai::{
@@ -260,6 +260,7 @@ impl SemanticCleanerImpl {
     /// - **First call**: Model download (~90MB) + load (~100-500ms)
     /// - **Subsequent calls**: Cache hit, ~10-50ms per page
     /// - **Memory**: Memory-mapped files, ~90MB virtual memory
+    #[tracing::instrument(skip(config), fields(repo = %config.repo, model_file = %config.model_file, offline_mode = config.offline_mode))]
     pub async fn new(config: ModelConfig) -> Result<Self, SemanticError> {
         info!(
             repo = %config.repo,
@@ -295,7 +296,7 @@ impl SemanticCleanerImpl {
             (model_path, tokenizer_path)
         } else {
             let api = ApiBuilder::from_env()
-                .with_progress(false)
+                .with_progress(true)
                 .build()
                 .map_err(|e| SemanticError::Download {
                     repo: config.repo.clone(),
@@ -305,8 +306,16 @@ impl SemanticCleanerImpl {
             let repo = api.model(config.repo.clone());
 
             // Resolve both assets concurrently (cache-first, downloads if missing).
+            // `with_progress(true)` surfaces hf_hub's built-in progress bar so the
+            // first download (~390MB) is not perceived as a hang; the span makes
+            // the download phase observable in the trace file.
             let (model_path, tokenizer_path) =
-                tokio::try_join!(repo.get(&config.model_file), repo.get("tokenizer.json"))
+                try_join(repo.get(&config.model_file), repo.get("tokenizer.json"))
+                    .instrument(tracing::info_span!(
+                        "download_model_assets",
+                        repo = %config.repo
+                    ))
+                    .await
                     .map_err(|e| SemanticError::Download {
                         repo: config.repo.clone(),
                         cause: format!("HuggingFace API error: {e}"),
@@ -324,16 +333,11 @@ impl SemanticCleanerImpl {
                 .map_err(SemanticError::ModelLoad)?,
         );
 
-        debug!("Validating model integrity...");
-        let actual_hash = format!("{:x}", Sha256::digest(model_bytes.as_slice()));
-        if actual_hash != config.model_variant.sha256() {
-            return Err(SemanticError::CacheValidation {
-                repo: config.repo.clone(),
-                expected: config.model_variant.sha256().to_string(),
-                actual: actual_hash,
-            });
-        }
-        debug!(sha = %actual_hash, "SHA256 validation passed");
+        validate_model_hash(
+            model_bytes.as_slice(),
+            config.model_variant.sha256(),
+            &config.repo,
+        )?;
 
         // Initialize all pipeline components.
         let tokenizer = MiniLmTokenizer::from_file(&tokenizer_path).await?;
@@ -612,6 +616,30 @@ impl SemanticCleanerImpl {
     }
 }
 
+/// Validate the SHA256 hash of in-memory model bytes against an expected value.
+///
+/// Extracted from [`SemanticCleanerImpl::new`] so the integrity check is
+/// unit-testable without downloading a model or loading the ONNX runtime.
+///
+/// # Errors
+///
+/// Returns [`SemanticError::CacheValidation`] when the computed hash does not
+/// match `expected`.
+#[tracing::instrument(skip(bytes), fields(repo = %repo, expected = %expected))]
+fn validate_model_hash(bytes: &[u8], expected: &str, repo: &str) -> Result<(), SemanticError> {
+    debug!("Validating model integrity...");
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if actual != expected {
+        return Err(SemanticError::CacheValidation {
+            repo: repo.to_string(),
+            expected: expected.to_string(),
+            actual,
+        });
+    }
+    debug!(sha = %actual, "SHA256 validation passed");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -736,5 +764,41 @@ mod tests {
         // This test would require creating a SemanticCleanerImpl instance,
         // which requires async setup. Skipping for now.
         // The method is tested indirectly through integration tests.
+    }
+
+    #[test]
+    fn test_validate_model_hash_mismatch_returns_cache_validation() {
+        // Exercises the REAL validation path: known content plus a WRONG
+        // expected hash must yield CacheValidation carrying both hashes + repo.
+        let bytes = b"webfang deterministic test payload";
+        let wrong_expected = "0000000000000000000000000000000000000000000000000000000000000000";
+
+        let result = validate_model_hash(bytes, wrong_expected, "test/repo");
+
+        match result {
+            Err(SemanticError::CacheValidation {
+                repo,
+                expected,
+                actual,
+            }) => {
+                assert_eq!(repo, "test/repo");
+                assert_eq!(expected, wrong_expected);
+                // The actual hash is the real SHA256 of the payload (64 hex
+                // chars), never the bogus expected value.
+                assert_ne!(actual, wrong_expected);
+                assert_eq!(actual.len(), 64);
+            },
+            other => panic!("expected CacheValidation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_validate_model_hash_match_passes() {
+        // Success path: feeding back the real SHA256 must validate cleanly,
+        // proving the helper round-trips the digest correctly.
+        let bytes = b"webfang deterministic test payload";
+        let real_hash = format!("{:x}", Sha256::digest(bytes));
+
+        assert!(validate_model_hash(bytes, &real_hash, "test/repo").is_ok());
     }
 }
