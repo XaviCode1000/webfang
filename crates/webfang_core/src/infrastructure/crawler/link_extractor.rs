@@ -119,6 +119,10 @@ pub fn is_internal_link(url: &str, domain: &str) -> bool {
 /// - `remove_query_parameters: All` — strips query strings for dedup
 /// - `sort_query_parameters: true` — consistent ordering
 ///
+/// After normalization, a trailing `/index.html` or `/index.htm` path segment
+/// is collapsed to `/` (case-insensitive, idempotent) so the same document is
+/// not stored under two URLs.
+///
 /// # Returns
 ///
 /// Normalized URL string
@@ -149,6 +153,10 @@ pub fn is_internal_link(url: &str, domain: &str) -> bool {
 ///     normalize_url("https://example.com:443/page", true),
 ///     "https://example.com/page"
 /// );
+/// assert_eq!(
+///     normalize_url("https://example.com/index.html", true),
+///     "https://example.com"
+/// );
 /// ```
 #[inline]
 #[must_use]
@@ -173,7 +181,54 @@ pub fn normalize_url(url: &str, strip_www: bool) -> String {
 
     // url-normalize handles WHATWG preprocessing (control chars, backslashes,
     // trailing whitespace) and produces idempotent output.
-    normalize(url, &opts).unwrap_or_else(|_| url.to_string())
+    let normalized = normalize(url, &opts).unwrap_or_else(|_| url.to_string());
+
+    // Collapse /index.html and /index.htm to / so the same document is not
+    // stored under two URLs (idempotent, case-insensitive).
+    collapse_index_path(&normalized)
+}
+
+/// Collapse a trailing `/index.html` or `/index.htm` path segment to `/`.
+///
+/// Many servers serve identical content at both `/` and `/index.html`;
+/// collapsing them lets the crawler deduplicate what would otherwise be two
+/// URLs pointing at the same document.
+///
+/// Guarantees:
+/// - Case-insensitive filename match (`/Index.HTML` collapses too).
+/// - Idempotent — an already-collapsed `/` path is returned unchanged.
+/// - Anchored on a `/` segment boundary, so `/my-index.html` is NOT collapsed.
+/// - Only `index.html` / `index.htm` — never `/index.php`, `/default.aspx`, etc.
+///
+/// If the normalized URL cannot be re-parsed, it is returned unchanged.
+#[inline]
+#[must_use]
+fn collapse_index_path(url: &str) -> String {
+    let Ok(mut parsed) = Url::parse(url) else {
+        return url.to_string();
+    };
+
+    let lower = parsed.path().to_ascii_lowercase();
+    let collapsed = lower
+        .strip_suffix("/index.html")
+        .or_else(|| lower.strip_suffix("/index.htm"))
+        .map(|parent| format!("{parent}/"));
+
+    match collapsed {
+        Some(new_path) => {
+            parsed.set_path(&new_path);
+            let mut result = parsed.to_string();
+            // The `url` crate serializes a root path as "https://host/", but
+            // url-normalize canonicalizes a bare root to "https://host" (no
+            // slash). Mirror that so "/" and "/index.html" produce the SAME
+            // string and deduplicate (#344). Nested paths keep their slash.
+            if parsed.path() == "/" {
+                result.pop();
+            }
+            result
+        },
+        None => url.to_string(),
+    }
 }
 
 /// Extract domain from URL
@@ -372,6 +427,74 @@ mod tests {
         assert_eq!(
             normalize_url("http://example.com:80/page", true),
             "http://example.com/page"
+        );
+    }
+
+    // ============================================================================
+    // /index.html and /index.htm collapse tests (Refs #344)
+    // ============================================================================
+
+    #[test]
+    fn test_normalize_url_index_html() {
+        // Collapses to the canonical root form. url-normalize drops the bare
+        // root slash, so this is "https://example.com" (not ".../").
+        assert_eq!(
+            normalize_url("https://example.com/index.html", true),
+            "https://example.com"
+        );
+    }
+
+    #[test]
+    fn test_normalize_url_index_htm() {
+        assert_eq!(
+            normalize_url("https://example.com/index.htm", true),
+            "https://example.com"
+        );
+    }
+
+    #[test]
+    fn test_normalize_url_nested_index_html() {
+        // Nested paths keep their trailing slash.
+        assert_eq!(
+            normalize_url("https://example.com/docs/index.html", true),
+            "https://example.com/docs/"
+        );
+    }
+
+    #[test]
+    fn test_normalize_url_index_html_case_insensitive() {
+        assert_eq!(
+            normalize_url("https://example.com/INDEX.HTML", true),
+            "https://example.com"
+        );
+    }
+
+    #[test]
+    fn test_normalize_url_index_html_idempotent() {
+        // "/" and "/index.html" canonicalize to the SAME string (dedup, #344).
+        let root = normalize_url("https://example.com/", true);
+        let from_index = normalize_url("https://example.com/index.html", true);
+        assert_eq!(root, "https://example.com");
+        assert_eq!(from_index, root);
+
+        // Normalizing an already-normalized URL is a no-op (idempotent).
+        let again = normalize_url(&from_index, true);
+        assert_eq!(again, from_index);
+    }
+
+    #[test]
+    fn test_normalize_url_not_index_php() {
+        assert_eq!(
+            normalize_url("https://example.com/index.php", true),
+            "https://example.com/index.php"
+        );
+    }
+
+    #[test]
+    fn test_normalize_url_index_html_in_filename() {
+        assert_eq!(
+            normalize_url("https://example.com/my-index.html", true),
+            "https://example.com/my-index.html"
         );
     }
 
