@@ -6,27 +6,26 @@
 
 use std::path::Path;
 
-/// Minimal encoding for Obsidian URI parameters.
+/// Comprehensive percent-encoding for Obsidian URI parameters.
 ///
-/// Unlike full URL encoding, this preserves forward slashes and other
-/// characters that Obsidian expects unencoded in URI query values.
-/// Only encodes characters that would break URI parsing: `&`, `=`,
-/// `#`, `?`, `%`, `+`, space, and non-ASCII.
+/// Whitelist-based: only RFC 3986 unreserved characters (`A-Z a-z 0-9 - _ . ~`)
+/// plus `/` (Obsidian needs slashes unencoded in file paths) survive verbatim.
+/// Every other ASCII character — including all cmd.exe metacharacters
+/// (`| > < ^ ; ( ) & = # ? % + space`) — is percent-encoded so it can never be
+/// interpreted by a shell. This neutralizes shell metacharacters (Windows
+/// cmd.exe safety) while preserving `/` for Obsidian file paths. Non-ASCII
+/// characters are UTF-8 percent-encoded byte by byte.
 fn encode_obsidian_param(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for ch in input.chars() {
         match ch {
-            '&' | '=' | '#' | '?' | '%' | '+' => {
-                out.push_str(&format!("%{:02X}", ch as u32));
-            },
-            ' ' => {
-                out.push_str("%20");
-            },
-            c if c.is_ascii() => {
-                out.push(c);
-            },
+            // RFC 3986 unreserved chars + '/' (Obsidian needs slashes unencoded in file paths).
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' | '/' => out.push(ch),
+            // Every other ASCII char — including cmd.exe metacharacters | > < ^ ; ( ) & = # ? % +
+            // and space — is percent-encoded so it can never be interpreted by a shell.
+            c if c.is_ascii() => out.push_str(&format!("%{:02X}", c as u32)),
+            // Non-ASCII: UTF-8 percent-encode each byte.
             c => {
-                // Non-ASCII: UTF-8 percent-encode each byte
                 let mut buf = [0u8; 4];
                 for &byte in c.encode_utf8(&mut buf).as_bytes() {
                     out.push_str(&format!("%{byte:02X}"));
@@ -53,6 +52,27 @@ pub fn build_obsidian_uri(vault_name: &str, file_path: &str) -> String {
     )
 }
 
+/// Validate Obsidian URI inputs, rejecting ASCII control characters.
+///
+/// Shell metacharacters are neutralized by `encode_obsidian_param` (percent-encoded),
+/// so they are safe in the URI. Control characters (newline, null byte, etc.) have no
+/// legitimate place in a vault name or note path and are rejected outright as a signal
+/// of malformed or hostile input.
+///
+/// # Errors
+/// Returns `Err` with a user-facing (Spanish) message if either input contains an
+/// ASCII control character.
+pub fn validate_obsidian_input(vault_name: &str, file_path: &str) -> Result<(), String> {
+    for (label, value) in [("vault_name", vault_name), ("file_path", file_path)] {
+        if value.chars().any(|c| c.is_ascii_control()) {
+            return Err(format!(
+                "{label} contiene caracteres de control no permitidos"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Open a note in Obsidian using the URI protocol (fire-and-forget).
 ///
 /// Uses `xdg-open` on Linux, `open` on macOS, `start` on Windows.
@@ -64,8 +84,12 @@ pub fn build_obsidian_uri(vault_name: &str, file_path: &str) -> String {
 /// # Returns
 /// `Ok(())` on spawn, `Err(String)` if command fails to start
 pub fn open_in_obsidian(uri: &str) -> Result<(), String> {
+    // The URI is fully percent-encoded by `build_obsidian_uri` (no raw
+    // metacharacters or quotes can appear), and on Windows the empty `""`
+    // title prevents `start` from consuming the URI as a window title.
+    // Together these make `cmd /C start` safe on Windows.
     let (cmd, args) = if cfg!(target_os = "windows") {
-        ("cmd", vec!["/C", "start", uri])
+        ("cmd", vec!["/C", "start", "", uri])
     } else if cfg!(target_os = "macos") {
         ("open", vec![uri])
     } else {
@@ -121,6 +145,8 @@ pub fn open_note(vault_path: &Path, file_path: &Path) -> Result<(), String> {
         .replace('\\', "/")
         .trim_end_matches(".md")
         .to_string();
+
+    validate_obsidian_input(&vault_name, &file_str)?;
 
     let uri = build_obsidian_uri(&vault_name, &file_str);
     open_in_obsidian(&uri)
@@ -178,5 +204,43 @@ mod tests {
     #[test]
     fn test_extract_vault_name_root() {
         assert_eq!(extract_vault_name(Path::new("/")), "Unknown");
+    }
+
+    #[test]
+    fn test_encode_neutralizes_pipe_injection() {
+        let uri = build_obsidian_uri("foo|calc.exe", "note");
+        assert!(!uri.contains('|'));
+        assert!(uri.contains("vault=foo%7Ccalc.exe"));
+    }
+
+    #[test]
+    fn test_encode_neutralizes_all_cmd_metacharacters() {
+        for meta in ['|', '>', '<', '^', ';', '(', ')', '&', '"', '\n', '\r'] {
+            let input = format!("a{meta}b");
+            let uri = build_obsidian_uri(&input, "note");
+            // Isolate the encoded vault value (between `vault=` and `&file=`).
+            // The whole URI structurally contains '&' and '=' as query separators,
+            // so asserting on the full string would false-positive on those
+            // legitimate characters even though the value is correctly encoded.
+            let vault_value = uri
+                .strip_prefix("obsidian://open?vault=")
+                .and_then(|rest| rest.split("&file=").next())
+                .unwrap_or_default();
+            assert!(
+                !vault_value.contains(meta),
+                "metacharacter {meta:?} leaked into vault value: {vault_value}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_rejects_control_chars() {
+        assert!(validate_obsidian_input("vault\nname", "note").is_err());
+        assert!(validate_obsidian_input("vault", "note\0path").is_err());
+    }
+
+    #[test]
+    fn test_validate_accepts_normal_input() {
+        assert!(validate_obsidian_input("My Vault", "Folder/Subfolder/note").is_ok());
     }
 }

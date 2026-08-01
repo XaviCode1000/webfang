@@ -230,6 +230,11 @@ pub async fn scrape_with_config(
                 }
             }
 
+            let author = crate::infrastructure::scraper::author_extractor::extract_author(
+                &html,
+                article.byline.as_deref(),
+            );
+
             results.push(ScrapedContent {
                 // H1 FIX: Use title from original DOM, falling back to Readability's title
                 title: crate::application::resolve_title(
@@ -243,7 +248,7 @@ pub async fn scrape_with_config(
                 content: article.text_content,
                 url: ValidUrl::new(url.clone()),
                 excerpt: article.excerpt,
-                author: article.byline,
+                author,
                 date: article.published_time,
                 // Store CLEAN HTML from Readability (not raw HTML with nav/ads/footer)
                 // This is what downstream Markdown converters receive.

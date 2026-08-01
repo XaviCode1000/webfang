@@ -204,6 +204,13 @@ async fn __main() -> CliExit {
     };
 
     // =========================================================================
+    // 1b. Merge positional URL into --url (positional is syntactic sugar)
+    // =========================================================================
+    if let Some(pos_url) = args.positional_url.take() {
+        args.crawler.url = Some(pos_url);
+    }
+
+    // =========================================================================
     // 2. Handle subcommands (completions)
     // =========================================================================
     if let Some(Commands::Completions { shell }) = args.subcommand {
