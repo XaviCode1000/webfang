@@ -1147,8 +1147,9 @@ async fn test_metrics_empty_state_honest_error() {
 
 /// REQ-04: search_obsidian returns an honest `CallToolResult::error`
 /// (isError:true, Spanish) stating the capability is not yet implemented and
-/// referencing the follow-up issue — never a false success, never a protocol
-/// error.
+/// Without `--features ai`, the embedding/note/chunker ports are absent.
+/// `search_obsidian` must return an honest Spanish error explaining the
+/// missing capability — never a false success, never a protocol error.
 #[tokio::test]
 async fn test_search_obsidian_not_implemented_is_honest_error() {
     let (base_url, _handle) = start_test_server().await;
@@ -1176,11 +1177,7 @@ async fn test_search_obsidian_not_implemented_is_honest_error() {
     let text = tool_text(&result);
     assert!(
         text.contains("búsqueda semántica"),
-        "honest Spanish not-implemented error expected, got: {text}"
-    );
-    assert!(
-        text.contains("issue #386"),
-        "error must reference the follow-up issue, got: {text}"
+        "honest Spanish not-available error expected, got: {text}"
     );
 }
 

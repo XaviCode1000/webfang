@@ -2,7 +2,7 @@
 //!
 //! Defines the contract for splitting text into semantic chunks.
 //! The concrete Markdown implementation lives in `webfang_ai`
-//! ([`MarkdownChunker`]); the HTML implementation uses [`HtmlChunker`].
+//! (`MarkdownChunker`); the HTML implementation uses `HtmlChunker`.
 //!
 //! This trait enables the application layer to orchestrate chunking
 //! without depending on `webfang_ai` directly (dependency inversion).

@@ -2,7 +2,7 @@
 //!
 //! Defines the contract for generating embedding vectors from text.
 //! Concrete implementations live in the `webfang_ai` crate (wrapping
-//! [`InferencePool`]). The trait uses `BoxFuture` for dyn-compatibility,
+//! `InferencePool`). The trait uses `BoxFuture` for dyn-compatibility,
 //! matching the pattern established in [`super::semantic_inspector`] and
 //! [`super::repository::VectorRepository`].
 //!
