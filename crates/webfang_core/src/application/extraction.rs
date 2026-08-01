@@ -141,6 +141,59 @@ pub async fn scrape_with_readability(
     Ok(outcome.results)
 }
 
+/// Canonical adaptive selector repair (Tier 1 lexical cascade).
+///
+/// Single home for the "extraction fell back → ask the adaptive engine for a
+/// repaired selector → re-extract" use case, shared by [`extract_content`] and
+/// `scrape_with_config` (issue #442 — previously duplicated in both). When the
+/// engine yields a selector that matches, the repaired [`ExtractResult`] is
+/// returned; otherwise the original fallback is preserved unchanged.
+///
+/// `inspector` is threaded through to [`extract_with_selector`] for diagnostics
+/// (`scrape_with_config` passes its inspector; [`extract_content`] passes
+/// `None`).
+#[cfg(feature = "adaptive-selectors")]
+pub(crate) async fn adaptive_selector_repair(
+    extract_result: ExtractResult,
+    engine: Option<&AdaptiveSelectorEngine>,
+    selector: &str,
+    host: Option<&str>,
+    inspector: Option<&dyn DomInspectorPort>,
+) -> ExtractResult {
+    if let ExtractResult::Fallback { html, diagnostic } = extract_result {
+        if let Some(engine) = engine {
+            match engine
+                .select_sync_aware(
+                    html.clone(),
+                    selector.to_owned(),
+                    host.map(|s| s.to_owned()),
+                )
+                .await
+            {
+                Ok(outcome) => {
+                    let repaired =
+                        extract_with_selector(&html, &outcome.suggestion.selector, inspector);
+                    if repaired.is_matched() {
+                        tracing::info!(
+                            repaired_selector = %outcome.suggestion.selector,
+                            method = ?outcome.status,
+                            "adaptive_repair_resolved"
+                        );
+                        repaired
+                    } else {
+                        ExtractResult::Fallback { html, diagnostic }
+                    }
+                },
+                Err(_) => ExtractResult::Fallback { html, diagnostic },
+            }
+        } else {
+            ExtractResult::Fallback { html, diagnostic }
+        }
+    } else {
+        extract_result
+    }
+}
+
 /// Pipeline de extracción de contenido: clean → selector → adaptive → readability/fallback.
 ///
 /// Recibe HTML ya fetchado y validado (post-WAF). No conoce el transporte.
@@ -163,43 +216,18 @@ pub async fn extract_content(
 
     // Apply CSS selector extraction if a non-default selector is configured.
     let extract_result = extract_with_selector(&cleaned_html, &config.selector, None);
-
-    // Adaptive selector repair (Tier 1 lexical): when extraction falls back and
-    // an engine is wired in, try to find a repaired selector and re-extract.
-    // Mirrors the repair in `scrape_with_config`; this TUI path keeps its own
-    // binary/metrics handling instead of delegating to that function.
+    // Adaptive selector repair (Tier 1 lexical): delegate to the canonical
+    // shared helper (#442). This TUI path passes no inspector and keeps its own
+    // binary/metrics handling instead of delegating to `scrape_with_config`.
     #[cfg(feature = "adaptive-selectors")]
-    let extract_result = if let ExtractResult::Fallback { html, diagnostic } = extract_result {
-        if let Some(engine) = engine {
-            match engine
-                .select_sync_aware(
-                    html.clone(),
-                    config.selector.clone(),
-                    url.host_str().map(|s| s.to_owned()),
-                )
-                .await
-            {
-                Ok(outcome) => {
-                    let repaired = extract_with_selector(&html, &outcome.suggestion.selector, None);
-                    if repaired.is_matched() {
-                        tracing::info!(
-                            repaired_selector = %outcome.suggestion.selector,
-                            method = ?outcome.status,
-                            "adaptive_repair_resolved"
-                        );
-                        repaired
-                    } else {
-                        ExtractResult::Fallback { html, diagnostic }
-                    }
-                },
-                Err(_) => ExtractResult::Fallback { html, diagnostic },
-            }
-        } else {
-            ExtractResult::Fallback { html, diagnostic }
-        }
-    } else {
-        extract_result
-    };
+    let extract_result = adaptive_selector_repair(
+        extract_result,
+        engine,
+        &config.selector,
+        url.host_str(),
+        None,
+    )
+    .await;
 
     let extraction_html = extract_result.as_html().to_owned();
 
