@@ -2,6 +2,7 @@
 //!
 //! Wraps `wreq::Client` with retry logic, UA rotation, and WAF detection.
 
+use super::retry::{retry_with_backoff, RetryPolicy};
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::http_error::{HttpError, HttpResult};
 use crate::domain::session_port::{SessionId, SessionPort};
@@ -195,7 +196,6 @@ impl HttpClient {
 
     async fn get_inner(&self, url: &str) -> HttpResult<String> {
         let mut ua_index = 0;
-        let max_attempts = self.config.max_retries;
 
         loop {
             if ua_index >= self.user_agents.len() && ua_index > 0 {
@@ -288,55 +288,19 @@ impl HttpClient {
 
                     debug!("429 Rate Limited, retry after {}s", retry_after);
 
-                    let mut attempt = 0;
-                    let ua_for_retry = ua.clone();
-                    while attempt < max_attempts {
-                        attempt += 1;
-
-                        let delay_ms = if retry_after > 0 {
-                            retry_after * 1000
-                        } else {
-                            let exponent = attempt.saturating_sub(1);
-                            let delay = self.config.backoff_base_ms * (2_u64.pow(exponent));
-                            delay.min(self.config.backoff_max_ms)
-                        };
-
-                        debug!("429 retry attempt {} after {}ms", attempt, delay_ms);
-                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-
-                        let request = self
-                            .client
-                            .get(url)
-                            .header("Accept-Language", &self.config.accept_language)
-                            .header("Accept", &self.config.accept)
-                            .header("Referer", &self.config.referer)
-                            .header("Cache-Control", &self.config.cache_control)
-                            .header("User-Agent", &ua_for_retry);
-
-                        match request.send().await {
-                            Ok(resp) => {
-                                if resp.status().is_success() {
-                                    return resp
-                                        .text()
-                                        .await
-                                        .map_err(|e| HttpError::Request(e.to_string()));
-                                } else if resp.status().as_u16() == 429
-                                    || resp.status().is_server_error()
-                                {
-                                    continue;
-                                } else {
-                                    return Err(HttpError::ClientError(resp.status().as_u16()));
-                                }
-                            },
-                            Err(e) => {
-                                if e.is_timeout() {
-                                    return Err(HttpError::Timeout);
-                                }
-                                continue;
-                            },
-                        }
-                    }
-                    return Err(HttpError::RateLimited(retry_after));
+                    return retry_with_backoff(
+                        &self.client,
+                        url,
+                        &self.config,
+                        &ua,
+                        RetryPolicy {
+                            retry_after_secs: Some(retry_after),
+                            retryable: |code: u16| code == 429 || (500..=599).contains(&code),
+                            exhausted: HttpError::RateLimited(retry_after),
+                            label: "429",
+                        },
+                    )
+                    .await;
                 },
                 500..=599 => {
                     debug!("{} from {}", status, url);
@@ -375,49 +339,19 @@ impl HttpClient {
                         return Err(HttpError::WafChallenge(verdict.evidence_chain()));
                     }
 
-                    let mut attempt = 0;
-                    let ua_for_retry = ua.clone();
-                    while attempt < max_attempts {
-                        attempt += 1;
-
-                        let exponent = attempt.saturating_sub(1);
-                        let delay = self.config.backoff_base_ms * (2_u64.pow(exponent));
-                        let delay_ms = delay.min(self.config.backoff_max_ms);
-
-                        debug!("5xx retry attempt {} after {}ms", attempt, delay_ms);
-                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-
-                        let request = self
-                            .client
-                            .get(url)
-                            .header("Accept-Language", &self.config.accept_language)
-                            .header("Accept", &self.config.accept)
-                            .header("Referer", &self.config.referer)
-                            .header("Cache-Control", &self.config.cache_control)
-                            .header("User-Agent", &ua_for_retry);
-
-                        match request.send().await {
-                            Ok(resp) => {
-                                if resp.status().is_success() {
-                                    return resp
-                                        .text()
-                                        .await
-                                        .map_err(|e| HttpError::Request(e.to_string()));
-                                } else if resp.status().is_server_error() {
-                                    continue;
-                                } else {
-                                    return Err(HttpError::ClientError(resp.status().as_u16()));
-                                }
-                            },
-                            Err(e) => {
-                                if e.is_timeout() {
-                                    return Err(HttpError::Timeout);
-                                }
-                                continue;
-                            },
-                        }
-                    }
-                    return Err(HttpError::ServerError(status.as_u16()));
+                    return retry_with_backoff(
+                        &self.client,
+                        url,
+                        &self.config,
+                        &ua,
+                        RetryPolicy {
+                            retry_after_secs: None,
+                            retryable: |code: u16| (500..=599).contains(&code),
+                            exhausted: HttpError::ServerError(status.as_u16()),
+                            label: "5xx",
+                        },
+                    )
+                    .await;
                 },
                 code if (400..=499).contains(&code) => {
                     return Err(HttpError::ClientError(code));
