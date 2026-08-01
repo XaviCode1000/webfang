@@ -18,7 +18,13 @@ fn parse_threshold(s: &str) -> Result<f32, String> {
 pub struct AiArgs {
     /// Relevance threshold for AI semantic filtering (0.0-1.0)
     #[cfg(feature = "ai")]
-    #[arg(long, default_value = "0.3", env = "WEBFANG_THRESHOLD", value_parser = parse_threshold)]
+    #[arg(
+        long,
+        default_value = "0.3",
+        env = "WEBFANG_THRESHOLD",
+        value_parser = parse_threshold,
+        allow_negative_numbers = true
+    )]
     #[clap(next_help_heading = "AI Settings")]
     pub threshold: f32,
 

@@ -75,6 +75,7 @@ fn test_ram_budget_accepts_plain_bytes_and_suffixes() {
 fn args_with_all_fields_set() -> Args {
     Args {
         subcommand: None,
+        positional_url: None,
 
         crawler: CrawlerArgs {
             url: Some("https://example.com/test".into()),
@@ -459,6 +460,7 @@ proptest! {
     ) {
         let args = Args {
             subcommand: None,
+            positional_url: None,
             crawler: CrawlerArgs {
                 url: Some("https://example.com/prop".into()),
                 selector: "body".into(),
@@ -565,6 +567,7 @@ proptest! {
     ) {
         let args = Args {
             subcommand: None,
+            positional_url: None,
             crawler: CrawlerArgs {
                 url: Some("https://example.com/prop".into()),
                 selector: "body".into(),
@@ -650,6 +653,7 @@ proptest! {
 
         let args = Args {
             subcommand: None,
+            positional_url: None,
             crawler: CrawlerArgs {
                 url: Some("https://example.com/prop".into()),
                 selector,
@@ -729,6 +733,7 @@ proptest! {
     ) {
         let args = Args {
             subcommand: None,
+            positional_url: None,
             crawler: CrawlerArgs {
                 url: Some("https://example.com/prop".into()),
                 selector: "body".into(),
@@ -812,6 +817,7 @@ proptest! {
 
         let args = Args {
             subcommand: None,
+            positional_url: None,
             crawler: CrawlerArgs {
                 url: Some("https://example.com/prop".into()),
                 selector: "body".into(),
@@ -887,6 +893,7 @@ proptest! {
     ) {
         let args = Args {
             subcommand: None,
+            positional_url: None,
             crawler: CrawlerArgs {
                 url: Some("https://example.com/prop".into()),
                 selector: "body".into(),
@@ -960,6 +967,7 @@ proptest! {
 
         let args = Args {
             subcommand: None,
+            positional_url: None,
             crawler: CrawlerArgs {
                 url: Some("https://example.com/prop".into()),
                 selector: "body".into(),

@@ -41,13 +41,17 @@ use clap::Parser;
 #[command(name = "webfang", version)]
 #[command(
     about = "High-performance web scraper with WAF evasion and AI-powered content cleaning",
-    after_help = "EXIT CODES:\n  0    Success\n  2    No URLs discovered\n  3    All scrapers failed\n  64   Bad CLI arguments (usage error)\n  69   WAF block or network error\n  74   I/O error\n  76   Protocol error\n  78   Configuration error\n\nEXAMPLES:\n  webfang -u https://example.com\n  webfang -u https://example.com --ai\n  webfang -u https://example.com -f jsonl\n  webfang -u https://example.com -v\n  webfang -u https://example.com -vv  # DEBUG\n  webfang --url-list urls.txt --resume"
+    after_help = "EXIT CODES:\n  0    Success\n  2    No URLs discovered\n  3    All scrapers failed\n  64   Bad CLI arguments (usage error)\n  69   WAF block or network error\n  74   I/O error\n  76   Protocol error\n  78   Configuration error\n\nEXAMPLES:\n  webfang https://example.com\n  webfang -u https://example.com\n  webfang -u https://example.com --ai\n  webfang -u https://example.com -f jsonl\n  webfang -u https://example.com -v\n  webfang -u https://example.com -vv  # DEBUG\n  webfang --url-list urls.txt --resume"
 )]
-#[command(args_conflicts_with_subcommands = true)]
+#[command(subcommand_negates_reqs = true)]
 pub struct Args {
     /// Subcommands
     #[command(subcommand)]
     pub subcommand: Option<Commands>,
+
+    /// URL to scrape (positional shorthand — equivalent to --url)
+    #[arg(value_name = "URL", conflicts_with = "url")]
+    pub positional_url: Option<String>,
 
     /// Crawler and discovery configuration.
     #[command(flatten)]
@@ -294,5 +298,58 @@ mod tests {
             opts.crawl.ignore_waf,
             "ignore_waf must propagate Args -> CrawlOptions"
         );
+    }
+
+    // ========================================================================
+    // #344 — Positional URL argument
+    // ========================================================================
+
+    #[test]
+    fn positional_url_parses() {
+        clean_env();
+        let args = Args::try_parse_from(["webfang", "https://example.com"]).expect("valid args");
+        assert_eq!(
+            args.positional_url.as_deref(),
+            Some("https://example.com"),
+            "positional URL captured"
+        );
+    }
+
+    #[test]
+    fn positional_url_with_flags() {
+        clean_env();
+        let args = Args::try_parse_from(["webfang", "https://example.com", "--max-pages", "5"])
+            .expect("valid args");
+        assert_eq!(args.positional_url.as_deref(), Some("https://example.com"));
+        assert_eq!(args.crawler.max_pages, 5);
+    }
+
+    #[test]
+    fn positional_url_conflicts_with_flag() {
+        clean_env();
+        let result =
+            Args::try_parse_from(["webfang", "https://example.com", "-u", "https://other.com"]);
+        assert!(result.is_err(), "positional + -u must conflict");
+    }
+
+    #[test]
+    fn completions_still_work() {
+        clean_env();
+        let args = Args::try_parse_from(["webfang", "completions", "bash"]).expect("valid args");
+        assert!(
+            matches!(
+                args.subcommand,
+                Some(Commands::Completions { shell: Shell::Bash })
+            ),
+            "completions subcommand parses without URL"
+        );
+    }
+
+    #[test]
+    fn no_args_no_url_is_ok() {
+        clean_env();
+        let args = Args::try_parse_from(["webfang"]).expect("valid args");
+        assert!(args.positional_url.is_none());
+        assert!(args.crawler.url.is_none());
     }
 }
