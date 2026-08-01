@@ -470,7 +470,7 @@ impl NoteRepository for SqliteVectorRepository {
             let conn = self.pool.get().await.map_err(|e| {
                 ScraperError::persistence(format!("obtener conexión del pool: {e}"))
             })?;
-            let rows: Result<Vec<(String, String, i64, Vec<u8>)>, ScraperError> = conn
+            let rows: Vec<(String, String, i64, Vec<u8>)> = conn
                 .interact(|c| {
                     let mut stmt = c.prepare(
                         "SELECT n.path, nc.content, nc.chunk_index, nc.embedding_vector \
@@ -573,7 +573,7 @@ impl NoteRepository for SqliteVectorRepository {
             let conn = self.pool.get().await.map_err(|e| {
                 ScraperError::persistence(format!("obtener conexión del pool: {e}"))
             })?;
-            let rows: Result<Vec<IndexedNoteMeta>, ScraperError> = conn
+            let rows: Vec<IndexedNoteMeta> = conn
                 .interact(|c| {
                     let mut stmt = c.prepare("SELECT path, content_hash, mtime_secs FROM notes")?;
                     let rows = stmt.query_map([], |row| {
