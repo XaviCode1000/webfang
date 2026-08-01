@@ -17,6 +17,10 @@ use crate::domain::dom_inspector::{
 };
 use crate::domain::semantic_inspector::{SemanticContext, SemanticInspectorPort};
 
+mod cache;
+
+use cache::{CachedEntry, FnvHasher};
+
 /// Whether the repair succeeded and how.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RepairStatus {
@@ -100,12 +104,6 @@ impl Default for AdaptiveSelectorOptions {
     }
 }
 
-/// Cached repair entry with expiration.
-struct CachedEntry {
-    outcome: AdaptiveRepairOutcome,
-    expires_at: Instant,
-}
-
 /// 2-tier adaptive CSS selector repair engine.
 ///
 /// Combines lexical (Tier 1) and semantic (Tier 2) selector suggestions
@@ -182,15 +180,12 @@ impl AdaptiveSelectorEngine {
 
         // 2. Check cache
         let cache_key = self.cache_key(&selector, structural_hash);
-        if let Some(entry) = self.cache.get(&cache_key) {
-            if entry.expires_at > Instant::now() {
-                let mut outcome = entry.outcome.clone();
-                if let Some(ref mut trace) = outcome.trace {
-                    trace.cache_hit = true;
-                }
-                debug!(cache_hit = true, "returning cached repair outcome");
-                return Ok(outcome);
+        if let Some(mut outcome) = self.cache_get(cache_key) {
+            if let Some(ref mut trace) = outcome.trace {
+                trace.cache_hit = true;
             }
+            debug!(cache_hit = true, "returning cached repair outcome");
+            return Ok(outcome);
         }
 
         // 3. Tier 1: lexical via spawn_blocking (HTML parsing is !Sync)
@@ -373,11 +368,9 @@ impl AdaptiveSelectorEngine {
 
         // Check cache first
         let cache_key = self.cache_key(failed_selector, structural_hash);
-        if let Some(entry) = self.cache.get(&cache_key) {
-            if entry.expires_at > Instant::now() {
-                debug!(cache_hit = true, "returning cached repair outcome");
-                return Some(entry.outcome.clone());
-            }
+        if let Some(outcome) = self.cache_get(cache_key) {
+            debug!(cache_hit = true, "returning cached repair outcome");
+            return Some(outcome);
         }
 
         let suggestions = self.inspector.suggest(document, failed_selector);
@@ -431,15 +424,12 @@ impl AdaptiveSelectorEngine {
 
         // Check cache
         let cache_key = self.cache_key(failed_selector, structural_hash);
-        if let Some(entry) = self.cache.get(&cache_key) {
-            if entry.expires_at > Instant::now() {
-                let mut outcome = entry.outcome.clone();
-                if let Some(ref mut trace) = outcome.trace {
-                    trace.cache_hit = true;
-                }
-                debug!(cache_hit = true, "returning cached repair outcome");
-                return Ok(outcome);
+        if let Some(mut outcome) = self.cache_get(cache_key) {
+            if let Some(ref mut trace) = outcome.trace {
+                trace.cache_hit = true;
             }
+            debug!(cache_hit = true, "returning cached repair outcome");
+            return Ok(outcome);
         }
 
         // Tier 1: lexical
@@ -602,58 +592,6 @@ impl AdaptiveSelectorEngine {
             .map(|(class, _)| class.clone())
             .chain(report.common_ids.iter().map(|(id, _)| id.clone()))
             .collect()
-    }
-
-    /// Compute cache key from selector + structural hash.
-    fn cache_key(&self, selector: &str, structural_hash: u64) -> u64 {
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = FnvHasher::default();
-        selector.hash(&mut hasher);
-        structural_hash.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    /// Insert into cache with lazy eviction when at capacity.
-    fn cache_insert(&self, key: u64, outcome: AdaptiveRepairOutcome) {
-        // Lazy eviction: if at capacity, remove expired entries
-        if self.cache.len() >= self.options.max_cache_entries {
-            let now = Instant::now();
-            self.cache.retain(|_, entry| entry.expires_at > now);
-        }
-
-        self.cache.insert(
-            key,
-            CachedEntry {
-                outcome,
-                expires_at: Instant::now() + self.options.cache_ttl,
-            },
-        );
-    }
-
-    /// Get the number of cached entries (for monitoring).
-    #[must_use]
-    pub fn cache_len(&self) -> usize {
-        self.cache.len()
-    }
-}
-
-/// Minimal FNV-1a hasher for deterministic cache key computation.
-#[derive(Default)]
-struct FnvHasher(u64);
-
-impl std::hash::Hasher for FnvHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for &b in bytes {
-            h ^= b as u64;
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        self.0 = h;
     }
 }
 
