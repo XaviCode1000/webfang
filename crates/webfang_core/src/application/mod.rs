@@ -3,6 +3,7 @@
 //! This layer contains the business logic that orchestrates the domain objects
 //! using infrastructure services. It depends on both domain and infrastructure.
 
+pub mod asset_download;
 pub mod batch;
 pub mod container;
 pub mod crawl_options;

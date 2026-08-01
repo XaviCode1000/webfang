@@ -13,7 +13,7 @@
 
 use crate::application::error_mapping::scraper_error_from_http;
 use crate::application::http_client::HttpClientPort;
-use crate::domain::{DomInspectorPort, DownloadedAsset, ExtractResult, ScrapedContent, ValidUrl};
+use crate::domain::{DomInspectorPort, ExtractResult, ScrapedContent, ValidUrl};
 use crate::error::{Result, ScraperError};
 use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
 use crate::infrastructure::observability::log_scrape_error;
@@ -31,6 +31,7 @@ type AdaptiveSelectorEngine = ();
 // Re-exports preserve the historical `scraper_service::*` public paths after
 // the #443 decomposition into focused application modules. Callers (MCP
 // handlers, `crawler::discovery`, integration tests) keep resolving unchanged.
+pub use crate::application::asset_download::download_assets_if_enabled;
 pub use crate::application::extraction::{extract_with_selector, scrape_with_readability};
 pub use crate::application::spa_detection::{
     detect_spa_content, SpaDetectionResult, MIN_CONTENT_CHARS,
@@ -411,72 +412,4 @@ pub async fn scrape_multiple_with_limit(
         urls.len()
     );
     Ok(all_content)
-}
-
-/// Helper: Download assets if config has downloads enabled
-///
-/// Uses the `AssetDownloaderPort` trait for testability.
-/// Falls back to constructing a concrete `Downloader` when no trait object is provided.
-pub async fn download_assets_if_enabled(
-    _html: &str,
-    _base_url: &url::Url,
-    _config: &crate::ScraperConfig,
-    _shared_downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
-) -> Result<Vec<DownloadedAsset>> {
-    if !_config.has_downloads() {
-        return Ok(Vec::new());
-    }
-
-    #[cfg(any(feature = "images", feature = "documents"))]
-    {
-        // Use shared downloader when provided; create a fallback one otherwise
-        let owned_downloader;
-        let downloader: &dyn crate::domain::ports::AssetDownloaderPort = match _shared_downloader {
-            Some(dl) => dl,
-            None => {
-                owned_downloader =
-                    crate::adapters::downloader::Downloader::new(_config.to_download_config())?;
-                &owned_downloader
-            },
-        };
-
-        // Extract URLs from HTML
-        let mut urls: Vec<String> = Vec::new();
-        {
-            let document = scraper::Html::parse_document(_html);
-            if _config.download_images {
-                let images = crate::extractor::extract_images(&document, _base_url);
-                urls.extend(images.into_iter().map(|a| a.url));
-            }
-            if _config.download_documents {
-                let docs = crate::extractor::extract_documents(&document, _base_url);
-                urls.extend(docs.into_iter().map(|a| a.url));
-            }
-        }
-
-        if urls.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Deduplicate URLs to avoid downloading the same asset multiple times
-        // (e.g., same image referenced from multiple <img> tags).
-        use std::collections::HashSet;
-        let mut seen = HashSet::with_capacity(urls.len());
-        urls.retain(|url| seen.insert(url.clone()));
-
-        tracing::info!(
-            "📦 Downloading {} assets via adapters::Downloader",
-            urls.len()
-        );
-
-        let results = downloader.download_batch(&urls).await?;
-
-        // Trait impl already returns domain::DownloadedAsset — collect directly
-        Ok(results)
-    }
-
-    #[cfg(not(any(feature = "images", feature = "documents")))]
-    {
-        Ok(Vec::new())
-    }
 }
