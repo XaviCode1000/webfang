@@ -11,7 +11,8 @@
 //! - **config-externalize**: Concurrency is configurable via ScraperConfig
 //! - **async-concurrency-limit**: Uses buffer_unordered for concurrency control
 
-use crate::application::http_client::{HttpClientPort, HttpError};
+use crate::application::error_mapping::scraper_error_from_http;
+use crate::application::http_client::HttpClientPort;
 use crate::domain::{
     DomInspectorPort, DownloadedAsset, ExtractResult, ScrapedContent, SelectorDiagnostic,
     SelectorErrorKind, ValidUrl,
@@ -29,43 +30,6 @@ use crate::application::adaptive_engine::AdaptiveSelectorEngine;
 /// Placeholder when `adaptive-selectors` feature is disabled.
 #[cfg(not(feature = "adaptive-selectors"))]
 type AdaptiveSelectorEngine = ();
-
-/// Convert an [`HttpError`] into a domain [`CrawlError`] with the URL context.
-///
-/// This is the application-layer half of the `HttpError` → `CrawlError`
-/// mapping; the domain half lives in `domain/error/crawl_error.rs`
-/// (`From<HttpError> for CrawlError`). The two sites MUST stay in sync —
-/// see `tests::test_request_failed_dual_site_agreement`.
-fn crawl_error_from_http(err: HttpError, url: &str) -> crate::domain::error::CrawlError {
-    use crate::domain::error::CrawlError;
-    match err {
-        HttpError::ClientError(code) | HttpError::ServerError(code) => CrawlError::Http {
-            status: code,
-            url: url.to_string(),
-        },
-        HttpError::Forbidden => CrawlError::Http {
-            status: 403,
-            url: url.to_string(),
-        },
-        HttpError::RateLimited(retry_after) => CrawlError::RateLimited(retry_after),
-        HttpError::Timeout => CrawlError::Timeout,
-        HttpError::Connection(msg) => CrawlError::Connection(msg),
-        HttpError::Request(msg) => CrawlError::RequestFailed(msg),
-        HttpError::WafChallenge(provider) => CrawlError::WafChallenge {
-            provider,
-            kind: crate::domain::error::WafDetectionKind::BodySignature,
-            url: url.to_string(),
-        },
-        HttpError::DomainBanned(domain) => {
-            CrawlError::SessionPool(format!("domain banned: {domain}"))
-        },
-    }
-}
-
-/// Convert an [`HttpError`] into a [`ScraperError`] with the URL context.
-fn scraper_error_from_http(err: HttpError, url: &str) -> ScraperError {
-    ScraperError::from(crawl_error_from_http(err, url))
-}
 
 /// Maximum HTML body size to log/instrument (1MB)
 /// Bodies larger than this are skipped to avoid performance issues
@@ -707,47 +671,5 @@ pub async fn download_assets_if_enabled(
     #[cfg(not(any(feature = "images", feature = "documents")))]
     {
         Ok(Vec::new())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::error::CrawlError;
-    use crate::error::ErrorClass;
-
-    /// EC-REQUEST-FAILED: both `HttpError::Request` conversion sites must agree.
-    ///
-    /// Site 1: `application/scraper_service.rs::crawl_error_from_http`
-    /// Site 2: `domain/error/crawl_error.rs` `From<HttpError>`
-    ///
-    /// Both must yield `CrawlError::RequestFailed(msg)` for the same input —
-    /// no divergence between the application and domain conversion paths.
-    #[test]
-    fn test_request_failed_dual_site_agreement() {
-        let msg = "build failed";
-
-        // Site 1 (application layer)
-        let via_service =
-            crawl_error_from_http(HttpError::Request(msg.to_string()), "https://example.com");
-        // Site 2 (domain layer)
-        let via_domain: CrawlError = HttpError::Request(msg.to_string()).into();
-
-        assert!(
-            matches!(&via_service, CrawlError::RequestFailed(m) if m == msg),
-            "service site must produce RequestFailed, got: {via_service:?}"
-        );
-        assert!(
-            matches!(&via_domain, CrawlError::RequestFailed(m) if m == msg),
-            "domain site must produce RequestFailed, got: {via_domain:?}"
-        );
-
-        // Classification is preserved end-to-end: RequestFailed → Internal → InternalFatal.
-        let scraper_err = ScraperError::from(via_service);
-        assert!(
-            matches!(&scraper_err, ScraperError::Internal(m) if m == msg),
-            "RequestFailed must map to ScraperError::Internal, got: {scraper_err}"
-        );
-        assert_eq!(scraper_err.classify(), ErrorClass::InternalFatal);
     }
 }
