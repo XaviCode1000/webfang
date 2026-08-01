@@ -236,30 +236,54 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "depends on external httpbin.org service, flaky in CI/CD"]
     async fn test_validate_http_status_200() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
         let validator = UrlValidator::new().unwrap();
-        let url = Url::parse("https://httpbin.org/status/200").unwrap();
+        let url = Url::parse(&server.uri()).unwrap();
 
         let result = validator.validate_http_status_inner(&url).await;
         assert!(matches!(result, Ok(ValidationResult::Valid)));
     }
 
     #[tokio::test]
-    #[ignore = "depends on external httpbin.org service, flaky in CI/CD"]
     async fn test_validate_http_status_404() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
         let validator = UrlValidator::new().unwrap();
-        let url = Url::parse("https://httpbin.org/status/404").unwrap();
+        let url = Url::parse(&server.uri()).unwrap();
 
         let result = validator.validate_http_status_inner(&url).await;
         assert!(matches!(result, Ok(ValidationResult::Invalid(_))));
     }
 
     #[tokio::test]
-    #[ignore = "depends on external httpbin.org service, flaky in CI/CD"]
     async fn test_validate_http_status_500() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
         let validator = UrlValidator::new().unwrap();
-        let url = Url::parse("https://httpbin.org/status/500").unwrap();
+        let url = Url::parse(&server.uri()).unwrap();
 
         let result = validator.validate_http_status_inner(&url).await;
         assert!(matches!(result, Ok(ValidationResult::Invalid(_))));
