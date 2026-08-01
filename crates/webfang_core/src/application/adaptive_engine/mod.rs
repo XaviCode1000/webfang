@@ -176,7 +176,9 @@ impl AdaptiveSelectorEngine {
             hasher.finish()
         })
         .await
-        .expect("Tier 1 hash computation panicked");
+        .map_err(|e| {
+            SelectorErrorKind::BlockingTaskFailed(format!("tier1 structural hash task failed: {e}"))
+        })?;
 
         // 2. Tier 1: lexical via spawn_blocking (HTML parsing is !Sync)
         let inspector = Arc::clone(&self.inspector);
@@ -187,7 +189,9 @@ impl AdaptiveSelectorEngine {
             inspector.suggest(&document, &selector_clone)
         })
         .await
-        .expect("Tier 1 suggestion panicked");
+        .map_err(|e| {
+            SelectorErrorKind::BlockingTaskFailed(format!("tier1 suggestion task failed: {e}"))
+        })?;
 
         let best_tier1 = t1_suggestions.into_iter().max_by(|a, b| {
             a.score
@@ -212,7 +216,11 @@ impl AdaptiveSelectorEngine {
                 .collect::<Vec<_>>()
         })
         .await
-        .expect("DOM fragment extraction panicked");
+        .map_err(|e| {
+            SelectorErrorKind::BlockingTaskFailed(format!(
+                "dom fragment extraction task failed: {e}"
+            ))
+        })?;
 
         // 4. Run the shared cascade
         let ctx = SemanticContext {
@@ -301,9 +309,9 @@ impl AdaptiveSelectorEngine {
 
     /// Full async repair cascade: Tier 1 + optional Tier 2.
     ///
-    /// Thin wrapper over [`Self::cascade`]: computes the structural hash, the
-    /// Tier 1 suggestions, and the DOM fragments synchronously from the
-    /// already-parsed `document`, then delegates the shared cascade.
+    /// Thin wrapper over the private `cascade` method: computes the structural
+    /// hash, the Tier 1 suggestions, and the DOM fragments synchronously from
+    /// the already-parsed `document`, then delegates the shared cascade.
     ///
     /// # Errors
     ///
