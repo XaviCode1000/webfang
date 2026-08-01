@@ -1,8 +1,9 @@
 //! Cache machinery for the adaptive selector repair engine.
 //!
-//! A TTL-bounded [`DashMap`] keyed by a deterministic FNV-1a hash of the failed
-//! selector combined with the DOM structural hash. Eviction is lazy: expired
-//! entries are purged only when the cache reaches its configured capacity.
+//! A TTL-bounded [`DashMap`](dashmap::DashMap) keyed by a deterministic FNV-1a
+//! hash of the failed selector combined with the DOM structural hash. Eviction
+//! is lazy: expired entries are purged only when the cache reaches its
+//! configured capacity.
 
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
