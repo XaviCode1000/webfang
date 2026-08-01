@@ -35,6 +35,7 @@ pub mod tui_terminal;
 
 pub mod collapsible_config;
 mod config_form;
+mod config_forms;
 mod error_log_widget;
 pub mod modal;
 pub mod progress_types {
