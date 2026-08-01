@@ -135,7 +135,7 @@ impl McpHandler {
 
     /// Convert a URL to a domain-based file path
     #[tool(
-        description = "Convert a URL to a domain-based file path. E.g., 'https://example.com/docs/page' → 'example.com/docs/page.md'."
+        description = "Convert a URL to a domain-based file path. E.g., 'https://example.com/docs/page' → './output/example.com/docs/docs-page.md'. Path segments are flattened into the filename."
     )]
     #[instrument(skip(self), fields(url = %params.url))]
     async fn url_to_file_path(
