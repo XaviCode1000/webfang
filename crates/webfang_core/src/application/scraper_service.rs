@@ -11,11 +11,11 @@
 //! - **config-externalize**: Concurrency is configurable via ScraperConfig
 //! - **async-concurrency-limit**: Uses buffer_unordered for concurrency control
 
+use crate::application::diagnostic::build_diagnostic;
 use crate::application::error_mapping::scraper_error_from_http;
 use crate::application::http_client::HttpClientPort;
 use crate::domain::{
-    DomInspectorPort, DownloadedAsset, ExtractResult, ScrapedContent, SelectorDiagnostic,
-    SelectorErrorKind, ValidUrl,
+    DomInspectorPort, DownloadedAsset, ExtractResult, ScrapedContent, SelectorErrorKind, ValidUrl,
 };
 use crate::error::{Result, ScraperError};
 use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
@@ -131,25 +131,6 @@ pub fn extract_with_selector(
         "<div id=\"selector-extracted\">{}</div>",
         matched.join("\n")
     ))
-}
-
-/// Build a [`SelectorDiagnostic`] using the inspector, or return `None` if no
-/// inspector was provided.
-///
-/// This helper calls `inspector.inspect()` for the DOM structure report and
-/// `inspector.suggest()` for closest-match selector suggestions. It is only
-/// called on the failure path (0 matches or invalid selector).
-fn build_diagnostic(
-    inspector: Option<&dyn DomInspectorPort>,
-    document: &scraper::Html,
-    error_kind: SelectorErrorKind,
-    failed_selector: &str,
-) -> Option<SelectorDiagnostic> {
-    inspector.map(|insp| SelectorDiagnostic {
-        error_kind,
-        report: insp.inspect(document),
-        suggestions: insp.suggest(document, failed_selector),
-    })
 }
 
 /// Scrape a URL using Readability algorithm for clean content extraction

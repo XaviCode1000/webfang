@@ -10,6 +10,7 @@ pub mod crawl_result_repository;
 pub mod crawler;
 pub mod crawler_service;
 pub mod deduplicator;
+pub mod diagnostic;
 pub mod elastic_ingestion;
 pub mod error_mapping;
 pub mod export_factory;
