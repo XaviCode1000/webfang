@@ -10,13 +10,13 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result};
 use tracing::debug;
 use wreq::Client;
 use wreq_util::Profile;
 
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::{CrawlError, CrawlerConfig};
+use crate::error::Result as ScraperResult;
 use crate::infrastructure::http::create_http_client_with_config;
 
 /// Create a rate-limited HTTP client
@@ -48,7 +48,7 @@ use crate::infrastructure::http::create_http_client_with_config;
 ///
 /// let client = create_rate_limited_client(500, Profile::Chrome145).unwrap();
 /// ```
-pub fn create_rate_limited_client(delay_ms: u64, tls_emulation: Profile) -> Result<Client> {
+pub fn create_rate_limited_client(delay_ms: u64, tls_emulation: Profile) -> ScraperResult<Client> {
     // The connect timeout replicates the historical 10s cap of this client; the
     // per-request timeout is applied by `fetch_url` from `CrawlerConfig`.
     let http_config = HttpClientConfig {
@@ -56,8 +56,7 @@ pub fn create_rate_limited_client(delay_ms: u64, tls_emulation: Profile) -> Resu
         connect_timeout_secs: 10,
         ..Default::default()
     };
-    let client = create_http_client_with_config(&http_config)
-        .context("failed to build rate-limited HTTP client")?;
+    let client = create_http_client_with_config(&http_config)?;
 
     debug!(
         "Created rate-limited HTTP client with delay_ms={} tls_emulation={:?}",

@@ -5,7 +5,6 @@
 //! were extracted from `discovery.rs` (issue #442) to separate the sitemap
 //! infrastructure concern from DOM-link discovery.
 
-use anyhow::Result;
 use tracing::{info, span, Level};
 use url::Url;
 
@@ -16,7 +15,6 @@ use crate::infrastructure::crawler::{SitemapConfig, SitemapParser};
 
 /// Crawl site using sitemap (preferred method - FASE 3)
 ///
-/// Following **err-anyhow-for-applications**: Uses anyhow::Result.
 /// Following **own-borrow-over-clone**: Accepts `&str` not `&String`.
 /// Following **api-builder-pattern**: Uses SitemapConfig builder.
 ///
@@ -39,7 +37,7 @@ use crate::infrastructure::crawler::{SitemapConfig, SitemapParser};
 /// use url::Url;
 ///
 /// # #[tokio::main]
-/// # async fn main() -> anyhow::Result<()> {
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let seed = Url::parse("https://example.com")?;
 /// let config = CrawlerConfig::new(seed);
 ///
@@ -65,7 +63,6 @@ pub async fn crawl_with_sitemap(
 /// The public `crawl_with_sitemap` function calls this one.
 ///
 /// Following **own-borrow-over-clone**: Accepts `&str` not `&String`.
-/// Following **err-anyhow-for-applications**: Uses Result with anyhow.
 #[allow(unused_variables)]
 async fn crawl_with_sitemap_internal(
     base_url: &str,
