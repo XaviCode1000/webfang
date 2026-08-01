@@ -51,6 +51,13 @@ impl McpHandler {
     ) -> Result<CallToolResult, McpError> {
         let _permit = acquire_semaphore!(self, obsidian);
 
+        if let Err(e) = webfang_core::infrastructure::obsidian::uri::validate_obsidian_input(
+            &params.vault_name,
+            &params.file_path,
+        ) {
+            return Ok(CallToolResult::error(vec![Content::text(e)]));
+        }
+
         let uri = webfang_core::infrastructure::obsidian::uri::build_obsidian_uri(
             &params.vault_name,
             &params.file_path,
@@ -69,12 +76,19 @@ impl McpHandler {
     ) -> Result<CallToolResult, McpError> {
         let _permit = acquire_semaphore!(self, obsidian);
 
+        if let Err(e) = webfang_core::infrastructure::obsidian::uri::validate_obsidian_input(
+            &params.vault_name,
+            &params.file_path,
+        ) {
+            return Ok(CallToolResult::error(vec![Content::text(e)]));
+        }
+
         let uri = webfang_core::infrastructure::obsidian::uri::build_obsidian_uri(
             &params.vault_name,
             &params.file_path,
         );
-        match tokio::process::Command::new("open").arg(&uri).spawn() {
-            Ok(_) => Ok(CallToolResult::success(vec![Content::text(format!(
+        match webfang_core::infrastructure::obsidian::uri::open_in_obsidian(&uri) {
+            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
                 "Opened in Obsidian: {uri}"
             ))])),
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
