@@ -15,6 +15,7 @@ use smallvec::SmallVec;
 use uuid::Uuid;
 
 use webfang_core::domain::DocumentChunk;
+use webfang_core::domain::TextChunker;
 use webfang_core::error::SemanticError;
 
 use super::sentence::SentenceSplitter;
@@ -327,6 +328,17 @@ impl MarkdownChunker {
         }
 
         result
+    }
+}
+
+// ============================================================================
+// TextChunker trait impl (domain port — dependency inversion)
+// ============================================================================
+
+impl TextChunker for MarkdownChunker {
+    fn chunk_text(&self, text: &str) -> Result<Vec<String>, SemanticError> {
+        let chunks = self.chunk(text)?;
+        Ok(chunks.into_iter().map(|c| c.content).collect())
     }
 }
 
