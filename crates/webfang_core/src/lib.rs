@@ -57,8 +57,8 @@ pub(crate) mod test_fixtures;
 
 // Domain layer
 pub use domain::{
-    ContentType, CrawlError, CrawlResult, CrawlerConfig, CrawlerConfigBuilder, DiscoveredUrl,
-    DownloadedAsset, JsRenderError, JsRenderer, ScrapedContent, SessionId, ValidUrl,
+    ContentType, CrawlError, CrawlErrorCategory, CrawlResult, CrawlerConfig, CrawlerConfigBuilder,
+    DiscoveredUrl, DownloadedAsset, JsRenderError, JsRenderer, ScrapedContent, SessionId, ValidUrl,
 };
 
 // Application layer

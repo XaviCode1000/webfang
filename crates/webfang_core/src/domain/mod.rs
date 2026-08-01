@@ -64,7 +64,7 @@ pub use entities::{
     DocumentChunk, DocumentChunkExported, DocumentChunkUnvalidated, DocumentChunkValidated,
     DownloadedAsset, Draft, ExportState, Exported, ScrapedContent, Validated, ValidationError,
 };
-pub use error::{CrawlError, DomainError};
+pub use error::{CrawlError, CrawlErrorCategory, DomainError};
 pub use exporter::{ExportResult, Exporter, ExporterConfig};
 pub use http_config::{HttpClientConfig, UnknownProfileError};
 pub use http_error::{HttpError, HttpResult};

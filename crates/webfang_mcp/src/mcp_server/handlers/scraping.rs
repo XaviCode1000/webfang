@@ -259,6 +259,7 @@ impl McpHandler {
                     "urls": urls,
                     "total_pages": result.total_pages,
                     "errors": result.errors,
+                    "error_breakdown": result.error_breakdown,
                 });
                 Ok(CallToolResult::success(vec![Content::text(
                     serde_json::to_string_pretty(&json)

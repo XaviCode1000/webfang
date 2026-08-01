@@ -40,6 +40,8 @@ pub struct CrawlTaskCtx {
 
     // --- Per-task mutable (atomics) ---
     pub(crate) error_count: Arc<AtomicUsize>,
+    /// Per-category error counters indexed by `CrawlErrorCategory::index()` (issue #374).
+    pub(crate) error_breakdown: Arc<[AtomicUsize; 8]>,
     pub(crate) pages_crawled: Arc<AtomicU64>,
 
     // --- Infrastructure ---
