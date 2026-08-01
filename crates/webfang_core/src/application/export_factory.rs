@@ -563,4 +563,37 @@ mod tests {
 
         assert_eq!(processed.len(), 1);
     }
+
+    // =========================================================================
+    // create_state_store failure-path characterization (#393)
+    // =========================================================================
+
+    /// Pins the current contract of [`create_state_store`]: it is lazy and
+    /// infallible. `StateStore::new` and `set_cache_dir` perform no I/O, so the
+    /// store is created successfully even when `state_dir` is a regular file
+    /// where no directory could ever be created.
+    ///
+    /// Consequence: the `CliExit::IoError` branch in `apply_resume_mode`
+    /// (`cli/scrape_flow.rs`) is currently unreachable dead code, because the
+    /// state directory is only created later, on `StateStore::save`. If
+    /// `create_state_store` is ever made eager (e.g. `create_dir_all` up front),
+    /// this test must be updated and the `IoError` path becomes coverable.
+    #[test]
+    fn test_create_state_store_returns_ok_even_when_state_dir_is_a_file() {
+        // Arrange: a regular file where a state directory would need to be —
+        // an impossible location for any real directory creation.
+        let temp_dir = TempDir::new().expect("tempdir should be created");
+        let blocker = temp_dir.path().join("not_a_dir");
+        std::fs::write(&blocker, "i am a file, not a directory")
+            .expect("blocker file should be written");
+
+        // Act
+        let result = create_state_store(blocker, "example.com");
+
+        // Assert: creation is lazy/infallible — no I/O is attempted yet.
+        assert!(
+            result.is_ok(),
+            "create_state_store must be infallible (lazy): it performs no I/O at creation time"
+        );
+    }
 }
