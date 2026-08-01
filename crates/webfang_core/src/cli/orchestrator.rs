@@ -161,7 +161,7 @@ pub async fn run(
     drop(elastic_ingestion);
     tokio::task::yield_now().await;
 
-    if let Some(exit) = report_phase(&results, &failures) {
+    if let Some(exit) = report_phase(&results, &failures, opts.verbosity) {
         return exit;
     }
 
@@ -368,22 +368,36 @@ async fn scrape_phase(
     scrape_urls(urls, scraper_config, opts, observer, downloader, engine).await
 }
 
-/// Report failures and determine the exit code.
+/// Build the user-facing failure line for a single URL.
 ///
-/// Returns `None` if all pages scraped successfully (caller proceeds to export).
-fn report_phase(
-    results: &[domain::ScrapedContent],
-    failures: &[(String, crate::error::ScraperError)],
-) -> Option<CliExit> {
-    // Preserve the full root-cause chain via `Error::source()` (D4)
-    for (url, error) in failures {
-        let mut chain = error.to_string();
+/// At `verbosity` 0 only the top-level `Display` message is shown, which keeps
+/// network errors (DNS, connect) to a single readable line. At `verbosity` 1+
+/// the full root-cause chain is preserved via `Error::source()` (D4), appending
+/// each cause as `← cause`.
+fn format_failure(url: &str, error: &crate::error::ScraperError, verbosity: u8) -> String {
+    let mut chain = error.to_string();
+    if verbosity > 0 {
         let mut src = std::error::Error::source(error);
         while let Some(cause) = src {
             chain.push_str(&format!("  ← {cause}"));
             src = cause.source();
         }
-        eprintln!("Failed to scrape {url}: {chain}");
+    }
+    format!("Failed to scrape {url}: {chain}")
+}
+
+/// Report failures and determine the exit code.
+///
+/// Returns `None` if all pages scraped successfully (caller proceeds to export).
+/// At `verbosity` 0 only the top-level error message is shown; at 1+ the full
+/// root-cause chain is appended (see [`format_failure`]).
+fn report_phase(
+    results: &[domain::ScrapedContent],
+    failures: &[(String, crate::error::ScraperError)],
+    verbosity: u8,
+) -> Option<CliExit> {
+    for (url, error) in failures {
+        eprintln!("{}", format_failure(url, error, verbosity));
     }
 
     if !failures.is_empty() && !results.is_empty() {
@@ -659,9 +673,43 @@ fn parse_asset_h2_profile(s: &str) -> wreq_util::Profile {
 
 #[cfg(test)]
 mod tests {
-    use super::{batch_exit_code, build_elastic_ingestion, parse_asset_h2_profile, plan_urls};
+    use super::{
+        batch_exit_code, build_elastic_ingestion, format_failure, parse_asset_h2_profile, plan_urls,
+    };
     use crate::application::crawl_options::CrawlOptions;
     use crate::cli::error::CliExit;
+
+    // ===== format_failure tests =====
+
+    fn network_error() -> crate::error::ScraperError {
+        let inner = std::io::Error::other("failed to lookup address information");
+        crate::error::ScraperError::Network(Box::new(inner))
+    }
+
+    #[test]
+    fn format_failure_default_hides_source_chain() {
+        let msg = format_failure("https://example.com", &network_error(), 0);
+
+        assert!(
+            msg.contains("error de red"),
+            "missing top-level message: {msg}"
+        );
+        assert!(
+            !msg.contains('←'),
+            "default output must not show the cause chain: {msg}"
+        );
+    }
+
+    #[test]
+    fn format_failure_verbose_shows_source_chain() {
+        let msg = format_failure("https://example.com", &network_error(), 1);
+
+        assert!(
+            msg.contains('←'),
+            "verbose output must show the cause chain: {msg}"
+        );
+        assert!(msg.contains("failed to lookup address information"));
+    }
 
     // ===== plan_urls tests =====
 
