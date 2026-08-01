@@ -20,7 +20,7 @@ use crate::domain::text_chunker::TextChunker;
 use crate::error::ScraperError;
 
 /// A search result with relevance score and source metadata.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct VaultSearchResult {
     /// Filesystem path of the source note.
     pub note_path: String,
