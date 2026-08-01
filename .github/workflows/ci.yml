@@ -76,6 +76,18 @@ jobs:
       # Fails if anyone re-adds a .rs file under root tests/ (dead test).
       - name: Dead test detection
         run: bash scripts/check_dead_tests.sh
+      # Regression guard for #428: webfang_core is a LIBRARY and must use typed
+      # errors (ScraperError/CrawlError/InfraError), never anyhow. anyhow erases
+      # the error types the engine needs to distinguish a 403 from a timeout for
+      # retry/WAF decisions. Doc-comments may still mention anyhow as prose; this
+      # guard only forbids real `use anyhow` imports in library code.
+      - name: Forbid anyhow in webfang_core
+        run: |
+          if grep -rn 'use anyhow' crates/webfang_core/src/ --include='*.rs'; then
+            echo "::error::webfang_core must use typed errors, not anyhow (issue #428). See crates/webfang_core/src/error.rs"
+            exit 1
+          fi
+          echo "OK: no anyhow imports in webfang_core/src"
 
   # ============================================================================
   # TIER 1: FORMAT GATE (30-60 seconds)
