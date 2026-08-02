@@ -266,9 +266,12 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
                 return Err(CliExit::NetworkError(format!("URL discovery failed: {e}")));
             },
             Ok(urls) if urls.is_empty() => {
-                return Err(CliExit::EmptyDiscovery(
-                    "No URLs discovered from sitemaps".into(),
-                ));
+                let msg = if opts.crawl.use_sitemap {
+                    "No URLs discovered from sitemaps"
+                } else {
+                    "No URLs discovered from link extraction"
+                };
+                return Err(CliExit::EmptyDiscovery(msg.into()));
             },
             Ok(urls) => urls,
         };
