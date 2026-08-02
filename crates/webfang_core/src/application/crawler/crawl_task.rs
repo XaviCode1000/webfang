@@ -942,4 +942,74 @@ mod tests {
         let b = bridge.read().expect("lock not poisoned");
         assert_eq!(b.len(), 0);
     }
+
+    // --- handle_crawl_result unit tests (PR #476) ---
+
+    fn counters() -> (Arc<AtomicUsize>, Arc<[AtomicUsize; 8]>) {
+        (
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(std::array::from_fn(|_| AtomicUsize::new(0))),
+        )
+    }
+
+    #[test]
+    fn success_leaves_counters_unchanged() {
+        let (error_count, breakdown) = counters();
+        handle_crawl_result(Ok(Ok(())), &error_count, &breakdown);
+        assert_eq!(error_count.load(Ordering::SeqCst), 0);
+        assert!(breakdown.iter().all(|c| c.load(Ordering::SeqCst) == 0));
+    }
+
+    #[test]
+    fn crawl_error_increments_count_and_own_category() {
+        let (error_count, breakdown) = counters();
+        handle_crawl_result(Ok(Err(CrawlError::Timeout)), &error_count, &breakdown);
+        assert_eq!(error_count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            breakdown[CrawlErrorCategory::Timeout.index()].load(Ordering::SeqCst),
+            1
+        );
+        for cat in CrawlErrorCategory::ALL {
+            if cat != CrawlErrorCategory::Timeout {
+                assert_eq!(breakdown[cat.index()].load(Ordering::SeqCst), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn crawl_error_category_is_derived_from_error() {
+        let (error_count, breakdown) = counters();
+        handle_crawl_result(
+            Ok(Err(CrawlError::Parse("bad html".into()))),
+            &error_count,
+            &breakdown,
+        );
+        assert_eq!(error_count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            breakdown[CrawlErrorCategory::Extraction.index()].load(Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            breakdown[CrawlErrorCategory::Timeout.index()].load(Ordering::SeqCst),
+            0,
+            "category must follow the error, not a fixed index"
+        );
+    }
+
+    #[tokio::test]
+    async fn join_error_increments_panic_category() {
+        let (error_count, breakdown) = counters();
+        let join_err = tokio::spawn(async { panic!("boom") }).await.unwrap_err();
+        handle_crawl_result(Err(join_err), &error_count, &breakdown);
+        assert_eq!(error_count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            breakdown[CrawlErrorCategory::Panic.index()].load(Ordering::SeqCst),
+            1
+        );
+        for cat in CrawlErrorCategory::ALL {
+            if cat != CrawlErrorCategory::Panic {
+                assert_eq!(breakdown[cat.index()].load(Ordering::SeqCst), 0);
+            }
+        }
+    }
 }
