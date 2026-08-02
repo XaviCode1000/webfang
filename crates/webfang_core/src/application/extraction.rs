@@ -198,6 +198,13 @@ pub(crate) async fn adaptive_selector_repair(
 ///
 /// Recibe HTML ya fetchado y validado (post-WAF). No conoce el transporte.
 ///
+/// Correlation identity (#501): callers that own the per-page identity (e.g.
+/// `scrape_single_url_for_tui`, which declares it on its trace span) inject it
+/// via `correlation_id` so the exported content shares the same identity as
+/// the page's `span_fields` in the `--trace-file` JSONL. When nothing is
+/// injected, a fresh ad-hoc ID is generated — the standalone fallback that
+/// preserves the issue #356 guarantee.
+///
 /// # Errors
 ///
 /// Returns [`ScraperError::ExtractionFailed`] when fallback content is below
@@ -208,11 +215,16 @@ pub async fn extract_content(
     config: &ScraperConfig,
     asset_downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
+    correlation_id: Option<&CorrelationId>,
 ) -> Result<ScrapedContent> {
     // Clean HTML boilerplate (scripts, styles, nav, sidebar, footer) BEFORE
     // Readability. This helps legible find the main content without being
     // confused by navigation elements, JavaScript bundles, and CSS.
     let cleaned_html = crate::infrastructure::converter::html_cleaner::clean_html(html);
+
+    // Page correlation identity (#501): injected by the caller so content and
+    // span share one identity; ad-hoc generation is only the standalone fallback.
+    let correlation = correlation_id.cloned().unwrap_or_else(CorrelationId::new);
 
     // Apply CSS selector extraction if a non-default selector is configured.
     let extract_result = extract_with_selector(&cleaned_html, &config.selector, None);
@@ -257,7 +269,7 @@ pub async fn extract_content(
                 // Store CLEAN HTML from Readability (not raw HTML with nav/ads/footer)
                 html: Some(article.content),
                 assets,
-                correlation_id: Some(CorrelationId::new()),
+                correlation_id: Some(correlation.clone()),
             })
         },
         Err(e) => {
@@ -277,7 +289,7 @@ pub async fn extract_content(
                     &msg,
                     url.as_str(),
                     "extract",
-                    None,
+                    Some(&correlation),
                     "content extraction failed",
                 );
                 return Err(ScraperError::ExtractionFailed {
@@ -306,7 +318,7 @@ pub async fn extract_content(
                 date: None,
                 html: Some(html.to_owned()),
                 assets,
-                correlation_id: Some(CorrelationId::new()),
+                correlation_id: Some(correlation),
             })
         },
     }

@@ -191,7 +191,17 @@ pub async fn scrape_single_url_for_tui(
     #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
     binary_writer: Option<&dyn crate::domain::ports::BinaryWriterPort>,
 ) -> ScraperResult<ScrapedContent> {
-    let span = span!(Level::DEBUG, "scrape_single", url = %url);
+    // Per-page identity, declared on the span at creation time (#501).
+    // FileTraceLayer snapshots span fields in `on_new_span`, so fields recorded
+    // later are invisible offline — mirror `crawl_page` (crawl_task.rs) exactly.
+    let page_correlation = CorrelationId::new();
+    let span = span!(
+        Level::DEBUG,
+        "scrape_single",
+        url = %url,
+        correlation_id = %page_correlation,
+        trace_id = %page_correlation.trace_id()
+    );
     let _guard = span.enter();
 
     debug!("Scraping: {}", url);
@@ -287,7 +297,7 @@ pub async fn scrape_single_url_for_tui(
             date: None,
             html: None,
             assets,
-            correlation_id: Some(CorrelationId::new()),
+            correlation_id: Some(page_correlation),
         });
     }
 
@@ -308,13 +318,21 @@ pub async fn scrape_single_url_for_tui(
             &chain,
             url.as_str(),
             "fetch",
-            None,
+            Some(&page_correlation),
             "WAF challenge detected",
         );
         return Err(ScraperError::waf_blocked(url.to_string(), chain));
     }
 
-    extract_content(&html, url, config, asset_downloader, engine).await
+    extract_content(
+        &html,
+        url,
+        config,
+        asset_downloader,
+        engine,
+        Some(&page_correlation),
+    )
+    .await
 }
 
 /// Convert lowercased string headers into a wreq [`wreq::header::HeaderMap`]
@@ -699,7 +717,7 @@ work with when computing the document readability score.</p>
         let url = Url::parse("https://example.com/article").unwrap();
         let config = ScraperConfig::default();
 
-        let result = extract_content(html, &url, &config, None, None).await;
+        let result = extract_content(html, &url, &config, None, None, None).await;
 
         assert!(result.is_ok());
         let content = result.unwrap();
@@ -714,7 +732,7 @@ work with when computing the document readability score.</p>
         let url = Url::parse("https://example.com/tiny").unwrap();
         let config = ScraperConfig::default();
 
-        let result = extract_content(html, &url, &config, None, None).await;
+        let result = extract_content(html, &url, &config, None, None, None).await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -738,7 +756,7 @@ work with when computing the document readability score.</p>
             ..Default::default()
         };
 
-        let result = extract_content(html, &url, &config, None, None).await;
+        let result = extract_content(html, &url, &config, None, None, None).await;
 
         assert!(result.is_ok());
         let content = result.unwrap();
@@ -758,7 +776,7 @@ work with when computing the document readability score.</p>
         let url = Url::parse("https://example.com/article").unwrap();
         let config = ScraperConfig::default();
 
-        let result = extract_content(html, &url, &config, None, None).await;
+        let result = extract_content(html, &url, &config, None, None, None).await;
 
         assert!(result.is_ok());
         let content = result.unwrap();

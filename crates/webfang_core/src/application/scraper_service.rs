@@ -13,7 +13,7 @@
 
 use crate::application::error_mapping::scraper_error_from_http;
 use crate::application::http_client::HttpClientPort;
-use crate::domain::{DomInspectorPort, ExtractResult, ScrapedContent, ValidUrl};
+use crate::domain::{CorrelationId, DomInspectorPort, ExtractResult, ScrapedContent, ValidUrl};
 use crate::error::{Result, ScraperError};
 use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
 use crate::infrastructure::observability::log_scrape_error;
@@ -79,21 +79,47 @@ impl ScrapeOutcome {
 /// # Errors
 /// Returns `ScraperError::Http` for HTTP errors, `ScraperError::Network` for
 /// connection errors.
-#[instrument(
-    name = "scrape_with_config",
-    skip(client, config, downloader, inspector, engine),
-    fields(
-        url = %url,
-        has_downloads = config.has_downloads()
-    )
-)]
 pub async fn scrape_with_config(
     client: &dyn HttpClientPort,
     url: &url::Url,
     config: &ScraperConfig,
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     inspector: Option<&dyn DomInspectorPort>,
+    engine: Option<&AdaptiveSelectorEngine>,
+) -> Result<ScrapeOutcome> {
+    // Per-page identity created BEFORE the span so the span can declare it
+    // (`#[instrument]` only sees function parameters — #501).
+    let correlation = CorrelationId::new();
+    scrape_with_config_inner(
+        client,
+        url,
+        config,
+        downloader,
+        inspector,
+        engine,
+        correlation,
+    )
+    .await
+}
+
+#[instrument(
+    name = "scrape_with_config",
+    skip(client, config, downloader, inspector, engine, correlation),
+    fields(
+        url = %url,
+        correlation_id = %correlation,
+        trace_id = %correlation.trace_id(),
+        has_downloads = config.has_downloads()
+    )
+)]
+async fn scrape_with_config_inner(
+    client: &dyn HttpClientPort,
+    url: &url::Url,
+    config: &ScraperConfig,
+    downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
+    inspector: Option<&dyn DomInspectorPort>,
     #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
+    correlation: CorrelationId,
 ) -> Result<ScrapeOutcome> {
     let mut results = Vec::new();
 
@@ -102,7 +128,13 @@ pub async fn scrape_with_config(
     let response = match client.get(url.as_str()).await {
         Ok(resp) => resp,
         Err(e) => {
-            log_scrape_error(&e, url.as_str(), "fetch", None, "HTTP request failed");
+            log_scrape_error(
+                &e,
+                url.as_str(),
+                "fetch",
+                Some(&correlation),
+                "HTTP request failed",
+            );
             return Err(scraper_error_from_http(e, url.as_str()));
         },
     };
@@ -148,7 +180,7 @@ pub async fn scrape_with_config(
             &chain,
             url.as_str(),
             "fetch",
-            None,
+            Some(&correlation),
             "WAF challenge detected",
         );
         return Err(ScraperError::waf_blocked(url.to_string(), chain));
@@ -256,7 +288,7 @@ pub async fn scrape_with_config(
                 // This is what downstream Markdown converters receive.
                 html: Some(article.content),
                 assets,
-                correlation_id: Some(crate::domain::CorrelationId::new()),
+                correlation_id: Some(correlation.clone()),
             });
         },
         Err(e) => {
@@ -309,7 +341,7 @@ pub async fn scrape_with_config(
                 date: None,
                 html: Some(html),
                 assets,
-                correlation_id: Some(crate::domain::CorrelationId::new()),
+                correlation_id: Some(correlation),
             });
         },
     }
