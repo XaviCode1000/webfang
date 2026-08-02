@@ -526,10 +526,6 @@ async fn test_crawl_site_max_depth_zero_single_page() {
 /// max_depth=1 follows internal links one level: seed + page_a + page_b, with
 /// zero errors. The `urls` array is order-independent (JoinSet concurrency).
 #[tokio::test]
-/// FIXME: This test reveals a potential crawler bug — with max_depth=1,
-/// the crawler only crawls the seed page and does not follow internal links.
-/// Investigate separately (not in scope for #450 coverage issue).
-#[ignore = "potential crawler bug: max_depth=1 does not follow internal links"]
 async fn test_crawl_site_max_depth_one_follows_internal_links() {
     let mock = MockServer::start().await;
     let index_html = r#"<html><body>
