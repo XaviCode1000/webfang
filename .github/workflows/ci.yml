@@ -372,15 +372,17 @@ jobs:
           cargo miri test --lib -- --skip downloader ${{ matrix.filter }}
 
   # ============================================================================
-  # COVERAGE: PR gate + manual trigger
+  # COVERAGE: PR gate + push-to-main + manual trigger
   # Measures and reports coverage on every PR (Wave 4, #403); uploads to Codecov.
+  # Also runs on push to main so the base commit always has a coverage report
+  # for PR comparisons (docs.codecov.com/docs/error-reference#missing-base-report).
   # fail_ci_if_error: false — coverage is informational, never blocks the PR.
   # ============================================================================
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: [test-full]
     steps:
       - uses: actions/checkout@v4
