@@ -1146,10 +1146,13 @@ async fn test_metrics_empty_state_honest_error() {
 // ============================================================================
 
 /// REQ-04: search_obsidian returns an honest `CallToolResult::error`
-/// (isError:true, Spanish) stating the capability is not yet implemented and
-/// Without `--features ai`, the embedding/note/chunker ports are absent.
-/// `search_obsidian` must return an honest Spanish error explaining the
-/// missing capability — never a false success, never a protocol error.
+/// (isError:true, Spanish) when the vault-search ports are absent.
+///
+/// `start_test_server` builds a bare `Container` and never wires the
+/// embedding/note/chunker ports (the production wiring lives in the
+/// `mcp_server` example behind `WEBFANG_MCP_AI`, #433), so this asserts the
+/// permanent "ports absent → honest error" contract: never a false success,
+/// never a protocol error — independent of whether `--features ai` is compiled.
 #[tokio::test]
 async fn test_search_obsidian_not_implemented_is_honest_error() {
     let (base_url, _handle) = start_test_server().await;

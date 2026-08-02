@@ -73,8 +73,13 @@ pub(super) async fn run_elastic_ingestion(
 /// - `--output-vectors <path|->` → dependency-free `StreamRepository` JSONL sink
 ///   (available in every build, including the lightweight core binary).
 /// - otherwise → `None` (no ingestion).
+///
+/// `vault_ports` (#433) carries the optional vault-search AI ports assembled by
+/// the binary layer; whichever are present are injected into the container so
+/// the ingestion's `Container` is complete. An empty bundle wires nothing.
 pub(super) async fn build_elastic_ingestion(
     opts: &CrawlOptions,
+    vault_ports: crate::application::container::VaultAiPorts,
 ) -> Result<
     Option<
         std::sync::Arc<
@@ -89,7 +94,7 @@ pub(super) async fn build_elastic_ingestion(
     )
     .await
     {
-        Ok(c) => c,
+        Ok(c) => c.with_vault_ports(vault_ports),
         Err(e) => {
             if opts.elastic.enabled || opts.elastic.output_vectors.is_some() {
                 return Err(CliExit::IoError(format!(

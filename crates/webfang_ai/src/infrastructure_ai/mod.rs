@@ -74,6 +74,9 @@ pub mod cache_config;
 
 pub mod semantic_cleaner_impl;
 
+/// Adapter bridging `InferencePool` to the domain `EmbeddingPort` (#433).
+pub mod embedding_adapter;
+
 pub mod inference_engine;
 
 pub mod tokenizer;
@@ -103,6 +106,8 @@ pub use cache_config::{
 };
 
 pub use semantic_cleaner_impl::{ModelConfig, SemanticCleanerImpl};
+
+pub use embedding_adapter::EmbeddingAdapter;
 
 pub use inference_engine::InferencePool;
 

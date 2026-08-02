@@ -329,13 +329,17 @@ async fn main() -> Result<()> {
         if ai_enabled {
             let variant = webfang_ai::AiModel::from_env_or_default();
             let model_config = webfang_ai::ModelConfig::default().with_model_variant(variant);
-            match webfang_ai::SemanticCleanerImpl::new(model_config).await {
+            // Wire the semantic cleaner (clean_html / semantic_cleaner tools).
+            let container = match webfang_ai::SemanticCleanerImpl::new(model_config.clone()).await {
                 Ok(cleaner) => container.with_cleaner(std::sync::Arc::new(cleaner)),
                 Err(e) => {
                     tracing::warn!("semantic cleaner unavailable, continuing without AI: {e}");
                     container
                 },
-            }
+            };
+            // Wire the vault-search ports (#433): embedding + chunker + note
+            // repository, so `search_obsidian` becomes functional.
+            webfang_mcp::mcp_server::ai_wiring::wire_ai_ports(container, &model_config).await
         } else {
             container
         }

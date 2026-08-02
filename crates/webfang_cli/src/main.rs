@@ -383,7 +383,10 @@ async fn __main() -> CliExit {
     };
 
     #[cfg(feature = "ai")]
-    let ai_cleaner: Option<Arc<dyn SemanticCleaner>> = if opts.ai && !opts.export.dry_run {
+    let (ai_cleaner, vault_ports): (
+        Option<Arc<dyn SemanticCleaner>>,
+        webfang_core::application::container::VaultAiPorts,
+    ) = if opts.ai && !opts.export.dry_run {
         // Resolve model variant: CLI flag takes precedence over AI_MODEL_ID env var
         let model_variant = if opts.ai_config.model.is_empty() {
             webfang_ai::AiModel::from_env_or_default()
@@ -405,8 +408,14 @@ async fn __main() -> CliExit {
             });
 
         match model_config {
-            Ok(config) => match SemanticCleanerImpl::new(config).await {
-                Ok(cleaner) => Some(Arc::new(cleaner) as Arc<dyn SemanticCleaner>),
+            Ok(config) => match SemanticCleanerImpl::new(config.clone()).await {
+                Ok(cleaner) => {
+                    let cleaner: Option<Arc<dyn SemanticCleaner>> = Some(Arc::new(cleaner));
+                    // Assemble the vault-search ports (#433) from the same config so
+                    // the elastic Container can embed / segment / persist notes.
+                    let ports = build_vault_ports(&config).await;
+                    (cleaner, ports)
+                },
                 Err(e) => {
                     let msg = format!("No se pudo inicializar el limpiador semántico AI: {e}");
                     return match e {
@@ -420,19 +429,75 @@ async fn __main() -> CliExit {
             },
         }
     } else {
-        None
+        (
+            None,
+            webfang_core::application::container::VaultAiPorts::default(),
+        )
     };
+    #[cfg(not(feature = "ai"))]
+    let vault_ports = webfang_core::application::container::VaultAiPorts::default();
 
     // Dispatch to the orchestrator. The argument list depends on which optional
     // features are compiled in, so each combination is spelled out explicitly.
     #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
-    let result = orchestrator::run(opts, ai_cleaner, adaptive_engine).await;
+    let result = orchestrator::run(opts, ai_cleaner, adaptive_engine, vault_ports).await;
     #[cfg(all(feature = "ai", not(feature = "adaptive-selectors")))]
-    let result = orchestrator::run(opts, ai_cleaner).await;
+    let result = orchestrator::run(opts, ai_cleaner, vault_ports).await;
     #[cfg(all(not(feature = "ai"), feature = "adaptive-selectors"))]
-    let result = orchestrator::run(opts, adaptive_engine).await;
+    let result = orchestrator::run(opts, adaptive_engine, vault_ports).await;
     #[cfg(all(not(feature = "ai"), not(feature = "adaptive-selectors")))]
-    let result = orchestrator::run(opts).await;
+    let result = orchestrator::run(opts, vault_ports).await;
 
     result
+}
+
+/// Assemble the vault-search AI ports (#433) from a resolved model config.
+///
+/// Builds the ONNX embedding adapter + Markdown chunker (always under `ai`) and
+/// the SQLite note repository (under `persistence`). Every construction failure
+/// degrades gracefully — the affected port stays `None` and the corresponding
+/// capability answers with an honest error rather than aborting the run.
+#[cfg(feature = "ai")]
+async fn build_vault_ports(
+    config: &ModelConfig,
+) -> webfang_core::application::container::VaultAiPorts {
+    use webfang_core::application::container::VaultAiPorts;
+
+    let mut ports = VaultAiPorts::default();
+
+    match webfang_ai::EmbeddingAdapter::from_config(config).await {
+        Ok(adapter) => {
+            ports.embedding_port = Some(Arc::new(adapter));
+            ports.text_chunker = Some(Arc::new(webfang_ai::MarkdownChunker::new()));
+        },
+        Err(e) => {
+            tracing::warn!("embedding port unavailable, vault search disabled: {e}");
+            return ports;
+        },
+    }
+
+    #[cfg(feature = "persistence")]
+    {
+        use webfang_core::infrastructure::autotuning::{env_db_path, resolve_db_path};
+        use webfang_core::infrastructure::persistence::{
+            create_pool, setup_schema, SqliteVectorRepository,
+        };
+
+        let db_path = resolve_db_path(None, env_db_path());
+        match create_pool(&db_path, 4) {
+            Ok(pool) => match setup_schema(&pool).await {
+                Ok(()) => {
+                    ports.note_repository = Some(Arc::new(SqliteVectorRepository::new(pool)));
+                },
+                Err(e) => {
+                    tracing::warn!("note repository schema init failed, persistence disabled: {e}");
+                },
+            },
+            Err(e) => {
+                tracing::warn!("note repository pool creation failed, persistence disabled: {e}");
+            },
+        }
+    }
+
+    ports
 }

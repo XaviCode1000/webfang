@@ -270,74 +270,10 @@ impl SemanticCleanerImpl {
             "Initializing semantic cleaner with full RAG pipeline"
         );
 
-        // Resolve model + tokenizer paths through the hf_hub cache.
-        // Offline mode resolves strictly from the local cache (no network) and
-        // fails fast with `OfflineMode` when either asset is missing. Online
-        // mode is cache-first: hf_hub returns the cached path when present and
-        // transparently downloads missing assets otherwise.
-        let (model_path, tokenizer_path) = if config.offline_mode {
-            let cache = HfCache::from_env();
-            let cache_repo = cache.repo(Repo::new(config.repo.clone(), RepoType::Model));
-
-            let model_path =
-                cache_repo
-                    .get(&config.model_file)
-                    .ok_or_else(|| SemanticError::OfflineMode {
-                        repo: config.repo.clone(),
-                    })?;
-            let tokenizer_path =
-                cache_repo
-                    .get("tokenizer.json")
-                    .ok_or_else(|| SemanticError::OfflineMode {
-                        repo: config.repo.clone(),
-                    })?;
-
-            debug!("Resolved model and tokenizer from offline cache");
-            (model_path, tokenizer_path)
-        } else {
-            let api = ApiBuilder::from_env()
-                .with_progress(true)
-                .build()
-                .map_err(|e| SemanticError::Download {
-                    repo: config.repo.clone(),
-                    cause: format!("Failed to build HuggingFace API client: {e}"),
-                })?;
-
-            let repo = api.model(config.repo.clone());
-
-            // Resolve both assets concurrently (cache-first, downloads if missing).
-            // `with_progress(true)` surfaces hf_hub's built-in progress bar so the
-            // first download (~390MB) is not perceived as a hang; the span makes
-            // the download phase observable in the trace file.
-            let (model_path, tokenizer_path) =
-                try_join(repo.get(&config.model_file), repo.get("tokenizer.json"))
-                    .instrument(tracing::info_span!(
-                        "download_model_assets",
-                        repo = %config.repo
-                    ))
-                    .await
-                    .map_err(|e| SemanticError::Download {
-                        repo: config.repo.clone(),
-                        cause: format!("HuggingFace API error: {e}"),
-                    })?;
-
-            debug!("Resolved model and tokenizer via hf_hub (cache-first)");
-            (model_path, tokenizer_path)
-        };
-
-        // Load the model bytes once and validate SHA256 on the in-memory buffer
-        // (zero extra I/O — the same bytes feed the inference pool below).
-        let model_bytes = Arc::new(
-            tokio::fs::read(&model_path)
-                .await
-                .map_err(SemanticError::ModelLoad)?,
-        );
-
-        validate_model_hash(
-            model_bytes.as_slice(),
-            config.model_variant.sha256(),
-            &config.repo,
-        )?;
+        // Resolve and validate model + tokenizer assets (hf_hub cache-first,
+        // in-memory SHA256 integrity check). Shared with `EmbeddingAdapter::from_config`
+        // so both pipelines resolve and validate models identically.
+        let (model_bytes, tokenizer_path) = resolve_model_assets(&config).await?;
 
         // Initialize all pipeline components.
         let tokenizer = MiniLmTokenizer::from_file(&tokenizer_path).await?;
@@ -614,6 +550,103 @@ impl SemanticCleanerImpl {
 
         Ok(result)
     }
+}
+
+/// Resolve and validate model assets from the hf_hub cache.
+///
+/// Resolves the model and tokenizer paths through the hf_hub cache — offline
+/// mode resolves strictly from the local cache (no network) and fails fast with
+/// [`SemanticError::OfflineMode`] when either asset is missing; online mode is
+/// cache-first (hf_hub returns the cached path when present and transparently
+/// downloads missing assets otherwise). Then loads the model bytes once and
+/// validates their SHA256 in memory.
+///
+/// Extracted from [`SemanticCleanerImpl::new`] so
+/// [`crate::infrastructure_ai::embedding_adapter::EmbeddingAdapter::from_config`]
+/// reuses the identical resolution + integrity-validation logic without
+/// duplicating the hf_hub plumbing.
+///
+/// # Returns
+///
+/// `(model_bytes, tokenizer_path)` — SHA256-validated model bytes and the path
+/// to `tokenizer.json`.
+///
+/// # Errors
+///
+/// Returns [`SemanticError::OfflineMode`] when offline and an asset is uncached,
+/// [`SemanticError::Download`] on hf_hub client/API failure,
+/// [`SemanticError::ModelLoad`] on read failure, or
+/// [`SemanticError::CacheValidation`] on SHA256 mismatch.
+#[tracing::instrument(skip(config), fields(repo = %config.repo, model_file = %config.model_file, offline_mode = config.offline_mode))]
+pub(crate) async fn resolve_model_assets(
+    config: &ModelConfig,
+) -> Result<(Arc<Vec<u8>>, std::path::PathBuf), SemanticError> {
+    // Resolve model + tokenizer paths through the hf_hub cache.
+    let (model_path, tokenizer_path) = if config.offline_mode {
+        let cache = HfCache::from_env();
+        let cache_repo = cache.repo(Repo::new(config.repo.clone(), RepoType::Model));
+
+        let model_path =
+            cache_repo
+                .get(&config.model_file)
+                .ok_or_else(|| SemanticError::OfflineMode {
+                    repo: config.repo.clone(),
+                })?;
+        let tokenizer_path =
+            cache_repo
+                .get("tokenizer.json")
+                .ok_or_else(|| SemanticError::OfflineMode {
+                    repo: config.repo.clone(),
+                })?;
+
+        debug!("Resolved model and tokenizer from offline cache");
+        (model_path, tokenizer_path)
+    } else {
+        let api = ApiBuilder::from_env()
+            .with_progress(true)
+            .build()
+            .map_err(|e| SemanticError::Download {
+                repo: config.repo.clone(),
+                cause: format!("Failed to build HuggingFace API client: {e}"),
+            })?;
+
+        let repo = api.model(config.repo.clone());
+
+        // Resolve both assets concurrently (cache-first, downloads if missing).
+        // `with_progress(true)` surfaces hf_hub's built-in progress bar so the
+        // first download (~390MB) is not perceived as a hang; the span makes
+        // the download phase observable in the trace file.
+        let (model_path, tokenizer_path) =
+            try_join(repo.get(&config.model_file), repo.get("tokenizer.json"))
+                .instrument(tracing::info_span!(
+                    "download_model_assets",
+                    repo = %config.repo
+                ))
+                .await
+                .map_err(|e| SemanticError::Download {
+                    repo: config.repo.clone(),
+                    cause: format!("HuggingFace API error: {e}"),
+                })?;
+
+        debug!("Resolved model and tokenizer via hf_hub (cache-first)");
+        (model_path, tokenizer_path)
+    };
+
+    // Load the model bytes once and validate SHA256 on the in-memory buffer
+    // (zero extra I/O — the same bytes feed the caller's inference pool).
+    let model_bytes = Arc::new(
+        tokio::fs::read(&model_path)
+            .await
+            .map_err(SemanticError::ModelLoad)?,
+    );
+
+    validate_model_hash(
+        model_bytes.as_slice(),
+        config.model_variant.sha256(),
+        &config.repo,
+    )?;
+
+    Ok((model_bytes, tokenizer_path))
 }
 
 /// Validate the SHA256 hash of in-memory model bytes against an expected value.
