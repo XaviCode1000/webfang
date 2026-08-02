@@ -18,20 +18,18 @@ use super::checkpoint::{
 };
 use super::collector::ResultsCollector;
 use super::concurrency_level::{ConcurrencyLevel, SharedConcurrencyLevel};
+use super::crawl_scheduler::CrawlScheduler;
 use super::crawl_task::{handle_crawl_result, run_crawl_task};
 use super::fetch_router::{build_fetch_router, FetchRouter};
 use super::progress::CrawlProgress;
 use crate::application::crawler::crawl_task_ctx::CrawlTaskCtx;
-use crate::application::deduplicator::UrlDeduplicator;
 use crate::application::pipeline::{OutputStage, PipelineExecutor};
 use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::domain::clock::SystemClock;
 use crate::domain::{
-    CorrelationId, CrawlError, CrawlErrorCategory, CrawlResult, CrawlerConfig, DiscoveredUrl,
-    JsStrategy,
+    CorrelationId, CrawlError, CrawlErrorCategory, CrawlResult, CrawlerConfig, JsStrategy,
 };
 use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
-use crate::infrastructure::crawler::{UrlQueue, UrlSource};
 use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
 use crate::infrastructure::downloader::resource_governor::ResourceGovernor;
 use crate::infrastructure::downloader::DownloadError;
@@ -50,10 +48,8 @@ pub struct Engine {
     /// Root correlation ID for this crawl — all pages share its `trace_id`.
     correlation_id: CorrelationId,
     collector: ResultsCollector,
-    visited: Arc<UrlDeduplicator>,
-    /// String URLs for checkpoint persistence (mirrors `visited` hashes).
-    visited_urls: Arc<RwLock<Vec<String>>>,
-    queue: Arc<UrlQueue>,
+    /// Scheduling policy — visited dedup, pending-work buffer, concurrency limits.
+    scheduler: CrawlScheduler,
     rate_limiter: SharedRateLimiter,
     error_count: Arc<AtomicUsize>,
     /// Per-category error counters indexed by `CrawlErrorCategory::index()` (issue #374).
@@ -88,8 +84,6 @@ pub struct Engine {
     pipeline: Option<Arc<PipelineExecutor>>,
     /// Output stages that receive items after pipeline processing.
     output_stages: Vec<Arc<Box<dyn OutputStage>>>,
-    /// Optional autoscale level for RAM-aware concurrency adjustment.
-    autoscale_level: Option<Arc<SharedConcurrencyLevel>>,
     /// Handle for the signal handler task — aborted on shutdown
     /// to prevent the tokio runtime from hanging waiting for it.
     signal_handle: Option<tokio::task::JoinHandle<()>>,
@@ -109,12 +103,9 @@ impl Engine {
             Err(e) => return Err(CrawlError::Internal(e.to_string())),
         };
 
-        // Create URL queue
-        let queue = Arc::new(UrlQueue::new());
-
-        // Track visited URLs — lock-free DashSet for dedup, RwLock Vec for checkpoint
-        let visited = Arc::new(UrlDeduplicator::new());
-        let visited_urls = Arc::new(RwLock::new(Vec::new()));
+        // Scheduling policy owns the visited set, its checkpoint string mirror,
+        // and the shared discovery queue (Arc-shared with the per-page tasks).
+        let scheduler = CrawlScheduler::new(config_clone.concurrency);
 
         // Results collector via mpsc channel
         let collector = ResultsCollector::new(config_clone.max_pages, Some(config_clone.max_pages));
@@ -134,9 +125,7 @@ impl Engine {
             config,
             correlation_id: CorrelationId::new(),
             collector,
-            visited,
-            visited_urls,
-            queue,
+            scheduler,
             rate_limiter,
             error_count,
             error_breakdown,
@@ -155,7 +144,6 @@ impl Engine {
             banned_domains: Arc::new(RwLock::new(Vec::new())),
             pipeline: None,
             output_stages: Vec::new(),
-            autoscale_level: None,
             signal_handle: None,
         })
     }
@@ -275,7 +263,7 @@ impl Engine {
             }
         });
 
-        self.autoscale_level = Some(level);
+        self.scheduler.set_autoscale(level);
         self
     }
 
@@ -302,14 +290,7 @@ impl Engine {
     /// Save the current checkpoint to disk (non-blocking wrapper).
     async fn save_checkpoint(&self) {
         if let Some(path) = &self.checkpoint_path {
-            let visited_set: HashSet<String> = {
-                #[allow(clippy::expect_used)]
-                let urls = self
-                    .visited_urls
-                    .read()
-                    .expect("visited_urls RwLock poisoned");
-                urls.iter().cloned().collect()
-            };
+            let visited_set: HashSet<String> = self.scheduler.snapshot_visited();
             let pages = self
                 .pages_crawled
                 .load(std::sync::atomic::Ordering::Relaxed);
@@ -374,18 +355,6 @@ impl Engine {
         })
     }
 
-    /// Record a URL as visited (both hash dedup and string tracking).
-    fn record_visit(&self, url: &str) -> bool {
-        if self.visited.try_insert(url) {
-            if let Ok(mut urls) = self.visited_urls.write() {
-                urls.push(url.to_string());
-            }
-            true
-        } else {
-            false
-        }
-    }
-
     /// Run the crawl loop until completion
     ///
     /// Returns the collected URLs and error count.
@@ -398,9 +367,7 @@ impl Engine {
         // Load checkpoint state if resuming
         if let Some(ref cp) = self.checkpoint_state {
             if !cp.visited.is_empty() {
-                for url in &cp.visited {
-                    self.record_visit(url);
-                }
+                self.scheduler.restore_visited(&cp.visited);
                 info!("Restored {} visited URLs from checkpoint", cp.visited.len());
             }
             if !cp.banned_domains.is_empty() {
@@ -414,31 +381,18 @@ impl Engine {
             }
         }
 
-        // Add seed URL to queue (highest priority)
-        let seed_discovered = DiscoveredUrl::html(
-            config_clone.seed_url.clone(),
-            0,
-            config_clone.seed_url.clone(),
-        );
-        self.queue
-            .push_prioritized(seed_discovered, UrlSource::Seed)
-            .await;
+        // Seed the scheduler (pushes onto the discovery queue and pending buffer)
+        self.scheduler.seed(&config_clone.seed_url).await;
 
         let mut tasks = tokio::task::JoinSet::new();
-        let mut url_queue = std::collections::VecDeque::new();
-        url_queue.push_back(DiscoveredUrl::html(
-            config_clone.seed_url.clone(),
-            0,
-            config_clone.seed_url.clone(),
-        ));
 
         // Build shared task context once — all spawned tasks share this Arc
         let task_ctx = Arc::new(CrawlTaskCtx {
             config: Arc::clone(&self.config),
             correlation_id: self.correlation_id.clone(),
-            visited: Arc::clone(&self.visited),
-            visited_urls: Arc::clone(&self.visited_urls),
-            queue: Arc::clone(&self.queue),
+            visited: self.scheduler.visited(),
+            visited_urls: self.scheduler.visited_urls(),
+            queue: self.scheduler.queue(),
             rate_limiter: self.rate_limiter.clone(),
             session_pool: self.session_pool.clone(),
             ignore_robots: self.ignore_robots,
@@ -458,7 +412,7 @@ impl Engine {
         let start = std::time::Instant::now();
 
         // Main crawl loop
-        while !url_queue.is_empty() || !tasks.is_empty() {
+        while self.scheduler.has_pending_work() || !tasks.is_empty() {
             // Check shutdown signal
             if self.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
                 info!("Shutdown signal received — saving checkpoint and exiting");
@@ -478,7 +432,7 @@ impl Engine {
             }
 
             // Drain discovered links from the deduplicated UrlQueue
-            url_queue.append(&mut self.queue.drain_all().await);
+            self.scheduler.drain_discovered().await;
 
             // Periodic checkpoint save
             if self.checkpoint_interval > 0 {
@@ -505,44 +459,19 @@ impl Engine {
                 }
             }
 
-            // Spawn new tasks up to concurrency limit
-            while let Some(discovered_url) = url_queue.pop_front() {
-                // Check concurrency limit (autoscale-aware)
-                let max_concurrent = self
-                    .autoscale_level
-                    .as_ref()
-                    .map(|l| l.effective_concurrency(config_clone.concurrency))
-                    .unwrap_or(config_clone.concurrency);
-                if tasks.len() >= max_concurrent {
-                    url_queue.push_front(discovered_url);
-                    break;
-                }
-
-                // Check if already visited — atomic, lock-free
-                if !self.visited.try_insert(discovered_url.url.as_str()) {
-                    continue;
-                }
-                // Record URL string for checkpoint (we just inserted into hash set)
-                if let Ok(mut urls) = self.visited_urls.write() {
-                    urls.push(discovered_url.url.as_str().to_string());
-                }
-
+            // Spawn new tasks up to the (autoscale-aware) concurrency limit.
+            // The scheduler checks the limit before popping and skips URLs that
+            // were already visited, marking each handed-out URL as visited.
+            while let Some(discovered_url) = self.scheduler.next_url(tasks.len()) {
                 // Spawn task — single Arc clone instead of 18 individual clones
                 let task_ctx = Arc::clone(&task_ctx);
-                let discovered_url_task = discovered_url.clone();
                 tasks.spawn(
-                    async move { run_crawl_task(task_ctx, discovered_url_task).await }
-                        .in_current_span(),
+                    async move { run_crawl_task(task_ctx, discovered_url).await }.in_current_span(),
                 );
             }
 
-            // If no tasks can be spawned and queue is not empty, wait for one task
-            let max_concurrent = self
-                .autoscale_level
-                .as_ref()
-                .map(|l| l.effective_concurrency(config_clone.concurrency))
-                .unwrap_or(config_clone.concurrency);
-            if tasks.len() >= max_concurrent && !url_queue.is_empty() {
+            // If no tasks can be spawned and work remains, wait for one task
+            if !self.scheduler.can_spawn(tasks.len()) && self.scheduler.has_pending_work() {
                 if let Some(result) = tasks.join_next().await {
                     handle_crawl_result(result, &self.error_count, &self.error_breakdown);
                 }
