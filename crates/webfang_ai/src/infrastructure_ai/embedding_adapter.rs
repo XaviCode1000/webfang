@@ -1,7 +1,7 @@
-//! Embedding adapter — bridges [`InferencePool`] to the domain [`EmbeddingPort`].
+//! Embedding adapter — bridges [`InferencePool`] to the domain [`EmbeddingPort`](webfang_core::domain::embedding_port::EmbeddingPort).
 //!
 //! This is the concrete infrastructure implementation of the always-compiled
-//! domain port [`EmbeddingPort`]. It wraps the ONNX [`InferencePool`] and the
+//! domain port [`EmbeddingPort`](webfang_core::domain::embedding_port::EmbeddingPort). It wraps the ONNX [`InferencePool`] and the
 //! HuggingFace [`MiniLmTokenizer`] to turn raw text into fixed-dimension
 //! embedding vectors, following the Adapter pattern (infrastructure adapts the
 //! domain port to the ONNX primitives).
@@ -20,20 +20,20 @@
 //!
 //! # Design decisions
 //!
-//! - **Batch override**: [`EmbeddingPort::embed_batch`] defaults to calling
-//!   [`EmbeddingPort::embed`] per text, re-tokenizing through the port surface
+//! - **Batch override**: [`EmbeddingPort::embed_batch`](webfang_core::domain::embedding_port::EmbeddingPort::embed_batch) defaults to calling
+//!   [`EmbeddingPort::embed`](webfang_core::domain::embedding_port::EmbeddingPort::embed) per text, re-tokenizing through the port surface
 //!   each time. This adapter overrides it to tokenize the whole batch in one
 //!   [`MiniLmTokenizer::tokenize_batch`] call, then dispatches the resulting
 //!   [`ModelInput`]s to the pool. `InferencePool` has no true batched inference
 //!   (each `infer` is one worker request), so the dispatch is sequential — the
 //!   win is avoiding per-call re-tokenization overhead, not parallel ONNX.
 //! - **Span attachment**: the port methods are synchronous fns returning a
-//!   [`BoxFuture`], so `#[instrument]` would only span the (trivial) future
+//!   `BoxFuture`, so `#[instrument]` would only span the (trivial) future
 //!   construction. Per the observability contract, the span is attached to the
-//!   future itself via [`Instrument::instrument`] so it covers the actual
+//!   future itself via [`Instrument::instrument`](tracing::Instrument::instrument) so it covers the actual
 //!   tokenize + infer work.
 //! - **Shared resolution**: [`EmbeddingAdapter::from_config`] reuses
-//!   [`resolve_model_assets`](crate::infrastructure_ai::semantic_cleaner_impl::resolve_model_assets),
+//!   `resolve_model_assets`,
 //!   the same hf_hub cache/download + SHA256 validation path extracted from
 //!   `SemanticCleanerImpl::new`, so both pipelines resolve models identically.
 //!
