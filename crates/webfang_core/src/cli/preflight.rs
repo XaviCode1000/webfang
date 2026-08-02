@@ -73,6 +73,12 @@ pub fn apply_config_defaults(mut opts: CrawlOptions, config: &ConfigDefaults) ->
         }
     }
 
+    // --sitemap-url implies --use-sitemap (#491): an explicit sitemap URL
+    // logically enables sitemap discovery, so the user shouldn't need both flags.
+    if opts.crawl.sitemap_url.is_some() {
+        opts.crawl.use_sitemap = true;
+    }
+
     if let Some(v) = config.ignore_waf {
         if !opts.crawl.ignore_waf && v {
             opts.crawl.ignore_waf = v;
