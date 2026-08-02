@@ -73,6 +73,12 @@ pub fn apply_config_defaults(mut opts: CrawlOptions, config: &ConfigDefaults) ->
         }
     }
 
+    // --sitemap-url implies --use-sitemap (#491): an explicit sitemap URL
+    // logically enables sitemap discovery, so the user shouldn't need both flags.
+    if opts.crawl.sitemap_url.is_some() {
+        opts.crawl.use_sitemap = true;
+    }
+
     if let Some(v) = config.ignore_waf {
         if !opts.crawl.ignore_waf && v {
             opts.crawl.ignore_waf = v;
@@ -567,5 +573,30 @@ mod tests {
         let config = ConfigDefaults::default(); // ignore_waf: None
         let merged = apply_config_defaults(opts, &config);
         assert!(!merged.crawl.ignore_waf);
+    }
+
+    // ========================================================================
+    // #491 — --sitemap-url implies --use-sitemap
+    // ========================================================================
+
+    #[test]
+    fn sitemap_url_implies_use_sitemap() {
+        let mut opts = CrawlOptions::default();
+        assert!(!opts.crawl.use_sitemap);
+        opts.crawl.sitemap_url = Some("https://example.com/sitemap.xml".into());
+        let config = ConfigDefaults::default();
+        let merged = apply_config_defaults(opts, &config);
+        assert!(
+            merged.crawl.use_sitemap,
+            "sitemap_url must imply use_sitemap"
+        );
+    }
+
+    #[test]
+    fn no_sitemap_url_leaves_use_sitemap_false() {
+        let opts = CrawlOptions::default();
+        let config = ConfigDefaults::default();
+        let merged = apply_config_defaults(opts, &config);
+        assert!(!merged.crawl.use_sitemap);
     }
 }

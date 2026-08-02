@@ -72,7 +72,7 @@ pub struct CrawlerArgs {
     pub use_sitemap: bool,
 
     /// Explicit sitemap URL
-    #[arg(long, requires = "use_sitemap", env = "WEBFANG_SITEMAP_URL")]
+    #[arg(long, env = "WEBFANG_SITEMAP_URL")]
     #[clap(next_help_heading = "Discovery")]
     pub sitemap_url: Option<String>,
 
