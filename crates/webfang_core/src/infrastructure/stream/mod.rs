@@ -153,10 +153,11 @@ impl VectorRepository for StreamRepository {
     ) -> Pin<Box<dyn Future<Output = Result<String, ScraperError>> + Send + 'a>> {
         Box::pin(async move {
             if !title.is_empty() {
-                self.titles
-                    .lock()
-                    .expect("title cache poisoned")
-                    .insert(url.to_string(), title.to_string());
+                // Invariant: a poisoned Mutex means another thread panicked while
+                // holding the lock — process state is undefined; panic is correct.
+                #[allow(clippy::expect_used)]
+                let mut cache = self.titles.lock().expect("title cache poisoned");
+                cache.insert(url.to_string(), title.to_string());
             }
             Ok(url.to_string())
         })
@@ -183,6 +184,8 @@ impl VectorRepository for StreamRepository {
             // first '-' (a SHA-256 hex string contains no '-').
             let sha256_hex = id.split('-').next().unwrap_or(id).to_string();
 
+            // Invariant: poisoned Mutex — see save_resource.
+            #[allow(clippy::expect_used)]
             let title = self
                 .titles
                 .lock()
@@ -203,6 +206,8 @@ impl VectorRepository for StreamRepository {
             let line = serde_json::to_string(&record)?;
             // D2: a broken pipe / WriteZero must surface as a fatal Io error so
             // the crawl aborts. `?` converts io::Error → ScraperError::Io.
+            // Invariant: poisoned RwLock — see save_resource.
+            #[allow(clippy::expect_used)]
             let mut writer = self.writer.lock().expect("vector stream poisoned");
             writer.write_all(line.as_bytes())?;
             writer.write_all(b"\n")?;

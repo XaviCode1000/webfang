@@ -1,4 +1,5 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
+#![cfg_attr(not(test), deny(clippy::expect_used))]
 //! WebFang AI — ONNX-based semantic cleaning
 //!
 //! Provides AI-powered content cleaning using sentence-transformers models.
