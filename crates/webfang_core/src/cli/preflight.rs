@@ -586,7 +586,10 @@ mod tests {
         opts.crawl.sitemap_url = Some("https://example.com/sitemap.xml".into());
         let config = ConfigDefaults::default();
         let merged = apply_config_defaults(opts, &config);
-        assert!(merged.crawl.use_sitemap, "sitemap_url must imply use_sitemap");
+        assert!(
+            merged.crawl.use_sitemap,
+            "sitemap_url must imply use_sitemap"
+        );
     }
 
     #[test]
