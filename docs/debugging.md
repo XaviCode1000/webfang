@@ -51,6 +51,27 @@ Each line of `debug.jsonl` is a JSON object:
 }
 ```
 
+When a span closes, a second record type is emitted carrying a top-level
+`span_duration_ms` (wall-clock milliseconds) — this is what the "Slowest spans"
+query below reads:
+
+```json
+{
+  "timestamp": "2026-01-29T10:00:00.456Z",
+  "record": "span_close",
+  "level": "INFO",
+  "target": "webfang_core::application::crawler::engine",
+  "span": "crawl_page",
+  "span_id": "0000000000000042",
+  "parent_id": "0000000000000001",
+  "trace_id": "0000000000000001",
+  "span_duration_ms": 333,
+  "span_fields": {
+    "url": "https://example.com/page1"
+  }
+}
+```
+
 ---
 
 ## Query cookbook
