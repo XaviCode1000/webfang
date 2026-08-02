@@ -368,13 +368,17 @@ fn extract_title(chunks: &[crate::infrastructure::bridge::ProcessedChunk]) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(miri))]
     use crate::infrastructure::cpu_pool::RayonCpuPool;
+    #[cfg(not(miri))]
     use crate::infrastructure::crawler::resource_downloader::DownloadConfig;
     use std::collections::HashMap;
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
+    #[cfg(not(miri))]
     use wiremock::matchers::{method, path};
+    #[cfg(not(miri))]
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Shared in-memory state for the mock repo (Arc so the test keeps a handle

@@ -270,8 +270,7 @@ impl ResourceDownloader {
     }
 }
 
-#[cfg(test)]
-#[cfg_attr(miri, ignore)] // tokio::time::timeout + spawn_blocking hang under Miri (entire module)
+#[cfg(all(test, not(miri)))] // tokio::time::timeout + spawn_blocking hang under Miri (entire module)
 mod tests {
     use super::*;
     use std::sync::Arc;

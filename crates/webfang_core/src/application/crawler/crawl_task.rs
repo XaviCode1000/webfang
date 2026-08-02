@@ -232,7 +232,7 @@ pub(crate) async fn run_crawl_task(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use std::future::Future;
     use std::pin::Pin;

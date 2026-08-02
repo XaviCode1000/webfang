@@ -342,6 +342,7 @@ fn headers_to_header_map(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(miri))]
     use std::time::Duration;
 
     #[test]
