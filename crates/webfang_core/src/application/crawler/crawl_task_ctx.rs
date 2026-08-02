@@ -9,16 +9,16 @@ use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::{Arc, RwLock};
 
 use crate::application::crawler::checkpoint::BannedDomain;
-use crate::application::crawler::collector::ResultsCollector;
-use crate::application::crawler::fetch_router::FetchRouter;
+use crate::application::crawler::ports::{
+    ContentPipeline, CrawlResultCollector, LinkExtractorPort, PageFetcher, RobotsChecker,
+};
 use crate::application::deduplicator::UrlDeduplicator;
-use crate::application::pipeline::{OutputStage, PipelineExecutor};
+use crate::application::pipeline::OutputStage;
 use crate::application::rate_limiter::SharedRateLimiter;
+use crate::domain::session_port::SessionPort;
 use crate::domain::{CorrelationId, CrawlerConfig};
-use crate::infrastructure::crawler::RobotsFetcher;
 use crate::infrastructure::crawler::UrlQueue;
 use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
-use crate::infrastructure::network::session_pool::DomainSessionPool;
 
 /// Shared context for all crawl tasks spawned by the engine.
 ///
@@ -34,9 +34,9 @@ pub struct CrawlTaskCtx {
     pub(crate) visited_urls: Arc<RwLock<Vec<String>>>,
     pub(crate) queue: Arc<UrlQueue>,
     pub(crate) rate_limiter: SharedRateLimiter,
-    pub(crate) session_pool: Option<DomainSessionPool>,
+    pub(crate) session_pool: Option<Arc<dyn SessionPort>>,
     pub(crate) ignore_robots: bool,
-    pub(crate) robots_fetcher: Arc<RobotsFetcher>,
+    pub(crate) robots_checker: Arc<dyn RobotsChecker>,
 
     // --- Per-task mutable (atomics) ---
     pub(crate) error_count: Arc<AtomicUsize>,
@@ -44,13 +44,14 @@ pub struct CrawlTaskCtx {
     pub(crate) error_breakdown: Arc<[AtomicUsize; 8]>,
     pub(crate) pages_crawled: Arc<AtomicU64>,
 
-    // --- Infrastructure ---
-    pub(crate) collector: ResultsCollector,
+    // --- Infrastructure (port-based) ---
+    pub(crate) collector: Arc<dyn CrawlResultCollector>,
     pub(crate) cookie_bridge: Arc<RwLock<CookieBridge>>,
     pub(crate) banned_domains: Arc<RwLock<Vec<BannedDomain>>>,
-    pub(crate) fetch_router: Option<FetchRouter>,
+    pub(crate) fetcher: Arc<dyn PageFetcher>,
+    pub(crate) link_extractor: Arc<dyn LinkExtractorPort>,
 
     // --- Pipeline ---
-    pub(crate) pipeline: Option<Arc<PipelineExecutor>>,
+    pub(crate) pipeline: Option<Arc<dyn ContentPipeline>>,
     pub(crate) output_stages: Vec<Arc<Box<dyn OutputStage>>>,
 }

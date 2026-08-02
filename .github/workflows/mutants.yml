@@ -15,11 +15,8 @@
 #                   if: always(), so survivors are always annotated, never blocking.
 #
 # Gated hot paths vs. matrix:
-#   crawler/** is deliberately EXCLUDED from the PR gate. Its core (engine.rs,
-#   crawl_scheduler.rs, crawl_task.rs) has NO inline unit tests, so `--lib`
-#   mutation testing would report false-positive survivors and block legitimate
-#   PRs. It stays in the weekly matrix as a visible debt beacon until real unit
-#   tests exist (tracked in the crawler-core unit-test debt issue).
+#   crawler/** is gated on PRs since issue #475 added inline unit tests to
+#   crawl_task.rs. It also stays in the weekly matrix for baseline reporting.
 #
 # Notes:
 #   - --timeout=60 per mutant prevents infinite-loop mutants from stalling.
@@ -39,8 +36,8 @@ permissions:
 on:
   pull_request:
     paths:
-      # crawler/** is intentionally NOT gated (no inline unit tests -> false
-      # survivors under --lib). Re-add once crawler core has real unit tests.
+      # crawler/** now has inline unit tests (issue #475) — safe to gate.
+      - crates/webfang_core/src/application/crawler/**
       - crates/webfang_core/src/application/pipeline/**
       - crates/webfang_core/src/extractor/**
       - crates/webfang_core/src/infrastructure/bridge.rs
