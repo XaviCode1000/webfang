@@ -1,0 +1,12 @@
+---
+source: crates/webfang_mcp/tests/download_assets_test.rs
+expression: tool_text(&result)
+---
+[
+  {
+    "url": "http://127.0.0.1:[PORT]/logo.png",
+    "local_path": "[OUT_DIR]/images/71a5d2aaa19f.png",
+    "asset_type": "image",
+    "size": 9
+  }
+]

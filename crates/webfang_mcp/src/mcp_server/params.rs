@@ -190,6 +190,13 @@ pub(crate) struct DownloadAssetsParams {
     pub images: Option<bool>,
     /// Download documents (default: false)
     pub documents: Option<bool>,
+    /// Output directory for downloaded assets.
+    ///
+    /// When omitted, defaults to the scraper output directory
+    /// (`output/` relative to the current working directory). Only used when
+    /// the server has no shared downloader injected; a shared downloader
+    /// writes to its own configured output directory.
+    pub output_dir: Option<String>,
 }
 
 // Params for tools that accept free-form JSON input

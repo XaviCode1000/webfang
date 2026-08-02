@@ -232,9 +232,7 @@
 //!
 //! | Tool | Description | Key params |
 //! |------|-------------|------------|
-//! | `download_assets` | Download images/docs from HTML | `html`, `base_url`, `images?`, `documents?` |
-//!
-//! **⚠️ Not yet implemented** — see #170. Returns explicit error.
+//! | `download_assets` | Download images/docs from HTML | `html`, `base_url`, `images?`, `documents?`, `output_dir?` |
 //!
 //! ### Category 8: AI Semantic (feature-gated)
 //!
@@ -298,6 +296,8 @@
 use std::net::SocketAddr;
 
 use anyhow::Result;
+use std::sync::Arc;
+use webfang_core::adapters::downloader::{DownloadConfig, Downloader};
 use webfang_core::config::Config;
 use webfang_core::di::{Container, ContainerExt};
 use webfang_mcp::mcp_server::server::{start_mcp_server, DEFAULT_MCP_ADDR};
@@ -341,7 +341,11 @@ async fn main() -> Result<()> {
         }
     };
 
-    let state = McpState::new(container);
+    // Inject a shared Downloader so `download_assets` reuses one connection
+    // pool across tool calls. The default config writes to `./downloads`
+    // relative to the working directory.
+    let state = McpState::new(container)
+        .with_downloader(Arc::new(Downloader::new(DownloadConfig::default())?));
     let addr: SocketAddr = DEFAULT_MCP_ADDR.parse()?;
     start_mcp_server(state, addr).await
 }
