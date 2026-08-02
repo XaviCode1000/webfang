@@ -1,0 +1,23 @@
+# Codecov configuration for webfang
+# Docs: https://docs.codecov.com/docs/codecovyml-reference
+
+coverage:
+  status:
+    project:
+      default:
+        target: auto # compare against PR base commit
+        threshold: 2% # tolerate up to 2% drop
+    patch:
+      default:
+        target: 80% # new/changed lines must have >= 80% coverage
+
+# Paths that should not count toward coverage metrics
+ignore:
+  - "tests/"
+  - "**/tests/"
+  - "benches/"
+  - "examples/"
+
+comment:
+  layout: "diff, files"
+  behavior: default
