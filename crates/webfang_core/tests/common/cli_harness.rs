@@ -254,5 +254,13 @@ pub(crate) fn redact_nondeterministic(dir: &Path, text: &str) -> String {
     // Normalize source line numbers in tracing spans (e.g. "scrape_flow.rs:193").
     // These shift with #[cfg(feature = "...")] blocks and differ across feature sets.
     let line_no = Regex::new(r"(\.rs:)\d+").unwrap();
-    line_no.replace_all(&text, "$1<LINE>").into_owned()
+    let text = line_no.replace_all(&text, "$1<LINE>").into_owned();
+    // Normalize tracing module paths (e.g. "WARN webfang_core::cli::orchestrator:")
+    // so snapshots decouple from source location and survive function moves (#462).
+    let module = Regex::new(r"((?:WARN|INFO|ERROR|DEBUG|TRACE)\s+)\w+(?:::\w+)+").unwrap();
+    let text = module.replace_all(&text, "$1<MODULE>").into_owned();
+    // Normalize tracing source file paths (e.g. "at crates/.../orchestrator.rs:<LINE>")
+    // so moving a function between files does not break snapshots (#462).
+    let file_path = Regex::new(r"(at\s+)\S+\.rs").unwrap();
+    file_path.replace_all(&text, "$1<FILE>.rs").into_owned()
 }
