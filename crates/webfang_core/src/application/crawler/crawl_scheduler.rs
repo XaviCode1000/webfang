@@ -75,16 +75,6 @@ impl CrawlScheduler {
         self.autoscale_level = Some(level);
     }
 
-    /// Clone the visited deduplicator for the shared task context.
-    pub(crate) fn visited(&self) -> Arc<UrlDeduplicator> {
-        Arc::clone(&self.visited)
-    }
-
-    /// Clone the visited-URL string mirror for the shared task context.
-    pub(crate) fn visited_urls(&self) -> Arc<RwLock<Vec<String>>> {
-        Arc::clone(&self.visited_urls)
-    }
-
     /// Clone the discovery queue for the shared task context.
     pub(crate) fn queue(&self) -> Arc<UrlQueue> {
         Arc::clone(&self.queue)

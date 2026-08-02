@@ -12,7 +12,6 @@ use crate::application::crawler::checkpoint::BannedDomain;
 use crate::application::crawler::ports::{
     ContentPipeline, CrawlResultCollector, LinkExtractorPort, PageFetcher, RobotsChecker,
 };
-use crate::application::deduplicator::UrlDeduplicator;
 use crate::application::pipeline::OutputStage;
 use crate::application::rate_limiter::SharedRateLimiter;
 use crate::domain::session_port::SessionPort;
@@ -30,8 +29,6 @@ pub struct CrawlTaskCtx {
     /// Root correlation ID for the crawl — every task derives a child from it
     /// so all pages share one `trace_id` (issue #356).
     pub(crate) correlation_id: CorrelationId,
-    pub(crate) visited: Arc<UrlDeduplicator>,
-    pub(crate) visited_urls: Arc<RwLock<Vec<String>>>,
     pub(crate) queue: Arc<UrlQueue>,
     pub(crate) rate_limiter: SharedRateLimiter,
     pub(crate) session_pool: Option<Arc<dyn SessionPort>>,

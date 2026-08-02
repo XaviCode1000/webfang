@@ -391,8 +391,6 @@ impl Engine {
         let task_ctx = Arc::new(CrawlTaskCtx {
             config: Arc::clone(&self.config),
             correlation_id: self.correlation_id.clone(),
-            visited: self.scheduler.visited(),
-            visited_urls: self.scheduler.visited_urls(),
             queue: self.scheduler.queue(),
             rate_limiter: self.rate_limiter.clone(),
             session_pool: self

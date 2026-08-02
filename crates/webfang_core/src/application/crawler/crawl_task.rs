@@ -192,6 +192,12 @@ pub(crate) async fn run_crawl_task(
                     if let Ok(parsed_link) = Url::parse(&link) {
                         if let Some(seed_domain) = ctx.config.seed_url.host_str() {
                             let link_domain = parsed_link.host_str().unwrap_or("");
+                            // Enqueue-time dedup is owned by the queue's `seen` set
+                            // inside `push_prioritized`. The `visited` set is marked
+                            // only at dispatch time (`CrawlScheduler::record_visit`),
+                            // so a freshly discovered link must NOT be pre-marked
+                            // here: doing so made `next_url` discard it as already
+                            // visited, silently dropping every internal link (#479).
                             if is_internal_link(&link, seed_domain)
                                 && is_allowed(&link, &ctx.config)
                                 && (ctx.ignore_robots
@@ -199,12 +205,7 @@ pub(crate) async fn run_crawl_task(
                                         .robots_checker
                                         .is_robots_allowed(&link, link_domain)
                                         .await)
-                                && ctx.visited.try_insert(&link)
                             {
-                                if let Ok(mut urls) = ctx.visited_urls.write() {
-                                    urls.push(link.clone());
-                                }
-
                                 let new_discovered = DiscoveredUrl::html(
                                     parsed_link,
                                     url_depth + 1,
@@ -244,7 +245,6 @@ mod tests {
     use crate::application::crawler::ports::{
         ContentPipeline, CrawlResultCollector, LinkExtractorPort, PageFetcher, RobotsChecker,
     };
-    use crate::application::deduplicator::UrlDeduplicator;
     use crate::application::pipeline::stages::output::OutputError;
     use crate::application::pipeline::OutputStage;
     use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
@@ -492,8 +492,6 @@ mod tests {
             Arc::new(CrawlTaskCtx {
                 config: Arc::new(config),
                 correlation_id: CorrelationId::new(),
-                visited: Arc::new(UrlDeduplicator::new()),
-                visited_urls: Arc::new(RwLock::new(Vec::new())),
                 queue: Arc::new(UrlQueue::new()),
                 rate_limiter,
                 session_pool: self.session_pool,
@@ -846,13 +844,23 @@ mod tests {
                 behavior: ExtractBehavior::Links(vec!["https://example.com/dup".to_string()]),
             }))
             .build();
-        assert!(ctx.visited.try_insert("https://example.com/dup"));
         let queue = Arc::clone(&ctx.queue);
+        // Pre-enqueue the URL so the queue's dedup set (`seen`) already contains
+        // it. Enqueue-time dedup lives in `push_prioritized`, not in the `visited`
+        // set (which is reserved for dispatch-time dedup — see #479).
+        let seed = test_url("https://example.com/", 0);
+        let dup = DiscoveredUrl::html(
+            Url::parse("https://example.com/dup").expect("valid test URL"),
+            1,
+            seed.url.clone(),
+        );
+        assert!(queue.push_prioritized(dup, UrlSource::Link).await);
 
-        run_crawl_task(ctx, test_url("https://example.com/", 0))
+        run_crawl_task(ctx, seed)
             .await
             .expect("crawl should succeed");
-        assert!(queue.is_empty().await);
+        // Only the pre-seeded entry remains — the task's duplicate was rejected.
+        assert_eq!(queue.len().await, 1);
     }
 
     // ── Tests: external links ──
