@@ -156,6 +156,8 @@ pub async fn scrape_with_config(
 
     // H1 FIX: Extract title from original DOM BEFORE any transformation.
     // This preserves the <title> tag even when --selector filters it out.
+    // 'title' is a compile-time-constant selector; `Selector::parse` cannot fail.
+    #[allow(clippy::expect_used)]
     let original_title = {
         let doc = scraper::Html::parse_document(&html);
         doc.select(

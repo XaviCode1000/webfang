@@ -65,6 +65,10 @@ pub async fn start_mcp_server(state: McpState, addr: SocketAddr) -> anyhow::Resu
 }
 
 /// Wait for Ctrl+C and return.
+///
+/// OS signal-handler registration cannot fail in practice; this function
+/// returns `()` so the error cannot be propagated.
+#[allow(clippy::expect_used)]
 async fn shutdown_signal() {
     tokio::signal::ctrl_c()
         .await

@@ -19,6 +19,8 @@ impl McpHandler {
         description = "Validate and parse a URL. Returns parsed components (scheme, host, port, path, query) or error details."
     )]
     #[instrument(skip(self), fields(url = %params.url))]
+    // serde_json::to_string cannot fail for a serde_json::Value.
+    #[allow(clippy::expect_used)]
     async fn validate_url(
         &self,
         Parameters(params): Parameters<ValidateUrlParams>,
@@ -138,6 +140,8 @@ impl McpHandler {
         description = "Convert a URL to a domain-based file path. E.g., 'https://example.com/docs/page' → './output/example.com/docs/docs-page.md'. Path segments are flattened into the filename."
     )]
     #[instrument(skip(self), fields(url = %params.url))]
+    // serde_json::to_string cannot fail for a serde_json::Value.
+    #[allow(clippy::expect_used)]
     async fn url_to_file_path(
         &self,
         Parameters(params): Parameters<ValidateUrlParams>,

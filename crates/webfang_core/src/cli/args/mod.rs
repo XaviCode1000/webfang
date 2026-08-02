@@ -151,6 +151,9 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
             CrawlLimits, ExportOptions, IngestionTuning, NetworkOptions,
         };
 
+        // `From::from` returns `Self`, so the parse error cannot be propagated;
+        // CLI validation guarantees the URL is valid before this point.
+        #[allow(clippy::expect_used)]
         let url = url::Url::parse(args.crawler.url.as_deref().unwrap_or("https://example.com"))
             .expect("URL must be valid — CLI validation ensures this");
 

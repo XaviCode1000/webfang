@@ -36,23 +36,31 @@ const MAX_AUTHOR_LEN: usize = 100;
 /// Ordered longest-first so "Written by" wins over "by".
 const BYLINE_PREFIXES: &[&str] = &["written by", "por", "by"];
 
+// All selectors below are compile-time-constant strings, so `Selector::parse`
+// cannot fail at runtime; each `expect` documents a true invariant.
+#[allow(clippy::expect_used)]
 static SEL_JSONLD: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse("script[type=\"application/ld+json\"]")
         .expect("BUG: invalid CSS selector application/ld+json")
 });
+#[allow(clippy::expect_used)]
 static SEL_META_AUTHOR: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse("meta[name=\"author\"], meta[property=\"article:author\"]")
         .expect("BUG: invalid CSS selector meta author")
 });
+#[allow(clippy::expect_used)]
 static SEL_ITEMPROP_AUTHOR: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse("[itemprop=\"author\"]").expect("BUG: invalid CSS selector itemprop=author")
 });
+#[allow(clippy::expect_used)]
 static SEL_ITEMPROP_NAME: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse("[itemprop=\"name\"]").expect("BUG: invalid CSS selector itemprop=name")
 });
+#[allow(clippy::expect_used)]
 static SEL_REL_AUTHOR: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse("[rel=\"author\"]").expect("BUG: invalid CSS selector rel=author")
 });
+#[allow(clippy::expect_used)]
 static SEL_CSS_CLASS: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse(".author, .byline, .post-author, .article-author")
         .expect("BUG: invalid CSS selector author classes")

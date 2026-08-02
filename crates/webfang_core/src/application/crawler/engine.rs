@@ -155,7 +155,7 @@ pub struct Engine {
     config: Arc<CrawlerConfig>,
     /// Root correlation ID for this crawl — all pages share its `trace_id`.
     correlation_id: CorrelationId,
-    collector: Option<ResultsCollector>,
+    collector: ResultsCollector,
     visited: Arc<UrlDeduplicator>,
     /// String URLs for checkpoint persistence (mirrors `visited` hashes).
     visited_urls: Arc<RwLock<Vec<String>>>,
@@ -239,7 +239,7 @@ impl Engine {
         Ok(Self {
             config,
             correlation_id: CorrelationId::new(),
-            collector: Some(collector),
+            collector,
             visited,
             visited_urls,
             queue,
@@ -409,6 +409,7 @@ impl Engine {
     async fn save_checkpoint(&self) {
         if let Some(path) = &self.checkpoint_path {
             let visited_set: HashSet<String> = {
+                #[allow(clippy::expect_used)]
                 let urls = self
                     .visited_urls
                     .read()
@@ -458,6 +459,7 @@ impl Engine {
             #[cfg(unix)]
             {
                 use tokio::signal::unix::{signal, SignalKind};
+                #[allow(clippy::expect_used)]
                 let mut sigterm =
                     signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
                 tokio::select! {
@@ -550,11 +552,7 @@ impl Engine {
             error_count: Arc::clone(&self.error_count),
             error_breakdown: Arc::clone(&self.error_breakdown),
             pages_crawled: Arc::clone(&self.pages_crawled),
-            collector: self
-                .collector
-                .as_ref()
-                .expect("collector initialized before crawl")
-                .clone(),
+            collector: self.collector.clone(),
             cookie_bridge: Arc::clone(&self.cookie_bridge),
             banned_domains: Arc::clone(&self.banned_domains),
             fetch_router: self.fetch_router.clone(),
@@ -575,12 +573,7 @@ impl Engine {
             }
 
             // Check if we've reached max pages (sin lock - atomic)
-            if self
-                .collector
-                .as_ref()
-                .expect("collector initialized before crawl")
-                .is_full(config_clone.max_pages)
-            {
+            if self.collector.is_full(config_clone.max_pages) {
                 info!("Reached max pages limit: {}", config_clone.max_pages);
                 break;
             }
@@ -677,12 +670,7 @@ impl Engine {
 
         // Collect results via mpsc channel — now all Senders are dropped,
         // so the receiver worker will drain and terminate.
-        let collected_urls = self
-            .collector
-            .take()
-            .expect("collector present at end of crawl")
-            .collect()
-            .await;
+        let collected_urls = std::mem::take(&mut self.collector).collect().await;
         let total_pages = collected_urls.len();
         let errors = self.error_count.load(std::sync::atomic::Ordering::SeqCst);
 
@@ -748,9 +736,6 @@ impl Engine {
         // Save checkpoint before shutting down
         self.save_checkpoint().await;
 
-        // Take the collector to drop the sender — receiver will drain remaining items
-        // The JoinSet tasks will complete naturally
-        self.collector.take();
         info!("Engine shutdown complete");
     }
 }

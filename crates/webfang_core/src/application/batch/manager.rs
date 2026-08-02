@@ -41,7 +41,11 @@ pub struct BatchManager {
 
 impl BatchManager {
     /// Create a new batch manager with the given concurrency limit
+    ///
+    /// `max_concurrent` is validated to be `> 0` by callers; `new` returns
+    /// `Self`, so the construction error cannot be propagated.
     #[must_use]
+    #[allow(clippy::expect_used)]
     pub fn new(max_concurrent: usize) -> Self {
         Self {
             processor: BatchProcessor::new(max_concurrent)

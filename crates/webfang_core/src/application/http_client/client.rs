@@ -73,6 +73,9 @@ impl HttpClient {
                     "rate_limit_rpm must be greater than 0".into(),
                 ));
             }
+            // rpm > 0 is guaranteed by the early-return check above, so
+            // `NonZeroU32::new` cannot fail — this is a proven invariant.
+            #[allow(clippy::expect_used)]
             let quota =
                 Quota::per_minute(NonZeroU32::new(rpm).expect(
                     "invariant: rpm > 0 was already checked above — NonZeroU32 cannot fail",

@@ -39,6 +39,10 @@ pub struct AiConfig {
 
 impl Config {
     /// Create a new config with default values
+    ///
+    /// The default crawler URL is a hardcoded constant that cannot fail to
+    /// parse; `new` returns `Self`, so the error cannot be propagated.
+    #[allow(clippy::expect_used)]
     pub fn new() -> Self {
         Self {
             scraper: ScraperConfig::default(),

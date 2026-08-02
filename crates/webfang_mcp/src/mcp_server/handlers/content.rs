@@ -135,6 +135,8 @@ impl McpHandler {
         description = "Generate rich metadata from scraped content including word count, reading time (200 WPM), language detection, and content type classification."
     )]
     #[instrument(skip(self), fields(params = ?params))]
+    // serde_json::to_string cannot fail for a serde_json::Value.
+    #[allow(clippy::expect_used)]
     async fn generate_rich_metadata(
         &self,
         Parameters(params): Parameters<GenerateRichMetadataParams>,

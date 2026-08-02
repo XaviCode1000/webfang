@@ -7,20 +7,32 @@ use std::sync::LazyLock;
 
 // CSS selectors - compilados una sola vez con LazyLock (opt-inline, err-no-unwrap-prod)
 /// Selector for img[src]
+///
+/// Compile-time-constant selector string; `Selector::parse` cannot fail.
+#[allow(clippy::expect_used)]
 static IMG_SELECTOR: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("img[src]").expect("BUG: invalid CSS selector img[src]"));
 
 /// Selector for img[srcset]
+///
+/// Compile-time-constant selector string; `Selector::parse` cannot fail.
+#[allow(clippy::expect_used)]
 static SRCSET_SELECTOR: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse("img[srcset]").expect("BUG: invalid CSS selector img[srcset]")
 });
 
 /// Selector for source[srcset]
+///
+/// Compile-time-constant selector string; `Selector::parse` cannot fail.
+#[allow(clippy::expect_used)]
 static SOURCE_SELECTOR: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse("source[srcset]").expect("BUG: invalid CSS selector source[srcset]")
 });
 
 /// Selector for a[href]
+///
+/// Compile-time-constant selector string; `Selector::parse` cannot fail.
+#[allow(clippy::expect_used)]
 static LINK_SELECTOR: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("a[href]").expect("BUG: invalid CSS selector a[href]"));
 

@@ -225,6 +225,8 @@ impl McpHandler {
         description = "Crawl a website using BFS with configurable depth limit, concurrency control, and rate limiting."
     )]
     #[instrument(skip(self), fields(url = %params.url))]
+    // serde_json::to_string cannot fail for a serde_json::Value.
+    #[allow(clippy::expect_used)]
     async fn crawl_site(
         &self,
         Parameters(params): Parameters<CrawlSiteParams>,
@@ -283,6 +285,8 @@ impl McpHandler {
     #[tool(
         description = "Discover URLs from a website's sitemap and crawl them. Auto-discovers sitemap from robots.txt if not provided."
     )]
+    // serde_json::to_string cannot fail for a serde_json::Value.
+    #[allow(clippy::expect_used)]
     async fn crawl_with_sitemap(
         &self,
         Parameters(params): Parameters<CrawlWithSitemapParams>,
@@ -455,6 +459,8 @@ impl McpHandler {
         description = "Detect if a page requires JavaScript rendering (Single Page Application). Checks for minimal content and SPA markers like <div id=\"root\"> or <div id=\"app\">."
     )]
     #[instrument(skip(self), fields(url = %params.url))]
+    // serde_json::to_string cannot fail for a serde_json::Value.
+    #[allow(clippy::expect_used)]
     async fn detect_spa(
         &self,
         Parameters(params): Parameters<DetectSpaParams>,
