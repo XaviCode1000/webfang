@@ -265,13 +265,16 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
             Err(e) => {
                 return Err(CliExit::NetworkError(format!("URL discovery failed: {e}")));
             },
-            Ok(urls) if urls.is_empty() => {
-                let msg = if opts.crawl.use_sitemap {
-                    "No URLs discovered from sitemaps"
-                } else {
-                    "No URLs discovered from link extraction"
-                };
-                return Err(CliExit::EmptyDiscovery(msg.into()));
+            // Exit 2 only when the sitemap is the source of truth. In DOM mode an
+            // empty discovery is not fatal: `plan_urls` injects the seed URL so
+            // the site itself is still scraped (#488). The message is always the
+            // sitemap one: this guard no longer fires in DOM mode (#495 made the
+            // message context-aware; the link-extraction branch is now unreachable
+            // here because an empty DOM discovery flows to `plan_urls`).
+            Ok(urls) if urls.is_empty() && opts.crawl.use_sitemap => {
+                return Err(CliExit::EmptyDiscovery(
+                    "No URLs discovered from sitemaps".into(),
+                ));
             },
             Ok(urls) => urls,
         };
