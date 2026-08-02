@@ -139,8 +139,25 @@ jq -r 'select(.level == "ERROR") | .fields.url // empty' debug.jsonl | sort -u
 | `execute` | `pipeline::PipelineExecutor` | `url`, `stages` |
 | `pipeline_stage` | `pipeline::PipelineExecutor` | `stage`, `url` |
 | `export_batch` | `JsonlExporter` / `VectorExporter` / `FileExporter` | `exporter`, `documents` |
-| `scrape_with_config` | `scraper_service` | `url`, `has_downloads` |
+| `scrape_single_url` → `scrape_single` | `crawler::discovery::scrape_single_url_for_tui` | `url` (outer), `correlation_id`, `trace_id`, `url` (inner, #501) |
+| `scrape_with_config` | `scraper_service` | `url`, `correlation_id`, `trace_id`, `has_downloads` |
 | `scrape_multiple_with_limit` | `scraper_service` | `urls`, `concurrency` |
+
+Per-page identity is declared **at span creation time** (`correlation_id` =
+W3C traceparent, `trace_id` = the correlation's UUID) because
+FileTraceLayer snapshots span fields in `on_new_span` — fields recorded
+later never reach the JSONL. `ScrapedContent` and the RAG exports carry the
+same identity, so an exported document's `correlation_id` matches its page's
+`span_fields.correlation_id`:
+
+```bash
+# Every page identity present in the trace
+jq -r '.span_fields.correlation_id // empty' debug.jsonl | sort -u
+
+# Reconstruct one page's scrape by its correlation_id
+CID=00-01949e0e8b8e70008000000000000001-0000000000000042-01
+jq -c "select(.span_fields.correlation_id? == \"$CID\")" debug.jsonl
+```
 
 Events (not spans): `crawl progress`, `crawl completed`, and any
 `log_scrape_error(...)` error carrying `error`, `url`, `stage`, `trace_id`.
