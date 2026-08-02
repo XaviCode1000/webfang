@@ -846,7 +846,7 @@ mod tests {
                 behavior: ExtractBehavior::Links(vec!["https://example.com/dup".to_string()]),
             }))
             .build();
-        ctx.visited.try_insert("https://example.com/dup");
+        assert!(ctx.visited.try_insert("https://example.com/dup"));
         let queue = Arc::clone(&ctx.queue);
 
         run_crawl_task(ctx, test_url("https://example.com/", 0))
