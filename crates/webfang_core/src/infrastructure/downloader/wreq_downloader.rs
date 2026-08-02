@@ -10,12 +10,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, warn};
 use url::Url;
 use wreq::Client;
 use wreq_util::Profile;
 
 use super::{Cookie, DownloadError, Downloader, FetchedPage};
+use crate::infrastructure::user_agent::UserAgentCache;
 
 /// Estimated memory cost of a wreq client instance in bytes.
 ///
@@ -181,7 +182,40 @@ fn parse_set_cookie(header: &str, url: &Url) -> Option<Cookie> {
     })
 }
 
+/// Parse the `Retry-After` header (integer seconds) into milliseconds.
+///
+/// Returns the delay in ms, defaulting to 1000ms if the header is absent or unparseable.
+fn parse_retry_after_ms(response: &wreq::Response) -> u64 {
+    response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(1)
+        .saturating_mul(1000)
+}
+
 impl WreqDownloader {
+    #[instrument(skip(self), fields(url = %url))]
+    async fn send_request(
+        &self,
+        url: &Url,
+        user_agent: Option<&str>,
+    ) -> Result<wreq::Response, DownloadError> {
+        let builder = self.client.get(url.as_str());
+        let builder = match user_agent {
+            Some(ua) => builder.header("User-Agent", ua),
+            None => builder,
+        };
+        builder.send().await.map_err(|e| {
+            if e.is_timeout() {
+                DownloadError::Timeout(self.timeout_secs)
+            } else {
+                DownloadError::Network(Box::new(e))
+            }
+        })
+    }
+
     #[instrument(
         skip(self),
         fields(
@@ -195,21 +229,47 @@ impl WreqDownloader {
     async fn fetch_inner(&self, url: &Url) -> Result<FetchedPage, DownloadError> {
         debug!("Fetching URL: {}", url);
 
-        let response = self.client.get(url.as_str()).send().await.map_err(|e| {
-            if e.is_timeout() {
-                DownloadError::Timeout(self.timeout_secs)
-            } else {
-                DownloadError::Network(Box::new(e))
+        let mut response = self.send_request(url, None).await?;
+        let mut status = response.status().as_u16();
+
+        // 403: one implicit retry with rotated User-Agent (mirrors HttpClient).
+        if status == 403 {
+            warn!("403 Forbidden from {url} — retrying with rotated User-Agent");
+            let agents = UserAgentCache::fallback_agents();
+            let rotated_ua = agents.get(1).map(String::as_str);
+            response = self.send_request(url, rotated_ua).await?;
+            status = response.status().as_u16();
+        }
+
+        // 429: backoff retry up to 3 times, honouring Retry-After.
+        if status == 429 {
+            let delay_ms = parse_retry_after_ms(&response);
+            warn!("429 Rate Limited from {url} — retrying after {delay_ms}ms");
+            let mut succeeded = false;
+            for _ in 0..3 {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                response = self.send_request(url, None).await?;
+                status = response.status().as_u16();
+                if response.status().is_success() {
+                    succeeded = true;
+                    break;
+                }
             }
-        })?;
+            if !succeeded {
+                return Err(DownloadError::Http {
+                    status: 429,
+                    message: "HTTP 429".to_string(),
+                });
+            }
+        }
 
-        let status = response.status().as_u16();
-
-        // Check for non-2xx responses
+        // Remaining non-2xx → terminal error.
         if !response.status().is_success() {
             let message = format!("HTTP {status}");
             return Err(DownloadError::Http { status, message });
         }
+
+        let status = response.status().as_u16();
 
         // Extract cookies before consuming the response body
         let cookies = Self::extract_cookies(url, &response);

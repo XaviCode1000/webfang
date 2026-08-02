@@ -10,3 +10,4 @@ mod resume_test;
 mod robots_test;
 mod single_page_test;
 mod sitemap_test;
+mod waf_gauntlet_test;
