@@ -98,6 +98,8 @@ gitnexus analyze --index-only --skip-agents-md --embeddings  # + re-embeds ONLY 
 - ALWAYS `--skip-agents-md` so this file isn't overwritten by the auto-block regeneration.
 - Add `--pdg` only for taint/control-data dependence layers. Add `--skills` only when regenerating skill files.
 
+**Embeddings (remote, 2048d):** `.gitnexusrc` (gitignored) pins `embeddingBaseUrl` (OpenRouter) + `embeddingModel` (nemotron-vl-1b) + `pdg`/`skipAgentsMd`/`embeddings` defaults. Dims and API key are **env-only** (rc no los soporta): `GITNEXUS_EMBEDDING_DIMS=2048` + `GITNEXUS_EMBEDDING_API_KEY`. Sin esas env vars, cae al ONNX local (384d) y dispara dimension mismatch.
+
 ---
 
 ## 🏗️ Architecture & Code Rules
