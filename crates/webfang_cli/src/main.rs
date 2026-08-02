@@ -408,12 +408,15 @@ async fn __main() -> CliExit {
             });
 
         match model_config {
-            Ok(config) => match SemanticCleanerImpl::new(config.clone()).await {
+            Ok(config) => match SemanticCleanerImpl::new(config).await {
                 Ok(cleaner) => {
+                    // Share the cleaner's ONNX pool + tokenizer (#433) so the
+                    // vault-search embedding adapter reuses the SAME model — one
+                    // `resolve_model_assets` call, one `InferencePool` on `--ai`.
+                    // Extracted before type-erasing the cleaner behind the trait.
+                    let (pool, tokenizer) = cleaner.shared_inference();
                     let cleaner: Option<Arc<dyn SemanticCleaner>> = Some(Arc::new(cleaner));
-                    // Assemble the vault-search ports (#433) from the same config so
-                    // the elastic Container can embed / segment / persist notes.
-                    let ports = build_vault_ports(&config).await;
+                    let ports = build_vault_ports(pool, tokenizer).await;
                     (cleaner, ports)
                 },
                 Err(e) => {
@@ -451,30 +454,30 @@ async fn __main() -> CliExit {
     result
 }
 
-/// Assemble the vault-search AI ports (#433) from a resolved model config.
+/// Assemble the vault-search AI ports (#433) from the cleaner's shared model.
 ///
-/// Builds the ONNX embedding adapter + Markdown chunker (always under `ai`) and
-/// the SQLite note repository (under `persistence`). Every construction failure
-/// degrades gracefully — the affected port stays `None` and the corresponding
-/// capability answers with an honest error rather than aborting the run.
+/// Builds the ONNX embedding adapter + Markdown chunker (always under `ai`) from
+/// the semantic cleaner's shared inference pool + tokenizer — so the `--ai` path
+/// loads the ONNX model exactly once — plus the SQLite note repository (under
+/// `persistence`). Embedding + chunker assembly is infallible (the components are
+/// already valid); only the note repository can fail, and it degrades gracefully
+/// — the port stays `None` and the capability answers with an honest error rather
+/// than aborting the run.
 #[cfg(feature = "ai")]
 async fn build_vault_ports(
-    config: &ModelConfig,
+    pool: Arc<webfang_ai::InferencePool>,
+    tokenizer: Arc<webfang_ai::MiniLmTokenizer>,
 ) -> webfang_core::application::container::VaultAiPorts {
     use webfang_core::application::container::VaultAiPorts;
 
     let mut ports = VaultAiPorts::default();
 
-    match webfang_ai::EmbeddingAdapter::from_config(config).await {
-        Ok(adapter) => {
-            ports.embedding_port = Some(Arc::new(adapter));
-            ports.text_chunker = Some(Arc::new(webfang_ai::MarkdownChunker::new()));
-        },
-        Err(e) => {
-            tracing::warn!("embedding port unavailable, vault search disabled: {e}");
-            return ports;
-        },
-    }
+    // Assemble the embedding adapter from the cleaner's shared pool + tokenizer.
+    // Infallible — no model resolution happens here (that already happened once
+    // inside `SemanticCleanerImpl::new`), so there is nothing to degrade around.
+    let adapter = webfang_ai::EmbeddingAdapter::new(pool, tokenizer);
+    ports.embedding_port = Some(Arc::new(adapter));
+    ports.text_chunker = Some(Arc::new(webfang_ai::MarkdownChunker::new()));
 
     #[cfg(feature = "persistence")]
     {
@@ -485,16 +488,22 @@ async fn build_vault_ports(
 
         let db_path = resolve_db_path(None, env_db_path());
         match create_pool(&db_path, 4) {
-            Ok(pool) => match setup_schema(&pool).await {
+            Ok(db_pool) => match setup_schema(&db_pool).await {
                 Ok(()) => {
-                    ports.note_repository = Some(Arc::new(SqliteVectorRepository::new(pool)));
+                    ports.note_repository = Some(Arc::new(SqliteVectorRepository::new(db_pool)));
                 },
                 Err(e) => {
-                    tracing::warn!("note repository schema init failed, persistence disabled: {e}");
+                    tracing::warn!(
+                        error = %e,
+                        "note repository schema init failed, persistence disabled"
+                    );
                 },
             },
             Err(e) => {
-                tracing::warn!("note repository pool creation failed, persistence disabled: {e}");
+                tracing::warn!(
+                    error = %e,
+                    "note repository pool creation failed, persistence disabled"
+                );
             },
         }
     }

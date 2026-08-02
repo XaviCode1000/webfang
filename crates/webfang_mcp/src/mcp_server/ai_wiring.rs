@@ -26,30 +26,28 @@ use webfang_core::domain::embedding_port::EmbeddingPort;
 
 /// Wire the vault-search AI ports into `container`.
 ///
-/// Injects, in order: the ONNX [`EmbeddingAdapter`](webfang_ai::EmbeddingAdapter),
-/// a [`MarkdownChunker`](webfang_ai::MarkdownChunker), and a SQLite-backed
-/// [`NoteRepository`]. Degradation is incremental: if the embedding adapter
-/// cannot be built the container is returned unchanged (vault search requires
-/// all three ports); if only the note repository fails, the embedding port and
-/// chunker remain wired.
+/// Injects, in order: the ONNX [`EmbeddingAdapter`](webfang_ai::EmbeddingAdapter)
+/// — assembled from the semantic cleaner's shared inference pool + tokenizer, so
+/// the ONNX model is loaded exactly once — a
+/// [`MarkdownChunker`](webfang_ai::MarkdownChunker), and a SQLite-backed
+/// [`NoteRepository`]. Embedding + chunker assembly is infallible (the components
+/// are already valid); only the note repository can fail, in which case the
+/// embedding port and chunker remain wired and vault search degrades to an honest
+/// "not available" error at call time.
 ///
 /// # Errors
 ///
-/// Never fails — every construction error is logged and degraded around, so the
-/// caller always receives a usable [`Container`].
+/// Never fails — the note-repository construction error is logged and degraded
+/// around, so the caller always receives a usable [`Container`].
 #[must_use]
 pub async fn wire_ai_ports(
     mut container: Container,
-    model_config: &webfang_ai::ModelConfig,
+    pool: Arc<webfang_ai::InferencePool>,
+    tokenizer: Arc<webfang_ai::MiniLmTokenizer>,
 ) -> Container {
-    // 1. Embedding port (ONNX adapter) — the hard dependency for vault search.
-    let adapter = match webfang_ai::EmbeddingAdapter::from_config(model_config).await {
-        Ok(adapter) => adapter,
-        Err(e) => {
-            tracing::warn!("embedding port unavailable, continuing without vault search: {e}");
-            return container;
-        },
-    };
+    // 1. Embedding port (ONNX adapter) — shares the cleaner's pool + tokenizer,
+    //    so this is infallible (no model resolution happens here).
+    let adapter = webfang_ai::EmbeddingAdapter::new(pool, tokenizer);
     let dim = adapter.embedding_dim();
     container = container.with_embedding_port(Arc::new(adapter));
 
@@ -70,7 +68,10 @@ pub async fn wire_ai_ports(
                 );
             },
             Err(e) => {
-                tracing::warn!("note repository unavailable, vault search persistence disabled: {e}");
+                tracing::warn!(
+                    error = %e,
+                    "note repository unavailable, vault search persistence disabled"
+                );
             },
         }
     }
@@ -94,8 +95,10 @@ pub async fn wire_ai_ports(
 /// Only compiled when the `persistence` feature is explicitly enabled — the
 /// consumer opts in with `--features ai,persistence`.
 #[cfg(feature = "persistence")]
-async fn build_note_repository(
-) -> Result<Arc<dyn webfang_core::domain::note_repository::NoteRepository>, Box<dyn std::error::Error + Send + Sync>> {
+async fn build_note_repository() -> Result<
+    Arc<dyn webfang_core::domain::note_repository::NoteRepository>,
+    Box<dyn std::error::Error + Send + Sync>,
+> {
     use webfang_core::infrastructure::autotuning::{env_db_path, resolve_db_path};
     use webfang_core::infrastructure::persistence::{
         create_pool, setup_schema, SqliteVectorRepository,

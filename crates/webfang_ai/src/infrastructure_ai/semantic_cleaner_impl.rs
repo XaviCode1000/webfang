@@ -199,8 +199,9 @@ pub struct SemanticCleanerImpl {
     // Phase 2: Core inference
     /// ONNX inference pool (dedicated worker threads with persistent sessions)
     inference_pool: Arc<InferencePool>,
-    /// HuggingFace tokenizer
-    tokenizer: MiniLmTokenizer,
+    /// HuggingFace tokenizer (`Arc`-shared with the embedding adapter via
+    /// [`shared_inference`](Self::shared_inference))
+    tokenizer: Arc<MiniLmTokenizer>,
 
     // Phase 3: Chunking + scoring
     /// Semantic HTML chunker with arena allocator
@@ -275,8 +276,9 @@ impl SemanticCleanerImpl {
         // so both pipelines resolve and validate models identically.
         let (model_bytes, tokenizer_path) = resolve_model_assets(&config).await?;
 
-        // Initialize all pipeline components.
-        let tokenizer = MiniLmTokenizer::from_file(&tokenizer_path).await?;
+        // Initialize all pipeline components. The tokenizer is `Arc`-wrapped so
+        // `shared_inference` can hand the SAME instance to the embedding adapter.
+        let tokenizer = Arc::new(MiniLmTokenizer::from_file(&tokenizer_path).await?);
         let inference_pool = Arc::new(InferencePool::new(
             Arc::clone(&model_bytes),
             config.model_variant,
@@ -306,6 +308,24 @@ impl SemanticCleanerImpl {
     #[must_use]
     pub fn relevance_threshold(&self) -> f32 {
         self.config.relevance_threshold
+    }
+
+    /// Share the inference pool and tokenizer with another pipeline.
+    ///
+    /// Returns cheap `Arc` clones of the ONNX [`InferencePool`] and the
+    /// [`MiniLmTokenizer`] this cleaner was built with, so a second consumer
+    /// (e.g. the
+    /// [`EmbeddingAdapter`](crate::infrastructure_ai::embedding_adapter::EmbeddingAdapter))
+    /// can reuse the SAME model + tokenizer instead of resolving and loading a
+    /// second copy. This is what lets the `--ai` path load the ONNX model
+    /// exactly once across the semantic cleaner and the vault-search embedding
+    /// adapter — one `resolve_model_assets` call, one `InferencePool`.
+    #[must_use]
+    pub fn shared_inference(&self) -> (Arc<InferencePool>, Arc<MiniLmTokenizer>) {
+        (
+            Arc::clone(&self.inference_pool),
+            Arc::clone(&self.tokenizer),
+        )
     }
 
     /// Set the relevance threshold
