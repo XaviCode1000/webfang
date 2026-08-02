@@ -100,9 +100,7 @@ pub fn extract_links(html: &str, base_url: &str) -> Result<Vec<String>, crate::d
 #[inline]
 #[must_use]
 pub fn is_internal_link(url: &str, domain: &str) -> bool {
-    extract_domain(url)
-        .map(|url_domain| url_domain == domain || url_domain.ends_with(&format!(".{domain}")))
-        .unwrap_or(false)
+    crate::domain::url_validation::is_internal_link(url, domain)
 }
 
 /// Normalize a URL (remove fragments, strip www, remove default ports, etc.)
@@ -229,26 +227,6 @@ fn collapse_index_path(url: &str) -> String {
         },
         None => url.to_string(),
     }
-}
-
-/// Extract domain from URL
-///
-/// Following **own-borrow-over-clone**: Accepts `&str`.
-/// Following **opt-inline**: Inlined for hot path.
-///
-/// # Arguments
-///
-/// * `url` - URL to extract domain from
-///
-/// # Returns
-///
-/// Domain string or None if invalid
-#[inline]
-#[must_use]
-fn extract_domain(url: &str) -> Option<&str> {
-    url.split("://")
-        .nth(1)
-        .and_then(|rest| rest.split('/').next())
 }
 
 /// HTML link extractor implementation

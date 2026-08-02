@@ -34,20 +34,10 @@ pub struct LinkProcessor;
 impl LinkProcessor {
     /// Check if a URL is internal (same domain)
     ///
-    /// Pure function for domain checking logic.
+    /// Delegates to the canonical, port-safe
+    /// [`crate::domain::url_validation::is_internal_link`].
     pub fn is_internal_link(url: &str, domain: &str) -> bool {
-        Self::extract_domain(url)
-            .map(|url_domain| url_domain == domain || url_domain.ends_with(&format!(".{domain}")))
-            .unwrap_or(false)
-    }
-
-    /// Extract domain from URL
-    ///
-    /// Pure function for domain extraction.
-    fn extract_domain(url: &str) -> Option<&str> {
-        url.split("://")
-            .nth(1)
-            .and_then(|rest| rest.split('/').next())
+        crate::domain::url_validation::is_internal_link(url, domain)
     }
 }
 

@@ -181,9 +181,7 @@ pub fn is_allowed(url: &str, config: &CrawlerConfig) -> bool {
 #[inline]
 #[must_use]
 pub fn extract_domain(url: &str) -> Option<String> {
-    url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(String::from))
+    crate::domain::url_validation::extract_domain(url)
 }
 
 /// Check if a URL is internal (same domain as seed)
@@ -211,9 +209,7 @@ pub fn extract_domain(url: &str) -> Option<String> {
 #[inline]
 #[must_use]
 pub fn is_internal_link(url: &str, seed_domain: &str) -> bool {
-    extract_domain(url)
-        .map(|domain| domain == seed_domain || domain.ends_with(&format!(".{seed_domain}")))
-        .unwrap_or(false)
+    crate::domain::url_validation::is_internal_link(url, seed_domain)
 }
 
 #[cfg(test)]

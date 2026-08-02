@@ -124,12 +124,10 @@ impl McpHandler {
     ) -> Result<CallToolResult, McpError> {
         let _permit = acquire_semaphore!(self, url_utils);
 
-        let seed_host = normalize_seed_host(&params.seed_domain);
-        let is_internal = url::Url::parse(&params.url)
-            .ok()
-            .and_then(|u| u.host_str().map(String::from))
-            .map(|url_host| url_host == seed_host || url_host.ends_with(&format!(".{seed_host}")))
-            .unwrap_or(false);
+        let is_internal = webfang_core::domain::url_validation::is_internal_link(
+            &params.url,
+            &params.seed_domain,
+        );
         Ok(CallToolResult::success(vec![Content::text(
             is_internal.to_string(),
         )]))
@@ -165,27 +163,13 @@ impl McpHandler {
     }
 }
 
-/// Normalize a seed domain input to a bare host string.
-///
-/// Accepts both bare domains (`example.com`) and full URLs (`https://example.com/path`).
-/// For URLs, extracts the host component. For bare domains, strips any path suffix.
-fn normalize_seed_host(seed: &str) -> String {
-    if let Ok(u) = url::Url::parse(seed) {
-        if let Some(host) = u.host_str() {
-            return host.to_string();
-        }
-    }
-    // Bare domain — strip any accidental path component
-    seed.split('/').next().unwrap_or(seed).to_string()
-}
-
 pub fn build_router() -> ToolRouter<McpHandler> {
     McpHandler::tool_router_url_utils()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use webfang_core::domain::url_validation::normalize_seed_host;
 
     #[test]
     fn normalize_seed_host_bare_domain() {
@@ -231,12 +215,7 @@ mod tests {
     // --- Integration-style tests for the classification logic ---
 
     fn classify(url: &str, seed_domain: &str) -> bool {
-        let seed_host = normalize_seed_host(seed_domain);
-        url::Url::parse(url)
-            .ok()
-            .and_then(|u| u.host_str().map(String::from))
-            .map(|url_host| url_host == seed_host || url_host.ends_with(&format!(".{seed_host}")))
-            .unwrap_or(false)
+        webfang_core::domain::url_validation::is_internal_link(url, seed_domain)
     }
 
     #[test]
