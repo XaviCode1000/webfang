@@ -114,13 +114,19 @@ pub fn extract_domain(url: &str) -> Option<String> {
         .and_then(|u| u.host_str().map(String::from))
 }
 
-/// Normalize a seed reference to a bare host string (no scheme, port, or path).
+/// Normalize a seed reference to a bare host string (no scheme, port, path, or
+/// `www.` prefix).
 ///
 /// Accepts both full URLs and bare hosts:
 /// - Full URL: `https://example.com:9090/path` → `example.com` (via
 ///   [`url::Url::host_str`], which drops the port).
 /// - Bare host: `example.com/path` → `example.com` (path stripped) and
 ///   `example.com:8080` → `example.com` (port stripped).
+///
+/// The `www.` prefix is stripped so that seed hosts are compared on the same
+/// footing as links normalized with `strip_www=true` (#500). Without this, a
+/// `www.`-prefixed seed (`www.gnu.org`) never matches its stripped links
+/// (`gnu.org`), silently dropping every internal URL on most real-world sites.
 ///
 /// This is the canonical seed-host normalizer shared by the crawl engine and the
 /// MCP `is_internal_link` tool, so both classify links against the same bare host.
@@ -131,7 +137,7 @@ pub fn extract_domain(url: &str) -> Option<String> {
 ///
 /// # Returns
 ///
-/// The bare host component.
+/// The bare host component, without a leading `www.`.
 ///
 /// # Examples
 ///
@@ -142,30 +148,45 @@ pub fn extract_domain(url: &str) -> Option<String> {
 /// assert_eq!(normalize_seed_host("example.com"), "example.com");
 /// assert_eq!(normalize_seed_host("example.com/path"), "example.com");
 /// assert_eq!(normalize_seed_host("example.com:8080"), "example.com");
+/// // www stripping (#500):
+/// assert_eq!(normalize_seed_host("https://www.example.com/path"), "example.com");
+/// assert_eq!(normalize_seed_host("www.example.com"), "example.com");
 /// ```
 #[inline]
 #[must_use]
 pub fn normalize_seed_host(seed: &str) -> String {
+    // Try full-URL parse first; fall through to bare-host handling when the
+    // input has no authority component (e.g. "www.example.com:8080" parses as
+    // scheme "www.example.com" with no host).
     if let Ok(u) = url::Url::parse(seed) {
-        if let Some(host) = u.host_str() {
-            return host.to_string();
+        if let Some(h) = u.host_str() {
+            return strip_www_prefix(h);
         }
     }
     // Bare host: strip any accidental path suffix, then any :port suffix.
     let without_path = seed.split('/').next().unwrap_or(seed);
-    without_path
-        .split(':')
-        .next()
-        .unwrap_or(without_path)
-        .to_string()
+    let host = without_path.split(':').next().unwrap_or(without_path);
+    strip_www_prefix(host)
+}
+
+/// Strip a leading `www.` from a host string, returning the bare domain.
+///
+/// Consistent with `normalize_url(strip_www=true)` used on the link side,
+/// so both sides of the internal-link comparison are www-agnostic (#500).
+#[inline]
+fn strip_www_prefix(host: &str) -> String {
+    host.strip_prefix("www.")
+        .map(String::from)
+        .unwrap_or_else(|| host.to_string())
 }
 
 /// Check whether a URL is internal to a seed domain (same host or subdomain).
 ///
-/// Both the URL host and the seed are normalized to bare hosts (port stripped)
-/// before comparison, so URLs with an explicit port are handled correctly. This
-/// is the single canonical implementation shared by the crawl engine and the MCP
-/// `is_internal_link` tool (#479).
+/// Both the URL host and the seed are normalized to bare hosts (port and
+/// `www.` stripped) before comparison, so URLs with an explicit port or a
+/// `www.` prefix mismatch are handled correctly. This is the single canonical
+/// implementation shared by the crawl engine and the MCP `is_internal_link`
+/// tool (#479, #500).
 ///
 /// # Arguments
 ///
@@ -186,6 +207,10 @@ pub fn normalize_seed_host(seed: &str) -> String {
 /// // The port case that broke the crawl engine (#479):
 /// assert!(is_internal_link("http://127.0.0.1:8080/page", "127.0.0.1"));
 /// assert!(!is_internal_link("http://other.com:8080/x", "example.com"));
+/// // The www asymmetry that broke DOM discovery (#500):
+/// assert!(is_internal_link("https://gnu.org/page", "www.gnu.org"));
+/// assert!(is_internal_link("https://www.gnu.org/page", "gnu.org"));
+/// assert!(is_internal_link("https://www.gnu.org/page", "www.gnu.org"));
 /// ```
 #[inline]
 #[must_use]
@@ -289,5 +314,85 @@ mod tests {
         assert_eq!(normalize_seed_host("example.com/path"), "example.com");
         assert_eq!(normalize_seed_host("example.com:8080"), "example.com");
         assert_eq!(normalize_seed_host(""), "");
+    }
+
+    // ========================================================================
+    // www-agnostic regression tests (#500)
+    //
+    // DOM-mode crawl normalized links with `normalize_url(strip_www=true)`
+    // but passed the seed host from `Url::host_str()` WITHOUT stripping www.
+    // On www-prefixed sites (the majority of the web), every internal link
+    // was classified external → 0 discovered URLs. These tests pin the
+    // www-agnostic behavior of the canonical component in all four
+    // seed/link www combinations.
+    // ========================================================================
+
+    #[test]
+    fn normalize_seed_host_strips_www_from_url() {
+        assert_eq!(normalize_seed_host("https://www.gnu.org/"), "gnu.org");
+    }
+
+    #[test]
+    fn normalize_seed_host_strips_www_from_bare_host() {
+        assert_eq!(normalize_seed_host("www.gnu.org"), "gnu.org");
+    }
+
+    #[test]
+    fn normalize_seed_host_strips_www_with_port() {
+        assert_eq!(normalize_seed_host("www.example.com:8080"), "example.com");
+    }
+
+    #[test]
+    fn normalize_seed_host_preserves_non_www_subdomain() {
+        // "wiki.example.com" must NOT be stripped — only leading "www." is.
+        assert_eq!(normalize_seed_host("wiki.example.com"), "wiki.example.com");
+    }
+
+    #[test]
+    fn is_internal_link_seed_www_link_stripped_is_internal() {
+        // THE #500 bug case: seed has www, link was normalized with strip_www.
+        assert!(is_internal_link("https://gnu.org/page", "www.gnu.org"));
+    }
+
+    #[test]
+    fn is_internal_link_seed_stripped_link_www_is_internal() {
+        // Reverse: seed bare, link keeps www (already worked via ends_with).
+        assert!(is_internal_link("https://www.gnu.org/page", "gnu.org"));
+    }
+
+    #[test]
+    fn is_internal_link_both_www_is_internal() {
+        assert!(is_internal_link(
+            "https://www.example.com/page",
+            "www.example.com"
+        ));
+    }
+
+    #[test]
+    fn is_internal_link_neither_www_is_internal() {
+        assert!(is_internal_link("https://example.com/page", "example.com"));
+    }
+
+    #[test]
+    fn is_internal_link_www_seed_subdomain_link_is_internal() {
+        // www seed + subdomain link: blog.example.com is internal to www.example.com.
+        assert!(is_internal_link(
+            "https://blog.example.com/post",
+            "www.example.com"
+        ));
+    }
+
+    #[test]
+    fn is_internal_link_www_seed_other_host_is_external() {
+        assert!(!is_internal_link("https://other.com/x", "www.example.com"));
+    }
+
+    #[test]
+    fn is_internal_link_www_seed_full_url_is_internal() {
+        // Seed passed as full URL with www (MCP tool path).
+        assert!(is_internal_link(
+            "https://gnu.org/page",
+            "https://www.gnu.org/"
+        ));
     }
 }
