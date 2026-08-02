@@ -383,7 +383,10 @@ async fn __main() -> CliExit {
     };
 
     #[cfg(feature = "ai")]
-    let ai_cleaner: Option<Arc<dyn SemanticCleaner>> = if opts.ai && !opts.export.dry_run {
+    let (ai_cleaner, vault_ports): (
+        Option<Arc<dyn SemanticCleaner>>,
+        webfang_core::application::container::VaultAiPorts,
+    ) = if opts.ai && !opts.export.dry_run {
         // Resolve model variant: CLI flag takes precedence over AI_MODEL_ID env var
         let model_variant = if opts.ai_config.model.is_empty() {
             webfang_ai::AiModel::from_env_or_default()
@@ -406,7 +409,16 @@ async fn __main() -> CliExit {
 
         match model_config {
             Ok(config) => match SemanticCleanerImpl::new(config).await {
-                Ok(cleaner) => Some(Arc::new(cleaner) as Arc<dyn SemanticCleaner>),
+                Ok(cleaner) => {
+                    // Share the cleaner's ONNX pool + tokenizer (#433) so the
+                    // vault-search embedding adapter reuses the SAME model — one
+                    // `resolve_model_assets` call, one `InferencePool` on `--ai`.
+                    // Extracted before type-erasing the cleaner behind the trait.
+                    let (pool, tokenizer) = cleaner.shared_inference();
+                    let cleaner: Option<Arc<dyn SemanticCleaner>> = Some(Arc::new(cleaner));
+                    let ports = build_vault_ports(pool, tokenizer).await;
+                    (cleaner, ports)
+                },
                 Err(e) => {
                     let msg = format!("No se pudo inicializar el limpiador semántico AI: {e}");
                     return match e {
@@ -420,19 +432,81 @@ async fn __main() -> CliExit {
             },
         }
     } else {
-        None
+        (
+            None,
+            webfang_core::application::container::VaultAiPorts::default(),
+        )
     };
+    #[cfg(not(feature = "ai"))]
+    let vault_ports = webfang_core::application::container::VaultAiPorts::default();
 
     // Dispatch to the orchestrator. The argument list depends on which optional
     // features are compiled in, so each combination is spelled out explicitly.
     #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
-    let result = orchestrator::run(opts, ai_cleaner, adaptive_engine).await;
+    let result = orchestrator::run(opts, ai_cleaner, adaptive_engine, vault_ports).await;
     #[cfg(all(feature = "ai", not(feature = "adaptive-selectors")))]
-    let result = orchestrator::run(opts, ai_cleaner).await;
+    let result = orchestrator::run(opts, ai_cleaner, vault_ports).await;
     #[cfg(all(not(feature = "ai"), feature = "adaptive-selectors"))]
-    let result = orchestrator::run(opts, adaptive_engine).await;
+    let result = orchestrator::run(opts, adaptive_engine, vault_ports).await;
     #[cfg(all(not(feature = "ai"), not(feature = "adaptive-selectors")))]
-    let result = orchestrator::run(opts).await;
+    let result = orchestrator::run(opts, vault_ports).await;
 
     result
+}
+
+/// Assemble the vault-search AI ports (#433) from the cleaner's shared model.
+///
+/// Builds the ONNX embedding adapter + Markdown chunker (always under `ai`) from
+/// the semantic cleaner's shared inference pool + tokenizer — so the `--ai` path
+/// loads the ONNX model exactly once — plus the SQLite note repository (under
+/// `persistence`). Embedding + chunker assembly is infallible (the components are
+/// already valid); only the note repository can fail, and it degrades gracefully
+/// — the port stays `None` and the capability answers with an honest error rather
+/// than aborting the run.
+#[cfg(feature = "ai")]
+async fn build_vault_ports(
+    pool: Arc<webfang_ai::InferencePool>,
+    tokenizer: Arc<webfang_ai::MiniLmTokenizer>,
+) -> webfang_core::application::container::VaultAiPorts {
+    use webfang_core::application::container::VaultAiPorts;
+
+    let mut ports = VaultAiPorts::default();
+
+    // Assemble the embedding adapter from the cleaner's shared pool + tokenizer.
+    // Infallible — no model resolution happens here (that already happened once
+    // inside `SemanticCleanerImpl::new`), so there is nothing to degrade around.
+    let adapter = webfang_ai::EmbeddingAdapter::new(pool, tokenizer);
+    ports.embedding_port = Some(Arc::new(adapter));
+    ports.text_chunker = Some(Arc::new(webfang_ai::MarkdownChunker::new()));
+
+    #[cfg(feature = "persistence")]
+    {
+        use webfang_core::infrastructure::autotuning::{env_db_path, resolve_db_path};
+        use webfang_core::infrastructure::persistence::{
+            create_pool, setup_schema, SqliteVectorRepository,
+        };
+
+        let db_path = resolve_db_path(None, env_db_path());
+        match create_pool(&db_path, 4) {
+            Ok(db_pool) => match setup_schema(&db_pool).await {
+                Ok(()) => {
+                    ports.note_repository = Some(Arc::new(SqliteVectorRepository::new(db_pool)));
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "note repository schema init failed, persistence disabled"
+                    );
+                },
+            },
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "note repository pool creation failed, persistence disabled"
+                );
+            },
+        }
+    }
+
+    ports
 }

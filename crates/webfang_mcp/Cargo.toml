@@ -11,7 +11,11 @@ homepage.workspace = true
 
 [features]
 mcp = ["webfang_core/mcp"]
+# Vault search (#433): ONNX embedding adapter + Markdown chunker.
+# Note: the SQLite note repository requires `persistence` SEPARATELY —
+# the consumer (CLI binary, MCP example) opts in with `--features ai,persistence`.
 ai = ["dep:webfang_ai", "webfang_ai/ai", "webfang_core/ai"]
+persistence = ["webfang_core/persistence"]
 
 [dependencies]
 webfang_core = { workspace = true }

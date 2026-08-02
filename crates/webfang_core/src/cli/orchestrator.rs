@@ -61,13 +61,14 @@ pub fn prepare_progress_channel(
 /// 2. Scraping with progress
 /// 3. Export results
 /// 4. Report failures + exit code
-#[instrument(level = "info", skip(opts, ai_cleaner, adaptive_engine), fields(url = %opts.url))]
+#[instrument(level = "info", skip(opts, ai_cleaner, adaptive_engine, vault_ports), fields(url = %opts.url))]
 pub async fn run(
     opts: CrawlOptions,
     #[cfg(feature = "ai")] ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
     #[cfg(feature = "adaptive-selectors")] adaptive_engine: Option<
         std::sync::Arc<AdaptiveSelectorEngine>,
     >,
+    vault_ports: crate::application::container::VaultAiPorts,
 ) -> CliExit {
     if opts.export.dry_run {
         println!("Dry-run: 1 URL(s) would be scraped:");
@@ -88,7 +89,7 @@ pub async fn run(
             Err(e) => return e,
         };
 
-    let elastic_ingestion = match build_elastic_ingestion(&opts).await {
+    let elastic_ingestion = match build_elastic_ingestion(&opts, vault_ports).await {
         Ok(v) => v,
         Err(e) => return e,
     };
@@ -706,7 +707,11 @@ mod tests {
     #[tokio::test]
     async fn build_elastic_ingestion_none_when_no_options() {
         let opts = CrawlOptions::default();
-        let result = build_elastic_ingestion(&opts).await;
+        let result = build_elastic_ingestion(
+            &opts,
+            crate::application::container::VaultAiPorts::default(),
+        )
+        .await;
         assert!(result.is_ok(), "should not error: {:?}", result.err());
         assert!(
             result.unwrap().is_none(),
@@ -722,7 +727,11 @@ mod tests {
     async fn build_elastic_ingestion_some_when_output_vectors() {
         let mut opts = CrawlOptions::default();
         opts.elastic.output_vectors = Some("/tmp/test.jsonl".to_string());
-        let result = build_elastic_ingestion(&opts).await;
+        let result = build_elastic_ingestion(
+            &opts,
+            crate::application::container::VaultAiPorts::default(),
+        )
+        .await;
         assert!(result.is_ok(), "should not error: {:?}", result.err());
     }
 
@@ -734,7 +743,11 @@ mod tests {
     async fn build_elastic_ingestion_some_when_elastic_enabled() {
         let mut opts = CrawlOptions::default();
         opts.elastic.enabled = true;
-        let result = build_elastic_ingestion(&opts).await;
+        let result = build_elastic_ingestion(
+            &opts,
+            crate::application::container::VaultAiPorts::default(),
+        )
+        .await;
         // May be Ok(None) or Ok(Some) depending on persistence feature
         assert!(result.is_ok(), "should not error: {:?}", result.err());
     }

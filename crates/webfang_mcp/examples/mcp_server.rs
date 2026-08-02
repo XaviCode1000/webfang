@@ -329,8 +329,17 @@ async fn main() -> Result<()> {
         if ai_enabled {
             let variant = webfang_ai::AiModel::from_env_or_default();
             let model_config = webfang_ai::ModelConfig::default().with_model_variant(variant);
+            // Wire the semantic cleaner (clean_html / semantic_cleaner tools), then
+            // share its ONNX pool + tokenizer with the vault-search ports (#433) so
+            // the model is loaded exactly once. The vault ports are wired only when
+            // the cleaner succeeds — they reuse the components it resolved.
             match webfang_ai::SemanticCleanerImpl::new(model_config).await {
-                Ok(cleaner) => container.with_cleaner(std::sync::Arc::new(cleaner)),
+                Ok(cleaner) => {
+                    let (pool, tokenizer) = cleaner.shared_inference();
+                    let container = container.with_cleaner(std::sync::Arc::new(cleaner));
+                    webfang_mcp::mcp_server::ai_wiring::wire_ai_ports(container, pool, tokenizer)
+                        .await
+                },
                 Err(e) => {
                     tracing::warn!("semantic cleaner unavailable, continuing without AI: {e}");
                     container

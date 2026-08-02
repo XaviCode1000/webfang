@@ -102,6 +102,24 @@ pub struct Container {
     text_chunker: Option<Arc<dyn TextChunker>>,
 }
 
+/// Vault-search AI ports (#433), constructed in the binary layer (CLI/MCP) and
+/// injected into the [`Container`] in one shot.
+///
+/// Fields are domain trait objects so the dependency direction (`ai → core`) is
+/// respected: `webfang_core` never names the concrete adapters, which live in
+/// `webfang_ai` / the persistence layer and are assembled by the binary crate.
+/// An empty bundle (the [`Default`]) wires nothing — used by builds without the
+/// `ai` feature.
+#[derive(Clone, Default)]
+pub struct VaultAiPorts {
+    /// Embedding port for query/chunk vectorization.
+    pub embedding_port: Option<Arc<dyn EmbeddingPort>>,
+    /// Note repository for vault search persistence.
+    pub note_repository: Option<Arc<dyn NoteRepository>>,
+    /// Text chunker for Markdown segmentation.
+    pub text_chunker: Option<Arc<dyn TextChunker>>,
+}
+
 impl Container {
     /// Create a new container with the given configurations.
     ///
@@ -292,6 +310,27 @@ impl Container {
     /// Inject a text chunker for Markdown segmentation (#386).
     pub fn with_text_chunker(mut self, chunker: Arc<dyn TextChunker>) -> Self {
         self.text_chunker = Some(chunker);
+        self
+    }
+
+    /// Inject the vault-search AI ports that are present in `ports` (#433).
+    ///
+    /// Each field is wired independently; `None` fields leave the corresponding
+    /// port untouched. Convenience wrapper over [`with_embedding_port`](Self::with_embedding_port),
+    /// [`with_note_repository`](Self::with_note_repository) and
+    /// [`with_text_chunker`](Self::with_text_chunker) for the binary composition
+    /// roots (CLI/MCP) that assemble the whole bundle at once.
+    #[must_use]
+    pub fn with_vault_ports(mut self, ports: VaultAiPorts) -> Self {
+        if let Some(port) = ports.embedding_port {
+            self.embedding_port = Some(port);
+        }
+        if let Some(repo) = ports.note_repository {
+            self.note_repository = Some(repo);
+        }
+        if let Some(chunker) = ports.text_chunker {
+            self.text_chunker = Some(chunker);
+        }
         self
     }
 

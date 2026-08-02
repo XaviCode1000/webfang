@@ -18,6 +18,10 @@ pub mod selector_service;
 pub mod server;
 pub mod state;
 
+/// Vault-search AI port wiring (#433) — only compiled with the `ai` feature.
+#[cfg(feature = "ai")]
+pub mod ai_wiring;
+
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{CallToolResult, ListToolsResult, ServerCapabilities, ServerInfo, Tool};
