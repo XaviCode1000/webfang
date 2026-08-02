@@ -17,8 +17,9 @@ use rmcp::tool;
 use rmcp::tool_router;
 use rmcp::{model::CallToolResult, model::Content, ErrorData as McpError};
 use tracing::instrument;
-use webfang_core::application::vault_search::{VaultSearchResult, VaultSearchService};
+use webfang_core::application::vault_search::{SyncSummary, VaultSearchResult, VaultSearchService};
 use webfang_core::domain::DocumentChunk;
+use webfang_core::infrastructure::obsidian::detect_vault;
 
 /// Build an honest tool error (`isError:true`) carrying a Spanish message.
 ///
@@ -158,6 +159,40 @@ impl McpHandler {
 
         let service = VaultSearchService::new(embedding, repo, chunker);
         let limit = params.limit.unwrap_or(10);
+
+        // Lazy sync: reconcile the vault filesystem against the index
+        // before searching. Uses the explicit vault_path param or falls
+        // back to auto-detection. Sync failures are non-fatal — we
+        // proceed with whatever is already indexed.
+        let vault_path = params
+            .vault_path
+            .clone()
+            .or_else(|| detect_vault(None, None, None).map(|p| p.to_string_lossy().into_owned()));
+        if let Some(vp) = &vault_path {
+            match service.sync_vault(std::path::Path::new(vp)).await {
+                Ok(SyncSummary {
+                    indexed,
+                    updated,
+                    deleted,
+                    unchanged,
+                }) => {
+                    tracing::info!(
+                        indexed,
+                        updated,
+                        deleted,
+                        unchanged,
+                        vault_path = %vp,
+                        "lazy vault sync completed before search"
+                    );
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        vault_path = %vp,
+                        "vault sync failed, searching existing index: {e}"
+                    );
+                },
+            }
+        }
 
         match service.search(&params.query, limit).await {
             Ok(results) => {

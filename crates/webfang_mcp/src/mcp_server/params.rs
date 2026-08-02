@@ -173,7 +173,6 @@ pub(crate) struct SearchObsidianParams {
     /// Search query
     pub query: String,
     /// Optional vault path to search in
-    #[allow(dead_code)]
     pub vault_path: Option<String>,
     /// Maximum results (default: 10)
     pub limit: Option<usize>,
