@@ -686,8 +686,11 @@ work with when computing the document readability score.</p>
     }
 
     // ─── extract_content direct tests (no Downloader needed) ───
+    // All gated: extract_content → html_cleaner → lol_html → servo_arc
+    // triggers Tree Borrows UB in servo_arc Arc::drop (upstream, experimental model).
 
     #[tokio::test]
+    #[cfg(not(miri))]
     async fn extract_content_readability_extracts_article() {
         let html = r#"<html><head><title>Test Page</title></head><body>
             <article><h1>Hello</h1><p>This is a long enough paragraph of content that readability should be able to extract properly from the DOM structure.</p>
@@ -705,6 +708,7 @@ work with when computing the document readability score.</p>
     }
 
     #[tokio::test]
+    #[cfg(not(miri))]
     async fn extract_content_fallback_short_content_returns_error() {
         let html = "<html><body><div></div></body></html>";
         let url = Url::parse("https://example.com/tiny").unwrap();
@@ -721,6 +725,7 @@ work with when computing the document readability score.</p>
     }
 
     #[tokio::test]
+    #[cfg(not(miri))]
     async fn extract_content_with_selector_extracts_matching_content() {
         let html = r#"<html><body>
             <nav>Navigation stuff</nav>
@@ -741,6 +746,7 @@ work with when computing the document readability score.</p>
     }
 
     #[tokio::test]
+    #[cfg(not(miri))]
     async fn extract_content_populates_correlation_id_natively() {
         // Fase 1 (issue #356): correlation_id must be populated natively,
         // WITHOUT requiring the `otel` feature. Every scraped page must be
