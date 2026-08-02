@@ -4,27 +4,43 @@
 # "cargo-mutants: hot path mutants die".
 #
 # Two complementary jobs (Phase 2, issue #451):
-#   - mutants-pr:   HARD GATE on every PR. Mutates ONLY the lines changed in
-#                   the PR diff (--in-diff), so cost is proportional to the
-#                   change, not the whole hot path. cargo-mutants exits 2 when
-#                   a mutant survives -> job fails -> PR is blocked. No
-#                   continue-on-error: this is the gate.
+#   - mutants-pr:   HARD GATE on every PR that touches a gated hot path.
+#                   Mutates ONLY the lines changed in the PR diff (--in-diff),
+#                   so cost is proportional to the change, not the whole hot
+#                   path. cargo-mutants exits 2 when a mutant survives -> job
+#                   fails -> PR is blocked. No continue-on-error: this is the gate.
 #   - mutants-weekly: weekly baseline over the full hot-path matrix (Mondays
-#                   03:00 UTC + manual dispatch). continue-on-error: true —
-#                   reports survivors as warnings for the full matrix without
-#                   blocking anything (the PR gate already covers new code).
+#                   03:00 UTC + manual dispatch). Report-only: the run step has
+#                   step-level continue-on-error and the survivor check runs with
+#                   if: always(), so survivors are always annotated, never blocking.
 #
-# Performance: matrix runs 6 targets in parallel (~20 min each).
-# --timeout=60 per mutant prevents infinite-loop mutants from stalling.
-# -- --lib limits test execution to unit tests (fast, no subprocess).
-# Estimated weekly total: ~25 min wall-clock (parallel matrix).
+# Gated hot paths vs. matrix:
+#   crawler/** is deliberately EXCLUDED from the PR gate. Its core (engine.rs,
+#   crawl_scheduler.rs, crawl_task.rs) has NO inline unit tests, so `--lib`
+#   mutation testing would report false-positive survivors and block legitimate
+#   PRs. It stays in the weekly matrix as a visible debt beacon until real unit
+#   tests exist (tracked in the crawler-core unit-test debt issue).
+#
+# Notes:
+#   - --timeout=60 per mutant prevents infinite-loop mutants from stalling.
+#   - -- --lib limits test execution to unit tests (fast, no subprocess). This
+#     is correct for the gated paths (waf_engine, session_pool, bridge, pipeline,
+#     extractor all carry inline unit tests); it is exactly WHY crawler is excluded.
+#   - Survivor detection greps "NOT CAUGHT" (cargo-mutants' per-survivor token);
+#     the summary line uses lowercase "missed".
+#   - cargo-mutants is pinned for deterministic output/exit codes.
+#   - Matrix runs 6 targets in parallel (~20 min each); ~25 min weekly wall-clock.
 
 name: Mutation Testing
+
+permissions:
+  contents: read
 
 on:
   pull_request:
     paths:
-      - crates/webfang_core/src/application/crawler/**
+      # crawler/** is intentionally NOT gated (no inline unit tests -> false
+      # survivors under --lib). Re-add once crawler core has real unit tests.
       - crates/webfang_core/src/application/pipeline/**
       - crates/webfang_core/src/extractor/**
       - crates/webfang_core/src/infrastructure/bridge.rs
@@ -68,8 +84,10 @@ jobs:
           fetch-depth: 0
 
       - name: Generate PR diff
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          git diff origin/${{ github.base_ref }}...HEAD | tee git.diff
+          git diff "origin/$BASE_REF"...HEAD > git.diff
 
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -78,7 +96,9 @@ jobs:
         run: sudo apt-get install -y cmake
 
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@cargo-mutants
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants@27.1.0
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
@@ -105,13 +125,11 @@ jobs:
     name: "cargo-mutants (${{ matrix.target }})"
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    # Report-only: full matrix may surface pre-existing survivors; the PR gate
-    # already blocks NEW surviving mutants on changed lines.
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
         target:
+          # crawler stays here as a report-only debt beacon (not in the PR gate).
           - crates/webfang_core/src/application/crawler
           - crates/webfang_core/src/application/pipeline
           - crates/webfang_core/src/extractor
@@ -128,12 +146,17 @@ jobs:
         run: sudo apt-get install -y cmake
 
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@cargo-mutants
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants@27.1.0
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
 
       - name: Run mutation testing
+        # Step-level (not job-level) continue-on-error: survivors (exit 2) must
+        # not abort the job, so the annotation step below always gets to run.
+        continue-on-error: true
         run: |
           cargo mutants -p webfang_core \
             -d "${{ matrix.target }}" \
@@ -142,10 +165,11 @@ jobs:
             2>&1 | tee mutants-output.txt
 
       - name: Check for survivors
+        if: always()
         run: |
-          if grep -q "MISSED" mutants-output.txt; then
+          if grep -q "NOT CAUGHT" mutants-output.txt; then
             echo "::warning::Surviving mutants detected in ${{ matrix.target }}"
-            grep "MISSED" mutants-output.txt
+            grep "NOT CAUGHT" mutants-output.txt
           fi
 
       - name: Upload results
