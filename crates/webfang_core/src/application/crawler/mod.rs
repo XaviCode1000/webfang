@@ -11,6 +11,7 @@ pub mod crawl_task_ctx;
 pub mod discovery;
 pub mod engine;
 pub(crate) mod fetch_router;
+pub(crate) mod ports;
 pub mod progress;
 pub mod sitemap_discovery;
 

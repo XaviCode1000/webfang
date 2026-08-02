@@ -21,6 +21,7 @@ use super::concurrency_level::{ConcurrencyLevel, SharedConcurrencyLevel};
 use super::crawl_scheduler::CrawlScheduler;
 use super::crawl_task::{handle_crawl_result, run_crawl_task};
 use super::fetch_router::{build_fetch_router, FetchRouter};
+use super::ports;
 use super::progress::CrawlProgress;
 use crate::application::crawler::crawl_task_ctx::CrawlTaskCtx;
 use crate::application::pipeline::{OutputStage, PipelineExecutor};
@@ -394,17 +395,31 @@ impl Engine {
             visited_urls: self.scheduler.visited_urls(),
             queue: self.scheduler.queue(),
             rate_limiter: self.rate_limiter.clone(),
-            session_pool: self.session_pool.clone(),
+            session_pool: self
+                .session_pool
+                .as_ref()
+                .map(|p| Arc::new(p.clone()) as Arc<dyn crate::domain::session_port::SessionPort>),
             ignore_robots: self.ignore_robots,
-            robots_fetcher: Arc::clone(&self.robots_fetcher),
+            robots_checker: Arc::new(ports::ProductionRobotsChecker {
+                fetcher: Arc::clone(&self.robots_fetcher),
+            }),
             error_count: Arc::clone(&self.error_count),
             error_breakdown: Arc::clone(&self.error_breakdown),
             pages_crawled: Arc::clone(&self.pages_crawled),
-            collector: self.collector.clone(),
+            collector: Arc::new(ports::ProductionCollector {
+                collector: self.collector.clone(),
+            }),
             cookie_bridge: Arc::clone(&self.cookie_bridge),
             banned_domains: Arc::clone(&self.banned_domains),
-            fetch_router: self.fetch_router.clone(),
-            pipeline: self.pipeline.clone(),
+            fetcher: Arc::new(ports::ProductionPageFetcher {
+                router: self.fetch_router.clone(),
+            }),
+            link_extractor: Arc::new(ports::ProductionLinkExtractor),
+            pipeline: self.pipeline.as_ref().map(|p| {
+                Arc::new(ports::ProductionPipeline {
+                    executor: Arc::clone(p),
+                }) as Arc<dyn ports::ContentPipeline>
+            }),
             output_stages: self.output_stages.to_vec(),
         });
 
