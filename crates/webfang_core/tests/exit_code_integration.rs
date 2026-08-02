@@ -101,6 +101,71 @@ async fn test_empty_sitemap_returns_exit_2() {
 }
 
 // ============================================================================
+// Tests: DOM discovery with only external links → exit 0 (seed injected)
+// ============================================================================
+
+/// DOM discovery that finds no internal URLs must still scrape the seed URL:
+/// empty discovery is not fatal outside sitemap mode, so the run exits 0
+/// instead of EmptyDiscovery (exit 2) (#488).
+#[tokio::test]
+async fn test_dom_external_only_links_scrapes_seed() {
+    let mock_server = MockServer::start().await;
+
+    // The seed page links only to an external domain, so DOM discovery yields
+    // zero internal URLs.
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "<html><body><h1>Seed content</h1>\
+             <a href=\"https://iana.org\">external link</a></body></html>",
+        ))
+        .mount(&mock_server)
+        .await;
+
+    let base_url = format!("{}/", mock_server.uri());
+    let out_dir = tempfile::TempDir::new().expect("create temp output dir");
+
+    cmd()
+        .arg("--url")
+        .arg(&base_url)
+        .arg("--output")
+        .arg(out_dir.path())
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .code(0);
+
+    // The seed page itself must have been fetched: DOM discovery reads it once
+    // for link extraction and the scraper reads it again for content.
+    let requests = mock_server.received_requests().await.unwrap();
+    let seed_requests = requests.iter().filter(|r| r.url.path() == "/").count();
+    assert!(
+        seed_requests >= 1,
+        "expected the seed page / to be fetched, got {seed_requests} requests"
+    );
+
+    // The seed page was saved as markdown in the output dir and contains the
+    // identifiable seed content.
+    let md_files: Vec<PathBuf> = walkdir::WalkDir::new(out_dir.path())
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
+        .map(|e| e.path().to_path_buf())
+        .collect();
+    assert_eq!(
+        md_files.len(),
+        1,
+        "expected 1 .md file in output, got {}",
+        md_files.len()
+    );
+    let content = std::fs::read_to_string(&md_files[0]).expect("read .md file");
+    assert!(
+        content.contains("Seed content"),
+        "expected seed content in .md file"
+    );
+}
+
+// ============================================================================
 // Tests: Network timeout → exit 69
 // ============================================================================
 
