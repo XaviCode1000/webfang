@@ -18,6 +18,36 @@ ignore:
   - "benches/"
   - "examples/"
 
+# Per-crate coverage breakdown (server-side, no CI changes needed)
+# Docs: https://docs.codecov.com/docs/components
+component_management:
+  default_rules:
+    statuses:
+      - type: project
+        target: auto
+        threshold: 2%
+  individual_components:
+    - component_id: webfang_core
+      name: "Core Engine"
+      paths:
+        - "crates/webfang_core/**"
+    - component_id: webfang_ai
+      name: "AI / Embeddings"
+      paths:
+        - "crates/webfang_ai/**"
+    - component_id: webfang_tui
+      name: "TUI Selector"
+      paths:
+        - "crates/webfang_tui/**"
+    - component_id: webfang_mcp
+      name: "MCP Server"
+      paths:
+        - "crates/webfang_mcp/**"
+    - component_id: webfang_cli
+      name: "CLI Binary"
+      paths:
+        - "crates/webfang_cli/**"
+
 comment:
-  layout: "diff, files"
+  layout: "diff, files, components"
   behavior: default
