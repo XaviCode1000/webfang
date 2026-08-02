@@ -17,6 +17,26 @@ use fs2::FileExt;
 use crate::domain::entities::DocumentChunkValidated;
 use crate::domain::exporter::{ExportResult, Exporter, ExporterConfig, ExporterError};
 
+/// Reserved character width of the `total_documents` header field.
+///
+/// The count is written right-aligned (space-padded) into this window so
+/// [`VectorExporter::close_json`] can patch it in place without shifting the
+/// rest of the file. Covers document counts up to 9,999,999,999.
+const COUNT_FIELD_WIDTH: usize = 10;
+
+/// Reserved character width of the `dimensions` header field.
+///
+/// Right-aligned like [`COUNT_FIELD_WIDTH`]; holds either the embedding
+/// dimension count or the literal `null`. Eight characters cover any
+/// realistic embedding size.
+const DIM_FIELD_WIDTH: usize = 8;
+
+/// Number of leading bytes scanned to locate and patch the metadata header.
+///
+/// The header line fits comfortably inside this window even with the reserved
+/// fields, so scanning a fixed prefix avoids reading whole files on close.
+const HEADER_SCAN_BYTES: usize = 512;
+
 /// Computes cosine similarity between two vectors
 ///
 /// Returns a value between -1.0 and 1.0, where:
@@ -118,6 +138,7 @@ impl VectorExporter {
             f
         } else {
             OpenOptions::new()
+                .read(true)
                 .write(true)
                 .create(true)
                 .truncate(!self.config.append)
@@ -134,9 +155,11 @@ impl VectorExporter {
 
     /// Write metadata header to file
     ///
-    /// For new files: writes complete header
-    /// For append mode: the file is already truncated at the closing `]`
-    /// so we just seek back and re-write the document count.
+    /// For new files: writes the header template with reserved (right-aligned,
+    /// space-padded) `dimensions` and `total_documents` windows that
+    /// [`Self::close_json`] patches in place once the real values are known.
+    /// For append mode with existing documents: the file is already truncated
+    /// at the closing `]` by [`Self::writer`], so nothing is written here.
     fn write_metadata_header(
         &self,
         writer: &mut BufWriter<File>,
@@ -151,24 +174,34 @@ impl VectorExporter {
             // File already truncated at `]` by writer() — just seek back to it
             file.seek(SeekFrom::End(0))?;
         } else {
-            // New file or overwrite mode - write complete header
+            // New file or overwrite mode — header with reserved patch windows
             let timestamp = Utc::now().to_rfc3339();
-            // Mutex poisoning indicates a bug in the calling code, not a recoverable error.
-            #[allow(clippy::expect_used)]
-            let dimensions_json = self
-                .dimensions
-                .lock()
-                .expect("lock poisoned")
-                .map(|d| d.to_string())
-                .unwrap_or_else(|| "null".to_string());
-            let header = format!(
-                r#"{{"format_version": "1.0", "model_name": null, "dimensions": {dimensions_json}, "total_documents": 0, "created_at": "{timestamp}", "documents": ["#
-            );
-
+            let header = self.build_header_line(&timestamp);
             write!(writer, "{header}")?;
         }
 
         Ok(())
+    }
+
+    /// Build the metadata header line with reserved in-place patch windows.
+    ///
+    /// `dimensions` and `total_documents` are right-aligned into fixed-width
+    /// windows ([`DIM_FIELD_WIDTH`] / [`COUNT_FIELD_WIDTH`]). Space padding is
+    /// legal JSON whitespace and right-alignment avoids leading zeros, so both
+    /// fields can be overwritten later without rewriting the whole file.
+    fn build_header_line(&self, created_at: &str) -> String {
+        // Mutex poisoning indicates a bug in the calling code, not a recoverable error.
+        #[allow(clippy::expect_used)]
+        let dimensions_json = self
+            .dimensions
+            .lock()
+            .expect("lock poisoned")
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| "null".to_string());
+        let count = 0_usize;
+        format!(
+            r#"{{"format_version": "1.0", "model_name": null, "dimensions": {dimensions_json:>DIM_FIELD_WIDTH$}, "total_documents": {count:>COUNT_FIELD_WIDTH$}, "created_at": "{created_at}", "documents": ["#
+        )
     }
 
     /// Serialize a document chunk to JSON
@@ -214,13 +247,245 @@ impl VectorExporter {
         Ok(serialized)
     }
 
-    /// Close the JSON structure properly
-    fn close_json(&self, writer: &mut BufWriter<File>, _doc_count: usize) -> ExportResult<()> {
+    /// Read how many documents an existing export already holds.
+    ///
+    /// Called when appending to a non-empty file. Parses the reserved
+    /// `total_documents` window written by [`Self::close_json`]. Files whose
+    /// header predates the in-place counter fix (issue #502) fail the
+    /// sentinel check and are migrated on the fly by
+    /// [`Self::migrate_legacy_header`].
+    ///
+    /// Leaves the file offset at EOF so the caller can keep appending.
+    fn read_append_state(&self, file: &mut File) -> ExportResult<usize> {
+        let head = read_header_bytes(file)?;
+
+        let marker = b"\"total_documents\": ";
+        let value_start = find_subslice(&head, marker)
+            .map(|pos| pos + marker.len())
+            .ok_or_else(|| {
+                ExporterError::WriteError(
+                    "vector export header is missing the total_documents field".to_string(),
+                )
+            })?;
+
+        // The fixed-width layout guarantees a ',' exactly COUNT_FIELD_WIDTH
+        // bytes after the value start. Anything else means the file was
+        // written by the pre-fix exporter (or is corrupt) and needs migration.
+        let existing = if head.get(value_start + COUNT_FIELD_WIDTH) == Some(&b',') {
+            let count = parse_count_field(&head[value_start..value_start + COUNT_FIELD_WIDTH])?;
+            if count == 0 {
+                // Defensive: files written by this version always carry the
+                // true count. Fall back to counting document lines.
+                count_documents(file)?
+            } else {
+                count
+            }
+        } else {
+            self.migrate_legacy_header(file, &head)?
+        };
+
+        file.seek(SeekFrom::End(0))?;
+        Ok(existing)
+    }
+
+    /// Migrate a pre-fix header to the reserved-window layout.
+    ///
+    /// Legacy files stored a hardcoded `"total_documents": 0` and dimensions
+    /// learned too late to be written. The real document count is recovered
+    /// from the line structure, the header is rebuilt with the reserved
+    /// windows (preserving the original `created_at`), and the file head is
+    /// rewritten in place. Safe because the caller holds the exclusive fs2
+    /// lock for the whole export call.
+    fn migrate_legacy_header(&self, file: &mut File, head: &[u8]) -> ExportResult<usize> {
+        // serde_json never emits raw line breaks inside strings, so every
+        // 0x0A byte marks the end of exactly one document line.
+        let existing = count_documents(file)?;
+
+        let docs_marker = b"\"documents\": [";
+        let body_start = find_subslice(head, docs_marker)
+            .map(|pos| pos + docs_marker.len())
+            .ok_or_else(|| {
+                ExporterError::WriteError(
+                    "vector export header is missing the documents array".to_string(),
+                )
+            })?;
+        let created_at = extract_created_at(head).ok_or_else(|| {
+            ExporterError::WriteError("vector export header is missing created_at".to_string())
+        })?;
+
+        file.seek(SeekFrom::Start(body_start as u64))?;
+        let mut body = Vec::new();
+        file.read_to_end(&mut body)?;
+
+        let new_head = self.build_header_line(&created_at);
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(new_head.as_bytes())?;
+        file.write_all(&body)?;
+        let new_len = file.stream_position()?;
+        file.set_len(new_len)?;
+
+        tracing::warn!(
+            existing_documents = existing,
+            path = %self.config.output_path().display(),
+            "Migrating legacy vector export header to the fixed-count layout"
+        );
+
+        Ok(existing)
+    }
+
+    /// Close the JSON structure and patch the header counters in place.
+    ///
+    /// Writes the closing bracket, then overwrites the reserved
+    /// `total_documents` window (and the `dimensions` window once the
+    /// embedding size became known during this run) at their fixed header
+    /// offsets. The `file` handle shares its offset with the `BufWriter`'s
+    /// clone, so the writer is flushed before any seek.
+    fn close_json(
+        &self,
+        writer: &mut BufWriter<File>,
+        file: &mut File,
+        total_documents: usize,
+    ) -> ExportResult<()> {
         writeln!(writer, "]}}")?;
         writer.flush()?;
 
+        let head = read_header_bytes(file)?;
+
+        let count = format!("{total_documents:>COUNT_FIELD_WIDTH$}");
+        patch_header_field(
+            file,
+            &head,
+            b"\"total_documents\": ",
+            "total_documents",
+            &count,
+            COUNT_FIELD_WIDTH,
+        )?;
+
+        // Dimensions may have been learned mid-run by serialize_document —
+        // backfill the reserved window now that the final value is known.
+        // Mutex poisoning indicates a bug in the calling code, not a recoverable error.
+        #[allow(clippy::expect_used)]
+        let known_dimensions = *self.dimensions.lock().expect("lock poisoned");
+        if let Some(dimensions) = known_dimensions {
+            let value = format!("{dimensions:>DIM_FIELD_WIDTH$}");
+            patch_header_field(
+                file,
+                &head,
+                b"\"dimensions\": ",
+                "dimensions",
+                &value,
+                DIM_FIELD_WIDTH,
+            )?;
+        }
+
+        file.seek(SeekFrom::End(0))?;
         Ok(())
     }
+}
+
+/// Read up to [`HEADER_SCAN_BYTES`] leading bytes from the file.
+///
+/// Seeks to the start first. Returns fewer bytes when the file is shorter
+/// than the scan window.
+fn read_header_bytes(file: &mut File) -> ExportResult<Vec<u8>> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut head = vec![0_u8; HEADER_SCAN_BYTES];
+    let mut filled = 0;
+    while filled < head.len() {
+        let read = file.read(&mut head[filled..])?;
+        if read == 0 {
+            break;
+        }
+        filled += read;
+    }
+    head.truncate(filled);
+    Ok(head)
+}
+
+/// Find the byte offset of `needle` inside `haystack`.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// Parse the right-aligned `total_documents` window into a count.
+fn parse_count_field(field: &[u8]) -> ExportResult<usize> {
+    let text = std::str::from_utf8(field).map_err(|_| {
+        ExporterError::WriteError(
+            "vector export total_documents field is not valid UTF-8".to_string(),
+        )
+    })?;
+    text.trim().parse::<usize>().map_err(|_| {
+        ExporterError::WriteError(format!(
+            "vector export total_documents field holds an unparsable count: {text:?}"
+        ))
+    })
+}
+
+/// Count document lines by scanning the whole file for 0x0A bytes.
+///
+/// The header carries no newline and every document is written with a single
+/// `writeln!` (serde_json escapes line breaks inside strings), so in a file
+/// truncated at its closing `]` the newline total equals the document count.
+fn count_documents(file: &mut File) -> ExportResult<usize> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut newlines = 0_usize;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        newlines += buffer[..read].iter().filter(|&&byte| byte == b'\n').count();
+    }
+    Ok(newlines)
+}
+
+/// Extract the `created_at` value from a header scan, if present.
+fn extract_created_at(head: &[u8]) -> Option<String> {
+    let marker = b"\"created_at\": \"";
+    let start = find_subslice(head, marker)? + marker.len();
+    let end = head[start..].iter().position(|&byte| byte == b'"')? + start;
+    std::str::from_utf8(&head[start..end])
+        .ok()
+        .map(str::to_string)
+}
+
+/// Overwrite one reserved header window in place.
+///
+/// Verifies the sentinel byte (the ',' that must follow the fixed-width
+/// window) before writing, so any layout mismatch is an error instead of a
+/// silent corruption. Seeks `file` to the window but does not restore the
+/// offset afterwards.
+fn patch_header_field(
+    file: &mut File,
+    head: &[u8],
+    marker: &[u8],
+    field_name: &str,
+    value: &str,
+    width: usize,
+) -> ExportResult<()> {
+    if value.len() != width {
+        return Err(ExporterError::WriteError(format!(
+            "vector export {field_name} value does not fit the reserved {width}-byte window"
+        )));
+    }
+    let value_start = find_subslice(head, marker)
+        .map(|pos| pos + marker.len())
+        .ok_or_else(|| {
+            ExporterError::WriteError(format!(
+                "vector export header is missing the {field_name} field"
+            ))
+        })?;
+    if head.get(value_start + width) != Some(&b',') {
+        return Err(ExporterError::WriteError(format!(
+            "vector export header layout mismatch around {field_name}"
+        )));
+    }
+    file.seek(SeekFrom::Start(value_start as u64))?;
+    file.write_all(value.as_bytes())?;
+    Ok(())
 }
 
 impl Exporter for VectorExporter {
@@ -228,6 +493,11 @@ impl Exporter for VectorExporter {
         let (mut file, mut writer) = self.writer()?;
         let is_first_doc =
             !self.config.append || file.metadata().map(|m| m.len() == 0).unwrap_or(true);
+        let existing = if is_first_doc {
+            0
+        } else {
+            self.read_append_state(&mut file)?
+        };
 
         self.write_metadata_header(&mut writer, &mut file, is_first_doc)?;
 
@@ -238,7 +508,7 @@ impl Exporter for VectorExporter {
         }
         writeln!(writer, "{serialized}")?;
 
-        self.close_json(&mut writer, 1)?;
+        self.close_json(&mut writer, &mut file, existing + 1)?;
 
         // Release lock
         fs2::FileExt::unlock(&file)?;
@@ -255,6 +525,11 @@ impl Exporter for VectorExporter {
         let (mut file, mut writer) = self.writer()?;
         let is_first_doc =
             !self.config.append || file.metadata().map(|m| m.len() == 0).unwrap_or(true);
+        let existing = if is_first_doc {
+            0
+        } else {
+            self.read_append_state(&mut file)?
+        };
 
         self.write_metadata_header(&mut writer, &mut file, is_first_doc)?;
 
@@ -269,7 +544,7 @@ impl Exporter for VectorExporter {
             doc_count += 1;
         }
 
-        self.close_json(&mut writer, doc_count)?;
+        self.close_json(&mut writer, &mut file, existing + doc_count)?;
 
         // Release lock
         fs2::FileExt::unlock(&file)?;
@@ -646,5 +921,154 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // ============================================================================
+    // Issue #502: header total_documents must match the documents array
+    // ============================================================================
+
+    /// Parse `<dir>/test_export.json` as JSON.
+    fn read_export_json(dir: &std::path::Path) -> serde_json::Value {
+        let path = dir.join("test_export.json");
+        let content = std::fs::read_to_string(&path).expect("export file should exist");
+        serde_json::from_str(&content).expect("export must be valid JSON")
+    }
+
+    /// ExporterConfig with append=true — the exact production shape
+    /// (`create_exporter` builds every exporter with `.with_append(true)`).
+    fn append_config(dir: PathBuf) -> ExporterConfig {
+        create_test_config_with_dir(dir).with_append(true)
+    }
+
+    /// Issue #502 repro: production always uses append mode, so a fresh
+    /// export must still report the real document count in the header.
+    #[test]
+    fn test_fresh_file_in_append_mode_reports_total_documents() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir should be created");
+        let exporter = VectorExporter::new(append_config(temp_dir.path().to_path_buf()));
+
+        let docs = vec![
+            create_test_chunk(),
+            create_test_chunk(),
+            create_test_chunk(),
+        ];
+        exporter
+            .export_batch(&docs)
+            .expect("batch export should succeed");
+
+        let json = read_export_json(temp_dir.path());
+        let documents = json["documents"]
+            .as_array()
+            .expect("documents must be an array");
+        assert_eq!(documents.len(), 3, "all 3 documents must be present");
+        assert_eq!(
+            json["total_documents"].as_u64(),
+            Some(3),
+            "total_documents must equal the documents array length"
+        );
+    }
+
+    #[test]
+    fn test_cross_run_appends_accumulate_total_documents() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir should be created");
+        let config = append_config(temp_dir.path().to_path_buf());
+
+        let first_run = VectorExporter::new(config.clone());
+        first_run
+            .export_batch(&[create_test_chunk(), create_test_chunk()])
+            .expect("first batch should succeed");
+
+        let second_run = VectorExporter::new(config);
+        second_run
+            .export_batch(&[create_test_chunk(), create_test_chunk()])
+            .expect("second batch should succeed");
+
+        let json = read_export_json(temp_dir.path());
+        assert_eq!(
+            json["total_documents"].as_u64(),
+            Some(4),
+            "total must accumulate across runs"
+        );
+        assert_eq!(json["documents"].as_array().map(Vec::len), Some(4));
+    }
+
+    #[test]
+    fn test_append_single_export_after_batch_accumulates_total() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir should be created");
+        let config = append_config(temp_dir.path().to_path_buf());
+
+        let first_run = VectorExporter::new(config.clone());
+        first_run
+            .export_batch(&[create_test_chunk(), create_test_chunk()])
+            .expect("batch should succeed");
+
+        let second_run = VectorExporter::new(config);
+        second_run
+            .export(create_test_chunk())
+            .expect("single export should succeed");
+
+        let json = read_export_json(temp_dir.path());
+        assert_eq!(
+            json["total_documents"].as_u64(),
+            Some(3),
+            "total must accumulate across runs"
+        );
+        assert_eq!(json["documents"].as_array().map(Vec::len), Some(3));
+    }
+
+    #[test]
+    fn test_legacy_header_is_migrated_on_append() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir should be created");
+        let path = temp_dir.path().join("test_export.json");
+
+        let doc1 = serde_json::to_string(&create_test_chunk()).expect("serialize doc1");
+        let doc2 = serde_json::to_string(&create_test_chunk()).expect("serialize doc2");
+        // Exact shape written by the pre-fix exporter: hardcoded count, no
+        // reserved windows, one line per document, closing bracket.
+        let legacy = format!(
+            "{{\"format_version\": \"1.0\", \"model_name\": null, \"dimensions\": null, \
+             \"total_documents\": 0, \"created_at\": \"2026-01-01T00:00:00+00:00\", \
+             \"documents\": [{doc1}\n,{doc2}\n]}}\n"
+        );
+        std::fs::write(&path, legacy).expect("legacy file should be written");
+
+        let exporter = VectorExporter::new(append_config(temp_dir.path().to_path_buf()));
+        exporter
+            .export(create_test_chunk())
+            .expect("append to legacy file should succeed");
+
+        let content = std::fs::read_to_string(&path).expect("read migrated file");
+        let json: serde_json::Value =
+            serde_json::from_str(&content).expect("migrated file must be valid JSON");
+        assert_eq!(
+            json["total_documents"].as_u64(),
+            Some(3),
+            "migrated header must report the real document count"
+        );
+        assert_eq!(json["documents"].as_array().map(Vec::len), Some(3));
+        assert_eq!(
+            json["created_at"].as_str(),
+            Some("2026-01-01T00:00:00+00:00"),
+            "migration must preserve the original created_at"
+        );
+    }
+
+    #[test]
+    fn test_dimensions_are_learned_and_written_to_header() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir should be created");
+        let exporter = VectorExporter::new(append_config(temp_dir.path().to_path_buf()));
+
+        let mut doc = create_test_chunk();
+        doc.embeddings = Some(vec![0.1, 0.2, 0.3, 0.4]);
+        exporter
+            .export_batch(&[doc])
+            .expect("batch with embeddings should succeed");
+
+        let json = read_export_json(temp_dir.path());
+        assert_eq!(
+            json["dimensions"].as_u64(),
+            Some(4),
+            "header dimensions must reflect the learned embedding size"
+        );
     }
 }
