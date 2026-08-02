@@ -5,6 +5,7 @@
 pub mod checkpoint;
 pub mod collector;
 pub mod concurrency_level;
+pub(crate) mod crawl_task;
 pub mod crawl_task_ctx;
 pub mod discovery;
 pub mod engine;
