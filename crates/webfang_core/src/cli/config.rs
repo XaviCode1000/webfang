@@ -86,22 +86,26 @@ pub fn init_logging_dual(
 ) {
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-    let filter = if quiet {
+    // Per-layer filters (#489): the console filter respects the user's
+    // verbosity choice, while the file trace layer ALWAYS runs at TRACE
+    // level so `--trace-file` captures everything independently of `-v`/`-vv`.
+    let console_filter = if quiet {
         EnvFilter::new("webfang=warn,tokio=warn,reqwest=warn")
     } else {
         EnvFilter::new(format!("webfang={level},tokio=warn,reqwest=warn"))
     };
+    let trace_filter = EnvFilter::new("webfang=trace,tokio=warn,reqwest=warn");
 
     let fmt_layer = fmt::layer()
         .with_writer(std::io::stderr)
         .with_ansi(!no_color)
         .with_target(true)
-        .pretty();
+        .pretty()
+        .with_filter(console_filter);
 
     tracing_subscriber::registry()
-        .with(file_trace_layer)
+        .with(file_trace_layer.with_filter(trace_filter))
         .with(fmt_layer)
-        .with(filter)
         .try_init()
         .ok();
 }
