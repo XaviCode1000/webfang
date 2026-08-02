@@ -788,4 +788,30 @@ work with when computing the document readability score.</p>
         let corr = content.correlation_id.unwrap();
         assert!(corr.to_traceparent().starts_with("00-"));
     }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn extract_content_reuses_injected_correlation_id() {
+        // Issue #501: callers that own the page identity (e.g. the scrape span
+        // in `scrape_single_url_for_tui`) inject it so the exported content is
+        // correlatable with the trace's `span_fields` — exact identity, not a
+        // freshly generated one.
+        let html = r#"<html><head><title>Test Page</title></head><body>
+            <article><h1>Hello</h1><p>This is a long enough paragraph of content that readability should be able to extract properly from the DOM structure.</p>
+            <p>Second paragraph with more content to ensure readability has enough material to work with for extraction.</p></article>
+        </body></html>"#;
+        let url = Url::parse("https://example.com/article").unwrap();
+        let config = ScraperConfig::default();
+        let injected = CorrelationId::new_with_ids(uuid::Uuid::now_v7(), 0x00AB);
+
+        let content = extract_content(html, &url, &config, None, None, Some(&injected))
+            .await
+            .expect("extraction with an injected correlation ID must succeed");
+
+        assert_eq!(
+            content.correlation_id.as_ref(),
+            Some(&injected),
+            "extract_content must reuse the injected correlation ID exactly"
+        );
+    }
 }
