@@ -294,7 +294,7 @@ mod tests {
         create_vault(tmp.path());
         fs::write(tmp.path().join("valid.md"), "# Valid").unwrap();
         // Invalid UTF-8 sequence
-        fs::write(tmp.path().join("binary.md"), &[0xFF, 0xFE, 0x00, 0x01]).unwrap();
+        fs::write(tmp.path().join("binary.md"), [0xFF, 0xFE, 0x00, 0x01]).unwrap();
 
         let notes = read_vault_notes(tmp.path()).unwrap();
         assert_eq!(notes.len(), 1);
