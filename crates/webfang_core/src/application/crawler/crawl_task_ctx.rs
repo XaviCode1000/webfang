@@ -10,7 +10,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::application::crawler::checkpoint::BannedDomain;
 use crate::application::crawler::collector::ResultsCollector;
-use crate::application::crawler::engine::FetchRouter;
+use crate::application::crawler::fetch_router::FetchRouter;
 use crate::application::deduplicator::UrlDeduplicator;
 use crate::application::pipeline::{OutputStage, PipelineExecutor};
 use crate::application::rate_limiter::SharedRateLimiter;
