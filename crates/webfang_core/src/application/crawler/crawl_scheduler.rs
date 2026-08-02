@@ -164,3 +164,196 @@ impl CrawlScheduler {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::crawler::concurrency_level::ConcurrencyLevel;
+
+    fn url(path: &str) -> Url {
+        Url::parse(&format!("https://example.com{path}")).unwrap()
+    }
+
+    fn disc(path: &str) -> DiscoveredUrl {
+        let u = url(path);
+        DiscoveredUrl::html(u.clone(), 0, u)
+    }
+
+    // -- record_visit --
+
+    #[test]
+    fn record_visit_first_true_duplicate_false() {
+        let s = CrawlScheduler::new(4);
+        assert!(s.record_visit("https://example.com/a"));
+        assert!(!s.record_visit("https://example.com/a"));
+        assert!(s.record_visit("https://example.com/b"));
+    }
+
+    #[test]
+    fn record_visit_mirror_skips_duplicates() {
+        let s = CrawlScheduler::new(4);
+        assert!(s.record_visit("https://example.com/a"));
+        assert!(s.record_visit("https://example.com/b"));
+        assert!(!s.record_visit("https://example.com/a"));
+        let snap = s.snapshot_visited();
+        assert_eq!(snap.len(), 2);
+        assert!(snap.contains("https://example.com/a"));
+        assert!(snap.contains("https://example.com/b"));
+    }
+
+    // -- restore_visited / snapshot_visited --
+
+    #[test]
+    fn restore_visited_is_idempotent() {
+        let s = CrawlScheduler::new(4);
+        assert!(s.record_visit("https://example.com/a"));
+        let mut set = HashSet::new();
+        set.insert("https://example.com/a".to_string());
+        set.insert("https://example.com/b".to_string());
+        s.restore_visited(&set);
+        s.restore_visited(&set);
+        let snap = s.snapshot_visited();
+        assert_eq!(snap.len(), 2);
+        assert!(snap.contains("https://example.com/a"));
+        assert!(snap.contains("https://example.com/b"));
+    }
+
+    #[test]
+    fn snapshot_visited_roundtrips() {
+        let s = CrawlScheduler::new(4);
+        let original: HashSet<String> = [
+            "https://example.com/a",
+            "https://example.com/b",
+            "https://example.com/c",
+        ]
+        .iter()
+        .map(|u| (*u).to_string())
+        .collect();
+        s.restore_visited(&original);
+        assert_eq!(s.snapshot_visited(), original);
+    }
+
+    // -- effective_concurrency / can_spawn --
+
+    #[test]
+    fn effective_concurrency_defaults_to_base() {
+        assert_eq!(CrawlScheduler::new(7).effective_concurrency(), 7);
+        assert_eq!(CrawlScheduler::new(1).effective_concurrency(), 1);
+        assert_eq!(CrawlScheduler::new(0).effective_concurrency(), 0);
+    }
+
+    #[test]
+    fn effective_concurrency_applies_autoscale() {
+        let mut s = CrawlScheduler::new(10);
+        let level = Arc::new(SharedConcurrencyLevel::new());
+        s.set_autoscale(Arc::clone(&level));
+        assert_eq!(s.effective_concurrency(), 10);
+        level.set(ConcurrencyLevel::Reduced);
+        assert_eq!(s.effective_concurrency(), 5);
+        level.set(ConcurrencyLevel::Critical);
+        assert_eq!(s.effective_concurrency(), 0);
+    }
+
+    #[test]
+    fn can_spawn_boundary() {
+        let s = CrawlScheduler::new(3);
+        assert!(s.can_spawn(0));
+        assert!(s.can_spawn(2));
+        assert!(!s.can_spawn(3));
+        assert!(!s.can_spawn(4));
+    }
+
+    // -- next_url --
+
+    #[tokio::test]
+    async fn next_url_none_at_limit_leaves_pending_untouched() {
+        let mut s = CrawlScheduler::new(1);
+        s.seed(&url("/a")).await;
+        assert!(s.has_pending_work());
+        assert!(s.next_url(1).is_none());
+        assert!(
+            s.has_pending_work(),
+            "pending buffer must not be consumed at the limit"
+        );
+        assert!(s.next_url(0).is_some());
+        assert!(!s.has_pending_work());
+    }
+
+    #[tokio::test]
+    async fn next_url_skips_already_visited() {
+        let mut s = CrawlScheduler::new(10);
+        s.seed(&url("/a")).await;
+        s.seed(&url("/b")).await;
+        assert!(s.record_visit("https://example.com/a"));
+        let next = s.next_url(0).unwrap();
+        assert_eq!(next.url.path(), "/b");
+    }
+
+    #[tokio::test]
+    async fn next_url_marks_returned_as_visited() {
+        let mut s = CrawlScheduler::new(10);
+        s.seed(&url("/a")).await;
+        let next = s.next_url(0).unwrap();
+        assert_eq!(next.url.path(), "/a");
+        assert!(
+            !s.record_visit("https://example.com/a"),
+            "returned URL must be marked visited"
+        );
+        assert!(s.snapshot_visited().contains("https://example.com/a"));
+    }
+
+    #[tokio::test]
+    async fn next_url_none_when_out_of_work() {
+        let mut s = CrawlScheduler::new(10);
+        assert!(s.next_url(0).is_none());
+        s.seed(&url("/a")).await;
+        assert!(s.next_url(0).is_some());
+        assert!(s.next_url(0).is_none());
+    }
+
+    #[tokio::test]
+    async fn next_url_returns_fifo_order() {
+        let mut s = CrawlScheduler::new(10);
+        s.seed(&url("/a")).await;
+        s.seed(&url("/b")).await;
+        s.seed(&url("/c")).await;
+        assert_eq!(s.next_url(0).unwrap().url.path(), "/a");
+        assert_eq!(s.next_url(0).unwrap().url.path(), "/b");
+        assert_eq!(s.next_url(0).unwrap().url.path(), "/c");
+        assert!(s.next_url(0).is_none());
+    }
+
+    // -- has_pending_work / seed / drain_discovered --
+
+    #[tokio::test]
+    async fn has_pending_work_tracks_buffer() {
+        let mut s = CrawlScheduler::new(10);
+        assert!(!s.has_pending_work());
+        s.seed(&url("/a")).await;
+        assert!(s.has_pending_work());
+        let _ = s.next_url(0).unwrap();
+        assert!(!s.has_pending_work());
+    }
+
+    #[tokio::test]
+    async fn seed_pushes_to_pending_and_queue() {
+        let mut s = CrawlScheduler::new(4);
+        let q = s.queue();
+        s.seed(&url("/seed")).await;
+        assert!(s.has_pending_work());
+        assert_eq!(q.len().await, 1);
+        assert_eq!(s.next_url(0).unwrap().url.path(), "/seed");
+    }
+
+    #[tokio::test]
+    async fn drain_discovered_moves_queue_into_pending() {
+        let mut s = CrawlScheduler::new(4);
+        let q = s.queue();
+        assert!(q.push_prioritized(disc("/x"), UrlSource::Link).await);
+        assert!(!s.has_pending_work(), "pending empty before drain");
+        s.drain_discovered().await;
+        assert!(s.has_pending_work());
+        assert_eq!(q.len().await, 0, "queue drained");
+        assert_eq!(s.next_url(0).unwrap().url.path(), "/x");
+    }
+}
