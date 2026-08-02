@@ -22,7 +22,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use serde_json::{json, Map, Value};
 use tracing::Subscriber;
@@ -43,6 +43,11 @@ thread_local! {
 /// Each line is a JSON object with: `timestamp` (RFC3339), `level`, `target`,
 /// `span` (name, when inside a span), `trace_id`, `span_id`, `message`,
 /// and `fields` (all structured key-value pairs from the event).
+///
+/// When a span closes, an additional record with `"record": "span_close"` is
+/// emitted carrying a **top-level** `span_duration_ms` (wall-clock milliseconds
+/// from span creation to close), so the `analyze-trace.sh <file> slow` workflow
+/// can rank spans by duration.
 pub struct FileTraceLayer {
     writer: Mutex<BufWriter<File>>,
     /// Stable per-invocation seed used as the fallback `trace_id` when no
@@ -120,6 +125,10 @@ where
         attrs.record(&mut recorder);
         if let Some(span_ref) = ctx.span(id) {
             span_ref.extensions_mut().insert(recorder);
+            // Wall-clock start for span_duration_ms, read back at on_close.
+            span_ref.extensions_mut().insert(SpanTimings {
+                start: Instant::now(),
+            });
         }
     }
 
@@ -202,6 +211,72 @@ where
             }
         }
     }
+
+    fn on_close(&self, id: tracing::Id, ctx: Context<'_, S>) {
+        // Graceful entry — never panic if the span is already gone.
+        let Some(span_ref) = ctx.span(&id) else {
+            return;
+        };
+
+        let meta = span_ref.metadata();
+
+        // Owned duration so the extensions borrow is released before the record
+        // is built. Wall-clock lifetime: Instant captured at on_new_span.
+        let duration_ms = span_ref
+            .extensions()
+            .get::<SpanTimings>()
+            .map(|t| t.start.elapsed().as_millis() as u64);
+
+        let mut record = json!({
+            "timestamp": system_time_to_rfc3339(SystemTime::now()),
+            "record": "span_close",
+            "level": meta.level().as_str(),
+            "target": meta.target(),
+            "span": span_ref.name(),
+            "span_id": format!("{:016x}", span_ref.id().into_u64()),
+        });
+
+        if let Some(d) = duration_ms {
+            record["span_duration_ms"] = json!(d);
+        }
+
+        if let Some(parent) = span_ref.parent() {
+            record["parent_id"] = json!(format!("{:016x}", parent.id().into_u64()));
+        }
+
+        // trace_id from the CLOSING span's own scope root — NOT
+        // ctx.lookup_current(), which is the thread-local current span and is
+        // wrong inside on_close.
+        let trace_id = span_ref
+            .scope()
+            .last()
+            .map(|root| format!("{:016x}", root.id().into_u64()))
+            .unwrap_or_else(|| format!("{:016x}", self.trace_id_seed));
+        record["trace_id"] = json!(trace_id);
+
+        if let Some(rec) = span_ref.extensions().get::<EventRecorder>() {
+            if !rec.fields.is_empty() {
+                record["span_fields"] = Value::Object(rec.fields.clone());
+            }
+        }
+
+        if let Ok(mut writer) = self.writer.lock() {
+            let mut line = match serde_json::to_vec(&record) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("[FileTraceLayer] serialization error: {e}");
+                    return;
+                },
+            };
+            line.push(b'\n');
+            if let Err(e) = writer.write_all(&line) {
+                eprintln!("[FileTraceLayer] write error: {e}");
+            }
+            if let Err(e) = writer.flush() {
+                eprintln!("[FileTraceLayer] flush error: {e}");
+            }
+        }
+    }
 }
 
 /// Resolve a logical `trace_id` independent of the OS thread, so it stays
@@ -231,6 +306,12 @@ fn make_trace_seed() -> u64 {
     nanos.hash(&mut hasher);
     std::process::id().hash(&mut hasher);
     hasher.finish()
+}
+
+/// Wall-clock start stored in span extensions at `on_new_span`, read at
+/// `on_close` to compute `span_duration_ms`.
+struct SpanTimings {
+    start: Instant,
 }
 
 /// Single-pass event recorder. Captures ALL fields (including `message`) in one
@@ -595,7 +676,7 @@ mod tests {
             tracing::info!("back to outer");
         });
 
-        let parsed = parse_lines(&path);
+        let parsed = event_records(&path);
         assert_eq!(parsed.len(), 3);
         assert_eq!(parsed[0]["span"], "outer");
         assert_eq!(parsed[1]["span"], "inner");
@@ -693,6 +774,143 @@ mod tests {
         assert!(!content.is_empty(), "Drop must flush buffered data to disk");
     }
 
+    #[test]
+    fn contract_span_close_emits_duration_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let layer = FileTraceLayer::new(path.clone()).unwrap();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            let span = tracing::info_span!("op");
+            let _enter = span.enter();
+        });
+
+        let closes = span_close_records(&path);
+        assert_eq!(closes.len(), 1, "exactly one span_close record expected");
+        assert_eq!(closes[0]["span"], "op");
+        let dur = &closes[0]["span_duration_ms"];
+        assert!(
+            dur.is_number(),
+            "span_duration_ms must be a number, got: {dur}"
+        );
+        assert!(
+            dur.as_f64().is_some_and(|d| d >= 0.0),
+            "span_duration_ms must be >= 0, got: {dur}"
+        );
+    }
+
+    #[test]
+    fn contract_span_close_has_correlation_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let layer = FileTraceLayer::new(path.clone()).unwrap();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            let span = tracing::info_span!("op");
+            let _enter = span.enter();
+        });
+
+        let closes = span_close_records(&path);
+        assert_eq!(closes.len(), 1);
+        let span_id = closes[0]["span_id"]
+            .as_str()
+            .expect("span_id must be a string");
+        assert_eq!(span_id.len(), 16, "span_id must be 16 hex chars");
+        assert!(
+            span_id.chars().all(|c| c.is_ascii_hexdigit()),
+            "span_id must be hex, got: {span_id}"
+        );
+        let trace_id = closes[0]["trace_id"]
+            .as_str()
+            .expect("trace_id must be a string");
+        assert_eq!(trace_id.len(), 16, "trace_id must be 16 hex chars");
+        assert!(
+            trace_id.chars().all(|c| c.is_ascii_hexdigit()),
+            "trace_id must be hex, got: {trace_id}"
+        );
+    }
+
+    #[test]
+    fn contract_nested_span_close_has_parent_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let layer = FileTraceLayer::new(path.clone()).unwrap();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            let outer = tracing::info_span!("outer");
+            let _og = outer.enter();
+            let inner = tracing::info_span!("inner");
+            let _ig = inner.enter();
+        });
+
+        let closes = span_close_records(&path);
+        let inner = closes
+            .iter()
+            .find(|v| v["span"] == "inner")
+            .expect("inner close record must exist");
+        let outer = closes
+            .iter()
+            .find(|v| v["span"] == "outer")
+            .expect("outer close record must exist");
+        assert_eq!(
+            inner["parent_id"], outer["span_id"],
+            "inner parent_id must equal outer span_id"
+        );
+    }
+
+    #[test]
+    fn contract_span_close_captures_span_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let layer = FileTraceLayer::new(path.clone()).unwrap();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            let span = tracing::info_span!("op", seed_url = "https://example.com");
+            let _enter = span.enter();
+        });
+
+        let closes = span_close_records(&path);
+        assert_eq!(closes.len(), 1);
+        assert_eq!(
+            closes[0]["span_fields"]["seed_url"],
+            json!("https://example.com"),
+            "span field must be captured on close"
+        );
+    }
+
+    #[test]
+    fn contract_span_close_duration_reflects_elapsed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let layer = FileTraceLayer::new(path.clone()).unwrap();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            let span = tracing::info_span!("slow_op");
+            let _enter = span.enter();
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        });
+
+        let closes = span_close_records(&path);
+        assert_eq!(closes.len(), 1);
+        let dur = closes[0]["span_duration_ms"]
+            .as_u64()
+            .expect("span_duration_ms must be a non-negative integer");
+        assert!(
+            dur >= 10,
+            "duration must reflect the ~15ms sleep (>= 10ms margin), got: {dur}"
+        );
+    }
+
     fn read_jsonl_lines(path: &Path) -> Vec<String> {
         let content = std::fs::read_to_string(path).unwrap();
         content
@@ -703,15 +921,32 @@ mod tests {
     }
 
     fn parse_single_event(path: &Path) -> Value {
-        let lines = read_jsonl_lines(path);
-        assert_eq!(lines.len(), 1, "expected exactly 1 JSONL line");
-        serde_json::from_str(&lines[0]).unwrap()
+        let events = event_records(path);
+        assert_eq!(events.len(), 1, "expected exactly 1 event record");
+        events.into_iter().next().unwrap()
     }
 
     fn parse_lines(path: &Path) -> Vec<Value> {
         read_jsonl_lines(path)
             .iter()
             .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    /// Event records only — span-close records carry a `"record"` discriminator,
+    /// event records do not.
+    fn event_records(path: &Path) -> Vec<Value> {
+        parse_lines(path)
+            .into_iter()
+            .filter(|v| v.get("record").is_none())
+            .collect()
+    }
+
+    /// Span-close records only (those with `"record": "span_close"`).
+    fn span_close_records(path: &Path) -> Vec<Value> {
+        parse_lines(path)
+            .into_iter()
+            .filter(|v| v["record"] == "span_close")
             .collect()
     }
 }
