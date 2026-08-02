@@ -107,7 +107,16 @@ pub fn redact_nondeterministic(dir: &Path, text: &str) -> String {
     let port = Regex::new(r"127\.0\.0\.1:\d+").expect("valid port regex");
     let text = port.replace_all(&text, "127.0.0.1:<PORT>").into_owned();
     let line_no = Regex::new(r"(\.rs:)\d+").expect("valid line number regex");
-    line_no.replace_all(&text, "$1<LINE>").into_owned()
+    let text = line_no.replace_all(&text, "$1<LINE>").into_owned();
+    // Normalize tracing module paths (e.g. "WARN webfang_core::cli::orchestrator:")
+    // so snapshots decouple from source location and survive function moves (#462).
+    let module = Regex::new(r"((?:WARN|INFO|ERROR|DEBUG|TRACE)\s+)\w+(?:::\w+)+")
+        .expect("valid module regex");
+    let text = module.replace_all(&text, "$1<MODULE>").into_owned();
+    // Normalize tracing source file paths (e.g. "at crates/.../orchestrator.rs:<LINE>")
+    // so moving a function between files does not break snapshots (#462).
+    let file_path = Regex::new(r"(at\s+)\S+\.rs").expect("valid file path regex");
+    file_path.replace_all(&text, "$1<FILE>.rs").into_owned()
 }
 
 /// Resolve the path to the `webfang` binary, building it on demand.
@@ -255,8 +264,25 @@ mod tests {
     #[test]
     fn redact_nondeterministic_normalizes_line_numbers() {
         let dir = Path::new("/tmp/test");
-        let input = "at scrape_flow.rs:193 in module";
+        let input = "see scrape_flow.rs:193 for details";
         let result = redact_nondeterministic(dir, input);
-        assert_eq!(result, "at scrape_flow.rs:<LINE> in module");
+        assert_eq!(result, "see scrape_flow.rs:<LINE> for details");
+    }
+
+    #[test]
+    fn redact_nondeterministic_normalizes_tracing_module_paths() {
+        let dir = Path::new("/tmp/test");
+        let input =
+            "  2024-03-15T10:30:00+01:00  WARN webfang_core::cli::orchestrator: Unknown profile";
+        let result = redact_nondeterministic(dir, input);
+        assert_eq!(result, "  <TIMESTAMP>  WARN <MODULE>: Unknown profile");
+    }
+
+    #[test]
+    fn redact_nondeterministic_normalizes_tracing_file_paths() {
+        let dir = Path::new("/tmp/test");
+        let input = "    at crates/webfang_core/src/cli/orchestrator.rs:42";
+        let result = redact_nondeterministic(dir, input);
+        assert_eq!(result, "    at <FILE>.rs:<LINE>");
     }
 }

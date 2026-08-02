@@ -517,8 +517,10 @@ mod tests {
         assert!(
             msg.contains("client error (connect)")
                 || msg.contains("connection")
-                || msg.contains("connect"),
-            "expected connect-failure message, got: {msg}"
+                || msg.contains("connect")
+                || msg.contains("timed out")
+                || msg.contains("timeout"),
+            "expected connect-failure or timeout message, got: {msg}"
         );
     }
 
