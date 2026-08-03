@@ -568,6 +568,12 @@ impl From<crate::domain::error::CrawlError> for ScraperError {
                 ScraperError::CrawlLimit("sitemap depth exceeded".to_string())
             },
             CrawlError::SemaphoreInanition => ScraperError::SemaphoreInanition,
+            // Cancellation is an engine control signal (#509), not a failure —
+            // the crawl engine consumes it before any error surfaces here.
+            // Defensive mapping only.
+            CrawlError::Cancelled => {
+                ScraperError::Internal("task cancelled by engine shutdown".to_string())
+            },
         }
     }
 }

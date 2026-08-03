@@ -19,6 +19,7 @@ use governor::{
     state::{InMemoryState, NotKeyed},
     Quota, RateLimiter as GovernorLimiter,
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::error::ScraperError;
 
@@ -53,6 +54,14 @@ impl RateLimiterConfig {
     }
 }
 
+/// A rate-limit wait was cancelled before a permit was granted (#509).
+///
+/// Control signal, not an operational failure: the engine's cancellation
+/// token fired while the task waited for a token-bucket permit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("rate limit wait cancelled by engine shutdown")]
+pub struct RateLimitCancelled;
+
 /// Shared rate limiter for crawl operations
 #[derive(Clone)]
 pub struct SharedRateLimiter(Arc<CrawlRateLimiter>);
@@ -75,6 +84,26 @@ impl SharedRateLimiter {
     /// Wait until a permit is available
     pub async fn until_ready(&self) {
         self.0.until_ready().await;
+    }
+
+    /// Wait until a permit is available, abandoning the wait if `cancel`
+    /// fires first (#509).
+    ///
+    /// Dropping the pending governor future consumes no token, so a
+    /// cancelled caller leaves the bucket untouched for the next task.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RateLimitCancelled`] when the token fires before a permit
+    /// is granted.
+    pub async fn until_ready_or_cancel(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<(), RateLimitCancelled> {
+        tokio::select! {
+            () = self.0.until_ready() => Ok(()),
+            () = cancel.cancelled() => Err(RateLimitCancelled),
+        }
     }
 }
 
@@ -364,5 +393,81 @@ mod tests {
     fn test_rate_limiter_config_extreme_burst() {
         let config = RateLimiterConfig::new(100, 1000);
         assert!(SharedRateLimiter::new(&config).is_ok());
+    }
+
+    // ============================================================================
+    // Cancellation tests (#509)
+    // ============================================================================
+
+    #[tokio::test]
+    async fn until_ready_or_cancel_grants_permit_from_available_burst() {
+        let limiter = SharedRateLimiter::new(&RateLimiterConfig::new(100, 5)).unwrap();
+        let cancel = CancellationToken::new();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            limiter.until_ready_or_cancel(&cancel),
+        )
+        .await;
+
+        assert!(matches!(result, Ok(Ok(()))));
+    }
+
+    #[tokio::test]
+    async fn until_ready_or_cancel_returns_cancelled_while_waiting() {
+        // 60s period with burst 2: exhaust the burst, then the third wait
+        // would block for ~60s without cancellation.
+        let limiter = SharedRateLimiter::new(&RateLimiterConfig::new(60_000, 2)).unwrap();
+        let cancel = CancellationToken::new();
+        limiter.until_ready().await;
+        limiter.until_ready().await;
+
+        let waiter = {
+            let limiter = limiter.clone();
+            let cancel = cancel.clone();
+            tokio::spawn(async move { limiter.until_ready_or_cancel(&cancel).await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.cancel();
+
+        let result = tokio::time::timeout(Duration::from_secs(1), waiter).await;
+        assert!(matches!(result, Ok(Ok(Err(RateLimitCancelled)))));
+    }
+
+    #[tokio::test]
+    async fn until_ready_or_cancel_bucket_survives_cancelled_wait() {
+        // 500ms period, burst 1: consume the token, block a waiter, cancel it
+        // before the first refill (~100ms < 500ms).
+        let limiter = SharedRateLimiter::new(&RateLimiterConfig::new(500, 1)).unwrap();
+        let cancel = CancellationToken::new();
+        limiter.until_ready().await; // consume the single burst token
+
+        let start = tokio::time::Instant::now();
+        let waiter = {
+            let limiter = limiter.clone();
+            let cancel = cancel.clone();
+            tokio::spawn(async move { limiter.until_ready_or_cancel(&cancel).await })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        cancel.cancel();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(1), waiter).await,
+            Ok(Ok(Err(RateLimitCancelled)))
+        ));
+
+        // The next wait must obtain the first period's refill (~500ms from
+        // start) — if the cancelled wait had consumed a token it would take
+        // ~1000ms. Asserting well below the leak case proves no state leaked.
+        let next = tokio::time::timeout(
+            Duration::from_secs(2),
+            limiter.until_ready_or_cancel(&CancellationToken::new()),
+        )
+        .await;
+        assert!(matches!(next, Ok(Ok(()))));
+        assert!(
+            start.elapsed() < Duration::from_millis(900),
+            "cancelled wait leaked a token: next refill took {:?}",
+            start.elapsed()
+        );
     }
 }
