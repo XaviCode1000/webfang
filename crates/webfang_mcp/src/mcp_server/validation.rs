@@ -200,7 +200,7 @@ pub fn require_safe_domain(field: &str, value: &str) -> Result<(), McpError> {
 }
 
 /// Validate a seed host: a bare domain (e.g. "example.com") OR an http(s) URL
-/// (e.g. "https://example.com/path"). Mirrors the core's
+/// (e.g. `<https://example.com/path>`). Mirrors the core's
 /// `url_validation::normalize_seed_host` acceptance so MCP validation does not
 /// over-reject input the core legitimately handles. Rejects empty, whitespace,
 /// `..` traversal, and non-http(s) schemes (file://, ftp://, ...).
