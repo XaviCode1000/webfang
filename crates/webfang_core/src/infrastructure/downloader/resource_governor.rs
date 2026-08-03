@@ -56,7 +56,17 @@ impl ResourceGovernor {
     /// Create a governor calibrated to current system RAM whose
     /// [`acquire`](Self::acquire) aborts when `cancel` fires (#509).
     pub fn with_cancel_token(cancel: CancellationToken) -> Self {
-        let max_permits = Self::compute_max_instances();
+        Self::with_max_instances(Self::compute_max_instances(), cancel)
+    }
+
+    /// Create a governor with an explicit permit budget.
+    ///
+    /// Calibration seam behind [`new`](Self::new) /
+    /// [`with_cancel_token`](Self::with_cancel_token): lets constrained
+    /// environments (containers) and tests set the budget directly instead
+    /// of deriving it from system RAM.
+    pub fn with_max_instances(max_permits: usize, cancel: CancellationToken) -> Self {
+        let max_permits = max_permits.max(1);
         debug!("ResourceGovernor: max_permits={max_permits}");
 
         Self {
@@ -181,7 +191,11 @@ mod tests {
 
     use std::time::Duration;
 
+    // The sysinfo-backed tests below read /proc via `sysconf`, which Miri
+    // cannot execute — gate them there. The semaphore/cancellation tests use
+    // the explicit-budget seam (`with_max_instances`) and DO run under Miri.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_governor_creation() {
         let gov = ResourceGovernor::new();
         // On any real machine we should have at least 1 permit
@@ -189,6 +203,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_check_resources_returns_ok() {
         let gov = ResourceGovernor::new();
         // On CI or dev machines RAM usage is typically well below 80%
@@ -197,12 +212,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_total_ram_nonzero() {
         let bytes = ResourceGovernor::total_ram_bytes();
         assert!(bytes > 0, "total RAM should be > 0 on any running system");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_usage_percent_range() {
         let pct = ResourceGovernor::ram_usage_percent();
         assert!(pct <= 100);
@@ -227,24 +244,23 @@ mod tests {
 
     #[tokio::test]
     async fn acquire_releases_permit_on_drop() {
-        let gov = ResourceGovernor::new();
-        let baseline = gov.available_permits();
-        assert!(baseline >= 1);
+        let gov = ResourceGovernor::with_max_instances(2, CancellationToken::new());
+        assert_eq!(gov.available_permits(), 2);
 
         let permit = gov.acquire().await.expect("first acquire must succeed");
-        assert_eq!(gov.available_permits(), baseline - 1);
+        assert_eq!(gov.available_permits(), 1);
 
         drop(permit);
         assert_eq!(
             gov.available_permits(),
-            baseline,
+            2,
             "dropping the permit must return it to the pool"
         );
     }
 
     #[tokio::test]
     async fn acquire_grants_permit_when_token_idle() {
-        let gov = ResourceGovernor::with_cancel_token(CancellationToken::new());
+        let gov = ResourceGovernor::with_max_instances(1, CancellationToken::new());
 
         let permit = tokio::time::timeout(Duration::from_secs(1), gov.acquire())
             .await
@@ -259,14 +275,10 @@ mod tests {
     #[tokio::test]
     async fn acquire_returns_cancelled_when_blocked_and_token_fires() {
         let cancel = CancellationToken::new();
-        let gov = std::sync::Arc::new(ResourceGovernor::with_cancel_token(cancel.clone()));
+        let gov = std::sync::Arc::new(ResourceGovernor::with_max_instances(1, cancel.clone()));
 
-        // Exhaust every permit so the next acquire must block.
-        let baseline = gov.available_permits();
-        let mut held = Vec::with_capacity(baseline);
-        for _ in 0..baseline {
-            held.push(gov.acquire().await.expect("exhaust acquire must succeed"));
-        }
+        // Take the single permit so the next acquire must block.
+        let held = gov.acquire().await.expect("single permit must be granted");
         assert_eq!(gov.available_permits(), 0);
 
         let waiter = {
@@ -284,8 +296,8 @@ mod tests {
         // The cancelled wait must not have consumed a permit.
         assert_eq!(gov.available_permits(), 0);
 
-        // RAII: releasing one held permit makes it visible again.
-        held.pop();
+        // RAII: releasing the held permit makes it visible again.
+        drop(held);
         assert_eq!(gov.available_permits(), 1);
     }
 }
