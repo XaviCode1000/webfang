@@ -195,6 +195,7 @@ impl VectorExporter {
         let dimensions_json = self
             .dimensions
             .lock()
+            // LCOV_EXCL_LINE defensive: mutex-poisoning — poisoning indicates a bug in the calling code
             .expect("lock poisoned")
             .map(|d| d.to_string())
             .unwrap_or_else(|| "null".to_string());
@@ -213,6 +214,7 @@ impl VectorExporter {
         if let Some(ref embeddings) = doc.embeddings {
             // Mutex poisoning indicates a bug in the calling code, not a recoverable error.
             #[allow(clippy::expect_used)]
+            // LCOV_EXCL_LINE defensive: mutex-poisoning — poisoning indicates a bug in the calling code
             let mut dim_guard = self.dimensions.lock().expect("lock poisoned");
             if let Some(exp) = *dim_guard {
                 if embeddings.len() != exp {
@@ -365,6 +367,7 @@ impl VectorExporter {
         // backfill the reserved window now that the final value is known.
         // Mutex poisoning indicates a bug in the calling code, not a recoverable error.
         #[allow(clippy::expect_used)]
+        // LCOV_EXCL_LINE defensive: mutex-poisoning — poisoning indicates a bug in the calling code
         let known_dimensions = *self.dimensions.lock().expect("lock poisoned");
         if let Some(dimensions) = known_dimensions {
             let value = format!("{dimensions:>DIM_FIELD_WIDTH$}");

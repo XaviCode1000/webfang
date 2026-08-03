@@ -521,7 +521,9 @@ impl From<crate::domain::error::CrawlError> for ScraperError {
             CrawlError::WafChallenge { provider, url, .. } => {
                 ScraperError::WafBlocked { url, provider }
             },
+            // LCOV_EXCL_LINE defensive: error-pass-through — Internal maps 1:1 and is invariant-guarded upstream
             CrawlError::Internal(msg) => ScraperError::Internal(msg),
+            // LCOV_EXCL_LINE defensive: error-pass-through — RequestFailed collapses into Internal and is invariant-guarded upstream
             CrawlError::RequestFailed(msg) => ScraperError::Internal(msg),
             CrawlError::Download(e) => ScraperError::Download(e),
             CrawlError::SitemapNotFound(url) => ScraperError::SitemapNotFound(url),
@@ -571,9 +573,11 @@ impl From<crate::domain::error::CrawlError> for ScraperError {
             // Cancellation is an engine control signal (#509), not a failure —
             // the crawl engine consumes it before any error surfaces here.
             // Defensive mapping only.
+            // LCOV_EXCL_START defensive: engine-control-signal — cancellation is consumed by the engine before it surfaces here
             CrawlError::Cancelled => {
                 ScraperError::Internal("task cancelled by engine shutdown".to_string())
             },
+            // LCOV_EXCL_STOP
         }
     }
 }

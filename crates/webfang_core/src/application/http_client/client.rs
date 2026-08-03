@@ -77,6 +77,7 @@ impl HttpClient {
             // `NonZeroU32::new` cannot fail — this is a proven invariant.
             #[allow(clippy::expect_used)]
             let quota =
+                // LCOV_EXCL_LINE defensive: nonzero-invariant — rpm > 0 is proven by the early-return check above
                 Quota::per_minute(NonZeroU32::new(rpm).expect(
                     "invariant: rpm > 0 was already checked above — NonZeroU32 cannot fail",
                 ));

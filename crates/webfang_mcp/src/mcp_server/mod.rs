@@ -17,6 +17,7 @@ pub mod params;
 pub mod selector_service;
 pub mod server;
 pub mod state;
+pub mod validation;
 
 /// Vault-search AI port wiring (#433) — only compiled with the `ai` feature.
 #[cfg(feature = "ai")]

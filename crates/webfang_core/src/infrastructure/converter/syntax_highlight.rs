@@ -17,6 +17,7 @@ use syntect::parsing::SyntaxSet;
 /// Compile-time-constant pattern; `Regex::new` cannot fail.
 #[allow(clippy::expect_used)]
 static CODE_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // LCOV_EXCL_LINE defensive: compile-time-regex — constant pattern, Regex::new cannot fail
     Regex::new(r"(?s)```(\w*)\n(.*?)```").expect("BUG: invalid regex for code blocks")
 });
 

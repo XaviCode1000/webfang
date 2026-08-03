@@ -106,6 +106,7 @@ impl MockClock {
     /// not a recoverable runtime error.
     #[allow(clippy::expect_used)]
     pub fn advance(&self, duration: std::time::Duration) {
+        // LCOV_EXCL_LINE defensive: mutex-poisoning — test utility, poisoning indicates a test bug
         *self.now.lock().expect("mock clock poisoned") += duration;
     }
 
@@ -115,6 +116,7 @@ impl MockClock {
     /// not a recoverable runtime error.
     #[allow(clippy::expect_used)]
     pub fn set_now(&self, now: Instant) {
+        // LCOV_EXCL_LINE defensive: mutex-poisoning — test utility, poisoning indicates a test bug
         *self.now.lock().expect("mock clock poisoned") = now;
     }
 }
@@ -124,6 +126,7 @@ impl Clock for MockClock {
     // not a recoverable runtime error.
     #[allow(clippy::expect_used)]
     fn now(&self) -> Instant {
+        // LCOV_EXCL_LINE defensive: mutex-poisoning — test utility, poisoning indicates a test bug
         *self.now.lock().expect("mock clock poisoned")
     }
 }
@@ -133,6 +136,7 @@ impl Clock for Mutex<Instant> {
     // not a recoverable runtime error.
     #[allow(clippy::expect_used)]
     fn now(&self) -> Instant {
+        // LCOV_EXCL_LINE defensive: mutex-poisoning — test utility, poisoning indicates a test bug
         *self.lock().expect("mock clock poisoned")
     }
 }

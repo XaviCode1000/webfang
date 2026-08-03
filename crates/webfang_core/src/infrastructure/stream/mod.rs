@@ -156,6 +156,7 @@ impl VectorRepository for StreamRepository {
                 // Invariant: a poisoned Mutex means another thread panicked while
                 // holding the lock — process state is undefined; panic is correct.
                 #[allow(clippy::expect_used)]
+                // LCOV_EXCL_LINE defensive: mutex-poisoning — a poisoned lock leaves process state undefined
                 let mut cache = self.titles.lock().expect("title cache poisoned");
                 cache.insert(url.to_string(), title.to_string());
             }
@@ -189,6 +190,7 @@ impl VectorRepository for StreamRepository {
             let title = self
                 .titles
                 .lock()
+                // LCOV_EXCL_LINE defensive: mutex-poisoning — a poisoned lock leaves process state undefined
                 .expect("title cache poisoned")
                 .get(resource_url)
                 .cloned();
@@ -208,6 +210,7 @@ impl VectorRepository for StreamRepository {
             // the crawl aborts. `?` converts io::Error → ScraperError::Io.
             // Invariant: poisoned RwLock — see save_resource.
             #[allow(clippy::expect_used)]
+            // LCOV_EXCL_LINE defensive: mutex-poisoning — a poisoned lock leaves process state undefined
             let mut writer = self.writer.lock().expect("vector stream poisoned");
             writer.write_all(line.as_bytes())?;
             writer.write_all(b"\n")?;

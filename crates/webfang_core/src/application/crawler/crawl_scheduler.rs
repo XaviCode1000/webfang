@@ -107,6 +107,7 @@ impl CrawlScheduler {
         let urls = self
             .visited_urls
             .read()
+            // LCOV_EXCL_LINE defensive: rwlock-poisoning — a poisoned lock leaves process state undefined
             .expect("visited_urls RwLock poisoned");
         urls.iter().cloned().collect()
     }

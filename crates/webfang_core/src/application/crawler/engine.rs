@@ -112,6 +112,7 @@ impl Engine {
             RateLimiterConfig::new(config_clone.delay_ms, config_clone.concurrency as u32);
         let rate_limiter = match SharedRateLimiter::new(&rate_limiter_config) {
             Ok(limiter) => limiter,
+            // LCOV_EXCL_LINE defensive: rate-limiter-config — SharedRateLimiter::new fails only on invalid config, an invariant
             Err(e) => return Err(CrawlError::Internal(e.to_string())),
         };
 
@@ -130,6 +131,7 @@ impl Engine {
         // robots.txt request is indistinguishable from a page fetch (#337).
         let robots_fetcher = Arc::new(
             RobotsFetcher::new(config_clone.tls_emulation, config_clone.timeout_secs)
+                // LCOV_EXCL_LINE defensive: wreq-client-build — client construction fails only on invalid TLS profile, an invariant
                 .map_err(|e| CrawlError::Internal(e.to_string()))?,
         );
 
@@ -339,9 +341,11 @@ impl Engine {
                 Ok(Err(e)) => {
                     tracing::error!(error = %e, "checkpoint save failed");
                 },
+                // LCOV_EXCL_START defensive: checkpoint-join-error — a JoinError occurs only when the spawned task panicked, a bug
                 Err(join_err) => {
                     tracing::error!(error = %join_err, "checkpoint save task panicked");
                 },
+                // LCOV_EXCL_STOP
             }
         }
     }
@@ -373,6 +377,7 @@ impl Engine {
                             },
                         }
                     },
+                    // LCOV_EXCL_START defensive: signal-registration — the OS rejects the SIGTERM handler only on an invariant break
                     Err(e) => {
                         warn!(
                             error = %e,
@@ -380,6 +385,7 @@ impl Engine {
                         );
                         ctrl_c.await.ok();
                     },
+                    // LCOV_EXCL_STOP
                 }
             }
             #[cfg(not(unix))]
