@@ -50,8 +50,10 @@ async fn mount_two_page_site(server: &wiremock::MockServer) -> String {
 }
 
 /// A sitemap scrape of two pages with `--trace-file` + vector export must:
-/// (a) carry distinct `span_fields.correlation_id` values, one per page, and
-/// (b) export the same identities in the vector JSON documents.
+/// (a) carry distinct `span_fields.correlation_id` values, one per page,
+/// (b) share exactly ONE run-root `span_fields.trace_id` across all page
+///     spans, with every traceparent embedding that same trace UUID, and
+/// (c) export the same identities in the vector JSON documents.
 #[tokio::test]
 async fn scrape_trace_and_vector_export_share_per_page_correlation() {
     let t = BehavioralTest::new().await;
@@ -110,7 +112,52 @@ async fn scrape_trace_and_vector_export_share_per_page_correlation() {
         span_correlations.len()
     );
 
-    // --- (b) The vector export carries the same identities ---
+    // --- (b) All page spans share ONE run-root trace_id (#501 follow-up) ---
+    let span_traces: BTreeSet<String> = lines
+        .iter()
+        .filter_map(|v| v["span_fields"]["trace_id"].as_str().map(str::to_owned))
+        .collect();
+    assert_eq!(
+        span_traces.len(),
+        1,
+        "every page span of a run must share the run-root trace_id (causality); \
+         got {} distinct value(s): {span_traces:?}",
+        span_traces.len()
+    );
+    let run_trace = span_traces
+        .first()
+        .expect("trace set asserted non-empty above");
+
+    // Every per-page traceparent `00-{32hex trace}-{16hex span}-01` must embed
+    // that same run-root trace UUID (without dashes) as its trace part.
+    let run_trace_hex = run_trace.replace('-', "");
+    for corr in &span_correlations {
+        let parts: Vec<&str> = corr.split('-').collect();
+        assert_eq!(
+            parts.len(),
+            4,
+            "correlation_id must be a W3C traceparent `00-<trace>-<span>-01`, got: {corr}"
+        );
+        assert_eq!(parts[0], "00", "traceparent version must be 00: {corr}");
+        assert_eq!(parts[3], "01", "traceparent flags must be 01: {corr}");
+        assert_eq!(
+            parts[1].len(),
+            32,
+            "traceparent trace part must be 32 hex chars: {corr}"
+        );
+        assert_eq!(
+            parts[2].len(),
+            16,
+            "traceparent span part must be 16 hex chars: {corr}"
+        );
+        assert_eq!(
+            parts[1], run_trace_hex,
+            "traceparent trace part must equal the shared run-root trace_id \
+             ({run_trace}); page identity drifted: {corr}"
+        );
+    }
+
+    // --- (c) The vector export carries the same identities ---
     let vector_files = t.find_files("json");
     assert!(
         !vector_files.is_empty(),
