@@ -609,3 +609,61 @@ async fn extract_links_accepts_valid() {
         "valid extract_links params must not be rejected, got: {resp}"
     );
 }
+
+/// `convert_wiki_links` accepts a bare `base_domain` (the documented format)
+/// and must NOT be rejected by validation.
+#[tokio::test]
+async fn convert_wiki_links_accepts_bare_domain() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let resp = call_tool(
+        &client,
+        &base_url,
+        &session_id,
+        "convert_wiki_links",
+        json!({ "markdown": "[link](/page)", "base_domain": "example.com" }),
+    )
+    .await;
+
+    assert_eq!(
+        error_code(&resp),
+        None,
+        "bare base_domain must not be rejected, got: {resp}"
+    );
+    assert!(
+        !is_tool_error(resp.get("result").unwrap_or(&Value::Null)),
+        "bare base_domain result must not be an error: {}",
+        tool_text(resp.get("result").unwrap_or(&Value::Null))
+    );
+}
+
+/// `is_internal_link` accepts a full-URL `seed_domain` (the core's
+/// `normalize_seed_host` handles it) and must NOT be rejected by validation.
+#[tokio::test]
+async fn is_internal_link_accepts_full_url_seed() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let resp = call_tool(
+        &client,
+        &base_url,
+        &session_id,
+        "is_internal_link",
+        json!({ "url": "https://example.com/page", "seed_domain": "https://example.com" }),
+    )
+    .await;
+
+    assert_eq!(
+        error_code(&resp),
+        None,
+        "full-URL seed_domain must not be rejected, got: {resp}"
+    );
+    assert!(
+        !is_tool_error(resp.get("result").unwrap_or(&Value::Null)),
+        "full-URL seed_domain result must not be an error: {}",
+        tool_text(resp.get("result").unwrap_or(&Value::Null))
+    );
+}

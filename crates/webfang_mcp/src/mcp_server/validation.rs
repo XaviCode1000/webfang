@@ -199,6 +199,53 @@ pub fn require_safe_domain(field: &str, value: &str) -> Result<(), McpError> {
     Ok(())
 }
 
+/// Validate a seed host: a bare domain (e.g. "example.com") OR an http(s) URL
+/// (e.g. "https://example.com/path"). Mirrors the core's
+/// `url_validation::normalize_seed_host` acceptance so MCP validation does not
+/// over-reject input the core legitimately handles. Rejects empty, whitespace,
+/// `..` traversal, and non-http(s) schemes (file://, ftp://, ...).
+///
+/// # Errors
+/// Returns `McpError::invalid_params` if `value` is empty, contains
+/// whitespace, `..`, a disallowed scheme, or is neither a bare domain nor an
+/// http(s) URL.
+pub fn require_safe_seed(field: &str, value: &str) -> Result<(), McpError> {
+    if value.is_empty() {
+        return Err(invalid_params(field, "must not be empty"));
+    }
+    if value.chars().any(char::is_whitespace) {
+        return Err(invalid_params(field, "must not contain whitespace"));
+    }
+    if value.contains("..") {
+        return Err(invalid_params(field, "must not contain '..'"));
+    }
+    // URL form: require an http(s) scheme. `split_once("://")` distinguishes
+    // "https://x" (scheme present) from "example.com" (no "://", bare host).
+    if let Some((scheme, _rest)) = value.split_once("://") {
+        if scheme != "http" && scheme != "https" {
+            return Err(invalid_params(
+                field,
+                format!("unsupported scheme '{scheme}' (only http/https allowed)"),
+            ));
+        }
+        return Ok(());
+    }
+    // Bare host form: require a domain shape (at least one '.', no '/' or ':').
+    if value.contains(['/', ':']) {
+        return Err(invalid_params(
+            field,
+            "must be a bare domain or http(s) URL",
+        ));
+    }
+    if !value.contains('.') {
+        return Err(invalid_params(
+            field,
+            "must contain at least one '.' separator",
+        ));
+    }
+    Ok(())
+}
+
 /// Validate that `value` is non-empty.
 ///
 /// # Errors
