@@ -114,7 +114,7 @@ impl ConcurrencyConfig {
     /// Check if this config uses auto-detection.
     #[must_use]
     pub fn is_auto(&self) -> bool {
-        self.auto_detect
+        self.auto_detect && self.value.is_none()
     }
 
     /// Get the raw value if explicitly set.
