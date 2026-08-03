@@ -87,6 +87,7 @@ async fn crawl_with_sitemap_internal(
         ..Default::default()
     };
     let discovery_client = super::super::create_http_client_with_config(&http_config)
+        // LCOV_EXCL_LINE defensive: wreq-client-build — client construction fails only on invalid TLS profile, an invariant
         .map_err(|e| CrawlError::Internal(format!("failed to build discovery client: {e}")))?;
 
     // Use default batch size (10,000) - SitemapConfig handles pagination

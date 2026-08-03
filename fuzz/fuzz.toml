@@ -6,6 +6,26 @@ opt-level = 3
 lto = true
 codegen-units = 1
 
+# ============================================================================
+# Tier policy (#507 Fase 7 — Fuzz Compliance)
+# Any target added to fuzz/Cargo.toml MUST declare the tier it belongs to and
+# get a matching override here. Touching a fuzzed function without updating the
+# target/override is a CI regression (issue #514).
+#
+# | Tier | Scope                                | max_len | timeout |
+# |------|--------------------------------------|---------|---------|
+# | 1    | Core HTML pipeline (parse/clean/convert/readability/extract) | 16384 | 10 |
+# | 2    | Sitemap XML                          | 32768   | 15      |
+# | 3    | Link/URL processing                  | 8192    | 10      |
+# | 4    | Security-sensitive (WAF, compression, cookies) | 4096–32768 | 10–15 |
+# | 5    | Content processing (post-extraction) | 8192   | 10      |
+# | 6    | Asset extraction                    | 8192    | 10      |
+#
+# HTML targets run at max_len=16384 (HTML can be large).
+# Decompression/sitemap run at max_len=32768 + timeout=15 (slower work).
+# HTTP-header-like inputs stay small (max_len=4096).
+# ============================================================================
+
 # Default libfuzzer settings applied to all targets
 [libfuzzer]
 max_len = 8192
@@ -14,7 +34,8 @@ runs = 0  # unlimited (run until Ctrl-C)
 max_total_time = 600  # 10 minutes per target
 jobs = 1
 
-# Per-target overrides
+# --- TIER 1: Core HTML pipeline (max_len=16384) ---
+
 [[target]]
 name = "fuzz_parse_html"
 max_len = 16384  # HTML can be large
@@ -24,6 +45,41 @@ name = "fuzz_html_cleaner"
 max_len = 16384  # HTML can be large
 
 [[target]]
+name = "fuzz_convert_to_markdown"
+max_len = 16384  # HTML can be large
+
+[[target]]
+name = "fuzz_readability_parse"
+max_len = 16384  # HTML can be large
+
+[[target]]
+name = "fuzz_extract_text"
+max_len = 16384  # HTML can be large
+
+# --- TIER 2: Sitemap XML ---
+
+[[target]]
+name = "fuzz_parse_sitemap"
+max_len = 32768  # sitemaps can be large XML
+timeout = 15
+
+# --- TIER 3: Link/URL processing ---
+
+[[target]]
+name = "fuzz_extract_links"
+max_len = 16384  # extracts links from HTML
+
+# --- TIER 4: Security-sensitive (WAF, compression, cookies) ---
+
+[[target]]
+name = "fuzz_waf_detection"
+max_len = 8192
+
+[[target]]
+name = "fuzz_compression_detect"
+max_len = 16384
+
+[[target]]
 name = "fuzz_parse_content_disposition"
 max_len = 4096  # HTTP headers are typically small
 
@@ -31,16 +87,3 @@ max_len = 4096  # HTTP headers are typically small
 name = "fuzz_decompression"
 max_len = 32768  # compressed payloads can be larger
 timeout = 15  # decompression can be slower
-
-[[target]]
-name = "fuzz_compression_detect"
-max_len = 16384
-
-[[target]]
-name = "fuzz_waf_detection"
-max_len = 8192
-
-[[target]]
-name = "fuzz_parse_sitemap"
-max_len = 32768  # sitemaps can be large XML
-timeout = 15

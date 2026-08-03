@@ -109,6 +109,49 @@ Gate clippy on the specific test crates (not `--tests`): `webfang_core`'s own li
 tests have a pre-existing `tokio::time::pause` failure that requires the `test-util`
 feature and is out of scope for E2E changes.
 
+## Coverage exclusions (LCOV)
+
+Defensive error paths — invariants by design — must not drag down the
+codecov/patch target (80% on new lines). Annotate them with LCOV exclusion
+markers (issue #527).
+
+### Policy
+
+Only annotate arms that "should not happen in normal operation":
+
+- internal / mutex-poisoning / integer-overflow invariants
+- compile-time-constant failures (CSS selectors, regexes, hardcoded URLs)
+- panic/expect paths guarded by proven invariants (e.g. `NonZeroU32` after a
+  zero-check, `chunks_exact` slice conversion)
+
+NEVER annotate business paths: reachable errors like HTTP connection failures,
+parse errors, or config validation. Reachable error handling is exercised by
+tests and counted like any other code.
+
+### Syntax
+
+- Single statement: `// LCOV_EXCL_LINE` on its OWN comment line immediately
+  ABOVE the code line — never inline on the code line.
+- Multi-line arm/block: `// LCOV_EXCL_START` above the block and
+  `// LCOV_EXCL_STOP` below it, each on its own line.
+- Every marker site carries a justification comment starting with
+  `// defensive: <variant> <rationale>` — merged into the marker line or as a
+  preceding line.
+
+### Safety net
+
+Excluded paths are still mutation-tested: a surviving mutant in the weekly
+cargo-mutants baseline, or in a PR touching gated hot paths (`cargo-mutants`
+PR diff), is reported. The markers only affect coverage accounting — they do
+not affect mutant survival.
+
+### Hot-path rule
+
+In files under `.cargo/mutants.toml` globs, markers MUST be own-line comments
+(never inline) so the diff adds no mutable code lines.
+
+Never lower `codecov.yml` thresholds; use markers per path instead.
+
 ## Known Issues
 
 ### Sitemap Discovery Regression (Pre-existing)

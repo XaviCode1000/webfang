@@ -122,9 +122,23 @@ webfang/                          # virtual workspace root (no [package])
 cli ──→ tui ──→ core ←── ai
 cli ──→ mcp ──→ core
 cli ──────────→ core
+cli ──→ ai   (feature-gated, #433)
+mcp ──→ ai   (feature-gated, #433)
 ```
 
+Full allow-matrix (effective build graph):
+
+| Crate | May depend on |
+|:---|:---|
+| `webfang_core` | — |
+| `webfang_ai` | `webfang_core` |
+| `webfang_tui` | `webfang_core` |
+| `webfang_mcp` | `webfang_core`, `webfang_ai` |
+| `webfang_cli` | `webfang_core`, `webfang_tui`, `webfang_ai`, `webfang_mcp` |
+
 This is an architectural POLICY, not just what the code happens to do. New code must respect this direction. Verify cross-crate usage with `codedb_deps` or GitNexus `impact` before adding any inter-crate import.
+
+**CI gate (#513):** `scripts/check_dependency_direction.sh` runs in the `toolchain` job of `ci.yml` and fails on any prohibited inter-crate dependency (including feature-gated optional deps). It parses each crate's `Cargo.toml` `[dependencies]`/`[dev-dependencies]` against the matrix above and prints the effective graph on success. Keep the matrix in the script and this section in sync.
 
 ### Intra-crate layers (Clean Architecture)
 

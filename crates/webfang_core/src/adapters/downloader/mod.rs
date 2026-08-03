@@ -201,6 +201,7 @@ impl Downloader {
         }
 
         // Unreachable: loop always returns on last attempt, but required for type inference
+        // LCOV_EXCL_LINE defensive: unreachable-retry-exhaustion — the retry loop always returns on the last attempt
         Err(last_err.unwrap_or_else(|| {
             ScraperError::Internal("exhausted retries with no error captured".to_string())
         }))
@@ -277,6 +278,7 @@ impl Downloader {
             }
 
             let chunk_len = chunk.len() as u64;
+            // LCOV_EXCL_LINE defensive: integer-overflow — u64 overflow requires an unrealistic download size
             downloaded = downloaded.checked_add(chunk_len).ok_or_else(|| {
                 ScraperError::Internal("integer overflow in download size".to_string())
             })?;

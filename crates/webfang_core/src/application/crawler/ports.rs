@@ -149,6 +149,7 @@ impl CrawlResultCollector for ProductionCollector {
             self.collector
                 .send(CrawlMessage::success(url))
                 .await
+                // LCOV_EXCL_LINE defensive: mpsc-send — send fails only when the engine collector was dropped, a shutdown bug
                 .map_err(|e| CrawlError::Internal(e.to_string()))
         })
     }

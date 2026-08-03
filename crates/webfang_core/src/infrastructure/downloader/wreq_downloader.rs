@@ -95,6 +95,7 @@ impl WreqDownloader {
             .cookie_store(true)
             .redirect(wreq::redirect::Policy::limited(10))
             .build()
+            // LCOV_EXCL_LINE defensive: wreq-client-build — client construction fails only on invalid TLS profile, an invariant
             .map_err(|e| DownloadError::Internal(format!("failed to build wreq client: {e}")))?;
 
         debug!(

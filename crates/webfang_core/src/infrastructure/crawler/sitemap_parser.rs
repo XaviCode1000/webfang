@@ -243,6 +243,7 @@ impl SitemapParser {
             ..Default::default()
         };
         crate::infrastructure::http::create_http_client_with_config(&http_config)
+            // LCOV_EXCL_LINE defensive: wreq-client-build — client construction fails only on invalid TLS profile, an invariant
             .map_err(|e| CrawlError::Internal(format!("failed to build sitemap client: {e}")))
     }
 

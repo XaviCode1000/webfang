@@ -60,6 +60,7 @@ impl OutputStage for MultiSinkOutput {
             if any_ok {
                 Ok(())
             } else {
+                // LCOV_EXCL_LINE defensive: zero-sink-wiring — a stage with no sinks registered is a wiring invariant
                 Err(last_err.unwrap_or_else(|| OutputError::Backend("no sinks registered".into())))
             }
         })
