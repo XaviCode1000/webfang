@@ -51,11 +51,13 @@ impl ObscuraDownloader {
 
         // Defense in depth: a typed Url always carries a scheme (e.g. https://) so it can
         // never be mistaken for an obscura flag; reject defensively anyway.
+        // LCOV_EXCL_START defensive: defense-in-depth — a typed Url always carries a scheme, never a leading '-'
         if url_string.starts_with('-') {
             return Err(DownloadError::Internal(
                 "URL inválida: no puede comenzar con '-'".to_string(),
             ));
         }
+        // LCOV_EXCL_STOP
 
         let result = timeout(
             self.timeout,
@@ -90,9 +92,11 @@ impl ObscuraDownloader {
                     cookies: vec![],
                 })
             },
+            // LCOV_EXCL_START defensive: spawn-failure — obscura fails to start only on environment breakage
             Ok(Ok(Err(e))) => Err(DownloadError::Internal(format!(
                 "obscura process failed to start: {e}"
             ))),
+            // LCOV_EXCL_STOP
             Ok(Err(_)) => Err(DownloadError::Timeout(self.timeout.as_secs())),
             Err(_) => Err(DownloadError::Timeout(self.timeout.as_secs())),
         }

@@ -125,6 +125,7 @@ impl RelevanceScorer {
         // a non-panicking path use `score_stored`, which returns `Option<f32>`.
         let reference = reference
             .or(self.reference.as_deref())
+            // LCOV_EXCL_LINE defensive: missing-reference-embedding — documented panic contract; callers use score_stored
             .expect("No reference embedding provided or stored");
 
         cosine_similarity(embedding, reference)

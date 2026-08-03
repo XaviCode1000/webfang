@@ -11,6 +11,7 @@ use std::sync::LazyLock;
 /// Compile-time-constant selector string; `Selector::parse` cannot fail.
 #[allow(clippy::expect_used)]
 static IMG_SELECTOR: LazyLock<Selector> =
+    // LCOV_EXCL_LINE defensive: compile-time-selector — constant selector string, parse cannot fail
     LazyLock::new(|| Selector::parse("img[src]").expect("BUG: invalid CSS selector img[src]"));
 
 /// Selector for img[srcset]
@@ -18,6 +19,7 @@ static IMG_SELECTOR: LazyLock<Selector> =
 /// Compile-time-constant selector string; `Selector::parse` cannot fail.
 #[allow(clippy::expect_used)]
 static SRCSET_SELECTOR: LazyLock<Selector> = LazyLock::new(|| {
+    // LCOV_EXCL_LINE defensive: compile-time-selector — constant selector string, parse cannot fail
     Selector::parse("img[srcset]").expect("BUG: invalid CSS selector img[srcset]")
 });
 
@@ -26,6 +28,7 @@ static SRCSET_SELECTOR: LazyLock<Selector> = LazyLock::new(|| {
 /// Compile-time-constant selector string; `Selector::parse` cannot fail.
 #[allow(clippy::expect_used)]
 static SOURCE_SELECTOR: LazyLock<Selector> = LazyLock::new(|| {
+    // LCOV_EXCL_LINE defensive: compile-time-selector — constant selector string, parse cannot fail
     Selector::parse("source[srcset]").expect("BUG: invalid CSS selector source[srcset]")
 });
 
@@ -34,6 +37,7 @@ static SOURCE_SELECTOR: LazyLock<Selector> = LazyLock::new(|| {
 /// Compile-time-constant selector string; `Selector::parse` cannot fail.
 #[allow(clippy::expect_used)]
 static LINK_SELECTOR: LazyLock<Selector> =
+    // LCOV_EXCL_LINE defensive: compile-time-selector — constant selector string, parse cannot fail
     LazyLock::new(|| Selector::parse("a[href]").expect("BUG: invalid CSS selector a[href]"));
 
 /// Represents an extracted asset URL

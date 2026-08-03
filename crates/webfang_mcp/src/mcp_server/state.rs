@@ -148,6 +148,7 @@ impl McpState {
     pub fn record_scrape(&self, event: ScrapeEvent) {
         self.metrics
             .lock()
+            // LCOV_EXCL_LINE defensive: lock-poisoning — poison is recovered via into_inner, never a panic
             .unwrap_or_else(|e| e.into_inner())
             .record(event);
     }
@@ -160,6 +161,7 @@ impl McpState {
     pub fn metrics_snapshot(&self) -> MetricsSnapshot {
         self.metrics
             .lock()
+            // LCOV_EXCL_LINE defensive: lock-poisoning — poison is recovered via into_inner, never a panic
             .unwrap_or_else(|e| e.into_inner())
             .snapshot()
     }

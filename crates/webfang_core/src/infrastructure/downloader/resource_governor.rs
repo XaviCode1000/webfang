@@ -128,6 +128,7 @@ impl ResourceGovernor {
 
         tokio::select! {
             result = arc.acquire_owned() => {
+                // LCOV_EXCL_LINE defensive: semaphore-closed — acquire_owned fails only when the governor is shut down
                 result.map_err(|_| {
                     DownloadError::Internal("resource governor semaphore closed".to_string())
                 })

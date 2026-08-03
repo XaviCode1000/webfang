@@ -78,6 +78,7 @@ impl Downloader for ChromiumoxideDownloader {
                 .headless_mode(HeadlessMode::True)
                 .no_sandbox()
                 .build()
+                // LCOV_EXCL_LINE defensive: browser-config-build — static builder flags cannot fail at runtime
                 .map_err(DownloadError::Internal)?;
 
             let (mut browser, mut handler) = Browser::launch(config)
@@ -93,6 +94,7 @@ impl Downloader for ChromiumoxideDownloader {
                 let bridge = self
                     .cookie_bridge
                     .read()
+                    // LCOV_EXCL_LINE defensive: lock-poisoning — a poisoned lock leaves process state undefined
                     .map_err(|e| DownloadError::Internal(format!("Lock poisoned: {e}")))?;
                 bridge
                     .to_cdp_cookies()

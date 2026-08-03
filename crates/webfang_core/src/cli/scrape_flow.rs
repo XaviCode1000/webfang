@@ -54,12 +54,14 @@ pub async fn apply_resume_mode(
         info!("State store domain: {}", domain);
         match export_factory::create_state_store(state_dir, &domain) {
             Ok(store) => Some(store),
+            // LCOV_EXCL_START defensive: state-store-creation — store creation failure with --resume is an environment invariant break
             Err(e) => {
                 tracing::error!(error = %e, "state store creation failed with --resume active");
                 return Err(CliExit::IoError(format!(
                     "No se pudo crear el almacén de estado para --resume: {e}"
                 )));
             },
+            // LCOV_EXCL_STOP
         }
     } else {
         None

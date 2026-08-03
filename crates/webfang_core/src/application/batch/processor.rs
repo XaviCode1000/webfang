@@ -126,6 +126,7 @@ impl BatchProcessor {
                 .clone()
                 .acquire_owned()
                 .await
+                // LCOV_EXCL_LINE defensive: semaphore-closed — acquire_owned fails only when the batch governor is shut down
                 .map_err(|_| BatchError::SemaphoreClosed)?;
 
             progress.start_one();

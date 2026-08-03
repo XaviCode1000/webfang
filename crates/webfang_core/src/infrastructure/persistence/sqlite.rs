@@ -241,6 +241,7 @@ fn bytes_to_f32_vec(b: &[u8]) -> Result<Vec<f32>, ScraperError> {
             #[allow(clippy::expect_used)]
             let arr: [u8; 4] = chunk
                 .try_into()
+                // LCOV_EXCL_LINE defensive: chunks-exact-invariant — try_into on a 4-byte slice cannot fail
                 .expect("chunks_exact(4) garantiza 4 bytes por fragmento");
             Ok(f32::from_le_bytes(arr))
         })

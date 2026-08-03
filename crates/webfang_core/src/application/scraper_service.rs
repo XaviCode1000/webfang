@@ -201,6 +201,7 @@ async fn scrape_with_config_inner(
         let doc = scraper::Html::parse_document(&html);
         doc.select(
             &scraper::Selector::parse("title")
+                // LCOV_EXCL_LINE defensive: compile-time-selector — 'title' is a constant valid selector
                 .expect("invariant: 'title' is a valid CSS selector — this cannot fail"),
         )
         .next()

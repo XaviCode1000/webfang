@@ -184,6 +184,7 @@ fn rewrite_image_urls_to_relative(content: &str, _md_file_dir: &Path) -> String 
     #[allow(clippy::expect_used)]
     static RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
         Regex::new(r"!\[([^\]]*)\]\((https?://[^)]+)\)")
+            // LCOV_EXCL_LINE defensive: compile-time-regex — static pattern is a constant, parse cannot fail
             .expect("static image-markdown regex is valid")
     });
 
