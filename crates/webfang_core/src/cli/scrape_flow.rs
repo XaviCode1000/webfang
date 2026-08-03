@@ -11,7 +11,7 @@ use crate::application::progress_observer::ProgressObserver;
 use crate::application::scrape_single_url_for_tui;
 use crate::cli::error::CliExit;
 use crate::domain::entities::progress::{ScrapeError, ScrapeStatus};
-use crate::domain::ScrapedContent;
+use crate::domain::{CorrelationId, ScrapedContent};
 use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
 use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
 use crate::infrastructure::export::state_store::StateStore;
@@ -107,6 +107,10 @@ pub async fn apply_resume_mode(
 
 /// Scrape all URLs, reporting progress via the provided observer.
 ///
+/// Correlation contract (#501): `root_correlation` is the run-root identity
+/// owned by the orchestrator; each page derives `.child()` from it — one
+/// shared `trace_id` for the whole run, a fresh `span_id` per page.
+///
 /// The observer handles quiet/channel logic internally — callers pass
 /// `&NoopObserver` for dry-run or `&LiveProgressObserver` for live output.
 ///
@@ -123,6 +127,7 @@ pub async fn scrape_urls(
     observer: &dyn ProgressObserver,
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     engine: Option<&AdaptiveSelectorEngine>,
+    root_correlation: &CorrelationId,
 ) -> Result<
     (
         Vec<ScrapedContent>,
@@ -192,8 +197,20 @@ pub async fn scrape_urls(
             .on_status_changed(url_str, ScrapeStatus::Fetching)
             .await;
 
-        match scrape_single_url_for_tui(&router, &url, scraper_config, downloader, engine, None)
-            .await
+        // Per-page identity: child of the run root — shared trace_id, fresh
+        // span_id (#501).
+        let page_correlation = root_correlation.child();
+
+        match scrape_single_url_for_tui(
+            &router,
+            &url,
+            scraper_config,
+            downloader,
+            engine,
+            None,
+            &page_correlation,
+        )
+        .await
         {
             Ok(content) => {
                 observer

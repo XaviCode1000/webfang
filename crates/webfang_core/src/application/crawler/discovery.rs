@@ -170,9 +170,13 @@ pub async fn discover_urls_for_tui(
 ///
 /// # Arguments
 ///
-/// * `client` - HTTP client to use for requests
+/// * `downloader` - Downloader (fetch router in production, mock in tests)
 /// * `url` - URL to scrape
 /// * `config` - Scraper configuration
+/// * `correlation` - Per-page correlation identity, derived by the caller from
+///   the run-root identity (`root.child()` — same `trace_id`, fresh
+///   `span_id`), so every page of a run stays reconstructable under one trace
+///   (#501)
 ///
 /// # Returns
 ///
@@ -180,7 +184,7 @@ pub async fn discover_urls_for_tui(
 /// * `Err(ScraperError)` - Error during scraping
 #[instrument(
     name = "scrape_single_url",
-    skip(downloader, config, asset_downloader, engine, binary_writer),
+    skip(downloader, config, asset_downloader, engine, binary_writer, correlation),
     fields(url = %url)
 )]
 pub async fn scrape_single_url_for_tui(
@@ -190,20 +194,46 @@ pub async fn scrape_single_url_for_tui(
     asset_downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
     binary_writer: Option<&dyn crate::domain::ports::BinaryWriterPort>,
+    correlation: &CorrelationId,
 ) -> ScraperResult<ScrapedContent> {
-    // Per-page identity, declared on the span at creation time (#501).
-    // FileTraceLayer snapshots span fields in `on_new_span`, so fields recorded
-    // later are invisible offline — mirror `crawl_page` (crawl_task.rs) exactly.
-    let page_correlation = CorrelationId::new();
-    let span = span!(
-        Level::DEBUG,
-        "scrape_single",
-        url = %url,
-        correlation_id = %page_correlation,
-        trace_id = %page_correlation.trace_id()
-    );
-    let _guard = span.enter();
+    scrape_single_url_for_tui_inner(
+        downloader,
+        url,
+        config,
+        asset_downloader,
+        engine,
+        binary_writer,
+        correlation.clone(),
+    )
+    .await
+}
 
+/// Inner implementation of [`scrape_single_url_for_tui`].
+///
+/// The `#[instrument]` span declares the per-page identity (`correlation_id`,
+/// `trace_id`) AT CREATION time (#501): FileTraceLayer snapshots span fields
+/// in `on_new_span`, so fields recorded later never reach the `--trace-file`
+/// JSONL. The instrumented span lifecycle is also async-safe — no `enter()`
+/// guard crosses an `.await` (#501 follow-up).
+#[instrument(
+    level = "debug",
+    name = "scrape_single",
+    skip(downloader, config, asset_downloader, engine, binary_writer, correlation),
+    fields(
+        url = %url,
+        correlation_id = %correlation,
+        trace_id = %correlation.trace_id()
+    )
+)]
+async fn scrape_single_url_for_tui_inner(
+    downloader: &dyn Downloader,
+    url: &Url,
+    config: &ScraperConfig,
+    asset_downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
+    #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
+    binary_writer: Option<&dyn crate::domain::ports::BinaryWriterPort>,
+    correlation: CorrelationId,
+) -> ScraperResult<ScrapedContent> {
     debug!("Scraping: {}", url);
 
     // Fetch the page through the injected downloader (a `FetchRouter` in
@@ -297,7 +327,7 @@ pub async fn scrape_single_url_for_tui(
             date: None,
             html: None,
             assets,
-            correlation_id: Some(page_correlation),
+            correlation_id: Some(correlation),
         });
     }
 
@@ -318,21 +348,13 @@ pub async fn scrape_single_url_for_tui(
             &chain,
             url.as_str(),
             "fetch",
-            Some(&page_correlation),
+            Some(&correlation),
             "WAF challenge detected",
         );
         return Err(ScraperError::waf_blocked(url.to_string(), chain));
     }
 
-    extract_content(
-        &html,
-        url,
-        config,
-        asset_downloader,
-        engine,
-        Some(&page_correlation),
-    )
-    .await
+    extract_content(&html, url, config, asset_downloader, engine, &correlation).await
 }
 
 /// Convert lowercased string headers into a wreq [`wreq::header::HeaderMap`]
@@ -607,7 +629,8 @@ mod tests {
         let url = Url::parse("https://example.com/doc.pdf").expect("valid URL");
         let config = ScraperConfig::new();
 
-        let result = scrape_single_url_for_tui(&dl, &url, &config, None, None, None)
+        let corr = CorrelationId::new();
+        let result = scrape_single_url_for_tui(&dl, &url, &config, None, None, None, &corr)
             .await
             .expect("binary detection should succeed");
 
@@ -627,7 +650,8 @@ mod tests {
         let url = Url::parse("https://example.com").expect("valid URL");
         let config = ScraperConfig::new();
 
-        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None, None)
+        let corr = CorrelationId::new();
+        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None, None, &corr)
             .await
             .expect_err("WAF body should trigger WafBlocked");
 
@@ -652,7 +676,8 @@ work with when computing the document readability score.</p>
         let url = Url::parse("https://example.com/article").expect("valid URL");
         let config = ScraperConfig::new();
 
-        let result = scrape_single_url_for_tui(&dl, &url, &config, None, None, None)
+        let corr = CorrelationId::new();
+        let result = scrape_single_url_for_tui(&dl, &url, &config, None, None, None, &corr)
             .await
             .expect("normal HTML should scrape successfully");
 
@@ -673,7 +698,8 @@ work with when computing the document readability score.</p>
         let url = Url::parse("https://example.com").expect("valid URL");
         let config = ScraperConfig::new();
 
-        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None, None)
+        let corr = CorrelationId::new();
+        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None, None, &corr)
             .await
             .expect_err("WafChallenge download error should propagate");
 
@@ -693,7 +719,8 @@ work with when computing the document readability score.</p>
         let url = Url::parse("https://example.com/missing").expect("valid URL");
         let config = ScraperConfig::new();
 
-        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None, None)
+        let corr = CorrelationId::new();
+        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None, None, &corr)
             .await
             .expect_err("404 status should produce an error");
 
@@ -717,7 +744,8 @@ work with when computing the document readability score.</p>
         let url = Url::parse("https://example.com/article").unwrap();
         let config = ScraperConfig::default();
 
-        let result = extract_content(html, &url, &config, None, None, None).await;
+        let corr = CorrelationId::new();
+        let result = extract_content(html, &url, &config, None, None, &corr).await;
 
         assert!(result.is_ok());
         let content = result.unwrap();
@@ -732,7 +760,8 @@ work with when computing the document readability score.</p>
         let url = Url::parse("https://example.com/tiny").unwrap();
         let config = ScraperConfig::default();
 
-        let result = extract_content(html, &url, &config, None, None, None).await;
+        let corr = CorrelationId::new();
+        let result = extract_content(html, &url, &config, None, None, &corr).await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -756,7 +785,8 @@ work with when computing the document readability score.</p>
             ..Default::default()
         };
 
-        let result = extract_content(html, &url, &config, None, None, None).await;
+        let corr = CorrelationId::new();
+        let result = extract_content(html, &url, &config, None, None, &corr).await;
 
         assert!(result.is_ok());
         let content = result.unwrap();
@@ -776,7 +806,8 @@ work with when computing the document readability score.</p>
         let url = Url::parse("https://example.com/article").unwrap();
         let config = ScraperConfig::default();
 
-        let result = extract_content(html, &url, &config, None, None, None).await;
+        let corr = CorrelationId::new();
+        let result = extract_content(html, &url, &config, None, None, &corr).await;
 
         assert!(result.is_ok());
         let content = result.unwrap();
@@ -792,10 +823,11 @@ work with when computing the document readability score.</p>
     #[tokio::test]
     #[cfg(not(miri))]
     async fn extract_content_reuses_injected_correlation_id() {
-        // Issue #501: callers that own the page identity (e.g. the scrape span
-        // in `scrape_single_url_for_tui`) inject it so the exported content is
-        // correlatable with the trace's `span_fields` — exact identity, not a
-        // freshly generated one.
+        // Issue #501: callers own the page identity (e.g. the scrape span in
+        // `scrape_single_url_for_tui`) and inject it so the exported content
+        // is correlatable with the trace's `span_fields` — exact identity,
+        // not a freshly generated one. The parameter is required: identity
+        // enters through the type system or not at all.
         let html = r#"<html><head><title>Test Page</title></head><body>
             <article><h1>Hello</h1><p>This is a long enough paragraph of content that readability should be able to extract properly from the DOM structure.</p>
             <p>Second paragraph with more content to ensure readability has enough material to work with for extraction.</p></article>
@@ -804,7 +836,7 @@ work with when computing the document readability score.</p>
         let config = ScraperConfig::default();
         let injected = CorrelationId::new_with_ids(uuid::Uuid::now_v7(), 0x00AB);
 
-        let content = extract_content(html, &url, &config, None, None, Some(&injected))
+        let content = extract_content(html, &url, &config, None, None, &injected)
             .await
             .expect("extraction with an injected correlation ID must succeed");
 

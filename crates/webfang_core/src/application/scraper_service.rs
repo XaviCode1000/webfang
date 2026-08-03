@@ -66,12 +66,18 @@ impl ScrapeOutcome {
 
 /// Scrape a URL with asset downloading configuration
 ///
+/// Correlation contract (#501): the caller owns the run-root identity
+/// (`root_correlation`); this use case derives one page child from it
+/// (same `trace_id`, fresh `span_id`) so every page of the operation stays
+/// reconstructable under a single trace while each page is distinguishable.
+///
 /// # Arguments
 /// * `client` - HTTP client
 /// * `url` - URL to scrape
 /// * `config` - Scraper configuration with download options
 /// * `downloader` - Optional asset downloader
 /// * `inspector` - Optional DOM inspector for selector diagnostics (None for non-MCP paths)
+/// * `root_correlation` - Run-root correlation identity of the enclosing operation
 ///
 /// # Returns
 /// * `ScrapeOutcome` - Scraped content results + CSS selector extraction result
@@ -86,10 +92,11 @@ pub async fn scrape_with_config(
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     inspector: Option<&dyn DomInspectorPort>,
     engine: Option<&AdaptiveSelectorEngine>,
+    root_correlation: &CorrelationId,
 ) -> Result<ScrapeOutcome> {
-    // Per-page identity created BEFORE the span so the span can declare it
-    // (`#[instrument]` only sees function parameters — #501).
-    let correlation = CorrelationId::new();
+    // Per-page identity derived from the run root BEFORE the span so the span
+    // can declare it (`#[instrument]` only sees function parameters — #501).
+    let page_correlation = root_correlation.child();
     scrape_with_config_inner(
         client,
         url,
@@ -97,7 +104,7 @@ pub async fn scrape_with_config(
         downloader,
         inspector,
         engine,
-        correlation,
+        page_correlation,
     )
     .await
 }
@@ -400,20 +407,34 @@ pub async fn scrape_multiple_with_limit(
         return Ok(Vec::new());
     }
 
+    // One run-root identity for the whole batch (#501): every
+    // `scrape_with_config` call derives its own child from it, so the trace
+    // is shared across the batch while each page span stays unique.
+    let root_correlation = CorrelationId::new();
+    info!(
+        correlation_id = %root_correlation,
+        trace_id = %root_correlation.trace_id(),
+        "scrape_multiple identity"
+    );
+
     info!(
         "🌐 Scraping {} URLs with concurrency limit {}",
         urls.len(),
         config.scraper_concurrency
     );
 
-    let results: Vec<Result<ScrapeOutcome>> = stream::iter(urls.to_vec())
-        .map(|url| {
-            let config = config.clone();
-            async move { scrape_with_config(client, &url, &config, downloader, None, None).await }
-        })
-        .buffer_unordered(config.scraper_concurrency)
-        .collect()
-        .await;
+    let results: Vec<Result<ScrapeOutcome>> =
+        stream::iter(urls.to_vec())
+            .map(|url| {
+                let config = config.clone();
+                let root = root_correlation.clone();
+                async move {
+                    scrape_with_config(client, &url, &config, downloader, None, None, &root).await
+                }
+            })
+            .buffer_unordered(config.scraper_concurrency)
+            .collect()
+            .await;
 
     let mut all_content = Vec::new();
     for result in results {

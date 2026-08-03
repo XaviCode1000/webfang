@@ -107,8 +107,17 @@ impl McpHandler {
             .as_deref()
             .map(|d| d as &dyn webfang_core::domain::ports::AssetDownloaderPort);
         let inspector = self.state.inspector.as_deref();
+        // An MCP tool call IS an operation (#501): mint the run-root identity
+        // at the handler entry; the use case derives the page child from it.
+        let root_correlation = webfang_core::domain::CorrelationId::new();
         match webfang_core::application::scraper_service::scrape_with_config(
-            client, &url, &config, dl, inspector, None,
+            client,
+            &url,
+            &config,
+            dl,
+            inspector,
+            None,
+            &root_correlation,
         )
         .await
         {

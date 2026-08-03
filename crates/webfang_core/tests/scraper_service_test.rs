@@ -5,7 +5,7 @@ use webfang_core::application::scraper_service::{
     detect_spa_content, extract_with_selector, scrape_multiple_with_limit, scrape_with_config,
     scrape_with_readability, MAX_INSTRUMENTED_BODY_SIZE, MIN_CONTENT_CHARS,
 };
-use webfang_core::domain::{DomInspectorPort, ExtractResult, SelectorErrorKind};
+use webfang_core::domain::{CorrelationId, DomInspectorPort, ExtractResult, SelectorErrorKind};
 use webfang_core::{ScraperConfig, ScraperError};
 
 // --- Shared mock HTTP client (tests/common/mock_http.rs, Item 2 Tier-2) ---
@@ -27,7 +27,8 @@ async fn test_scrape_with_config_invalid_url() {
         Err(HttpError::Connection("no route to host".into())),
     );
 
-    let result = scrape_with_config(&mock, &url, &config, None, None, None).await;
+    let root = CorrelationId::new();
+    let result = scrape_with_config(&mock, &url, &config, None, None, None, &root).await;
     assert!(result.is_err(), "connection error should propagate as Err");
 }
 
@@ -49,7 +50,8 @@ async fn test_scrape_with_config_returns_outcome() {
     let mock = MockHttpClient::new().with_ok_response(url.as_str(), html);
     let config = ScraperConfig::default();
 
-    let outcome = scrape_with_config(&mock, &url, &config, None, None, None)
+    let root = CorrelationId::new();
+    let outcome = scrape_with_config(&mock, &url, &config, None, None, None, &root)
         .await
         .expect("mock HTML should succeed");
     assert!(
