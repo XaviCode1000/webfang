@@ -6,7 +6,7 @@
 //! and sitemap XML parsing in the infrastructure layer (issue #442); both are
 //! re-exported here so existing import paths keep resolving.
 
-use tracing::{debug, info, instrument, span, warn, Level};
+use tracing::{debug, info, instrument, warn};
 use url::Url;
 
 use crate::application::url_filter::is_allowed;
@@ -86,9 +86,6 @@ pub async fn discover_urls_for_tui(
     base_url: &str,
     config: &CrawlerConfig,
 ) -> ScraperResult<Vec<Url>> {
-    let span = span!(Level::INFO, "discover_urls", base_url = base_url);
-    let _guard = span.enter();
-
     info!("Discovering URLs from {}", base_url);
 
     // If sitemap enabled, use sitemap (preferred)

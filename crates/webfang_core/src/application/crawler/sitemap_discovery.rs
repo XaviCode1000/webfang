@@ -5,7 +5,7 @@
 //! were extracted from `discovery.rs` (issue #442) to separate the sitemap
 //! infrastructure concern from DOM-link discovery.
 
-use tracing::{info, span, Level};
+use tracing::{info, instrument};
 use url::Url;
 
 use crate::application::url_filter::is_allowed;
@@ -46,14 +46,19 @@ use crate::infrastructure::crawler::{SitemapConfig, SitemapParser};
 /// # Ok(())
 /// # }
 /// ```
+#[instrument(
+    name = "crawl_with_sitemap",
+    skip(config),
+    fields(
+        base_url,
+        sitemap_url = ?sitemap_url
+    )
+)]
 pub async fn crawl_with_sitemap(
     base_url: &str,
     sitemap_url: Option<&str>,
     config: &CrawlerConfig,
 ) -> Result<Vec<DiscoveredUrl>, CrawlError> {
-    let span = span!(Level::INFO, "crawl_with_sitemap", base_url = base_url);
-    let _guard = span.enter();
-
     crawl_with_sitemap_internal(base_url, sitemap_url, config).await
 }
 

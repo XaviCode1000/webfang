@@ -11,7 +11,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, instrument, span, warn, Instrument, Level};
+use tracing::{debug, info, instrument, warn, Instrument};
 use wreq_util::Profile;
 
 use super::checkpoint::{
@@ -778,10 +778,23 @@ impl Default for EngineOptions {
 /// # Ok(())
 /// # }
 /// ```
+pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError> {
+    crawl_site_inner(config, CorrelationId::new()).await
+}
+
+/// Inner implementation of [`crawl_site`].
+///
+/// The `#[instrument]` span declares the run-root identity (`correlation_id`,
+/// `trace_id`) AT CREATION time (#501): FileTraceLayer snapshots span fields
+/// in `on_new_span`, so fields recorded later never reach the `--trace-file`
+/// JSONL. The instrumented span lifecycle is also async-safe — no `enter()`
+/// guard crosses an `.await` (#519).
 #[instrument(
     name = "crawl_site",
-    skip(config),
+    skip(config, correlation_id),
     fields(
+        correlation_id = %correlation_id,
+        trace_id = %correlation_id.trace_id(),
         seed_url = %config.seed_url,
         max_depth = config.max_depth,
         max_pages = config.max_pages,
@@ -789,19 +802,10 @@ impl Default for EngineOptions {
         concurrency = config.concurrency
     )
 )]
-pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError> {
-    let correlation_id = CorrelationId::new();
-    let span = span!(
-        Level::INFO,
-        "crawl_site",
-        correlation_id = %correlation_id,
-        trace_id = %correlation_id.trace_id(),
-        seed_url = %config.seed_url,
-        max_depth = config.max_depth,
-        max_pages = config.max_pages
-    );
-    let _guard = span.enter();
-
+async fn crawl_site_inner(
+    config: CrawlerConfig,
+    correlation_id: CorrelationId,
+) -> Result<CrawlResult, CrawlError> {
     info!(
         "Starting crawl from {} with max_depth={} max_pages={}",
         config.seed_url, config.max_depth, config.max_pages
@@ -860,10 +864,25 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
 /// # Ok(())
 /// # }
 /// ```
+pub async fn crawl_site_with_options(
+    config: CrawlerConfig,
+    options: EngineOptions,
+) -> Result<CrawlResult, CrawlError> {
+    crawl_site_with_options_inner(config, options, CorrelationId::new()).await
+}
+
+/// Inner implementation of [`crawl_site_with_options`].
+///
+/// The `#[instrument]` span declares the run-root identity (`correlation_id`,
+/// `trace_id`) AT CREATION time (#501): FileTraceLayer snapshots span fields
+/// in `on_new_span`. The instrumented span lifecycle is also async-safe — no
+/// `enter()` guard crosses an `.await` (#519).
 #[instrument(
     name = "crawl_site_with_options",
-    skip(config, options),
+    skip(config, options, correlation_id),
     fields(
+        correlation_id = %correlation_id,
+        trace_id = %correlation_id.trace_id(),
         seed_url = %config.seed_url,
         max_depth = config.max_depth,
         max_pages = config.max_pages,
@@ -872,22 +891,11 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
         ignore_robots = options.ignore_robots
     )
 )]
-pub async fn crawl_site_with_options(
+async fn crawl_site_with_options_inner(
     config: CrawlerConfig,
     options: EngineOptions,
+    correlation_id: CorrelationId,
 ) -> Result<CrawlResult, CrawlError> {
-    let correlation_id = CorrelationId::new();
-    let span = span!(
-        Level::INFO,
-        "crawl_site_with_options",
-        correlation_id = %correlation_id,
-        trace_id = %correlation_id.trace_id(),
-        seed_url = %config.seed_url,
-        max_depth = config.max_depth,
-        max_pages = config.max_pages
-    );
-    let _guard = span.enter();
-
     info!(
         "Starting crawl from {} with max_depth={} max_pages={} (checkpoint={}, session_pool={}, ignore_robots={})",
         config.seed_url,

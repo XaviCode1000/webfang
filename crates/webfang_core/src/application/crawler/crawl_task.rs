@@ -9,7 +9,7 @@
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-use tracing::{debug, span, warn, Level};
+use tracing::{debug, instrument, warn};
 use url::Url;
 
 use super::checkpoint::BannedDomain;
@@ -17,7 +17,7 @@ use super::crawl_task_ctx::CrawlTaskCtx;
 use super::ports::waf_challenge_message;
 use crate::application::pipeline::{ScrapedItem, StageOutcome};
 use crate::application::url_filter::is_allowed;
-use crate::domain::{CrawlError, CrawlErrorCategory, DiscoveredUrl};
+use crate::domain::{CorrelationId, CrawlError, CrawlErrorCategory, DiscoveredUrl};
 use crate::infrastructure::crawler::{is_internal_link, UrlSource};
 use crate::infrastructure::observability::log_scrape_error;
 
@@ -77,20 +77,36 @@ pub(crate) async fn run_crawl_task(
         },
     }
 
+    let page_correlation = ctx.correlation_id.child();
+    run_crawl_task_inner(ctx, discovered_url, page_correlation).await
+}
+
+/// Inner implementation of [`run_crawl_task`] — carries the per-page
+/// `crawl_page` span (#519).
+///
+/// The `#[instrument]` span declares the per-page identity (`correlation_id`,
+/// `trace_id`) AT CREATION time (#501): FileTraceLayer snapshots span fields
+/// in `on_new_span`, so fields recorded later never reach the `--trace-file`
+/// JSONL. The instrumented span lifecycle is also async-safe — no `enter()`
+/// guard crosses an `.await` (#519).
+#[instrument(
+    name = "crawl_page",
+    skip(ctx, page_correlation, discovered_url),
+    fields(
+        correlation_id = %page_correlation,
+        trace_id = %page_correlation.trace_id(),
+        url = %discovered_url.url,
+        depth = discovered_url.depth
+    )
+)]
+async fn run_crawl_task_inner(
+    ctx: Arc<CrawlTaskCtx>,
+    discovered_url: DiscoveredUrl,
+    page_correlation: CorrelationId,
+) -> Result<(), CrawlError> {
     let url_str = discovered_url.url.as_str().to_string();
     let url_depth = discovered_url.depth;
     let parent_url = discovered_url.url.clone();
-
-    let page_correlation = ctx.correlation_id.child();
-    let page_span = span!(
-        Level::DEBUG,
-        "crawl_page",
-        correlation_id = %page_correlation,
-        trace_id = %page_correlation.trace_id(),
-        url = %url_str,
-        depth = url_depth
-    );
-    let _page_guard = page_span.enter();
 
     let mut session_id = None;
     if let Some(ref pool) = ctx.session_pool {

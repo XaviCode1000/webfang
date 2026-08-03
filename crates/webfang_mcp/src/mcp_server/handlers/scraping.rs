@@ -156,13 +156,11 @@ impl McpHandler {
     #[tool(
         description = "Scrape multiple URLs with concurrency control. Failed URLs are logged but don't stop the batch."
     )]
+    #[instrument(skip(self), name = "mcp.scrape_batch", fields(url_count = params.urls.len()))]
     async fn scrape_batch(
         &self,
         Parameters(params): Parameters<ScrapeBatchParams>,
     ) -> Result<CallToolResult, McpError> {
-        let span = tracing::info_span!("mcp.scrape_batch", url_count = params.urls.len());
-        let _enter = span.enter();
-
         tracing::info!("starting batch scrape");
         let _permit = acquire_semaphore!(self, scraping);
 
@@ -296,13 +294,11 @@ impl McpHandler {
     )]
     // serde_json::to_string cannot fail for a serde_json::Value.
     #[allow(clippy::expect_used)]
+    #[instrument(skip(self), name = "mcp.crawl_with_sitemap", fields(url = %params.url))]
     async fn crawl_with_sitemap(
         &self,
         Parameters(params): Parameters<CrawlWithSitemapParams>,
     ) -> Result<CallToolResult, McpError> {
-        let span = tracing::info_span!("mcp.crawl_with_sitemap", url = %params.url);
-        let _enter = span.enter();
-
         tracing::info!("starting sitemap crawl");
         let _permit = acquire_semaphore!(self, scraping);
 
