@@ -212,11 +212,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Rustdoc (links + missing_docs)
-        run: cargo doc -p webfang_core -p webfang_ai --all-features --no-deps
+        run: cargo doc --workspace --all-features --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
       - name: Doctests
-        run: cargo test --doc -p webfang_core -p webfang_ai --all-features
+        run: cargo test --doc --workspace --all-features
 
   # ============================================================================
   # FEATURE MATRIX: cargo-hack checks each feature in isolation (Wave 4, #403).

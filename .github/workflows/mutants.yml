@@ -30,14 +30,11 @@ permissions:
 
 on:
   pull_request:
-    paths:
-      # Only PRs touching a gated hot path (must match .cargo/mutants.toml).
-      - crates/webfang_core/src/application/crawler/**
-      - crates/webfang_core/src/application/pipeline/**
-      - crates/webfang_core/src/extractor/**
-      - crates/webfang_core/src/infrastructure/bridge.rs
-      - crates/webfang_core/src/infrastructure/http/waf_engine.rs
-      - crates/webfang_core/src/infrastructure/network/**
+    # NO `paths:` filter here. The required check "cargo-mutants (PR diff)"
+    # must ALWAYS be reported, otherwise PRs that don't touch hot paths
+    # (docs, lints, CI) stay BLOCKED forever: GitHub treats a required check
+    # that never ran as pending. The job decides internally via paths-filter
+    # and reports SUCCESS when the diff has no gated hot-path changes.
   schedule:
     - cron: "0 3 * * 1"  # Mondays 03:00 UTC
   workflow_dispatch:
@@ -73,21 +70,41 @@ jobs:
         run: |
           git diff "origin/${{ github.base_ref }}"...HEAD > git.diff
 
+      # Always reported check: when the diff touches no gated hot path,
+      # the job short-circuits to SUCCESS instead of silently not running.
+      - name: Check for hot-path changes
+        id: hotpath
+        run: |
+          if grep -qE "^(crates/webfang_core/src/application/crawler/|crates/webfang_core/src/application/pipeline/|crates/webfang_core/src/extractor/|crates/webfang_core/src/infrastructure/bridge\.rs$|crates/webfang_core/src/infrastructure/http/waf_engine\.rs$|crates/webfang_core/src/infrastructure/network/)" git.diff; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip mutation testing (no hot-path changes)
+        if: steps.hotpath.outputs.changed == 'false'
+        run: echo "PR does not touch gated hot paths; reporting SUCCESS."
+
       - name: Install stable toolchain
+        if: steps.hotpath.outputs.changed == 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cmake
+        if: steps.hotpath.outputs.changed == 'true'
         run: sudo apt-get install -y cmake
 
       - name: Install cargo-mutants
+        if: steps.hotpath.outputs.changed == 'true'
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-mutants@27.1.0
 
       - name: Cache Rust artifacts
+        if: steps.hotpath.outputs.changed == 'true'
         uses: Swatinem/rust-cache@v2
 
       - name: Run mutation testing (PR diff)
+        if: steps.hotpath.outputs.changed == 'true'
         run: |
           cargo mutants -p webfang_core \
             --in-diff git.diff \
@@ -97,8 +114,8 @@ jobs:
             2>&1 | tee mutants-output.txt
 
       - name: Upload results
+        if: always() && steps.hotpath.outputs.changed == 'true'
         uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: mutants-pr
           path: mutants-output.txt

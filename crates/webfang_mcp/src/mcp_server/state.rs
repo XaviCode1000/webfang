@@ -74,13 +74,21 @@ pub struct McpState {
 /// Semaphore instances for each tool category.
 #[derive(Debug)]
 pub struct CategorySemaphores {
+    /// Semaphore limiting concurrent AI tool calls
     pub ai: Arc<Semaphore>,
+    /// Semaphore limiting concurrent scraping tool calls
     pub scraping: Arc<Semaphore>,
+    /// Semaphore limiting concurrent export tool calls
     pub export: Arc<Semaphore>,
+    /// Semaphore limiting concurrent Obsidian tool calls
     pub obsidian: Arc<Semaphore>,
+    /// Semaphore limiting concurrent content processing tool calls
     pub content: Arc<Semaphore>,
+    /// Semaphore limiting concurrent URL utility tool calls
     pub url_utils: Arc<Semaphore>,
+    /// Semaphore limiting concurrent security & diagnostics tool calls
     pub security: Arc<Semaphore>,
+    /// Semaphore limiting concurrent asset download tool calls
     pub assets: Arc<Semaphore>,
 }
 
@@ -158,6 +166,10 @@ impl McpState {
 }
 
 impl CategorySemaphores {
+    /// Build semaphores from per-category concurrency limits.
+    ///
+    /// Each permit count is clamped to a minimum of one so that a zero-permit
+    /// limit cannot deadlock concurrent tool calls.
     pub fn from_limits(limits: &CategoryLimits) -> Self {
         // Clamp to >= 1 to prevent deadlock from zero-permit semaphores
         let clamp = |v: usize| v.max(1);

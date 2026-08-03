@@ -13,7 +13,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use webfang::adapters::tui;
+//! use webfang_tui::tui;
 //! use url::Url;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -70,9 +70,11 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum TuiError {
     #[error("Terminal setup failed: {0}")]
+    /// Terminal backend initialization failed
     TerminalSetup(#[from] std::io::Error),
 
     #[error("User interrupted")]
+    /// The user interrupted the TUI session
     Interrupted,
 }
 

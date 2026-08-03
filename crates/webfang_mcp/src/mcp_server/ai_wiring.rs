@@ -2,7 +2,8 @@
 //!
 //! Constructs the concrete vault-search ports — the ONNX embedding adapter and
 //! the Markdown chunker — behind the `ai` feature and injects them into the
-//! [`Container`]. The SQLite note repository is wired ONLY when the consumer
+//! [`Container`](webfang_core::application::container::Container). The SQLite
+//! note repository is wired ONLY when the consumer
 //! explicitly enables the `persistence` feature (`--features ai,persistence`),
 //! keeping the `ai` feature free of database dependencies.
 //!
@@ -30,7 +31,8 @@ use webfang_core::domain::embedding_port::EmbeddingPort;
 /// — assembled from the semantic cleaner's shared inference pool + tokenizer, so
 /// the ONNX model is loaded exactly once — a
 /// [`MarkdownChunker`](webfang_ai::MarkdownChunker), and a SQLite-backed
-/// [`NoteRepository`]. Embedding + chunker assembly is infallible (the components
+/// [`NoteRepository`](webfang_core::domain::note_repository::NoteRepository).
+/// Embedding + chunker assembly is infallible (the components
 /// are already valid); only the note repository can fail, in which case the
 /// embedding port and chunker remain wired and vault search degrades to an honest
 /// "not available" error at call time.

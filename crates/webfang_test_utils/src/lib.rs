@@ -1,3 +1,6 @@
+#![deny(missing_docs)]
+#![deny(clippy::missing_errors_doc)]
+#![deny(clippy::missing_panics_doc)]
 //! Shared test utilities for the webfang workspace.
 //!
 //! Provides RAII environment isolation, output redaction for deterministic
@@ -93,6 +96,12 @@ pub fn redact_temp_path(dir: &Path, text: &str) -> String {
 /// the temp dir, ISO-8601 log timestamps, dynamic wiremock ports, ANSI color
 /// escape sequences, environment-specific error suffixes, and source line
 /// numbers in tracing spans.
+///
+/// # Panics
+///
+/// Panics if any of the built-in redaction regular expressions fail to
+/// compile. They are static literals, so this only happens if a regression
+/// corrupts the pattern.
 #[must_use]
 pub fn redact_nondeterministic(dir: &Path, text: &str) -> String {
     let text = redact_temp_path(dir, text);
@@ -124,6 +133,11 @@ pub fn redact_nondeterministic(dir: &Path, text: &str) -> String {
 /// `webfang` is built by the `webfang_cli` crate (a workspace sibling),
 /// so `CARGO_BIN_EXE_webfang` is only set for the crate that owns the binary.
 /// This function falls back to building it via `cargo build`.
+///
+/// # Panics
+///
+/// Panics if the workspace root cannot be resolved from the crate manifest
+/// directory, if `cargo` cannot be spawned, or if the build fails.
 #[must_use]
 pub fn webfang_path() -> PathBuf {
     if let Ok(p) = env::var("CARGO_BIN_EXE_webfang") {

@@ -18,7 +18,7 @@
 //! ```no_run
 //! # use anyhow::Result;
 //! # async fn example() -> Result<()> {
-//! let mut tui = webfang::adapters::tui::Tui::new()?;
+//! let mut tui = webfang_tui::tui::Tui::new()?;
 //! tui.enter()?;
 //! // ... event loop managed by App ...
 //! tui.exit()?;

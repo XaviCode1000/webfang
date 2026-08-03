@@ -12,9 +12,9 @@
 //! # Usage
 //!
 //! ```no_run
-//! use webfang::adapters::tui::app::App;
-//! use webfang::adapters::tui::modal::HelpModal;
-//! use webfang::adapters::tui::component::AppMode;
+//! use webfang_tui::tui::app::App;
+//! use webfang_tui::tui::modal::HelpModal;
+//! use webfang_tui::tui::component::AppMode;
 //!
 //! # async fn example() -> anyhow::Result<()> {
 //! let help = HelpModal::new(

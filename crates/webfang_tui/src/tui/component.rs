@@ -30,6 +30,10 @@ pub trait Component {
     ///
     /// Components should store this sender to emit actions (e.g., errors).
     /// Default implementation is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the action handler cannot be registered.
     fn register_action_handler(&mut self, tx: UnboundedSender<Action>) -> Result<()> {
         let _ = tx;
         Ok(())
@@ -39,6 +43,10 @@ pub trait Component {
     ///
     /// Called once after all components have registered their action handlers.
     /// Default implementation is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the component cannot be initialized.
     fn init(&mut self, area: Size) -> Result<()> {
         let _ = area;
         Ok(())
@@ -47,6 +55,10 @@ pub trait Component {
     /// Handle an optional terminal event, returning an action if the event was consumed.
     ///
     /// Default implementation dispatches to `handle_key_event` or `handle_mouse_event`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the event cannot be handled.
     fn handle_events(&mut self, event: Option<Event>) -> Result<Option<Action>> {
         match event {
             Some(Event::Key(key)) => self.handle_key_event(key),
@@ -58,6 +70,10 @@ pub trait Component {
     /// Handle a keyboard event, returning an action if the key was consumed.
     ///
     /// Default implementation ignores the event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key event cannot be handled.
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
         let _ = key;
         Ok(None)
@@ -66,6 +82,10 @@ pub trait Component {
     /// Handle a mouse event, returning an action if the event was consumed.
     ///
     /// Default implementation ignores the event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the mouse event cannot be handled.
     fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
         let _ = mouse;
         Ok(None)
@@ -74,9 +94,17 @@ pub trait Component {
     /// Update the component's state in response to an action.
     ///
     /// Returns an optional action that should be dispatched to other components.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the state cannot be updated.
     fn update(&mut self, action: Action) -> Result<Option<Action>>;
 
     /// Render the component to the given frame and area.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the component cannot be rendered.
     fn draw(&mut self, f: &mut Frame, rect: Rect) -> Result<()>;
 }
 
@@ -93,12 +121,15 @@ pub enum AppMode {
 
 /// Header bar showing project name and current mode.
 pub struct Header {
+    /// Current application mode
     pub mode: AppMode,
+    /// Optional transient status message shown next to the mode
     pub status_message: Option<String>,
     action_tx: Option<UnboundedSender<Action>>,
 }
 
 impl Header {
+    /// Create a header for the given application mode.
     pub fn new(mode: AppMode) -> Self {
         Self {
             mode,
@@ -107,6 +138,7 @@ impl Header {
         }
     }
 
+    /// Set the status message shown in the header.
     pub fn with_status(mut self, msg: impl Into<String>) -> Self {
         self.status_message = Some(msg.into());
         self
@@ -161,11 +193,13 @@ impl Component for Header {
 
 /// Status bar showing keyboard shortcuts and metrics.
 pub struct StatusBar {
+    /// Items rendered as (key, description) pairs
     pub items: Vec<(String, String)>, // (key, description)
     action_tx: Option<UnboundedSender<Action>>,
 }
 
 impl StatusBar {
+    /// Create an empty status bar.
     pub fn new() -> Self {
         Self {
             items: Vec::new(),
@@ -173,6 +207,7 @@ impl StatusBar {
         }
     }
 
+    /// Set the items shown in the status bar.
     pub fn with_items(mut self, items: Vec<(&str, &str)>) -> Self {
         self.items = items
             .into_iter()

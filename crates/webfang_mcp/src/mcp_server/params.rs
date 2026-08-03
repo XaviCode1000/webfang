@@ -5,12 +5,14 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+/// Parameters for the `scrape_url` tool.
 #[derive(Deserialize, JsonSchema, Debug)]
 pub struct ScrapeUrlParams {
     /// URL to scrape (must start with http:// or https://)
     pub url: String,
 }
 
+/// Parameters for the `scrape_with_options` tool.
 #[derive(Deserialize, JsonSchema, Debug)]
 pub struct ScrapeWithOptionsParams {
     /// URL to scrape
@@ -30,6 +32,7 @@ pub struct ScrapeWithOptionsParams {
     pub selector: Option<String>,
 }
 
+/// Parameters for the `scrape_batch` tool.
 #[derive(Deserialize, JsonSchema, Debug)]
 pub struct ScrapeBatchParams {
     /// List of URLs to scrape
@@ -38,6 +41,7 @@ pub struct ScrapeBatchParams {
     pub concurrency: Option<usize>,
 }
 
+/// Parameters for the `crawl_site` tool.
 #[derive(Deserialize, JsonSchema, Debug)]
 pub struct CrawlSiteParams {
     /// Base URL to crawl
@@ -48,6 +52,7 @@ pub struct CrawlSiteParams {
     pub max_pages: Option<u32>,
 }
 
+/// Parameters for the `crawl_with_sitemap` tool.
 #[derive(Deserialize, JsonSchema, Debug)]
 pub struct CrawlWithSitemapParams {
     /// Base URL of the website
@@ -56,30 +61,35 @@ pub struct CrawlWithSitemapParams {
     pub sitemap_url: Option<String>,
 }
 
+/// Parameters for the `discover_urls` tool.
 #[derive(Deserialize, JsonSchema, Debug)]
 pub struct DiscoverUrlsParams {
     /// URL to extract links from
     pub url: String,
 }
 
+/// Parameters for the `detect_spa` tool.
 #[derive(Deserialize, JsonSchema, Debug)]
 pub struct DetectSpaParams {
     /// URL to check for SPA content
     pub url: String,
 }
 
+/// Parameters for the `clean_html` tool.
 #[derive(Deserialize, JsonSchema, Debug)]
 pub struct CleanHtmlParams {
     /// Raw HTML to clean
     pub html: String,
 }
 
+/// Parameters for the `convert_html_to_markdown` tool.
 #[derive(Deserialize, JsonSchema, Debug)]
 pub struct HtmlToMarkdownParams {
     /// HTML to convert
     pub html: String,
 }
 
+/// Parameters for the `extract_links` tool.
 #[derive(Deserialize, JsonSchema, Debug)]
 pub struct ExtractLinksParams {
     /// HTML to extract links from
@@ -142,6 +152,7 @@ pub(crate) struct DetectWafParams {
     pub html: String,
 }
 
+/// Parameters for the `export_file` tool.
 #[derive(Deserialize, JsonSchema, Debug)]
 pub struct ExportFileParams {
     /// Output directory path
@@ -154,6 +165,7 @@ pub struct ExportFileParams {
     pub content: String,
 }
 
+/// Parameters for the `detect_obsidian_vault` tool.
 #[derive(Deserialize, JsonSchema, Debug)]
 pub struct DetectVaultParams {
     /// Explicit vault path (optional)
