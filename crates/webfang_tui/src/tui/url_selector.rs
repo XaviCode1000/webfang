@@ -400,7 +400,7 @@ impl Component for UrlSelectorState {
 ///
 /// ```no_run
 /// use url::Url;
-/// use webfang::adapters::tui;
+/// use webfang_tui::tui;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let urls = vec![

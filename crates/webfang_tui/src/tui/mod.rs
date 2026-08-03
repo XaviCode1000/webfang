@@ -13,7 +13,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use webfang::adapters::tui;
+//! use webfang_tui::tui;
 //! use url::Url;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {

@@ -69,7 +69,7 @@ pub enum AppResult {
 /// # Example
 ///
 /// ```no_run
-/// use webfang::adapters::tui::{App, AppMode, Header, StatusBar, Component};
+/// use webfang_tui::tui::{App, AppMode, Header, StatusBar, Component};
 ///
 /// # async fn example() -> anyhow::Result<()> {
 /// let mut app = App::new(AppMode::Selector)?

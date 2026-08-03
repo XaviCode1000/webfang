@@ -16,7 +16,7 @@
 //! ## Example Integration
 //!
 //! ```no_run
-//! use webfang::adapters::tui::{App, AppMode, Header, ProgressWidget};
+//! use webfang_tui::tui::{App, AppMode, Header, ProgressWidget};
 //! use url::Url;
 //!
 //! # async fn example() -> anyhow::Result<()> {
@@ -105,6 +105,8 @@ impl ProgressIcons {
     ///
     /// # Example
     /// ```no_run
+    /// use webfang_tui::tui::ProgressIcons;
+    ///
     /// let mut icons = ProgressIcons::new();
     /// icons.set_frame_interval(std::time::Duration::from_millis(50));
     /// ```
