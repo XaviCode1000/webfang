@@ -6067,7 +6067,6 @@ dependencies = [
 name = "webfang_ai"
 version = "2.0.0"
 dependencies = [
- "anyhow",
  "crossbeam-channel",
  "futures",
  "hf-hub",
@@ -6098,11 +6097,9 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-tree",
  "url",
  "webfang_ai",
  "webfang_core",
- "webfang_mcp",
  "webfang_tui",
 ]
 
@@ -6211,7 +6208,6 @@ name = "webfang_test_utils"
 version = "2.0.0"
 dependencies = [
  "regex",
- "tempfile",
 ]
 
 [[package]]

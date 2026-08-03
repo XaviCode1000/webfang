@@ -9,7 +9,6 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = { version = "0.4" }
-tokio = { version = "1", features = ["rt"] }
 url = "2"
 
 [dependencies.webfang]

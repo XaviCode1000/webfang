@@ -1,0 +1,5 @@
+{
+  "description": "Quality ratchet baselines used by the code-quality CI gate (issue #516). Update DOWNWARD only, never upward, except to correct a measurement error.",
+  "updated": "2026-08-03",
+  "duplicated_lines_rust": 6568
+}
