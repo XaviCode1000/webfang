@@ -34,6 +34,7 @@ pathdiff = "0.2"
 
 # Async runtime
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 
 # HTTP & Networking
 wreq = { workspace = true }

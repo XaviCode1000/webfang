@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use sysinfo::System;
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use super::DownloadError;
@@ -32,18 +33,45 @@ const WARNING_THRESHOLD: u8 = 80;
 const CRITICAL_THRESHOLD: u8 = 90;
 
 /// Gates concurrent heavyweight downloader instances based on system RAM.
+///
+/// Holds a [`CancellationToken`] (#509) so a caller blocked in
+/// [`acquire`](Self::acquire) can be woken on engine shutdown instead of
+/// hanging on the semaphore forever. [`new`](Self::new) uses a fresh token
+/// that never fires (pre-#509 behavior); the crawl engine injects its own
+/// token via [`with_cancel_token`](Self::with_cancel_token).
 pub struct ResourceGovernor {
     semaphore: Arc<Semaphore>,
+    cancel: CancellationToken,
 }
 
 impl ResourceGovernor {
     /// Create a governor calibrated to current system RAM.
+    ///
+    /// The embedded cancellation token never fires; use
+    /// [`with_cancel_token`](Self::with_cancel_token) to wire shutdown.
     pub fn new() -> Self {
-        let max_permits = Self::compute_max_instances();
+        Self::with_cancel_token(CancellationToken::new())
+    }
+
+    /// Create a governor calibrated to current system RAM whose
+    /// [`acquire`](Self::acquire) aborts when `cancel` fires (#509).
+    pub fn with_cancel_token(cancel: CancellationToken) -> Self {
+        Self::with_max_instances(Self::compute_max_instances(), cancel)
+    }
+
+    /// Create a governor with an explicit permit budget.
+    ///
+    /// Calibration seam behind [`new`](Self::new) /
+    /// [`with_cancel_token`](Self::with_cancel_token): lets constrained
+    /// environments (containers) and tests set the budget directly instead
+    /// of deriving it from system RAM.
+    pub fn with_max_instances(max_permits: usize, cancel: CancellationToken) -> Self {
+        let max_permits = max_permits.max(1);
         debug!("ResourceGovernor: max_permits={max_permits}");
 
         Self {
             semaphore: Arc::new(Semaphore::new(max_permits)),
+            cancel,
         }
     }
 
@@ -78,12 +106,26 @@ impl ResourceGovernor {
     ///
     /// Returns a [`tokio::sync::OwnedSemaphorePermit`] (`'static`) so callers can hold
     /// it across async boundaries without tying it to the governor's lifetime.
+    ///
+    /// The wait aborts with [`DownloadError::Cancelled`] if the governor's
+    /// cancellation token fires while blocked (#509). Dropping the pending
+    /// acquire consumes no permit, so a cancelled wait cannot leak one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DownloadError::Cancelled`] on cancellation and
+    /// [`DownloadError::Internal`] if the semaphore was closed.
     pub async fn acquire(&self) -> Result<tokio::sync::OwnedSemaphorePermit, DownloadError> {
         let arc = Arc::clone(&self.semaphore);
 
-        arc.acquire_owned()
-            .await
-            .map_err(|_| DownloadError::Internal("resource governor semaphore closed".to_string()))
+        tokio::select! {
+            result = arc.acquire_owned() => {
+                result.map_err(|_| {
+                    DownloadError::Internal("resource governor semaphore closed".to_string())
+                })
+            },
+            () = self.cancel.cancelled() => Err(DownloadError::Cancelled),
+        }
     }
 
     /// Current number of available permits.
@@ -147,7 +189,13 @@ impl From<ResourceError> for DownloadError {
 mod tests {
     use super::*;
 
+    use std::time::Duration;
+
+    // The sysinfo-backed tests below read /proc via `sysconf`, which Miri
+    // cannot execute — gate them there. The semaphore/cancellation tests use
+    // the explicit-budget seam (`with_max_instances`) and DO run under Miri.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_governor_creation() {
         let gov = ResourceGovernor::new();
         // On any real machine we should have at least 1 permit
@@ -155,6 +203,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_check_resources_returns_ok() {
         let gov = ResourceGovernor::new();
         // On CI or dev machines RAM usage is typically well below 80%
@@ -163,12 +212,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_total_ram_nonzero() {
         let bytes = ResourceGovernor::total_ram_bytes();
         assert!(bytes > 0, "total RAM should be > 0 on any running system");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_usage_percent_range() {
         let pct = ResourceGovernor::ram_usage_percent();
         assert!(pct <= 100);
@@ -185,5 +236,68 @@ mod tests {
         let res_err = ResourceError::Insufficient("test".into());
         let dl_err: DownloadError = res_err.into();
         assert!(matches!(dl_err, DownloadError::Internal(_)));
+    }
+
+    // ========================================================================
+    // RAII permit tests (#509) — prove no semaphore permit leaks
+    // ========================================================================
+
+    #[tokio::test]
+    async fn acquire_releases_permit_on_drop() {
+        let gov = ResourceGovernor::with_max_instances(2, CancellationToken::new());
+        assert_eq!(gov.available_permits(), 2);
+
+        let permit = gov.acquire().await.expect("first acquire must succeed");
+        assert_eq!(gov.available_permits(), 1);
+
+        drop(permit);
+        assert_eq!(
+            gov.available_permits(),
+            2,
+            "dropping the permit must return it to the pool"
+        );
+    }
+
+    #[tokio::test]
+    async fn acquire_grants_permit_when_token_idle() {
+        let gov = ResourceGovernor::with_max_instances(1, CancellationToken::new());
+
+        let permit = tokio::time::timeout(Duration::from_secs(1), gov.acquire())
+            .await
+            .expect("acquire must not hang when permits are available");
+        assert!(permit.is_ok());
+    }
+
+    // ========================================================================
+    // Cancellation tests (#509)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn acquire_returns_cancelled_when_blocked_and_token_fires() {
+        let cancel = CancellationToken::new();
+        let gov = std::sync::Arc::new(ResourceGovernor::with_max_instances(1, cancel.clone()));
+
+        // Take the single permit so the next acquire must block.
+        let held = gov.acquire().await.expect("single permit must be granted");
+        assert_eq!(gov.available_permits(), 0);
+
+        let waiter = {
+            let gov = std::sync::Arc::clone(&gov);
+            tokio::spawn(async move { gov.acquire().await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.cancel();
+
+        let result = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("cancelled acquire must return within the bound");
+        assert!(matches!(result, Ok(Err(DownloadError::Cancelled))));
+
+        // The cancelled wait must not have consumed a permit.
+        assert_eq!(gov.available_permits(), 0);
+
+        // RAII: releasing the held permit makes it visible again.
+        drop(held);
+        assert_eq!(gov.available_permits(), 1);
     }
 }

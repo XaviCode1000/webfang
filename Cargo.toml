@@ -30,6 +30,7 @@ webfang_test_utils = { path = "crates/webfang_test_utils" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 
 # HTTP & Networking
 wreq = { version = "6.0.0-rc.28", features = ["gzip", "brotli", "stream", "json", "cookies", "prefix-symbols"] }

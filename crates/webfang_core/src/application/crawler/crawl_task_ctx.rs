@@ -8,6 +8,8 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::{Arc, RwLock};
 
+use tokio_util::sync::CancellationToken;
+
 use crate::application::crawler::checkpoint::BannedDomain;
 use crate::application::crawler::ports::{
     ContentPipeline, CrawlResultCollector, LinkExtractorPort, PageFetcher, RobotsChecker,
@@ -31,6 +33,9 @@ pub struct CrawlTaskCtx {
     pub(crate) correlation_id: CorrelationId,
     pub(crate) queue: Arc<UrlQueue>,
     pub(crate) rate_limiter: SharedRateLimiter,
+    /// Engine-wide cancellation token (#509) — fired on shutdown so tasks
+    /// blocked on rate-limit or resource waits abort promptly.
+    pub(crate) cancel_token: CancellationToken,
     pub(crate) session_pool: Option<Arc<dyn SessionPort>>,
     pub(crate) ignore_robots: bool,
     pub(crate) robots_checker: Arc<dyn RobotsChecker>,

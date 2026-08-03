@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, span, warn, Instrument, Level};
 use wreq_util::Profile;
 
@@ -38,6 +39,13 @@ use crate::infrastructure::network::session_pool::{DomainSessionPool, SessionPoo
 
 /// Shared shutdown signal — set to `true` when SIGINT/SIGTERM received.
 type ShutdownSignal = Arc<AtomicBool>;
+
+/// Grace added to the longest legitimate worker wait when bounding joins (#509).
+///
+/// The longest legitimate wait is a fetch (`config.timeout_secs`) or a
+/// rate-limit token (`config.delay_ms`); anything beyond that plus this grace
+/// is treated as a hung worker.
+const SHUTDOWN_GRACE_SECS: u64 = 10;
 
 /// Crawl engine — orchestrates URL fetching with concurrency control
 ///
@@ -73,6 +81,9 @@ pub struct Engine {
     pages_crawled: Arc<AtomicU64>,
     /// Shared shutdown signal for graceful termination.
     shutdown: ShutdownSignal,
+    /// Engine-wide cancellation token (#509) — fired on shutdown so workers
+    /// blocked on rate-limit or resource-governor waits abort promptly.
+    cancel_token: CancellationToken,
     /// JavaScript rendering strategy.
     js_strategy: JsStrategy,
     /// Optional fetch router for hybrid/full JS rendering.
@@ -139,6 +150,7 @@ impl Engine {
             session_pool: None,
             pages_crawled,
             shutdown,
+            cancel_token: CancellationToken::new(),
             js_strategy: JsStrategy::default(),
             fetch_router: None,
             cookie_bridge: Arc::new(RwLock::new(CookieBridge::new())),
@@ -229,6 +241,9 @@ impl Engine {
             // #503: the Engine path keeps today's rotating default behavior —
             // `CrawlerConfig.user_agent` is a separate dead field, out of scope.
             None,
+            // #509: the Full strategy's governor shares the engine token so
+            // permit waits abort on shutdown.
+            self.cancel_token.clone(),
         )?;
         self.js_strategy = strategy;
         self.fetch_router = Some(router);
@@ -332,7 +347,13 @@ impl Engine {
     }
 
     /// Spawn a signal handler that sets the shutdown flag on SIGINT/SIGTERM.
-    fn spawn_signal_handler(shutdown: ShutdownSignal) -> tokio::task::JoinHandle<()> {
+    ///
+    /// Also fires the cancellation token (#509) so workers blocked on
+    /// rate-limit or resource-governor waits abort instead of hanging.
+    fn spawn_signal_handler(
+        shutdown: ShutdownSignal,
+        cancel: CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let ctrl_c = tokio::signal::ctrl_c();
             #[cfg(unix)]
@@ -356,7 +377,18 @@ impl Engine {
                 info!("Received interrupt — initiating graceful shutdown");
             }
             shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+            cancel.cancel();
         })
+    }
+
+    /// Clone of the engine's cancellation token (#509).
+    ///
+    /// Fire it to abort workers blocked on rate-limit or resource-governor
+    /// waits and unblock [`run`](Self::run)'s drain — the same effect as a
+    /// signal-driven shutdown, without an OS signal.
+    #[must_use]
+    pub fn cancel_handle(&self) -> CancellationToken {
+        self.cancel_token.clone()
     }
 
     /// Run the crawl loop until completion
@@ -366,7 +398,10 @@ impl Engine {
         let config_clone = Arc::clone(&self.config);
 
         // Spawn signal handler for graceful shutdown
-        self.signal_handle = Some(Self::spawn_signal_handler(Arc::clone(&self.shutdown)));
+        self.signal_handle = Some(Self::spawn_signal_handler(
+            Arc::clone(&self.shutdown),
+            self.cancel_token.clone(),
+        ));
 
         // Load checkpoint state if resuming
         if let Some(ref cp) = self.checkpoint_state {
@@ -396,6 +431,7 @@ impl Engine {
             correlation_id: self.correlation_id.clone(),
             queue: self.scheduler.queue(),
             rate_limiter: self.rate_limiter.clone(),
+            cancel_token: self.cancel_token.clone(),
             session_pool: self
                 .session_pool
                 .as_ref()
@@ -427,11 +463,23 @@ impl Engine {
         // Progress tracking start (issue #356 Fase 4)
         let start = std::time::Instant::now();
 
+        // Bound every worker wait (#509): the longest legitimate wait is a
+        // fetch (timeout_secs) or a rate-limit token (delay_ms), plus grace.
+        let worker_wait_bound = Duration::from_secs(
+            config_clone
+                .timeout_secs
+                .max(config_clone.delay_ms / 1000)
+                .saturating_add(SHUTDOWN_GRACE_SECS),
+        );
+
         // Main crawl loop
         while self.scheduler.has_pending_work() || !tasks.is_empty() {
             // Check shutdown signal
             if self.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
                 info!("Shutdown signal received — saving checkpoint and exiting");
+                // Unblock workers parked on rate-limit/governor waits (#509)
+                // before saving state; cancel() is idempotent.
+                self.cancel_token.cancel();
                 self.save_checkpoint().await;
                 break;
             }
@@ -486,18 +534,34 @@ impl Engine {
                 );
             }
 
-            // If no tasks can be spawned and work remains, wait for one task
+            // If no tasks can be spawned and work remains, wait for one task.
+            // The wait is bounded (#509): on expiry we re-check engine state
+            // instead of hanging on a wedged worker.
             if !self.scheduler.can_spawn(tasks.len()) && self.scheduler.has_pending_work() {
-                if let Some(result) = tasks.join_next().await {
-                    handle_crawl_result(result, &self.error_count, &self.error_breakdown);
+                match tokio::time::timeout(worker_wait_bound, tasks.join_next()).await {
+                    Ok(Some(result)) => {
+                        handle_crawl_result(result, &self.error_count, &self.error_breakdown);
+                    },
+                    Ok(None) => {},
+                    Err(_elapsed) => {
+                        warn!(
+                            bound_secs = worker_wait_bound.as_secs(),
+                            "worker wait exceeded bound — re-checking engine state"
+                        );
+                    },
                 }
             }
         }
 
-        // Wait for remaining tasks
-        while let Some(result) = tasks.join_next().await {
-            handle_crawl_result(result, &self.error_count, &self.error_breakdown);
-        }
+        // Wait for remaining tasks — bounded, then abort stragglers, so a
+        // shutdown can never hang on a blocked worker (#509).
+        Self::drain_tasks(
+            &mut tasks,
+            &self.error_count,
+            &self.error_breakdown,
+            worker_wait_bound,
+        )
+        .await;
 
         // Drop task_ctx so all cloned Senders inside CrawlTaskCtx are released.
         // Without this, collect() hangs forever — the mpsc channel stays open
@@ -565,8 +629,46 @@ impl Engine {
         ))
     }
 
+    /// Drain spawned tasks with a bounded wait, aborting any stragglers so a
+    /// shutdown can never hang on a blocked worker (#509).
+    ///
+    /// Graceful path: cancellation fires upstream, workers parked on
+    /// rate-limit/governor waits return [`CrawlError::Cancelled`] promptly,
+    /// and the drain finishes well within `bound`. `bound` only bites when a
+    /// worker is genuinely wedged (e.g. a fetch ignoring its own timeout).
+    async fn drain_tasks(
+        tasks: &mut tokio::task::JoinSet<Result<(), CrawlError>>,
+        error_count: &Arc<AtomicUsize>,
+        error_breakdown: &Arc<[AtomicUsize; 8]>,
+        bound: Duration,
+    ) {
+        let drained = tokio::time::timeout(bound, async {
+            while let Some(result) = tasks.join_next().await {
+                handle_crawl_result(result, error_count, error_breakdown);
+            }
+        })
+        .await
+        .is_ok();
+
+        if !drained {
+            let remaining = tasks.len();
+            warn!(
+                remaining_tasks = remaining,
+                bound_secs = bound.as_secs(),
+                "task drain timed out — aborting remaining workers"
+            );
+            tasks.abort_all();
+            while let Some(result) = tasks.join_next().await {
+                handle_crawl_result(result, error_count, error_breakdown);
+            }
+        }
+    }
+
     /// Graceful shutdown — drop the collector sender, receiver drains remaining items
     pub async fn shutdown(mut self) {
+        // Unblock any worker still parked on a rate-limit/governor wait (#509).
+        self.cancel_token.cancel();
+
         // Abort signal handler to prevent the runtime from hanging
         if let Some(handle) = self.signal_handle.take() {
             handle.abort();
@@ -809,4 +911,92 @@ pub async fn crawl_site_with_options(
     let result = engine.run().await;
     engine.shutdown().await;
     result
+}
+
+#[cfg(test)]
+#[cfg(not(miri))] // wiremock + wreq use boring-sys2 FFI (unsupported by Miri)
+mod tests {
+    use super::*;
+    use url::Url;
+    use wiremock::matchers::path;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Shutdown while a worker waits: cancellation must abort the parked
+    /// worker and `run()` must return within seconds, not after the 60s
+    /// rate-limit refill (#509 acceptance).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancellation_aborts_rate_blocked_worker_and_run_returns_within_bound() {
+        let server = MockServer::start().await;
+        let port = server.address().port();
+        Mock::given(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                "<html><body><a href=\"http://127.0.0.1:{port}/linked\">next</a></body></html>"
+            )))
+            .mount(&server)
+            .await;
+        Mock::given(path("/linked"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("<html><body>linked</body></html>"),
+            )
+            .mount(&server)
+            .await;
+
+        let seed = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed)
+            .max_depth(1)
+            .max_pages(10)
+            .concurrency(1)
+            .delay_ms(60_000) // 60s refill: without cancellation run() hangs ~1 min
+            .timeout_secs(5)
+            .ignore_robots(true)
+            .build();
+
+        let mut engine = Engine::new(config, true).expect("engine must build");
+        let cancel = engine.cancel_handle();
+
+        let run_handle = tokio::spawn(async move { engine.run().await });
+
+        // Wait until the seed fetch lands; its discovered /linked task is then
+        // dispatched into the rate-limit wait (burst already consumed). Even if
+        // cancellation wins that race, the task still returns Cancelled without
+        // fetching — both orderings must satisfy the assertions below.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let seed_received = server
+                .received_requests()
+                .await
+                .map(|reqs| reqs.iter().any(|r| r.url.path() == "/"))
+                .unwrap_or(false);
+            if seed_received {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "seed request never arrived"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        cancel.cancel();
+
+        let result = tokio::time::timeout(Duration::from_secs(10), run_handle)
+            .await
+            .expect("run() must return within the bound after cancellation")
+            .expect("spawned run task must not panic");
+        let crawl = result.expect("cancelled crawl must still return a result");
+
+        assert_eq!(crawl.total_pages, 1, "only the seed was fetched");
+        assert_eq!(crawl.errors, 0, "cancelled tasks are control signals");
+
+        let requested_linked = server
+            .received_requests()
+            .await
+            .map(|reqs| reqs.iter().any(|r| r.url.path() == "/linked"))
+            .unwrap_or(true);
+        assert!(
+            !requested_linked,
+            "rate-blocked worker must be cancelled before fetching"
+        );
+    }
 }

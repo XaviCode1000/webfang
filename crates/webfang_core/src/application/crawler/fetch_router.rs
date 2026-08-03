@@ -11,6 +11,7 @@ use url::Url;
 use wreq_util::Profile;
 
 use futures::future::BoxFuture;
+use tokio_util::sync::CancellationToken;
 
 use crate::domain::JsStrategy;
 use crate::infrastructure::downloader::chromiumoxide_downloader::ChromiumoxideDownloader;
@@ -53,7 +54,10 @@ pub enum FetchRouter {
 /// cookie injection; `ignore_waf` bypasses WAF classification on the hybrid
 /// spa-detection path (REQ-WAF-07); `user_agent` pins the User-Agent on the
 /// wreq layer (Static and Hybrid L1) so `--user-agent` reaches the wire —
-/// `None` keeps the emulation-default + 403-rotation behavior (#503).
+/// `None` keeps the emulation-default + 403-rotation behavior (#503);
+/// `cancel_token` is injected into the Full strategy's
+/// [`ResourceGovernor`] so permit waits abort on shutdown (#509) — pass an
+/// inert token where no cancellation policy exists.
 ///
 /// # Errors
 ///
@@ -65,6 +69,7 @@ pub fn build_fetch_router(
     cookie_bridge: Arc<RwLock<CookieBridge>>,
     ignore_waf: bool,
     user_agent: Option<String>,
+    cancel_token: CancellationToken,
 ) -> Result<FetchRouter, DownloadError> {
     let connect_timeout = timeout_secs.min(10);
     Ok(match strategy {
@@ -82,10 +87,12 @@ pub fn build_fetch_router(
         },
         // Full renders every page directly in Chrome (no wreq → Obscura
         // escalation) and gates concurrency on system RAM via its own
-        // ResourceGovernor to prevent OOM on large crawls.
+        // ResourceGovernor to prevent OOM on large crawls. The governor
+        // shares the engine's cancellation token so permit waits abort on
+        // shutdown (#509).
         JsStrategy::Full => {
             let dl = ChromiumoxideDownloader::new(cookie_bridge);
-            let governor = ResourceGovernor::new();
+            let governor = ResourceGovernor::with_cancel_token(cancel_token);
             FetchRouter::Full(Arc::new(dl), Arc::new(governor))
         },
     })
@@ -141,6 +148,7 @@ mod router_tests {
             test_cookie_bridge(),
             false,
             None,
+            CancellationToken::new(),
         )
         .expect("static router must build");
         assert!(
@@ -158,6 +166,7 @@ mod router_tests {
             test_cookie_bridge(),
             false,
             None,
+            CancellationToken::new(),
         )
         .expect("hybrid router must build");
         assert!(
@@ -175,6 +184,7 @@ mod router_tests {
             test_cookie_bridge(),
             false,
             None,
+            CancellationToken::new(),
         )
         .expect("full router must build");
         assert!(

@@ -144,6 +144,11 @@ pub enum DownloadError {
     /// Internal error (should not happen in normal operation).
     #[error("internal error: {0}")]
     Internal(String),
+
+    /// Acquisition cancelled by the engine's cancellation token (#509) —
+    /// the caller was waiting for a resource permit when shutdown fired.
+    #[error("operation cancelled while waiting for resources")]
+    Cancelled,
 }
 
 impl From<DownloadError> for crate::domain::CrawlError {

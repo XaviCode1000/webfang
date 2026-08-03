@@ -215,6 +215,14 @@ pub enum CrawlError {
     /// Semaphore exhausted (backpressure)
     #[error("semáforo agotado: no hay permisos disponibles")]
     SemaphoreInanition,
+
+    /// Task cancelled by engine shutdown (#509)
+    ///
+    /// Control signal, not an operational failure: the crawl engine cancelled
+    /// this task while it waited for a rate-limit permit or a resource-governor
+    /// permit. Handlers must NOT count it as a crawl error.
+    #[error("task cancelled by engine shutdown")]
+    Cancelled,
 }
 
 impl From<crate::domain::http_error::HttpError> for CrawlError {
@@ -285,6 +293,12 @@ mod tests {
     fn test_crawl_error_semaphore_inanition() {
         let error = CrawlError::SemaphoreInanition;
         assert!(error.to_string().contains("semáforo agotado"));
+    }
+
+    #[test]
+    fn test_crawl_error_cancelled_display() {
+        let error = CrawlError::Cancelled;
+        assert_eq!(error.to_string(), "task cancelled by engine shutdown");
     }
 
     #[test]

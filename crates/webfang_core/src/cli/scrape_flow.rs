@@ -148,6 +148,9 @@ pub async fn scrape_urls(
         // of dropping it on the floor. `http_config` stays usable below —
         // only this field moves out.
         http_config.user_agent,
+        // #509: the scrape flow has no shutdown policy yet — pass an inert
+        // token so Full-strategy governor waits keep pre-#509 behavior.
+        tokio_util::sync::CancellationToken::new(),
     )?;
 
     let _total_urls = urls.len();
