@@ -1,0 +1,78 @@
+# Fuzz Build — compile-time verification of all fuzz targets (#514)
+#
+# cargo fuzz build was NOT in any CI workflow: a broken fuzz target shipped
+# silently. This workflow compiles all fuzz targets on PRs + main (build only,
+# no fuzzing runs). It is report-only — NOT a required check — so the ~10 min
+# BoringSSL + libfuzzer build never blocks the fast tiered CI pipeline.
+#
+# Fuzz tier policy (max_len/timeout per tier) lives in fuzz/fuzz.toml (#507).
+
+name: Fuzz Build
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # Bulkhead: PR runs and push runs never cancel each other.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # CI optimizations: disable debuginfo + incremental for faster builds
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_DEV_INCREMENTAL: "false"
+
+jobs:
+  fuzz-build:
+    name: cargo fuzz build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # cargo-fuzz requires nightly (libfuzzer-sys). The repo pins stable via
+      # rust-toolchain.toml; `cargo +nightly` forces the override per command.
+      - name: Install nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      # wreq → boring2 → boring-sys2 needs cmake to build BoringSSL.
+      - name: Install cmake
+        run: sudo apt-get install -y cmake
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz@0.13.0
+
+      # fuzz/ is NOT a workspace member: cargo-fuzz builds into fuzz/target,
+      # so the cache must cover that directory (not the root workspace target).
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+
+      - name: Build all fuzz targets
+        run: cargo +nightly fuzz build
+
+      - name: Verify all declared targets built
+        run: |
+          EXPECTED=$(grep -c 'name = "fuzz_' fuzz/Cargo.toml)
+          BUILT=$(ls fuzz/target/*/release/fuzz_* 2>/dev/null | grep -v '\.d$' | wc -l)
+          echo "Targets declared: $EXPECTED — built: $BUILT"
+          if [ "$BUILT" -lt "$EXPECTED" ]; then
+            echo "::error::Only $BUILT of $EXPECTED fuzz targets were built"
+            exit 1
+          fi
+
+      - name: Publish summary
+        if: always()
+        run: |
+          echo "## Fuzz Build" >> $GITHUB_STEP_SUMMARY
+          echo "All declared fuzz targets compiled with \`cargo +nightly fuzz build\`." >> $GITHUB_STEP_SUMMARY
