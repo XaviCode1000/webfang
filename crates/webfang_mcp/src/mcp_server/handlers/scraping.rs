@@ -28,6 +28,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ScrapeUrlParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, scraping);
 
         let url = url::Url::parse(&params.url).map_err(|e| {
@@ -77,6 +79,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ScrapeWithOptionsParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, scraping);
 
         let url = url::Url::parse(&params.url).map_err(|e| {
@@ -163,6 +167,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ScrapeBatchParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         tracing::info!("starting batch scrape");
         let _permit = acquire_semaphore!(self, scraping);
 
@@ -240,6 +246,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<CrawlSiteParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, scraping);
 
         let seed_url = url::Url::parse(&params.url).map_err(|e| {
@@ -301,6 +309,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<CrawlWithSitemapParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         tracing::info!("starting sitemap crawl");
         let _permit = acquire_semaphore!(self, scraping);
 
@@ -359,6 +369,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<DiscoverUrlsParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, scraping);
 
         let start = Instant::now();
@@ -416,6 +428,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<DiscoverUrlsParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, scraping);
 
         let seed = url::Url::parse(&params.url).map_err(|e| {
@@ -472,6 +486,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<DetectSpaParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, scraping);
 
         let start = Instant::now();

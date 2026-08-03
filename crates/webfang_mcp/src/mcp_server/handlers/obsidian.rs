@@ -24,6 +24,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<DetectVaultParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, obsidian);
 
         let cli_path = params
@@ -51,6 +53,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<BuildObsidianUriParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, obsidian);
 
         if let Err(e) = webfang_core::infrastructure::obsidian::uri::validate_obsidian_input(
@@ -76,6 +80,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<BuildObsidianUriParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, obsidian);
 
         if let Err(e) = webfang_core::infrastructure::obsidian::uri::validate_obsidian_input(

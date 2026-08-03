@@ -27,6 +27,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<DetectWafParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, security);
 
         match detect_waf_provider(&params.html) {
@@ -48,6 +50,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<VerifyWafIntegrityParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, security);
 
         let html = params.html.as_deref().unwrap_or("");

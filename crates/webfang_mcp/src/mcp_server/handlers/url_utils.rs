@@ -27,6 +27,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ValidateUrlParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, url_utils);
 
         match url::Url::parse(&params.url) {
@@ -63,6 +65,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ExtractDomainParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, url_utils);
 
         match url::Url::parse(&params.url) {
@@ -83,6 +87,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<NormalizeUrlParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, url_utils);
 
         // Delegate to core normalize_url with strip_www=false (MCP preserves www prefix)
@@ -107,6 +113,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<MatchUrlPatternParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, url_utils);
 
         let matches = webfang_core::domain::matches_pattern(&params.url, &params.pattern);
@@ -124,6 +132,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<IsInternalLinkParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, url_utils);
 
         let is_internal = webfang_core::domain::url_validation::is_internal_link(
@@ -146,6 +156,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ValidateUrlParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, url_utils);
 
         match webfang_core::adapters::url_path::OutputPath::from_url(&params.url) {

@@ -10,14 +10,7 @@
 //! * `pub fn validate(&self) -> Result<(), McpError>` — semantic validation
 //!   (URL scheme, path traversal, oversize blobs, numeric bounds). Handlers
 //!   call this at the top of every tool body (`params.validate()?`); the
-//!   wiring is delivered in slice 2 of issue #512.
-//!
-//! The `validate()` methods are not yet called from any handler — the
-//! `#![allow(dead_code)]` below keeps clippy clean until slice 2 wires them
-//! into the tool bodies. Remove the allow once slice 2 lands.
-
-// `validate()` methods are foundation only — slice 2 wires them into handlers.
-#![allow(dead_code)]
+//!   wiring landed in slice 2 of issue #512.
 
 use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
@@ -501,7 +494,6 @@ impl SearchObsidianParams {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DownloadAssetsParams {
@@ -538,7 +530,6 @@ impl DownloadAssetsParams {
 }
 
 // Params for tools that accept free-form JSON input
-#[allow(dead_code)]
 #[derive(Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GenerateFrontmatterParams {
@@ -582,7 +573,6 @@ impl GenerateFrontmatterParams {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GenerateRichMetadataParams {
@@ -602,7 +592,6 @@ impl GenerateRichMetadataParams {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ExportJsonlParams {
@@ -628,7 +617,6 @@ impl ExportJsonlParams {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ExportVectorParams {
@@ -654,7 +642,6 @@ impl ExportVectorParams {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProcessExportPipelineParams {
@@ -680,7 +667,6 @@ impl ProcessExportPipelineParams {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct VerifyWafIntegrityParams {
