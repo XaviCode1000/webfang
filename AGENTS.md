@@ -516,6 +516,38 @@ gh run list --workflow=ci.yml --branch "$(git branch --show-current)" --limit 1 
 - [ ] No `git checkout`/`switch`/`stash` was executed during the session
 - [ ] Post-merge handoff runbook will be executed after merge
 
+### Automated merge workflow (single maintainer)
+
+GitHub's auto-merge feature (`gh pr merge --auto`) is **broken for this repo**: classic
+branch protection + no rulesets means `enablePullRequestAutoMerge` returns HTTP 422 /
+`GraphQL: Auto merge is not allowed for this repository` (verified empirically, Aug 2026;
+matches the open community thread orgs/community#190610 and ravenblackx's May 2026 report).
+The fix GitHub announced for March 2026 has not landed for this repo profile.
+
+The automation path that works:
+
+1. Open the PR (`gh pr create ...`).
+2. Walk away while CI runs (~6m34s to merge-ready; full wall: ~8m41s).
+3. Run the automation script:
+
+   ```bash
+   scripts/merge-when-green.sh <PR-NUMBER>
+   ```
+
+The script:
+- Polls `gh pr checks <N> --watch --required --fail-fast` until all required checks are
+  SUCCESS or one FAILS/CANCELS (exit 2 on failure).
+- Verifies `mergeStateStatus == CLEAN`. If `BEHIND`, exits 3 and asks you to rebase
+  (single maintainer, ~30s; no auto-rebase needed).
+- Calls `gh pr merge <N> --squash --delete-branch`. This **respects branch protection** —
+  required checks must be green at merge time. It is NOT the synchronous-PUT bypass
+  (`gh api -X PUT .../pulls/N/merge`) which bypasses required checks and should not be
+  used for routine merges.
+- Use `--dry-run` to poll and report without merging.
+
+Do NOT rely on `--auto`: it never accepts in this repo configuration. If a future PR
+needs auto-merge (e.g. transferring the repo to an organization with rulesets), revisit.
+
 ---
 
 ## 🗺️ Skill Routing Matrix
@@ -550,6 +582,13 @@ cargo fmt                    # Format
 ```bash
 cargo nextest run            # Full suite
 cargo build --release        # LTO fat, ~3-5 min
+```
+
+**PR automation (single maintainer):**
+
+```bash
+scripts/merge-when-green.sh <PR-N>          # Wait for green checks, squash-merge, delete branch
+scripts/merge-when-green.sh <PR-N> --dry-run # Poll and report; do not merge
 ```
 
 **Miri (unsafe/concurrent code only):**
