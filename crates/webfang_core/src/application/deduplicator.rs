@@ -14,8 +14,17 @@
 //!   hot loop (FR-8: no data races, no lost updates)
 //! - Deterministic within a single process (FR-5): the seed is fixed for the
 //!   process lifetime, so identical URLs hash to identical `u64` keys
+//! - **Canonical-key dedup (#517)**: `try_insert` normalizes the URL through
+//!   the domain `normalize_url` (strip_www, strip hash/query, collapse
+//!   `/index.html`) BEFORE hashing, so two spellings of the same document
+//!   (`https://www.example.com/page`, `https://example.com/page#top`) collapse
+//!   to one key. This is a deliberate contract change from the earlier design
+//!   where callers were expected to normalize first — the queue cannot rely on
+//!   every producer (seed, links, sitemap) doing so.
 
 use dashmap::DashSet;
+
+use crate::domain::url_validation::normalize_url;
 
 /// Lock-free URL deduplicator.
 ///
@@ -27,6 +36,9 @@ use dashmap::DashSet;
 /// The hash seed is randomized per process startup (`RandomState::new()`,
 /// satisfying FR-3) yet stable for the deduplicator's lifetime, so the same URL
 /// always maps to the same `u64` within one process (FR-5).
+///
+/// URLs are normalized to a canonical form before hashing (#517), so equivalent
+/// spellings of the same document deduplicate as one key.
 ///
 /// # Example
 ///
@@ -62,9 +74,14 @@ impl UrlDeduplicator {
     /// present. This is a single lock-free `DashSet::insert` — no `Mutex`, no
     /// `.await` — so it is safe to call from many Tokio tasks concurrently
     /// (FR-8) without data races or lost updates.
+    ///
+    /// The URL is normalized via the canonical domain normalizer before
+    /// hashing (#517), so `https://www.example.com/page` and
+    /// `https://example.com/page#top` collide on one key.
     #[must_use]
     pub fn try_insert(&self, url: &str) -> bool {
-        self.seen.insert(self.rs.hash_one(url))
+        let canonical = normalize_url(url, true);
+        self.seen.insert(self.rs.hash_one(&canonical))
     }
 
     /// Number of unique URLs currently tracked.
@@ -155,17 +172,86 @@ mod tests {
     }
 
     #[test]
-    fn test_padded_urls_are_distinct() {
-        // padded: try_insert does NOT trim/normalize; surrounding whitespace
-        // yields a distinct hash from the bare URL. Normalization is
-        // normalize_url's job, applied by callers before inserting.
+    fn test_padded_urls_are_canonicalized() {
+        // padded + canonical-key (#517): surrounding whitespace is removed by
+        // url-normalize's WHATWG preprocessing, so padded and bare spellings
+        // of the same URL collapse to ONE key. This is the contract change
+        // from the earlier design where try_insert hashed raw strings.
         let dedup = UrlDeduplicator::new();
         assert!(dedup.try_insert("https://example.com"));
-        assert!(dedup.try_insert(" https://example.com "));
-        assert!(dedup.try_insert("https://example.com\n"));
+        assert!(!dedup.try_insert(" https://example.com "));
+        assert!(!dedup.try_insert("https://example.com\n"));
+        assert_eq!(dedup.len(), 1);
+    }
+
+    #[test]
+    fn test_cross_normalization_www_collapses() {
+        // www-vs-bare (#517): the same document reached via www and bare host
+        // must deduplicate to a single key.
+        let dedup = UrlDeduplicator::new();
+        assert!(dedup.try_insert("https://www.example.com/page"));
+        assert!(!dedup.try_insert("https://example.com/page"));
+        assert_eq!(dedup.len(), 1);
+    }
+
+    #[test]
+    fn test_cross_normalization_fragment_collapses() {
+        // fragments (#517): a fragment is not part of the document identity.
+        let dedup = UrlDeduplicator::new();
+        assert!(dedup.try_insert("https://example.com/page#section"));
+        assert!(!dedup.try_insert("https://example.com/page#other"));
+        assert_eq!(dedup.len(), 1);
+    }
+
+    #[test]
+    fn test_cross_normalization_query_order_collapses() {
+        // query ordering + full query strip (#517): query parameters are
+        // removed entirely for dedup (remove_query_parameters: All), so order
+        // and presence of query strings never splits a document.
+        let dedup = UrlDeduplicator::new();
+        assert!(dedup.try_insert("https://example.com/page?a=1&b=2"));
+        assert!(!dedup.try_insert("https://example.com/page?b=2&a=1"));
+        assert!(!dedup.try_insert("https://example.com/page?utm_source=x"));
+        assert_eq!(dedup.len(), 1);
+    }
+
+    #[test]
+    fn test_cross_normalization_host_case_collapses() {
+        // host casing (#517): WHATWG URL normalization lowercases the host.
+        let dedup = UrlDeduplicator::new();
+        assert!(dedup.try_insert("https://Example.COM/page"));
+        assert!(!dedup.try_insert("https://example.com/page"));
+        assert_eq!(dedup.len(), 1);
+    }
+
+    #[test]
+    fn test_cross_normalization_default_port_collapses() {
+        // default ports (#517): :443 on https is redundant.
+        let dedup = UrlDeduplicator::new();
+        assert!(dedup.try_insert("https://example.com/page"));
+        assert!(!dedup.try_insert("https://example.com:443/page"));
+        assert_eq!(dedup.len(), 1);
+    }
+
+    #[test]
+    fn test_cross_normalization_index_html_collapses() {
+        // /index.html (#344/#517): the same document served at / and
+        // /index.html is one key.
+        let dedup = UrlDeduplicator::new();
+        assert!(dedup.try_insert("https://example.com/"));
+        assert!(!dedup.try_insert("https://example.com/index.html"));
+        assert_eq!(dedup.len(), 1);
+    }
+
+    #[test]
+    fn test_cross_normalization_distinct_documents_stay_distinct() {
+        // distinct documents must NOT collide (#517): normalization collapses
+        // equivalent spellings, never different pages.
+        let dedup = UrlDeduplicator::new();
+        assert!(dedup.try_insert("https://example.com/page"));
+        assert!(dedup.try_insert("https://example.com/other"));
+        assert!(dedup.try_insert("https://example.com/page/"));
         assert_eq!(dedup.len(), 3);
-        // Re-inserting the bare URL is still a duplicate of itself
-        assert!(!dedup.try_insert("https://example.com"));
     }
 
     #[tokio::test]
