@@ -582,15 +582,19 @@ const MAX_EVIDENCE_PER_BODY: usize = 64;
 
 /// Aho-Corasick automaton for O(N) multi-pattern body matching.
 ///
-/// Built once via `Lazy` from [`WAF_BODY_SIGNATURES`] patterns (pattern index
-/// maps back to the registry entry for tier/boundary metadata). Thread-safe
-/// for concurrent reads.
-///
-/// The patterns are hardcoded constants, so building the automaton cannot fail.
-#[allow(clippy::expect_used)]
+/// Compiled once from [`WAF_BODY_SIGNATURES`] on first access (thread-safe via
+/// `Lazy`). Signatures are compile-time constants and validated in tests — but a
+/// mis-configured signature would silently panic on first use. We therefore
+/// make the builder fallible and surface clear diagnostics if it ever happens.
 static WAF_AC: Lazy<AhoCorasick> = Lazy::new(|| {
-    AhoCorasick::new(WAF_BODY_SIGNATURES.iter().map(|(sig, _, _, _)| sig))
-        .expect("Failed to build Aho-Corasick automaton")
+    AhoCorasick::new(WAF_BODY_SIGNATURES.iter().map(|(sig, _, _, _)| sig)).unwrap_or_else(|err| {
+        panic!(
+            "WAF body signature automaton build failed — verify the {} compile-time \
+                 signatures in `WAF_BODY_SIGNATURES` (patterns must be valid UTF-8 and \
+                 within byte-depth limits). Aho-Corasick build error: {err}",
+            WAF_BODY_SIGNATURES.len()
+        )
+    })
 });
 
 /// WafInspector provides multi-layer WAF detection

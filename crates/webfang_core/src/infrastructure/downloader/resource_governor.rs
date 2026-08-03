@@ -10,6 +10,14 @@
 //! Thresholds:
 //! - **80 %** RAM used → warning log, max_instances halved
 //! - **90 %** RAM used → all new Chrome permits denied
+//!
+//! # Sanitizer coverage
+//!
+//! - **Miri: inapplicable** — `sysinfo` calls `sysconf(SC_PHYS_PAGES)`, which
+//!   Miri cannot execute (unsupported operation). Tests are gated with
+//!   `#[cfg(not(miri))]` and document the reason.
+//! - **TSan: covered** — the semaphore-based concurrent gating is exercised
+//!   under ThreadSanitizer in CI (`sanitizers.yml`), where sysconf works.
 
 use std::sync::Arc;
 
@@ -186,6 +194,7 @@ impl From<ResourceError> for DownloadError {
 }
 
 #[cfg(test)]
+#[cfg(not(miri))] // sysinfo uses sysconf (unsupported by Miri — but TSan covers the semaphore)
 mod tests {
     use super::*;
 
