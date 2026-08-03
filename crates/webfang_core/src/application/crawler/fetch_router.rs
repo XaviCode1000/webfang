@@ -50,8 +50,10 @@ pub enum FetchRouter {
 /// `timeout_secs` drives the wreq request timeout (connect timeout is clamped
 /// to 10s); `tls_emulation` is the TLS/HTTP2 fingerprint profile applied to the
 /// wreq layer; `cookie_bridge` is shared with the Chromiumoxide layer for
-/// cookie injection. `ignore_waf` bypasses WAF classification on the hybrid
-/// spa-detection path (REQ-WAF-07).
+/// cookie injection; `ignore_waf` bypasses WAF classification on the hybrid
+/// spa-detection path (REQ-WAF-07); `user_agent` pins the User-Agent on the
+/// wreq layer (Static and Hybrid L1) so `--user-agent` reaches the wire —
+/// `None` keeps the emulation-default + 403-rotation behavior (#503).
 ///
 /// # Errors
 ///
@@ -62,6 +64,7 @@ pub fn build_fetch_router(
     tls_emulation: Profile,
     cookie_bridge: Arc<RwLock<CookieBridge>>,
     ignore_waf: bool,
+    user_agent: Option<String>,
 ) -> Result<FetchRouter, DownloadError> {
     let connect_timeout = timeout_secs.min(10);
     Ok(match strategy {
@@ -69,9 +72,10 @@ pub fn build_fetch_router(
             timeout_secs,
             connect_timeout,
             tls_emulation,
+            user_agent,
         )?)),
         JsStrategy::Hybrid => {
-            let l1 = WreqDownloader::new(timeout_secs, connect_timeout, tls_emulation)?;
+            let l1 = WreqDownloader::new(timeout_secs, connect_timeout, tls_emulation, user_agent)?;
             let l2 = ObscuraDownloader::new(timeout_secs);
             let l3 = ChromiumoxideDownloader::new(cookie_bridge);
             FetchRouter::Hybrid(Arc::new(HybridRouter::new(l1, l2, l3, ignore_waf)))
@@ -136,6 +140,7 @@ mod router_tests {
             Profile::Chrome145,
             test_cookie_bridge(),
             false,
+            None,
         )
         .expect("static router must build");
         assert!(
@@ -152,6 +157,7 @@ mod router_tests {
             Profile::Chrome145,
             test_cookie_bridge(),
             false,
+            None,
         )
         .expect("hybrid router must build");
         assert!(
@@ -168,6 +174,7 @@ mod router_tests {
             Profile::Chrome145,
             test_cookie_bridge(),
             false,
+            None,
         )
         .expect("full router must build");
         assert!(

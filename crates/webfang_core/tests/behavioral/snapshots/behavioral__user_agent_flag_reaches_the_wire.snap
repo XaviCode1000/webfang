@@ -1,0 +1,16 @@
+---
+source: crates/webfang_core/tests/behavioral/main.rs
+expression: redacted
+---
+---
+title: User Agent Pin Test
+url: http://127.0.0.1:<PORT>/
+date: [DATE]
+excerpt: This content is only served when the pinned User-Agent arrives on the wire.
+---
+
+## Pinned Identity
+
+This content is only served when the pinned User-Agent arrives on the wire.
+
+More paragraphs ensure readability can extract a proper document.

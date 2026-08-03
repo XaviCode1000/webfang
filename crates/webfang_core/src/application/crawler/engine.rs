@@ -226,6 +226,9 @@ impl Engine {
             tls_emulation,
             Arc::clone(&self.cookie_bridge),
             ignore_waf,
+            // #503: the Engine path keeps today's rotating default behavior —
+            // `CrawlerConfig.user_agent` is a separate dead field, out of scope.
+            None,
         )?;
         self.js_strategy = strategy;
         self.fetch_router = Some(router);
