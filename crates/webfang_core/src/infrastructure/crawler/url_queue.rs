@@ -20,6 +20,7 @@ use dashmap::DashSet;
 use tokio::sync::Mutex;
 use tracing::debug;
 
+use crate::domain::url_validation::normalize_url;
 use crate::domain::DiscoveredUrl;
 
 /// Source of a discovered URL, used for priority scoring.
@@ -149,7 +150,12 @@ impl UrlQueue {
         // Lock-free, atomic check-and-insert via DashSet::insert (no Mutex, no
         // .await). Prevents the race where two tasks both pass contains() and
         // both insert. The hash uses the per-process randomized seed (FR-3/FR-5).
-        let hash = self.rs.hash_one(url.url.as_str());
+        //
+        // The URL is normalized to its canonical form BEFORE hashing (#517):
+        // the seed enters the queue raw while links arrive already normalized,
+        // so a raw/equivalently-spelled duplicate must still be rejected here.
+        let canonical = normalize_url(url.url.as_str(), true);
+        let hash = self.rs.hash_one(&canonical);
         if !self.seen.insert(hash) {
             debug!("Duplicate URL in queue: {}", url.url);
             return false;
@@ -208,6 +214,23 @@ impl UrlQueue {
             result.push_back(prioritized.url);
         }
         result
+    }
+
+    /// Snapshot pending URLs as strings WITHOUT consuming them.
+    ///
+    /// Used by checkpoint persistence (#517): the queue must be serializable at
+    /// any point so a resume can re-enqueue what was pending when the crawl
+    /// stopped. The `seen` set is untouched, so re-pushing these URLs later
+    /// would be rejected as duplicates — callers restoring a checkpoint must
+    /// bypass the dedup set for exactly the restored URLs.
+    ///
+    /// # Returns
+    ///
+    /// All URLs currently in the queue (heap order, not priority order).
+    #[must_use]
+    pub async fn snapshot_urls(&self) -> Vec<String> {
+        let queue = self.queue.lock().await;
+        queue.iter().map(|p| p.url.url.to_string()).collect()
     }
 
     /// Get the current queue length
@@ -295,6 +318,13 @@ mod tests {
         DiscoveredUrl::html(url, depth, parent)
     }
 
+    /// Build a DiscoveredUrl from an arbitrary absolute URL string.
+    fn push_with_url(raw: &str) -> DiscoveredUrl {
+        let url = Url::parse(raw).unwrap();
+        let parent = Url::parse("https://example.com/").unwrap();
+        DiscoveredUrl::html(url, 0, parent)
+    }
+
     #[tokio::test]
     async fn test_url_queue_new() {
         let queue = UrlQueue::new();
@@ -335,6 +365,48 @@ mod tests {
 
         assert_eq!(queue.len().await, 1);
         assert_eq!(queue.seen_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_url_queue_cross_normalization_www_collapses() {
+        // www-vs-bare (#517): same document reached via www and bare host is
+        // one queue entry.
+        let queue = UrlQueue::new();
+        assert!(queue.push(create_test_url("/page")).await);
+        assert!(
+            !queue
+                .push(push_with_url("https://www.example.com/page"))
+                .await
+        );
+        assert_eq!(queue.len().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_url_queue_cross_normalization_fragment_collapses() {
+        // fragments (#517): a fragment is not part of the document identity.
+        let queue = UrlQueue::new();
+        assert!(queue.push(create_test_url("/page")).await);
+        assert!(
+            !queue
+                .push(push_with_url("https://example.com/page#section"))
+                .await
+        );
+        assert_eq!(queue.len().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_url_queue_cross_normalization_query_collapses() {
+        // query strings (#517): query parameters are removed entirely for
+        // dedup (remove_query_parameters: All), so a seed with a tracking
+        // query is the same document as the bare link.
+        let queue = UrlQueue::new();
+        assert!(queue.push(create_test_url("/page")).await);
+        assert!(
+            !queue
+                .push(push_with_url("https://example.com/page?a=1&b=2"))
+                .await
+        );
+        assert_eq!(queue.len().await, 1);
     }
 
     #[tokio::test]

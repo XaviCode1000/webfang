@@ -48,9 +48,9 @@ impl McpHandler {
         Ok(CallToolResult::success(vec![Content::text(md)]))
     }
 
-    /// Extract all href links from HTML
+    /// Extract all crawlable href links from HTML
     #[tool(
-        description = "Extract all href links from HTML content. Returns list of raw href values."
+        description = "Extract href links from HTML content, honoring rel=\"nofollow\" (excluded) and a document <base href>. Returns list of raw href values."
     )]
     #[instrument(skip(self), fields(base_url = %params.base_url))]
     async fn extract_links(

@@ -111,6 +111,35 @@ impl CrawlScheduler {
         urls.iter().cloned().collect()
     }
 
+    /// Snapshot URLs that are pending (queued but not yet visited) for
+    /// checkpoint persistence.
+    ///
+    /// Combines the shared discovery queue (links pushed by in-flight tasks but
+    /// not yet drained) with the scheduler's local pending buffer. The engine
+    /// persists this so a resume re-enqueues exactly what was left to crawl —
+    /// without it, `save_checkpoint` used to write an empty queue and a resume
+    /// after the seed was already visited would crawl nothing (#517).
+    pub(crate) async fn snapshot_pending(&self) -> Vec<String> {
+        let mut urls: Vec<String> = self.pending.iter().map(|d| d.url.to_string()).collect();
+        urls.extend(self.queue.snapshot_urls().await);
+        urls
+    }
+
+    /// Restore pending (queued-but-unvisited) URLs from a checkpoint.
+    ///
+    /// Re-enqueues them into the local pending buffer as depth-0 HTML links.
+    /// The visited set is restored separately and takes precedence: `next_url`
+    /// skips any restored URL that was actually already visited, so a queued
+    /// entry that raced into `visited` never gets re-crawled (#517).
+    pub(crate) fn restore_pending(&mut self, urls: &[String]) {
+        for raw in urls {
+            if let Ok(url) = Url::parse(raw) {
+                let discovered = DiscoveredUrl::html(url.clone(), 0, url);
+                self.pending.push_back(discovered);
+            }
+        }
+    }
+
     /// Seed the crawl: push the seed onto the discovery queue (highest priority)
     /// and onto the local pending buffer.
     pub(crate) async fn seed(&mut self, seed_url: &Url) {
@@ -355,5 +384,94 @@ mod tests {
         assert!(s.has_pending_work());
         assert_eq!(q.len().await, 0, "queue drained");
         assert_eq!(s.next_url(0).unwrap().url.path(), "/x");
+    }
+
+    // -- snapshot_pending / restore_pending (#517) --
+
+    #[tokio::test]
+    async fn snapshot_pending_captures_pending_and_queue() {
+        let mut s = CrawlScheduler::new(4);
+        // One URL sits in the pending buffer, one still in the shared queue.
+        s.restore_pending(&["https://example.com/buffered".into()]);
+        s.queue()
+            .push_prioritized(disc("/queued"), UrlSource::Link)
+            .await;
+        let snap = s.snapshot_pending().await;
+        assert_eq!(snap.len(), 2, "both sources must be captured: {snap:?}");
+        assert!(snap.iter().any(|u| u.ends_with("/buffered")));
+        assert!(snap.iter().any(|u| u.ends_with("/queued")));
+    }
+
+    #[tokio::test]
+    async fn snapshot_pending_is_nondestructive() {
+        let mut s = CrawlScheduler::new(4);
+        s.restore_pending(&["https://example.com/buffered".into()]);
+        s.queue()
+            .push_prioritized(disc("/queued"), UrlSource::Link)
+            .await;
+        let _ = s.snapshot_pending().await;
+        assert!(s.has_pending_work(), "pending buffer must survive snapshot");
+        assert_eq!(s.queue().len().await, 1, "queue must survive snapshot");
+    }
+
+    #[test]
+    fn restore_pending_reenqueues_for_next_url() {
+        let mut s = CrawlScheduler::new(4);
+        s.restore_pending(&[
+            "https://example.com/p1".into(),
+            "https://example.com/p2".into(),
+        ]);
+        assert!(s.has_pending_work());
+        assert_eq!(s.next_url(0).unwrap().url.path(), "/p1");
+        assert_eq!(s.next_url(0).unwrap().url.path(), "/p2");
+        assert!(!s.has_pending_work());
+    }
+
+    #[test]
+    fn restore_pending_skips_unparseable_urls() {
+        let mut s = CrawlScheduler::new(4);
+        s.restore_pending(&["not-a-url".into(), "https://example.com/ok".into()]);
+        assert_eq!(s.next_url(0).unwrap().url.path(), "/ok");
+        assert!(!s.has_pending_work());
+    }
+
+    #[tokio::test]
+    async fn restore_pending_then_next_url_skips_visited() {
+        let mut s = CrawlScheduler::new(4);
+        s.record_visit("https://example.com/done");
+        s.restore_pending(&[
+            "https://example.com/done".into(),
+            "https://example.com/fresh".into(),
+        ]);
+        assert_eq!(
+            s.next_url(0).unwrap().url.path(),
+            "/fresh",
+            "restored URL already visited must be skipped"
+        );
+        assert!(!s.has_pending_work());
+    }
+
+    #[tokio::test]
+    async fn snapshot_restore_pending_roundtrips() {
+        let mut s = CrawlScheduler::new(4);
+        s.restore_pending(&["https://example.com/buffered".into()]);
+        s.queue()
+            .push_prioritized(disc("/queued"), UrlSource::Link)
+            .await;
+        let snap = s.snapshot_pending().await;
+
+        let mut s2 = CrawlScheduler::new(4);
+        s2.restore_pending(&snap);
+        let mut paths: Vec<String> = Vec::new();
+        while let Some(d) = s2.next_url(0) {
+            paths.push(d.url.path().to_string());
+        }
+        assert_eq!(
+            paths.len(),
+            2,
+            "all pending URLs must be restored: {paths:?}"
+        );
+        assert!(paths.contains(&"/buffered".into()));
+        assert!(paths.contains(&"/queued".into()));
     }
 }

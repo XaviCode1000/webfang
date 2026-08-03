@@ -106,9 +106,7 @@ impl<L1: Downloader, L2: Downloader, L3: Downloader> HybridRouter<L1, L2, L3> {
         // Check resources before spawning a subprocess
         if let Err(e) = self.governor.check_resources() {
             warn!("ResourceGovernor denied Layer 2: {e}");
-            return Err(DownloadError::Internal(format!(
-                "resource governor denied obscura: {e}"
-            )));
+            return Err(DownloadError::from(e));
         }
 
         match self.layer2.fetch(url).await {
@@ -132,9 +130,7 @@ impl<L1: Downloader, L2: Downloader, L3: Downloader> HybridRouter<L1, L2, L3> {
 
         if let Err(e) = self.governor.check_resources() {
             warn!("ResourceGovernor denied Layer 3: {e}");
-            return Err(DownloadError::Internal(format!(
-                "resource governor denied chromiumoxide: {e}"
-            )));
+            return Err(DownloadError::from(e));
         }
 
         match self.layer3.fetch(url).await {

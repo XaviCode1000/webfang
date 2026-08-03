@@ -14,19 +14,26 @@ use url::Url;
 
 use crate::domain::LinkExtractor;
 
-/// Extract all links from HTML content
+/// Extract all crawlable links from HTML content
 ///
 /// Following **own-borrow-over-clone**: Accepts `&str` not `&String`.
 /// Following **mem-with-capacity**: Pre-allocates Vec with estimated capacity.
 ///
+/// Links marked `rel="nofollow"` (any token, case-insensitive) are excluded —
+/// the crawler must not follow them (#517). A `<base href>` element in the
+/// document overrides the caller's `base_url` for resolving relative links,
+/// per the HTML spec (first `<base href>` wins; invalid or absent → fallback
+/// to `base_url`).
+///
 /// # Arguments
 ///
 /// * `html` - HTML content to parse
-/// * `base_url` - Base URL for resolving relative links
+/// * `base_url` - Base URL for resolving relative links (fallback when the
+///   document has no usable `<base href>`)
 ///
 /// # Returns
 ///
-/// * `Ok(Vec<String>)` - List of extracted URLs
+/// * `Ok(Vec<String>)` - List of extracted, normalized URLs
 /// * `Err(CrawlError)` - Parse error
 ///
 /// # Examples
@@ -45,15 +52,35 @@ pub fn extract_links(html: &str, base_url: &str) -> Result<Vec<String>, crate::d
     let document = Html::parse_document(html);
     let selector = Selector::parse("a[href]")
         .map_err(|e| crate::domain::CrawlError::Parse(format!("Failed to parse selector: {e}")))?;
+    let base_selector = Selector::parse("base[href]")
+        .map_err(|e| crate::domain::CrawlError::Parse(format!("Failed to parse selector: {e}")))?;
 
     // Parse base URL once
-    let base =
+    let caller_base =
         Url::parse(base_url).map_err(|e| crate::domain::CrawlError::InvalidUrl(e.to_string()))?;
+
+    // HTML spec: the first <base href> in the document overrides the caller's
+    // base for resolving relative links. A relative <base href> is itself
+    // resolved against the caller's base; an unparseable one is ignored.
+    let base = document
+        .select(&base_selector)
+        .next()
+        .and_then(|el| el.value().attr("href"))
+        .and_then(|href| Url::parse(href).or_else(|_| caller_base.join(href)).ok())
+        .unwrap_or(caller_base);
 
     // Pre-allocate with estimated capacity (optimization for typical pages)
     let mut links = Vec::with_capacity(32);
 
     for element in document.select(&selector) {
+        // rel="nofollow" is a hint the crawler must not follow this link.
+        let rel = element.value().attr("rel").unwrap_or("");
+        if rel
+            .split_whitespace()
+            .any(|token| token.eq_ignore_ascii_case("nofollow"))
+        {
+            continue;
+        }
         if let Some(href) = element.value().attr("href") {
             // Resolve relative URLs
             match base.join(href) {
@@ -103,131 +130,13 @@ pub fn is_internal_link(url: &str, domain: &str) -> bool {
     crate::domain::url_validation::is_internal_link(url, domain)
 }
 
-/// Normalize a URL (remove fragments, strip www, remove default ports, etc.)
+/// Re-export of the canonical URL normalizer.
 ///
-/// Following **own-borrow-over-clone**: Accepts `&str`.
-///
-/// This is the **canonical** URL normalizer for the scraper. All URL
-/// normalization should go through this function.
-///
-/// Options:
-/// - `strip_hash: true` — removes URL fragments (`#section`)
-/// - `strip_www` — removes `www.` prefix when `true` (caller controls behavior)
-/// - `remove_trailing_slash: false` — preserves trailing slashes
-/// - `remove_query_parameters: All` — strips query strings for dedup
-/// - `sort_query_parameters: true` — consistent ordering
-///
-/// After normalization, a trailing `/index.html` or `/index.htm` path segment
-/// is collapsed to `/` (case-insensitive, idempotent) so the same document is
-/// not stored under two URLs.
-///
-/// # Returns
-///
-/// Normalized URL string
-///
-/// # Arguments
-///
-/// * `url` - URL to normalize
-/// * `strip_www` - If `true`, removes `www.` prefix (e.g. `www.example.com` → `example.com`)
-///
-/// # Examples
-///
-/// ```
-/// use webfang_core::infrastructure::crawler::normalize_url;
-///
-/// assert_eq!(
-///     normalize_url("https://example.com/page#section", true),
-///     "https://example.com/page"
-/// );
-/// assert_eq!(
-///     normalize_url("https://www.example.com/page", true),
-///     "https://example.com/page"
-/// );
-/// assert_eq!(
-///     normalize_url("https://www.example.com/page", false),
-///     "https://www.example.com/page"
-/// );
-/// assert_eq!(
-///     normalize_url("https://example.com:443/page", true),
-///     "https://example.com/page"
-/// );
-/// assert_eq!(
-///     normalize_url("https://example.com/index.html", true),
-///     "https://example.com"
-/// );
-/// ```
-#[inline]
-#[must_use]
-pub fn normalize_url(url: &str, strip_www: bool) -> String {
-    use url_normalize::{normalize_url as normalize, Options, RemoveQueryParameters};
-
-    // Non-URLs (no scheme) should not be normalized — return as-is.
-    // This prevents "not-a-valid-url" → "http://not-a-valid-url" conversion.
-    if !url.contains("://") {
-        return url.to_string();
-    }
-
-    let opts = Options {
-        strip_hash: true,
-        remove_trailing_slash: false,
-        remove_query_parameters: RemoveQueryParameters::All,
-        sort_query_parameters: true,
-        strip_www,
-        force_https: false,
-        ..Options::default()
-    };
-
-    // url-normalize handles WHATWG preprocessing (control chars, backslashes,
-    // trailing whitespace) and produces idempotent output.
-    let normalized = normalize(url, &opts).unwrap_or_else(|_| url.to_string());
-
-    // Collapse /index.html and /index.htm to / so the same document is not
-    // stored under two URLs (idempotent, case-insensitive).
-    collapse_index_path(&normalized)
-}
-
-/// Collapse a trailing `/index.html` or `/index.htm` path segment to `/`.
-///
-/// Many servers serve identical content at both `/` and `/index.html`;
-/// collapsing them lets the crawler deduplicate what would otherwise be two
-/// URLs pointing at the same document.
-///
-/// Guarantees:
-/// - Case-insensitive filename match (`/Index.HTML` collapses too).
-/// - Idempotent — an already-collapsed `/` path is returned unchanged.
-/// - Anchored on a `/` segment boundary, so `/my-index.html` is NOT collapsed.
-/// - Only `index.html` / `index.htm` — never `/index.php`, `/default.aspx`, etc.
-///
-/// If the normalized URL cannot be re-parsed, it is returned unchanged.
-#[inline]
-#[must_use]
-fn collapse_index_path(url: &str) -> String {
-    let Ok(mut parsed) = Url::parse(url) else {
-        return url.to_string();
-    };
-
-    let lower = parsed.path().to_ascii_lowercase();
-    let collapsed = lower
-        .strip_suffix("/index.html")
-        .or_else(|| lower.strip_suffix("/index.htm"))
-        .map(|parent| format!("{parent}/"));
-
-    match collapsed {
-        Some(new_path) => {
-            parsed.set_path(&new_path);
-            let mut result = parsed.to_string();
-            // The `url` crate serializes a root path as "https://host/", but
-            // url-normalize canonicalizes a bare root to "https://host" (no
-            // slash). Mirror that so "/" and "/index.html" produce the SAME
-            // string and deduplicate (#344). Nested paths keep their slash.
-            if parsed.path() == "/" {
-                result.pop();
-            }
-            result
-        },
-        None => url.to_string(),
-    }
-}
+/// The implementation lives in the domain layer (`url_validation::normalize_url`)
+/// so both application deduplicators and infrastructure crawlers share one
+/// canonical URL form (#517). This re-export keeps the historical
+/// `infrastructure::crawler::normalize_url` path working for all callers.
+pub use crate::domain::url_validation::normalize_url;
 
 /// HTML link extractor implementation
 ///
@@ -543,5 +452,158 @@ mod tests {
         // Links contain the path portion; query params may be normalized
         assert!(links.iter().any(|l| l.contains("/search")));
         assert!(links.iter().any(|l| l.contains("/page")));
+    }
+
+    // ============================================================================
+    // rel="nofollow" and <base href> handling (#517)
+    // ============================================================================
+
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
+    #[test]
+    fn test_extract_links_skips_nofollow() {
+        let html = r#"
+            <html>
+                <body>
+                    <a href="/follow">Follow me</a>
+                    <a href="/skip" rel="nofollow">Do not follow</a>
+                    <a href="/also-follow">Also follow</a>
+                </body>
+            </html>
+        "#;
+
+        let links = extract_links(html, "https://example.com").unwrap();
+        assert_eq!(links.len(), 2);
+        assert!(links.contains(&"https://example.com/follow".to_string()));
+        assert!(links.contains(&"https://example.com/also-follow".to_string()));
+        assert!(!links.contains(&"https://example.com/skip".to_string()));
+    }
+
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
+    #[test]
+    fn test_extract_links_nofollow_token_is_case_insensitive() {
+        let html = r#"
+            <html>
+                <body>
+                    <a href="/skip1" rel="NOFOLLOW">Uppercase</a>
+                    <a href="/skip2" rel="noopener nofollow sponsored">Multi-token</a>
+                    <a href="/keep">Keep</a>
+                </body>
+            </html>
+        "#;
+
+        let links = extract_links(html, "https://example.com").unwrap();
+        assert_eq!(links.len(), 1);
+        assert!(links.contains(&"https://example.com/keep".to_string()));
+    }
+
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
+    #[test]
+    fn test_extract_links_nofollow_requires_exact_token() {
+        // "nofollows" and "no-follow" are NOT the rel token "nofollow".
+        let html = r#"
+            <html>
+                <body>
+                    <a href="/a" rel="nofollows">Not exact</a>
+                    <a href="/b" rel="no-follow">Hyphenated</a>
+                    <a href="/c">Plain</a>
+                </body>
+            </html>
+        "#;
+
+        let links = extract_links(html, "https://example.com").unwrap();
+        assert_eq!(links.len(), 3);
+    }
+
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
+    #[test]
+    fn test_extract_links_uses_base_href() {
+        let html = r#"
+            <html>
+                <head><base href="https://cdn.example.com/docs/"></head>
+                <body>
+                    <a href="guide.html">Relative to base</a>
+                    <a href="/absolute">Root-relative also resolves against base</a>
+                </body>
+            </html>
+        "#;
+
+        let links = extract_links(html, "https://example.com").unwrap();
+        assert_eq!(links.len(), 2);
+        assert!(links.contains(&"https://cdn.example.com/docs/guide.html".to_string()));
+        assert!(links.contains(&"https://cdn.example.com/absolute".to_string()));
+    }
+
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
+    #[test]
+    fn test_extract_links_uses_first_base_href() {
+        // HTML spec: the FIRST <base href> in the document wins.
+        let html = r#"
+            <html>
+                <head>
+                    <base href="https://first.example.com/docs/">
+                    <base href="https://second.example.com/docs/">
+                </head>
+                <body><a href="guide.html">Relative to base</a></body>
+            </html>
+        "#;
+
+        let links = extract_links(html, "https://example.com").unwrap();
+        assert_eq!(
+            links,
+            vec!["https://first.example.com/docs/guide.html".to_string()]
+        );
+    }
+
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
+    #[test]
+    fn test_extract_links_relative_base_href_resolves_against_caller() {
+        let html = r#"
+            <html>
+                <head><base href="/subdir/"></head>
+                <body><a href="guide.html">Relative to base</a></body>
+            </html>
+        "#;
+
+        let links = extract_links(html, "https://example.com").unwrap();
+        assert_eq!(
+            links,
+            vec!["https://example.com/subdir/guide.html".to_string()]
+        );
+    }
+
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
+    #[test]
+    fn test_extract_links_invalid_base_href_falls_back_to_caller() {
+        // An unparseable <base href> must not poison resolution; fall back to
+        // the caller's base_url.
+        let html = r#"
+            <html>
+                <head><base href="::::not-a-url"></head>
+                <body><a href="guide.html">Relative to caller</a></body>
+            </html>
+        "#;
+
+        let links = extract_links(html, "https://example.com").unwrap();
+        assert_eq!(links, vec!["https://example.com/guide.html".to_string()]);
+    }
+
+    #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
+    #[test]
+    fn test_extract_links_nofollow_and_base_href_combine() {
+        let html = r#"
+            <html>
+                <head><base href="https://cdn.example.com/docs/"></head>
+                <body>
+                    <a href="guide.html">Relative to base</a>
+                    <a href="secret.html" rel="nofollow">Skipped</a>
+                </body>
+            </html>
+        "#;
+
+        let links = extract_links(html, "https://example.com").unwrap();
+        assert_eq!(
+            links,
+            vec!["https://cdn.example.com/docs/guide.html".to_string()]
+        );
     }
 }

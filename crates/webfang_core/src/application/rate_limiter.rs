@@ -318,6 +318,43 @@ mod tests {
         );
     }
 
+    /// Sustained-pressure (no-starvation) proof for #517 hallazgo 5.
+    ///
+    /// With burst = `concurrency`, N concurrent waiters where N >> burst must
+    /// ALL complete, and the tail must respect the configured period — the
+    /// burst only front-loads the first `concurrency` permits, it must not
+    /// inflate the sustained rate.
+    #[tokio::test]
+    async fn test_rate_limiting_sustained_pressure_no_starvation() {
+        let config = RateLimiterConfig::new(100, 4); // 100ms period, burst=4
+        let limiter = SharedRateLimiter::new(&config).unwrap();
+
+        let num_tasks = 16; // 4× the burst — sustained pressure
+        let start = std::time::Instant::now();
+
+        let mut handles = Vec::new();
+        for _ in 0..num_tasks {
+            let limiter = limiter.clone();
+            let handle = tokio::spawn(async move {
+                limiter.until_ready().await;
+            });
+            handles.push(handle);
+        }
+
+        futures::future::join_all(handles).await;
+        let elapsed = start.elapsed();
+
+        // All 16 completed (no starvation — the join_all above would not
+        // return otherwise). The last permit is gated by the 12th refill
+        // after the burst: (16 - 4) × 100ms = 1200ms. Assert ≥ 1000ms so a
+        // single lost refill does not flake, but the sustained rate clearly
+        // did not collapse to burst-speed.
+        assert!(
+            elapsed >= std::time::Duration::from_millis(1000),
+            "sustained rate collapsed: 16 tasks with period=100ms/burst=4 took {elapsed:?}"
+        );
+    }
+
     // ============================================================================
     // MockClock unit tests (testing the Clock port itself)
     //
