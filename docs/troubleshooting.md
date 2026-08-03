@@ -101,14 +101,3 @@ This shows live task states and poll times, making stuck tasks visible.
   interactive app, or not an article.
 - Try `--selector '.main-content'` (or the right CSS selector for the site),
   or enable JS rendering for SPA content.
-
----
-
-## CI runs are slower than expected
-
-- The `fmt` job can spend most of its time on the runner's `Free disk space`
-  cleanup step — a GitHub Actions runner maintenance cost, not project work.
-- A full CI run is ~8.5 minutes; the critical path is
-  `test-full → mcp → release`. Jobs like `coverage` and `release` run after
-  the required checks are already green, so merge-ready is typically ~6.5
-  minutes.
