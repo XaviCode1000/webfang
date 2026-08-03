@@ -158,6 +158,36 @@ fn is_tool_error(result: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// A relative temporary directory that deletes itself on drop.
+///
+/// `tempfile::TempDir` always returns an absolute path (it joins with
+/// `env::current_dir`), which the MCP `require_safe_path` validator rejects.
+/// These tests need a *relative* vault dir, so we manage one manually.
+struct RelTempDir {
+    path: std::path::PathBuf,
+}
+
+impl RelTempDir {
+    fn new(prefix: &str) -> Self {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let name = format!("{prefix}-{}-{}", std::process::id(), n);
+        let path = std::path::PathBuf::from(name);
+        std::fs::create_dir_all(&path).expect("create relative temp dir");
+        RelTempDir { path }
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for RelTempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 // ============================================================================
 // build_obsidian_uri
 // ============================================================================
@@ -294,7 +324,7 @@ async fn test_build_obsidian_uri_rejects_control_chars() {
 /// registry, or the real home directory.
 #[tokio::test]
 async fn test_detect_obsidian_vault_explicit_path() {
-    let vault = tempfile::TempDir::new().unwrap();
+    let vault = RelTempDir::new("wf-vault");
     std::fs::create_dir_all(vault.path().join(".obsidian")).unwrap();
 
     let (base_url, _handle) = start_test_server().await;

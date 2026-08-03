@@ -258,6 +258,36 @@ fn is_tool_error(result: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// A relative temporary directory that deletes itself on drop.
+///
+/// `tempfile::TempDir` always returns an absolute path (it joins with
+/// `env::current_dir`), which the MCP `require_safe_path` validator rejects.
+/// These tests need a *relative* output dir, so we manage one manually.
+struct RelTempDir {
+    path: std::path::PathBuf,
+}
+
+impl RelTempDir {
+    fn new(prefix: &str) -> Self {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let name = format!("{prefix}-{}-{}", std::process::id(), n);
+        let path = std::path::PathBuf::from(name);
+        std::fs::create_dir_all(&path).expect("create relative temp dir");
+        RelTempDir { path }
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for RelTempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 // ============================================================================
 // 1. Initialize request — returns server info
 // ============================================================================
@@ -583,7 +613,7 @@ async fn test_export_jsonl_writes_real_file() {
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
-    let out = tempfile::TempDir::new().unwrap();
+    let out = RelTempDir::new("wf-out");
     let resp = call_tool(
         &client,
         &base_url,
@@ -656,7 +686,7 @@ async fn test_export_vector_writes_real_file() {
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
-    let out = tempfile::TempDir::new().unwrap();
+    let out = RelTempDir::new("wf-out");
     let resp = call_tool(
         &client,
         &base_url,
@@ -778,7 +808,7 @@ async fn test_export_file_writes_content() {
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
-    let out = tempfile::TempDir::new().unwrap();
+    let out = RelTempDir::new("wf-out");
     let content = "Hello export file content written by the caller";
     let resp = call_tool(
         &client,
@@ -836,7 +866,7 @@ async fn test_export_jsonl_empty_repo_honest_error() {
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
-    let out = tempfile::TempDir::new().unwrap();
+    let out = RelTempDir::new("wf-out");
     let resp = call_tool(
         &client,
         &base_url,
@@ -874,7 +904,7 @@ async fn test_export_file_missing_content_honest_error() {
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
-    let out = tempfile::TempDir::new().unwrap();
+    let out = RelTempDir::new("wf-out");
     let resp = call_tool(
         &client,
         &base_url,
@@ -913,7 +943,7 @@ async fn test_export_invalid_format_hard_error() {
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
-    let out = tempfile::TempDir::new().unwrap();
+    let out = RelTempDir::new("wf-out");
     let resp = call_tool(
         &client,
         &base_url,
@@ -957,7 +987,7 @@ async fn test_export_uncreatable_output_dir_honest_error() {
 
     // Build an output_dir that cannot be created: a path descending through an
     // existing regular file. `create_dir_all` on this fails (NotADirectory).
-    let blocker_tmp = tempfile::TempDir::new().unwrap();
+    let blocker_tmp = RelTempDir::new("wf-blocker");
     let blocker_file = blocker_tmp.path().join("blocker.txt");
     std::fs::write(&blocker_file, "a regular file, not a directory").unwrap();
     let uncreatable_dir = blocker_file.join("nested").join("output");
