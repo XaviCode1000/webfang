@@ -31,11 +31,21 @@ pub(crate) fn handle_crawl_result(
         Ok(Ok(())) => {
             // Task completed successfully
         },
+        Ok(Err(CrawlError::Cancelled)) => {
+            // Shutdown control signal (#509) — not an operational failure,
+            // so it must not inflate the crawl error counters.
+            debug!("Task cancelled by engine shutdown");
+        },
         Ok(Err(e)) => {
             let category = CrawlErrorCategory::from(&e);
             warn!("Task error: {}", e);
             error_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             error_breakdown[category.index()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        },
+        Err(e) if e.is_cancelled() => {
+            // JoinSet abort (shutdown drain timeout, #509) — logged once at
+            // the drain site; not counted as a panic.
+            debug!("Task aborted during shutdown drain");
         },
         Err(e) => {
             warn!("Task panicked: {}", e);
@@ -55,7 +65,17 @@ pub(crate) async fn run_crawl_task(
     ctx: Arc<CrawlTaskCtx>,
     discovered_url: DiscoveredUrl,
 ) -> Result<(), CrawlError> {
-    ctx.rate_limiter.until_ready().await;
+    match ctx
+        .rate_limiter
+        .until_ready_or_cancel(&ctx.cancel_token)
+        .await
+    {
+        Ok(()) => {},
+        Err(_cancelled) => {
+            debug!("Rate limit wait cancelled by engine shutdown");
+            return Err(CrawlError::Cancelled);
+        },
+    }
 
     let url_str = discovered_url.url.as_str().to_string();
     let url_depth = discovered_url.depth;
@@ -238,6 +258,7 @@ mod tests {
     use std::pin::Pin;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
+    use std::time::Duration;
 
     use url::Url;
 
@@ -253,6 +274,7 @@ mod tests {
     use crate::infrastructure::crawler::UrlQueue;
     use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
     use crate::infrastructure::downloader::Cookie;
+    use tokio_util::sync::CancellationToken;
 
     // ── Mock implementations ──
 
@@ -419,6 +441,8 @@ mod tests {
         collector: Arc<dyn CrawlResultCollector>,
         session_pool: Option<Arc<dyn SessionPort>>,
         output_stages: Vec<Arc<Box<dyn OutputStage>>>,
+        rate_limiter: Option<SharedRateLimiter>,
+        cancel_token: CancellationToken,
         ignore_robots: bool,
         max_depth: u8,
     }
@@ -443,6 +467,8 @@ mod tests {
                 collector,
                 session_pool: None,
                 output_stages: Vec::new(),
+                rate_limiter: None,
+                cancel_token: CancellationToken::new(),
                 ignore_robots: false,
                 max_depth: 3,
             }
@@ -472,6 +498,14 @@ mod tests {
             self.output_stages.push(s);
             self
         }
+        fn rate_limiter(mut self, rl: SharedRateLimiter) -> Self {
+            self.rate_limiter = Some(rl);
+            self
+        }
+        fn cancel_token(mut self, token: CancellationToken) -> Self {
+            self.cancel_token = token;
+            self
+        }
         fn ignore_robots(mut self, v: bool) -> Self {
             self.ignore_robots = v;
             self
@@ -486,14 +520,17 @@ mod tests {
             let mut config = crate::domain::CrawlerConfig::new(seed_url);
             config.max_depth = self.max_depth;
 
-            let rate_limiter = SharedRateLimiter::new(&RateLimiterConfig::new(1, 100))
-                .expect("valid rate limiter config");
+            let rate_limiter = self.rate_limiter.unwrap_or_else(|| {
+                SharedRateLimiter::new(&RateLimiterConfig::new(1, 100))
+                    .expect("valid rate limiter config")
+            });
 
             Arc::new(CrawlTaskCtx {
                 config: Arc::new(config),
                 correlation_id: CorrelationId::new(),
                 queue: Arc::new(UrlQueue::new()),
                 rate_limiter,
+                cancel_token: self.cancel_token,
                 session_pool: self.session_pool,
                 ignore_robots: self.ignore_robots,
                 robots_checker: self.robots,
@@ -1011,5 +1048,70 @@ mod tests {
                 assert_eq!(breakdown[cat.index()].load(Ordering::SeqCst), 0);
             }
         }
+    }
+
+    // ========================================================================
+    // Cancellation tests (#509)
+    // ========================================================================
+
+    #[test]
+    fn cancelled_result_is_not_counted_as_error() {
+        let (error_count, breakdown) = counters();
+        handle_crawl_result(Ok(Err(CrawlError::Cancelled)), &error_count, &breakdown);
+        assert_eq!(
+            error_count.load(Ordering::SeqCst),
+            0,
+            "shutdown cancellation must not inflate the error count"
+        );
+        assert!(breakdown.iter().all(|c| c.load(Ordering::SeqCst) == 0));
+    }
+
+    #[tokio::test]
+    async fn aborted_join_result_is_not_counted_as_panic() {
+        let (error_count, breakdown) = counters();
+        let handle = tokio::spawn(std::future::pending::<Result<(), CrawlError>>());
+        handle.abort();
+        let join_err = handle.await.unwrap_err();
+        assert!(join_err.is_cancelled());
+
+        handle_crawl_result(Err(join_err), &error_count, &breakdown);
+        assert_eq!(
+            error_count.load(Ordering::SeqCst),
+            0,
+            "drain-time aborts are a control signal, not panics"
+        );
+        assert!(breakdown.iter().all(|c| c.load(Ordering::SeqCst) == 0));
+    }
+
+    #[tokio::test]
+    async fn run_crawl_task_cancelled_during_rate_limit_wait() {
+        // 60s refill with burst 1: consuming the burst forces the task into
+        // the rate-limit wait, where only cancellation can free it.
+        let limiter = SharedRateLimiter::new(&RateLimiterConfig::new(60_000, 1))
+            .expect("valid rate limiter config");
+        limiter.until_ready().await;
+
+        let cancel = CancellationToken::new();
+        let (collector, sent) = mock_collector();
+        let ctx = TestCtxBuilder::new(collector)
+            .rate_limiter(limiter)
+            .cancel_token(cancel.clone())
+            .build();
+
+        cancel.cancel();
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            run_crawl_task(ctx, test_url("https://example.com/page", 0)),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Ok(Err(CrawlError::Cancelled))),
+            "worker parked on the rate limiter must abort within the bound"
+        );
+        assert!(
+            sent.lock().map(|s| s.is_empty()).unwrap_or(false),
+            "cancelled task must not emit results"
+        );
     }
 }
