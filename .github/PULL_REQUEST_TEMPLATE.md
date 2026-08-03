@@ -39,3 +39,4 @@ Closes #
 - [ ] Conventional commit format (`type(scope): description`)
 - [ ] No `Co-Authored-By` / AI attribution trailers
 - [ ] Docs updated if behavior changed
+- [ ] Defensive error paths annotated with `// LCOV_EXCL_*` markers per docs/testing.md (issue #527)

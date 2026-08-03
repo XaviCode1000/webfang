@@ -586,6 +586,7 @@ const MAX_EVIDENCE_PER_BODY: usize = 64;
 /// `Lazy`). Signatures are compile-time constants and validated in tests — but a
 /// mis-configured signature would silently panic on first use. We therefore
 /// make the builder fallible and surface clear diagnostics if it ever happens.
+// LCOV_EXCL_START defensive: waf-automaton-build — signature patterns are compile-time constants verified in tests
 static WAF_AC: Lazy<AhoCorasick> = Lazy::new(|| {
     AhoCorasick::new(WAF_BODY_SIGNATURES.iter().map(|(sig, _, _, _)| sig)).unwrap_or_else(|err| {
         panic!(
@@ -596,6 +597,7 @@ static WAF_AC: Lazy<AhoCorasick> = Lazy::new(|| {
         )
     })
 });
+// LCOV_EXCL_STOP
 
 /// WafInspector provides multi-layer WAF detection
 pub struct WafInspector;

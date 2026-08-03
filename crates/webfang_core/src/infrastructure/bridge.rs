@@ -88,16 +88,20 @@ impl CpuBridge {
         // fire-and-forget via a oneshot channel — the JoinHandle is not awaited.
         let handle = tokio::task::spawn_blocking(move || {
             let caught = catch_unwind(AssertUnwindSafe(move || pool.install(work)));
+            // LCOV_EXCL_START defensive: cpu-pool-panic — a panic in Rayon work is a bug; the pool must not die with it
             let mapped: Result<R, ScraperError> = caught.map_err(|panic| {
                 let msg = panic_message(&*panic);
                 ScraperError::ingestion(format!("CPU pool panic: {msg}"))
             });
+            // LCOV_EXCL_STOP
+            // LCOV_EXCL_START defensive: oneshot-receiver-dropped — the Tokio task was aborted before consuming the result
             if tx.send(mapped).is_err() {
                 warn!(
                     reason = "receptor oneshot descartado",
                     "canal CPU bridge descartado: tarea Tokio abortada antes de recibir el resultado"
                 );
             }
+            // LCOV_EXCL_STOP
         });
         // Suppress clippy warning: this is fire-and-forget via oneshot channel.
         // The span context is captured by in_current_span() before the handle

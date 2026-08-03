@@ -49,6 +49,7 @@ impl Config {
             crawler: CrawlerConfig::builder(
                 "https://example.com"
                     .parse()
+                    // LCOV_EXCL_LINE defensive: hardcoded-url — a constant URL cannot fail to parse
                     .expect("example.com is a valid URL"),
             )
             .build(),

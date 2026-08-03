@@ -108,6 +108,7 @@ impl UrlValidator {
             ..Default::default()
         };
         crate::infrastructure::http::create_http_client_with_config(&http_config)
+            // LCOV_EXCL_LINE defensive: wreq-client-build — client construction fails only on invalid TLS profile, an invariant
             .map_err(|e| CrawlError::Internal(format!("Failed to create HTTP client: {e}")))
     }
 
