@@ -51,6 +51,11 @@ pub fn build_mcp_router(state: McpState) -> Router {
 ///
 /// Without a shared Downloader, each MCP tool call creates a fresh connection pool,
 /// defeating keep-alive and TLS session reuse.
+///
+/// # Errors
+///
+/// Returns an error if the TCP listener cannot bind to `addr`, or if the
+/// server fails while serving.
 pub async fn start_mcp_server(state: McpState, addr: SocketAddr) -> anyhow::Result<()> {
     let app = build_mcp_router(state);
 

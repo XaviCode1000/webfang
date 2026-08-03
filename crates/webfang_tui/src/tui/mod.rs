@@ -70,9 +70,11 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum TuiError {
     #[error("Terminal setup failed: {0}")]
+    /// Terminal backend initialization failed
     TerminalSetup(#[from] std::io::Error),
 
     #[error("User interrupted")]
+    /// The user interrupted the TUI session
     Interrupted,
 }
 
