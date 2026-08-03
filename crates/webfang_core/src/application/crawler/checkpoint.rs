@@ -345,8 +345,46 @@ fn tmp_path_for(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use std::fs;
     use tempfile::TempDir;
+
+    fn arb_datetime_utc() -> impl proptest::strategy::Strategy<Value = DateTime<Utc>> {
+        (0i64..=100_000_000_000)
+            .prop_map(|secs| DateTime::<Utc>::from_timestamp(secs, 0).expect("bounded"))
+    }
+
+    fn arb_banned_domain() -> impl proptest::strategy::Strategy<Value = BannedDomain> {
+        (
+            any::<String>(),
+            proptest::option::of(arb_datetime_utc()),
+            any::<String>(),
+        )
+            .prop_map(|(domain, banned_until, reason)| BannedDomain {
+                domain,
+                banned_until,
+                reason,
+            })
+    }
+
+    fn arb_checkpoint() -> impl proptest::strategy::Strategy<Value = CrawlCheckpoint> {
+        (
+            proptest::collection::hash_set(any::<String>(), 0..=20),
+            proptest::collection::vec(any::<String>(), 0..=20),
+            any::<u64>(),
+            proptest::collection::vec(arb_banned_domain(), 0..=20),
+            any::<u32>(),
+        )
+            .prop_map(
+                |(visited, queued, pages_crawled, banned_domains, version)| CrawlCheckpoint {
+                    visited,
+                    queued,
+                    pages_crawled,
+                    banned_domains,
+                    version,
+                },
+            )
+    }
 
     fn sample_checkpoint() -> CrawlCheckpoint {
         let mut visited = HashSet::new();
@@ -669,5 +707,39 @@ mod tests {
             err.contains("failed to create checkpoint dir"),
             "error should carry creation context, got: {err}"
         );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1024))]
+
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_roundtrip_save_load(state in arb_checkpoint()) {
+            let tmp = TempDir::new().unwrap();
+            let path = tmp.path().join("checkpoint.json");
+            let store = BincodeCheckpoint::new();
+            store.save(&state, &path).unwrap();
+            let loaded = store.load(&path).unwrap();
+            prop_assert_eq!(state, loaded);
+        }
+
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_corruption_tamper_crc32(
+            state in arb_checkpoint(),
+            xor_byte in 1u8..=255,
+            crc_offset in 0u8..4,
+        ) {
+            let tmp = TempDir::new().unwrap();
+            let path = tmp.path().join("checkpoint.json");
+            let store = BincodeCheckpoint::new();
+            store.save(&state, &path).unwrap();
+
+            let mut data = fs::read(&path).unwrap();
+            data[crc_offset as usize] ^= xor_byte;
+            fs::write(&path, &data).unwrap();
+
+            prop_assert!(store.load(&path).is_none());
+        }
     }
 }
