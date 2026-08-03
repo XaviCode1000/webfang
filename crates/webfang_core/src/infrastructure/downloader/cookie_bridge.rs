@@ -202,6 +202,28 @@ mod tests {
     }
 
     #[test]
+    fn test_cookies_do_not_leak_cross_domain() {
+        // #511: pin cross-domain isolation — cookies accumulated across fetch
+        // layers must never be served to an unrelated domain, including the
+        // suffix-without-dot-boundary trap ("notexample.com" vs ".example.com").
+        let mut bridge = CookieBridge::new();
+        bridge.add(make_cookie("exact", "example.com", "/"));
+        bridge.add(make_cookie("wild", ".example.com", "/"));
+
+        let url: Url = "https://other.com/".parse().unwrap();
+        assert!(
+            bridge.cookies_for_url(&url).is_empty(),
+            "unrelated domain must receive no cookies"
+        );
+
+        let url: Url = "https://notexample.com/".parse().unwrap();
+        assert!(
+            bridge.cookies_for_url(&url).is_empty(),
+            "suffix without dot boundary must not match .example.com"
+        );
+    }
+
+    #[test]
     fn test_cookies_for_url_filters_by_path() {
         let mut bridge = CookieBridge::new();
         bridge.add(make_cookie("s1", "a.com", "/admin"));
