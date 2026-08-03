@@ -177,38 +177,55 @@ test-ci-quick:
 
 # -- Documentación --
 
+# Ruta del wiki combinado (NotebookLM / exportación PDF)
+wiki_output := "/var/home/xavi/Descargas/mdxportpdf/wiki-cargo-doc.md"
+
 # Genera documentación Markdown para NotebookLM (llms.txt compatible)
-# Requiere: rustdoc-md (mise install cargo:rustdoc-md)
+# Usa cargo doc (HTML) + pandoc: el HTML es estable entre toolchains,
+# a diferencia del JSON de rustdoc (formato inestable que rompía rustdoc-md).
+# Requiere: pandoc (mise install aqua:jgm/pandoc)
 docs:
     @echo "📚 Generando documentación para NotebookLM..."
+    @mkdir -p "$(dirname '{{wiki_output}}')"
     @for crate in webfang_core webfang_ai webfang_tui webfang_mcp; do \
         echo "  → $crate..."; \
-        RUSTC_BOOTSTRAP=1 RUSTDOCFLAGS="-Z unstable-options --output-format json" \
-            cargo doc -p $crate --no-deps 2>/dev/null; \
-        if [ -f "target/doc/$crate.json" ]; then \
-            rustdoc-md --path "target/doc/$crate.json" --output "target/doc/$crate.md" 2>&1; \
-        else \
-            echo "  ⚠️  $crate.json no generado"; \
-        fi; \
+        cargo doc -p $crate --no-deps 2>/dev/null; \
+        { \
+            pandoc -f html -t gfm --wrap=none "target/doc/$crate/index.html" 2>/dev/null; \
+            find "target/doc/$crate" -name '*.html' ! -name 'index.html' ! -path '*/src/*' -print0 \
+                | sort -z \
+                | while IFS= read -r -d '' f; do \
+                    pandoc -f html -t gfm --wrap=none "$f" 2>/dev/null; \
+                  done; \
+        } \
+        | sed -e 's/Copy item path//' \
+                  -e 's/<span[^>]*>//g' \
+                  -e 's/<\/span>//g' \
+                  -e 's/<div[^>]*>//g' \
+                  -e 's/<\/div>//g' \
+                  -e 's/Show [0-9][0-9]* fields[[:space:]]*//g' \
+                  -e 's/Show [0-9][0-9]* variants[[:space:]]*//g' \
+            > "target/doc/$crate.md"; \
     done
-    @# Archivo combinado para NotebookLM
-    @echo "# WebFang Documentation" > target/doc/wiki.md
-    @echo "" >> target/doc/wiki.md
-    @echo "Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> target/doc/wiki.md
-    @echo "" >> target/doc/wiki.md
-    @echo "---" >> target/doc/wiki.md
-    @echo "" >> target/doc/wiki.md
+    @# Archivo combinado para NotebookLM / PDF
+    @echo "# WebFang Documentation" > "{{wiki_output}}"
+    @echo "" >> "{{wiki_output}}"
+    @echo "Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "{{wiki_output}}"
+    @echo "" >> "{{wiki_output}}"
+    @echo "---" >> "{{wiki_output}}"
+    @echo "" >> "{{wiki_output}}"
     @for crate in webfang_core webfang_ai webfang_tui webfang_mcp; do \
         if [ -f "target/doc/$crate.md" ]; then \
-            echo "# $crate" >> target/doc/wiki.md; \
-            echo "" >> target/doc/wiki.md; \
-            cat "target/doc/$crate.md" >> target/doc/wiki.md; \
-            echo "" >> target/doc/wiki.md; \
-            echo "---" >> target/doc/wiki.md; \
-            echo "" >> target/doc/wiki.md; \
+            echo "# $crate" >> "{{wiki_output}}"; \
+            echo "" >> "{{wiki_output}}"; \
+            cat "target/doc/$crate.md" >> "{{wiki_output}}"; \
+            echo "" >> "{{wiki_output}}"; \
+            echo "---" >> "{{wiki_output}}"; \
+            echo "" >> "{{wiki_output}}"; \
         fi; \
     done
     @echo "✅ Documentación generada:"
-    @ls -lh target/doc/*.md | grep -v index | awk '{print "  " $NF " (" $5 ")"}'
+    @ls -lh "{{wiki_output}}" | awk '{print "  " $NF " (" $5 ")"}'
+    @ls -lh target/doc/*.md 2>/dev/null | grep -v index | awk '{print "  " $NF " (" $5 ")"}'
     @echo ""
-    @echo "📋 Para NotebookLM: arrastrá target/doc/wiki.md"
+    @echo "📋 Para NotebookLM/PDF: {{wiki_output}}"
