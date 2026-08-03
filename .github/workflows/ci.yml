@@ -88,6 +88,12 @@ jobs:
             exit 1
           fi
           echo "OK: no anyhow imports in webfang_core/src"
+      # Regression guard for #513: inter-crate dependency direction (see
+      # AGENTS.md "Inter-crate dependency direction (ENFORCED POLICY)").
+      # Fails if any crate depends on a prohibited sibling crate (e.g.
+      # webfang_core depending on cli/tui/mcp/ai, or tui on cli).
+      - name: Dependency direction gate
+        run: bash scripts/check_dependency_direction.sh
 
   # ============================================================================
   # TIER 1: FORMAT GATE (30-60 seconds)
