@@ -309,7 +309,11 @@ jobs:
   #      onig-sys (syntect) use #[cfg_attr(miri, ignore)] or live in
   #      #[cfg(not(miri))] modules. Miri cannot execute C FFI nor inline
   #      assembly (raw-cpuid via quanta/governor).
-  #   2. CI safety net: --skip downloader catches any missed FFI tests.
+  #   2. CI safety net: per-submodule skips (--skip wreq_downloader /
+  #      obscura_downloader / chromiumoxide_downloader) catch any missed FFI
+  #      test, while still allowing the pure-Rust downloader modules
+  #      (resource_governor, cookie_bridge, spa_detector, hybrid_router)
+  #      to run under Miri (#515).
   #   3. Matrix: tests split into parallel groups so ALL failures surface
   #      in ONE run instead of blocking on the first UB.
   #   4. Sysroot cache: cargo miri setup drops from ~15min to ~2s warm.
@@ -346,8 +350,12 @@ jobs:
           - group: infra-fast
             filter: "-- infrastructure::cpu_pool:: -- infrastructure::stream:: -- infrastructure::error:: -- infrastructure::user_agent:: -- infrastructure::bridge:: -- infrastructure::output:: -- infrastructure::config:: -- infrastructure::autotuning:: -- infrastructure::content_processing:: -- infrastructure::scraper::"
           - group: infra-slow
-            # wikilinks/syntax_highlight explicitly skipped — FFI-heavy, can't execute under Miri
-            filter: "-- infrastructure::crawler:: -- infrastructure::obsidian:: -- infrastructure::export:: -- infrastructure::http:: -- infrastructure::network:: -- infrastructure::converter:: --skip wikilinks --skip syntax_highlight"
+            # wikilinks/syntax_highlight explicitly skipped — FFI-heavy, can't execute under Miri.
+            # downloader: only pure-Rust submodules (cookie_bridge/spa_detector) — FFI (wreq,
+            # obscura, chromiumoxide) and sysinfo-dependent (hybrid_router, resource_governor)
+            # excluded via --skip below / #[cfg(not(miri))] in their test modules (#515).
+            # resource_governor is covered by TSan (sanitizers.yml), where sysconf works.
+            filter: "-- infrastructure::crawler:: -- infrastructure::obsidian:: -- infrastructure::export:: -- infrastructure::http:: -- infrastructure::network:: -- infrastructure::converter:: -- infrastructure::downloader::cookie_bridge:: -- infrastructure::downloader::spa_detector:: --skip wikilinks --skip syntax_highlight"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -369,7 +377,14 @@ jobs:
           MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-disable-isolation -Zmiri-ignore-leaks -Zmiri-seed=42 -Zmiri-permissive-provenance
         run: |
           cargo miri setup
-          cargo miri test --lib -- --skip downloader ${{ matrix.filter }}
+          # Safety net (#515): skip the FFI/subprocess-heavy AND sysinfo-dependent
+          # downloader submodules explicitly instead of the whole `downloader`
+          # subtree, so the pure-Rust submodules (cookie_bridge, spa_detector)
+          # run under Miri. hybrid_router/resource_governor can't run under Miri
+          # (sysconf via sysinfo) and are gated by #[cfg(not(miri))] at test level.
+          cargo miri test --lib -- \
+            --skip wreq_downloader --skip obscura_downloader --skip chromiumoxide_downloader \
+            ${{ matrix.filter }}
 
   # ============================================================================
   # COVERAGE: PR gate + push-to-main + manual trigger

@@ -359,15 +359,26 @@ impl Engine {
             #[cfg(unix)]
             {
                 use tokio::signal::unix::{signal, SignalKind};
-                #[allow(clippy::expect_used)]
-                let mut sigterm =
-                    signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
-                tokio::select! {
-                    _ = ctrl_c => {
-                        info!("Received SIGINT — initiating graceful shutdown");
+                // SIGTERM registration failure is only possible when the OS
+                // rejects the handler (e.g. invalid stream or OS). Never panic —
+                // gracefully degrade to SIGINT-only (warn for observability).
+                match signal(SignalKind::terminate()) {
+                    Ok(mut sigterm) => {
+                        tokio::select! {
+                            _ = ctrl_c => {
+                                info!("Received SIGINT — initiating graceful shutdown");
+                            },
+                            _ = sigterm.recv() => {
+                                info!("Received SIGTERM — initiating graceful shutdown");
+                            },
+                        }
                     },
-                    _ = sigterm.recv() => {
-                        info!("Received SIGTERM — initiating graceful shutdown");
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            "SIGTERM handler registration failed — graceful shutdown will only respond to SIGINT"
+                        );
+                        ctrl_c.await.ok();
                     },
                 }
             }

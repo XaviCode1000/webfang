@@ -164,6 +164,7 @@ impl<L1: Downloader, L2: Downloader, L3: Downloader> Downloader for HybridRouter
 }
 
 #[cfg(test)]
+#[cfg(not(miri))] // ResourceGovernor uses sysinfo (unsupported sysconf under Miri)
 mod tests {
     use super::*;
 

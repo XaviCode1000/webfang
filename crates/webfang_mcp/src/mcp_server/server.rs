@@ -66,13 +66,21 @@ pub async fn start_mcp_server(state: McpState, addr: SocketAddr) -> anyhow::Resu
 
 /// Wait for Ctrl+C and return.
 ///
-/// OS signal-handler registration cannot fail in practice; this function
-/// returns `()` so the error cannot be propagated.
-#[allow(clippy::expect_used)]
+/// OS signal-handler registration can fail (invalid stream state, OS limit).
+/// Instead of panicking, degrade gracefully: warn and park the future so the
+/// server keeps running; the OS-default SIGTERM handling still applies.
+///
+/// Note: we park instead of returning `Ok(())` because returning early would
+/// make `with_graceful_shutdown` fire immediately and tear the server down
+/// at startup.
 async fn shutdown_signal() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("failed to install Ctrl+C handler");
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        tracing::warn!(
+            error = %e,
+            "SIGINT handler unavailable — server will keep running and rely on SIGTERM"
+        );
+        std::future::pending::<()>().await;
+    }
     info!("MCP server shutting down");
 }
 
