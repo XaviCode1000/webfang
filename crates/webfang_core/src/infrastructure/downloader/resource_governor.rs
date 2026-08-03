@@ -181,7 +181,7 @@ pub enum ResourceError {
 
 impl From<ResourceError> for DownloadError {
     fn from(err: ResourceError) -> Self {
-        DownloadError::Internal(err.to_string())
+        DownloadError::ResourceExhausted(err.to_string())
     }
 }
 
@@ -235,7 +235,7 @@ mod tests {
     fn test_resource_error_into_download_error() {
         let res_err = ResourceError::Insufficient("test".into());
         let dl_err: DownloadError = res_err.into();
-        assert!(matches!(dl_err, DownloadError::Internal(_)));
+        assert!(matches!(dl_err, DownloadError::ResourceExhausted(_)));
     }
 
     // ========================================================================

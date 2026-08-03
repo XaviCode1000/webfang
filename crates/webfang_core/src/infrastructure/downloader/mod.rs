@@ -145,6 +145,12 @@ pub enum DownloadError {
     #[error("internal error: {0}")]
     Internal(String),
 
+    /// System resources (RAM) insufficient to spawn a heavyweight downloader
+    /// layer. An *expected* operational condition under memory pressure —
+    /// distinct from [`Internal`](Self::Internal), which means a bug.
+    #[error("insufficient resources: {0}")]
+    ResourceExhausted(String),
+
     /// Acquisition cancelled by the engine's cancellation token (#509) —
     /// the caller was waiting for a resource permit when shutdown fired.
     #[error("operation cancelled while waiting for resources")]
