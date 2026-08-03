@@ -68,6 +68,59 @@ async fn test_scrape_with_config_returns_outcome() {
     );
 }
 
+/// Lineage contract (#501): `scrape_with_config` derives the page identity
+/// from the caller-owned run root — the exported `ScrapedContent` must keep
+/// the root's `trace_id` (operation causality) while getting a fresh
+/// `span_id` (`.child()` semantics). Guards against a regression back to an
+/// ad-hoc `CorrelationId::new()` inside the use case.
+#[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
+#[tokio::test]
+async fn test_scrape_with_config_derives_child_from_run_root() {
+    let html = r#"<!DOCTYPE html>
+<html>
+<head><title>Lineage Page</title></head>
+<body>
+<article>
+<h1>Main Heading</h1>
+<p>This is the content of the article. It has enough text to be extracted by Readability.</p>
+</article>
+</body>
+</html>"#;
+
+    let url = url::Url::parse("https://example.com/lineage").unwrap();
+    let mock = MockHttpClient::new().with_ok_response(url.as_str(), html);
+    let config = ScraperConfig::default();
+
+    // Deterministic root: fixed UUID v7 + span_id keep the assertions exact.
+    let root_trace = uuid::Uuid::parse_str("01949e0e-8b8e-7000-8000-000000000001")
+        .expect("valid fixed UUID for the test root");
+    let root = CorrelationId::new_with_ids(root_trace, 0x0000_0000_0000_0001);
+
+    let outcome = scrape_with_config(&mock, &url, &config, None, None, None, &root)
+        .await
+        .expect("mock HTML should scrape");
+
+    let page = outcome
+        .results
+        .first()
+        .expect("one scraped result expected");
+    let page_correlation = page
+        .correlation_id
+        .as_ref()
+        .expect("scraped content must carry the page correlation identity");
+
+    assert_eq!(
+        page_correlation.trace_id(),
+        root.trace_id(),
+        "page identity must stay under the run-root trace_id (operation causality)"
+    );
+    assert_ne!(
+        page_correlation.span_id(),
+        root.span_id(),
+        "page identity must derive a fresh span_id via .child(), not reuse the root's"
+    );
+}
+
 // =====================================================================
 // ScraperConfig tests
 // =====================================================================
