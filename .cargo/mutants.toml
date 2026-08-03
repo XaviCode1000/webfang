@@ -1,0 +1,27 @@
+# cargo-mutants configuration — WebFang hot-path mutation scope
+#
+# IMPORTANT: This file is FLAT TOML — top-level keys only. There is no
+# per-package table (`[webfang_core]` does not exist in the schema).
+# Reference: https://json.schemastore.org/cargo-mutants-config.json
+#
+# `examine_globs` is the mutation scope: only files matching these globs
+# are mutated (analog of `-f`). `-d/--dir` selects the tree root, NOT the
+# mutation scope — never use it to filter files.
+#
+# Scope decision (2026-08): only the 6 gated hot paths, ~600 mutants.
+# The whole crate is ~3182 mutants — too slow for any CI budget.
+
+examine_globs = [
+  "crates/webfang_core/src/application/crawler/**",
+  "crates/webfang_core/src/application/pipeline/**",
+  "crates/webfang_core/src/extractor/**",
+  "crates/webfang_core/src/infrastructure/network/**",
+  "crates/webfang_core/src/infrastructure/http/waf_engine.rs",
+  "crates/webfang_core/src/infrastructure/bridge.rs",
+]
+
+# Re-exports and module glue add no mutation signal.
+exclude_globs = [
+  "**/mod.rs",
+  "crates/webfang_core/src/lib.rs",
+]

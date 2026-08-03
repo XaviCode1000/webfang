@@ -1,32 +1,27 @@
 # Mutation Testing — Hot Path Verification
 #
-# Stopping criterion #3 of the mega test remediation plan:
-# "cargo-mutants: hot path mutants die".
-#
 # Two complementary jobs (Phase 2, issue #451):
 #   - mutants-pr:   HARD GATE on every PR that touches a gated hot path.
 #                   Mutates ONLY the lines changed in the PR diff (--in-diff),
-#                   so cost is proportional to the change, not the whole hot
-#                   path. cargo-mutants exits 2 when a mutant survives -> job
-#                   fails -> PR is blocked. No continue-on-error: this is the gate.
-#   - mutants-weekly: weekly baseline over the full hot-path matrix (Mondays
-#                   03:00 UTC + manual dispatch). Report-only: the run step has
-#                   step-level continue-on-error and the survivor check runs with
-#                   if: always(), so survivors are always annotated, never blocking.
+#                   so cost is proportional to the change. cargo-mutants exits
+#                   2 when a mutant survives -> PR is blocked.
+#   - mutants-weekly: weekly baseline over the full hot-path scope, split into
+#                   16 deterministic shards (--shard k/16, --no-shuffle). The
+#                   shards partition the ~600 hot-path mutants so each job
+#                   finishes well inside the timeout. Report-only.
+#   - report:        aggregates shard outcomes.json into a single summary.
 #
-# Gated hot paths vs. matrix:
-#   crawler/** is gated on PRs since issue #475 added inline unit tests to
-#   crawl_task.rs. It also stays in the weekly matrix for baseline reporting.
-#
-# Notes:
-#   - --timeout=60 per mutant prevents infinite-loop mutants from stalling.
-#   - -- --lib limits test execution to unit tests (fast, no subprocess). This
-#     is correct for the gated paths (waf_engine, session_pool, bridge, pipeline,
-#     extractor all carry inline unit tests); it is exactly WHY crawler is excluded.
-#   - Survivor detection greps "NOT CAUGHT" (cargo-mutants' per-survivor token);
-#     the summary line uses lowercase "missed".
-#   - cargo-mutants is pinned for deterministic output/exit codes.
-#   - Matrix runs 6 targets in parallel (~20 min each); ~25 min weekly wall-clock.
+# Fixed in this version (was broken):
+#   - mutants-pr ran on `schedule` -> `origin/...HEAD` empty -> whole run died.
+#     Now gated with `if: github.event_name == 'pull_request'` (bulkhead).
+#   - Matrix used `-d <dir>` which selects the tree ROOT, not the mutation
+#     scope; every job mutated the whole crate (~3182 mutants) and timed out
+#     at 90 min. Scope now lives in .cargo/mutants.toml (examine_globs).
+#   - `-d file.rs` errored "not a directory" but passed via continue-on-error
+#     -> false-positive successes. Matrix is now shard-based, not target-based.
+#   - Survivor detection greps "MISSED" — the per-survivor token emitted by
+#     cargo-mutants 27.1.0 (verified against real CI artifacts; the old
+#     "NOT CAUGHT" token matched ZERO lines — the old alarm was dead code).
 
 name: Mutation Testing
 
@@ -36,7 +31,7 @@ permissions:
 on:
   pull_request:
     paths:
-      # crawler/** now has inline unit tests (issue #475) — safe to gate.
+      # Only PRs touching a gated hot path (must match .cargo/mutants.toml).
       - crates/webfang_core/src/application/crawler/**
       - crates/webfang_core/src/application/pipeline/**
       - crates/webfang_core/src/extractor/**
@@ -46,22 +41,14 @@ on:
   schedule:
     - cron: "0 3 * * 1"  # Mondays 03:00 UTC
   workflow_dispatch:
-    inputs:
-      scope:
-        description: "Directory or file to mutate (default: hot paths)"
-        required: false
-        default: ""
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
-  cancel-in-progress: true
+  # Bulkhead: PR runs and scheduled runs never cancel each other.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-  # Forces v4 actions (checkout, cache, upload-artifact) to run on Node 24
-  # instead of deprecated Node 20. Remove when all actions migrate to v5+.
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # CI optimizations: disable debuginfo + incremental for faster builds
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_DEV_INCREMENTAL: "false"
@@ -69,8 +56,10 @@ env:
 jobs:
   # ---------------------------------------------------------------------------
   # PR GATE — mutates only the diff. Any surviving mutant fails the job.
+  # Runs ONLY on pull_request (bulkhead: no base_ref on schedule).
   # ---------------------------------------------------------------------------
   mutants-pr:
+    if: github.event_name == 'pull_request'
     name: "cargo-mutants (PR diff)"
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -81,10 +70,8 @@ jobs:
           fetch-depth: 0
 
       - name: Generate PR diff
-        env:
-          BASE_REF: ${{ github.base_ref }}
         run: |
-          git diff "origin/$BASE_REF"...HEAD > git.diff
+          git diff "origin/${{ github.base_ref }}"...HEAD > git.diff
 
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -104,8 +91,9 @@ jobs:
         run: |
           cargo mutants -p webfang_core \
             --in-diff git.diff \
-            --timeout=60 \
-            -- --lib \
+            --baseline=skip \
+            --timeout=120 \
+            --in-place \
             2>&1 | tee mutants-output.txt
 
       - name: Upload results
@@ -116,23 +104,18 @@ jobs:
           path: mutants-output.txt
 
   # ---------------------------------------------------------------------------
-  # WEEKLY BASELINE — full hot-path matrix, reports survivors as warnings.
+  # WEEKLY BASELINE — full hot-path scope as 16 deterministic shards.
+  # Survivors are reported, never blocking.
   # ---------------------------------------------------------------------------
   mutants-weekly:
-    name: "cargo-mutants (${{ matrix.target }})"
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: "cargo-mutants (shard ${{ matrix.shard }}/16)"
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        target:
-          # crawler stays here as a report-only debt beacon (not in the PR gate).
-          - crates/webfang_core/src/application/crawler
-          - crates/webfang_core/src/application/pipeline
-          - crates/webfang_core/src/extractor
-          - crates/webfang_core/src/infrastructure/bridge.rs
-          - crates/webfang_core/src/infrastructure/http/waf_engine.rs
-          - crates/webfang_core/src/infrastructure/network
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     steps:
       - uses: actions/checkout@v4
 
@@ -150,28 +133,71 @@ jobs:
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Run mutation testing
-        # Step-level (not job-level) continue-on-error: survivors (exit 2) must
-        # not abort the job, so the annotation step below always gets to run.
+      - name: Run mutation testing (shard)
+        # Survivors (exit 2) must not abort the shard: the report job below
+        # aggregates every shard's outcomes. --no-shuffle keeps the k/16
+        # partition deterministic (no overlap, no gaps).
         continue-on-error: true
         run: |
           cargo mutants -p webfang_core \
-            -d "${{ matrix.target }}" \
-            --timeout=60 \
-            -- --lib \
+            --no-shuffle \
+            --shard ${{ matrix.shard }}/16 \
+            --baseline=skip \
+            --timeout=300 \
+            --in-place \
             2>&1 | tee mutants-output.txt
 
       - name: Check for survivors
         if: always()
         run: |
-          if grep -q "NOT CAUGHT" mutants-output.txt; then
-            echo "::warning::Surviving mutants detected in ${{ matrix.target }}"
-            grep "NOT CAUGHT" mutants-output.txt
+          if grep -q "MISSED" mutants-output.txt; then
+            echo "::warning::Surviving mutants detected in shard ${{ matrix.shard }}/16"
+            grep "MISSED" mutants-output.txt
           fi
 
       - name: Upload results
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: mutants-${{ strategy.job-index }}
+          name: mutants-${{ matrix.shard }}
           path: mutants-output.txt
+
+  # ---------------------------------------------------------------------------
+  # AGGREGATE REPORT — merge all shard outcomes into one summary.
+  # ---------------------------------------------------------------------------
+  report:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: mutants-weekly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mutants-*
+          merge-multiple: true
+          path: mutants-results/
+
+      - name: Summarize survivors
+        run: |
+          TOTAL=0
+          FILES=$(ls mutants-results/ 2>/dev/null | wc -l)
+          echo "## Mutation Testing Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Survivor summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Shard | Survivors |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          for f in mutants-results/*; do
+            [ -f "$f" ] || continue
+            SHARD=$(basename "$f" .txt)
+            COUNT=$(grep -c "MISSED" "$f" || echo 0)
+            TOTAL=$((TOTAL + COUNT))
+            echo "| $SHARD | $COUNT |" >> $GITHUB_STEP_SUMMARY
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Total surviving mutants: $TOTAL**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Shard artifacts processed: $FILES" >> $GITHUB_STEP_SUMMARY
+          echo "Total survivors: $TOTAL"
+          if [ "$TOTAL" -gt 0 ]; then
+            echo "::warning::$TOTAL surviving mutants across hot paths — review coverage"
+          fi
