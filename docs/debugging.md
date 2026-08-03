@@ -139,11 +139,47 @@ jq -r 'select(.level == "ERROR") | .fields.url // empty' debug.jsonl | sort -u
 | `execute` | `pipeline::PipelineExecutor` | `url`, `stages` |
 | `pipeline_stage` | `pipeline::PipelineExecutor` | `stage`, `url` |
 | `export_batch` | `JsonlExporter` / `VectorExporter` / `FileExporter` | `exporter`, `documents` |
-| `scrape_with_config` | `scraper_service` | `url`, `has_downloads` |
+| `scrape_single_url` → `scrape_single` | `crawler::discovery::scrape_single_url_for_tui` | `url` (outer), `correlation_id`, `trace_id`, `url` (inner, #501) |
+| `scrape_with_config` | `scraper_service` | `url`, `correlation_id`, `trace_id`, `has_downloads` |
 | `scrape_multiple_with_limit` | `scraper_service` | `urls`, `concurrency` |
 
-Events (not spans): `crawl progress`, `crawl completed`, and any
-`log_scrape_error(...)` error carrying `error`, `url`, `stage`, `trace_id`.
+Identity follows the root-child contract: the OPERATION owns one root
+`CorrelationId`, and every unit of work derives `.child()` from it — same
+`trace_id`, fresh `span_id`. In a CLI run the orchestrator mints the root
+and announces it with a `run identity` event (`correlation_id`, `trace_id`
+in `.fields`); `scrape_multiple_with_limit` does the same with a
+`scrape_multiple identity` event. So in a multi-page scrape:
+
+- `span_fields.trace_id` is the **shared run-root UUID** across all page
+  spans — the whole run is reconstructable by it.
+- `span_fields.correlation_id` (full W3C traceparent) is **unique per
+  page**; its trace part is the run-root UUID without dashes.
+
+Identity is declared **at span creation time** because FileTraceLayer
+snapshots span fields in `on_new_span` — fields recorded later never reach
+the JSONL. `ScrapedContent` and the RAG exports carry the same identity, so
+an exported document's `correlation_id` matches its page's
+`span_fields.correlation_id`:
+
+```bash
+# Reconstruct an entire run by the shared run-root trace_id
+ROOT=01949e0e-8b8e-7000-8000-000000000001
+jq -c "select(.span_fields.trace_id == \"$ROOT\")" debug.jsonl
+
+# The run-root identity (the `run identity` event carries it in .fields)
+jq -c 'select(.message? == "run identity") | .fields' debug.jsonl
+
+# Every page identity present in the trace
+jq -r '.span_fields.correlation_id // empty' debug.jsonl | sort -u
+
+# Reconstruct one page's scrape by its correlation_id
+CID=00-01949e0e8b8e70008000000000000001-0000000000000042-01
+jq -c "select(.span_fields.correlation_id? == \"$CID\")" debug.jsonl
+```
+
+Events (not spans): `run identity`, `scrape_multiple identity`,
+`crawl progress`, `crawl completed`, and any `log_scrape_error(...)` error
+carrying `error`, `url`, `stage`, `trace_id`.
 
 ---
 

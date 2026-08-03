@@ -13,7 +13,7 @@
 
 use crate::application::error_mapping::scraper_error_from_http;
 use crate::application::http_client::HttpClientPort;
-use crate::domain::{DomInspectorPort, ExtractResult, ScrapedContent, ValidUrl};
+use crate::domain::{CorrelationId, DomInspectorPort, ExtractResult, ScrapedContent, ValidUrl};
 use crate::error::{Result, ScraperError};
 use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
 use crate::infrastructure::observability::log_scrape_error;
@@ -66,12 +66,18 @@ impl ScrapeOutcome {
 
 /// Scrape a URL with asset downloading configuration
 ///
+/// Correlation contract (#501): the caller owns the run-root identity
+/// (`root_correlation`); this use case derives one page child from it
+/// (same `trace_id`, fresh `span_id`) so every page of the operation stays
+/// reconstructable under a single trace while each page is distinguishable.
+///
 /// # Arguments
 /// * `client` - HTTP client
 /// * `url` - URL to scrape
 /// * `config` - Scraper configuration with download options
 /// * `downloader` - Optional asset downloader
 /// * `inspector` - Optional DOM inspector for selector diagnostics (None for non-MCP paths)
+/// * `root_correlation` - Run-root correlation identity of the enclosing operation
 ///
 /// # Returns
 /// * `ScrapeOutcome` - Scraped content results + CSS selector extraction result
@@ -79,21 +85,48 @@ impl ScrapeOutcome {
 /// # Errors
 /// Returns `ScraperError::Http` for HTTP errors, `ScraperError::Network` for
 /// connection errors.
-#[instrument(
-    name = "scrape_with_config",
-    skip(client, config, downloader, inspector, engine),
-    fields(
-        url = %url,
-        has_downloads = config.has_downloads()
-    )
-)]
 pub async fn scrape_with_config(
     client: &dyn HttpClientPort,
     url: &url::Url,
     config: &ScraperConfig,
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     inspector: Option<&dyn DomInspectorPort>,
+    engine: Option<&AdaptiveSelectorEngine>,
+    root_correlation: &CorrelationId,
+) -> Result<ScrapeOutcome> {
+    // Per-page identity derived from the run root BEFORE the span so the span
+    // can declare it (`#[instrument]` only sees function parameters — #501).
+    let page_correlation = root_correlation.child();
+    scrape_with_config_inner(
+        client,
+        url,
+        config,
+        downloader,
+        inspector,
+        engine,
+        page_correlation,
+    )
+    .await
+}
+
+#[instrument(
+    name = "scrape_with_config",
+    skip(client, config, downloader, inspector, engine, correlation),
+    fields(
+        url = %url,
+        correlation_id = %correlation,
+        trace_id = %correlation.trace_id(),
+        has_downloads = config.has_downloads()
+    )
+)]
+async fn scrape_with_config_inner(
+    client: &dyn HttpClientPort,
+    url: &url::Url,
+    config: &ScraperConfig,
+    downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
+    inspector: Option<&dyn DomInspectorPort>,
     #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
+    correlation: CorrelationId,
 ) -> Result<ScrapeOutcome> {
     let mut results = Vec::new();
 
@@ -102,7 +135,13 @@ pub async fn scrape_with_config(
     let response = match client.get(url.as_str()).await {
         Ok(resp) => resp,
         Err(e) => {
-            log_scrape_error(&e, url.as_str(), "fetch", None, "HTTP request failed");
+            log_scrape_error(
+                &e,
+                url.as_str(),
+                "fetch",
+                Some(&correlation),
+                "HTTP request failed",
+            );
             return Err(scraper_error_from_http(e, url.as_str()));
         },
     };
@@ -148,7 +187,7 @@ pub async fn scrape_with_config(
             &chain,
             url.as_str(),
             "fetch",
-            None,
+            Some(&correlation),
             "WAF challenge detected",
         );
         return Err(ScraperError::waf_blocked(url.to_string(), chain));
@@ -256,7 +295,7 @@ pub async fn scrape_with_config(
                 // This is what downstream Markdown converters receive.
                 html: Some(article.content),
                 assets,
-                correlation_id: Some(crate::domain::CorrelationId::new()),
+                correlation_id: Some(correlation.clone()),
             });
         },
         Err(e) => {
@@ -309,7 +348,7 @@ pub async fn scrape_with_config(
                 date: None,
                 html: Some(html),
                 assets,
-                correlation_id: Some(crate::domain::CorrelationId::new()),
+                correlation_id: Some(correlation),
             });
         },
     }
@@ -368,20 +407,34 @@ pub async fn scrape_multiple_with_limit(
         return Ok(Vec::new());
     }
 
+    // One run-root identity for the whole batch (#501): every
+    // `scrape_with_config` call derives its own child from it, so the trace
+    // is shared across the batch while each page span stays unique.
+    let root_correlation = CorrelationId::new();
+    info!(
+        correlation_id = %root_correlation,
+        trace_id = %root_correlation.trace_id(),
+        "scrape_multiple identity"
+    );
+
     info!(
         "🌐 Scraping {} URLs with concurrency limit {}",
         urls.len(),
         config.scraper_concurrency
     );
 
-    let results: Vec<Result<ScrapeOutcome>> = stream::iter(urls.to_vec())
-        .map(|url| {
-            let config = config.clone();
-            async move { scrape_with_config(client, &url, &config, downloader, None, None).await }
-        })
-        .buffer_unordered(config.scraper_concurrency)
-        .collect()
-        .await;
+    let results: Vec<Result<ScrapeOutcome>> =
+        stream::iter(urls.to_vec())
+            .map(|url| {
+                let config = config.clone();
+                let root = root_correlation.clone();
+                async move {
+                    scrape_with_config(client, &url, &config, downloader, None, None, &root).await
+                }
+            })
+            .buffer_unordered(config.scraper_concurrency)
+            .collect()
+            .await;
 
     let mut all_content = Vec::new();
     for result in results {

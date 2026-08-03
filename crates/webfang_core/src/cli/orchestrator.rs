@@ -76,8 +76,22 @@ pub async fn run(
         return CliExit::Success;
     }
     if opts.batch.enabled {
+        // Batch mode uses the crawl Engine, which mints its own run-root
+        // identity per crawl — do not mint one here.
         return run_batch(opts).await;
     }
+
+    // Run-root correlation identity (#501): the whole operation owns ONE
+    // root; every page derives `.child()` from it. `#[instrument]` spans
+    // cannot see locals at creation, so declare it offline-visible via a
+    // structured event (lands in the JSONL `.fields`).
+    let root_correlation = domain::CorrelationId::new();
+    info!(
+        correlation_id = %root_correlation,
+        trace_id = %root_correlation.trace_id(),
+        "run identity"
+    );
+
     let prepare = match prepare_phase(&opts).await {
         Err(e) => return e,
         Ok(p) => p,
@@ -126,6 +140,7 @@ pub async fn run(
             .as_deref()
             .map(|d| d as &dyn crate::domain::ports::AssetDownloaderPort),
         engine_ref,
+        &root_correlation,
     )
     .await
     {
@@ -352,6 +367,7 @@ async fn scrape_phase(
     observer: &dyn crate::application::progress_observer::ProgressObserver,
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     engine: Option<&AdaptiveSelectorEngine>,
+    root_correlation: &domain::CorrelationId,
 ) -> Result<
     (
         Vec<domain::ScrapedContent>,
@@ -359,7 +375,16 @@ async fn scrape_phase(
     ),
     crate::error::ScraperError,
 > {
-    scrape_urls(urls, scraper_config, opts, observer, downloader, engine).await
+    scrape_urls(
+        urls,
+        scraper_config,
+        opts,
+        observer,
+        downloader,
+        engine,
+        root_correlation,
+    )
+    .await
 }
 
 /// Build the user-facing failure line for a single URL.

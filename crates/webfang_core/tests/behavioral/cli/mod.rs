@@ -11,5 +11,6 @@ mod resume_test;
 mod robots_test;
 mod single_page_test;
 mod sitemap_test;
+mod trace_correlation_test;
 mod user_agent_test;
 mod waf_gauntlet_test;

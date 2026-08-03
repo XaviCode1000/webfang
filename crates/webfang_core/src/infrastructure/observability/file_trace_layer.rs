@@ -635,6 +635,54 @@ mod tests {
         );
     }
 
+    /// Issue #501 regression: correlation identity declared at span creation
+    /// (the exact pattern of `scrape_single` / `crawl_page` /
+    /// `scrape_with_config`) must surface as `span_fields.correlation_id` and
+    /// `span_fields.trace_id` on every event inside the span. FileTraceLayer
+    /// snapshots fields in `on_new_span`, so anything not declared at creation
+    /// time is invisible offline — this test pins that contract.
+    #[test]
+    fn contract_captures_correlation_identity_declared_at_span_creation() {
+        use crate::domain::value_objects::CorrelationId;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let layer = FileTraceLayer::new(path.clone()).unwrap();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        // Fixed IDs keep the assertions exact-equality and deterministic.
+        let trace_id = uuid::Uuid::parse_str("01949e0e-8b8e-7000-8000-000000000001").unwrap();
+        let correlation = CorrelationId::new_with_ids(trace_id, 0x0000_0000_0000_0042);
+        let expected_traceparent = correlation.to_string();
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            let span = tracing::info_span!(
+                "scrape_single",
+                url = "https://example.com/page",
+                correlation_id = %correlation,
+                trace_id = %correlation.trace_id()
+            );
+            let _enter = span.enter();
+            tracing::info!("fetching page");
+        });
+
+        let parsed = parse_single_event(&path);
+        let span_fields = parsed["span_fields"]
+            .as_object()
+            .expect("span_fields must be present for spans declaring identity");
+        assert_eq!(
+            span_fields["correlation_id"],
+            json!(expected_traceparent),
+            "correlation_id must equal the W3C traceparent declared at span creation"
+        );
+        assert_eq!(
+            span_fields["trace_id"],
+            json!(trace_id.to_string()),
+            "trace_id must equal the correlation's UUID declared at span creation"
+        );
+    }
+
     #[test]
     fn contract_span_field_absent_outside_span() {
         let dir = tempfile::tempdir().unwrap();

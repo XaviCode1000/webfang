@@ -5,7 +5,7 @@ use webfang_core::application::scraper_service::{
     detect_spa_content, extract_with_selector, scrape_multiple_with_limit, scrape_with_config,
     scrape_with_readability, MAX_INSTRUMENTED_BODY_SIZE, MIN_CONTENT_CHARS,
 };
-use webfang_core::domain::{DomInspectorPort, ExtractResult, SelectorErrorKind};
+use webfang_core::domain::{CorrelationId, DomInspectorPort, ExtractResult, SelectorErrorKind};
 use webfang_core::{ScraperConfig, ScraperError};
 
 // --- Shared mock HTTP client (tests/common/mock_http.rs, Item 2 Tier-2) ---
@@ -27,7 +27,8 @@ async fn test_scrape_with_config_invalid_url() {
         Err(HttpError::Connection("no route to host".into())),
     );
 
-    let result = scrape_with_config(&mock, &url, &config, None, None, None).await;
+    let root = CorrelationId::new();
+    let result = scrape_with_config(&mock, &url, &config, None, None, None, &root).await;
     assert!(result.is_err(), "connection error should propagate as Err");
 }
 
@@ -49,7 +50,8 @@ async fn test_scrape_with_config_returns_outcome() {
     let mock = MockHttpClient::new().with_ok_response(url.as_str(), html);
     let config = ScraperConfig::default();
 
-    let outcome = scrape_with_config(&mock, &url, &config, None, None, None)
+    let root = CorrelationId::new();
+    let outcome = scrape_with_config(&mock, &url, &config, None, None, None, &root)
         .await
         .expect("mock HTML should succeed");
     assert!(
@@ -63,6 +65,59 @@ async fn test_scrape_with_config_returns_outcome() {
     assert!(
         !outcome.results[0].content.is_empty(),
         "scraped content should not be empty"
+    );
+}
+
+/// Lineage contract (#501): `scrape_with_config` derives the page identity
+/// from the caller-owned run root — the exported `ScrapedContent` must keep
+/// the root's `trace_id` (operation causality) while getting a fresh
+/// `span_id` (`.child()` semantics). Guards against a regression back to an
+/// ad-hoc `CorrelationId::new()` inside the use case.
+#[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
+#[tokio::test]
+async fn test_scrape_with_config_derives_child_from_run_root() {
+    let html = r#"<!DOCTYPE html>
+<html>
+<head><title>Lineage Page</title></head>
+<body>
+<article>
+<h1>Main Heading</h1>
+<p>This is the content of the article. It has enough text to be extracted by Readability.</p>
+</article>
+</body>
+</html>"#;
+
+    let url = url::Url::parse("https://example.com/lineage").unwrap();
+    let mock = MockHttpClient::new().with_ok_response(url.as_str(), html);
+    let config = ScraperConfig::default();
+
+    // Deterministic root: fixed UUID v7 + span_id keep the assertions exact.
+    let root_trace = uuid::Uuid::parse_str("01949e0e-8b8e-7000-8000-000000000001")
+        .expect("valid fixed UUID for the test root");
+    let root = CorrelationId::new_with_ids(root_trace, 0x0000_0000_0000_0001);
+
+    let outcome = scrape_with_config(&mock, &url, &config, None, None, None, &root)
+        .await
+        .expect("mock HTML should scrape");
+
+    let page = outcome
+        .results
+        .first()
+        .expect("one scraped result expected");
+    let page_correlation = page
+        .correlation_id
+        .as_ref()
+        .expect("scraped content must carry the page correlation identity");
+
+    assert_eq!(
+        page_correlation.trace_id(),
+        root.trace_id(),
+        "page identity must stay under the run-root trace_id (operation causality)"
+    );
+    assert_ne!(
+        page_correlation.span_id(),
+        root.span_id(),
+        "page identity must derive a fresh span_id via .child(), not reuse the root's"
     );
 }
 
