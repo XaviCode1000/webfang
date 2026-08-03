@@ -268,6 +268,33 @@ mod tests {
         }
     }
 
+    /// Fails with an HTTP error — a non-WAF [`DownloadError`] that must NOT
+    /// abort escalation (distinct variant from `FailingDownloader` so tests
+    /// can pinpoint which layer produced the observed error).
+    struct HttpErrorDownloader {
+        status: u16,
+        message: String,
+    }
+
+    impl Downloader for HttpErrorDownloader {
+        fn fetch<'a>(&'a self, _url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
+            Box::pin(async move {
+                Err(DownloadError::Http {
+                    status: self.status,
+                    message: self.message.clone(),
+                })
+            })
+        }
+
+        fn supports_interactions(&self) -> bool {
+            false
+        }
+
+        fn memory_cost(&self) -> usize {
+            0
+        }
+    }
+
     // ---- Tests ---------------------------------------------------------
 
     #[tokio::test]
@@ -354,6 +381,51 @@ mod tests {
         let url: Url = "https://spa.example.com".parse().unwrap();
         let page = router.fetch(&url).await.unwrap();
         assert!(page.html.contains("Enough content"));
+    }
+
+    #[tokio::test]
+    async fn test_layer2_non_waf_error_escalates_to_layer3() {
+        // Gap #511-1: Layer 2 failing with a non-WAF DownloadError (here: HTTP
+        // 500, a distinct variant from L1/L3 Network errors) must NOT abort —
+        // the router escalates to Layer 3 (hybrid_router.rs:125-127).
+        let router = HybridRouter::new(
+            StubDownloader::spa_page(),
+            HttpErrorDownloader {
+                status: 500,
+                message: "obscura subprocess failed".into(),
+            },
+            StubDownloader::static_page().with_interactions(true),
+            false,
+        );
+        let url: Url = "https://spa.example.com".parse().unwrap();
+        let page = router.fetch(&url).await.unwrap();
+        assert!(page.html.contains("Enough content"));
+    }
+
+    #[tokio::test]
+    async fn test_all_layers_exhausted_returns_final_error() {
+        // Gap #511-2: when all three layers fail, the router returns the LAST
+        // layer's error (hybrid_router.rs:148-151). L2 fails with Http{500}
+        // and L3 with Network("chromium crashed"); asserting the Network
+        // variant + message proves the surfaced error is L3's, not L2's.
+        let router = HybridRouter::new(
+            StubDownloader::spa_page(),
+            HttpErrorDownloader {
+                status: 500,
+                message: "obscura subprocess failed".into(),
+            },
+            FailingDownloader {
+                message: "chromium crashed".into(),
+            },
+            false,
+        );
+        let url: Url = "https://spa.example.com".parse().unwrap();
+        let err = router.fetch(&url).await.unwrap_err();
+        assert!(matches!(err, DownloadError::Network(_)));
+        assert!(
+            err.to_string().contains("chromium crashed"),
+            "final error must carry Layer 3's cause, got: {err}"
+        );
     }
 
     #[tokio::test]
