@@ -74,6 +74,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ScrapeUrlParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, ai);
 
         // REQ-03: reject malformed URLs first (invalid-params), regardless of
@@ -140,6 +142,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<SearchObsidianParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, obsidian);
 
         // Check all three required ports are available.

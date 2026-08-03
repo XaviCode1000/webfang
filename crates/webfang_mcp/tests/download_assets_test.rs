@@ -163,6 +163,36 @@ fn is_tool_error(result: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// A relative temporary directory that deletes itself on drop.
+///
+/// `tempfile::TempDir` always returns an absolute path (it joins with
+/// `env::current_dir`), which the MCP `require_safe_path` validator rejects.
+/// These tests need a *relative* output dir, so we manage one manually.
+struct RelTempDir {
+    path: std::path::PathBuf,
+}
+
+impl RelTempDir {
+    fn new(prefix: &str) -> Self {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let name = format!("{prefix}-{}-{}", std::process::id(), n);
+        let path = std::path::PathBuf::from(name);
+        std::fs::create_dir_all(&path).expect("create relative temp dir");
+        RelTempDir { path }
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for RelTempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 /// Unwrap the CallToolResult object from the JSON-RPC envelope returned by
 /// `call_tool`, so helpers like `tool_text` see the `content` field.
 fn tool_result(resp: Value) -> Value {
@@ -399,7 +429,7 @@ async fn download_assets_output_dir_param_writes_to_requested_dir() {
     let client = Client::new();
     let session = init_session(&client, &base_url).await;
 
-    let out = tempfile::TempDir::new().expect("create output temp dir");
+    let out = RelTempDir::new("wf-out");
     let html = format!(
         "<html><body><img src=\"{}/logo.png\"></body></html>",
         mock.uri()

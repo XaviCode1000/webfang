@@ -26,6 +26,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<CleanHtmlParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, content);
 
         let cleaned =
@@ -42,6 +44,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<HtmlToMarkdownParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, content);
 
         let md = webfang_core::infrastructure::converter::html_to_markdown::convert_to_markdown(
@@ -59,6 +63,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ExtractLinksParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, content);
 
         match webfang_core::infrastructure::crawler::extract_links(&params.html, &params.base_url) {
@@ -80,6 +86,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<HighlightCodeParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, content);
 
         let highlighted =
@@ -98,6 +106,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ConvertWikiLinksParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, content);
 
         let wikilinks = webfang_core::infrastructure::converter::wikilinks::convert_wiki_links(
@@ -116,6 +126,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<GenerateFrontmatterParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, content);
 
         let title = params.title.as_deref().unwrap_or("Untitled");
@@ -143,6 +155,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<GenerateRichMetadataParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, content);
 
         let content = params.content.as_deref().unwrap_or("");

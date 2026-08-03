@@ -10,14 +10,7 @@
 //! * `pub fn validate(&self) -> Result<(), McpError>` — semantic validation
 //!   (URL scheme, path traversal, oversize blobs, numeric bounds). Handlers
 //!   call this at the top of every tool body (`params.validate()?`); the
-//!   wiring is delivered in slice 2 of issue #512.
-//!
-//! The `validate()` methods are not yet called from any handler — the
-//! `#![allow(dead_code)]` below keeps clippy clean until slice 2 wires them
-//! into the tool bodies. Remove the allow once slice 2 lands.
-
-// `validate()` methods are foundation only — slice 2 wires them into handlers.
-#![allow(dead_code)]
+//!   wiring landed in slice 2 of issue #512.
 
 use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
@@ -27,7 +20,7 @@ use serde_json::Value;
 use crate::mcp_server::validation::{
     require_http_url, require_max_len, require_max_value_u16, require_max_value_u64,
     require_non_empty, require_one_of, require_safe_domain, require_safe_name, require_safe_path,
-    MAX_BLOB_LEN,
+    require_safe_seed, MAX_BLOB_LEN,
 };
 
 const EXPORT_FORMATS: &[&str] = &["jsonl", "vector", "auto"];
@@ -282,7 +275,7 @@ impl HighlightCodeParams {
 pub(crate) struct ConvertWikiLinksParams {
     /// Markdown content
     pub markdown: String,
-    /// Base domain for link conversion
+    /// Base domain for link conversion (e.g. example.com, without scheme)
     pub base_domain: String,
 }
 
@@ -292,7 +285,7 @@ impl ConvertWikiLinksParams {
     /// blob size or `base_domain` is not a bare domain string.
     pub fn validate(&self) -> Result<(), McpError> {
         require_max_len("markdown", &self.markdown, MAX_BLOB_LEN)?;
-        require_http_url("base_domain", &self.base_domain)?;
+        require_safe_domain("base_domain", &self.base_domain)?;
         Ok(())
     }
 }
@@ -371,7 +364,7 @@ impl MatchUrlPatternParams {
 pub(crate) struct IsInternalLinkParams {
     /// URL to check
     pub url: String,
-    /// Seed domain to compare against (bare domain, e.g. "example.com")
+    /// Seed domain to compare against (bare domain, e.g. example.com, or a full http(s) URL)
     pub seed_domain: String,
 }
 
@@ -381,7 +374,7 @@ impl IsInternalLinkParams {
     /// or `seed_domain` is not a well-formed bare domain string.
     pub fn validate(&self) -> Result<(), McpError> {
         require_http_url("url", &self.url)?;
-        require_safe_domain("seed_domain", &self.seed_domain)?;
+        require_safe_seed("seed_domain", &self.seed_domain)?;
         Ok(())
     }
 }
@@ -501,7 +494,6 @@ impl SearchObsidianParams {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DownloadAssetsParams {
@@ -538,7 +530,6 @@ impl DownloadAssetsParams {
 }
 
 // Params for tools that accept free-form JSON input
-#[allow(dead_code)]
 #[derive(Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GenerateFrontmatterParams {
@@ -582,7 +573,6 @@ impl GenerateFrontmatterParams {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GenerateRichMetadataParams {
@@ -602,7 +592,6 @@ impl GenerateRichMetadataParams {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ExportJsonlParams {
@@ -628,7 +617,6 @@ impl ExportJsonlParams {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ExportVectorParams {
@@ -654,7 +642,6 @@ impl ExportVectorParams {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProcessExportPipelineParams {
@@ -680,7 +667,6 @@ impl ProcessExportPipelineParams {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct VerifyWafIntegrityParams {

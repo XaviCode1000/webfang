@@ -170,6 +170,52 @@ fn require_safe_domain_rejects_no_dot() {
 }
 
 // ===========================================================================
+// validation::require_safe_seed
+// ===========================================================================
+
+#[test]
+fn require_safe_seed_accepts_bare_domain() {
+    validation::require_safe_seed("seed_domain", "example.com").expect("bare domain ok");
+    validation::require_safe_seed("seed_domain", "a.b.c.example.co.uk").expect("deep subdomain ok");
+}
+
+#[test]
+fn require_safe_seed_accepts_full_url() {
+    validation::require_safe_seed("seed_domain", "https://example.com/path")
+        .expect("full http(s) URL ok");
+}
+
+#[test]
+fn require_safe_seed_rejects_file_scheme() {
+    let err = validation::require_safe_seed("seed_domain", "file:///etc").unwrap_err();
+    assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
+}
+
+#[test]
+fn require_safe_seed_rejects_traversal_url() {
+    let err = validation::require_safe_seed("seed_domain", "https://evil.com/..").unwrap_err();
+    assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
+}
+
+#[test]
+fn require_safe_seed_rejects_empty() {
+    let err = validation::require_safe_seed("seed_domain", "").unwrap_err();
+    assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
+}
+
+#[test]
+fn require_safe_seed_rejects_no_dot() {
+    let err = validation::require_safe_seed("seed_domain", "localhost").unwrap_err();
+    assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
+}
+
+#[test]
+fn require_safe_seed_rejects_traversal_bare() {
+    let err = validation::require_safe_seed("seed_domain", "..").unwrap_err();
+    assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
+}
+
+// ===========================================================================
 // validation::require_one_of
 // ===========================================================================
 

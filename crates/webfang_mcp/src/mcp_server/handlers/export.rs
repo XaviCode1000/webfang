@@ -129,6 +129,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ExportFileParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, export);
 
         // Honest error on empty content (REQ-MCP-EXPORT-05).
@@ -212,6 +214,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ExportJsonlParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, export);
 
         let output_dir = PathBuf::from(params.output_dir.as_deref().unwrap_or("./output"));
@@ -237,6 +241,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ExportVectorParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, export);
 
         let output_dir = PathBuf::from(params.output_dir.as_deref().unwrap_or("./output"));
@@ -262,6 +268,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ProcessExportPipelineParams>,
     ) -> Result<CallToolResult, McpError> {
+        params.validate()?;
+
         let _permit = acquire_semaphore!(self, export);
 
         let format_str = params.format.as_deref().unwrap_or("jsonl");
