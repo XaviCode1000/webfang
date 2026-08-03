@@ -66,20 +66,7 @@ pub fn read_vault_notes(vault_path: &Path) -> Result<Vec<VaultNote>, ScraperErro
         .follow_links(true)
         .min_depth(1)
         .into_iter()
-        .filter_entry(|entry| {
-            // Always include the vault root (depth 0 is excluded by min_depth,
-            // but filter_entry still sees it for pruning decisions).
-            if entry.depth() == 0 {
-                return true;
-            }
-            // Prune hidden directories entirely (`.obsidian/`, `.trash/`, `.git/`, …)
-            if entry.file_type().is_dir() {
-                if let Some(name) = entry.file_name().to_str() {
-                    return !name.starts_with('.');
-                }
-            }
-            true
-        });
+        .filter_entry(should_walk_entry);
 
     for entry in walker {
         let entry = match entry {
@@ -92,53 +79,9 @@ pub fn read_vault_notes(vault_path: &Path) -> Result<Vec<VaultNote>, ScraperErro
             },
         };
 
-        // Only process regular files with `.md` extension.
-        if !entry.file_type().is_file() {
-            continue;
+        if let Some(note) = process_vault_entry(&entry, vault_path)? {
+            notes.push(note);
         }
-        let is_markdown = entry
-            .path()
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
-        if !is_markdown {
-            continue;
-        }
-
-        let path = entry.path();
-
-        // Read raw bytes, then validate UTF-8.
-        let bytes = std::fs::read(path)?;
-        let content = match String::from_utf8(bytes) {
-            Ok(c) => c,
-            Err(_) => {
-                tracing::warn!("Skipping non-UTF-8 note: {}", path.display());
-                continue;
-            },
-        };
-
-        // mtime via filesystem metadata → Unix epoch seconds.
-        let metadata = std::fs::metadata(path)?;
-        let mtime_secs = metadata
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0, |d| d.as_secs() as i64);
-
-        let content_hash = sha256_hex(content.as_bytes());
-
-        // Store path relative to the vault root for portability.
-        let relative = path
-            .strip_prefix(vault_path)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .into_owned();
-
-        notes.push(VaultNote {
-            path: relative,
-            content,
-            mtime_secs,
-            content_hash,
-        });
     }
 
     tracing::debug!(
@@ -148,6 +91,84 @@ pub fn read_vault_notes(vault_path: &Path) -> Result<Vec<VaultNote>, ScraperErro
     );
 
     Ok(notes)
+}
+
+/// Walker prune rule: always include the vault root, but prune hidden
+/// directories entirely (`.obsidian/`, `.trash/`, `.git/`, …). Non-directory
+/// entries are kept so regular files (incl. hidden ones at depth ≥ 1) are
+/// visited and filtered by extension in [`process_vault_entry`].
+fn should_walk_entry(entry: &walkdir::DirEntry) -> bool {
+    if entry.depth() == 0 {
+        return true;
+    }
+    if entry.file_type().is_dir() {
+        if let Some(name) = entry.file_name().to_str() {
+            return !name.starts_with('.');
+        }
+    }
+    true
+}
+
+/// Convert a single walked entry into a [`VaultNote`] when it is a regular
+/// `.md` file with valid UTF-8 content.
+///
+/// - `Ok(Some(note))` — a note was read.
+/// - `Ok(None)` — non-markdown file, or a non-UTF-8 note (logged + skipped,
+///   matching the original tolerant handling of bad encodings).
+/// - `Err(ScraperError::Io)` — the file could not be read or its metadata
+///   queried; propagated to abort the vault read (documented contract).
+fn process_vault_entry(
+    entry: &walkdir::DirEntry,
+    vault_path: &Path,
+) -> Result<Option<VaultNote>, ScraperError> {
+    // Only process regular files with `.md` extension.
+    if !entry.file_type().is_file() {
+        return Ok(None);
+    }
+    let is_markdown = entry
+        .path()
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
+    if !is_markdown {
+        return Ok(None);
+    }
+
+    let path = entry.path();
+
+    // Read raw bytes, then validate UTF-8. A failed read aborts (documented
+    // contract); a non-UTF-8 file is skipped (tolerant, original behavior).
+    let bytes = std::fs::read(path)?;
+    let content = match String::from_utf8(bytes) {
+        Ok(c) => c,
+        Err(_) => {
+            tracing::warn!("Skipping non-UTF-8 note: {}", path.display());
+            return Ok(None);
+        },
+    };
+
+    // mtime via filesystem metadata → Unix epoch seconds.
+    let metadata = std::fs::metadata(path)?;
+    let mtime_secs = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs() as i64);
+
+    let content_hash = sha256_hex(content.as_bytes());
+
+    // Store path relative to the vault root for portability.
+    let relative = path
+        .strip_prefix(vault_path)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned();
+
+    Ok(Some(VaultNote {
+        path: relative,
+        content,
+        mtime_secs,
+        content_hash,
+    }))
 }
 
 /// SHA-256 hex digest of the bytes (lowercase, dependency-free hex encoding).
