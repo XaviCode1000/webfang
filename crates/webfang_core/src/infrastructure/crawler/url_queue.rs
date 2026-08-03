@@ -216,6 +216,23 @@ impl UrlQueue {
         result
     }
 
+    /// Snapshot pending URLs as strings WITHOUT consuming them.
+    ///
+    /// Used by checkpoint persistence (#517): the queue must be serializable at
+    /// any point so a resume can re-enqueue what was pending when the crawl
+    /// stopped. The `seen` set is untouched, so re-pushing these URLs later
+    /// would be rejected as duplicates — callers restoring a checkpoint must
+    /// bypass the dedup set for exactly the restored URLs.
+    ///
+    /// # Returns
+    ///
+    /// All URLs currently in the queue (heap order, not priority order).
+    #[must_use]
+    pub async fn snapshot_urls(&self) -> Vec<String> {
+        let queue = self.queue.lock().await;
+        queue.iter().map(|p| p.url.url.to_string()).collect()
+    }
+
     /// Get the current queue length
     ///
     /// # Returns

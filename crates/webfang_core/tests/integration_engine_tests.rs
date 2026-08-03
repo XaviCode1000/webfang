@@ -72,8 +72,9 @@ async fn test_engine_with_checkpoint_enabled() {
 
 /// Test 2: Engine resumes from an existing checkpoint.
 ///
-/// Creates a checkpoint with one visited URL, then verifies the engine
-/// skips that URL and starts from the remaining queue.
+/// Pre-creates a checkpoint whose seed is already visited and whose queue
+/// still holds `/page2.html`, then verifies the engine actually crawls the
+/// pending URL instead of finishing with zero work.
 #[tokio::test]
 async fn test_engine_resume_from_checkpoint() {
     let server = MockServer::start().await;
@@ -102,13 +103,16 @@ async fn test_engine_resume_from_checkpoint() {
     let checkpoint_dir = tmp.path().join("checkpoints");
     std::fs::create_dir_all(&checkpoint_dir).unwrap();
 
-    // Pre-create a checkpoint that marks the seed as already visited
+    // Pre-create a checkpoint that marks the seed as visited but keeps
+    // /page2.html pending in the queue — exactly what a mid-crawl
+    // save_checkpoint leaves behind.
     let seed_url = format!("{}/index.html", server.uri());
+    let page2_url = format!("{}/page2.html", server.uri());
     let mut visited = std::collections::HashSet::new();
     visited.insert(seed_url);
     let state = CrawlCheckpoint {
         visited,
-        queued: Vec::new(),
+        queued: vec![page2_url],
         pages_crawled: 1,
         banned_domains: Vec::new(),
         version: 1,
@@ -137,11 +141,20 @@ async fn test_engine_resume_from_checkpoint() {
     );
 
     let crawl_result = result.unwrap();
-    // The seed was already visited, so the engine should discover page2
-    // via the queue (if checkpoint restored it) or just finish quickly.
-    // The important thing is it doesn't re-crawl the seed.
-    println!(
-        "Resume test: crawled {} pages, {} total",
-        crawl_result.total_pages, crawl_result.total_pages
+    assert!(
+        crawl_result.total_pages >= 1,
+        "resume must crawl the pending queue, not finish empty (crawled {})",
+        crawl_result.total_pages
+    );
+
+    let requests = server.received_requests().await.unwrap_or_default();
+    let requested_paths: Vec<String> = requests.iter().map(|r| r.url.path().to_string()).collect();
+    assert!(
+        requested_paths.iter().any(|p| *p == "/page2.html"),
+        "pending /page2.html must be fetched on resume, got: {requested_paths:?}"
+    );
+    assert!(
+        requested_paths.iter().all(|p| *p != "/index.html"),
+        "visited seed must not be re-crawled on resume, got: {requested_paths:?}"
     );
 }

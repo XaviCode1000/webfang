@@ -320,7 +320,7 @@ impl Engine {
                 .unwrap_or_default();
             let state = CrawlCheckpoint {
                 visited: visited_set,
-                queued: Vec::new(),
+                queued: self.scheduler.snapshot_pending().await,
                 pages_crawled: pages,
                 banned_domains: banned,
                 version: 1,
@@ -408,6 +408,10 @@ impl Engine {
             if !cp.visited.is_empty() {
                 self.scheduler.restore_visited(&cp.visited);
                 info!("Restored {} visited URLs from checkpoint", cp.visited.len());
+            }
+            if !cp.queued.is_empty() {
+                self.scheduler.restore_pending(&cp.queued);
+                info!("Restored {} queued URLs from checkpoint", cp.queued.len());
             }
             if !cp.banned_domains.is_empty() {
                 if let Ok(mut banned) = self.banned_domains.write() {
