@@ -139,6 +139,10 @@ pub async fn scrape_urls(
         http_config.tls_emulation,
         cookie_bridge,
         opts.crawl.ignore_waf,
+        // #503: move the operator's --user-agent into the wreq layer instead
+        // of dropping it on the floor. `http_config` stays usable below —
+        // only this field moves out.
+        http_config.user_agent,
     )?;
 
     let _total_urls = urls.len();
