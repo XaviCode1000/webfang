@@ -753,7 +753,12 @@ mod tests {
     #[test]
     fn batch_all_fail_returns_network_error() {
         let errors: Vec<(String, crate::error::ScraperError)> = (0..5)
-            .map(|i| (format!("https://x{i}.com"), http_err(404, "https://x{i}.com")))
+            .map(|i| {
+                (
+                    format!("https://x{i}.com"),
+                    http_err(404, "https://x{i}.com"),
+                )
+            })
             .collect();
         let exit = batch_exit_code(0, 5, &errors);
         assert!(
@@ -787,7 +792,12 @@ mod tests {
     #[test]
     fn batch_partial_success_returns_partial() {
         let errors: Vec<(String, crate::error::ScraperError)> = (0..2)
-            .map(|i| (format!("https://x{i}.com"), http_err(500, "https://x{i}.com")))
+            .map(|i| {
+                (
+                    format!("https://x{i}.com"),
+                    http_err(500, "https://x{i}.com"),
+                )
+            })
             .collect();
         let exit = batch_exit_code(3, 2, &errors);
         match exit {

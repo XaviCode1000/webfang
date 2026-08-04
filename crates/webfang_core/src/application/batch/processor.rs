@@ -413,7 +413,12 @@ mod tests {
     #[test]
     fn test_batch_result_counts_consistent() {
         let errors: Vec<(String, ScraperError)> = (0..5)
-            .map(|i| (format!("url-{i}"), ScraperError::Internal(format!("err-{i}"))))
+            .map(|i| {
+                (
+                    format!("url-{i}"),
+                    ScraperError::Internal(format!("err-{i}")),
+                )
+            })
             .collect();
         let result = BatchResult {
             job_id: "job-mixed".to_string(),

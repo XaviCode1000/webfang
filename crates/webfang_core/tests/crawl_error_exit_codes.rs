@@ -94,11 +94,7 @@ fn scraper_failure_for_internal_fatal(failures: &[(String, ScraperError)]) -> Op
 }
 
 /// Mirror of `batch_exit_code` (see `cli/orchestrator.rs`).
-fn batch_exit_code(
-    succeeded: usize,
-    failed: usize,
-    errors: &[(String, ScraperError)],
-) -> CliExit {
+fn batch_exit_code(succeeded: usize, failed: usize, errors: &[(String, ScraperError)]) -> CliExit {
     if failed > 0 && succeeded == 0 {
         if let Some(exit) = scraper_failure_for_internal_fatal(errors) {
             return exit;
@@ -347,7 +343,10 @@ fn scraper_failure_exit_code_3_is_reached_by_internal_fatal_not_by_transient() {
     assert_eq!(exit.report(), ExitCode::from(EXIT_SCRAPER_FAILURE));
 
     // And a purely transient all-fail set must NOT route to exit 3.
-    let transient = vec![failing("https://x.com", ScraperError::http(503, "https://x.com"))];
+    let transient = vec![failing(
+        "https://x.com",
+        ScraperError::http(503, "https://x.com"),
+    )];
     assert_eq!(
         transient[0].1.classify(),
         ErrorClass::TransientRetriable,
