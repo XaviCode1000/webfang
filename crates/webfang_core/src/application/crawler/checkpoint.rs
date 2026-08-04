@@ -284,18 +284,9 @@ fn verify_and_parse_checkpoint(data: &[u8], path: &Path) -> Option<CrawlCheckpoi
     let computed_checksum = crc32fast::hash(payload);
 
     if stored_checksum != computed_checksum {
-        // Legacy format fallback (pure JSON, no CRC32 header). Old JSON starts
-        // with `{` (0x7B), which is never a valid CRC32+JSON combo.
-        if let Ok(old) = serde_json::from_slice::<OldCheckpointSchema>(data) {
-            info!(
-                "migrated old-format checkpoint: {} (visited={}, pages={})",
-                path.display(),
-                old.visited.len(),
-                old.pages_crawled
-            );
-            return Some(old.into());
+        if let Some(state) = migrate_legacy_checkpoint(data, path) {
+            return Some(state);
         }
-
         warn!(
             "checkpoint CRC32 mismatch: stored={:#x}, computed={:#x}",
             stored_checksum, computed_checksum
@@ -303,6 +294,24 @@ fn verify_and_parse_checkpoint(data: &[u8], path: &Path) -> Option<CrawlCheckpoi
         return None;
     }
 
+    deserialize_checkpoint(payload, path)
+}
+
+/// Try to read a legacy pure-JSON checkpoint (no CRC32 header), returning
+/// `None` when `data` is not a valid legacy checkpoint.
+fn migrate_legacy_checkpoint(data: &[u8], path: &Path) -> Option<CrawlCheckpoint> {
+    let old = serde_json::from_slice::<OldCheckpointSchema>(data).ok()?;
+    info!(
+        "migrated old-format checkpoint: {} (visited={}, pages={})",
+        path.display(),
+        old.visited.len(),
+        old.pages_crawled
+    );
+    Some(old.into())
+}
+
+/// Deserialize a CRC32-verified payload, logging a warning on failure.
+fn deserialize_checkpoint(payload: &[u8], path: &Path) -> Option<CrawlCheckpoint> {
     match serde_json::from_slice::<CrawlCheckpoint>(payload) {
         Ok(state) => {
             info!(
