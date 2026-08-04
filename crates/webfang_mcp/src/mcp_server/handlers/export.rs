@@ -348,6 +348,7 @@ mod handler_tests {
     use crate::mcp_server::state::McpState;
     use rmcp::handler::server::wrapper::Parameters;
     use rmcp::model::CallToolResult;
+    use std::path::Path;
     use tempfile::TempDir;
     use webfang_core::di::Container;
     use webfang_core::domain::{CrawlerConfig, ScrapedContent, ValidUrl};
@@ -417,10 +418,13 @@ mod handler_tests {
 
     #[tokio::test]
     async fn export_file_empty_content_is_error() {
-        let (handler, tmp) = test_handler().await;
+        let (handler, _tmp) = test_handler().await;
+        // `output_dir` must be a safe relative path (params validation, #512).
+        let out_dir = "test-output/export-empty";
+        let _ = std::fs::remove_dir_all(out_dir);
         let res = handler
             .export_file(Parameters(ExportFileParams {
-                output_dir: tmp.path().to_string_lossy().to_string(),
+                output_dir: out_dir.to_string(),
                 filename: "doc".to_string(),
                 format: "jsonl".to_string(),
                 content: "   ".to_string(),
@@ -433,6 +437,7 @@ mod handler_tests {
             Some(true),
             "empty content must map to isError:true, got: {json}"
         );
+        let _ = std::fs::remove_dir_all(out_dir);
     }
 
     #[tokio::test]
@@ -451,10 +456,12 @@ mod handler_tests {
 
     #[tokio::test]
     async fn export_file_writes_jsonl() {
-        let (handler, tmp) = test_handler().await;
+        let (handler, _tmp) = test_handler().await;
+        let out_dir = "test-output/export-jsonl";
+        let _ = std::fs::remove_dir_all(out_dir);
         let res = handler
             .export_file(Parameters(ExportFileParams {
-                output_dir: tmp.path().to_string_lossy().to_string(),
+                output_dir: out_dir.to_string(),
                 filename: "doc".to_string(),
                 format: "jsonl".to_string(),
                 content: "hello world".to_string(),
@@ -467,9 +474,10 @@ mod handler_tests {
             "success must report completion: {text}"
         );
         assert!(
-            tmp.path().join("doc.jsonl").exists(),
+            Path::new(out_dir).join("doc.jsonl").exists(),
             "export file must be written"
         );
+        let _ = std::fs::remove_dir_all(out_dir);
     }
 
     #[tokio::test]
@@ -492,11 +500,13 @@ mod handler_tests {
 
     #[tokio::test]
     async fn export_jsonl_seeded_writes_file() {
-        let (handler, tmp) = test_handler().await;
+        let (handler, _tmp) = test_handler().await;
         seed_one(&handler).await;
+        let out_dir = "test-output/export-jsonl-seeded";
+        let _ = std::fs::remove_dir_all(out_dir);
         let res = handler
             .export_jsonl(Parameters(ExportJsonlParams {
-                output_dir: Some(tmp.path().to_string_lossy().to_string()),
+                output_dir: Some(out_dir.to_string()),
                 filename: Some("out".to_string()),
             }))
             .await
@@ -507,18 +517,21 @@ mod handler_tests {
             "seeded export must report completion: {text}"
         );
         assert!(
-            tmp.path().join("out.jsonl").exists(),
+            Path::new(out_dir).join("out.jsonl").exists(),
             "jsonl export file must be written"
         );
+        let _ = std::fs::remove_dir_all(out_dir);
     }
 
     #[tokio::test]
     async fn export_vector_seeded_writes_json() {
-        let (handler, tmp) = test_handler().await;
+        let (handler, _tmp) = test_handler().await;
         seed_one(&handler).await;
+        let out_dir = "test-output/export-vector-seeded";
+        let _ = std::fs::remove_dir_all(out_dir);
         let res = handler
             .export_vector(Parameters(ExportVectorParams {
-                output_dir: Some(tmp.path().to_string_lossy().to_string()),
+                output_dir: Some(out_dir.to_string()),
                 filename: Some("vec".to_string()),
             }))
             .await
@@ -529,9 +542,10 @@ mod handler_tests {
             "seeded vector export must report completion: {text}"
         );
         assert!(
-            tmp.path().join("vec.json").exists(),
+            Path::new(out_dir).join("vec.json").exists(),
             "vector export file must be written"
         );
+        let _ = std::fs::remove_dir_all(out_dir);
     }
 
     #[tokio::test]

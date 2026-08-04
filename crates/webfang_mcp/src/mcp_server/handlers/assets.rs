@@ -149,14 +149,17 @@ mod tests {
 
     #[tokio::test]
     async fn download_assets_no_assets_is_empty_success() {
-        let (handler, tmp) = test_handler().await;
+        let (handler, _tmp) = test_handler().await;
+        // `output_dir` must be a safe relative path (params validation, #512).
+        let out_dir = "test-output/download-assets-empty";
+        let _ = std::fs::remove_dir_all(out_dir);
         let res = handler
             .download_assets(Parameters(DownloadAssetsParams {
                 html: "<html><body><p>no images here</p></body></html>".to_string(),
                 base_url: "https://example.com/".to_string(),
                 images: Some(true),
                 documents: None,
-                output_dir: Some(tmp.path().to_string_lossy().to_string()),
+                output_dir: Some(out_dir.to_string()),
             }))
             .await
             .expect("download_assets returns Ok");
@@ -165,11 +168,15 @@ mod tests {
             text.contains("[]"),
             "no assets must yield an empty list: {text}"
         );
+        let _ = std::fs::remove_dir_all(out_dir);
     }
 
     #[tokio::test]
     async fn download_assets_downloads_image_from_html() {
-        let (handler, tmp) = test_handler().await;
+        let (handler, _tmp) = test_handler().await;
+        // `output_dir` must be a safe relative path (params validation, #512).
+        let out_dir = "test-output/download-assets-image";
+        let _ = std::fs::remove_dir_all(out_dir);
         let server = MockServer::start().await;
         // The page references an image; wiremock serves it so the download
         // path executes against a real (ephemeral) HTTP endpoint.
@@ -193,7 +200,7 @@ mod tests {
                 base_url: server.uri(),
                 images: Some(true),
                 documents: None,
-                output_dir: Some(tmp.path().to_string_lossy().to_string()),
+                output_dir: Some(out_dir.to_string()),
             }))
             .await
             .expect("download_assets returns Ok");
@@ -203,5 +210,6 @@ mod tests {
             text.contains("logo.png") || text.contains("assets") || text.contains(".png"),
             "downloaded asset must be reported: {text}"
         );
+        let _ = std::fs::remove_dir_all(out_dir);
     }
 }

@@ -159,35 +159,36 @@ mod tests {
 
     #[tokio::test]
     async fn detect_obsidian_vault_finds_cli_path() {
-        let (handler, tmp) = test_handler().await;
+        let (handler, _tmp) = test_handler().await;
+        // `vault_path` must be a safe relative path (params validation, #512).
         // A directory containing the `.obsidian` marker is a valid vault.
-        fs::create_dir_all(tmp.path().join(".obsidian")).expect("create .obsidian");
+        let vault_dir = "test-output/obsidian-vault";
+        let _ = fs::remove_dir_all(vault_dir);
+        fs::create_dir_all(format!("{vault_dir}/.obsidian")).expect("create .obsidian");
         let res = handler
             .detect_obsidian_vault(Parameters(DetectVaultParams {
-                vault_path: Some(tmp.path().to_string_lossy().to_string()),
+                vault_path: Some(vault_dir.to_string()),
             }))
             .await
             .expect("detect returns Ok");
         let text = result_text(&res);
-        let vault_dir = tmp
-            .path()
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .to_string();
         assert!(
-            text.contains(&vault_dir),
+            text.contains("obsidian-vault"),
             "detected vault path must be reported: {text}"
         );
+        let _ = fs::remove_dir_all(vault_dir);
     }
 
     #[tokio::test]
     async fn detect_obsidian_vault_none_when_not_a_vault() {
-        let (handler, tmp) = test_handler().await;
-        // A plain temp dir with no `.obsidian` marker is not a vault.
+        let (handler, _tmp) = test_handler().await;
+        // A plain dir with no `.obsidian` marker is not a vault.
+        let not_vault_dir = "test-output/obsidian-notvault";
+        let _ = fs::remove_dir_all(not_vault_dir);
+        fs::create_dir_all(not_vault_dir).expect("create dir");
         let res = handler
             .detect_obsidian_vault(Parameters(DetectVaultParams {
-                vault_path: Some(tmp.path().to_string_lossy().to_string()),
+                vault_path: Some(not_vault_dir.to_string()),
             }))
             .await
             .expect("detect returns Ok");
@@ -196,6 +197,7 @@ mod tests {
             text, "no vault detected",
             "non-vault path must report no vault: {text}"
         );
+        let _ = fs::remove_dir_all(not_vault_dir);
     }
 
     #[tokio::test]

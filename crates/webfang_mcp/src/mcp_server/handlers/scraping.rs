@@ -713,18 +713,16 @@ mod tests {
     #[tokio::test]
     async fn scrape_batch_no_valid_urls_is_error() {
         let (handler, _tmp) = test_handler().await;
+        // Params validation (#512) rejects unparseable URLs up front.
         let res = handler
             .scrape_batch(Parameters(ScrapeBatchParams {
                 urls: vec!["not a url".to_string()],
                 concurrency: None,
             }))
-            .await
-            .expect("scrape_batch returns Ok on empty");
-        let json = serde_json::to_value(&res).expect("serialize");
-        assert_eq!(
-            json.get("isError").and_then(|v| v.as_bool()),
-            Some(true),
-            "no valid URLs must map to isError:true, got: {json}"
+            .await;
+        assert!(
+            res.is_err(),
+            "invalid URLs must be a protocol error, got: {res:?}"
         );
     }
 
@@ -749,19 +747,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discover_urls_invalid_url_is_tool_error() {
+    async fn discover_urls_invalid_url_is_invalid_params() {
         let (handler, _tmp) = test_handler().await;
+        // Params validation (#512) rejects unparseable URLs up front.
         let res = handler
             .discover_urls(Parameters(DiscoverUrlsParams {
                 url: "not a url".to_string(),
             }))
-            .await
-            .expect("discover_urls returns Ok on http error");
-        let json = serde_json::to_value(&res).expect("serialize");
-        assert_eq!(
-            json.get("isError").and_then(|v| v.as_bool()),
-            Some(true),
-            "invalid URL must map to isError:true, got: {json}"
+            .await;
+        assert!(
+            res.is_err(),
+            "invalid URL must be a protocol error, got: {res:?}"
         );
     }
 
@@ -804,19 +800,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn detect_spa_invalid_url_is_tool_error() {
+    async fn detect_spa_invalid_url_is_invalid_params() {
         let (handler, _tmp) = test_handler().await;
+        // Params validation (#512) rejects unparseable URLs up front.
         let res = handler
             .detect_spa(Parameters(DetectSpaParams {
                 url: "not a url".to_string(),
             }))
-            .await
-            .expect("detect_spa returns Ok on http error");
-        let json = serde_json::to_value(&res).expect("serialize");
-        assert_eq!(
-            json.get("isError").and_then(|v| v.as_bool()),
-            Some(true),
-            "invalid URL must map to isError:true, got: {json}"
+            .await;
+        assert!(
+            res.is_err(),
+            "invalid URL must be a protocol error, got: {res:?}"
         );
     }
 

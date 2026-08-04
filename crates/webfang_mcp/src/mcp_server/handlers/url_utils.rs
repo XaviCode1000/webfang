@@ -333,16 +333,15 @@ mod handler_tests {
     #[tokio::test]
     async fn validate_url_invalid() {
         let (handler, _tmp) = test_handler().await;
+        // Params validation (#512) rejects unparseable URLs up front.
         let res = handler
             .validate_url(Parameters(ValidateUrlParams {
                 url: "not a url".to_string(),
             }))
-            .await
-            .expect("validate_url returns Ok");
-        let text = result_text(&res);
+            .await;
         assert!(
-            text.contains("\"valid\": false"),
-            "invalid url flagged: {text}"
+            res.is_err(),
+            "invalid URL must be a protocol error, got: {res:?}"
         );
     }
 
@@ -360,19 +359,17 @@ mod handler_tests {
     }
 
     #[tokio::test]
-    async fn extract_domain_invalid_is_error() {
+    async fn extract_domain_invalid_is_invalid_params() {
         let (handler, _tmp) = test_handler().await;
+        // Params validation (#512) rejects unparseable URLs up front.
         let res = handler
             .extract_domain(Parameters(ExtractDomainParams {
                 url: "not a url".to_string(),
             }))
-            .await
-            .expect("extract_domain returns Ok on invalid");
-        let json = serde_json::to_value(&res).expect("serialize");
-        assert_eq!(
-            json.get("isError").and_then(|v| v.as_bool()),
-            Some(true),
-            "invalid url must map to isError:true, got: {json}"
+            .await;
+        assert!(
+            res.is_err(),
+            "invalid URL must be a protocol error, got: {res:?}"
         );
     }
 
@@ -390,18 +387,17 @@ mod handler_tests {
     }
 
     #[tokio::test]
-    async fn normalize_url_invalid_no_scheme_is_error() {
+    async fn normalize_url_invalid_no_scheme_is_invalid_params() {
         let (handler, _tmp) = test_handler().await;
+        // Params validation (#512) rejects URLs without a parseable scheme.
         let res = handler
             .normalize_url(Parameters(NormalizeUrlParams {
                 url: "example.com".to_string(),
             }))
-            .await
-            .expect("normalize_url returns Ok on invalid");
-        let text = result_text(&res);
+            .await;
         assert!(
-            text.contains("no scheme"),
-            "missing scheme must be reported: {text}"
+            res.is_err(),
+            "URL without scheme must be a protocol error, got: {res:?}"
         );
     }
 
