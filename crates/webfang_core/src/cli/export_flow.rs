@@ -16,6 +16,9 @@ use crate::{
 #[cfg(feature = "ai")]
 use crate::domain::semantic_cleaner::SemanticCleaner;
 
+#[cfg(feature = "ai")]
+use crate::domain::DocumentChunk;
+
 // ============================================================================
 // Export Results (RAG pipeline)
 // ============================================================================
@@ -98,52 +101,12 @@ async fn run_ai_export(
     config: &ExportConfig<'_>,
     cleaner: std::sync::Arc<dyn SemanticCleaner>,
 ) -> Result<Vec<String>, CliExit> {
-    use crate::domain::DocumentChunk;
-
     info!(
         "Starting AI cleaning for {} pages concurrently...",
         config.results.len()
     );
 
-    let cleaning_tasks: Vec<_> = config
-        .results
-        .iter()
-        .map(|result| {
-            let html_content = result
-                .html
-                .clone()
-                .unwrap_or_else(|| result.content.clone());
-            let url = result.url.clone();
-            let cleaner = std::sync::Arc::clone(&cleaner);
-            async move {
-                let chunks_result = cleaner.clean(&html_content).await;
-                (url, chunks_result, result.clone())
-            }
-        })
-        .collect();
-
-    let cleaning_results = futures::future::join_all(cleaning_tasks).await;
-
-    let mut cleaned_chunks: Vec<DocumentChunk> = Vec::with_capacity(config.results.len() * 2);
-    for (url, chunks_result, result) in cleaning_results {
-        match chunks_result {
-            Ok(chunks) => {
-                if chunks.is_empty() {
-                    warn!("AI cleaner produced 0 chunks for: {}", url);
-                    cleaned_chunks.push(DocumentChunk::from_scraped_content(&result));
-                } else {
-                    cleaned_chunks.extend(chunks);
-                }
-            },
-            Err(e) => {
-                warn!(
-                    "Failed to clean content for {}: {}. Using fallback.",
-                    url, e
-                );
-                cleaned_chunks.push(DocumentChunk::from_scraped_content(&result));
-            },
-        }
-    }
+    let cleaned_chunks = clean_all_pages(config.results, &cleaner).await;
 
     info!(
         "AI cleaning complete: {} chunks from {} pages",
@@ -165,6 +128,55 @@ async fn run_ai_export(
             Err(CliExit::IoError(e.to_string()))
         },
     }
+}
+
+/// Run the cleaner over every scraped page concurrently and fold the results
+/// into a single chunk list, falling back to the raw content on failure.
+#[cfg(feature = "ai")]
+async fn clean_all_pages(
+    results: &[ScrapedContent],
+    cleaner: &std::sync::Arc<dyn SemanticCleaner>,
+) -> Vec<DocumentChunk> {
+    let cleaning_tasks: Vec<_> = results
+        .iter()
+        .map(|result| {
+            let html_content = result
+                .html
+                .clone()
+                .unwrap_or_else(|| result.content.clone());
+            let url = result.url.clone();
+            let cleaner = std::sync::Arc::clone(cleaner);
+            async move {
+                let chunks_result = cleaner.clean(&html_content).await;
+                (url, chunks_result, result.clone())
+            }
+        })
+        .collect();
+
+    let cleaning_results = futures::future::join_all(cleaning_tasks).await;
+
+    let mut cleaned_chunks: Vec<DocumentChunk> = Vec::with_capacity(results.len() * 2);
+    for (url, chunks_result, result) in cleaning_results {
+        match chunks_result {
+            Ok(chunks) => {
+                if chunks.is_empty() {
+                    warn!("AI cleaner produced 0 chunks for: {}", url);
+                    cleaned_chunks.push(DocumentChunk::from_scraped_content(&result));
+                } else {
+                    cleaned_chunks.extend(chunks);
+                }
+            },
+            Err(e) => {
+                warn!(
+                    "Failed to clean content for {}: {}. Using fallback.",
+                    url, e
+                );
+                cleaned_chunks.push(DocumentChunk::from_scraped_content(&result));
+            },
+        }
+    }
+
+    cleaned_chunks
 }
 
 // ============================================================================
