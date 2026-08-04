@@ -440,34 +440,106 @@ impl ScraperError {
 ///
 /// This is a heuristic — `io::ErrorKind` is the primary signal,
 /// but some wreq errors may also be transient.
+///
+/// #537: the io-kind list and the text fallback were extended so common
+/// "service unavailable" network failures (`ConnectionRefused`,
+/// `HostUnreachable`, `NetworkUnreachable`, `AddrNotAvailable`, wreq
+/// connect/DNS wrappers) classify as [`ErrorClass::TransientRetriable`]
+/// instead of falling through to `InternalFatal` and masquerading as a bug.
+///
+/// The heuristic walks the FULL `Error::source()` chain: infrastructure
+/// layers wrap transport errors several deep (e.g. `DownloadError::Network`
+/// boxing a `wreq::Error` boxing an `io::Error`), so inspecting only the
+/// top-level error misses the typed kind and the transport text.
 fn is_transient_network(e: &(dyn std::error::Error + 'static)) -> bool {
-    if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
-        return matches!(
-            io_err.kind(),
-            std::io::ErrorKind::ConnectionReset
-                | std::io::ErrorKind::ConnectionAborted
-                | std::io::ErrorKind::TimedOut
-                | std::io::ErrorKind::Interrupted
-                | std::io::ErrorKind::BrokenPipe
-        );
-    }
-    if e.downcast_ref::<WreqError>().is_some() {
-        let msg = e.to_string().to_ascii_lowercase();
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(err) = current {
+        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+            return matches!(
+                io_err.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::HostUnreachable
+                    | std::io::ErrorKind::NetworkUnreachable
+                    | std::io::ErrorKind::AddrNotAvailable
+                    | std::io::ErrorKind::TimedOut
+                    | std::io::ErrorKind::Interrupted
+                    | std::io::ErrorKind::BrokenPipe
+            );
+        }
+        // Text fallback runs for every link, not just `WreqError`: wrappers
+        // (`DownloadError::Network`, `CrawlError::Network`'s flattened text)
+        // commonly erase the concrete type before reaching this function.
+        let msg = err.to_string().to_ascii_lowercase();
         let matched = msg.contains("timeout")
             || msg.contains("timed out")
             || msg.contains("connection refused")
             || msg.contains("connection reset")
             || msg.contains("broken pipe")
-            || msg.contains("connection aborted");
+            || msg.contains("connection aborted")
+            || msg.contains("client error (connect)")
+            || msg.contains("dns error")
+            || msg.contains("dns lookup failed")
+            || msg.contains("could not resolve")
+            || msg.contains("failed to lookup address");
         if matched {
             tracing::debug!(
-                error = %e,
-                "is_transient_network: classified transient via wreq text-fallback heuristic"
+                error = %err,
+                "is_transient_network: classified transient via source-chain text heuristic"
             );
+            return true;
         }
-        return matched;
+        current = err.source();
     }
     false
+}
+
+/// Map a `CrawlError::Network` message to a synthetic `io::Error` with the
+/// kind that best matches the transport failure (#537).
+///
+/// `CrawlError::Network` has already crossed the infrastructure → domain
+/// boundary and lost its typed source; all that survives is a `String`
+/// message. Re-deriving the io kind from that message text lets
+/// `is_transient_network` (which downcasts on `io::Error` FIRST and never
+/// reaches the text fallback for an io-typed boxed error) classify it
+/// correctly. Unknown transport text conservatively maps to
+/// `ErrorKind::Other`, which is NOT in the transient list and so falls back
+/// to `InternalFatal` — preserving the safety net for genuinely unknown
+/// internal failures.
+fn io_error_for_network_message(message: &str) -> std::io::Error {
+    let msg = message.to_ascii_lowercase();
+    let kind = if msg.contains("connection refused")
+        || msg.contains("client error (connect)")
+        || msg.contains("connect error")
+    {
+        std::io::ErrorKind::ConnectionRefused
+    } else if msg.contains("host unreachable") {
+        std::io::ErrorKind::HostUnreachable
+    } else if msg.contains("network unreachable") {
+        std::io::ErrorKind::NetworkUnreachable
+    } else if msg.contains("dns error")
+        || msg.contains("dns lookup failed")
+        || msg.contains("could not resolve")
+        || msg.contains("failed to lookup address")
+        || msg.contains("name or service not known")
+    {
+        // DNS failure: the service is unreachable — still a transport outage,
+        // not a bug. AddrNotAvailable is the closest stable io kind in the
+        // transient list.
+        std::io::ErrorKind::AddrNotAvailable
+    } else if msg.contains("timeout") || msg.contains("timed out") {
+        std::io::ErrorKind::TimedOut
+    } else if msg.contains("connection reset") {
+        std::io::ErrorKind::ConnectionReset
+    } else if msg.contains("connection aborted") {
+        std::io::ErrorKind::ConnectionAborted
+    } else if msg.contains("broken pipe") {
+        std::io::ErrorKind::BrokenPipe
+    } else {
+        std::io::ErrorKind::Other
+    };
+    std::io::Error::new(kind, message.to_string())
 }
 
 /// Operational classification of errors for observability and retry logic.
@@ -512,7 +584,13 @@ impl From<crate::domain::error::CrawlError> for ScraperError {
                         url: message,
                     }
                 } else {
-                    ScraperError::Internal(format!("network: {message}"))
+                    // #537: do NOT flatten transport failures to Internal —
+                    // that bypasses `is_transient_network` and masquerades a
+                    // service outage (connect refused, DNS, timeout) as a bug.
+                    // Wrap the message in a synthetic `io::Error` whose kind
+                    // is sniffed from the transport text so `classify()` can
+                    // route to TransientRetriable when appropriate.
+                    ScraperError::Network(Box::new(io_error_for_network_message(&message)))
                 }
             },
             CrawlError::Http { status, url } => ScraperError::Http { status, url },
@@ -1357,6 +1435,121 @@ mod tests {
             "broken pipe",
         )));
         assert_eq!(err.classify(), ErrorClass::TransientRetriable);
+    }
+
+    // ========================================================================
+    // #537: service-unavailable transport errors must not classify as bugs
+    // ========================================================================
+
+    #[test]
+    fn test_is_transient_network_connection_refused_io() {
+        let err = ScraperError::Download(Box::new(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "refused",
+        )));
+        assert_eq!(
+            err.classify(),
+            ErrorClass::TransientRetriable,
+            "io ConnectionRefused → TransientRetriable (service unavailable, EX_UNAVAILABLE)"
+        );
+    }
+
+    #[test]
+    fn test_is_transient_network_unreachable_io_kinds() {
+        for kind in [
+            std::io::ErrorKind::HostUnreachable,
+            std::io::ErrorKind::NetworkUnreachable,
+            std::io::ErrorKind::AddrNotAvailable,
+        ] {
+            let err = ScraperError::Network(Box::new(std::io::Error::new(kind, "unreachable")));
+            assert_eq!(
+                err.classify(),
+                ErrorClass::TransientRetriable,
+                "io {kind:?} → TransientRetriable (#537)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_transient_network_wreq_connect_wrapper_text() {
+        // wreq wraps connect failures as "…: client error (Connect)". The io
+        // source is NOT the boxed outer error, so the io downcast misses and
+        // the text fallback at `is_transient_network` must catch it (#537).
+        let io_src = std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "error sending request for uri (http://127.0.0.1:1/): client error (Connect)",
+        );
+        let err = ScraperError::Download(Box::new(io_src));
+        assert_eq!(
+            err.classify(),
+            ErrorClass::TransientRetriable,
+            "connect-style io error must classify TransientRetriable (#537)"
+        );
+    }
+
+    #[test]
+    fn test_is_transient_network_walks_source_chain() {
+        // Production chain (#537): `ScraperError::Network(Box<DownloadError>)`
+        // → `DownloadError::Network`'s `#[source]` → `wreq::Error`. Walking
+        // `Error::source()` must reach a transient io link even though the
+        // boxed outer error is neither io nor wreq-typed.
+        #[derive(Debug)]
+        struct Wrapper(&'static str, Option<std::io::Error>);
+        impl std::fmt::Display for Wrapper {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        impl std::error::Error for Wrapper {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.1.as_ref().map(|e| e as _)
+            }
+        }
+
+        let io_leaf = std::io::Error::new(std::io::ErrorKind::TimedOut, "request timeout");
+        let wrapper = Wrapper("download failed", Some(io_leaf));
+        let err = ScraperError::Network(Box::new(wrapper));
+        assert_eq!(
+            err.classify(),
+            ErrorClass::TransientRetriable,
+            "source-chain walk must surface the transient io leaf (#537)"
+        );
+
+        // Text fallback through the same chain (non-io leaf carrying wreq text).
+        #[derive(Debug)]
+        struct TextLeaf;
+        impl std::fmt::Display for TextLeaf {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("client error (Connect)")
+            }
+        }
+        impl std::error::Error for TextLeaf {}
+        #[derive(Debug)]
+        struct TextWrapper(&'static str);
+        impl std::fmt::Display for TextWrapper {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        impl std::error::Error for TextWrapper {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&TextLeaf)
+            }
+        }
+        let err = ScraperError::Network(Box::new(TextWrapper("network error")));
+        assert_eq!(
+            err.classify(),
+            ErrorClass::TransientRetriable,
+            "source-chain text fallback must catch wreq connect wrapper (#537)"
+        );
+    }
+
+    #[test]
+    fn test_classify_non_network_nonwreq_still_internal() {
+        // Safety net stays: a non-io, non-wreq-scoped error keeps falling
+        // through to InternalFatal (genuine bug bucket).
+        let err = ScraperError::Internal("unreachable state".into());
+        assert_eq!(err.classify(), ErrorClass::InternalFatal);
     }
 
     // ========================================================================
