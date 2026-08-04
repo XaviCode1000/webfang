@@ -130,27 +130,15 @@ fn transform_and_serialize<'a>(
 ) -> String {
     let mut result = String::new();
     let mut in_link = false;
-    let mut link_has_image = false;
-    let mut link_url = String::new();
-    let mut link_text_parts: Vec<Event<'a>> = Vec::new();
+    let mut link: Option<LinkState<'a>> = None;
     let mut depth = 0;
-    // Track image URLs for reconstruction when link contains images
-    let mut image_urls: Vec<String> = Vec::new();
 
     for event in events {
         match &event {
-            Event::Start(Tag::Link {
-                dest_url,
-                title: _,
-                id: _,
-                link_type: _,
-            }) => {
+            Event::Start(Tag::Link { dest_url, .. }) => {
                 if depth == 0 {
                     in_link = true;
-                    link_has_image = false;
-                    link_url = dest_url.to_string();
-                    link_text_parts.clear();
-                    image_urls.clear();
+                    link = Some(LinkState::new(dest_url.to_string()));
                 }
                 depth += 1;
                 if !in_link {
@@ -161,69 +149,9 @@ fn transform_and_serialize<'a>(
                 if depth == 1 && in_link {
                     in_link = false;
                     depth = 0;
-
-                    // If the link contains an image (e.g. [![alt](img)](url)),
-                    // preserve the original markdown — don't convert to wiki-link.
-                    // Wiki-links can't hold images, and converting would lose the asset.
-                    if link_has_image {
-                        let needs_space =
-                            !result.is_empty() && !result.ends_with(' ') && !result.ends_with('\n');
-                        if needs_space {
-                            result.push(' ');
-                        }
-                        // Reconstruct: [![alt](img_url)](link_url) — preserve all images
-                        let alt_text = extract_text_from_events(&link_text_parts);
-                        tracing::debug!("WIKILINK: reconstructing image link, alt={}, img_count={}, link_url={}", alt_text, image_urls.len(), link_url);
-                        result.push('[');
-                        for (i, img_url) in image_urls.iter().enumerate() {
-                            if i > 0 {
-                                // Multiple images: use text fallback for alt on 2nd+
-                                result.push_str("![img](");
-                            } else {
-                                result.push_str("![");
-                                result.push_str(&alt_text);
-                                result.push_str("](");
-                            }
-                            result.push_str(img_url);
-                            result.push(')');
-                        }
-                        result.push_str("](");
-                        result.push_str(&link_url);
-                        result.push(')');
-                    } else if let Some(slug) = should_convert_wikilink(&link_url, base_domain) {
-                        let link_text = extract_text_from_events(&link_text_parts);
-                        let normalized_text = link_text.to_lowercase().trim().replace(' ', "-");
-
-                        // Add space before wiki-link if result is not empty and doesn't already end with space
-                        let needs_space =
-                            !result.is_empty() && !result.ends_with(' ') && !result.ends_with('\n');
-
-                        if slug == normalized_text {
-                            if needs_space {
-                                result.push(' ');
-                            }
-                            result.push_str("[[");
-                            result.push_str(&slug);
-                            result.push_str("]]");
-                        } else {
-                            if needs_space {
-                                result.push(' ');
-                            }
-                            result.push_str("[[");
-                            result.push_str(&slug);
-                            result.push('|');
-                            result.push_str(&link_text);
-                            result.push_str("]]");
-                        }
-                    } else {
-                        let link_text = extract_text_from_events(&link_text_parts);
-                        result.push('[');
-                        result.push_str(&link_text);
-                        result.push_str("](");
-                        result.push_str(&link_url);
-                        result.push(')');
+                    if let Some(state) = link.take() {
+                        finish_link(state, base_domain, &mut result);
                     }
-                    link_text_parts.clear();
                 } else {
                     depth -= 1;
                     if !in_link {
@@ -231,48 +159,39 @@ fn transform_and_serialize<'a>(
                     }
                 }
             },
-            Event::Start(Tag::Image {
-                dest_url,
-                title: _,
-                id: _,
-                link_type: _,
-            }) => {
-                if in_link {
-                    link_has_image = true;
-                    image_urls.push(dest_url.to_string());
-                    tracing::debug!("WIKILINK: detected image inside link, url={}", dest_url);
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                if let Some(state) = link.as_mut() {
+                    state.record_image(dest_url);
                 } else {
                     push_event_text(&event, &mut result);
                 }
             },
             Event::Start(_) => {
-                if in_link {
+                if let Some(state) = link.as_mut() {
                     depth += 1;
-                    link_text_parts.push(event);
+                    state.text_parts.push(event);
                 } else {
                     push_event_text(&event, &mut result);
                 }
             },
             Event::End(TagEnd::Image) => {
-                if in_link {
-                    // Don't push image end event — we reconstruct it manually
-                } else {
+                if !in_link {
                     push_event_text(&event, &mut result);
                 }
             },
             Event::End(_) => {
-                if in_link && depth > 1 {
-                    depth -= 1;
-                    link_text_parts.push(event);
-                } else if in_link {
-                    link_text_parts.push(event);
+                if let Some(state) = link.as_mut() {
+                    if depth > 1 {
+                        depth -= 1;
+                    }
+                    state.text_parts.push(event);
                 } else {
                     push_event_text(&event, &mut result);
                 }
             },
             _ => {
-                if in_link {
-                    link_text_parts.push(event);
+                if let Some(state) = link.as_mut() {
+                    state.text_parts.push(event);
                 } else {
                     push_event_text(&event, &mut result);
                 }
@@ -281,12 +200,121 @@ fn transform_and_serialize<'a>(
     }
 
     if in_link {
-        for e in link_text_parts.drain(..) {
-            push_event_text(&e, &mut result);
+        if let Some(state) = link {
+            for e in state.text_parts {
+                push_event_text(&e, &mut result);
+            }
         }
     }
 
     result.trim_end().to_string()
+}
+
+/// In-progress state for a link being transformed.
+struct LinkState<'a> {
+    has_image: bool,
+    url: String,
+    text_parts: Vec<Event<'a>>,
+    image_urls: Vec<String>,
+}
+
+impl<'a> LinkState<'a> {
+    fn new(url: String) -> Self {
+        Self {
+            has_image: false,
+            url,
+            text_parts: Vec::new(),
+            image_urls: Vec::new(),
+        }
+    }
+
+    /// Record an image discovered inside the link.
+    fn record_image(&mut self, dest_url: &str) {
+        self.has_image = true;
+        self.image_urls.push(dest_url.to_string());
+        tracing::debug!("WIKILINK: detected image inside link, url={}", dest_url);
+    }
+}
+
+/// Serialize a completed link into the result, converting to a wiki-link when
+/// possible and preserving image links verbatim.
+fn finish_link<'a>(state: LinkState<'a>, base_domain: &str, result: &mut String) {
+    if state.has_image {
+        reconstruct_image_link(&state, result);
+    } else if let Some(slug) = should_convert_wikilink(&state.url, base_domain) {
+        convert_to_wikilink(slug, &state, result);
+    } else {
+        keep_original_link(&state, result);
+    }
+}
+
+/// Reconstruct a link that contains an image (e.g. `[![alt](img)](url)`),
+/// preserving the original markdown — wiki-links can't hold images.
+fn reconstruct_image_link(state: &LinkState, result: &mut String) {
+    let needs_space = !result.is_empty() && !result.ends_with(' ') && !result.ends_with('\n');
+    if needs_space {
+        result.push(' ');
+    }
+    let alt_text = extract_text_from_events(&state.text_parts);
+    tracing::debug!(
+        "WIKILINK: reconstructing image link, alt={}, img_count={}, link_url={}",
+        alt_text,
+        state.image_urls.len(),
+        state.url
+    );
+    result.push('[');
+    for (i, img_url) in state.image_urls.iter().enumerate() {
+        if i > 0 {
+            // Multiple images: use text fallback for alt on 2nd+
+            result.push_str("![img](");
+        } else {
+            result.push_str("![");
+            result.push_str(&alt_text);
+            result.push_str("](");
+        }
+        result.push_str(img_url);
+        result.push(')');
+    }
+    result.push_str("](");
+    result.push_str(&state.url);
+    result.push(')');
+}
+
+/// Convert a same-domain link to `[[slug|text]]` wiki-link syntax.
+fn convert_to_wikilink(slug: String, state: &LinkState, result: &mut String) {
+    let link_text = extract_text_from_events(&state.text_parts);
+    let normalized_text = link_text.to_lowercase().trim().replace(' ', "-");
+
+    // Add space before wiki-link if result is not empty and doesn't already end with space
+    let needs_space = !result.is_empty() && !result.ends_with(' ') && !result.ends_with('\n');
+
+    if slug == normalized_text {
+        if needs_space {
+            result.push(' ');
+        }
+        result.push_str("[[");
+        result.push_str(&slug);
+        result.push_str("]]");
+    } else {
+        if needs_space {
+            result.push(' ');
+        }
+        result.push_str("[[");
+        result.push_str(&slug);
+        result.push('|');
+        result.push_str(&link_text);
+        result.push_str("]]");
+    }
+}
+
+/// Preserve a link that should not be converted as original markdown.
+fn keep_original_link(state: &LinkState, result: &mut String) {
+    let link_text = extract_text_from_events(&state.text_parts);
+    result.push('[');
+    result.push_str(&link_text);
+    result.push_str("](");
+    result.push_str(&state.url);
+    result.push(')');
 }
 
 /// Push the text representation of an event to the result string.

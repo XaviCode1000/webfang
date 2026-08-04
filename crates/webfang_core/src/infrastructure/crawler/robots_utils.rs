@@ -183,27 +183,7 @@ impl RobotsFetcher {
         let robots_url = robots_txt_url(url, domain);
         tracing::debug!("Fetching robots.txt from {}", robots_url);
 
-        let content = match self.client.get(&robots_url).send().await {
-            Ok(resp) if resp.status().is_success() => match resp.text().await {
-                Ok(text) => text,
-                Err(e) => {
-                    tracing::warn!("Failed to read robots.txt body for {}: {}", domain, e);
-                    return None;
-                },
-            },
-            Ok(resp) => {
-                tracing::debug!(
-                    "robots.txt for {} returned status {}, treating as all-allowed",
-                    domain,
-                    resp.status()
-                );
-                return None;
-            },
-            Err(e) => {
-                tracing::warn!("Failed to fetch robots.txt for {}: {}", domain, e);
-                return None;
-            },
-        };
+        let content = self.fetch_robots_content(domain, &robots_url).await?;
 
         let crawl_delay = parse_crawl_delay(&content);
         let rules = Arc::new(RobotsRules {
@@ -212,6 +192,39 @@ impl RobotsFetcher {
         });
         self.cache.insert(domain.to_string(), Arc::clone(&rules));
         Some(rules)
+    }
+
+    /// Fetch the raw robots.txt content, or `None` if unavailable (fail-open).
+    async fn fetch_robots_content(&self, domain: &str, robots_url: &str) -> Option<String> {
+        let resp = match self.client.get(robots_url).send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                tracing::warn!("Failed to fetch robots.txt for {}: {}", domain, e);
+                return None;
+            },
+        };
+
+        if !resp.status().is_success() {
+            tracing::debug!(
+                "robots.txt for {} returned status {}, treating as all-allowed",
+                domain,
+                resp.status()
+            );
+            return None;
+        }
+
+        self.read_robots_body(domain, resp).await
+    }
+
+    /// Read the body of a successful robots.txt response.
+    async fn read_robots_body(&self, domain: &str, resp: wreq::Response) -> Option<String> {
+        match resp.text().await {
+            Ok(text) => Some(text),
+            Err(e) => {
+                tracing::warn!("Failed to read robots.txt body for {}: {}", domain, e);
+                None
+            },
+        }
     }
 
     /// Check if a URL is allowed by the site's robots.txt.

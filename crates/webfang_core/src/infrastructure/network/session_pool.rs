@@ -147,6 +147,97 @@ impl DomainSessionPool {
         let jittered = (capped as f64 * jitter_factor).round() as u64;
         Duration::from_millis(jittered.max(1))
     }
+
+    /// Reset sessions whose TTL has expired back to healthy.
+    fn evict_expired(&self, domain: &str, sessions: &mut [SessionState], now: Instant) {
+        for state in sessions.iter_mut() {
+            if let Some(last_failure) = state.last_failure_time {
+                if now.duration_since(last_failure) > self.config.ttl_duration
+                    && state.status != SessionStatus::Healthy
+                {
+                    debug!(domain, "evicting stale session (TTL expired)");
+                    *state = SessionState::healthy();
+                }
+            }
+        }
+    }
+
+    /// Find the first healthy or recoverable session for the domain.
+    fn find_available(
+        &self,
+        domain: &str,
+        sessions: &[SessionState],
+        now: Instant,
+    ) -> Option<SessionId> {
+        for (idx, state) in sessions.iter().enumerate() {
+            match state.status {
+                SessionStatus::Healthy => {
+                    debug!(domain, session_id = idx, "acquired healthy session");
+                    return Some(SessionId(idx));
+                },
+                SessionStatus::Banned => {
+                    if self.banned_session_ready(state, idx, now) {
+                        debug!(domain, session_id = idx, "acquired session after cooldown");
+                        return Some(SessionId(idx));
+                    }
+                },
+                SessionStatus::Retiring => continue,
+            }
+        }
+        warn!(domain, "no available sessions for domain");
+        None
+    }
+
+    /// Whether a banned session's cooldown (with jitter) has elapsed.
+    fn banned_session_ready(&self, state: &SessionState, idx: usize, now: Instant) -> bool {
+        let Some(next_retry) = state.next_retry_time else {
+            return false;
+        };
+        // Apply +0–20% dynamic jitter to prevent thundering herd recovery
+        let jitter_range = self.backoff_delay(state.consecutive_failures);
+        let jitter_ms = (jitter_range.as_millis() as f64 * 0.2) as u128;
+        let jitter_offset = Duration::from_millis((idx as u64 * 37) % (jitter_ms.max(1) as u64));
+        let effective_retry = next_retry + jitter_offset;
+        now >= effective_retry
+    }
+
+    /// Apply a failure to a session state, banning or retiring as appropriate.
+    fn apply_failure(
+        &self,
+        state: &mut SessionState,
+        domain: &str,
+        session_id: SessionId,
+        status_code: u16,
+        should_ban: bool,
+    ) {
+        state.consecutive_failures += 1;
+        state.last_failure_time = Some(self.clock.now());
+
+        if should_ban {
+            let delay = self.backoff_delay(state.consecutive_failures);
+            state.next_retry_time = Some(self.clock.now() + delay);
+            state.status = SessionStatus::Banned;
+            warn!(
+                domain,
+                session_id = session_id.0,
+                status_code,
+                failures = state.consecutive_failures,
+                backoff_secs = delay.as_secs(),
+                "session banned with exponential backoff"
+            );
+        } else {
+            // Non-ban failure: mark retiring after threshold
+            if state.consecutive_failures >= 3 {
+                state.status = SessionStatus::Retiring;
+                warn!(
+                    domain,
+                    session_id = session_id.0,
+                    failures = state.consecutive_failures,
+                    "session retiring after repeated failures"
+                );
+            }
+        }
+    }
 }
 
 impl fmt::Debug for DomainSessionPool {
@@ -170,46 +261,10 @@ impl SessionManager for DomainSessionPool {
 
         // Evict stale sessions first
         let now = self.clock.now();
-        for state in sessions.iter_mut() {
-            if let Some(last_failure) = state.last_failure_time {
-                if now.duration_since(last_failure) > self.config.ttl_duration
-                    && state.status != SessionStatus::Healthy
-                {
-                    debug!(domain, "evicting stale session (TTL expired)");
-                    *state = SessionState::healthy();
-                }
-            }
-        }
+        self.evict_expired(domain, &mut sessions, now);
 
         // Find first healthy or recoverable session
-        let result = 'find: {
-            for (idx, state) in sessions.iter().enumerate() {
-                match state.status {
-                    SessionStatus::Healthy => {
-                        debug!(domain, session_id = idx, "acquired healthy session");
-                        break 'find Some(SessionId(idx));
-                    },
-                    SessionStatus::Banned => {
-                        if let Some(next_retry) = state.next_retry_time {
-                            // Apply +0–20% dynamic jitter to prevent thundering herd recovery
-                            let jitter_range = self.backoff_delay(state.consecutive_failures);
-                            let jitter_ms = (jitter_range.as_millis() as f64 * 0.2) as u128;
-                            let jitter_offset = Duration::from_millis(
-                                (idx as u64 * 37) % (jitter_ms.max(1) as u64),
-                            );
-                            let effective_retry = next_retry + jitter_offset;
-                            if now >= effective_retry {
-                                debug!(domain, session_id = idx, "acquired session after cooldown");
-                                break 'find Some(SessionId(idx));
-                            }
-                        }
-                    },
-                    SessionStatus::Retiring => continue,
-                }
-            }
-            warn!(domain, "no available sessions for domain");
-            None
-        };
+        let result = self.find_available(domain, &sessions, now);
 
         // Drop the DashMap RefMut before refreshing the gauge to avoid deadlock:
         // refresh_healthy_gauge calls self.sessions.iter() which needs read access
@@ -239,33 +294,7 @@ impl SessionManager for DomainSessionPool {
 
         if let Some(mut sessions) = self.sessions.get_mut(domain) {
             if let Some(state) = sessions.get_mut(session_id.0) {
-                state.consecutive_failures += 1;
-                state.last_failure_time = Some(self.clock.now());
-
-                if should_ban {
-                    let delay = self.backoff_delay(state.consecutive_failures);
-                    state.next_retry_time = Some(self.clock.now() + delay);
-                    state.status = SessionStatus::Banned;
-                    warn!(
-                        domain,
-                        session_id = session_id.0,
-                        status_code,
-                        failures = state.consecutive_failures,
-                        backoff_secs = delay.as_secs(),
-                        "session banned with exponential backoff"
-                    );
-                } else {
-                    // Non-ban failure: mark retiring after threshold
-                    if state.consecutive_failures >= 3 {
-                        state.status = SessionStatus::Retiring;
-                        warn!(
-                            domain,
-                            session_id = session_id.0,
-                            failures = state.consecutive_failures,
-                            "session retiring after repeated failures"
-                        );
-                    }
-                }
+                self.apply_failure(state, domain, session_id, status_code, should_ban);
             }
         }
     }
