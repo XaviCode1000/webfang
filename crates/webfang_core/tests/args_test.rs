@@ -154,18 +154,13 @@ fn args_with_all_fields_set() -> Args {
     }
 }
 
-#[test]
-fn test_args_to_crawl_options_full_parity() {
-    clean_env();
-    let args = args_with_all_fields_set();
-    let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
-
-    // ── Top-level ──────────────────────────────────────────────────────
+fn assert_full_parity_top_level(opts: &webfang_core::application::crawl_options::CrawlOptions) {
     assert_eq!(opts.url.as_str(), "https://example.com/test");
     assert_eq!(opts.verbosity, 3);
     assert!(opts.quiet);
+}
 
-    // ── CrawlLimits ────────────────────────────────────────────────────
+fn assert_full_parity_crawl_limits(opts: &webfang_core::application::crawl_options::CrawlOptions) {
     assert_eq!(opts.crawl.selector, "article.main");
     assert_eq!(opts.crawl.max_depth, 5);
     assert_eq!(opts.crawl.max_pages, 25);
@@ -191,8 +186,9 @@ fn test_args_to_crawl_options_full_parity() {
     assert!(opts.crawl.ignore_robots);
     assert!(opts.crawl.no_session_health);
     assert!(opts.crawl.autoscale_enabled);
+}
 
-    // ── NetworkOptions ─────────────────────────────────────────────────
+fn assert_full_parity_network(opts: &webfang_core::application::crawl_options::CrawlOptions) {
     assert_eq!(opts.network.user_agent.as_deref(), Some("TestAgent/1.0"));
     assert_eq!(opts.network.accept_language, "es-ES,es;q=0.9");
     assert!(!opts.network.concurrency.is_auto());
@@ -210,8 +206,9 @@ fn test_args_to_crawl_options_full_parity() {
         webfang_core::domain::JsStrategy::Hybrid
     );
     assert_eq!(opts.network.obscura_binary, "/usr/local/bin/obscura");
+}
 
-    // ── ExportOptions ──────────────────────────────────────────────────
+fn assert_full_parity_export(opts: &webfang_core::application::crawl_options::CrawlOptions) {
     assert_eq!(opts.export.output_format, webfang_core::OutputFormat::Json);
     assert_eq!(
         opts.export.export_format,
@@ -235,8 +232,11 @@ fn test_args_to_crawl_options_full_parity() {
     assert!(opts.export.obsidian_wiki_links);
     assert!(opts.export.obsidian_relative_assets);
     assert!(opts.export.quick_save);
+}
 
-    // ── IngestionTuning ────────────────────────────────────────────────
+fn assert_full_parity_ingestion_tuning(
+    opts: &webfang_core::application::crawl_options::CrawlOptions,
+) {
     assert!(opts.elastic.enabled);
     assert_eq!(opts.elastic.cpu_cores, Some(6));
     assert_eq!(opts.elastic.ram_budget_bytes, Some(4 * 1024 * 1024 * 1024));
@@ -244,17 +244,47 @@ fn test_args_to_crawl_options_full_parity() {
         opts.elastic.db_path,
         Some(std::path::PathBuf::from("/tmp/test.db"))
     );
+}
 
-    // ── Item Pipeline ─────────────────────────────────────────────────
+fn assert_full_parity_item_pipeline(opts: &webfang_core::application::crawl_options::CrawlOptions) {
     assert!(opts.pipeline_enabled);
     assert_eq!(
         opts.pipeline_output_format,
         webfang_core::domain::config::PipelineOutputFormat::None
     );
+}
 
-    // ── Asset naming ─────────────────────────────────────────────────
+fn assert_full_parity_asset_naming(opts: &webfang_core::application::crawl_options::CrawlOptions) {
     assert_eq!(opts.asset_naming, "slug");
     assert_eq!(opts.download_concurrency, 5);
+}
+
+#[test]
+fn test_args_to_crawl_options_full_parity() {
+    clean_env();
+    let args = args_with_all_fields_set();
+    let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
+
+    // ── Top-level ──────────────────────────────────────────────────────
+    assert_full_parity_top_level(&opts);
+
+    // ── CrawlLimits ────────────────────────────────────────────────────
+    assert_full_parity_crawl_limits(&opts);
+
+    // ── NetworkOptions ─────────────────────────────────────────────────
+    assert_full_parity_network(&opts);
+
+    // ── ExportOptions ──────────────────────────────────────────────────
+    assert_full_parity_export(&opts);
+
+    // ── IngestionTuning ────────────────────────────────────────────────
+    assert_full_parity_ingestion_tuning(&opts);
+
+    // ── Item Pipeline ─────────────────────────────────────────────────
+    assert_full_parity_item_pipeline(&opts);
+
+    // ── Asset naming ─────────────────────────────────────────────────
+    assert_full_parity_asset_naming(&opts);
 
     // ── AiConfig (defaults when AI flags not set) ─────────────────────
     // When feature="ai" is OFF, ai_config should be Default (0.3/32768/false/"")
@@ -340,17 +370,14 @@ fn test_ai_config_defaults_without_ai_feature() {
     assert_eq!(opts.ai_config, AiConfig::default());
 }
 
-/// Tests `CrawlOptions::default()` directly — hermetic, no env reads, no CLI parsing.
-#[test]
-fn test_args_to_crawl_options_defaults() {
-    clean_env();
-    let opts = webfang_core::application::crawl_options::CrawlOptions::default();
-
+fn assert_defaults_top_level(opts: &webfang_core::application::crawl_options::CrawlOptions) {
     // url defaults to example.com when None
     assert_eq!(opts.url.as_str(), "https://example.com/");
     assert_eq!(opts.verbosity, 0);
     assert!(!opts.quiet);
+}
 
+fn assert_defaults_crawl(opts: &webfang_core::application::crawl_options::CrawlOptions) {
     assert_eq!(opts.crawl.selector, "body");
     assert_eq!(opts.crawl.max_depth, 2);
     assert_eq!(opts.crawl.max_pages, 10);
@@ -362,7 +389,9 @@ fn test_args_to_crawl_options_defaults() {
     assert!(opts.crawl.state_dir.is_none());
     assert!(!opts.crawl.use_sitemap);
     assert!(opts.crawl.sitemap_url.is_none());
+}
 
+fn assert_defaults_network(opts: &webfang_core::application::crawl_options::CrawlOptions) {
     assert!(opts.network.user_agent.is_none());
     assert_eq!(opts.network.accept_language, "en-US,en;q=0.9");
     assert!(opts.network.concurrency.is_auto());
@@ -373,7 +402,9 @@ fn test_args_to_crawl_options_defaults() {
     assert_eq!(opts.network.backoff_max_ms, 10_000);
     assert!(!opts.network.download_images);
     assert!(!opts.network.download_documents);
+}
 
+fn assert_defaults_export(opts: &webfang_core::application::crawl_options::CrawlOptions) {
     assert_eq!(
         opts.export.output_format,
         webfang_core::OutputFormat::Markdown
@@ -388,12 +419,16 @@ fn test_args_to_crawl_options_defaults() {
     assert!(!opts.export.obsidian_wiki_links);
     assert!(!opts.export.obsidian_relative_assets);
     assert!(!opts.export.quick_save);
+}
 
+fn assert_defaults_elastic(opts: &webfang_core::application::crawl_options::CrawlOptions) {
     assert!(!opts.elastic.enabled);
     assert!(opts.elastic.cpu_cores.is_none());
     assert!(opts.elastic.ram_budget_bytes.is_none());
     assert!(opts.elastic.db_path.is_none());
+}
 
+fn assert_defaults_pipeline(opts: &webfang_core::application::crawl_options::CrawlOptions) {
     assert!(!opts.pipeline_enabled);
     assert_eq!(
         opts.pipeline_output_format,
@@ -402,6 +437,20 @@ fn test_args_to_crawl_options_defaults() {
     assert!(!opts.crawl.autoscale_enabled);
     // CLI default_value = "hash" (via #[arg(default_value)])
     assert_eq!(opts.asset_naming, "hash");
+}
+
+/// Tests `CrawlOptions::default()` directly — hermetic, no env reads, no CLI parsing.
+#[test]
+fn test_args_to_crawl_options_defaults() {
+    clean_env();
+    let opts = webfang_core::application::crawl_options::CrawlOptions::default();
+
+    assert_defaults_top_level(&opts);
+    assert_defaults_crawl(&opts);
+    assert_defaults_network(&opts);
+    assert_defaults_export(&opts);
+    assert_defaults_elastic(&opts);
+    assert_defaults_pipeline(&opts);
 }
 
 #[test]
