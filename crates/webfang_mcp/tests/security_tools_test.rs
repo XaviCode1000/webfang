@@ -307,6 +307,12 @@ async fn test_verify_waf_integrity_t1_challenge_blocks_degraded() {
         "verify_waf_integrity should succeed: {}",
         tool_text(&result)
     );
+    // The block verdict is reported as a SUCCESS result (isError:false) whose
+    // content begins with the stable ENGLISH prefix "WAF blocked:" (see
+    // crates/webfang_mcp/src/mcp_server/handlers/security.rs). No JSON-RPC
+    // `error.code` is produced on this path — the handler returns
+    // `Ok(CallToolResult::success(...))` — so we assert on the stable prefix
+    // rather than any localized message text.
     assert!(
         tool_text(&result).starts_with("WAF blocked:"),
         "T1 challenge must block, got: {}",
@@ -344,6 +350,12 @@ async fn test_verify_waf_integrity_t2_with_waf_status_blocks() {
         "verify_waf_integrity should succeed: {}",
         tool_text(&result)
     );
+    // The block verdict is reported as a SUCCESS result (isError:false) whose
+    // content begins with the stable ENGLISH prefix "WAF blocked:" (see
+    // crates/webfang_mcp/src/mcp_server/handlers/security.rs). No JSON-RPC
+    // `error.code` is produced on this path — the handler returns
+    // `Ok(CallToolResult::success(...))` — so we assert on the stable prefix
+    // rather than any localized message text.
     assert!(
         tool_text(&result).starts_with("WAF blocked:"),
         "T2 fingerprint + WAF status 403 must block, got: {}",

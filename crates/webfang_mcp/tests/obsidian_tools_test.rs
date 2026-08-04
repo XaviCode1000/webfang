@@ -307,11 +307,11 @@ async fn test_build_obsidian_uri_rejects_control_chars() {
         "control chars must yield isError:true, got: {}",
         tool_text(&result)
     );
-    let text = tool_text(&result);
-    assert!(
-        text.contains("caracteres de control no permitidos"),
-        "Spanish control-char error expected, got: {text}"
-    );
+    // Rejection is signaled by `isError:true` on the tool result, NOT by the
+    // Spanish error message (user-facing text, may change). No JSON-RPC
+    // `error.code` is produced here: the handler returns
+    // `Ok(CallToolResult::error(...))` (crates/webfang_mcp/src/mcp_server/
+    // handlers/obsidian.rs), a tool-level error that carries no `code` field.
 }
 
 // ============================================================================
@@ -386,11 +386,10 @@ async fn test_open_in_obsidian_control_chars_validation_error() {
         "control chars must yield isError:true, got: {}",
         tool_text(&result)
     );
+    // Rejection is signaled by `isError:true`, NOT the Spanish error message
+    // (user-facing text, may change). The handler returns
+    // `Ok(CallToolResult::error(...))` — a tool-level error with no `code`.
     let text = tool_text(&result);
-    assert!(
-        text.contains("caracteres de control no permitidos"),
-        "Spanish control-char error expected, got: {text}"
-    );
     assert!(
         !text.contains("Opened in Obsidian"),
         "no real app launch may be reported, got: {text}"
