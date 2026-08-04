@@ -10,7 +10,7 @@
 mod common;
 use common::*;
 
-use serde_json::{json, Value};
+use serde_json::json;
 use wreq::Client;
 
 // ============================================================================
@@ -19,6 +19,12 @@ use wreq::Client;
 
 /// Test the complete MCP lifecycle: initialize → notifications/initialized →
 /// tools/list → tools/call, verifying session state persists across all requests.
+///
+/// Kept as a single test on purpose: the value is verifying that the MCP
+/// session persists across a full request sequence. Splitting it into
+/// per-step tests would create a fresh session per step and lose that
+/// coverage, so the length is intentional.
+#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn test_full_lifecycle_init_notify_list_call() {
     let (base_url, _handle) = start_test_server().await;
