@@ -41,6 +41,9 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 futures = { workspace = true }
 uuid = { workspace = true }
 webfang_test_utils = { workspace = true }
+# Used by doctests (docs examples return anyhow::Result); cargo-machete does
+# not scan dev-dependencies, so this does not reappear as "unused".
+anyhow = { workspace = true }
 
 
 
