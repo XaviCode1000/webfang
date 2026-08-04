@@ -17,8 +17,10 @@ use super::crawl_task_ctx::CrawlTaskCtx;
 use super::ports::waf_challenge_message;
 use crate::application::pipeline::{ScrapedItem, StageOutcome};
 use crate::application::url_filter::is_allowed;
+use crate::domain::session_port::SessionId;
 use crate::domain::{CorrelationId, CrawlError, CrawlErrorCategory, DiscoveredUrl};
 use crate::infrastructure::crawler::{is_internal_link, UrlSource};
+use crate::infrastructure::downloader::Cookie;
 use crate::infrastructure::observability::log_scrape_error;
 
 /// Handle result from a completed crawl task
@@ -31,29 +33,46 @@ pub(crate) fn handle_crawl_result(
         Ok(Ok(())) => {
             // Task completed successfully
         },
-        Ok(Err(CrawlError::Cancelled)) => {
-            // Shutdown control signal (#509) — not an operational failure,
-            // so it must not inflate the crawl error counters.
-            debug!("Task cancelled by engine shutdown");
-        },
-        Ok(Err(e)) => {
-            let category = CrawlErrorCategory::from(&e);
-            warn!("Task error: {}", e);
-            error_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            error_breakdown[category.index()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        },
-        Err(e) if e.is_cancelled() => {
-            // JoinSet abort (shutdown drain timeout, #509) — logged once at
-            // the drain site; not counted as a panic.
-            debug!("Task aborted during shutdown drain");
-        },
-        Err(e) => {
-            warn!("Task panicked: {}", e);
-            error_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            error_breakdown[CrawlErrorCategory::Panic.index()]
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        },
+        Ok(Err(e)) => handle_task_error(e, error_count, error_breakdown),
+        Err(e) => handle_join_error(e, error_count, error_breakdown),
     }
+}
+
+/// Bookkeeping for a task that returned an operational error.
+///
+/// Shutdown cancellation is a control signal, not a failure (#509), so it
+/// must not inflate the crawl error counters.
+fn handle_task_error(
+    e: CrawlError,
+    error_count: &Arc<AtomicUsize>,
+    error_breakdown: &Arc<[AtomicUsize; 8]>,
+) {
+    if matches!(e, CrawlError::Cancelled) {
+        debug!("Task cancelled by engine shutdown");
+        return;
+    }
+    let category = CrawlErrorCategory::from(&e);
+    warn!("Task error: {}", e);
+    error_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    error_breakdown[category.index()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Bookkeeping for a task that failed to join (abort or panic).
+fn handle_join_error(
+    e: tokio::task::JoinError,
+    error_count: &Arc<AtomicUsize>,
+    error_breakdown: &Arc<[AtomicUsize; 8]>,
+) {
+    if e.is_cancelled() {
+        // JoinSet abort (shutdown drain timeout, #509) — logged once at
+        // the drain site; not counted as a panic.
+        debug!("Task aborted during shutdown drain");
+        return;
+    }
+    warn!("Task panicked: {}", e);
+    error_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    error_breakdown[CrawlErrorCategory::Panic.index()]
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Execute a single crawl task using shared context.
@@ -108,164 +127,231 @@ async fn run_crawl_task_inner(
     let url_depth = discovered_url.depth;
     let parent_url = discovered_url.url.clone();
 
-    let mut session_id = None;
-    if let Some(ref pool) = ctx.session_pool {
-        let domain = url::Url::parse(&url_str)
-            .ok()
-            .and_then(|u| u.host_str().map(String::from))
-            .unwrap_or_default();
-        match pool.acquire(&domain) {
-            Some(id) => {
-                session_id = Some(id);
-            },
-            None => {
-                debug!("Domain {} has no available sessions, skipping", domain);
-                return Ok(());
-            },
-        }
-    }
+    // Acquire a per-domain session when the pool is enabled. `Err(())` means
+    // the pool had no available session for this domain — skip the URL.
+    let session_id = match acquire_session(&ctx, &url_str) {
+        Ok(id) => id,
+        Err(()) => return Ok(()),
+    };
 
     debug!("Crawling: {} (depth={})", url_str, url_depth);
 
     let parsed_url =
         url::Url::parse(&url_str).map_err(|e| CrawlError::Internal(format!("invalid URL: {e}")))?;
 
-    let (response, fetched_cookies) = match ctx.fetcher.fetch_page(&parsed_url, &ctx.config).await {
-        Ok((html, cookies)) => (html, cookies),
-        Err(e) => {
-            if let Some(waf_msg) = waf_challenge_message(&e) {
-                if let Some(domain) = parsed_url.host_str() {
-                    let banned = BannedDomain {
-                        domain: domain.to_string(),
-                        banned_until: None,
-                        reason: waf_msg.clone(),
-                    };
-                    if let Ok(mut domains) = ctx.banned_domains.write() {
-                        if !domains.iter().any(|d| d.domain == domain) {
-                            domains.push(banned);
-                            warn!("Banned domain {} due to WAF: {}", domain, waf_msg);
-                        }
-                    }
-                }
-                log_scrape_error(
-                    &waf_msg,
-                    &url_str,
-                    "fetch",
-                    Some(&page_correlation),
-                    "WAF challenge detected",
-                );
-            } else {
-                log_scrape_error(
-                    &e,
-                    &url_str,
-                    "fetch",
-                    Some(&page_correlation),
-                    "page fetch failed",
-                );
-            }
-            return Err(e);
-        },
-    };
+    let (response, fetched_cookies) =
+        fetch_page(&ctx, &parsed_url, &url_str, &page_correlation).await?;
 
-    if !fetched_cookies.is_empty() {
-        if let Ok(mut bridge) = ctx.cookie_bridge.write() {
-            for cookie in &fetched_cookies {
-                bridge.add(cookie.clone());
-            }
-        }
-    }
-
-    if let Some(ref pool) = ctx.session_pool {
-        if let Some(id) = session_id {
-            if let Ok(parsed) = url::Url::parse(&url_str) {
-                if let Some(domain) = parsed.host_str() {
-                    pool.report_success(domain, id);
-                }
-            }
-        }
-    }
+    ingest_cookies(&ctx, &fetched_cookies);
+    report_session_success(&ctx, &url_str, session_id);
 
     ctx.pages_crawled
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    if let Some(ref pipeline) = ctx.pipeline {
-        let item = ScrapedItem {
-            url: url_str.clone(),
-            raw_html: response.clone(),
-            text_content: None,
-            metadata: std::collections::HashMap::new(),
-            status_code: 200,
-            embeddings: None,
-        };
-
-        match pipeline.execute_pipeline(item).await {
-            StageOutcome::Continue(processed_item) => {
-                for stage in &ctx.output_stages {
-                    if let Err(e) = stage.write(&processed_item).await {
-                        warn!("Output stage '{}' failed: {}", stage.name(), e);
-                    }
-                }
-            },
-            StageOutcome::Skip => {
-                debug!("Pipeline skipped item: {}", url_str);
-                return Ok(());
-            },
-            StageOutcome::Reject(reason) => {
-                warn!("Pipeline rejected {}: {}", url_str, reason);
-                return Ok(());
-            },
-        }
+    if !run_pipeline(&ctx, &url_str, &response).await {
+        return Ok(());
     }
 
     if let Err(e) = ctx.collector.send_result(discovered_url).await {
         debug!("Failed to send result: {}", e);
     }
 
-    if url_depth < ctx.config.max_depth {
-        match ctx.link_extractor.extract_links(&response, &url_str) {
-            Ok(links) => {
-                for link in links {
-                    if let Ok(parsed_link) = Url::parse(&link) {
-                        if let Some(seed_domain) = ctx.config.seed_url.host_str() {
-                            let link_domain = parsed_link.host_str().unwrap_or("");
-                            // Enqueue-time dedup is owned by the queue's `seen` set
-                            // inside `push_prioritized`. The `visited` set is marked
-                            // only at dispatch time (`CrawlScheduler::record_visit`),
-                            // so a freshly discovered link must NOT be pre-marked
-                            // here: doing so made `next_url` discard it as already
-                            // visited, silently dropping every internal link (#479).
-                            if is_internal_link(&link, seed_domain)
-                                && is_allowed(&link, &ctx.config)
-                                && (ctx.ignore_robots
-                                    || ctx
-                                        .robots_checker
-                                        .is_robots_allowed(&link, link_domain)
-                                        .await)
-                            {
-                                let new_discovered = DiscoveredUrl::html(
-                                    parsed_link,
-                                    url_depth + 1,
-                                    parent_url.clone(),
-                                );
-                                ctx.queue
-                                    .push_prioritized(new_discovered, UrlSource::Link)
-                                    .await;
-                            }
+    extract_and_queue_links(&ctx, &response, &url_str, url_depth, &parent_url).await;
+
+    Ok(())
+}
+
+/// Acquire a per-domain session from the pool, if one is configured.
+///
+/// Returns `Ok(Some(id))` on acquisition, `Ok(None)` when no pool is enabled,
+/// and `Err(())` when the pool exists but has no available session (the caller
+/// should skip the URL).
+fn acquire_session(ctx: &CrawlTaskCtx, url_str: &str) -> Result<Option<SessionId>, ()> {
+    let Some(ref pool) = ctx.session_pool else {
+        return Ok(None);
+    };
+    let domain = url::Url::parse(url_str)
+        .ok()
+        .and_then(|u| u.host_str().map(String::from))
+        .unwrap_or_default();
+    match pool.acquire(&domain) {
+        Some(id) => Ok(Some(id)),
+        None => {
+            debug!("Domain {} has no available sessions, skipping", domain);
+            Err(())
+        },
+    }
+}
+
+/// Fetch the page, handling WAF challenges (banning the domain) and logging
+/// fetch failures before propagating the error.
+async fn fetch_page(
+    ctx: &CrawlTaskCtx,
+    parsed_url: &Url,
+    url_str: &str,
+    page_correlation: &CorrelationId,
+) -> Result<(String, Vec<Cookie>), CrawlError> {
+    match ctx.fetcher.fetch_page(parsed_url, &ctx.config).await {
+        Ok((html, cookies)) => Ok((html, cookies)),
+        Err(e) => {
+            if let Some(waf_msg) = waf_challenge_message(&e) {
+                ban_waf_domain(ctx, parsed_url, &waf_msg);
+                log_scrape_error(
+                    &waf_msg,
+                    url_str,
+                    "fetch",
+                    Some(page_correlation),
+                    "WAF challenge detected",
+                );
+            } else {
+                log_scrape_error(
+                    &e,
+                    url_str,
+                    "fetch",
+                    Some(page_correlation),
+                    "page fetch failed",
+                );
+            }
+            Err(e)
+        },
+    }
+}
+
+/// Ban a domain that triggered a WAF challenge, unless it is already banned.
+fn ban_waf_domain(ctx: &CrawlTaskCtx, parsed_url: &Url, waf_msg: &str) {
+    let Some(domain) = parsed_url.host_str() else {
+        return;
+    };
+    let banned = BannedDomain {
+        domain: domain.to_string(),
+        banned_until: None,
+        reason: waf_msg.to_string(),
+    };
+    if let Ok(mut domains) = ctx.banned_domains.write() {
+        if !domains.iter().any(|d| d.domain == domain) {
+            domains.push(banned);
+            warn!("Banned domain {} due to WAF: {}", domain, waf_msg);
+        }
+    }
+}
+
+/// Ingest any cookies returned by the fetch into the shared cookie bridge.
+fn ingest_cookies(ctx: &CrawlTaskCtx, fetched_cookies: &[Cookie]) {
+    if fetched_cookies.is_empty() {
+        return;
+    }
+    if let Ok(mut bridge) = ctx.cookie_bridge.write() {
+        for cookie in fetched_cookies {
+            bridge.add(cookie.clone());
+        }
+    }
+}
+
+/// Report a successful fetch back to the session pool for the acquired session.
+fn report_session_success(ctx: &CrawlTaskCtx, url_str: &str, session_id: Option<SessionId>) {
+    let Some(ref pool) = ctx.session_pool else {
+        return;
+    };
+    let Some(id) = session_id else {
+        return;
+    };
+    if let Ok(parsed) = url::Url::parse(url_str) {
+        if let Some(domain) = parsed.host_str() {
+            pool.report_success(domain, id);
+        }
+    }
+}
+
+/// Run the content pipeline if configured. Returns `true` when processing
+/// should continue (no pipeline, or `Continue`); `false` when the item was
+/// skipped or rejected (the caller should stop processing this page).
+async fn run_pipeline(ctx: &CrawlTaskCtx, url_str: &str, response: &str) -> bool {
+    let Some(ref pipeline) = ctx.pipeline else {
+        return true;
+    };
+    let item = ScrapedItem {
+        url: url_str.to_string(),
+        raw_html: response.to_string(),
+        text_content: None,
+        metadata: std::collections::HashMap::new(),
+        status_code: 200,
+        embeddings: None,
+    };
+    match pipeline.execute_pipeline(item).await {
+        StageOutcome::Continue(processed_item) => {
+            write_to_output_stages(ctx, &processed_item).await;
+            true
+        },
+        StageOutcome::Skip => {
+            debug!("Pipeline skipped item: {}", url_str);
+            false
+        },
+        StageOutcome::Reject(reason) => {
+            warn!("Pipeline rejected {}: {}", url_str, reason);
+            false
+        },
+    }
+}
+
+/// Write a processed item to every configured output stage.
+async fn write_to_output_stages(ctx: &CrawlTaskCtx, item: &ScrapedItem) {
+    for stage in &ctx.output_stages {
+        if let Err(e) = stage.write(item).await {
+            warn!("Output stage '{}' failed: {}", stage.name(), e);
+        }
+    }
+}
+
+/// Extract links from the page and enqueue internal, allowed, robots-permitted
+/// links for further crawling (subject to the configured max depth).
+async fn extract_and_queue_links(
+    ctx: &CrawlTaskCtx,
+    response: &str,
+    url_str: &str,
+    url_depth: u8,
+    parent_url: &Url,
+) {
+    if url_depth >= ctx.config.max_depth {
+        return;
+    }
+    match ctx.link_extractor.extract_links(response, url_str) {
+        Ok(links) => {
+            for link in links {
+                if let Ok(parsed_link) = Url::parse(&link) {
+                    if let Some(seed_domain) = ctx.config.seed_url.host_str() {
+                        let link_domain = parsed_link.host_str().unwrap_or("");
+                        // Enqueue-time dedup is owned by the queue's `seen` set
+                        // inside `push_prioritized`. The `visited` set is marked
+                        // only at dispatch time (`CrawlScheduler::record_visit`),
+                        // so a freshly discovered link must NOT be pre-marked
+                        // here: doing so made `next_url` discard it as already
+                        // visited, silently dropping every internal link (#479).
+                        if is_internal_link(&link, seed_domain)
+                            && is_allowed(&link, &ctx.config)
+                            && (ctx.ignore_robots
+                                || ctx
+                                    .robots_checker
+                                    .is_robots_allowed(&link, link_domain)
+                                    .await)
+                        {
+                            let new_discovered =
+                                DiscoveredUrl::html(parsed_link, url_depth + 1, parent_url.clone());
+                            ctx.queue
+                                .push_prioritized(new_discovered, UrlSource::Link)
+                                .await;
                         }
                     }
                 }
-            },
-            Err(e) => {
-                warn!("Failed to extract links from {}: {}", url_str, e);
-                ctx.error_count
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                ctx.error_breakdown[CrawlErrorCategory::Extraction.index()]
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            },
-        }
+            }
+        },
+        Err(e) => {
+            warn!("Failed to extract links from {}: {}", url_str, e);
+            ctx.error_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            ctx.error_breakdown[CrawlErrorCategory::Extraction.index()]
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        },
     }
-
-    Ok(())
 }
 
 #[cfg(all(test, not(miri)))]

@@ -13,6 +13,7 @@
 
 use crate::application::error_mapping::scraper_error_from_http;
 use crate::application::http_client::HttpClientPort;
+use crate::domain::http_port::HttpResponse;
 use crate::domain::{CorrelationId, DomInspectorPort, ExtractResult, ScrapedContent, ValidUrl};
 use crate::error::{Result, ScraperError};
 use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
@@ -132,82 +133,16 @@ async fn scrape_with_config_inner(
 
     info!("🌐 Fetching: {}", url);
 
-    let response = match client.get(url.as_str()).await {
-        Ok(resp) => resp,
-        Err(e) => {
-            log_scrape_error(
-                &e,
-                url.as_str(),
-                "fetch",
-                Some(&correlation),
-                "HTTP request failed",
-            );
-            return Err(scraper_error_from_http(e, url.as_str()));
-        },
-    };
+    let response = fetch_html(client, url, &correlation).await?;
 
-    if !(200..300).contains(&response.status) {
-        return Err(ScraperError::http(response.status, url.as_str()));
-    }
+    let html: &str = &response.body;
+    log_html_size(html, url);
 
-    let html = response.body;
-
-    // Record HTML size in span, skip logging for large bodies (>1MB) to avoid performance issues
-    let html_size = html.len();
-    let html_truncated = html_size > MAX_INSTRUMENTED_BODY_SIZE;
-    if html_truncated {
-        tracing::debug!(
-            html_size_bytes = html_size,
-            html_size_skipped = true,
-            "HTML body exceeds 1MB, skipping detailed instrumentation"
-        );
-    } else {
-        tracing::debug!("📄 Downloaded {} bytes from {}", html.len(), url);
-    }
-
-    // Add span field for html size (truncated)
-    let span = tracing::Span::current();
-    span.record("html_size_bytes", html_size.min(MAX_INSTRUMENTED_BODY_SIZE));
-    span.record("html_size_skipped", html_truncated);
-
-    // Detect WAF/CAPTCHA challenges disguised as HTTP 200 (REQ-WAF-05).
-    // Context-aware inspection: status + content-type + headers drive the
-    // tiered verdict, and a block carries the full Spanish evidence chain
-    // (REQ-WAF-08) instead of a bare first-hit provider. `config.ignore_waf`
-    // short-circuits to a clean verdict (REQ-WAF-07).
-    let ctx = InspectionContext::from_lowercase_headers(
-        response.status,
-        &response.headers,
-        config.ignore_waf,
-    );
-    let verdict = WafInspector::inspect(&html, &ctx);
-    if verdict.is_blocked {
-        let chain = verdict.evidence_chain();
-        log_scrape_error(
-            &chain,
-            url.as_str(),
-            "fetch",
-            Some(&correlation),
-            "WAF challenge detected",
-        );
-        return Err(ScraperError::waf_blocked(url.to_string(), chain));
-    }
+    detect_waf(html, &response, config, url, &correlation)?;
 
     // H1 FIX: Extract title from original DOM BEFORE any transformation.
     // This preserves the <title> tag even when --selector filters it out.
-    // 'title' is a compile-time-constant selector; `Selector::parse` cannot fail.
-    #[allow(clippy::expect_used)]
-    let original_title = {
-        let doc = scraper::Html::parse_document(&html);
-        doc.select(
-            &scraper::Selector::parse("title")
-                // LCOV_EXCL_LINE defensive: compile-time-selector — 'title' is a constant valid selector
-                .expect("invariant: 'title' is a valid CSS selector — this cannot fail"),
-        )
-        .next()
-        .map(|el| el.text().collect::<String>())
-        .unwrap_or_default()
-    };
+    let original_title = extract_original_title(html);
 
     // M7 FIX: Log selector feedback when --selector is active
     if config.selector != "body" {
@@ -221,13 +156,7 @@ async fn scrape_with_config_inner(
     // Clean HTML boilerplate (scripts, styles, nav, sidebar, footer) BEFORE
     // Readability. This helps legible find the main content without being
     // confused by navigation elements, JavaScript bundles, and CSS.
-    let cleaned_html = crate::infrastructure::converter::html_cleaner::clean_html(&html);
-    debug!(
-        "🧹 Cleaned HTML: {} → {} bytes ({}% reduction)",
-        html.len(),
-        cleaned_html.len(),
-        ((html.len() - cleaned_html.len()) as f64 / html.len() as f64 * 100.0).round()
-    );
+    let cleaned_html = clean_html_for_scrape(html);
 
     // Apply CSS selector extraction if a non-default selector is configured.
     let extract_result = extract_with_selector(&cleaned_html, &config.selector, inspector);
@@ -247,112 +176,17 @@ async fn scrape_with_config_inner(
     let extraction_html = extract_result.as_html().to_owned();
 
     // Try Readability first, fallback to plain text extraction
-    match crate::infrastructure::scraper::readability::parse(&extraction_html, Some(url.as_str())) {
-        Ok(article) => {
-            let assets = download_assets_if_enabled(
-                &html,
-                url,
-                config,
-                downloader.map(|d| d as &dyn crate::domain::ports::AssetDownloaderPort),
-            )
-            .await?;
-
-            // SPA detection: check if extracted content is minimal
-            if let Some(spa_info) = detect_spa_content(url.as_str(), &article.text_content, &html) {
-                if spa_info.has_spa_markers {
-                    warn!(
-                        "{} returned minimal content ({} chars) with SPA markers detected. This site may require JavaScript rendering. This feature is not yet implemented. Track: https://github.com/XaviCode1000/webfang/issues/16",
-                        spa_info.url, spa_info.char_count
-                    );
-                } else {
-                    warn!(
-                        "{} returned minimal content ({} chars). This site may require JavaScript rendering. This feature is not yet implemented. Track: https://github.com/XaviCode1000/webfang/issues/16",
-                        spa_info.url, spa_info.char_count
-                    );
-                }
-            }
-
-            let author = crate::infrastructure::scraper::author_extractor::extract_author(
-                &html,
-                article.byline.as_deref(),
-            );
-
-            results.push(ScrapedContent {
-                // H1 FIX: Use title from original DOM, falling back to Readability's title
-                title: crate::application::resolve_title(
-                    if original_title.is_empty() {
-                        &article.title
-                    } else {
-                        &original_title
-                    },
-                    url,
-                ),
-                content: article.text_content,
-                url: ValidUrl::new(url.clone()),
-                excerpt: article.excerpt,
-                author,
-                date: article.published_time,
-                // Store CLEAN HTML from Readability (not raw HTML with nav/ads/footer)
-                // This is what downstream Markdown converters receive.
-                html: Some(article.content),
-                assets,
-                correlation_id: Some(correlation.clone()),
-            });
-        },
-        Err(e) => {
-            warn!("⚠️  Readability failed for {}: {}", url, e);
-            // H2 FIX: Apply clean_html to fallback content to prevent JS/CSS leakage
-            let raw_fallback =
-                crate::infrastructure::scraper::fallback::extract_text(&extraction_html);
-            let fallback_content =
-                crate::infrastructure::converter::html_cleaner::clean_html(&raw_fallback);
-            let assets = download_assets_if_enabled(
-                &html,
-                url,
-                config,
-                downloader.map(|d| d as &dyn crate::domain::ports::AssetDownloaderPort),
-            )
-            .await?;
-
-            // SPA detection: check if fallback content is minimal
-            if let Some(spa_info) = detect_spa_content(url.as_str(), &fallback_content, &html) {
-                if spa_info.has_spa_markers {
-                    warn!(
-                        "{} returned minimal content ({} chars) with SPA markers detected. This site may require JavaScript rendering. This feature is not yet implemented. Track: https://github.com/XaviCode1000/webfang/issues/16",
-                        spa_info.url, spa_info.char_count
-                    );
-                } else {
-                    warn!(
-                        "{} returned minimal content ({} chars). This site may require JavaScript rendering. This feature is not yet implemented. Track: https://github.com/XaviCode1000/webfang/issues/16",
-                        spa_info.url, spa_info.char_count
-                    );
-                }
-            }
-
-            results.push(ScrapedContent {
-                // H1 FIX: Use title from original DOM, falling back to host-based fallback
-                title: {
-                    let fallback_title = url.host_str().unwrap_or("unknown_host").to_string();
-                    crate::application::resolve_title(
-                        if original_title.is_empty() {
-                            &fallback_title
-                        } else {
-                            &original_title
-                        },
-                        url,
-                    )
-                },
-                content: fallback_content,
-                url: ValidUrl::new(url.clone()),
-                excerpt: None,
-                author: None,
-                date: None,
-                html: Some(html),
-                assets,
-                correlation_id: Some(correlation),
-            });
-        },
-    }
+    let content = build_scraped_content(
+        html,
+        &extraction_html,
+        url,
+        config,
+        downloader,
+        &original_title,
+        &correlation,
+    )
+    .await?;
+    results.push(content);
 
     info!(
         "✅ Extracted: {} ({} chars, {} assets)",
@@ -368,6 +202,224 @@ async fn scrape_with_config_inner(
         results,
         extract_result,
     })
+}
+
+/// Fetch the page HTML, logging failures and rejecting non-2xx responses.
+async fn fetch_html(
+    client: &dyn HttpClientPort,
+    url: &url::Url,
+    correlation: &CorrelationId,
+) -> Result<HttpResponse> {
+    let response = match client.get(url.as_str()).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            log_scrape_error(
+                &e,
+                url.as_str(),
+                "fetch",
+                Some(correlation),
+                "HTTP request failed",
+            );
+            return Err(scraper_error_from_http(e, url.as_str()));
+        },
+    };
+
+    if !(200..300).contains(&response.status) {
+        return Err(ScraperError::http(response.status, url.as_str()));
+    }
+
+    Ok(response)
+}
+
+/// Log the HTML size and record it on the current span, skipping detailed
+/// instrumentation for bodies larger than 1MB.
+fn log_html_size(html: &str, url: &url::Url) {
+    let html_size = html.len();
+    let html_truncated = html_size > MAX_INSTRUMENTED_BODY_SIZE;
+    if html_truncated {
+        tracing::debug!(
+            html_size_bytes = html_size,
+            html_size_skipped = true,
+            "HTML body exceeds 1MB, skipping detailed instrumentation"
+        );
+    } else {
+        tracing::debug!("📄 Downloaded {} bytes from {}", html.len(), url);
+    }
+
+    // Add span field for html size (truncated)
+    let span = tracing::Span::current();
+    span.record("html_size_bytes", html_size.min(MAX_INSTRUMENTED_BODY_SIZE));
+    span.record("html_size_skipped", html_truncated);
+}
+
+/// Detect WAF/CAPTCHA challenges disguised as HTTP 200 (REQ-WAF-05).
+///
+/// Context-aware inspection: status + content-type + headers drive the tiered
+/// verdict, and a block carries the full Spanish evidence chain (REQ-WAF-08)
+/// instead of a bare first-hit provider. `config.ignore_waf` short-circuits to
+/// a clean verdict (REQ-WAF-07).
+fn detect_waf(
+    html: &str,
+    response: &HttpResponse,
+    config: &ScraperConfig,
+    url: &url::Url,
+    correlation: &CorrelationId,
+) -> Result<()> {
+    let ctx = InspectionContext::from_lowercase_headers(
+        response.status,
+        &response.headers,
+        config.ignore_waf,
+    );
+    let verdict = WafInspector::inspect(html, &ctx);
+    if verdict.is_blocked {
+        let chain = verdict.evidence_chain();
+        log_scrape_error(
+            &chain,
+            url.as_str(),
+            "fetch",
+            Some(correlation),
+            "WAF challenge detected",
+        );
+        return Err(ScraperError::waf_blocked(url.to_string(), chain));
+    }
+    Ok(())
+}
+
+/// Extract the `<title>` from the original DOM before any transformation.
+///
+/// 'title' is a compile-time-constant selector; `Selector::parse` cannot fail.
+fn extract_original_title(html: &str) -> String {
+    let doc = scraper::Html::parse_document(html);
+    #[allow(clippy::expect_used)]
+    let selector = scraper::Selector::parse("title")
+        // LCOV_EXCL_LINE defensive: compile-time-selector — 'title' is a constant valid selector
+        .expect("invariant: 'title' is a valid CSS selector — this cannot fail");
+    doc.select(&selector)
+        .next()
+        .map(|el| el.text().collect::<String>())
+        .unwrap_or_default()
+}
+
+/// Clean HTML boilerplate (scripts, styles, nav, sidebar, footer) BEFORE
+/// Readability, logging the reduction.
+fn clean_html_for_scrape(html: &str) -> String {
+    let cleaned_html = crate::infrastructure::converter::html_cleaner::clean_html(html);
+    debug!(
+        "🧹 Cleaned HTML: {} → {} bytes ({}% reduction)",
+        html.len(),
+        cleaned_html.len(),
+        ((html.len() - cleaned_html.len()) as f64 / html.len() as f64 * 100.0).round()
+    );
+    cleaned_html
+}
+
+/// Build a [`ScrapedContent`] from the fetched HTML, trying Readability first
+/// and falling back to plain-text extraction.
+async fn build_scraped_content(
+    html: &str,
+    extraction_html: &str,
+    url: &url::Url,
+    config: &ScraperConfig,
+    downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
+    original_title: &str,
+    correlation: &CorrelationId,
+) -> Result<ScrapedContent> {
+    match crate::infrastructure::scraper::readability::parse(extraction_html, Some(url.as_str())) {
+        Ok(article) => {
+            let assets = download_assets_if_enabled(
+                html,
+                url,
+                config,
+                downloader.map(|d| d as &dyn crate::domain::ports::AssetDownloaderPort),
+            )
+            .await?;
+
+            log_spa_warning(url.as_str(), &article.text_content, html);
+
+            let author = crate::infrastructure::scraper::author_extractor::extract_author(
+                html,
+                article.byline.as_deref(),
+            );
+
+            Ok(ScrapedContent {
+                // H1 FIX: Use title from original DOM, falling back to Readability's title
+                title: crate::application::resolve_title(
+                    if original_title.is_empty() {
+                        &article.title
+                    } else {
+                        original_title
+                    },
+                    url,
+                ),
+                content: article.text_content,
+                url: ValidUrl::new(url.clone()),
+                excerpt: article.excerpt,
+                author,
+                date: article.published_time,
+                // Store CLEAN HTML from Readability (not raw HTML with nav/ads/footer)
+                // This is what downstream Markdown converters receive.
+                html: Some(article.content),
+                assets,
+                correlation_id: Some(correlation.clone()),
+            })
+        },
+        Err(e) => {
+            warn!("⚠️  Readability failed for {}: {}", url, e);
+            // H2 FIX: Apply clean_html to fallback content to prevent JS/CSS leakage
+            let raw_fallback =
+                crate::infrastructure::scraper::fallback::extract_text(extraction_html);
+            let fallback_content =
+                crate::infrastructure::converter::html_cleaner::clean_html(&raw_fallback);
+            let assets = download_assets_if_enabled(
+                html,
+                url,
+                config,
+                downloader.map(|d| d as &dyn crate::domain::ports::AssetDownloaderPort),
+            )
+            .await?;
+
+            log_spa_warning(url.as_str(), &fallback_content, html);
+
+            let fallback_title = url.host_str().unwrap_or("unknown_host").to_string();
+            Ok(ScrapedContent {
+                // H1 FIX: Use title from original DOM, falling back to host-based fallback
+                title: crate::application::resolve_title(
+                    if original_title.is_empty() {
+                        &fallback_title
+                    } else {
+                        original_title
+                    },
+                    url,
+                ),
+                content: fallback_content,
+                url: ValidUrl::new(url.clone()),
+                excerpt: None,
+                author: None,
+                date: None,
+                html: Some(html.to_string()),
+                assets,
+                correlation_id: Some(correlation.clone()),
+            })
+        },
+    }
+}
+
+/// Log a warning when extracted content is minimal (possible SPA requiring JS).
+fn log_spa_warning(url: &str, content: &str, html: &str) {
+    // SPA detection: check if extracted content is minimal
+    if let Some(spa_info) = detect_spa_content(url, content, html) {
+        if spa_info.has_spa_markers {
+            warn!(
+                "{} returned minimal content ({} chars) with SPA markers detected. This site may require JavaScript rendering. This feature is not yet implemented. Track: https://github.com/XaviCode1000/webfang/issues/16",
+                spa_info.url, spa_info.char_count
+            );
+        } else {
+            warn!(
+                "{} returned minimal content ({} chars). This site may require JavaScript rendering. This feature is not yet implemented. Track: https://github.com/XaviCode1000/webfang/issues/16",
+                spa_info.url, spa_info.char_count
+            );
+        }
+    }
 }
 
 /// Scrape multiple URLs with concurrency control
