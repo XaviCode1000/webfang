@@ -8,6 +8,16 @@
 //! `search_obsidian` requires `embedding_port`, `note_repository`, and
 //! `text_chunker` to be injected (#386); without them it returns an honest
 //! feature-gated error.
+//!
+//! ## Test-coverage exception (issue #516, task 4)
+//! The success paths of both handlers require the ONNX semantic-cleaning
+//! model (`--features ai`) and call ports whose traits (`SemanticCleaner`,
+//! `EmbeddingPort`, `NoteRepository`, `TextChunker`) are sealed to
+//! `webfang_core`, so no stub can be injected from this crate's unit tests.
+//! Only the model-free error/validation branches are therefore unit-tested,
+//! which leaves `ai.rs` at ~65% line coverage. It is **intentionally exempt**
+//! from the ≥70% per-handler line-coverage gate. The model-dependent paths are
+//! exercised by the integration harness under the `ai` feature.
 
 use super::McpHandler;
 use crate::mcp_server::params::*;
