@@ -28,6 +28,7 @@ use tracing::info;
 use super::processor::{BatchError, BatchProcessor, BatchResult};
 use super::{BatchJob, BatchJobStatus};
 use crate::domain::CrawlerConfig;
+use crate::error::ScraperError;
 
 /// Queue-based manager for batch crawl jobs
 ///
@@ -131,19 +132,25 @@ impl BatchManager {
         let results = self.process_all().await;
         let mut summary = BatchManagerSummary::default();
 
-        for result in &results {
+        // Consume by value: `ScraperError` is not `Clone`, so error tuples are
+        // moved into the summary rather than cloned (#537).
+        for result in results {
             match result {
                 Ok(r) => {
                     summary.total_urls += r.total;
                     summary.succeeded += r.succeeded;
                     summary.failed += r.failed;
-                    summary.errors.extend(r.errors.clone());
+                    summary.errors.extend(r.errors);
                 },
                 Err(e) => {
                     summary.failed += 1;
-                    summary
-                        .errors
-                        .push(("batch-error".to_string(), format!("{e}")));
+                    // `BatchError` is not a `ScraperError`; wrap into Internal
+                    // (classifies as InternalFatal) so batch-level failures
+                    // escalate the exit code.
+                    summary.errors.push((
+                        "batch-error".to_string(),
+                        ScraperError::Internal(format!("batch-error: {e}")),
+                    ));
                 },
             }
         }
@@ -168,7 +175,7 @@ impl BatchManager {
 }
 
 /// Aggregated summary across all batch jobs in a manager
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub struct BatchManagerSummary {
     /// Total number of URLs across all jobs
     pub total_urls: usize,
@@ -176,8 +183,10 @@ pub struct BatchManagerSummary {
     pub succeeded: usize,
     /// Number of failed URLs
     pub failed: usize,
-    /// Error messages from failed jobs
-    pub errors: Vec<(String, String)>,
+    /// Errors from failed jobs, preserving the [`ScraperError`] variant so
+    /// exit-code routing can aggregate severity via
+    /// [`ScraperError::classify`] (#537).
+    pub errors: Vec<(String, ScraperError)>,
 }
 
 #[cfg(test)]

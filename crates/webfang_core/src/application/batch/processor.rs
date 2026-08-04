@@ -35,10 +35,15 @@ use tokio::task::JoinSet;
 use tracing::{error, info, instrument, warn};
 
 use super::BatchJob;
-use crate::domain::{CrawlError, CrawlerConfig};
+use crate::domain::{CrawlError, CrawlErrorCategory, CrawlerConfig};
+use crate::error::ScraperError;
 
 /// Result of processing a batch job
-#[derive(Debug, Clone)]
+///
+/// Not `Clone`: `errors` carries [`ScraperError`], which owns non-cloneable
+/// sources (`std::io::Error`, boxed trait objects). Callers that need to
+/// forward the errors must move them (#537).
+#[derive(Debug)]
 pub struct BatchResult {
     /// ID of the batch job
     pub job_id: String,
@@ -48,8 +53,12 @@ pub struct BatchResult {
     pub succeeded: usize,
     /// Number of failed URLs
     pub failed: usize,
-    /// List of (url, error_message) for failed URLs
-    pub errors: Vec<(String, String)>,
+    /// List of (url, error) for failed URLs.
+    ///
+    /// The [`ScraperError`] variant is preserved (not flattened to a string)
+    /// so exit-code routing can aggregate severity via
+    /// [`ScraperError::classify`] (#537).
+    pub errors: Vec<(String, ScraperError)>,
 }
 
 /// Batch processor with concurrency control
@@ -116,7 +125,7 @@ impl BatchProcessor {
         let base_config = job.config.clone();
 
         let mut join_set = JoinSet::new();
-        let mut errors: Vec<(String, String)> = Vec::new();
+        let mut errors: Vec<(String, ScraperError)> = Vec::new();
 
         for url_str in &job.urls {
             let url = url_str.clone();
@@ -147,14 +156,20 @@ impl BatchProcessor {
                 },
                 Ok((url, Err(e))) => {
                     progress.fail_one();
-                    let err_msg = format!("{e}");
-                    warn!("Failed to crawl {url}: {err_msg}");
-                    errors.push((url, err_msg));
+                    // Preserve the full variant through the CrawlError ->
+                    // ScraperError conversion (#537): severity routing needs
+                    // classify(), which a flattened string cannot provide.
+                    let scraper_err = ScraperError::from(e);
+                    warn!(error = %scraper_err, "Failed to crawl {url}");
+                    errors.push((url, scraper_err));
                 },
                 Err(e) => {
                     progress.fail_one();
                     error!("Task panicked: {e}");
-                    errors.push(("unknown".to_string(), format!("Task panicked: {e}")));
+                    errors.push((
+                        "unknown".to_string(),
+                        ScraperError::Internal(format!("task-panic: {e}")),
+                    ));
                 },
             }
         }
@@ -208,10 +223,56 @@ async fn process_single_url(
 
     let result = crate::application::crawler::engine::crawl_site(config).await?;
 
-    // Treat any crawl errors (timeouts, etc.) as failures for batch processing
+    // Treat any crawl errors (timeouts, etc.) as failures for batch processing,
+    // but preserve severity (#537): the engine already partitioned them into
+    // `error_breakdown` (issue #374). A genuinely-internal category (storage,
+    // checkpoint, parse, panic) is a real bug and must stay `Internal` so the
+    // run exits 3 (issue #537, phase 1). A purely transient/external failure
+    // set (timeout, network, http, rate-limit, waf) must surface as a transient
+    // `CrawlError` so it classifies `TransientRetriable`/`Backoff`/`Permanent`
+    // and exits 69 — NOT as a bug (exit 3).
     if result.errors > 0 {
-        return Err(CrawlError::Internal(format!(
-            "crawl completed with {} error(s)",
+        let breakdown = &result.error_breakdown;
+
+        // Defensive: errors reported without a category breakdown are treated
+        // as internal failures (fail-safe → exit 3), matching the classify()
+        // safety net for genuinely unknown errors.
+        if breakdown.is_empty() {
+            return Err(CrawlError::Internal(format!(
+                "crawl completed with {} error(s)",
+                result.errors
+            )));
+        }
+
+        // A genuinely-internal category means a real bug. Mixed batches are
+        // dominated by the worst severity, so any such category escalates to
+        // exit 3 (matches `scraper_failure_for_internal_fatal` in the CLI).
+        let has_internal_bug = [
+            CrawlErrorCategory::Internal,
+            CrawlErrorCategory::Extraction,
+            CrawlErrorCategory::Panic,
+        ]
+        .iter()
+        .any(|c| breakdown.get(c).copied().unwrap_or(0) > 0);
+        if has_internal_bug {
+            return Err(CrawlError::Internal(format!(
+                "crawl completed with {} error(s)",
+                result.errors
+            )));
+        }
+
+        // Purely transient/external: surface as a transient error → exit 69.
+        // A timeout is the most common batch failure here.
+        if breakdown
+            .get(&CrawlErrorCategory::Timeout)
+            .copied()
+            .unwrap_or(0)
+            > 0
+        {
+            return Err(CrawlError::Timeout);
+        }
+        return Err(CrawlError::Connection(format!(
+            "crawl completed with {} transient error(s)",
             result.errors
         )));
     }
@@ -325,11 +386,14 @@ mod tests {
             errors: vec![
                 (
                     "https://example.com/404".to_string(),
-                    "404 Not Found".to_string(),
+                    ScraperError::http(404, "https://example.com/404"),
                 ),
                 (
                     "https://example.com/timeout".to_string(),
-                    "Timeout".to_string(),
+                    ScraperError::Network(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "Timeout",
+                    ))),
                 ),
             ],
         };
@@ -377,8 +441,14 @@ mod tests {
             succeeded: 0,
             failed: 2,
             errors: vec![
-                ("https://a.com".to_string(), "error a".to_string()),
-                ("https://b.com".to_string(), "error b".to_string()),
+                (
+                    "https://a.com".to_string(),
+                    ScraperError::Internal("error a".to_string()),
+                ),
+                (
+                    "https://b.com".to_string(),
+                    ScraperError::Internal("error b".to_string()),
+                ),
             ],
         };
         assert_eq!(result.succeeded, 0);
@@ -388,8 +458,13 @@ mod tests {
 
     #[test]
     fn test_batch_result_counts_consistent() {
-        let errors: Vec<(String, String)> = (0..5)
-            .map(|i| (format!("url-{i}"), format!("err-{i}")))
+        let errors: Vec<(String, ScraperError)> = (0..5)
+            .map(|i| {
+                (
+                    format!("url-{i}"),
+                    ScraperError::Internal(format!("err-{i}")),
+                )
+            })
             .collect();
         let result = BatchResult {
             job_id: "job-mixed".to_string(),
