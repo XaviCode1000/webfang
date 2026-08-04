@@ -341,3 +341,214 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod handler_tests {
+    use super::*;
+    use crate::mcp_server::state::McpState;
+    use rmcp::handler::server::wrapper::Parameters;
+    use rmcp::model::CallToolResult;
+    use tempfile::TempDir;
+    use webfang_core::di::Container;
+    use webfang_core::domain::{CrawlerConfig, ScrapedContent, ValidUrl};
+    use webfang_core::infrastructure::config::ScraperConfig;
+
+    async fn test_handler() -> (McpHandler, TempDir) {
+        let tmp = TempDir::new().expect("create temp dir");
+        let crawler_config =
+            CrawlerConfig::new(url::Url::parse("https://example.com").expect("valid url"));
+        let scraper_config = ScraperConfig {
+            output_dir: tmp.path().to_path_buf(),
+            ..Default::default()
+        };
+        let container = Container::new(crawler_config, scraper_config)
+            .await
+            .expect("create container");
+        let state = McpState::new(container);
+        (McpHandler::new(state), tmp)
+    }
+
+    /// Seed the container's crawl-result repository with one item, polling
+    /// until the append-only writer has flushed it (mirrors the shared
+    /// `start_seeded_server` harness).
+    async fn seed_one(handler: &McpHandler) {
+        let repo = handler
+            .state
+            .container
+            .crawl_result_repository()
+            .expect("repo wired");
+        let content = ScrapedContent {
+            title: "Seed".to_string(),
+            content: "seed body".to_string(),
+            url: ValidUrl::new(url::Url::parse("https://example.com/seed").expect("valid")),
+            excerpt: None,
+            author: None,
+            date: None,
+            html: None,
+            assets: vec![],
+            correlation_id: None,
+        };
+        repo.save(&content).expect("save seed");
+        for _ in 0..80 {
+            if repo
+                .find_by_url("https://example.com/seed")
+                .expect("find")
+                .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
+    fn result_text(result: &CallToolResult) -> String {
+        serde_json::to_value(result)
+            .ok()
+            .and_then(|v| v.get("content").and_then(|c| c.as_array()).cloned())
+            .and_then(|arr| arr.first().cloned())
+            .and_then(|first| {
+                first
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn export_file_empty_content_is_error() {
+        let (handler, tmp) = test_handler().await;
+        let res = handler
+            .export_file(Parameters(ExportFileParams {
+                output_dir: tmp.path().to_string_lossy().to_string(),
+                filename: "doc".to_string(),
+                format: "jsonl".to_string(),
+                content: "   ".to_string(),
+            }))
+            .await
+            .expect("export_file returns Ok on empty content");
+        let json = serde_json::to_value(&res).expect("serialize");
+        assert_eq!(
+            json.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "empty content must map to isError:true, got: {json}"
+        );
+    }
+
+    #[tokio::test]
+    async fn export_file_invalid_format_is_invalid_params() {
+        let (handler, tmp) = test_handler().await;
+        let res = handler
+            .export_file(Parameters(ExportFileParams {
+                output_dir: tmp.path().to_string_lossy().to_string(),
+                filename: "doc".to_string(),
+                format: "bogus".to_string(),
+                content: "hello".to_string(),
+            }))
+            .await;
+        assert!(res.is_err(), "invalid format must be a protocol error");
+    }
+
+    #[tokio::test]
+    async fn export_file_writes_jsonl() {
+        let (handler, tmp) = test_handler().await;
+        let res = handler
+            .export_file(Parameters(ExportFileParams {
+                output_dir: tmp.path().to_string_lossy().to_string(),
+                filename: "doc".to_string(),
+                format: "jsonl".to_string(),
+                content: "hello world".to_string(),
+            }))
+            .await
+            .expect("export_file returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("Exportación completada"),
+            "success must report completion: {text}"
+        );
+        assert!(
+            tmp.path().join("doc.jsonl").exists(),
+            "export file must be written"
+        );
+    }
+
+    #[tokio::test]
+    async fn export_jsonl_empty_repo_is_error() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .export_jsonl(Parameters(ExportJsonlParams {
+                output_dir: None,
+                filename: None,
+            }))
+            .await
+            .expect("export_jsonl returns Ok on empty repo");
+        let json = serde_json::to_value(&res).expect("serialize");
+        assert_eq!(
+            json.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "empty repo must map to isError:true, got: {json}"
+        );
+    }
+
+    #[tokio::test]
+    async fn export_jsonl_seeded_writes_file() {
+        let (handler, tmp) = test_handler().await;
+        seed_one(&handler).await;
+        let res = handler
+            .export_jsonl(Parameters(ExportJsonlParams {
+                output_dir: Some(tmp.path().to_string_lossy().to_string()),
+                filename: Some("out".to_string()),
+            }))
+            .await
+            .expect("export_jsonl returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("Exportación completada"),
+            "seeded export must report completion: {text}"
+        );
+        assert!(
+            tmp.path().join("out.jsonl").exists(),
+            "jsonl export file must be written"
+        );
+    }
+
+    #[tokio::test]
+    async fn export_vector_seeded_writes_json() {
+        let (handler, tmp) = test_handler().await;
+        seed_one(&handler).await;
+        let res = handler
+            .export_vector(Parameters(ExportVectorParams {
+                output_dir: Some(tmp.path().to_string_lossy().to_string()),
+                filename: Some("vec".to_string()),
+            }))
+            .await
+            .expect("export_vector returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("Exportación completada"),
+            "seeded vector export must report completion: {text}"
+        );
+        assert!(
+            tmp.path().join("vec.json").exists(),
+            "vector export file must be written"
+        );
+    }
+
+    #[tokio::test]
+    async fn process_export_pipeline_seeded_writes_to_output_dir() {
+        let (handler, _tmp) = test_handler().await;
+        seed_one(&handler).await;
+        let res = handler
+            .process_export_pipeline(Parameters(ProcessExportPipelineParams {
+                url: None,
+                format: Some("jsonl".to_string()),
+            }))
+            .await
+            .expect("process_export_pipeline returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("Exportación completada"),
+            "pipeline export must report completion: {text}"
+        );
+    }
+}

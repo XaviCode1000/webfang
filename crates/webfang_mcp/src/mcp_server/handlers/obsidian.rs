@@ -115,3 +115,139 @@ impl McpHandler {
 pub fn build_router() -> ToolRouter<McpHandler> {
     McpHandler::tool_router_obsidian()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp_server::state::McpState;
+    use rmcp::handler::server::wrapper::Parameters;
+    use rmcp::model::CallToolResult;
+    use std::fs;
+    use tempfile::TempDir;
+    use webfang_core::di::Container;
+    use webfang_core::domain::CrawlerConfig;
+    use webfang_core::infrastructure::config::ScraperConfig;
+
+    async fn test_handler() -> (McpHandler, TempDir) {
+        let tmp = TempDir::new().expect("create temp dir");
+        let crawler_config =
+            CrawlerConfig::new(url::Url::parse("https://example.com").expect("valid url"));
+        let scraper_config = ScraperConfig {
+            output_dir: tmp.path().to_path_buf(),
+            ..Default::default()
+        };
+        let container = Container::new(crawler_config, scraper_config)
+            .await
+            .expect("create container");
+        let state = McpState::new(container);
+        (McpHandler::new(state), tmp)
+    }
+
+    fn result_text(result: &CallToolResult) -> String {
+        serde_json::to_value(result)
+            .ok()
+            .and_then(|v| v.get("content").and_then(|c| c.as_array()).cloned())
+            .and_then(|arr| arr.first().cloned())
+            .and_then(|first| {
+                first
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn detect_obsidian_vault_finds_cli_path() {
+        let (handler, tmp) = test_handler().await;
+        // A directory containing the `.obsidian` marker is a valid vault.
+        fs::create_dir_all(tmp.path().join(".obsidian")).expect("create .obsidian");
+        let res = handler
+            .detect_obsidian_vault(Parameters(DetectVaultParams {
+                vault_path: Some(tmp.path().to_string_lossy().to_string()),
+            }))
+            .await
+            .expect("detect returns Ok");
+        let text = result_text(&res);
+        let vault_dir = tmp
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert!(
+            text.contains(&vault_dir),
+            "detected vault path must be reported: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn detect_obsidian_vault_none_when_not_a_vault() {
+        let (handler, tmp) = test_handler().await;
+        // A plain temp dir with no `.obsidian` marker is not a vault.
+        let res = handler
+            .detect_obsidian_vault(Parameters(DetectVaultParams {
+                vault_path: Some(tmp.path().to_string_lossy().to_string()),
+            }))
+            .await
+            .expect("detect returns Ok");
+        let text = result_text(&res);
+        assert_eq!(
+            text, "no vault detected",
+            "non-vault path must report no vault: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_obsidian_uri_success() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .build_obsidian_uri(Parameters(BuildObsidianUriParams {
+                vault_name: "MyVault".to_string(),
+                file_path: "Notes/note.md".to_string(),
+            }))
+            .await
+            .expect("build returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.starts_with("obsidian://open?vault=MyVault&file="),
+            "must build obsidian uri: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_obsidian_uri_rejects_control_chars() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .build_obsidian_uri(Parameters(BuildObsidianUriParams {
+                vault_name: "MyVault".to_string(),
+                file_path: "Notes\note.md".to_string(),
+            }))
+            .await
+            .expect("build returns Ok on invalid input");
+        let json = serde_json::to_value(&res).expect("serialize");
+        assert_eq!(
+            json.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "control chars must map to isError:true, got: {json}"
+        );
+    }
+
+    #[tokio::test]
+    async fn open_in_obsidian_rejects_control_chars() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .open_in_obsidian(Parameters(BuildObsidianUriParams {
+                vault_name: "MyVault".to_string(),
+                file_path: "Notes\note.md".to_string(),
+            }))
+            .await
+            .expect("open returns Ok on invalid input");
+        let json = serde_json::to_value(&res).expect("serialize");
+        assert_eq!(
+            json.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "control chars must map to isError:true, got: {json}"
+        );
+    }
+}

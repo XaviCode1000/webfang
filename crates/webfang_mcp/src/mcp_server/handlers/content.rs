@@ -185,3 +185,187 @@ impl McpHandler {
 pub fn build_router() -> ToolRouter<McpHandler> {
     McpHandler::tool_router_content()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp_server::state::McpState;
+    use rmcp::handler::server::wrapper::Parameters;
+    use rmcp::model::CallToolResult;
+    use tempfile::TempDir;
+    use webfang_core::di::Container;
+    use webfang_core::domain::CrawlerConfig;
+    use webfang_core::infrastructure::config::ScraperConfig;
+
+    /// Build an `McpHandler` backed by a real `Container` (no network, no MCP
+    /// server). The temp dir is returned so it stays alive for the test.
+    async fn test_handler() -> (McpHandler, TempDir) {
+        let tmp = TempDir::new().expect("create temp dir");
+        let crawler_config =
+            CrawlerConfig::new(url::Url::parse("https://example.com").expect("valid url"));
+        let scraper_config = ScraperConfig {
+            output_dir: tmp.path().to_path_buf(),
+            ..Default::default()
+        };
+        let container = Container::new(crawler_config, scraper_config)
+            .await
+            .expect("create container");
+        let state = McpState::new(container);
+        (McpHandler::new(state), tmp)
+    }
+
+    /// Extract the first `content[0].text` from a `CallToolResult` (mirrors the
+    /// MCP transport serialization used by the integration harness).
+    fn result_text(result: &CallToolResult) -> String {
+        serde_json::to_value(result)
+            .ok()
+            .and_then(|v| v.get("content").and_then(|c| c.as_array()).cloned())
+            .and_then(|arr| arr.first().cloned())
+            .and_then(|first| {
+                first
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn clean_html_removes_scripts() {
+        let (handler, _tmp) = test_handler().await;
+        let html = "<html><head><script>evil()</script></head><body><p>Hello</p></body></html>";
+        let res = handler
+            .clean_html(Parameters(CleanHtmlParams {
+                html: html.to_string(),
+            }))
+            .await
+            .expect("clean_html returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("Hello"),
+            "cleaned text must keep body: {text}"
+        );
+        assert!(!text.contains("evil()"), "scripts must be stripped: {text}");
+    }
+
+    #[tokio::test]
+    async fn convert_html_to_markdown_preserves_heading() {
+        let (handler, _tmp) = test_handler().await;
+        let html = "<h1>My Title</h1><p>Body text here</p>";
+        let res = handler
+            .convert_html_to_markdown(Parameters(HtmlToMarkdownParams {
+                html: html.to_string(),
+            }))
+            .await
+            .expect("convert returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("My Title"),
+            "markdown must preserve heading: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_links_resolves_relative() {
+        let (handler, _tmp) = test_handler().await;
+        let html =
+            r#"<html><body><a href="/page">x</a><a href="https://other.com/y">y</a></body></html>"#;
+        let res = handler
+            .extract_links(Parameters(ExtractLinksParams {
+                html: html.to_string(),
+                base_url: "https://example.com".to_string(),
+            }))
+            .await
+            .expect("extract_links returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("page"),
+            "relative link must be present: {text}"
+        );
+        assert!(
+            text.contains("other.com"),
+            "absolute link must be present: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn highlight_code_blocks_is_idempotent_ok() {
+        let (handler, _tmp) = test_handler().await;
+        let md = "```rust\nfn main() {}\n```";
+        let res = handler
+            .highlight_code_blocks(Parameters(HighlightCodeParams {
+                markdown: md.to_string(),
+            }))
+            .await
+            .expect("highlight returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("main"),
+            "code tokens must survive highlighting: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn convert_wiki_links_same_domain() {
+        let (handler, _tmp) = test_handler().await;
+        let md = "[note](https://example.com/notes/a-note)";
+        let res = handler
+            .convert_wiki_links(Parameters(ConvertWikiLinksParams {
+                markdown: md.to_string(),
+                base_domain: "example.com".to_string(),
+            }))
+            .await
+            .expect("convert_wiki_links returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("[["),
+            "same-domain link becomes wiki-link: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_frontmatter_includes_title() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .generate_frontmatter(Parameters(GenerateFrontmatterParams {
+                title: Some("Hello".to_string()),
+                url: Some("https://example.com/p".to_string()),
+                author: None,
+                excerpt: None,
+                tags: None,
+            }))
+            .await
+            .expect("generate_frontmatter returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("Hello"),
+            "frontmatter must include title: {text}"
+        );
+        assert!(
+            text.contains("example.com"),
+            "frontmatter must include url: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_rich_metadata_counts_words() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .generate_rich_metadata(Parameters(GenerateRichMetadataParams {
+                content: Some("one two three four five".to_string()),
+            }))
+            .await
+            .expect("generate_rich_metadata returns Ok");
+        let text = result_text(&res);
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("rich metadata is JSON");
+        assert_eq!(
+            parsed.get("word_count").and_then(|v| v.as_u64()),
+            Some(5),
+            "word_count must be 5: {parsed}"
+        );
+        assert!(
+            parsed.get("reading_time_minutes").is_some(),
+            "reading_time must be present: {parsed}"
+        );
+    }
+}

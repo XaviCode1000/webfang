@@ -89,3 +89,119 @@ impl McpHandler {
 pub fn build_router() -> ToolRouter<McpHandler> {
     McpHandler::tool_router_assets()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp_server::state::McpState;
+    use rmcp::handler::server::wrapper::Parameters;
+    use rmcp::model::CallToolResult;
+    use tempfile::TempDir;
+    use webfang_core::di::Container;
+    use webfang_core::domain::CrawlerConfig;
+    use webfang_core::infrastructure::config::ScraperConfig;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    async fn test_handler() -> (McpHandler, TempDir) {
+        let tmp = TempDir::new().expect("create temp dir");
+        let crawler_config =
+            CrawlerConfig::new(url::Url::parse("https://example.com").expect("valid url"));
+        let scraper_config = ScraperConfig {
+            output_dir: tmp.path().to_path_buf(),
+            ..Default::default()
+        };
+        let container = Container::new(crawler_config, scraper_config)
+            .await
+            .expect("create container");
+        let state = McpState::new(container);
+        (McpHandler::new(state), tmp)
+    }
+
+    fn result_text(result: &CallToolResult) -> String {
+        serde_json::to_value(result)
+            .ok()
+            .and_then(|v| v.get("content").and_then(|c| c.as_array()).cloned())
+            .and_then(|arr| arr.first().cloned())
+            .and_then(|first| {
+                first
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn download_assets_invalid_base_url_is_invalid_params() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .download_assets(Parameters(DownloadAssetsParams {
+                html: "<html></html>".to_string(),
+                base_url: "not a url".to_string(),
+                images: None,
+                documents: None,
+                output_dir: None,
+            }))
+            .await;
+        assert!(res.is_err(), "invalid base URL must be a protocol error");
+    }
+
+    #[tokio::test]
+    async fn download_assets_no_assets_is_empty_success() {
+        let (handler, tmp) = test_handler().await;
+        let res = handler
+            .download_assets(Parameters(DownloadAssetsParams {
+                html: "<html><body><p>no images here</p></body></html>".to_string(),
+                base_url: "https://example.com/".to_string(),
+                images: Some(true),
+                documents: None,
+                output_dir: Some(tmp.path().to_string_lossy().to_string()),
+            }))
+            .await
+            .expect("download_assets returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("[]"),
+            "no assets must yield an empty list: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn download_assets_downloads_image_from_html() {
+        let (handler, tmp) = test_handler().await;
+        let server = MockServer::start().await;
+        // The page references an image; wiremock serves it so the download
+        // path executes against a real (ephemeral) HTTP endpoint.
+        Mock::given(method("GET"))
+            .and(path("/img/logo.png"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(b"fake-png-bytes")
+                    .insert_header("content-type", "image/png"),
+            )
+            .mount(&server)
+            .await;
+
+        let html = format!(
+            r#"<html><body><img src="{}/img/logo.png"></body></html>"#,
+            server.uri()
+        );
+        let res = handler
+            .download_assets(Parameters(DownloadAssetsParams {
+                html,
+                base_url: server.uri(),
+                images: Some(true),
+                documents: None,
+                output_dir: Some(tmp.path().to_string_lossy().to_string()),
+            }))
+            .await
+            .expect("download_assets returns Ok");
+        let text = result_text(&res);
+        // At least one asset downloaded and its local path reported.
+        assert!(
+            text.contains("logo.png") || text.contains("assets") || text.contains(".png"),
+            "downloaded asset must be reported: {text}"
+        );
+    }
+}
