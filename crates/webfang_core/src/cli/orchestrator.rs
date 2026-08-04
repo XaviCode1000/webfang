@@ -503,7 +503,7 @@ async fn run_batch(opts: CrawlOptions) -> CliExit {
 
     log_batch_summary(&summary);
 
-    batch_exit_code(summary.succeeded, summary.failed)
+    batch_exit_code(summary.succeeded, summary.failed, &summary.errors)
 }
 
 /// Print the batch completion summary and log each failed URL.
@@ -516,9 +516,6 @@ fn log_batch_summary(summary: &BatchManagerSummary) {
     for (url, err) in &summary.errors {
         error!(%url, error = %err, "Batch URL failed");
     }
-}
-
-    batch_exit_code(summary.succeeded, summary.failed, &summary.errors)
 }
 
 /// Resolve the TLS/H2 fingerprint for the batch crawl engine.
@@ -588,7 +585,6 @@ async fn load_batch_manager_from_stdin(
             )))
         },
     }
-}
 }
 
 /// Determine the CLI exit code from batch scrape results.
