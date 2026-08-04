@@ -35,7 +35,7 @@ use tokio::task::JoinSet;
 use tracing::{error, info, instrument, warn};
 
 use super::BatchJob;
-use crate::domain::{CrawlError, CrawlerConfig};
+use crate::domain::{CrawlError, CrawlErrorCategory, CrawlerConfig};
 use crate::error::ScraperError;
 
 /// Result of processing a batch job
@@ -223,10 +223,56 @@ async fn process_single_url(
 
     let result = crate::application::crawler::engine::crawl_site(config).await?;
 
-    // Treat any crawl errors (timeouts, etc.) as failures for batch processing
+    // Treat any crawl errors (timeouts, etc.) as failures for batch processing,
+    // but preserve severity (#537): the engine already partitioned them into
+    // `error_breakdown` (issue #374). A genuinely-internal category (storage,
+    // checkpoint, parse, panic) is a real bug and must stay `Internal` so the
+    // run exits 3 (issue #537, phase 1). A purely transient/external failure
+    // set (timeout, network, http, rate-limit, waf) must surface as a transient
+    // `CrawlError` so it classifies `TransientRetriable`/`Backoff`/`Permanent`
+    // and exits 69 — NOT as a bug (exit 3).
     if result.errors > 0 {
-        return Err(CrawlError::Internal(format!(
-            "crawl completed with {} error(s)",
+        let breakdown = &result.error_breakdown;
+
+        // Defensive: errors reported without a category breakdown are treated
+        // as internal failures (fail-safe → exit 3), matching the classify()
+        // safety net for genuinely unknown errors.
+        if breakdown.is_empty() {
+            return Err(CrawlError::Internal(format!(
+                "crawl completed with {} error(s)",
+                result.errors
+            )));
+        }
+
+        // A genuinely-internal category means a real bug. Mixed batches are
+        // dominated by the worst severity, so any such category escalates to
+        // exit 3 (matches `scraper_failure_for_internal_fatal` in the CLI).
+        let has_internal_bug = [
+            CrawlErrorCategory::Internal,
+            CrawlErrorCategory::Extraction,
+            CrawlErrorCategory::Panic,
+        ]
+        .iter()
+        .any(|c| breakdown.get(c).copied().unwrap_or(0) > 0);
+        if has_internal_bug {
+            return Err(CrawlError::Internal(format!(
+                "crawl completed with {} error(s)",
+                result.errors
+            )));
+        }
+
+        // Purely transient/external: surface as a transient error → exit 69.
+        // A timeout is the most common batch failure here.
+        if breakdown
+            .get(&CrawlErrorCategory::Timeout)
+            .copied()
+            .unwrap_or(0)
+            > 0
+        {
+            return Err(CrawlError::Timeout);
+        }
+        return Err(CrawlError::Connection(format!(
+            "crawl completed with {} transient error(s)",
             result.errors
         )));
     }
