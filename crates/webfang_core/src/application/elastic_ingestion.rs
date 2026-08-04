@@ -133,50 +133,91 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
 
         // Layer 1+3: HTTP download (PR2 byte-weighted semaphore + PermitGuard RAII).
         // Fail-fast: network error → warn + propagate (no retry).
-        let bytes = match self.downloader.download(url).await {
-            Ok(b) => b,
-            Err(e) => {
-                warn!(%url, error = %e, "descarga falló: abortando pipeline");
-                return Err(e);
-            },
-        };
+        let bytes = self.download_bytes(url).await?;
         let size = bytes.len() as u64;
 
         // Layer 2: SHA-256 content hash.
         let hash = sha256_hex(&bytes);
 
         // Layer: dedup short-circuit (Decision 3) — skip CPU + persist if known.
-        if let Some(existing) = self.repository.resource_exists_by_hash(&hash).await? {
-            info!(
-                %url,
-                existing_url = %existing,
-                "recurso ya persistido: omitiendo pipeline (dedup)"
-            );
+        if self.is_duplicate(url, &hash).await? {
             return Ok(());
         }
 
         // Layer 4: CPU-bound cleaning (Rayon: lol_html via CpuBridge) — OR, under
         // `ai` with a cleaner set, the ONNX semantic pipeline (async embeddings).
         // Fail-fast: CPU panic → error + propagate (no retry).
-        let chunks: Vec<crate::infrastructure::bridge::ProcessedChunk> = {
-            #[cfg(feature = "ai")]
-            {
-                if let Some(cleaner) = &self.cleaner {
-                    self.cleaner_chunks(cleaner, &bytes).await?
-                } else {
-                    self.bridge_chunks(url, bytes, size).await?
-                }
-            }
-            #[cfg(not(feature = "ai"))]
-            {
-                self.bridge_chunks(url, bytes, size).await?
-            }
-        };
+        let chunks = self.clean_chunks(url, bytes, size).await?;
 
         // Layer 5: SQLite persist (resource + each chunk).
         let title = extract_title(&chunks);
+        self.persist_chunks(url, &title, &hash, size, chunks)
+            .await?;
+
+        info!(%url, %hash, "ingestión completada");
+        Ok(())
+    }
+
+    /// Dedup short-circuit: when the content hash is already persisted, log and
+    /// return `true` so the caller skips CPU cleaning and persistence.
+    async fn is_duplicate(&self, url: &str, hash: &str) -> Result<bool, ScraperError> {
+        if let Some(existing) = self.repository.resource_exists_by_hash(hash).await? {
+            info!(
+                %url,
+                existing_url = %existing,
+                "recurso ya persistido: omitiendo pipeline (dedup)"
+            );
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Layer 1+3: download the URL, mapping a network failure to a warn +
+    /// propagate (fail-fast, no retry).
+    async fn download_bytes(&self, url: &str) -> Result<Vec<u8>, ScraperError> {
+        match self.downloader.download(url).await {
+            Ok(b) => Ok(b),
+            Err(e) => {
+                warn!(%url, error = %e, "descarga falló: abortando pipeline");
+                Err(e)
+            },
+        }
+    }
+
+    /// Layer 4: dispatch the downloaded bytes through the CPU cleaning pipeline.
+    /// Under `ai` with a cleaner set, routes through the ONNX semantic cleaner;
+    /// otherwise (and in the no-`ai` build) through the CpuBridge.
+    async fn clean_chunks(
+        &self,
+        url: &str,
+        bytes: Vec<u8>,
+        size: u64,
+    ) -> Result<Vec<crate::infrastructure::bridge::ProcessedChunk>, ScraperError> {
+        #[cfg(feature = "ai")]
+        {
+            if let Some(cleaner) = &self.cleaner {
+                self.cleaner_chunks(cleaner, &bytes).await
+            } else {
+                self.bridge_chunks(url, bytes, size).await
+            }
+        }
+        #[cfg(not(feature = "ai"))]
+        {
+            self.bridge_chunks(url, bytes, size).await
+        }
+    }
+
+    /// Layer 5: persist the resource row and each chunk row to the repository.
+    async fn persist_chunks(
+        &self,
+        url: &str,
+        title: &str,
+        hash: &str,
+        size: u64,
+        chunks: Vec<crate::infrastructure::bridge::ProcessedChunk>,
+    ) -> Result<(), ScraperError> {
         self.repository
-            .save_resource(url, &title, &hash, size)
+            .save_resource(url, title, hash, size)
             .await?;
         for (idx, chunk) in chunks.into_iter().enumerate() {
             let chunk_id = format!("{hash}-{idx}");
@@ -190,8 +231,6 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
                 )
                 .await?;
         }
-
-        info!(%url, %hash, "ingestión completada");
         Ok(())
     }
 
@@ -234,6 +273,23 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
             .collect::<Vec<_>>()
             .await;
 
+        let batch = Self::aggregate_results(results);
+
+        info!(
+            success = batch.success,
+            errors = batch.errors.len(),
+            panics = batch.panics,
+            "lote completado"
+        );
+
+        Ok(batch)
+    }
+
+    /// Fold the per-URL outcomes into a [`BatchResult`], counting successes,
+    /// collecting errors, and counting panics separately.
+    fn aggregate_results(
+        results: Vec<Result<Result<(), ScraperError>, Box<dyn std::any::Any + Send>>>,
+    ) -> BatchResult {
         let mut batch = BatchResult::default();
         for result in results {
             match result {
@@ -248,15 +304,7 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
                 },
             }
         }
-
-        info!(
-            success = batch.success,
-            errors = batch.errors.len(),
-            panics = batch.panics,
-            "lote completado"
-        );
-
-        Ok(batch)
+        batch
     }
 
     /// Dispatch the downloaded bytes through the CpuBridge (sync lol_html text

@@ -49,57 +49,43 @@ pub fn extract_with_selector(
     // selector matching would fall through to ZeroMatches instead of
     // EmptyDocument — leaving SelectorErrorKind::EmptyDocument as dead code.
     if html.trim().is_empty() {
-        warn!(
-            "HTML document is empty or whitespace-only, falling back with EmptyDocument diagnostic"
-        );
         let document = scraper::Html::parse_document(html);
-        return ExtractResult::Fallback {
-            html: html.to_owned(),
-            diagnostic: build_diagnostic(
-                inspector,
-                &document,
-                SelectorErrorKind::EmptyDocument,
-                selector,
-            ),
-        };
+        return fallback(
+            html,
+            inspector,
+            &document,
+            SelectorErrorKind::EmptyDocument,
+            selector,
+            "HTML document is empty or whitespace-only, falling back with EmptyDocument diagnostic",
+        );
     }
 
     let document = scraper::Html::parse_document(html);
     let sel = match scraper::Selector::parse(selector) {
         Ok(s) => s,
         Err(e) => {
-            warn!(
-                "Invalid CSS selector '{}': {}, falling back to full HTML",
-                selector, e
+            return fallback(
+                html,
+                inspector,
+                &document,
+                SelectorErrorKind::InvalidSelector(e.to_string()),
+                selector,
+                &format!("Invalid CSS selector '{selector}': {e}, falling back to full HTML"),
             );
-            return ExtractResult::Fallback {
-                html: html.to_owned(),
-                diagnostic: build_diagnostic(
-                    inspector,
-                    &document,
-                    SelectorErrorKind::InvalidSelector(e.to_string()),
-                    selector,
-                ),
-            };
         },
     };
 
     let matched: Vec<String> = document.select(&sel).map(|el| el.html()).collect();
 
     if matched.is_empty() {
-        warn!(
-            "CSS selector '{}' matched 0 elements, falling back to full HTML",
-            selector
+        return fallback(
+            html,
+            inspector,
+            &document,
+            SelectorErrorKind::ZeroMatches,
+            selector,
+            &format!("CSS selector '{selector}' matched 0 elements, falling back to full HTML"),
         );
-        return ExtractResult::Fallback {
-            html: html.to_owned(),
-            diagnostic: build_diagnostic(
-                inspector,
-                &document,
-                SelectorErrorKind::ZeroMatches,
-                selector,
-            ),
-        };
     }
 
     debug!(
@@ -112,6 +98,24 @@ pub fn extract_with_selector(
         "<div id=\"selector-extracted\">{}</div>",
         matched.join("\n")
     ))
+}
+
+/// Emit the fallback warning and build a [`ExtractResult::Fallback`] carrying
+/// the full HTML and a diagnostic for the given [`SelectorErrorKind`], when an
+/// inspector is available.
+fn fallback(
+    html: &str,
+    inspector: Option<&dyn DomInspectorPort>,
+    document: &scraper::Html,
+    kind: SelectorErrorKind,
+    selector: &str,
+    message: &str,
+) -> ExtractResult {
+    warn!("{}", message);
+    ExtractResult::Fallback {
+        html: html.to_owned(),
+        diagnostic: build_diagnostic(inspector, document, kind, selector),
+    }
 }
 
 /// Scrape a URL using Readability algorithm for clean content extraction

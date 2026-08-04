@@ -279,59 +279,75 @@ impl BackgroundWriter {
     }
 
     async fn run(mut self) {
-        use std::io::Write;
-
-        // H6 FIX: Create parent directory before opening log file
-        if let Some(parent) = self.log_path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                tracing::error!("no se pudo crear directorio para log: {e}");
-                self.write_error.store(true, Ordering::Relaxed);
-                return;
-            }
-        }
-
-        let mut file = match std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log_path)
-        {
+        let mut file = match self.open_log() {
             Ok(f) => f,
-            Err(e) => {
-                tracing::error!("no se pudo abrir log para escritura: {e}");
-                self.write_error.store(true, Ordering::Relaxed);
-                return;
-            },
+            Err(()) => return,
         };
 
         while let Some(cmd) = self.rx.recv().await {
             match cmd {
                 WriteCommand::Append { url, payload } => {
-                    let len = payload.len() as u32;
-                    let len_bytes = len.to_le_bytes();
-
-                    let offset = file.metadata().map(|m| m.len()).unwrap_or(0);
-
-                    if file.write_all(&len_bytes).is_err() {
-                        tracing::error!("error escribiendo longitud al log");
-                        self.write_error.store(true, Ordering::Relaxed);
-                        continue;
-                    }
-                    if file.write_all(&payload).is_err() {
-                        tracing::error!("error escribiendo payload al log");
-                        self.write_error.store(true, Ordering::Relaxed);
-                        continue;
-                    }
-                    if file.write_all(b"\n").is_err() {
-                        tracing::error!("error escribiendo newline al log");
-                        self.write_error.store(true, Ordering::Relaxed);
-                        continue;
-                    }
-                    let _ = file.flush();
-
-                    self.index.insert(url, offset);
+                    self.append_record(&mut file, url, &payload);
                 },
             }
         }
+    }
+
+    /// Create the parent directory (if any) and open the log file for appending.
+    /// On any failure, marks the writer as errored and returns `Err(())` so the
+    /// caller can bail out of the writer loop.
+    fn open_log(&self) -> Result<std::fs::File, ()> {
+        // H6 FIX: Create parent directory before opening log file
+        if let Some(parent) = self.log_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::error!("no se pudo crear directorio para log: {e}");
+                self.write_error.store(true, Ordering::Relaxed);
+                return Err(());
+            }
+        }
+
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.log_path)
+        {
+            Ok(f) => Ok(f),
+            Err(e) => {
+                tracing::error!("no se pudo abrir log para escritura: {e}");
+                self.write_error.store(true, Ordering::Relaxed);
+                Err(())
+            },
+        }
+    }
+
+    /// Append a single framed record (`[len][payload][\n]`) to the log and index
+    /// the URL at its byte offset. Any write failure marks the writer errored.
+    fn append_record(&self, file: &mut std::fs::File, url: String, payload: &[u8]) {
+        use std::io::Write;
+
+        let len = payload.len() as u32;
+        let len_bytes = len.to_le_bytes();
+
+        let offset = file.metadata().map(|m| m.len()).unwrap_or(0);
+
+        if file.write_all(&len_bytes).is_err() {
+            tracing::error!("error escribiendo longitud al log");
+            self.write_error.store(true, Ordering::Relaxed);
+            return;
+        }
+        if file.write_all(payload).is_err() {
+            tracing::error!("error escribiendo payload al log");
+            self.write_error.store(true, Ordering::Relaxed);
+            return;
+        }
+        if file.write_all(b"\n").is_err() {
+            tracing::error!("error escribiendo newline al log");
+            self.write_error.store(true, Ordering::Relaxed);
+            return;
+        }
+        let _ = file.flush();
+
+        self.index.insert(url, offset);
     }
 }
 
