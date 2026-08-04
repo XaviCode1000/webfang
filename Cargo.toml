@@ -152,6 +152,7 @@ tempfile = "3"
 wiremock = "0.6"
 proptest = "1.6"
 insta = { version = "1", features = ["redactions", "filters"] }
+serial_test = "3"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "deny", check-cfg = ["cfg(tokio_unstable)"] }
