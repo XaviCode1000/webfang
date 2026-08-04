@@ -1,30 +1,46 @@
 # ============================================================================
-# DOCS: Deploy rustdoc to GitHub Pages
+# DOCS: Build mdBook + rustdoc in CI, deploy combined site, upload LLM artifact
 # ============================================================================
-# Generates documentation for all crates and deploys to GitHub Pages.
-# Accessible at: https://xavicode1000.github.io/webfang/
+# All heavy compute runs in CI (mdBook build/test/linkcheck + rustdoc + pandoc).
+# Locally the user only pulls the generated result via `just docs`.
 #
 # Triggers:
-#   - Push to main (auto-deploy)
-#   - Manual dispatch (re-deploy)
+#   - Push to main            → validate + deploy + upload artifact (auto)
+#   - Manual dispatch         → validate + deploy + upload artifact
+#   - Pull request            → validate only (gates catch stale/broken docs)
 # ============================================================================
 name: Docs
 
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  docs:
-    name: Generate & Deploy Docs
+  # --------------------------------------------------------------------------
+  # Validate: build, test (rust snippets), linkcheck, rustdoc.
+  # Runs on EVERY trigger (incl. PR) so broken/stale docs fail the check.
+  # --------------------------------------------------------------------------
+  validate:
+    name: Validate Docs
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install mise toolchain (mdbook + linkcheck + pandoc)
+        uses: jdx/mise-action@v2
+        with:
+          install: false
+      - run: mise install aqua:rust-lang/mdBook cargo:mdbook-linkcheck aqua:jgm/pandoc
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -32,71 +48,135 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Generate rustdoc
+      - name: mdBook build (narrative docs must be valid)
+        run: mdbook build docs
+
+      - name: mdBook test (Rust snippets in docs must compile)
+        run: mdbook test docs
+
+      - name: mdBook linkcheck (no dead links)
+        run: mdbook-linkcheck --standalone docs
+
+      - name: Generate rustdoc for all 6 crates
         env:
           RUSTDOCFLAGS: "-D warnings"
-        run: |
-          cargo doc --workspace --all-features --no-deps
-          touch target/doc/.nojekyll
+        run: cargo doc --workspace --all-features --no-deps
 
-      - name: Create landing page
+  # --------------------------------------------------------------------------
+  # Deploy: only on push to main / manual dispatch. Combines rustdoc into the
+  # mdBook site, deploys to gh-pages, and uploads the LLM markdown artifact.
+  # --------------------------------------------------------------------------
+  deploy:
+    name: Deploy Docs & Upload LLM Artifact
+    needs: validate
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mise toolchain (mdbook + linkcheck + pandoc)
+        uses: jdx/mise-action@v2
+        with:
+          install: false
+      - run: mise install aqua:rust-lang/mdBook cargo:mdbook-linkcheck aqua:jgm/pandoc
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rust-docs
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: mdBook build
+        run: mdbook build docs
+
+      - name: Generate rustdoc for all 6 crates
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --all-features --no-deps
+
+      # Combine: rustdoc API lives under /api/<crate>/ on the published site.
+      - name: Combine rustdoc into mdBook site
         run: |
-          cat > target/doc/index.html << 'LANDING'
-          <!DOCTYPE html>
-          <html lang="en">
-          <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <title>WebFang Documentation</title>
-            <style>
-              * { margin: 0; padding: 0; box-sizing: border-box; }
-              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d1117; color: #c9d1d9; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-              .container { max-width: 640px; padding: 2rem; }
-              h1 { font-size: 2rem; margin-bottom: 0.5rem; color: #f0f6fc; }
-              .subtitle { color: #8b949e; margin-bottom: 2rem; font-size: 1.1rem; }
-              .crates { display: grid; gap: 1rem; }
-              .crate { display: block; padding: 1.25rem 1.5rem; background: #161b22; border: 1px solid #30363d; border-radius: 8px; text-decoration: none; transition: border-color 0.2s; }
-              .crate:hover { border-color: #58a6ff; }
-              .crate-name { font-size: 1.15rem; font-weight: 600; color: #58a6ff; margin-bottom: 0.25rem; }
-              .crate-desc { font-size: 0.9rem; color: #8b949e; }
-              .footer { margin-top: 2.5rem; font-size: 0.8rem; color: #484f58; }
-            </style>
-          </head>
-          <body>
-            <div class="container">
-              <h1>WebFang</h1>
-              <p class="subtitle">Production-ready web scraper &mdash; Rust 1.88, Clean Architecture</p>
-              <div class="crates">
-                <a class="crate" href="./webfang_core/">
-                  <div class="crate-name">webfang_core</div>
-                  <div class="crate-desc">Core scraping library &mdash; domain, application, infrastructure, CLI</div>
-                </a>
-                <a class="crate" href="./webfang_ai/">
-                  <div class="crate-name">webfang_ai</div>
-                  <div class="crate-desc">ONNX embeddings &amp; semantic cleaning</div>
-                </a>
-                <a class="crate" href="./webfang_mcp/">
-                  <div class="crate-name">webfang_mcp</div>
-                  <div class="crate-desc">MCP server (35 tools)</div>
-                </a>
-                <a class="crate" href="./webfang_tui/">
-                  <div class="crate-name">webfang_tui</div>
-                  <div class="crate-desc">ratatui TUI selector</div>
-                </a>
-              </div>
-              <div class="footer">Auto-generated from main &bull; <a href="https://github.com/XaviCode1000/webfang" style="color:#58a6ff">GitHub</a></div>
-            </div>
-          </body>
-          </html>
-          LANDING
+          set -euo pipefail
+          cp -r target/doc docs/book/html/api
+          touch docs/book/html/.nojekyll
+
+      # Build the NotebookLM / LLM markdown: narrative (SUMMARY order) +
+      # rustdoc API (all 6 crates) converted via pandoc.
+      - name: Build LLM markdown artifact
+        run: |
+          set -euo pipefail
+          OUT=docs/book/html/webfang-docs-llm.md
+          echo "# WebFang Documentation" > "$OUT"
+          echo "" >> "$OUT"
+          echo "Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$OUT"
+          echo "" >> "$OUT"
+          echo "---" >> "$OUT"
+          echo "" >> "$OUT"
+
+          echo "## Narrative Documentation" >> "$OUT"
+          echo "" >> "$OUT"
+          for entry in \
+            "overview:Overview" \
+            "debugging:Debugging & Observability" \
+            "testing:Testing" \
+            "troubleshooting:Troubleshooting" \
+            "tui-unified-design:TUI Unified Design"; do
+            f="${entry%%:*}"
+            title="${entry#*:}"
+            echo "# $title" >> "$OUT"
+            echo "" >> "$OUT"
+            cat "docs/src/$f.md" >> "$OUT"
+            echo "" >> "$OUT"
+            echo "---" >> "$OUT"
+            echo "" >> "$OUT"
+          done
+
+          echo "## API Reference (rustdoc)" >> "$OUT"
+          echo "" >> "$OUT"
+          for crate in webfang_core webfang_ai webfang_tui webfang_mcp webfang_cli webfang_test_utils; do
+            if [ -d "target/doc/$crate" ]; then
+              echo "# API: $crate" >> "$OUT"
+              echo "" >> "$OUT"
+              {
+                pandoc -f html -t gfm --wrap=none "target/doc/$crate/index.html" 2>/dev/null
+                find "target/doc/$crate" -name '*.html' ! -name 'index.html' ! -path '*/src/*' -print0 \
+                  | sort -z \
+                  | while IFS= read -r -d '' fl; do
+                    pandoc -f html -t gfm --wrap=none "$fl" 2>/dev/null
+                  done
+              } \
+              | sed -e 's/Copy item path//' \
+                    -e 's/<span[^>]*>//g' \
+                    -e 's/<\/span>//g' \
+                    -e 's/<div[^>]*>//g' \
+                    -e 's/<\/div>//g' \
+                    -e 's/Show [0-9][0-9]* fields[[:space:]]*//g' \
+                    -e 's/Show [0-9][0-9]* variants[[:space:]]*//g' \
+                > "target/doc/$crate.md"
+              cat "target/doc/$crate.md" >> "$OUT"
+              echo "" >> "$OUT"
+              echo "---" >> "$OUT"
+              echo "" >> "$OUT"
+            fi
+          done
+
+      - name: Upload LLM markdown artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webfang-docs-llm
+          path: docs/book/html/webfang-docs-llm.md
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./target/doc
+          publish_dir: ./docs/book/html
           publish_branch: gh-pages
           force_orphan: true
           user_name: 'github-actions[bot]'
           user_email: 'github-actions[bot]@users.noreply.github.com'
-          commit_message: 'docs: deploy rustdoc to GitHub Pages'
+          commit_message: 'docs: deploy mdBook + rustdoc to GitHub Pages'
