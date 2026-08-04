@@ -4,6 +4,14 @@
 # `deny(clippy::disallowed_types)` attribute is active (webfang_core).
 # Crates that do not deny the lint (e.g. webfang_cli, which legitimately
 # uses anyhow as its application-layer error type) are unaffected.
+#
+# Complexity ratchet (issue #516): functions above these thresholds warn when
+# `clippy::cognitive_complexity` / `clippy::too_many_lines` are enabled. Combined
+# with `-D warnings` in CI this fails the build on any violation. Thresholds are
+# a DESCENDING ratchet — lower them only as the codebase improves, never raise.
+
+cognitive-complexity-threshold = 30
+too-many-lines-threshold = 100
 
 disallowed-types = [
     { path = "anyhow::Error", reason = "webfang_core uses typed errors (ScraperError / DomainError / AppError / InfraError) — see error stratification in AGENTS.md" },
