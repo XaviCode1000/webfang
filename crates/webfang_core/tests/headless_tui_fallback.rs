@@ -7,16 +7,19 @@
 
 #![cfg(not(feature = "ui"))]
 
+#[path = "common/cli_harness.rs"]
+mod common;
+
 use assert_cmd::Command;
+use common::webfang_path;
 
 /// Expected Spanish message (spec S2.2 exact wording).
 const EXPECTED_MSG: &str = "TUI no disponible: compilar con --features ui";
 
 fn webfang_core() -> Command {
-    Command::cargo_bin("webfang_core").expect("webfang_core binary must be built for this test")
+    Command::new(webfang_path())
 }
 
-#[ignore = "resurrected: pending triage"]
 #[test]
 fn tui_flag_prints_spanish_message_when_ui_off() {
     let output = webfang_core()
@@ -40,7 +43,6 @@ fn tui_flag_prints_spanish_message_when_ui_off() {
     );
 }
 
-#[ignore = "resurrected: pending triage"]
 #[test]
 fn config_tui_flag_prints_spanish_message_when_ui_off() {
     let output = webfang_core()
@@ -64,7 +66,6 @@ fn config_tui_flag_prints_spanish_message_when_ui_off() {
     );
 }
 
-#[ignore = "resurrected: pending triage"]
 #[test]
 fn interactive_flag_prints_spanish_message_when_ui_off() {
     let output = webfang_core()
