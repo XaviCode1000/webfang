@@ -201,74 +201,15 @@ impl HttpClient {
                 return Err(HttpError::Forbidden);
             }
 
-            let ua = self
-                .user_agents
-                .get(ua_index % self.user_agents.len())
-                .cloned()
-                .unwrap_or_else(|| {
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".into()
-                });
+            let ua = self.select_user_agent(ua_index);
+            let request = self.build_request(url, &ua, ua_index);
 
-            let mut request = self
-                .client
-                .get(url)
-                .header("Accept-Language", &self.config.accept_language)
-                .header("Accept", &self.config.accept)
-                .header("User-Agent", ua.clone());
-
-            // Use minimal headers for WAF bypass attempts (ua_index >= 4)
-            if ua_index < 4 {
-                request = request
-                    .header("Referer", &self.config.referer)
-                    .header("Cache-Control", &self.config.cache_control);
-            }
-
-            let response = request.send().await.map_err(|e| {
-                if e.is_timeout() {
-                    HttpError::Timeout
-                } else if e.is_connect() {
-                    HttpError::Connection(e.to_string())
-                } else {
-                    HttpError::Request(e.to_string())
-                }
-            })?;
+            let response = request.send().await.map_err(map_send_error)?;
 
             let status = response.status();
 
             match status.as_u16() {
-                200..=299 => {
-                    // Build the inspection context BEFORE consuming the body
-                    // (headers borrow must end before `.text()`).
-                    let ctx = inspection_context(
-                        status.as_u16(),
-                        response.headers(),
-                        self.config.ignore_waf,
-                    );
-
-                    let body = response
-                        .text()
-                        .await
-                        .map_err(|e| HttpError::Request(e.to_string()))?;
-
-                    // Context-aware WAF inspection (REQ-WAF-05). A classified
-                    // block returns immediately — the old fallback ladder
-                    // (~4 requests / ~5s of UA rotation) is gone: with tiered,
-                    // evidence-based detection a block is a genuine challenge
-                    // that UA rotation cannot bypass, and false positives no
-                    // longer reach this branch.
-                    let verdict = WafInspector::inspect(&body, &ctx);
-                    if verdict.is_blocked {
-                        warn!(
-                            url = %url,
-                            status = %status,
-                            evidences = verdict.evidences.len(),
-                            "WAF/CAPTCHA challenge detected; blocking"
-                        );
-                        return Err(HttpError::WafChallenge(verdict.evidence_chain()));
-                    }
-
-                    return Ok(body);
-                },
+                200..=299 => return self.handle_success(url, response, status.as_u16()).await,
                 403 => {
                     warn!("403 Forbidden from {}", url);
                     if ua_index == 0 {
@@ -277,80 +218,11 @@ impl HttpClient {
                     }
                     return Err(HttpError::Forbidden);
                 },
-                429 => {
-                    let retry_after = response
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(1);
-
-                    debug!("429 Rate Limited, retry after {}s", retry_after);
-
-                    return retry_with_backoff(
-                        &self.client,
-                        url,
-                        &self.config,
-                        &ua,
-                        RetryPolicy {
-                            retry_after_secs: Some(retry_after),
-                            retryable: |code: u16| code == 429 || (500..=599).contains(&code),
-                            exhausted: HttpError::RateLimited(retry_after),
-                            label: "429",
-                        },
-                    )
-                    .await;
-                },
+                429 => return self.handle_rate_limited(url, response, &ua).await,
                 500..=599 => {
-                    debug!("{} from {}", status, url);
-
-                    // Inspect the initial response BEFORE retrying (REQ-WAF-05).
-                    // Approved behavior change: a 503 Cloudflare challenge is
-                    // classified as a WAF block instead of dying as a generic
-                    // ServerError after exhausting retries.
-                    let ctx = inspection_context(
-                        status.as_u16(),
-                        response.headers(),
-                        self.config.ignore_waf,
-                    );
-                    // Non-critical enrichment (FIX C): a body-transfer failure
-                    // (connection reset mid-body) must not bypass the retry loop
-                    // with a fatal Request error — the base never read the 5xx
-                    // body. Fall back to an empty body so inspection proceeds on
-                    // headers only (cf-mitigated detection still works) and the
-                    // retry loop runs. The 2xx branch keeps its fatal body read:
-                    // there the body IS the scrape content.
-                    let body = match response.text().await {
-                        Ok(b) => b,
-                        Err(e) => {
-                            debug!(url = %url, error = %e, "5xx body read failed; inspecting headers only");
-                            String::new()
-                        },
-                    };
-                    let verdict = WafInspector::inspect(&body, &ctx);
-                    if verdict.is_blocked {
-                        warn!(
-                            url = %url,
-                            status = %status,
-                            evidences = verdict.evidences.len(),
-                            "WAF/CAPTCHA challenge detected; blocking"
-                        );
-                        return Err(HttpError::WafChallenge(verdict.evidence_chain()));
-                    }
-
-                    return retry_with_backoff(
-                        &self.client,
-                        url,
-                        &self.config,
-                        &ua,
-                        RetryPolicy {
-                            retry_after_secs: None,
-                            retryable: |code: u16| (500..=599).contains(&code),
-                            exhausted: HttpError::ServerError(status.as_u16()),
-                            label: "5xx",
-                        },
-                    )
-                    .await;
+                    return self
+                        .handle_server_error(url, response, status.as_u16(), &ua)
+                        .await
                 },
                 code if (400..=499).contains(&code) => {
                     return Err(HttpError::ClientError(code));
@@ -360,6 +232,176 @@ impl HttpClient {
                 },
             }
         }
+    }
+
+    /// Select the user-agent to use for a given rotation index.
+    fn select_user_agent(&self, ua_index: usize) -> String {
+        self.user_agents
+            .get(ua_index % self.user_agents.len())
+            .cloned()
+            .unwrap_or_else(|| {
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".into()
+            })
+    }
+
+    /// Build the GET request for `url`, applying the configured headers.
+    ///
+    /// Uses minimal headers for WAF-bypass attempts (`ua_index >= 4`).
+    fn build_request(&self, url: &str, ua: &str, ua_index: usize) -> wreq::RequestBuilder {
+        let mut request = self
+            .client
+            .get(url)
+            .header("Accept-Language", &self.config.accept_language)
+            .header("Accept", &self.config.accept)
+            .header("User-Agent", ua);
+
+        if ua_index < 4 {
+            request = request
+                .header("Referer", &self.config.referer)
+                .header("Cache-Control", &self.config.cache_control);
+        }
+
+        request
+    }
+
+    /// Handle a 2xx response: read the body and run context-aware WAF inspection.
+    async fn handle_success(
+        &self,
+        url: &str,
+        response: wreq::Response,
+        status: u16,
+    ) -> HttpResult<String> {
+        // Build the inspection context BEFORE consuming the body
+        // (headers borrow must end before `.text()`).
+        let ctx = inspection_context(status, response.headers(), self.config.ignore_waf);
+
+        let body = response
+            .text()
+            .await
+            .map_err(|e| HttpError::Request(e.to_string()))?;
+
+        // Context-aware WAF inspection (REQ-WAF-05). A classified block returns
+        // immediately — the old fallback ladder (~4 requests / ~5s of UA rotation)
+        // is gone: with tiered, evidence-based detection a block is a genuine
+        // challenge that UA rotation cannot bypass, and false positives no longer
+        // reach this branch.
+        if let Some(err) = waf_block_error(url, status, &body, &ctx) {
+            return Err(err);
+        }
+
+        Ok(body)
+    }
+
+    /// Handle a 429 response: honor `Retry-After` and retry with backoff.
+    async fn handle_rate_limited(
+        &self,
+        url: &str,
+        response: wreq::Response,
+        ua: &str,
+    ) -> HttpResult<String> {
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
+
+        debug!("429 Rate Limited, retry after {}s", retry_after);
+
+        retry_with_backoff(
+            &self.client,
+            url,
+            &self.config,
+            ua,
+            RetryPolicy {
+                retry_after_secs: Some(retry_after),
+                retryable: |code: u16| code == 429 || (500..=599).contains(&code),
+                exhausted: HttpError::RateLimited(retry_after),
+                label: "429",
+            },
+        )
+        .await
+    }
+
+    /// Handle a 5xx response: inspect for WAF challenges, then retry with backoff.
+    async fn handle_server_error(
+        &self,
+        url: &str,
+        response: wreq::Response,
+        status: u16,
+        ua: &str,
+    ) -> HttpResult<String> {
+        debug!("{} from {}", status, url);
+
+        // Inspect the initial response BEFORE retrying (REQ-WAF-05).
+        // Approved behavior change: a 503 Cloudflare challenge is classified as
+        // a WAF block instead of dying as a generic ServerError after exhausting
+        // retries.
+        let ctx = inspection_context(status, response.headers(), self.config.ignore_waf);
+
+        // Non-critical enrichment (FIX C): a body-transfer failure (connection
+        // reset mid-body) must not bypass the retry loop with a fatal Request
+        // error — the base never read the 5xx body. Fall back to an empty body so
+        // inspection proceeds on headers only (cf-mitigated detection still
+        // works) and the retry loop runs. The 2xx branch keeps its fatal body
+        // read: there the body IS the scrape content.
+        let body = match response.text().await {
+            Ok(b) => b,
+            Err(e) => {
+                debug!(url = %url, error = %e, "5xx body read failed; inspecting headers only");
+                String::new()
+            },
+        };
+
+        if let Some(err) = waf_block_error(url, status, &body, &ctx) {
+            return Err(err);
+        }
+
+        retry_with_backoff(
+            &self.client,
+            url,
+            &self.config,
+            ua,
+            RetryPolicy {
+                retry_after_secs: None,
+                retryable: |code: u16| (500..=599).contains(&code),
+                exhausted: HttpError::ServerError(status),
+                label: "5xx",
+            },
+        )
+        .await
+    }
+}
+
+/// Map a transport error to the corresponding [`HttpError`].
+fn map_send_error(e: wreq::Error) -> HttpError {
+    if e.is_timeout() {
+        HttpError::Timeout
+    } else if e.is_connect() {
+        HttpError::Connection(e.to_string())
+    } else {
+        HttpError::Request(e.to_string())
+    }
+}
+
+/// Return a WAF-challenge error when the body is classified as blocked.
+fn waf_block_error(
+    url: &str,
+    status: u16,
+    body: &str,
+    ctx: &InspectionContext,
+) -> Option<HttpError> {
+    let verdict = WafInspector::inspect(body, ctx);
+    if verdict.is_blocked {
+        warn!(
+            url = %url,
+            status = %status,
+            evidences = verdict.evidences.len(),
+            "WAF/CAPTCHA challenge detected; blocking"
+        );
+        Some(HttpError::WafChallenge(verdict.evidence_chain()))
+    } else {
+        None
     }
 }
 

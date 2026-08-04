@@ -7,66 +7,11 @@
 
 #![cfg(feature = "mcp")]
 
-use serde_json::{json, Value};
-use std::net::SocketAddr;
-use tokio::net::TcpListener;
+mod common;
+use common::*;
+
+use serde_json::json;
 use wreq::Client;
-
-use webfang_core::config::Config;
-use webfang_core::di::Container;
-use webfang_mcp::mcp_server::server::build_mcp_router;
-use webfang_mcp::mcp_server::state::McpState;
-
-/// Start a test MCP server on a random port and return the base URL.
-///
-/// NOTE: Container::new creates real HTTP clients (wreq) and a real service layer.
-/// This is intentional for integration tests — the container is ephemeral and
-/// scoped to the test, so real infrastructure gives us confidence that the MCP
-/// server works end-to-end with the actual application state.
-async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
-    let config = Config::default();
-    let container = Container::new(config.crawler, config.scraper)
-        .await
-        .expect("container creation failed");
-    let state = McpState::new(container);
-    let app = build_mcp_router(state);
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    let base_url = format!("http://{addr}");
-
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-
-    // Wait for the server to accept TCP connections instead of a fixed sleep.
-    for _ in 0..20 {
-        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-
-    (base_url, handle)
-}
-
-/// Helper: extract JSON from SSE or direct JSON response.
-///
-/// NOTE: This reimplements SSE parsing inline. If more MCP test files are added,
-/// consider extracting this to `tests/common/mod.rs` to avoid duplication.
-fn extract_json(body: &str) -> Option<Value> {
-    if body.contains("data: ") {
-        body.lines()
-            .filter(|line| line.starts_with("data: "))
-            .filter_map(|line| {
-                let json_str = line.strip_prefix("data: ").unwrap_or(line);
-                serde_json::from_str::<Value>(json_str).ok()
-            })
-            .next()
-    } else {
-        serde_json::from_str::<Value>(body).ok()
-    }
-}
 
 // ============================================================================
 // Full lifecycle: init → notify → list → call
@@ -74,6 +19,12 @@ fn extract_json(body: &str) -> Option<Value> {
 
 /// Test the complete MCP lifecycle: initialize → notifications/initialized →
 /// tools/list → tools/call, verifying session state persists across all requests.
+///
+/// Kept as a single test on purpose: the value is verifying that the MCP
+/// session persists across a full request sequence. Splitting it into
+/// per-step tests would create a fresh session per step and lose that
+/// coverage, so the length is intentional.
+#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn test_full_lifecycle_init_notify_list_call() {
     let (base_url, _handle) = start_test_server().await;

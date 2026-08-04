@@ -54,38 +54,33 @@ async fn mount_two_page_site(server: &wiremock::MockServer) -> String {
 /// (b) share exactly ONE run-root `span_fields.trace_id` across all page
 ///     spans, with every traceparent embedding that same trace UUID, and
 /// (c) export the same identities in the vector JSON documents.
-#[tokio::test]
-async fn scrape_trace_and_vector_export_share_per_page_correlation() {
-    let t = BehavioralTest::new().await;
-    let base = mount_two_page_site(&t.server).await;
-
-    let trace_path = t.out.path().join("trace.jsonl");
-
-    let output = cmd()
+/// Run a sitemap scrape with `--trace-file` + vector export and return the
+/// child process output.
+fn run_scrape_with_trace(
+    base: &str,
+    output_dir: &std::path::Path,
+    trace_path: &std::path::Path,
+) -> std::process::Output {
+    cmd()
         .arg("--url")
-        .arg(&base)
+        .arg(base)
         .arg("--use-sitemap")
         .arg("--export-format")
         .arg("vector")
         .arg("--output")
-        .arg(t.out.path())
+        .arg(output_dir)
         .arg("--trace-file")
-        .arg(&trace_path)
+        .arg(trace_path)
         .arg("--quiet")
         .output()
-        .expect("run webfang binary");
+        .expect("run webfang binary")
+}
 
-    assert!(
-        output.status.success(),
-        "expected exit 0, got {:?}\nstderr: {}",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // --- Parse the JSONL trace ---
-    let file = std::fs::File::open(&trace_path)
+/// Read a JSONL trace file into a `Vec` of parsed JSON events.
+fn parse_trace(trace_path: &std::path::Path) -> Vec<serde_json::Value> {
+    let file = std::fs::File::open(trace_path)
         .unwrap_or_else(|e| panic!("trace file must exist at {}: {e}", trace_path.display()));
-    let lines: Vec<serde_json::Value> = BufReader::new(file)
+    BufReader::new(file)
         .lines()
         .map_while(Result::ok)
         .filter(|line| !line.trim().is_empty())
@@ -93,26 +88,34 @@ async fn scrape_trace_and_vector_export_share_per_page_correlation() {
             serde_json::from_str(&line)
                 .unwrap_or_else(|e| panic!("trace line should be valid JSON: {e}\n{line}"))
         })
-        .collect();
-    assert!(!lines.is_empty(), "trace must contain events");
+        .collect()
+}
 
-    // --- (a) Per-page correlation IDs declared on the scrape spans ---
-    let span_correlations: BTreeSet<String> = lines
+/// Collect the distinct per-page `span_fields.correlation_id` values.
+fn span_correlation_ids(lines: &[serde_json::Value]) -> BTreeSet<String> {
+    lines
         .iter()
         .filter_map(|v| {
             v["span_fields"]["correlation_id"]
                 .as_str()
                 .map(str::to_owned)
         })
-        .collect();
+        .collect()
+}
+
+/// (a) Each scraped page must declare its own correlation_id at span creation.
+fn assert_per_page_correlation_ids(lines: &[serde_json::Value]) {
+    let span_correlations = span_correlation_ids(lines);
     assert!(
         span_correlations.len() >= 2,
         "each scraped page must declare its own correlation_id at span creation (#501); \
          got {} distinct value(s): {span_correlations:?}",
         span_correlations.len()
     );
+}
 
-    // --- (b) All page spans share ONE run-root trace_id (#501 follow-up) ---
+/// (b) All page spans must share ONE run-root trace_id; returns it.
+fn assert_shared_run_root_trace(lines: &[serde_json::Value]) -> String {
     let span_traces: BTreeSet<String> = lines
         .iter()
         .filter_map(|v| v["span_fields"]["trace_id"].as_str().map(str::to_owned))
@@ -124,12 +127,16 @@ async fn scrape_trace_and_vector_export_share_per_page_correlation() {
          got {} distinct value(s): {span_traces:?}",
         span_traces.len()
     );
-    let run_trace = span_traces
+    span_traces
         .first()
-        .expect("trace set asserted non-empty above");
+        .expect("trace set asserted non-empty above")
+        .clone()
+}
 
-    // Every per-page traceparent `00-{32hex trace}-{16hex span}-01` must embed
-    // that same run-root trace UUID (without dashes) as its trace part.
+/// Every per-page traceparent `00-{32hex trace}-{16hex span}-01` must embed
+/// the same run-root trace UUID (without dashes) as its trace part.
+fn assert_traceparent_embeds_run_trace(lines: &[serde_json::Value], run_trace: &str) {
+    let span_correlations = span_correlation_ids(lines);
     let run_trace_hex = run_trace.replace('-', "");
     for corr in &span_correlations {
         let parts: Vec<&str> = corr.split('-').collect();
@@ -156,8 +163,12 @@ async fn scrape_trace_and_vector_export_share_per_page_correlation() {
              ({run_trace}); page identity drifted: {corr}"
         );
     }
+}
 
-    // --- (c) The vector export carries the same identities ---
+/// (c) The vector export must carry the same correlation identities.
+fn assert_vector_export_identities(t: &BehavioralTest, lines: &[serde_json::Value]) {
+    let span_correlations = span_correlation_ids(lines);
+
     let vector_files = t.find_files("json");
     assert!(
         !vector_files.is_empty(),
@@ -194,4 +205,34 @@ async fn scrape_trace_and_vector_export_share_per_page_correlation() {
         2,
         "each page must keep its own identity in the export; got {exported:?}"
     );
+}
+
+#[tokio::test]
+async fn scrape_trace_and_vector_export_share_per_page_correlation() {
+    let t = BehavioralTest::new().await;
+    let base = mount_two_page_site(&t.server).await;
+
+    let trace_path = t.out.path().join("trace.jsonl");
+
+    let output = run_scrape_with_trace(&base, t.out.path(), &trace_path);
+    assert!(
+        output.status.success(),
+        "expected exit 0, got {:?}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // --- Parse the JSONL trace ---
+    let lines = parse_trace(&trace_path);
+    assert!(!lines.is_empty(), "trace must contain events");
+
+    // --- (a) Per-page correlation IDs declared on the scrape spans ---
+    assert_per_page_correlation_ids(&lines);
+
+    // --- (b) All page spans share ONE run-root trace_id (#501 follow-up) ---
+    let run_trace = assert_shared_run_root_trace(&lines);
+    assert_traceparent_embeds_run_trace(&lines, &run_trace);
+
+    // --- (c) The vector export carries the same identities ---
+    assert_vector_export_identities(&t, &lines);
 }

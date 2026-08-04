@@ -10,6 +10,14 @@
 use crate::cmd;
 use crate::BehavioralTest;
 use std::io::{BufRead, BufReader};
+use std::path::Path;
+use tempfile::TempDir;
+use url::Url;
+use webfang_core::application::crawler::engine::EngineOptions;
+use webfang_core::domain::JsStrategy;
+use webfang_core::{
+    crawl_site_with_options, BincodeCheckpoint, CheckpointStore, CrawlCheckpoint, CrawlerConfig,
+};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -268,25 +276,15 @@ async fn waf_gauntlet_persistent_403_fails() {
 /// This uses the Engine API directly (`crawl_site_with_options`) because the
 /// CLI binary does not wire `Engine::with_checkpoint` — the checkpoint is an
 /// engine-internal crash-recovery mechanism.
-#[tokio::test]
-async fn waf_gauntlet_checkpoint_atomicity_and_resume() {
-    use tempfile::TempDir;
-    use url::Url;
-    use webfang_core::application::crawler::engine::EngineOptions;
-    use webfang_core::domain::JsStrategy;
-    use webfang_core::{
-        crawl_site_with_options, BincodeCheckpoint, CheckpointStore, CrawlCheckpoint, CrawlerConfig,
-    };
-
-    let server = wiremock::MockServer::start().await;
-
+/// Mount a seed page linking to /page-a and /page-b for the checkpoint test.
+async fn mount_checkpoint_site(server: &wiremock::MockServer) {
     // Seed page links to /page-a and /page-b.
     Mock::given(method("GET"))
         .and(path("/seed"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
             r#"<html><body><a href="/page-a">A</a><a href="/page-b">B</a></body></html>"#,
         ))
-        .mount(&server)
+        .mount(server)
         .await;
 
     Mock::given(method("GET"))
@@ -295,7 +293,7 @@ async fn waf_gauntlet_checkpoint_atomicity_and_resume() {
             ResponseTemplate::new(200)
                 .set_body_string("<html><body><article><h1>Page A</h1></article></body></html>"),
         )
-        .mount(&server)
+        .mount(server)
         .await;
 
     Mock::given(method("GET"))
@@ -304,24 +302,26 @@ async fn waf_gauntlet_checkpoint_atomicity_and_resume() {
             ResponseTemplate::new(200)
                 .set_body_string("<html><body><article><h1>Page B</h1></article></body></html>"),
         )
-        .mount(&server)
+        .mount(server)
         .await;
+}
 
-    let tmp = TempDir::new().unwrap();
-    let checkpoint_dir = tmp.path().join("checkpoints");
-
-    // --- Phase 1: crawl with checkpoint, max_pages=2 (seed + page-a) ---
-    let seed = Url::parse(&format!("{}/seed", server.uri())).expect("valid URL");
-    let config = CrawlerConfig::builder(seed.clone())
+/// Run a crawl from `seed` with checkpointing enabled, bounded by `max_pages`.
+async fn crawl_with_checkpoint(
+    seed: Url,
+    checkpoint_dir: &Path,
+    max_pages: usize,
+) -> Result<webfang_core::domain::CrawlResult, webfang_core::domain::CrawlError> {
+    let config = CrawlerConfig::builder(seed)
         .max_depth(1)
-        .max_pages(2)
+        .max_pages(max_pages)
         .delay_ms(1)
         .concurrency(1)
         .timeout_secs(5)
         .build();
 
     let options = EngineOptions {
-        checkpoint_path: Some(checkpoint_dir.clone()),
+        checkpoint_path: Some(checkpoint_dir.to_path_buf()),
         session_pool_enabled: false,
         ignore_robots: true,
         js_strategy: JsStrategy::Static,
@@ -329,14 +329,12 @@ async fn waf_gauntlet_checkpoint_atomicity_and_resume() {
         ..Default::default()
     };
 
-    let result = crawl_site_with_options(config, options).await;
-    assert!(
-        result.is_ok(),
-        "phase-1 crawl should succeed: {:?}",
-        result.err()
-    );
+    crawl_site_with_options(config, options).await
+}
 
-    // --- Verify checkpoint file exists and has valid format ---
+/// Verify the checkpoint file exists with a valid CRC32 prefix + JSON payload,
+/// that the store can load it, and that no `.tmp` file remains (atomicity).
+fn assert_checkpoint_valid(checkpoint_dir: &Path) {
     let checkpoint_file = checkpoint_dir.join("crawl_checkpoint.json");
     assert!(
         checkpoint_file.exists(),
@@ -376,26 +374,30 @@ async fn waf_gauntlet_checkpoint_atomicity_and_resume() {
         !tmp_file.exists(),
         "no .tmp file should remain after atomic save"
     );
+}
+
+#[tokio::test]
+async fn waf_gauntlet_checkpoint_atomicity_and_resume() {
+    let server = wiremock::MockServer::start().await;
+    mount_checkpoint_site(&server).await;
+
+    let tmp = TempDir::new().unwrap();
+    let checkpoint_dir = tmp.path().join("checkpoints");
+
+    // --- Phase 1: crawl with checkpoint, max_pages=2 (seed + page-a) ---
+    let seed = Url::parse(&format!("{}/seed", server.uri())).expect("valid URL");
+    let result = crawl_with_checkpoint(seed.clone(), &checkpoint_dir, 2).await;
+    assert!(
+        result.is_ok(),
+        "phase-1 crawl should succeed: {:?}",
+        result.err()
+    );
+
+    // --- Verify checkpoint file exists and has valid format ---
+    assert_checkpoint_valid(&checkpoint_dir);
 
     // --- Phase 2: resume from checkpoint — engine should skip visited ---
-    let config2 = CrawlerConfig::builder(seed)
-        .max_depth(1)
-        .max_pages(10)
-        .delay_ms(1)
-        .concurrency(1)
-        .timeout_secs(5)
-        .build();
-
-    let options2 = EngineOptions {
-        checkpoint_path: Some(checkpoint_dir),
-        session_pool_enabled: false,
-        ignore_robots: true,
-        js_strategy: JsStrategy::Static,
-        autoscale_enabled: false,
-        ..Default::default()
-    };
-
-    let result2 = crawl_site_with_options(config2, options2).await;
+    let result2 = crawl_with_checkpoint(seed, &checkpoint_dir, 10).await;
     assert!(
         result2.is_ok(),
         "phase-2 resume crawl should succeed: {:?}",

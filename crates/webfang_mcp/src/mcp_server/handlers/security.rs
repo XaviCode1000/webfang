@@ -356,4 +356,168 @@ mod tests {
             "per-domain breakdown expected, got: {parsed}"
         );
     }
+
+    // ========================================================================
+    // Handler-method coverage (direct dispatch, no MCP server, no network).
+    // The free functions above are already unit-tested; these exercise the
+    // `#[tool]` wrappers (semaphore, McpState wiring, render) end-to-end.
+    // ========================================================================
+
+    use crate::mcp_server::state::McpState;
+    use rmcp::handler::server::wrapper::Parameters;
+    use rmcp::model::CallToolResult;
+    use tempfile::TempDir;
+    use webfang_core::di::Container;
+    use webfang_core::domain::CrawlerConfig;
+    use webfang_core::infrastructure::config::ScraperConfig;
+
+    async fn super_test_container() -> (TempDir, Container) {
+        let tmp = TempDir::new().expect("create temp dir");
+        let crawler_config =
+            CrawlerConfig::new(url::Url::parse("https://example.com").expect("valid url"));
+        let scraper_config = ScraperConfig {
+            output_dir: tmp.path().to_path_buf(),
+            ..Default::default()
+        };
+        let container = Container::new(crawler_config, scraper_config)
+            .await
+            .expect("create container");
+        (tmp, container)
+    }
+
+    fn result_text(result: &CallToolResult) -> String {
+        serde_json::to_value(result)
+            .ok()
+            .and_then(|v| v.get("content").and_then(|c| c.as_array()).cloned())
+            .and_then(|arr| arr.first().cloned())
+            .and_then(|first| {
+                first
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn detect_waf_handler_detects_challenge() {
+        let (_tmp, container) = super_test_container().await;
+        let handler = McpHandler::new(McpState::new(container));
+        let html = r#"<div id="cf-turnstile" data-sitekey="abc"></div>"#;
+        let res = handler
+            .detect_waf(Parameters(DetectWafParams {
+                html: html.to_string(),
+            }))
+            .await
+            .expect("detect_waf returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("WAF detected"),
+            "challenge must be detected: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn detect_waf_handler_clean_body() {
+        let (_tmp, container) = super_test_container().await;
+        let handler = McpHandler::new(McpState::new(container));
+        let res = handler
+            .detect_waf(Parameters(DetectWafParams {
+                html: "<html><body>clean</body></html>".to_string(),
+            }))
+            .await
+            .expect("detect_waf returns Ok");
+        let text = result_text(&res);
+        assert_eq!(text, "no WAF detected", "clean body: {text}");
+    }
+
+    #[tokio::test]
+    async fn verify_waf_integrity_handler_blocks_with_status() {
+        let (_tmp, container) = super_test_container().await;
+        let handler = McpHandler::new(McpState::new(container));
+        let res = handler
+            .verify_waf_integrity(Parameters(VerifyWafIntegrityParams {
+                html: Some("<html>blocked by akamai</html>".to_string()),
+                headers: None,
+                status: Some(403),
+                content_type: Some("text/html".to_string()),
+            }))
+            .await
+            .expect("verify_waf_integrity returns Ok");
+        let text = result_text(&res);
+        assert!(text.contains("WAF blocked"), "T2 + 403 must block: {text}");
+    }
+
+    #[tokio::test]
+    async fn verify_waf_integrity_handler_passes_without_context() {
+        let (_tmp, container) = super_test_container().await;
+        let handler = McpHandler::new(McpState::new(container));
+        let res = handler
+            .verify_waf_integrity(Parameters(VerifyWafIntegrityParams {
+                html: Some("<html>clean</html>".to_string()),
+                headers: None,
+                status: None,
+                content_type: None,
+            }))
+            .await
+            .expect("verify_waf_integrity returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("integrity check passed"),
+            "clean body without context passes: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_waf_providers_handler_returns_list() {
+        let (_tmp, container) = super_test_container().await;
+        let handler = McpHandler::new(McpState::new(container));
+        let res = handler
+            .list_waf_providers()
+            .await
+            .expect("list_waf_providers returns Ok");
+        let text = result_text(&res);
+        assert!(!text.is_empty(), "providers list must be non-empty");
+    }
+
+    #[tokio::test]
+    async fn get_scrape_metrics_handler_empty_is_honest_error() {
+        let (_tmp, container) = super_test_container().await;
+        let handler = McpHandler::new(McpState::new(container));
+        let res = handler
+            .get_scrape_metrics()
+            .await
+            .expect("get_scrape_metrics returns Ok");
+        let json = serde_json::to_value(&res).expect("serialize");
+        assert_eq!(
+            json.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "empty metrics must be an honest error: {json}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_scrape_metrics_handler_populated_is_json() {
+        let (_tmp, container) = super_test_container().await;
+        let state = McpState::new(container);
+        let handler = McpHandler::new(state.clone());
+        use crate::mcp_server::metrics::{Outcome, ScrapeEvent};
+        use std::time::Duration;
+        state.record_scrape(ScrapeEvent {
+            tool: "scrape_url",
+            domain: "example.com".to_string(),
+            outcome: Outcome::Success,
+            count: 1,
+            duration: Duration::from_millis(5),
+        });
+        let res = handler
+            .get_scrape_metrics()
+            .await
+            .expect("get_scrape_metrics returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("total_events"),
+            "populated metrics must render JSON: {text}"
+        );
+    }
 }

@@ -134,7 +134,32 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      # Complexity ratchet (issue #516): clippy.toml sets
+      # cognitive-complexity-threshold=30 and too-many-lines-threshold=100.
+      # Enabling these two lints + the existing -D warnings fails the build on
+      # any function above those thresholds. DESCENDING ratchet — never raise.
+      - run: cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines
+
+  # ============================================================================
+  # CODE QUALITY: dead deps + duplication ratchet (issue #516).
+  # cargo-machete fails on any unused dependency; check_duplication.sh fails if
+  # duplicated lines exceed the committed baseline (a DESCENDING ratchet).
+  # ============================================================================
+  code-quality:
+    name: Code quality (machete + duplication ratchet)
+    needs: [clippy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-machete
+        run: cargo install cargo-machete --locked --quiet
+      - name: Dead dependency gate (cargo-machete)
+        run: cargo machete
+      - name: Duplication ratchet (jscpd)
+        run: bash scripts/check_duplication.sh
 
   # ============================================================================
   # TIER 3: TEST CORE — Split by category for targeted feedback.

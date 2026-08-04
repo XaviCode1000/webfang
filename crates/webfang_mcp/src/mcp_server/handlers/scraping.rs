@@ -548,3 +548,305 @@ impl McpHandler {
 pub fn build_router() -> ToolRouter<McpHandler> {
     McpHandler::tool_router_scraping()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp_server::state::McpState;
+    use rmcp::handler::server::wrapper::Parameters;
+    use rmcp::model::CallToolResult;
+    use tempfile::TempDir;
+    use webfang_core::di::Container;
+    use webfang_core::domain::CrawlerConfig;
+    use webfang_core::infrastructure::config::ScraperConfig;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const ARTICLE_HTML: &str = r#"<!DOCTYPE html>
+<html><head><title>Test Page</title></head>
+<body><article><h1>Main Heading</h1>
+<p>This is the content of the article. It has enough text to be extracted by Readability.</p>
+</article></body></html>"#;
+
+    const LINKS_HTML: &str = r#"<html><body>
+<a href="/internal">internal</a>
+<a href="https://external.com/x">external</a>
+</body></html>"#;
+
+    async fn test_handler() -> (McpHandler, TempDir) {
+        let tmp = TempDir::new().expect("create temp dir");
+        let crawler_config =
+            CrawlerConfig::new(url::Url::parse("https://example.com").expect("valid url"));
+        let scraper_config = ScraperConfig {
+            output_dir: tmp.path().to_path_buf(),
+            ..Default::default()
+        };
+        let container = Container::new(crawler_config, scraper_config)
+            .await
+            .expect("create container");
+        let state = McpState::new(container);
+        (McpHandler::new(state), tmp)
+    }
+
+    async fn mock_article() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(ARTICLE_HTML))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn result_text(result: &CallToolResult) -> String {
+        serde_json::to_value(result)
+            .ok()
+            .and_then(|v| v.get("content").and_then(|c| c.as_array()).cloned())
+            .and_then(|arr| arr.first().cloned())
+            .and_then(|first| {
+                first
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn scrape_url_success_extracts_content() {
+        let (handler, _tmp) = test_handler().await;
+        let server = mock_article().await;
+        let res = handler
+            .scrape_url(Parameters(ScrapeUrlParams { url: server.uri() }))
+            .await
+            .expect("scrape_url returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("Main Heading"),
+            "scraped content must include heading: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn scrape_url_invalid_url_is_invalid_params() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .scrape_url(Parameters(ScrapeUrlParams {
+                url: "not a url".to_string(),
+            }))
+            .await;
+        assert!(res.is_err(), "invalid URL must be a protocol error");
+    }
+
+    #[tokio::test]
+    async fn scrape_url_http_error_is_tool_error() {
+        let (handler, _tmp) = test_handler().await;
+        // Port with nothing listening → connection refused → HttpError → isError.
+        let res = handler
+            .scrape_url(Parameters(ScrapeUrlParams {
+                url: "http://127.0.0.1:1/".to_string(),
+            }))
+            .await
+            .expect("scrape_url returns Ok on http error");
+        let json = serde_json::to_value(&res).expect("serialize");
+        assert_eq!(
+            json.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "http error must map to isError:true, got: {json}"
+        );
+    }
+
+    #[tokio::test]
+    async fn scrape_with_options_success() {
+        let (handler, _tmp) = test_handler().await;
+        let server = mock_article().await;
+        let res = handler
+            .scrape_with_options(Parameters(ScrapeWithOptionsParams {
+                url: server.uri(),
+                max_pages: Some(1),
+                download_images: Some(false),
+                download_documents: Some(false),
+                selector: None,
+            }))
+            .await
+            .expect("scrape_with_options returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("Main Heading"),
+            "scrape_with_options must extract content: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn scrape_with_options_invalid_url_is_invalid_params() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .scrape_with_options(Parameters(ScrapeWithOptionsParams {
+                url: "::bad::".to_string(),
+                max_pages: None,
+                download_images: None,
+                download_documents: None,
+                selector: None,
+            }))
+            .await;
+        assert!(res.is_err(), "invalid URL must be a protocol error");
+    }
+
+    #[tokio::test]
+    async fn scrape_batch_success() {
+        let (handler, _tmp) = test_handler().await;
+        let server = mock_article().await;
+        let res = handler
+            .scrape_batch(Parameters(ScrapeBatchParams {
+                urls: vec![server.uri()],
+                concurrency: Some(2),
+            }))
+            .await
+            .expect("scrape_batch returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("Main Heading"),
+            "batch must scrape content: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn scrape_batch_no_valid_urls_is_error() {
+        let (handler, _tmp) = test_handler().await;
+        // Params validation (#512) rejects unparseable URLs up front.
+        let res = handler
+            .scrape_batch(Parameters(ScrapeBatchParams {
+                urls: vec!["not a url".to_string()],
+                concurrency: None,
+            }))
+            .await;
+        assert!(
+            res.is_err(),
+            "invalid URLs must be a protocol error, got: {res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn discover_urls_success_extracts_links() {
+        let (handler, _tmp) = test_handler().await;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(LINKS_HTML))
+            .mount(&server)
+            .await;
+        let res = handler
+            .discover_urls(Parameters(DiscoverUrlsParams { url: server.uri() }))
+            .await
+            .expect("discover_urls returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("internal"),
+            "discover_urls must extract internal link: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn discover_urls_invalid_url_is_invalid_params() {
+        let (handler, _tmp) = test_handler().await;
+        // Params validation (#512) rejects unparseable URLs up front.
+        let res = handler
+            .discover_urls(Parameters(DiscoverUrlsParams {
+                url: "not a url".to_string(),
+            }))
+            .await;
+        assert!(
+            res.is_err(),
+            "invalid URL must be a protocol error, got: {res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn discover_urls_http_error_is_tool_error() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .discover_urls(Parameters(DiscoverUrlsParams {
+                url: "http://127.0.0.1:1/".to_string(),
+            }))
+            .await
+            .expect("discover_urls returns Ok on http error");
+        let json = serde_json::to_value(&res).expect("serialize");
+        assert_eq!(
+            json.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "http error must map to isError:true, got: {json}"
+        );
+    }
+
+    #[tokio::test]
+    async fn detect_spa_sufficient_content_is_not_spa() {
+        let (handler, _tmp) = test_handler().await;
+        let server = MockServer::start().await;
+        let body = "<html><body><p>This page has plenty of substantive readable content that comfortably exceeds the SPA minimum content threshold used by the detector logic.</p></body></html>";
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+        let res = handler
+            .detect_spa(Parameters(DetectSpaParams { url: server.uri() }))
+            .await
+            .expect("detect_spa returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("not an SPA"),
+            "sufficient content must report not-an-SPA: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn detect_spa_invalid_url_is_invalid_params() {
+        let (handler, _tmp) = test_handler().await;
+        // Params validation (#512) rejects unparseable URLs up front.
+        let res = handler
+            .detect_spa(Parameters(DetectSpaParams {
+                url: "not a url".to_string(),
+            }))
+            .await;
+        assert!(
+            res.is_err(),
+            "invalid URL must be a protocol error, got: {res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn crawl_site_invalid_url_is_invalid_params() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .crawl_site(Parameters(CrawlSiteParams {
+                url: "not a url".to_string(),
+                max_depth: None,
+                max_pages: None,
+            }))
+            .await;
+        assert!(res.is_err(), "invalid URL must be a protocol error");
+    }
+
+    #[tokio::test]
+    async fn crawl_with_sitemap_invalid_url_is_invalid_params() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .crawl_with_sitemap(Parameters(CrawlWithSitemapParams {
+                url: "not a url".to_string(),
+                sitemap_url: None,
+            }))
+            .await;
+        assert!(res.is_err(), "invalid URL must be a protocol error");
+    }
+
+    #[tokio::test]
+    async fn discover_sitemap_invalid_url_is_invalid_params() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .discover_sitemap(Parameters(DiscoverUrlsParams {
+                url: "not a url".to_string(),
+            }))
+            .await;
+        assert!(res.is_err(), "invalid URL must be a protocol error");
+    }
+}

@@ -311,42 +311,56 @@ impl Engine {
     /// Save the current checkpoint to disk (non-blocking wrapper).
     async fn save_checkpoint(&self) {
         if let Some(path) = &self.checkpoint_path {
-            let visited_set: HashSet<String> = self.scheduler.snapshot_visited();
-            let pages = self
-                .pages_crawled
-                .load(std::sync::atomic::Ordering::Relaxed);
-            let banned = self
-                .banned_domains
-                .read()
-                .map(|d| d.clone())
-                .unwrap_or_default();
-            let state = CrawlCheckpoint {
-                visited: visited_set,
-                queued: self.scheduler.snapshot_pending().await,
-                pages_crawled: pages,
-                banned_domains: banned,
-                version: 1,
-            };
+            let state = self.build_checkpoint_state().await;
+            self.persist_checkpoint(state, path).await;
+        }
+    }
 
-            // Save on blocking thread to avoid blocking the event loop
-            let store = BincodeCheckpoint::new();
-            let path = path.clone();
-            match tokio::task::spawn_blocking(move || store.save(&state, &path))
-                .in_current_span()
-                .await
-            {
-                Ok(Ok(())) => {
-                    tracing::debug!("checkpoint saved successfully");
-                },
-                Ok(Err(e)) => {
-                    tracing::error!(error = %e, "checkpoint save failed");
-                },
-                // LCOV_EXCL_START defensive: checkpoint-join-error — a JoinError occurs only when the spawned task panicked, a bug
-                Err(join_err) => {
-                    tracing::error!(error = %join_err, "checkpoint save task panicked");
-                },
-                // LCOV_EXCL_STOP
-            }
+    /// Snapshot the current engine state into a checkpoint.
+    async fn build_checkpoint_state(&self) -> CrawlCheckpoint {
+        let visited_set: HashSet<String> = self.scheduler.snapshot_visited();
+        let pages = self
+            .pages_crawled
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let banned = self
+            .banned_domains
+            .read()
+            .map(|d| d.clone())
+            .unwrap_or_default();
+        CrawlCheckpoint {
+            visited: visited_set,
+            queued: self.scheduler.snapshot_pending().await,
+            pages_crawled: pages,
+            banned_domains: banned,
+            version: 1,
+        }
+    }
+
+    /// Persist a checkpoint on a blocking thread, logging the outcome.
+    async fn persist_checkpoint(&self, state: CrawlCheckpoint, path: &std::path::Path) {
+        // Save on blocking thread to avoid blocking the event loop
+        let store = BincodeCheckpoint::new();
+        let path = path.to_path_buf();
+        let outcome = tokio::task::spawn_blocking(move || store.save(&state, &path))
+            .in_current_span()
+            .await;
+        Self::log_checkpoint_save(outcome);
+    }
+
+    /// Log the result of a checkpoint save attempt.
+    fn log_checkpoint_save(outcome: Result<Result<(), String>, tokio::task::JoinError>) {
+        match outcome {
+            Ok(Ok(())) => {
+                tracing::debug!("checkpoint saved successfully");
+            },
+            Ok(Err(e)) => {
+                tracing::error!(error = %e, "checkpoint save failed");
+            },
+            // LCOV_EXCL_START defensive: checkpoint-join-error — a JoinError occurs only when the spawned task panicked, a bug
+            Err(join_err) => {
+                tracing::error!(error = %join_err, "checkpoint save task panicked");
+            },
+            // LCOV_EXCL_STOP
         }
     }
 
@@ -421,25 +435,7 @@ impl Engine {
         ));
 
         // Load checkpoint state if resuming
-        if let Some(ref cp) = self.checkpoint_state {
-            if !cp.visited.is_empty() {
-                self.scheduler.restore_visited(&cp.visited);
-                info!("Restored {} visited URLs from checkpoint", cp.visited.len());
-            }
-            if !cp.queued.is_empty() {
-                self.scheduler.restore_pending(&cp.queued);
-                info!("Restored {} queued URLs from checkpoint", cp.queued.len());
-            }
-            if !cp.banned_domains.is_empty() {
-                if let Ok(mut banned) = self.banned_domains.write() {
-                    *banned = cp.banned_domains.clone();
-                }
-                info!(
-                    "Restored {} banned domains from checkpoint",
-                    cp.banned_domains.len()
-                );
-            }
-        }
+        self.restore_checkpoint_state();
 
         // Seed the scheduler (pushes onto the discovery queue and pending buffer)
         self.scheduler.seed(&config_clone.seed_url).await;
@@ -447,7 +443,97 @@ impl Engine {
         let mut tasks = tokio::task::JoinSet::new();
 
         // Build shared task context once — all spawned tasks share this Arc
-        let task_ctx = Arc::new(CrawlTaskCtx {
+        let task_ctx = self.build_task_ctx();
+
+        // Progress tracking start (issue #356 Fase 4)
+        let start = std::time::Instant::now();
+
+        // Bound every worker wait (#509): the longest legitimate wait is a
+        // fetch (timeout_secs) or a rate-limit token (delay_ms), plus grace.
+        let worker_wait_bound = Self::worker_wait_bound(&config_clone);
+
+        // Main crawl loop
+        self.crawl_loop(&mut tasks, &task_ctx, start, worker_wait_bound)
+            .await;
+
+        // Wait for remaining tasks — bounded, then abort stragglers, so a
+        // shutdown can never hang on a blocked worker (#509).
+        Self::drain_tasks(
+            &mut tasks,
+            &self.error_count,
+            &self.error_breakdown,
+            worker_wait_bound,
+        )
+        .await;
+
+        // Drop task_ctx so all cloned Senders inside CrawlTaskCtx are released.
+        // Without this, collect() hangs forever — the mpsc channel stays open
+        // because a Sender clone inside the Arc<CrawlTaskCtx> is still alive.
+        drop(task_ctx);
+
+        // Final checkpoint save
+        self.save_checkpoint().await;
+
+        // Collect results via mpsc channel — now all Senders are dropped,
+        // so the receiver worker will drain and terminate.
+        let collected_urls = std::mem::take(&mut self.collector).collect().await;
+        let total_pages = collected_urls.len();
+        let errors = self.error_count.load(std::sync::atomic::Ordering::SeqCst);
+
+        let breakdown = self.collect_error_breakdown();
+
+        // Structured crawl summary (issue #356 Fase 4, error breakdown #374)
+        self.log_crawl_summary(total_pages, errors, start);
+
+        Ok(CrawlResult::new(
+            collected_urls,
+            total_pages,
+            errors,
+            breakdown,
+        ))
+    }
+
+    /// Load checkpoint state if resuming (visited, queued, banned domains).
+    fn restore_checkpoint_state(&mut self) {
+        if let Some(cp) = &self.checkpoint_state {
+            Self::restore_visited(&mut self.scheduler, &cp.visited);
+            Self::restore_queued(&mut self.scheduler, &cp.queued);
+            Self::restore_banned(&self.banned_domains, &cp.banned_domains);
+        }
+    }
+
+    /// Restore the visited set from a checkpoint.
+    fn restore_visited(scheduler: &mut CrawlScheduler, visited: &HashSet<String>) {
+        if !visited.is_empty() {
+            scheduler.restore_visited(visited);
+            info!("Restored {} visited URLs from checkpoint", visited.len());
+        }
+    }
+
+    /// Restore the pending queue from a checkpoint.
+    fn restore_queued(scheduler: &mut CrawlScheduler, queued: &[String]) {
+        if !queued.is_empty() {
+            scheduler.restore_pending(queued);
+            info!("Restored {} queued URLs from checkpoint", queued.len());
+        }
+    }
+
+    /// Restore banned domains from a checkpoint.
+    fn restore_banned(banned_domains: &RwLock<Vec<BannedDomain>>, cp_banned: &[BannedDomain]) {
+        if !cp_banned.is_empty() {
+            if let Ok(mut banned) = banned_domains.write() {
+                *banned = cp_banned.to_vec();
+            }
+            info!(
+                "Restored {} banned domains from checkpoint",
+                cp_banned.len()
+            );
+        }
+    }
+
+    /// Build the shared task context once — all spawned tasks share this Arc.
+    fn build_task_ctx(&self) -> Arc<CrawlTaskCtx> {
+        Arc::new(CrawlTaskCtx {
             config: Arc::clone(&self.config),
             correlation_id: self.correlation_id.clone(),
             queue: self.scheduler.queue(),
@@ -479,21 +565,29 @@ impl Engine {
                 }) as Arc<dyn ports::ContentPipeline>
             }),
             output_stages: self.output_stages.to_vec(),
-        });
+        })
+    }
 
-        // Progress tracking start (issue #356 Fase 4)
-        let start = std::time::Instant::now();
-
-        // Bound every worker wait (#509): the longest legitimate wait is a
-        // fetch (timeout_secs) or a rate-limit token (delay_ms), plus grace.
-        let worker_wait_bound = Duration::from_secs(
-            config_clone
+    /// Bound every worker wait (#509): the longest legitimate wait is a fetch
+    /// (timeout_secs) or a rate-limit token (delay_ms), plus grace.
+    fn worker_wait_bound(config: &CrawlerConfig) -> Duration {
+        Duration::from_secs(
+            config
                 .timeout_secs
-                .max(config_clone.delay_ms / 1000)
+                .max(config.delay_ms / 1000)
                 .saturating_add(SHUTDOWN_GRACE_SECS),
-        );
+        )
+    }
 
-        // Main crawl loop
+    /// Main crawl loop — process completed tasks, drain discovered links,
+    /// checkpoint periodically, spawn new tasks, and wait for work.
+    async fn crawl_loop(
+        &mut self,
+        tasks: &mut tokio::task::JoinSet<Result<(), CrawlError>>,
+        task_ctx: &Arc<CrawlTaskCtx>,
+        start: std::time::Instant,
+        worker_wait_bound: Duration,
+    ) {
         while self.scheduler.has_pending_work() || !tasks.is_empty() {
             // Check shutdown signal
             if self.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
@@ -506,109 +600,118 @@ impl Engine {
             }
 
             // Check if we've reached max pages (sin lock - atomic)
-            if self.collector.is_full(config_clone.max_pages) {
-                info!("Reached max pages limit: {}", config_clone.max_pages);
+            if self.collector.is_full(self.config.max_pages) {
+                info!("Reached max pages limit: {}", self.config.max_pages);
                 break;
             }
 
             // Process completed tasks FIRST (non-blocking)
-            while let Some(result) = tasks.try_join_next() {
-                handle_crawl_result(result, &self.error_count, &self.error_breakdown);
-            }
+            self.process_completed_tasks(tasks);
 
             // Drain discovered links from the deduplicated UrlQueue
             self.scheduler.drain_discovered().await;
 
             // Periodic checkpoint save
-            if self.checkpoint_interval > 0 {
-                let pages = self
-                    .pages_crawled
-                    .load(std::sync::atomic::Ordering::Relaxed);
-                if pages > 0 && pages.is_multiple_of(self.checkpoint_interval) {
-                    debug!("Periodic checkpoint save at {pages} pages");
-                    self.save_checkpoint().await;
-
-                    // Periodic structured progress log (issue #356 Fase 4)
-                    let progress =
-                        CrawlProgress::new(pages, config_clone.max_pages, start.elapsed());
-                    info!(
-                        pages_crawled = pages,
-                        max_pages = config_clone.max_pages,
-                        progress_pct = progress.progress_pct(),
-                        elapsed_secs = start.elapsed().as_secs(),
-                        pages_per_sec = progress.pages_per_sec(),
-                        eta_secs = progress.eta_secs(),
-                        trace_id = %self.correlation_id.trace_id(),
-                        "crawl progress"
-                    );
-                }
-            }
+            self.maybe_save_periodic_checkpoint(start).await;
 
             // Spawn new tasks up to the (autoscale-aware) concurrency limit.
-            // The scheduler checks the limit before popping and skips URLs that
-            // were already visited, marking each handed-out URL as visited.
-            while let Some(discovered_url) = self.scheduler.next_url(tasks.len()) {
-                // Spawn task — single Arc clone instead of 18 individual clones
-                let task_ctx = Arc::clone(&task_ctx);
-                tasks.spawn(
-                    async move { run_crawl_task(task_ctx, discovered_url).await }.in_current_span(),
-                );
-            }
+            Self::spawn_available_tasks(&mut self.scheduler, tasks, task_ctx);
 
             // If no tasks can be spawned and work remains, wait for one task.
-            // The wait is bounded (#509): on expiry we re-check engine state
-            // instead of hanging on a wedged worker.
-            if !self.scheduler.can_spawn(tasks.len()) && self.scheduler.has_pending_work() {
-                match tokio::time::timeout(worker_wait_bound, tasks.join_next()).await {
-                    Ok(Some(result)) => {
-                        handle_crawl_result(result, &self.error_count, &self.error_breakdown);
-                    },
-                    Ok(None) => {},
-                    Err(_elapsed) => {
-                        warn!(
-                            bound_secs = worker_wait_bound.as_secs(),
-                            "worker wait exceeded bound — re-checking engine state"
-                        );
-                    },
-                }
-            }
+            self.wait_for_task(tasks, worker_wait_bound).await;
         }
+    }
 
-        // Wait for remaining tasks — bounded, then abort stragglers, so a
-        // shutdown can never hang on a blocked worker (#509).
-        Self::drain_tasks(
-            &mut tasks,
-            &self.error_count,
-            &self.error_breakdown,
-            worker_wait_bound,
-        )
-        .await;
+    /// Process completed tasks (non-blocking) and update error counters.
+    fn process_completed_tasks(&self, tasks: &mut tokio::task::JoinSet<Result<(), CrawlError>>) {
+        while let Some(result) = tasks.try_join_next() {
+            handle_crawl_result(result, &self.error_count, &self.error_breakdown);
+        }
+    }
 
-        // Drop task_ctx so all cloned Senders inside CrawlTaskCtx are released.
-        // Without this, collect() hangs forever — the mpsc channel stays open
-        // because a Sender clone inside the Arc<CrawlTaskCtx> is still alive.
-        drop(task_ctx);
-
-        // Final checkpoint save
+    /// Periodically save a checkpoint and emit a structured progress log.
+    async fn maybe_save_periodic_checkpoint(&self, start: std::time::Instant) {
+        if self.checkpoint_interval == 0 {
+            return;
+        }
+        let pages = self
+            .pages_crawled
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if pages == 0 || !pages.is_multiple_of(self.checkpoint_interval) {
+            return;
+        }
+        debug!("Periodic checkpoint save at {pages} pages");
         self.save_checkpoint().await;
 
-        // Collect results via mpsc channel — now all Senders are dropped,
-        // so the receiver worker will drain and terminate.
-        let collected_urls = std::mem::take(&mut self.collector).collect().await;
-        let total_pages = collected_urls.len();
-        let errors = self.error_count.load(std::sync::atomic::Ordering::SeqCst);
+        // Periodic structured progress log (issue #356 Fase 4)
+        let progress = CrawlProgress::new(pages, self.config.max_pages, start.elapsed());
+        info!(
+            pages_crawled = pages,
+            max_pages = self.config.max_pages,
+            progress_pct = progress.progress_pct(),
+            elapsed_secs = start.elapsed().as_secs(),
+            pages_per_sec = progress.pages_per_sec(),
+            eta_secs = progress.eta_secs(),
+            trace_id = %self.correlation_id.trace_id(),
+            "crawl progress"
+        );
+    }
 
-        let breakdown: std::collections::BTreeMap<CrawlErrorCategory, usize> =
-            CrawlErrorCategory::ALL
-                .iter()
-                .filter_map(|cat| {
-                    let count =
-                        self.error_breakdown[cat.index()].load(std::sync::atomic::Ordering::SeqCst);
-                    (count > 0).then_some((*cat, count))
-                })
-                .collect();
+    /// Spawn new tasks up to the (autoscale-aware) concurrency limit.
+    ///
+    /// The scheduler checks the limit before popping and skips URLs that
+    /// were already visited, marking each handed-out URL as visited.
+    fn spawn_available_tasks(
+        scheduler: &mut CrawlScheduler,
+        tasks: &mut tokio::task::JoinSet<Result<(), CrawlError>>,
+        task_ctx: &Arc<CrawlTaskCtx>,
+    ) {
+        while let Some(discovered_url) = scheduler.next_url(tasks.len()) {
+            // Spawn task — single Arc clone instead of 18 individual clones
+            let task_ctx = Arc::clone(task_ctx);
+            tasks.spawn(
+                async move { run_crawl_task(task_ctx, discovered_url).await }.in_current_span(),
+            );
+        }
+    }
 
-        // Structured crawl summary (issue #356 Fase 4, error breakdown #374)
+    /// Wait for one task when no more can be spawned, bounded so a wedged
+    /// worker cannot hang the loop (#509).
+    async fn wait_for_task(
+        &self,
+        tasks: &mut tokio::task::JoinSet<Result<(), CrawlError>>,
+        worker_wait_bound: Duration,
+    ) {
+        if !self.scheduler.can_spawn(tasks.len()) && self.scheduler.has_pending_work() {
+            match tokio::time::timeout(worker_wait_bound, tasks.join_next()).await {
+                Ok(Some(result)) => {
+                    handle_crawl_result(result, &self.error_count, &self.error_breakdown);
+                },
+                Ok(None) => {},
+                Err(_elapsed) => {
+                    warn!(
+                        bound_secs = worker_wait_bound.as_secs(),
+                        "worker wait exceeded bound — re-checking engine state"
+                    );
+                },
+            }
+        }
+    }
+
+    /// Build the per-category error breakdown map (issue #374).
+    fn collect_error_breakdown(&self) -> std::collections::BTreeMap<CrawlErrorCategory, usize> {
+        CrawlErrorCategory::ALL
+            .iter()
+            .filter_map(|cat| {
+                let count =
+                    self.error_breakdown[cat.index()].load(std::sync::atomic::Ordering::SeqCst);
+                (count > 0).then_some((*cat, count))
+            })
+            .collect()
+    }
+
+    /// Emit the structured crawl summary (issue #356 Fase 4, error breakdown #374).
+    fn log_crawl_summary(&self, total_pages: usize, errors: usize, start: std::time::Instant) {
         let duration = start.elapsed();
         let succeeded = total_pages.saturating_sub(errors);
         let summary_rate = if duration.as_secs_f64() > 0.0 {
@@ -641,13 +744,6 @@ impl Engine {
             trace_id = %self.correlation_id.trace_id(),
             "crawl completed"
         );
-
-        Ok(CrawlResult::new(
-            collected_urls,
-            total_pages,
-            errors,
-            breakdown,
-        ))
     }
 
     /// Drain spawned tasks with a bounded wait, aborting any stragglers so a

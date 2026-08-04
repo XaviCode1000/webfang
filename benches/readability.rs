@@ -91,7 +91,8 @@ should know, including indexing, slicing, reshaping, and broadcasting.</p>
         .to_string()
 }
 
-fn complex_layout_html() -> String {
+/// Head of the complex-layout HTML fixture: document, header, nav, breadcrumb.
+fn complex_layout_head() -> String {
     r##"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -113,7 +114,13 @@ fn complex_layout_html() -> String {
 <div class="breadcrumb">
     <a href="/">Home</a> &gt; <a href="/blog">Blog</a> &gt; <span>Post</span>
 </div>
-<div class="layout">
+"##
+    .to_string()
+}
+
+/// Main content of the complex-layout fixture: layout, sidebars, article.
+fn complex_layout_main() -> String {
+    r##"<div class="layout">
     <aside class="left-sidebar">
         <div class="table-of-contents">
             <h3>Contents</h3>
@@ -195,7 +202,13 @@ thiserror = "1"</code></pre>
         </div>
     </article>
 </div>
-<div class="comments-section">
+"##
+    .to_string()
+}
+
+/// Tail of the complex-layout fixture: comments, footer, closing tags.
+fn complex_layout_tail() -> String {
+    r##"<div class="comments-section">
     <h3>Comments (5)</h3>
     <div class="comment">
         <span class="commenter">Alice</span>
@@ -212,6 +225,15 @@ thiserror = "1"</code></pre>
 </body>
 </html>"##
         .to_string()
+}
+
+fn complex_layout_html() -> String {
+    format!(
+        "{}{}{}",
+        complex_layout_head(),
+        complex_layout_main(),
+        complex_layout_tail()
+    )
 }
 
 fn bench_readability(c: &mut Criterion) {

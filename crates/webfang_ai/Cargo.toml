@@ -29,7 +29,6 @@ crossbeam-channel = { workspace = true }
 
 # Utilities
 sha2 = { workspace = true }
-anyhow = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 futures = { workspace = true }
@@ -42,6 +41,9 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 futures = { workspace = true }
 uuid = { workspace = true }
 webfang_test_utils = { workspace = true }
+# Used by doctests (docs examples return anyhow::Result); cargo-machete does
+# not scan dev-dependencies, so this does not reappear as "unused".
+anyhow = { workspace = true }
 
 
 

@@ -7,6 +7,7 @@ use tracing::{error, info, instrument};
 #[cfg(not(feature = "ai"))]
 use tracing::warn;
 
+use crate::application::batch::{BatchManager, BatchManagerSummary};
 use crate::application::crawl_options::CrawlOptions;
 use crate::cli::elastic::{build_elastic_ingestion, run_elastic_ingestion};
 use crate::cli::error::CliExit;
@@ -472,58 +473,19 @@ fn scraper_failure_for_internal_fatal(
 
 /// Run batch processing mode: crawl multiple URLs from stdin or file
 async fn run_batch(opts: CrawlOptions) -> CliExit {
-    use crate::application::batch::BatchManager;
-    use crate::domain::CrawlerConfig;
-
     // Resolve the TLS/H2 fingerprint once so the batch crawl engine honors
     // `--h2-profile` (#312). An unknown profile is a config error (exit 78),
     // matching the scrape phase — never silently crawl with a wrong fingerprint.
-    let tls_emulation = match HttpClientConfig::profile_from_name(&opts.network.h2_profile) {
+    let tls_emulation = match resolve_batch_tls_emulation(&opts) {
         Ok(profile) => profile,
-        Err(e) => return CliExit::ConfigError(e.to_string()),
+        Err(e) => return e,
     };
 
-    let mut crawler_config = CrawlerConfig::builder(opts.url.clone())
-        .max_pages(opts.crawl.max_pages)
-        .max_depth(opts.crawl.max_depth)
-        .include_patterns(opts.crawl.include_patterns.clone())
-        .exclude_patterns(opts.crawl.exclude_patterns.clone())
-        .ignore_robots(opts.crawl.ignore_robots)
-        .use_sitemap(opts.crawl.use_sitemap)
-        .timeout_secs(opts.network.timeout_secs)
-        .tls_emulation(tls_emulation);
-    if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
-        crawler_config = crawler_config.sitemap_url(sitemap_url);
-    }
-    let crawler_config = crawler_config.build();
+    let crawler_config = build_batch_crawler_config(&opts, tls_emulation);
 
-    let manager_result = if let Some(ref path) = opts.batch.batch_file {
-        info!("Reading URLs from file: {}", path.display());
-        BatchManager::from_file(path, crawler_config, opts.batch.concurrency)
-    } else {
-        info!("Reading URLs from stdin");
-        // spawn_blocking: stdin read is blocking I/O that must not run on the
-        // Tokio async runtime thread pool — it would block other tasks.
-        let concurrency = opts.batch.concurrency;
-        match tokio::task::spawn_blocking(move || {
-            BatchManager::from_stdin(crawler_config, concurrency)
-        })
-        .await
-        {
-            Ok(result) => result,
-            Err(join_err) => {
-                error!(error = %join_err, "stdin read task panicked");
-                return CliExit::NetworkError(format!("Failed to read URLs: {join_err}"));
-            },
-        }
-    };
-
-    let manager = match manager_result {
+    let manager = match load_batch_manager(&opts, crawler_config).await {
         Ok(m) => m,
-        Err(e) => {
-            error!(error = %e, "Failed to read URLs");
-            return CliExit::NetworkError(format!("Failed to read URLs: {e}"));
-        },
+        Err(e) => return e,
     };
 
     if manager.job_count() == 0 {
@@ -539,6 +501,13 @@ async fn run_batch(opts: CrawlOptions) -> CliExit {
 
     let summary = manager.process_all_summary().await;
 
+    log_batch_summary(&summary);
+
+    batch_exit_code(summary.succeeded, summary.failed, &summary.errors)
+}
+
+/// Print the batch completion summary and log each failed URL.
+fn log_batch_summary(summary: &BatchManagerSummary) {
     println!(
         "Batch complete: {}/{} succeeded, {} failed",
         summary.succeeded, summary.total_urls, summary.failed
@@ -547,8 +516,75 @@ async fn run_batch(opts: CrawlOptions) -> CliExit {
     for (url, err) in &summary.errors {
         error!(%url, error = %err, "Batch URL failed");
     }
+}
 
-    batch_exit_code(summary.succeeded, summary.failed, &summary.errors)
+/// Resolve the TLS/H2 fingerprint for the batch crawl engine.
+///
+/// An unknown profile is a config error (exit 78), matching the scrape phase —
+/// never silently crawl with a wrong fingerprint (#312).
+fn resolve_batch_tls_emulation(opts: &CrawlOptions) -> Result<wreq_util::Profile, CliExit> {
+    HttpClientConfig::profile_from_name(&opts.network.h2_profile)
+        .map_err(|e| CliExit::ConfigError(e.to_string()))
+}
+
+/// Build the crawler config for the batch engine, honoring `--h2-profile`.
+fn build_batch_crawler_config(
+    opts: &CrawlOptions,
+    tls_emulation: wreq_util::Profile,
+) -> CrawlerConfig {
+    let mut crawler_config = CrawlerConfig::builder(opts.url.clone())
+        .max_pages(opts.crawl.max_pages)
+        .max_depth(opts.crawl.max_depth)
+        .include_patterns(opts.crawl.include_patterns.clone())
+        .exclude_patterns(opts.crawl.exclude_patterns.clone())
+        .ignore_robots(opts.crawl.ignore_robots)
+        .use_sitemap(opts.crawl.use_sitemap)
+        .timeout_secs(opts.network.timeout_secs)
+        .tls_emulation(tls_emulation);
+    if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
+        crawler_config = crawler_config.sitemap_url(sitemap_url);
+    }
+    crawler_config.build()
+}
+
+/// Load the batch manager from a file or stdin.
+async fn load_batch_manager(
+    opts: &CrawlOptions,
+    crawler_config: CrawlerConfig,
+) -> Result<BatchManager, CliExit> {
+    if let Some(ref path) = opts.batch.batch_file {
+        info!("Reading URLs from file: {}", path.display());
+        BatchManager::from_file(path, crawler_config, opts.batch.concurrency).map_err(|e| {
+            error!(error = %e, "Failed to read URLs");
+            CliExit::NetworkError(format!("Failed to read URLs: {e}"))
+        })
+    } else {
+        info!("Reading URLs from stdin");
+        load_batch_manager_from_stdin(crawler_config, opts.batch.concurrency).await
+    }
+}
+
+/// Read batch URLs from stdin on a blocking thread.
+async fn load_batch_manager_from_stdin(
+    crawler_config: CrawlerConfig,
+    concurrency: usize,
+) -> Result<BatchManager, CliExit> {
+    // spawn_blocking: stdin read is blocking I/O that must not run on the
+    // Tokio async runtime thread pool — it would block other tasks.
+    match tokio::task::spawn_blocking(move || BatchManager::from_stdin(crawler_config, concurrency))
+        .await
+    {
+        Ok(result) => result.map_err(|e| {
+            error!(error = %e, "Failed to read URLs");
+            CliExit::NetworkError(format!("Failed to read URLs: {e}"))
+        }),
+        Err(join_err) => {
+            error!(error = %join_err, "stdin read task panicked");
+            Err(CliExit::NetworkError(format!(
+                "Failed to read URLs: {join_err}"
+            )))
+        },
+    }
 }
 
 /// Determine the CLI exit code from batch scrape results.

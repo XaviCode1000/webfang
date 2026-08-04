@@ -272,3 +272,176 @@ mod tests {
         assert!(classify("https://example.com:8080/a", "example.com"));
     }
 }
+
+#[cfg(test)]
+mod handler_tests {
+    use super::*;
+    use crate::mcp_server::state::McpState;
+    use rmcp::handler::server::wrapper::Parameters;
+    use rmcp::model::CallToolResult;
+    use tempfile::TempDir;
+    use webfang_core::di::Container;
+    use webfang_core::domain::CrawlerConfig;
+    use webfang_core::infrastructure::config::ScraperConfig;
+
+    async fn test_handler() -> (McpHandler, TempDir) {
+        let tmp = TempDir::new().expect("create temp dir");
+        let crawler_config =
+            CrawlerConfig::new(url::Url::parse("https://example.com").expect("valid url"));
+        let scraper_config = ScraperConfig {
+            output_dir: tmp.path().to_path_buf(),
+            ..Default::default()
+        };
+        let container = Container::new(crawler_config, scraper_config)
+            .await
+            .expect("create container");
+        let state = McpState::new(container);
+        (McpHandler::new(state), tmp)
+    }
+
+    fn result_text(result: &CallToolResult) -> String {
+        serde_json::to_value(result)
+            .ok()
+            .and_then(|v| v.get("content").and_then(|c| c.as_array()).cloned())
+            .and_then(|arr| arr.first().cloned())
+            .and_then(|first| {
+                first
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn validate_url_valid() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .validate_url(Parameters(ValidateUrlParams {
+                url: "https://example.com/path?q=1".to_string(),
+            }))
+            .await
+            .expect("validate_url returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("\"valid\": true"),
+            "valid url flagged: {text}"
+        );
+        assert!(text.contains("example.com"), "host extracted: {text}");
+    }
+
+    #[tokio::test]
+    async fn validate_url_invalid() {
+        let (handler, _tmp) = test_handler().await;
+        // Params validation (#512) rejects unparseable URLs up front.
+        let res = handler
+            .validate_url(Parameters(ValidateUrlParams {
+                url: "not a url".to_string(),
+            }))
+            .await;
+        assert!(
+            res.is_err(),
+            "invalid URL must be a protocol error, got: {res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_domain_valid() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .extract_domain(Parameters(ExtractDomainParams {
+                url: "https://www.example.com/x".to_string(),
+            }))
+            .await
+            .expect("extract_domain returns Ok");
+        let text = result_text(&res);
+        assert_eq!(text, "www.example.com", "domain extracted: {text}");
+    }
+
+    #[tokio::test]
+    async fn extract_domain_invalid_is_invalid_params() {
+        let (handler, _tmp) = test_handler().await;
+        // Params validation (#512) rejects unparseable URLs up front.
+        let res = handler
+            .extract_domain(Parameters(ExtractDomainParams {
+                url: "not a url".to_string(),
+            }))
+            .await;
+        assert!(
+            res.is_err(),
+            "invalid URL must be a protocol error, got: {res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn normalize_url_valid() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .normalize_url(Parameters(NormalizeUrlParams {
+                url: "https://example.com/a/b/#frag".to_string(),
+            }))
+            .await
+            .expect("normalize_url returns Ok");
+        let text = result_text(&res);
+        assert!(!text.contains("#frag"), "fragment must be stripped: {text}");
+    }
+
+    #[tokio::test]
+    async fn normalize_url_invalid_no_scheme_is_invalid_params() {
+        let (handler, _tmp) = test_handler().await;
+        // Params validation (#512) rejects URLs without a parseable scheme.
+        let res = handler
+            .normalize_url(Parameters(NormalizeUrlParams {
+                url: "example.com".to_string(),
+            }))
+            .await;
+        assert!(
+            res.is_err(),
+            "URL without scheme must be a protocol error, got: {res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn match_url_pattern_true() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .match_url_pattern(Parameters(MatchUrlPatternParams {
+                url: "https://example.com/articles/1".to_string(),
+                pattern: "/articles/*".to_string(),
+            }))
+            .await
+            .expect("match_url_pattern returns Ok");
+        let text = result_text(&res);
+        assert_eq!(text, "true", "pattern should match: {text}");
+    }
+
+    #[tokio::test]
+    async fn is_internal_link_true() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .is_internal_link(Parameters(IsInternalLinkParams {
+                url: "https://example.com/x".to_string(),
+                seed_domain: "example.com".to_string(),
+            }))
+            .await
+            .expect("is_internal_link returns Ok");
+        let text = result_text(&res);
+        assert_eq!(text, "true", "internal link expected: {text}");
+    }
+
+    #[tokio::test]
+    async fn url_to_file_path_valid() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .url_to_file_path(Parameters(ValidateUrlParams {
+                url: "https://example.com/docs/page".to_string(),
+            }))
+            .await
+            .expect("url_to_file_path returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("example.com"),
+            "file path must include domain: {text}"
+        );
+    }
+}

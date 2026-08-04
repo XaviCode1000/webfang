@@ -28,29 +28,27 @@ fn sample_chunks(count: usize) -> Vec<ScrapedContent> {
         .collect()
 }
 
-fn bench_export(c: &mut Criterion) {
-    let chunks_100: Vec<_> = sample_chunks(100)
+fn sample_chunks_as_documents(count: usize) -> Vec<webfang_core::domain::DocumentChunk> {
+    sample_chunks(count)
         .into_iter()
         .map(|sc| {
             let chunk: webfang_core::domain::DocumentChunk = sc.into();
             chunk
         })
-        .collect();
-    let chunks_1000: Vec<_> = sample_chunks(1000)
-        .into_iter()
-        .map(|sc| {
-            let chunk: webfang_core::domain::DocumentChunk = sc.into();
-            chunk
-        })
-        .collect();
+        .collect()
+}
 
-    // JSONL export
+fn bench_jsonl_export(
+    c: &mut Criterion,
+    chunks_100: &[webfang_core::domain::DocumentChunk],
+    chunks_1000: &[webfang_core::domain::DocumentChunk],
+) {
     let mut group = c.benchmark_group("export_jsonl");
     group.throughput(Throughput::Elements(100));
     group.bench_function("serialize_100_chunks", |b| {
         b.iter(|| {
             let mut output = String::new();
-            for chunk in black_box(&chunks_100) {
+            for chunk in black_box(chunks_100) {
                 let line = serde_json::to_string(black_box(chunk)).unwrap();
                 output.push_str(&line);
                 output.push('\n');
@@ -64,7 +62,7 @@ fn bench_export(c: &mut Criterion) {
     group.bench_function("serialize_1000_chunks", |b| {
         b.iter(|| {
             let mut output = String::new();
-            for chunk in black_box(&chunks_1000) {
+            for chunk in black_box(chunks_1000) {
                 let line = serde_json::to_string(black_box(chunk)).unwrap();
                 output.push_str(&line);
                 output.push('\n');
@@ -74,8 +72,13 @@ fn bench_export(c: &mut Criterion) {
         })
     });
     group.finish();
+}
 
-    // Vector format export (with metadata wrapper)
+fn bench_vector_export(
+    c: &mut Criterion,
+    chunks_100: &[webfang_core::domain::DocumentChunk],
+    chunks_1000: &[webfang_core::domain::DocumentChunk],
+) {
     let mut vec_group = c.benchmark_group("export_vector");
     vec_group.throughput(Throughput::Elements(100));
     vec_group.bench_function("serialize_vector_100", |b| {
@@ -83,7 +86,7 @@ fn bench_export(c: &mut Criterion) {
             let wrapper = serde_json::json!({
                 "format": "vector",
                 "version": "1.0",
-                "chunks": black_box(&chunks_100).iter().map(|c| {
+                "chunks": black_box(chunks_100).iter().map(|c| {
                     serde_json::json!({
                         "id": c.id,
                         "url": c.url,
@@ -106,7 +109,7 @@ fn bench_export(c: &mut Criterion) {
             let wrapper = serde_json::json!({
                 "format": "vector",
                 "version": "1.0",
-                "chunks": black_box(&chunks_1000).iter().map(|c| {
+                "chunks": black_box(chunks_1000).iter().map(|c| {
                     serde_json::json!({
                         "id": c.id,
                         "url": c.url,
@@ -123,8 +126,9 @@ fn bench_export(c: &mut Criterion) {
         })
     });
     vec_group.finish();
+}
 
-    // Deserialization benchmark
+fn bench_deserialize(c: &mut Criterion, chunks_1000: &[webfang_core::domain::DocumentChunk]) {
     let jsonl_data: String = chunks_1000
         .iter()
         .map(|c| serde_json::to_string(c).unwrap())
@@ -145,6 +149,15 @@ fn bench_export(c: &mut Criterion) {
         })
     });
     deser_group.finish();
+}
+
+fn bench_export(c: &mut Criterion) {
+    let chunks_100 = sample_chunks_as_documents(100);
+    let chunks_1000 = sample_chunks_as_documents(1000);
+
+    bench_jsonl_export(c, &chunks_100, &chunks_1000);
+    bench_vector_export(c, &chunks_100, &chunks_1000);
+    bench_deserialize(c, &chunks_1000);
 }
 
 criterion_group!(benches, bench_export);

@@ -252,68 +252,81 @@ impl CheckpointStore for BincodeCheckpoint {
 
     #[instrument(skip(self), fields(path = %path.display()))]
     fn load(&self, path: &Path) -> Option<CrawlCheckpoint> {
-        let data = match std::fs::read(path) {
-            Ok(d) => d,
-            Err(e) => {
-                debug!("checkpoint file not readable: {e}");
-                return None;
-            },
-        };
+        let data = read_checkpoint_bytes(path)?;
+        verify_and_parse_checkpoint(&data, path)
+    }
+}
 
-        // Need at least 4 bytes for CRC32 header
-        if data.len() < 4 {
-            warn!("checkpoint file too small ({} bytes)", data.len());
+/// Read the raw checkpoint file, returning `None` when it is missing or too
+/// small to contain the 4-byte CRC32 header.
+fn read_checkpoint_bytes(path: &Path) -> Option<Vec<u8>> {
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(e) => {
+            debug!("checkpoint file not readable: {e}");
             return None;
+        },
+    };
+
+    if data.len() < 4 {
+        warn!("checkpoint file too small ({} bytes)", data.len());
+        return None;
+    }
+
+    Some(data)
+}
+
+/// Verify the CRC32 header and deserialize the payload, falling back to the
+/// legacy pure-JSON schema when the checksum does not match.
+fn verify_and_parse_checkpoint(data: &[u8], path: &Path) -> Option<CrawlCheckpoint> {
+    let stored_checksum = u32::from_ne_bytes([data[0], data[1], data[2], data[3]]);
+    let payload = &data[4..];
+    let computed_checksum = crc32fast::hash(payload);
+
+    if stored_checksum != computed_checksum {
+        if let Some(state) = migrate_legacy_checkpoint(data, path) {
+            return Some(state);
         }
+        warn!(
+            "checkpoint CRC32 mismatch: stored={:#x}, computed={:#x}",
+            stored_checksum, computed_checksum
+        );
+        return None;
+    }
 
-        // Extract stored checksum (first 4 bytes)
-        let stored_checksum = u32::from_ne_bytes([data[0], data[1], data[2], data[3]]);
+    deserialize_checkpoint(payload, path)
+}
 
-        // Compute CRC32 of the payload (bytes after header)
-        let payload = &data[4..];
-        let computed_checksum = crc32fast::hash(payload);
+/// Try to read a legacy pure-JSON checkpoint (no CRC32 header), returning
+/// `None` when `data` is not a valid legacy checkpoint.
+fn migrate_legacy_checkpoint(data: &[u8], path: &Path) -> Option<CrawlCheckpoint> {
+    let old = serde_json::from_slice::<OldCheckpointSchema>(data).ok()?;
+    info!(
+        "migrated old-format checkpoint: {} (visited={}, pages={})",
+        path.display(),
+        old.visited.len(),
+        old.pages_crawled
+    );
+    Some(old.into())
+}
 
-        // Verify integrity
-        if stored_checksum != computed_checksum {
-            // CRC mismatch — try old-format fallback (pure JSON, no CRC32 header).
-            // Old JSON starts with `{` (0x7B), which is never a valid CRC32+JSON combo.
-            if let Ok(old) = serde_json::from_slice::<OldCheckpointSchema>(&data) {
-                info!(
-                    "migrated old-format checkpoint: {} (visited={}, pages={})",
-                    path.display(),
-                    old.visited.len(),
-                    old.pages_crawled
-                );
-                return Some(old.into());
-            }
-
-            warn!(
-                "checkpoint CRC32 mismatch: stored={:#x}, computed={:#x}",
-                stored_checksum, computed_checksum
+/// Deserialize a CRC32-verified payload, logging a warning on failure.
+fn deserialize_checkpoint(payload: &[u8], path: &Path) -> Option<CrawlCheckpoint> {
+    match serde_json::from_slice::<CrawlCheckpoint>(payload) {
+        Ok(state) => {
+            info!(
+                "checkpoint loaded: {} (visited={}, queued={}, pages={})",
+                path.display(),
+                state.visited.len(),
+                state.queued.len(),
+                state.pages_crawled
             );
-
-            return None;
-        }
-
-        // Deserialize from JSON
-        match serde_json::from_slice::<CrawlCheckpoint>(payload) {
-            Ok(state) => {
-                info!(
-                    "checkpoint loaded: {} (visited={}, queued={}, pages={})",
-                    path.display(),
-                    state.visited.len(),
-                    state.queued.len(),
-                    state.pages_crawled
-                );
-
-                Some(state)
-            },
-            Err(e) => {
-                warn!("checkpoint deserialization failed: {e}");
-
-                None
-            },
-        }
+            Some(state)
+        },
+        Err(e) => {
+            warn!("checkpoint deserialization failed: {e}");
+            None
+        },
     }
 }
 

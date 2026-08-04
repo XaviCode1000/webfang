@@ -8,6 +8,16 @@
 //! `search_obsidian` requires `embedding_port`, `note_repository`, and
 //! `text_chunker` to be injected (#386); without them it returns an honest
 //! feature-gated error.
+//!
+//! ## Test-coverage exception (issue #516, task 4)
+//! The success paths of both handlers require the ONNX semantic-cleaning
+//! model (`--features ai`) and call ports whose traits (`SemanticCleaner`,
+//! `EmbeddingPort`, `NoteRepository`, `TextChunker`) are sealed to
+//! `webfang_core`, so no stub can be injected from this crate's unit tests.
+//! Only the model-free error/validation branches are therefore unit-tested,
+//! which leaves `ai.rs` at ~65% line coverage. It is **intentionally exempt**
+//! from the ≥70% per-handler line-coverage gate. The model-dependent paths are
+//! exercised by the integration harness under the `ai` feature.
 
 use super::McpHandler;
 use crate::mcp_server::params::*;
@@ -231,6 +241,13 @@ pub fn build_router() -> ToolRouter<McpHandler> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp_server::state::McpState;
+    use rmcp::handler::server::wrapper::Parameters;
+    use rmcp::model::CallToolResult;
+    use tempfile::TempDir;
+    use webfang_core::di::Container;
+    use webfang_core::domain::CrawlerConfig;
+    use webfang_core::infrastructure::config::ScraperConfig;
 
     /// REQ-02/04 contract: `honest_error` produces a `CallToolResult` that
     /// serializes with `isError:true` and carries the exact Spanish text —
@@ -259,5 +276,111 @@ mod tests {
             text.contains("funcionalidad no disponible"),
             "honest Spanish error text expected, got: {text}"
         );
+    }
+
+    /// Build a default handler (no cleaner / embedding ports injected) backed by
+    /// a real DI container. The `ai` feature is off in unit tests, so the
+    /// cleaner and embedding ports are `None` — exactly the branch these tests
+    /// exercise (honest feature-gated errors, no ONNX model needed).
+    async fn test_handler() -> (McpHandler, TempDir) {
+        let tmp = TempDir::new().expect("create temp dir");
+        let crawler_config =
+            CrawlerConfig::new(url::Url::parse("https://example.com").expect("valid url"));
+        let scraper_config = ScraperConfig {
+            output_dir: tmp.path().to_path_buf(),
+            ..Default::default()
+        };
+        let container = Container::new(crawler_config, scraper_config)
+            .await
+            .expect("create container");
+        (McpHandler::new(McpState::new(container)), tmp)
+    }
+
+    fn result_text(result: &CallToolResult) -> String {
+        serde_json::to_value(result)
+            .ok()
+            .and_then(|v| v.get("content").and_then(|c| c.as_array()).cloned())
+            .and_then(|arr| arr.first().cloned())
+            .and_then(|first| {
+                first
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default()
+    }
+
+    /// REQ-03: a malformed URL must be rejected with `McpError::invalid_params`
+    /// before any fetch/clean — no honest-error envelope, a real protocol error.
+    #[tokio::test]
+    async fn semantic_cleaner_invalid_url_is_invalid_params() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .semantic_cleaner(Parameters(ScrapeUrlParams {
+                url: "not a url".to_string(),
+            }))
+            .await;
+        assert!(
+            res.is_err(),
+            "invalid URL must return McpError, got: {res:?}"
+        );
+    }
+
+    /// REQ-02: a valid URL with no cleaner injected (ai feature off) maps to an
+    /// honest Spanish `isError:true` envelope — never a false success.
+    #[tokio::test]
+    async fn semantic_cleaner_no_cleaner_is_honest_feature_error() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .semantic_cleaner(Parameters(ScrapeUrlParams {
+                url: "https://example.com/article".to_string(),
+            }))
+            .await
+            .expect("semantic_cleaner returns Ok with honest error");
+        let json = serde_json::to_value(&res).expect("CallToolResult serializes");
+        assert_eq!(
+            json.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "missing cleaner must set isError:true, got: {json}"
+        );
+        let text = result_text(&res);
+        assert!(
+            text.contains("--features ai") && text.contains("limpieza semántica"),
+            "Spanish feature-gated message expected, got: {text}"
+        );
+    }
+
+    /// `search_obsidian` with no embedding port injected maps to an honest
+    /// Spanish `isError:true` envelope (feature-gated path).
+    #[tokio::test]
+    async fn search_obsidian_no_embedding_is_honest_feature_error() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .search_obsidian(Parameters(SearchObsidianParams {
+                query: "rust async".to_string(),
+                vault_path: None,
+                limit: None,
+            }))
+            .await
+            .expect("search_obsidian returns Ok with honest error");
+        let json = serde_json::to_value(&res).expect("CallToolResult serializes");
+        assert_eq!(
+            json.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "missing embedding port must set isError:true, got: {json}"
+        );
+        let text = result_text(&res);
+        assert!(
+            text.contains("--features ai") && text.contains("búsqueda semántica"),
+            "Spanish feature-gated message expected, got: {text}"
+        );
+    }
+
+    /// `build_router` returns the AI-tool partial router without panicking.
+    #[test]
+    fn build_router_returns_ai_router() {
+        let router = build_router();
+        // Non-ZST assert keeps the value live and confirms the function ran.
+        assert!(std::mem::size_of_val(&router) > 0);
     }
 }

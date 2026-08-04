@@ -161,6 +161,7 @@ pub fn domain_of(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -323,9 +324,12 @@ mod tests {
     /// REQ-09: each record emits ONE structured tracing event carrying
     /// tool/domain/success/duration_ms/pages (English field names/values).
     ///
-    /// Zero new deps: a manual capturing [`Layer`] is installed via a SCOPED
-    /// `with_default` subscriber (no global state → parallel-test safe).
+    /// Captures via a SCOPED `with_default` subscriber (no global state).
+    /// `#[serial]` keeps this test exclusive under `cargo test` (libtest runs
+    /// tests on shared threads; nextest isolates per process, cargo test does
+    /// not) so the capturing subscriber can never be shadowed by another test.
     #[test]
+    #[serial]
     fn record_emits_structured_tracing_event() {
         use tracing::field::{Field, Visit};
         use tracing_subscriber::layer::Layer;

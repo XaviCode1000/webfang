@@ -77,24 +77,9 @@ impl UserAgentCache {
     /// Same as [`load()`](Self::load) but uses the given profile for the HTTP client
     /// when fetching fresh agents from the API.
     pub async fn load_with_profile(profile: Profile) -> Vec<String> {
-        let current_year = Utc::now().year();
-
-        // Try load from cache
-        if let Ok(cache) = Self::load_from_cache() {
-            // Chrome 120 = 2023, Chrome 131 = 2025, Chrome 132 = 2026
-            // Formula: chrome_year = 2023 + (chrome_version - 120)
-            let cache_chrome_year = 2023 + (cache.chrome_version - 120) as i32;
-
-            // Cache valid if <= 1 year old
-            if cache_chrome_year >= current_year - 1 {
-                tracing::info!("Using cached user agents (Chrome {})", cache.chrome_version);
-                return cache.agents;
-            }
-
-            tracing::warn!(
-                "Cached user agents outdated (Chrome {}), fetching fresh...",
-                cache.chrome_version
-            );
+        // Fresh cache hit short-circuits the network fetch.
+        if let Some(agents) = Self::fresh_cached_agents() {
+            return agents;
         }
 
         // Fetch fresh
@@ -104,6 +89,29 @@ impl UserAgentCache {
                 tracing::warn!("Failed to fetch user agents: {}", e);
                 Self::fallback_agents()
             },
+        }
+    }
+
+    /// Return cached user agents when the cache is fresh (Chrome version
+    /// within one year of the current date); `None` when the cache is stale,
+    /// missing, or unreadable.
+    ///
+    /// Chrome-version → calendar-year mapping: Chrome 120 = 2023,
+    /// Chrome 131 = 2025, Chrome 132 = 2026
+    /// (`chrome_year = 2023 + (chrome_version - 120)`).
+    fn fresh_cached_agents() -> Option<Vec<String>> {
+        let cache = Self::load_from_cache().ok()?;
+        let cache_chrome_year = 2023 + (cache.chrome_version - 120) as i32;
+        let current_year = Utc::now().year();
+        if cache_chrome_year >= current_year - 1 {
+            tracing::info!("Using cached user agents (Chrome {})", cache.chrome_version);
+            Some(cache.agents)
+        } else {
+            tracing::warn!(
+                "Cached user agents outdated (Chrome {}), fetching fresh...",
+                cache.chrome_version
+            );
+            None
         }
     }
 

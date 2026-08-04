@@ -185,11 +185,68 @@ pub async fn main() -> CliExit {
 }
 
 async fn __main() -> CliExit {
-    // =========================================================================
     // 1. Parse CLI arguments
-    // =========================================================================
-    let mut args = match Args::try_parse() {
+    let mut args = match parse_args() {
         Ok(args) => args,
+        Err(exit) => return exit,
+    };
+
+    // 1b. Merge positional URL into --url (positional is syntactic sugar)
+    if let Some(pos_url) = args.positional_url.take() {
+        args.crawler.url = Some(pos_url);
+    }
+
+    // 2. Handle subcommands (completions)
+    if let Some(Commands::Completions { shell }) = args.subcommand {
+        return orchestrator::handle_completions(shell);
+    }
+
+    // 3. Unified TUI mode (if --tui flag is set)
+    match handle_tui_mode(args).await {
+        Ok(updated) => args = updated,
+        Err(exit) => return exit,
+    }
+
+    // 4. URL handling with interactive wizard
+    if let Err(exit) = resolve_url(&mut args).await {
+        return exit;
+    }
+
+    // 5. Load config file (graceful: missing file = defaults)
+    let config_path = resolve_config_path();
+    let config_defaults = ConfigDefaults::load(&config_path);
+
+    // 5b. Validate URL before conversion (CrawlOptions::from panics on invalid URL)
+    if let Some(ref url_str) = args.crawler.url {
+        if url::Url::parse(url_str).is_err() {
+            return CliExit::UsageError(format!("Invalid URL: {url_str}"));
+        }
+    }
+
+    // 6. Extract trace_file before args is moved into CrawlOptions
+    let trace_file = args.crawler.trace_file.take();
+
+    // 6b. Convert Args → CrawlOptions and apply config file defaults
+    let opts = CrawlOptions::from(args);
+    let opts = preflight::apply_config_defaults(opts, &config_defaults);
+
+    // 7. Initialize logging (stderr-only, respects quiet + NO_COLOR)
+    let no_color = is_no_color();
+    let log_level = resolve_log_level(opts.verbosity);
+    let file_trace_layer = build_file_trace_layer(trace_file);
+
+    // Initialize logging (stderr + optional JSONL file trace layer)
+    #[allow(clippy::let_unit_value)]
+    let _guard = init_logging_dual(log_level, opts.export.quiet, no_color, file_trace_layer);
+
+    // 8. Build optional engines and delegate to orchestrator
+    build_and_run(opts).await
+}
+
+/// Parse CLI arguments, translating clap's help/version/error cases into exits.
+fn parse_args() -> Result<Args, CliExit> {
+    match Args::try_parse() {
+        Ok(args) => Ok(args),
         Err(e) => {
             // clap returns DisplayHelp/DisplayVersion for --help/--version
             // These are NOT errors — print and exit 0
@@ -197,161 +254,140 @@ async fn __main() -> CliExit {
                 || e.kind() == clap::error::ErrorKind::DisplayVersion
             {
                 e.print().ok();
-                return CliExit::Success;
+                return Err(CliExit::Success);
             }
             eprintln!("{e}");
-            return CliExit::UsageError("invalid arguments".into());
+            Err(CliExit::UsageError("invalid arguments".into()))
         },
-    };
-
-    // =========================================================================
-    // 1b. Merge positional URL into --url (positional is syntactic sugar)
-    // =========================================================================
-    if let Some(pos_url) = args.positional_url.take() {
-        args.crawler.url = Some(pos_url);
     }
+}
 
-    // =========================================================================
-    // 2. Handle subcommands (completions)
-    // =========================================================================
-    if let Some(Commands::Completions { shell }) = args.subcommand {
-        return orchestrator::handle_completions(shell);
-    }
-
-    // =========================================================================
-    // 3. Unified TUI mode (if --tui flag is set)
-    // =========================================================================
-    #[cfg(feature = "ui")]
-    {
-        if args.tui.tui {
-            // Run unified TUI: config form → URL selector → scraping
-            let tui_result = run_unified_tui().await;
-            match tui_result {
-                Ok(Some(config_values)) => {
-                    // Apply TUI config values to args (overrides CLI values)
-                    args = preflight::apply_tui_config_args(args, &config_values);
-                    println!("Config applied from TUI.");
-                },
-                Ok(None) => {
-                    println!("TUI cancelled.");
-                    return CliExit::Success;
-                },
-                Err(e) => {
-                    return e;
-                },
-            }
-        } else if args.tui.config_tui || args.tui.interactive {
-            // [DEPRECATED] Legacy flags — redirect to unified TUI
-            if args.tui.config_tui {
-                eprintln!("Warning: --config-tui is deprecated, use --tui instead. Will be removed in v0.6.0");
-            } else {
-                eprintln!("Warning: --interactive is deprecated, use --tui instead. Will be removed in v0.6.0");
-            }
-            let tui_result = run_unified_tui().await;
-            match tui_result {
-                Ok(Some(config_values)) => {
-                    args = preflight::apply_tui_config_args(args, &config_values);
-                },
-                Ok(None) => return CliExit::Success,
-                Err(e) => return e,
-            }
+/// Run the unified TUI (or reject it when the `ui` feature is off).
+///
+/// Returns the (possibly TUI-modified) args, or the `CliExit` to propagate —
+/// including `CliExit::Success` when the user cancels the TUI.
+#[cfg(feature = "ui")]
+async fn handle_tui_mode(mut args: Args) -> Result<Args, CliExit> {
+    if args.tui.tui {
+        // Run unified TUI: config form → URL selector → scraping
+        let tui_result = run_unified_tui().await;
+        match tui_result {
+            Ok(Some(config_values)) => {
+                // Apply TUI config values to args (overrides CLI values)
+                args = preflight::apply_tui_config_args(args, &config_values);
+                println!("Config applied from TUI.");
+            },
+            Ok(None) => {
+                println!("TUI cancelled.");
+                return Err(CliExit::Success);
+            },
+            Err(e) => return Err(e),
+        }
+    } else if args.tui.config_tui || args.tui.interactive {
+        // [DEPRECATED] Legacy flags — redirect to unified TUI
+        if args.tui.config_tui {
+            eprintln!(
+                "Warning: --config-tui is deprecated, use --tui instead. Will be removed in v0.6.0"
+            );
+        } else {
+            eprintln!("Warning: --interactive is deprecated, use --tui instead. Will be removed in v0.6.0");
+        }
+        let tui_result = run_unified_tui().await;
+        match tui_result {
+            Ok(Some(config_values)) => {
+                args = preflight::apply_tui_config_args(args, &config_values);
+            },
+            Ok(None) => return Err(CliExit::Success),
+            Err(e) => return Err(e),
         }
     }
-    // When `ui` is OFF, any TUI flag triggers a graceful Spanish error (spec S2.2).
-    #[cfg(not(feature = "ui"))]
+    Ok(args)
+}
+
+/// When `ui` is OFF, any TUI flag triggers a graceful Spanish error (spec S2.2).
+#[cfg(not(feature = "ui"))]
+async fn handle_tui_mode(args: Args) -> Result<Args, CliExit> {
     if args.tui.tui || args.tui.config_tui || args.tui.interactive {
         eprintln!("TUI no disponible: compilar con --features ui");
-        return CliExit::UsageError("TUI no disponible: compilar con --features ui".into());
+        return Err(CliExit::UsageError(
+            "TUI no disponible: compilar con --features ui".into(),
+        ));
     }
+    Ok(args)
+}
 
-    // =========================================================================
-    // 4. URL handling with interactive wizard
-    // =========================================================================
-
+/// Ensure a URL is present, prompting interactively when stdin is a TTY.
+async fn resolve_url(args: &mut Args) -> Result<(), CliExit> {
     // Batch mode reads URLs from stdin/file — --url is not required
     let is_batch = args.export.batch || args.export.batch_file.is_some();
 
-    // If no URL provided, check for interactive mode
-    if args.crawler.url.is_none() && !is_batch {
-        // CI environment always requires --url
-        if is_ci() {
-            eprintln!("Error: --url is required for scraping (CI mode)");
-            return CliExit::UsageError("--url is required".into());
-        }
-
-        // Try interactive prompt only if stdin is a TTY
-        if stdin_is_tty() {
-            #[cfg(feature = "ui")]
-            {
-                match prompt_for_url() {
-                    Ok(url) => {
-                        args.crawler.url = Some(url);
-                    },
-                    Err(_e) => {
-                        // Prompt failed (e.g., non-interactive), fall through to error
-                        eprintln!("Error: --url is required for scraping");
-                        return CliExit::UsageError("--url is required".into());
-                    },
-                }
-            }
-            #[cfg(not(feature = "ui"))]
-            {
-                // No inquire prompt available in headless builds — require --url explicitly.
-                eprintln!(
-                    "Error: --url is required for scraping (interactive prompt requires --features ui)"
-                );
-                return CliExit::UsageError("--url is required".into());
-            }
-        } else {
-            // Not a TTY and no URL provided
-            eprintln!("Error: --url is required for scraping");
-            return CliExit::UsageError("--url is required".into());
-        }
+    // If a URL is provided (or batch mode), nothing to resolve.
+    if args.crawler.url.is_some() || is_batch {
+        return Ok(());
     }
 
-    // =========================================================================
-    // 5. Load config file (graceful: missing file = defaults)
-    // =========================================================================
-    let config_path = dirs::config_dir()
+    // CI environment always requires --url
+    if is_ci() {
+        eprintln!("Error: --url is required for scraping (CI mode)");
+        return Err(CliExit::UsageError("--url is required".into()));
+    }
+
+    // Try interactive prompt only if stdin is a TTY
+    if stdin_is_tty() {
+        prompt_for_url_interactive(args)
+    } else {
+        // Not a TTY and no URL provided
+        eprintln!("Error: --url is required for scraping");
+        Err(CliExit::UsageError("--url is required".into()))
+    }
+}
+
+/// Prompt for a URL when stdin is a TTY and the `ui` feature is enabled.
+#[cfg(feature = "ui")]
+fn prompt_for_url_interactive(args: &mut Args) -> Result<(), CliExit> {
+    match prompt_for_url() {
+        Ok(url) => {
+            args.crawler.url = Some(url);
+            Ok(())
+        },
+        Err(_e) => {
+            // Prompt failed (e.g., non-interactive), fall through to error
+            eprintln!("Error: --url is required for scraping");
+            Err(CliExit::UsageError("--url is required".into()))
+        },
+    }
+}
+
+/// Headless builds have no inquire prompt — require --url explicitly.
+#[cfg(not(feature = "ui"))]
+fn prompt_for_url_interactive(_args: &mut Args) -> Result<(), CliExit> {
+    eprintln!("Error: --url is required for scraping (interactive prompt requires --features ui)");
+    Err(CliExit::UsageError("--url is required".into()))
+}
+
+/// Resolve the webfang config file path (graceful: missing file = defaults).
+fn resolve_config_path() -> std::path::PathBuf {
+    dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("webfang")
-        .join("config.toml");
-    let config_defaults = ConfigDefaults::load(&config_path);
+        .join("config.toml")
+}
 
-    // =========================================================================
-    // 5b. Validate URL before conversion (CrawlOptions::from panics on invalid URL)
-    // =========================================================================
-    if let Some(ref url_str) = args.crawler.url {
-        if url::Url::parse(url_str).is_err() {
-            return CliExit::UsageError(format!("Invalid URL: {url_str}"));
-        }
-    }
-
-    // =========================================================================
-    // 6. Extract trace_file and ai_model before args is moved into CrawlOptions
-    // =========================================================================
-    let trace_file = args.crawler.trace_file.take();
-
-    // =========================================================================
-    // 6b. Convert Args → CrawlOptions and apply config file defaults
-    // =========================================================================
-    let opts = CrawlOptions::from(args);
-    let opts = preflight::apply_config_defaults(opts, &config_defaults);
-
-    // =========================================================================
-    // 7. Initialize logging (stderr-only, respects quiet + NO_COLOR)
-    // =========================================================================
-    let no_color = is_no_color();
-    // L3 FIX: Map verbose count to tracing levels (0=WARN, 1=INFO, 2=DEBUG, 3+=TRACE)
-    let log_level = match opts.verbosity {
+/// Map verbosity count to tracing levels (0=WARN, 1=INFO, 2=DEBUG, 3+=TRACE).
+fn resolve_log_level(verbosity: u8) -> &'static str {
+    match verbosity {
         0 => "warn",
         1 => "info",
         2 => "debug",
         _ => "trace",
-    };
+    }
+}
 
-    // Create FileTraceLayer when --trace-file is present (always available, no feature gate)
-    let file_trace_layer = trace_file.and_then(|path| {
+/// Create FileTraceLayer when --trace-file is present (always available, no feature gate).
+fn build_file_trace_layer(
+    trace_file: Option<std::path::PathBuf>,
+) -> Option<webfang_core::infrastructure::observability::FileTraceLayer> {
+    trace_file.and_then(|path| {
         match webfang_core::infrastructure::observability::FileTraceLayer::new(path) {
             Ok(layer) => Some(layer),
             Err(e) => {
@@ -359,20 +395,16 @@ async fn __main() -> CliExit {
                 None
             },
         }
-    });
+    })
+}
 
-    // Initialize logging (stderr + optional JSONL file trace layer)
-    #[allow(clippy::let_unit_value)]
-    let _guard = init_logging_dual(log_level, opts.export.quiet, no_color, file_trace_layer);
-
-    // =========================================================================
-    // 8. Delegate to orchestrator
-    // =========================================================================
-    // Build the adaptive selector engine when the feature and flag are both
-    // active. Tier 1 (lexical) only — Tier 2 semantic repair would require the
-    // `ai` feature plus a GraniteDomInspector, so `semantic` is wired as None.
-    #[cfg(feature = "adaptive-selectors")]
-    let adaptive_engine: Option<Arc<AdaptiveSelectorEngine>> = if opts.adaptive_selectors {
+/// Build the adaptive selector engine when the feature and flag are both active.
+///
+/// Tier 1 (lexical) only — Tier 2 semantic repair would require the `ai` feature
+/// plus a GraniteDomInspector, so `semantic` is wired as None.
+#[cfg(feature = "adaptive-selectors")]
+fn build_adaptive_engine(opts: &CrawlOptions) -> Option<Arc<AdaptiveSelectorEngine>> {
+    if opts.adaptive_selectors {
         Some(Arc::new(AdaptiveSelectorEngine::new(
             Arc::new(DefaultDomInspector::new()),
             None,
@@ -380,78 +412,107 @@ async fn __main() -> CliExit {
         )))
     } else {
         None
-    };
+    }
+}
 
-    #[cfg(feature = "ai")]
-    let (ai_cleaner, vault_ports): (
+/// Build the AI semantic cleaner and its vault-search ports.
+#[cfg(feature = "ai")]
+async fn build_ai_cleaner(
+    opts: &CrawlOptions,
+) -> Result<
+    (
         Option<Arc<dyn SemanticCleaner>>,
         webfang_core::application::container::VaultAiPorts,
-    ) = if opts.ai && !opts.export.dry_run {
-        // Resolve model variant: CLI flag takes precedence over AI_MODEL_ID env var
-        let model_variant = if opts.ai_config.model.is_empty() {
-            webfang_ai::AiModel::from_env_or_default()
-        } else {
-            match opts.ai_config.model.parse::<webfang_ai::AiModel>() {
-                Ok(variant) => variant,
-                Err(e) => {
-                    return CliExit::UsageError(format!("Modelo AI inválido para --ai-model: {e}"));
-                },
-            }
-        };
-
-        let model_config = ModelConfig::default()
-            .with_model_variant(model_variant)
-            .with_relevance_threshold(opts.ai_config.threshold)
-            .map(|c| {
-                c.with_max_tokens(opts.ai_config.max_tokens)
-                    .with_offline_mode(opts.ai_config.offline)
-            });
-
-        match model_config {
-            Ok(config) => match SemanticCleanerImpl::new(config).await {
-                Ok(cleaner) => {
-                    // Share the cleaner's ONNX pool + tokenizer (#433) so the
-                    // vault-search embedding adapter reuses the SAME model — one
-                    // `resolve_model_assets` call, one `InferencePool` on `--ai`.
-                    // Extracted before type-erasing the cleaner behind the trait.
-                    let (pool, tokenizer) = cleaner.shared_inference();
-                    let cleaner: Option<Arc<dyn SemanticCleaner>> = Some(Arc::new(cleaner));
-                    let ports = build_vault_ports(pool, tokenizer).await;
-                    (cleaner, ports)
-                },
-                Err(e) => {
-                    let msg = format!("No se pudo inicializar el limpiador semántico AI: {e}");
-                    return match e {
-                        SemanticError::Download { .. } => CliExit::NetworkError(msg),
-                        _ => CliExit::ConfigError(msg),
-                    };
-                },
-            },
-            Err(e) => {
-                return CliExit::ConfigError(format!("Configuración de umbral AI inválida: {e}"));
-            },
-        }
-    } else {
-        (
+    ),
+    CliExit,
+> {
+    if !opts.ai || opts.export.dry_run {
+        return Ok((
             None,
             webfang_core::application::container::VaultAiPorts::default(),
-        )
+        ));
+    }
+
+    // Resolve model variant: CLI flag takes precedence over AI_MODEL_ID env var
+    let model_variant = if opts.ai_config.model.is_empty() {
+        webfang_ai::AiModel::from_env_or_default()
+    } else {
+        match opts.ai_config.model.parse::<webfang_ai::AiModel>() {
+            Ok(variant) => variant,
+            Err(e) => {
+                return Err(CliExit::UsageError(format!(
+                    "Modelo AI inválido para --ai-model: {e}"
+                )));
+            },
+        }
+    };
+
+    let model_config = ModelConfig::default()
+        .with_model_variant(model_variant)
+        .with_relevance_threshold(opts.ai_config.threshold)
+        .map(|c| {
+            c.with_max_tokens(opts.ai_config.max_tokens)
+                .with_offline_mode(opts.ai_config.offline)
+        });
+
+    match model_config {
+        Ok(config) => match SemanticCleanerImpl::new(config).await {
+            Ok(cleaner) => {
+                // Share the cleaner's ONNX pool + tokenizer (#433) so the
+                // vault-search embedding adapter reuses the SAME model — one
+                // `resolve_model_assets` call, one `InferencePool` on `--ai`.
+                // Extracted before type-erasing the cleaner behind the trait.
+                let (pool, tokenizer) = cleaner.shared_inference();
+                let cleaner: Option<Arc<dyn SemanticCleaner>> = Some(Arc::new(cleaner));
+                let ports = build_vault_ports(pool, tokenizer).await;
+                Ok((cleaner, ports))
+            },
+            Err(e) => {
+                let msg = format!("No se pudo inicializar el limpiador semántico AI: {e}");
+                Err(match e {
+                    SemanticError::Download { .. } => CliExit::NetworkError(msg),
+                    _ => CliExit::ConfigError(msg),
+                })
+            },
+        },
+        Err(e) => Err(CliExit::ConfigError(format!(
+            "Configuración de umbral AI inválida: {e}"
+        ))),
+    }
+}
+
+/// Build optional engines and dispatch to the orchestrator.
+///
+/// The argument list depends on which optional features are compiled in, so each
+/// combination is spelled out explicitly.
+async fn build_and_run(opts: CrawlOptions) -> CliExit {
+    #[cfg(feature = "adaptive-selectors")]
+    let adaptive_engine = build_adaptive_engine(&opts);
+
+    #[cfg(feature = "ai")]
+    let (ai_cleaner, vault_ports) = match build_ai_cleaner(&opts).await {
+        Ok(v) => v,
+        Err(e) => return e,
     };
     #[cfg(not(feature = "ai"))]
     let vault_ports = webfang_core::application::container::VaultAiPorts::default();
 
-    // Dispatch to the orchestrator. The argument list depends on which optional
-    // features are compiled in, so each combination is spelled out explicitly.
     #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
-    let result = orchestrator::run(opts, ai_cleaner, adaptive_engine, vault_ports).await;
+    {
+        orchestrator::run(opts, ai_cleaner, adaptive_engine, vault_ports).await
+    }
     #[cfg(all(feature = "ai", not(feature = "adaptive-selectors")))]
-    let result = orchestrator::run(opts, ai_cleaner, vault_ports).await;
+    {
+        orchestrator::run(opts, ai_cleaner, vault_ports).await
+    }
     #[cfg(all(not(feature = "ai"), feature = "adaptive-selectors"))]
-    let result = orchestrator::run(opts, adaptive_engine, vault_ports).await;
+    {
+        orchestrator::run(opts, adaptive_engine, vault_ports).await
+    }
     #[cfg(all(not(feature = "ai"), not(feature = "adaptive-selectors")))]
-    let result = orchestrator::run(opts, vault_ports).await;
-
-    result
+    {
+        orchestrator::run(opts, vault_ports).await
+    }
 }
 
 /// Assemble the vault-search AI ports (#433) from the cleaner's shared model.

@@ -14,6 +14,7 @@ use crate::domain::entities::progress::{ScrapeError, ScrapeStatus};
 use crate::domain::{CorrelationId, ScrapedContent};
 use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
 use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
+use crate::infrastructure::downloader::Downloader;
 use crate::infrastructure::export::state_store::StateStore;
 use crate::HttpClientConfig;
 use crate::ScraperConfig;
@@ -39,16 +40,7 @@ pub async fn apply_resume_mode(
 ) -> Result<(Vec<Url>, Option<StateStore>), CliExit> {
     let state_store: Option<StateStore> = if opts.crawl.resume {
         info!("Resume mode enabled - tracking processed URLs");
-        let state_dir = opts.crawl.state_dir.clone().unwrap_or_else(|| {
-            let cache_base = std::env::var("XDG_CACHE_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| {
-                    dirs::home_dir()
-                        .unwrap_or_else(|| PathBuf::from("."))
-                        .join(".cache")
-                });
-            cache_base.join("webfang").join("state")
-        });
+        let state_dir = resolve_state_dir(opts);
 
         let domain = export_factory::domain_from_url(target_url);
         info!("State store domain: {}", domain);
@@ -68,43 +60,61 @@ pub async fn apply_resume_mode(
     };
 
     let filtered = if opts.crawl.resume {
-        if let Some(store) = state_store.as_ref() {
-            match store.load_or_default() {
-                Ok(state) => {
-                    let original_count = urls_to_scrape.len();
-                    let filtered: Vec<_> = urls_to_scrape
-                        .into_iter()
-                        .filter(|url| {
-                            let should_skip = store.is_processed(&state, url.as_str());
-                            if should_skip {
-                                info!("Skipping already processed: {}", url);
-                            }
-                            !should_skip
-                        })
-                        .collect();
-
-                    let skipped_count = original_count - filtered.len();
-                    info!(
-                        "Resume mode: {} URLs already processed, {} new URLs to scrape",
-                        skipped_count,
-                        filtered.len()
-                    );
-
-                    filtered
-                },
-                Err(e) => {
-                    warn!("Failed to load state: {}", e);
-                    urls_to_scrape
-                },
-            }
-        } else {
-            urls_to_scrape
+        match state_store.as_ref() {
+            Some(store) => filter_processed_urls(urls_to_scrape, store),
+            None => urls_to_scrape,
         }
     } else {
         urls_to_scrape
     };
 
     Ok((filtered, state_store))
+}
+
+/// Resolve the resume state directory, defaulting to the XDG cache path.
+fn resolve_state_dir(opts: &CrawlOptions) -> PathBuf {
+    opts.crawl.state_dir.clone().unwrap_or_else(|| {
+        let cache_base = std::env::var("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(".cache")
+            });
+        cache_base.join("webfang").join("state")
+    })
+}
+
+/// Drop URLs already processed by a prior run, degrading gracefully on error.
+fn filter_processed_urls(urls_to_scrape: Vec<Url>, store: &StateStore) -> Vec<Url> {
+    match store.load_or_default() {
+        Ok(state) => {
+            let original_count = urls_to_scrape.len();
+            let filtered: Vec<_> = urls_to_scrape
+                .into_iter()
+                .filter(|url| {
+                    let should_skip = store.is_processed(&state, url.as_str());
+                    if should_skip {
+                        info!("Skipping already processed: {}", url);
+                    }
+                    !should_skip
+                })
+                .collect();
+
+            let skipped_count = original_count - filtered.len();
+            info!(
+                "Resume mode: {} URLs already processed, {} new URLs to scrape",
+                skipped_count,
+                filtered.len()
+            );
+
+            filtered
+        },
+        Err(e) => {
+            warn!("Failed to load state: {}", e);
+            urls_to_scrape
+        },
+    }
 }
 
 /// Scrape all URLs, reporting progress via the provided observer.
@@ -163,75 +173,31 @@ pub async fn scrape_urls(
     let robots_fetcher = RobotsFetcher::new(http_config.tls_emulation, http_config.timeout_secs)?;
 
     // Apply max_pages limit if configured
-    let urls_to_process = if let Some(max_pages) = scraper_config.max_pages {
-        let limited: Vec<_> = urls.iter().take(max_pages).cloned().collect();
-        if limited.len() < urls.len() {
-            tracing::info!(
-                "Limiting to {} pages (max_pages={}), skipping {} URLs",
-                limited.len(),
-                max_pages,
-                urls.len() - limited.len()
-            );
-        }
-        limited
-    } else {
-        urls.to_vec()
-    };
+    let urls_to_process = apply_max_pages_limit(urls, scraper_config);
 
     let processing_count = urls_to_process.len();
     let mut results = Vec::with_capacity(processing_count);
     let mut failures: Vec<(String, crate::error::ScraperError)> = Vec::new();
 
+    let ctx = ScrapeContext {
+        router: &router,
+        scraper_config,
+        downloader,
+        engine,
+        robots_fetcher: &robots_fetcher,
+    };
+
     for url in urls_to_process {
-        let url_str = url.as_str();
-        let _url_host = url.host_str().unwrap_or("unknown").to_string();
-
-        observer.on_page_started(url_str).await;
-
-        // Robots.txt enforcement — skip disallowed URLs unless --ignore-robots
-        if !opts.crawl.ignore_robots {
-            let domain = url.host_str().unwrap_or("unknown");
-            if !robots_fetcher.is_allowed(url_str, domain).await {
-                info!("Blocked by robots.txt: {}", url_str);
-                observer.on_robots_blocked(url_str).await;
-                continue;
-            }
-        }
-
-        observer
-            .on_status_changed(url_str, ScrapeStatus::Fetching)
-            .await;
-
         // Per-page identity: child of the run root — shared trace_id, fresh
         // span_id (#501).
         let page_correlation = root_correlation.child();
 
-        match scrape_single_url_for_tui(
-            &router,
-            &url,
-            scraper_config,
-            downloader,
-            engine,
-            None,
-            &page_correlation,
-        )
-        .await
-        {
-            Ok(content) => {
-                observer
-                    .on_status_changed(url_str, ScrapeStatus::Extracting)
-                    .await;
-                let chars = content.content.chars().count();
-                results.push(content);
-                observer.on_page_completed(url_str, chars).await;
-            },
+        match scrape_one_url(&url, &ctx, opts, observer, &page_correlation).await {
+            Ok(Some(content)) => results.push(content),
+            // Robots.txt blocked — skipped, not a failure.
+            Ok(None) => {},
             Err(e) => {
                 let url_str = url.as_str().to_string();
-                warn!("Failed to scrape {}: {}", url_str, e);
-                // ScraperError doesn't impl Clone, so we format for the observer
-                // and keep the original for the failures vec (needed for error chain display).
-                let scrape_err = ScrapeError::Other(format!("{e}"));
-                observer.on_page_failed(&url_str, &scrape_err).await;
                 failures.push((url_str, e));
             },
         }
@@ -244,6 +210,95 @@ pub async fn scrape_urls(
         .await;
 
     Ok((results, failures))
+}
+
+/// Shared per-URL dependencies for a single scrape, bundled to keep the
+/// per-page helper's signature small.
+struct ScrapeContext<'a> {
+    router: &'a dyn Downloader,
+    scraper_config: &'a ScraperConfig,
+    downloader: Option<&'a dyn crate::domain::ports::AssetDownloaderPort>,
+    engine: Option<&'a AdaptiveSelectorEngine>,
+    robots_fetcher: &'a RobotsFetcher,
+}
+
+/// Apply the `max_pages` cap to the URL list when configured.
+fn apply_max_pages_limit(urls: &[Url], scraper_config: &ScraperConfig) -> Vec<Url> {
+    if let Some(max_pages) = scraper_config.max_pages {
+        let limited: Vec<_> = urls.iter().take(max_pages).cloned().collect();
+        if limited.len() < urls.len() {
+            tracing::info!(
+                "Limiting to {} pages (max_pages={}), skipping {} URLs",
+                limited.len(),
+                max_pages,
+                urls.len() - limited.len()
+            );
+        }
+        limited
+    } else {
+        urls.to_vec()
+    }
+}
+
+/// Scrape a single URL, reporting progress and enforcing robots.txt.
+///
+/// Returns `Ok(Some(content))` on success, `Ok(None)` when the URL is blocked
+/// by robots.txt (skipped, not a failure), and `Err(e)` on a scrape failure.
+async fn scrape_one_url(
+    url: &Url,
+    ctx: &ScrapeContext<'_>,
+    opts: &CrawlOptions,
+    observer: &dyn ProgressObserver,
+    page_correlation: &CorrelationId,
+) -> Result<Option<ScrapedContent>, crate::error::ScraperError> {
+    let url_str = url.as_str();
+    let _url_host = url.host_str().unwrap_or("unknown").to_string();
+
+    observer.on_page_started(url_str).await;
+
+    // Robots.txt enforcement — skip disallowed URLs unless --ignore-robots
+    if !opts.crawl.ignore_robots {
+        let domain = url.host_str().unwrap_or("unknown");
+        if !ctx.robots_fetcher.is_allowed(url_str, domain).await {
+            info!("Blocked by robots.txt: {}", url_str);
+            observer.on_robots_blocked(url_str).await;
+            return Ok(None);
+        }
+    }
+
+    observer
+        .on_status_changed(url_str, ScrapeStatus::Fetching)
+        .await;
+
+    match scrape_single_url_for_tui(
+        ctx.router,
+        url,
+        ctx.scraper_config,
+        ctx.downloader,
+        ctx.engine,
+        None,
+        page_correlation,
+    )
+    .await
+    {
+        Ok(content) => {
+            observer
+                .on_status_changed(url_str, ScrapeStatus::Extracting)
+                .await;
+            let chars = content.content.chars().count();
+            observer.on_page_completed(url_str, chars).await;
+            Ok(Some(content))
+        },
+        Err(e) => {
+            let url_str = url.as_str().to_string();
+            warn!("Failed to scrape {}: {}", url_str, e);
+            // ScraperError doesn't impl Clone, so we format for the observer
+            // and keep the original for the failures vec (needed for error chain display).
+            let scrape_err = ScrapeError::Other(format!("{e}"));
+            observer.on_page_failed(&url_str, &scrape_err).await;
+            Err(e)
+        },
+    }
 }
 
 fn build_http_client_config(
