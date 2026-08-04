@@ -99,24 +99,21 @@ mod tests {
             </html>
         "#;
 
-        let result = parse(html, Some("https://example.com"));
-        // Legible parsing is heuristic - accept either Ok or Err,
-        // but if Ok, verify the article has meaningful content
-        match result {
-            Ok(article) => {
-                assert!(
-                    !article.title.is_empty() || !article.text_content.is_empty(),
-                    "article should have title or text content"
-                );
-            },
-            Err(e) => {
-                // Heuristic parser may fail on this structure - that's acceptable
-                assert!(
-                    e.to_string().contains("Readability failed"),
-                    "unexpected error: {e}"
-                );
-            },
-        }
+        // The fixture is a well-formed article with a clear <h1> title and a
+        // substantial body, so legible is expected to extract content rather
+        // than fail. Assert the concrete Ok outcome and validate the extracted
+        // fields instead of accepting either variant.
+        let article = parse(html, Some("https://example.com"))
+            .expect("legible should extract content from a well-formed article fixture");
+        assert_eq!(article.title, "Article Title");
+        assert!(
+            article.text_content.contains("main content of the article"),
+            "extracted text should contain the article body"
+        );
+        assert!(
+            article.text_content.contains("By John Doe"),
+            "byline text in <address> should be present in the extracted content"
+        );
     }
 
     #[test]
