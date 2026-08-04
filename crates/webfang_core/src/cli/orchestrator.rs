@@ -410,6 +410,14 @@ fn format_failure(url: &str, error: &crate::error::ScraperError, verbosity: u8) 
 /// Returns `None` if all pages scraped successfully (caller proceeds to export).
 /// At `verbosity` 0 only the top-level error message is shown; at 1+ the full
 /// root-cause chain is appended (see [`format_failure`]).
+///
+/// Severity routing (#537): when every URL failed AND at least one failure
+/// classifies as [`crate::error::ErrorClass::InternalFatal`], the exit code is
+/// `CliExit::ScraperFailure` (3) rather than `NetworkError` (69) — an internal
+/// bug must not masquerade as a transient network outage. Purely
+/// transient/permanent all-fail runs keep exit 69. The partial-success case
+/// always reports `PartialSuccess` (69) regardless of failure severity: some
+/// content was scraped, which is the dominant signal.
 fn report_phase(
     results: &[domain::ScrapedContent],
     failures: &[(String, crate::error::ScraperError)],
@@ -427,6 +435,9 @@ fn report_phase(
     }
 
     if results.is_empty() {
+        if let Some(exit) = scraper_failure_for_internal_fatal(failures) {
+            return Some(exit);
+        }
         eprintln!("No pages were successfully scraped");
         return Some(CliExit::NetworkError(
             "No pages were successfully scraped".into(),
@@ -435,6 +446,28 @@ fn report_phase(
 
     info!("Successfully scraped {} pages", results.len());
     None
+}
+
+/// Fold an all-failed error set into a severity-aware exit (#537).
+///
+/// Returns `Some(CliExit::ScraperFailure(..))` when at least one failure
+/// classifies as [`crate::error::ErrorClass::InternalFatal`], with a message
+/// that calls out the internal-fatal count. Returns `None` when every failure
+/// is transient/permanent — the caller then keeps its historical
+/// `CliExit::NetworkError` arm.
+fn scraper_failure_for_internal_fatal(
+    failures: &[(String, crate::error::ScraperError)],
+) -> Option<CliExit> {
+    let internal_fatal = failures
+        .iter()
+        .filter(|(_, e)| e.classify() == crate::error::ErrorClass::InternalFatal)
+        .count();
+    (internal_fatal > 0).then(|| {
+        CliExit::ScraperFailure(format!(
+            "Scraper failure: {internal_fatal} internal error(s) out of {} URLs",
+            failures.len()
+        ))
+    })
 }
 
 /// Run batch processing mode: crawl multiple URLs from stdin or file
@@ -515,12 +548,26 @@ async fn run_batch(opts: CrawlOptions) -> CliExit {
         error!(%url, error = %err, "Batch URL failed");
     }
 
-    batch_exit_code(summary.succeeded, summary.failed)
+    batch_exit_code(summary.succeeded, summary.failed, &summary.errors)
 }
 
 /// Determine the CLI exit code from batch scrape results.
-fn batch_exit_code(succeeded: usize, failed: usize) -> CliExit {
+///
+/// Severity routing (#537): an all-failed batch containing at least one
+/// [`crate::error::ErrorClass::InternalFatal`] error yields
+/// `CliExit::ScraperFailure` (3); purely transient/permanent all-fail runs
+/// keep `CliExit::NetworkError` (69). Partial success remains
+/// `CliExit::PartialSuccess` (69) regardless of failure severity — some
+/// content was scraped, which is the dominant signal.
+fn batch_exit_code(
+    succeeded: usize,
+    failed: usize,
+    errors: &[(String, crate::error::ScraperError)],
+) -> CliExit {
     if failed > 0 && succeeded == 0 {
+        if let Some(exit) = scraper_failure_for_internal_fatal(errors) {
+            return exit;
+        }
         CliExit::NetworkError("All batch URLs failed".into())
     } else if failed > 0 {
         CliExit::PartialSuccess {
@@ -695,18 +742,42 @@ mod tests {
 
     // ===== batch_exit_code tests =====
 
+    fn internal_err(msg: &str) -> crate::error::ScraperError {
+        crate::error::ScraperError::Internal(msg.to_string())
+    }
+
+    fn http_err(status: u16, url: &str) -> crate::error::ScraperError {
+        crate::error::ScraperError::http(status, url)
+    }
+
     #[test]
     fn batch_all_fail_returns_network_error() {
-        let exit = batch_exit_code(0, 5);
+        let errors: Vec<(String, crate::error::ScraperError)> = (0..5)
+            .map(|i| (format!("https://x{i}.com"), http_err(404, "https://x{i}.com")))
+            .collect();
+        let exit = batch_exit_code(0, 5, &errors);
         assert!(
             matches!(exit, CliExit::NetworkError(_)),
-            "Expected NetworkError when all URLs failed, got: {exit:?}"
+            "Expected NetworkError when all URLs failed with non-internal errors, got: {exit:?}"
+        );
+    }
+
+    #[test]
+    fn batch_all_fail_with_internal_fatal_returns_scraper_failure() {
+        let errors: Vec<(String, crate::error::ScraperError)> = vec![
+            ("https://a.com".to_string(), http_err(404, "https://a.com")),
+            ("https://b.com".to_string(), internal_err("bug")),
+        ];
+        let exit = batch_exit_code(0, 2, &errors);
+        assert!(
+            matches!(exit, CliExit::ScraperFailure(_)),
+            "Expected ScraperFailure when any failure classifies InternalFatal, got: {exit:?}"
         );
     }
 
     #[test]
     fn batch_all_succeed_returns_success() {
-        let exit = batch_exit_code(10, 0);
+        let exit = batch_exit_code(10, 0, &[]);
         assert!(
             matches!(exit, CliExit::Success),
             "Expected Success when all URLs succeed, got: {exit:?}"
@@ -715,7 +786,10 @@ mod tests {
 
     #[test]
     fn batch_partial_success_returns_partial() {
-        let exit = batch_exit_code(3, 2);
+        let errors: Vec<(String, crate::error::ScraperError)> = (0..2)
+            .map(|i| (format!("https://x{i}.com"), http_err(500, "https://x{i}.com")))
+            .collect();
+        let exit = batch_exit_code(3, 2, &errors);
         match exit {
             CliExit::PartialSuccess { success, failed } => {
                 assert_eq!(success, 3, "success count mismatch");
