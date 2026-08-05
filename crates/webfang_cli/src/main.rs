@@ -464,7 +464,8 @@ async fn build_ai_cleaner(
                 // Extracted before type-erasing the cleaner behind the trait.
                 let (pool, tokenizer) = cleaner.shared_inference();
                 let cleaner: Option<Arc<dyn SemanticCleaner>> = Some(Arc::new(cleaner));
-                let ports = build_vault_ports(pool, tokenizer).await;
+                let mut ports = build_vault_ports(pool, tokenizer).await;
+                ports.cleaner = cleaner.clone();
                 Ok((cleaner, ports))
             },
             Err(e) => {

@@ -118,6 +118,10 @@ pub struct VaultAiPorts {
     pub note_repository: Option<Arc<dyn NoteRepository>>,
     /// Text chunker for Markdown segmentation.
     pub text_chunker: Option<Arc<dyn TextChunker>>,
+
+    /// Semantic cleaner for AI-driven content extraction. `None` when the `ai`
+    /// feature is off or no cleaner was injected.
+    pub cleaner: Option<Arc<dyn SemanticCleaner>>,
 }
 
 impl Container {
@@ -331,6 +335,9 @@ impl Container {
         if let Some(chunker) = ports.text_chunker {
             self.text_chunker = Some(chunker);
         }
+        if let Some(cleaner) = ports.cleaner {
+            self.cleaner = Some(cleaner);
+        }
         self
     }
 
@@ -395,6 +402,23 @@ impl Container {
         ))
     }
 
+    /// Build an [`ElasticIngestion`] and attach the AI semantic cleaner when
+    /// present under the `ai` feature. Shared by [`with_elastic`] and
+    /// [`with_stream`] so the injection logic lives in exactly one place.
+    fn build_ingestion(
+        repository: DynVectorRepository,
+        config: &ElasticConfig,
+        cleaner: Option<Arc<dyn SemanticCleaner>>,
+    ) -> Result<ElasticIngestion<DynVectorRepository>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let mut ingestion = Self::build_elastic(repository, config)?;
+        #[cfg(feature = "ai")]
+        if let Some(cleaner) = cleaner {
+            ingestion = ingestion.with_cleaner(cleaner);
+        }
+        Ok(ingestion)
+    }
+
     /// Activate the elastic ingestion pipeline with SQLite persistence.
     ///
     /// Resolves `ElasticConfig` from the provided options, then wires
@@ -423,7 +447,7 @@ impl Container {
         sqlite_persistence::setup_schema(&pool).await?;
         let repository: DynVectorRepository = Arc::new(SqliteVectorRepository::new(pool));
 
-        let ingestion = Self::build_elastic(repository, &config)?;
+        let ingestion = Self::build_ingestion(repository, &config, self.cleaner.clone())?;
         self.elastic_ingestion = Some(Arc::new(ingestion));
         Ok(self)
     }
@@ -450,7 +474,7 @@ impl Container {
         let repository: DynVectorRepository =
             Arc::new(crate::infrastructure::stream::StreamRepository::new(path)?);
 
-        let ingestion = Self::build_elastic(repository, &config)?;
+        let ingestion = Self::build_ingestion(repository, &config, self.cleaner.clone())?;
         self.elastic_ingestion = Some(Arc::new(ingestion));
         Ok(self)
     }
