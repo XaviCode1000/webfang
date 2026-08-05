@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: docs-${{ github.ref }}
@@ -86,6 +86,13 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Native GitHub Pages ("deploy from a workflow") requires OIDC + Pages write
+    # permission, and the `github-pages` environment (auto-provisioned by Pages).
+    environment: github-pages
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -191,6 +198,25 @@ jobs:
             fi
           done
 
+      # --- Native GitHub Pages deployment (2025+ "deploy from a workflow") ---
+      # configure-pages@v5 enables/gathers the Pages site; upload-pages-artifact
+      # packages docs/book (must include index.html at root — it does), and
+      # deploy-pages@v4 (OIDC on the github-pages environment) performs the build.
+      #
+      # Why not the legacy gh-pages branch source? Commits a GHA pushes to a
+      # Pages *branch* using GITHUB_TOKEN do NOT trigger a Pages build — that was
+      # the root cause of the first deploy's "Site not found". The workflow
+      # source used here is immune to that caveat.
+      # Artifact name expected by deploy-pages defaults to "github-pages".
+      - name: Configure GitHub Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload GitHub Pages artifact (mdBook + combined rustdoc)
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs/book
+
       - name: Upload LLM markdown artifact
         uses: actions/upload-artifact@v4
         with:
@@ -200,12 +226,7 @@ jobs:
           retention-days: 30
 
       - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+        id: deployment
+        uses: actions/deploy-pages@v4
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./docs/book
-          publish_branch: gh-pages
-          force_orphan: true
-          user_name: 'github-actions[bot]'
-          user_email: 'github-actions[bot]@users.noreply.github.com'
-          commit_message: 'docs: deploy mdBook + rustdoc to GitHub Pages'
+          artifact_name: github-pages
