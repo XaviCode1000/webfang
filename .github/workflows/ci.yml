@@ -229,6 +229,7 @@ jobs:
           echo "Verifying tokenizer SHA256..."
           echo "$TOKENIZER_BLOB_SHA  $TOKENIZER_BLOB_FILE" | sha256sum --check --status
           # Create hf_hub cache structure: refs/main + snapshot symlinks
+          mkdir -p "$MODEL_DIR/refs"
           echo "835ad14087e140460703cf0fae09f97d469d65c2" > "$MODEL_DIR/refs/main"
           ln -s "../../../blobs/$BLOB_SHA" "$SNAPSHOT_FILE"
           ln -s "../../blobs/$TOKENIZER_BLOB_SHA" "$SNAPSHOT_TOKENIZER"
