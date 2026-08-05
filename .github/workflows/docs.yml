@@ -195,13 +195,15 @@ jobs:
                       -e 's/<[^>]*>//g' \
                       -e 's/Show [0-9][0-9]* fields[[:space:]]*//g' \
                       -e 's/Show [0-9][0-9]* variants[[:space:]]*//g' \
-                      -e '/^[[:space:]]*$/N;/^\n[[:space:]]*$/D' \
+                | sed -e '/^[[:space:]]*$/N;/^\n[[:space:]]*$/D' \
                 > "target/doc/$crate.md"
                 # Gate ONLY the cleaned API markdown. The Source Code section below
                 # intentionally contains HTML inside Rust string/test/doc-comment
                 # literals (e.g. extractor/html_cleaner/link_extractor tests), so a
-                # whole-file grep would false-positive there.
-                if grep -q 'Expand description\|href="\|<a \|<span\|<div\|<abbr\|<code\|§' "target/doc/$crate.md"; then
+                # whole-file grep would false-positive there. The gate is also
+                # fence-aware: doctests may legitimately contain HTML inside
+                # ``` code fences (e.g. assert!(html.contains("<span"))).
+                if awk 'BEGIN{f=0} /^```/{f=!f; next} !f && /Expand description|Copy item path|href="|<a |<span|<div|<abbr|<code|§/{bad=1} END{exit !bad}' "target/doc/$crate.md"; then
                   echo "::error::rustdoc noise not fully stripped for $crate"
                   exit 1
                 fi
