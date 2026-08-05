@@ -124,18 +124,19 @@ jobs:
         run: cargo doc --workspace --all-features --no-deps
 
       # Combine: rustdoc API lives under /api/<crate>/ on the published site.
+      # mdBook outputs straight into docs/book/ (no html/ subdir).
       - name: Combine rustdoc into mdBook site
         run: |
           set -euo pipefail
-          cp -r target/doc docs/book/html/api
-          touch docs/book/html/.nojekyll
+          cp -r target/doc docs/book/api
+          touch docs/book/.nojekyll
 
       # Build the NotebookLM / LLM markdown: narrative (SUMMARY order) +
       # rustdoc API (all 6 crates) converted via pandoc.
       - name: Build LLM markdown artifact
         run: |
           set -euo pipefail
-          OUT=docs/book/html/webfang-docs-llm.md
+          OUT=docs/book/webfang-docs-llm.md
           echo "# WebFang Documentation" > "$OUT"
           echo "" >> "$OUT"
           echo "Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$OUT"
@@ -194,7 +195,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: webfang-docs-llm
-          path: docs/book/html/webfang-docs-llm.md
+          path: docs/book/webfang-docs-llm.md
           if-no-files-found: error
           retention-days: 30
 
@@ -202,7 +203,7 @@ jobs:
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./docs/book/html
+          publish_dir: ./docs/book
           publish_branch: gh-pages
           force_orphan: true
           user_name: 'github-actions[bot]'
