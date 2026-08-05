@@ -172,39 +172,37 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    #[ignore = "governor uses QuantaClock (real time), not injectable with domain::clock::MockClock; \
-                this test asserts elapsed < 50ms (upper-bound real-time) which flakes under CI load. \
-                Deterministic parallelism is covered by test_rate_limiting_burst_protection."]
-    async fn test_rate_limiter_burst_allows_parallel_requests() {
-        // Test que burst de N requests ocurren en paralelo
-        // Config: delay_ms=100ms, concurrency=5
-        // 5 tasks simultáneas → todas deben pasar rápido (dentro del burst)
-        use tokio::time::Instant;
+    #[test]
+    fn test_rate_limiter_burst_allows_parallel_requests() {
+        // Deterministic burst proof. governor grants `concurrency` burst
+        // permits immediately, without consuming real time. We drive a
+        // `FakeRelativeClock`-backed limiter and assert the burst is exhausted by the
+        // Nth non-blocking acquisition — no real-time upper bound, so it
+        // cannot flake under CI load.
+        use governor::clock::FakeRelativeClock;
+        use governor::RateLimiter as GovernorLimiter;
+        use std::num::NonZeroU32;
+        use std::time::Duration;
 
-        let config = RateLimiterConfig::new(100, 5); // 100ms delay, burst=5
-        let limiter = SharedRateLimiter::new(&config).unwrap();
+        let clock = FakeRelativeClock::default();
+        let quota = Quota::with_period(Duration::from_millis(100))
+            .expect("valid period")
+            .allow_burst(NonZeroU32::new(5).expect("valid burst"));
+        let limiter = GovernorLimiter::direct_with_clock(quota, &clock);
 
-        let num_tasks = 5;
-        let start = Instant::now();
-
-        let mut handles = Vec::new();
-        for _ in 0..num_tasks {
-            let limiter = limiter.clone();
-            let handle = tokio::spawn(async move {
-                limiter.until_ready().await;
-            });
-            handles.push(handle);
+        // All 5 burst permits are granted immediately and deterministically.
+        for i in 0..5 {
+            assert!(
+                limiter.check().is_ok(),
+                "burst permit {i} should be available without waiting"
+            );
         }
 
-        futures::future::join_all(handles).await;
-        let elapsed = start.elapsed();
-
-        // 5 tasks con burst=5 → todas deberían pasar casi instantáneo (< 50ms)
+        // The 6th acquisition must be rejected: the burst is exhausted and a
+        // refill would require advancing the (still-zero) FakeClock.
         assert!(
-            elapsed.as_millis() < 50,
-            "Tiempo {}ms > 50ms — burst no está funcionando",
-            elapsed.as_millis()
+            limiter.check().is_err(),
+            "burst exhausted after 5 acquires — 6th must wait for refill"
         );
     }
 

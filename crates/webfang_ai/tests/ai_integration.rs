@@ -439,30 +439,28 @@ async fn test_error_chunk_too_large() {
         .with_offline_mode(true)
         .with_max_tokens(512);
 
-    let cleaner = SemanticCleanerImpl::new(config).await;
+    let cleaner = SemanticCleanerImpl::new(config)
+        .await
+        .expect("cached ONNX model required to run this ignored test");
 
-    if let Ok(cleaner) = cleaner {
-        let long_content = "Test. ".repeat(2000);
-        let html = format!("<p>{long_content}</p>");
+    let long_content = "Test. ".repeat(2000);
+    let html = format!("<p>{long_content}</p>");
 
-        let result = cleaner.clean(&html).await;
+    let result = cleaner.clean(&html).await;
 
-        match result {
-            Ok(chunks) => {
-                eprintln!("Content split into {} chunks", chunks.len());
-                for chunk in &chunks {
-                    assert!(chunk.content.len() <= 2048, "Chunk content too large");
-                }
-            },
-            Err(SemanticError::ChunkTooLarge { .. }) => {
-                eprintln!("Correctly detected chunk too large");
-            },
-            Err(e) => {
-                eprintln!("Other error (acceptable): {e}");
-            },
-        }
-    } else {
-        eprintln!("SKIP: cleaner creation failed");
+    match result {
+        Ok(chunks) => {
+            eprintln!("Content split into {} chunks", chunks.len());
+            for chunk in &chunks {
+                assert!(chunk.content.len() <= 2048, "Chunk content too large");
+            }
+        },
+        Err(SemanticError::ChunkTooLarge { .. }) => {
+            eprintln!("Correctly detected chunk too large");
+        },
+        Err(e) => {
+            eprintln!("Other error (acceptable): {e}");
+        },
     }
 }
 
@@ -491,18 +489,16 @@ async fn test_offline_mode_error() {
 #[ignore = "requires cached ONNX model"]
 async fn test_pipeline_empty_input() {
     let config = ModelConfig::default().with_offline_mode(true);
-    let cleaner = SemanticCleanerImpl::new(config).await;
+    let cleaner = SemanticCleanerImpl::new(config)
+        .await
+        .expect("cached ONNX model required to run this ignored test");
 
-    if let Ok(cleaner) = cleaner {
-        let html = "";
-        let chunks = cleaner.clean(html).await;
+    let html = "";
+    let chunks = cleaner.clean(html).await;
 
-        assert!(chunks.is_ok(), "Empty input should not fail");
-        let chunks = chunks.unwrap();
-        assert!(chunks.is_empty(), "Empty input should produce no chunks");
-    } else {
-        eprintln!("SKIP: cleaner creation failed");
-    }
+    assert!(chunks.is_ok(), "Empty input should not fail");
+    let chunks = chunks.unwrap();
+    assert!(chunks.is_empty(), "Empty input should produce no chunks");
 }
 
 /// Test pipeline with HTML-only input (no text content)
@@ -510,21 +506,19 @@ async fn test_pipeline_empty_input() {
 #[ignore = "requires cached ONNX model"]
 async fn test_pipeline_html_only() {
     let config = ModelConfig::default().with_offline_mode(true);
-    let cleaner = SemanticCleanerImpl::new(config).await;
+    let cleaner = SemanticCleanerImpl::new(config)
+        .await
+        .expect("cached ONNX model required to run this ignored test");
 
-    if let Ok(cleaner) = cleaner {
-        let html = "<div></div><span></span>";
-        let chunks = cleaner.clean(html).await;
+    let html = "<div></div><span></span>";
+    let chunks = cleaner.clean(html).await;
 
-        assert!(chunks.is_ok(), "HTML-only input should not fail");
-        let chunks = chunks.unwrap();
-        assert!(
-            chunks.is_empty(),
-            "HTML-only input should produce no chunks"
-        );
-    } else {
-        eprintln!("SKIP: cleaner creation failed");
-    }
+    assert!(chunks.is_ok(), "HTML-only input should not fail");
+    let chunks = chunks.unwrap();
+    assert!(
+        chunks.is_empty(),
+        "HTML-only input should produce no chunks"
+    );
 }
 
 /// Test relevance scorer threshold validation
