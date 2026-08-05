@@ -431,6 +431,7 @@ impl Container {
         let repository: DynVectorRepository = Arc::new(SqliteVectorRepository::new(pool));
 
         let mut ingestion = Self::build_elastic(repository, &config)?;
+        #[cfg(feature = "ai")]
         if let Some(cleaner) = self.cleaner.clone() {
             ingestion = ingestion.with_cleaner(cleaner);
         }
@@ -461,6 +462,7 @@ impl Container {
             Arc::new(crate::infrastructure::stream::StreamRepository::new(path)?);
 
         let mut ingestion = Self::build_elastic(repository, &config)?;
+        #[cfg(feature = "ai")]
         if let Some(cleaner) = self.cleaner.clone() {
             ingestion = ingestion.with_cleaner(cleaner);
         }
