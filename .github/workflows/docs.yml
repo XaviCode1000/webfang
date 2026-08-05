@@ -178,6 +178,9 @@ jobs:
               if [ -d "target/doc/$crate" ]; then
                 echo "### API: $crate"
                 echo
+                # Single H1 in the artifact: downgrade rustdoc page titles
+                # (Struct/Function/Enum/.../List) to H3 under "## API Reference".
+                # Safe: doctest hidden lines (# use ...) never match these words.
                 {
                   pandoc -f html -t gfm --wrap=none "target/doc/$crate/index.html" 2>/dev/null
                   find "target/doc/$crate" -name '*.html' ! -name 'index.html' ! -path '*/src/*' -print0 \
@@ -195,9 +198,6 @@ jobs:
                       -e 's/<[^>]*>//g' \
                       -e 's/Show [0-9][0-9]* fields[[:space:]]*//g' \
                       -e 's/Show [0-9][0-9]* variants[[:space:]]*//g' \
-                      # Single H1 in the artifact: downgrade rustdoc page titles
-                      # (Struct/Function/Enum/.../List) to H3 under "## API Reference".
-                      # Safe: doctest hidden lines (# use ...) never match these words.
                       -e 's/^# \(Struct\|Function\|Enum\|Trait\|Constant\|Type\|Crate\|Macro\|List\) /### \1 /' \
                 | sed -e '/^[[:space:]]*$/N;/^\n[[:space:]]*$/D' \
                 > "target/doc/$crate.md"
