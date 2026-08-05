@@ -25,7 +25,8 @@ use wide::f32x8;
 ///
 /// Unlike a raw dot product, this function divides by both magnitudes so it
 /// produces correct cosine similarity for **any** input vectors — not just
-/// pre-normalized unit vectors. This is critical for [`RelevanceScorer::score`],
+/// pre-normalized unit vectors. This is critical for
+/// [`RelevanceScorer::score`](crate::infrastructure_ai::RelevanceScorer::score),
 /// which does not normalize embeddings before scoring.
 ///
 /// # Arguments
