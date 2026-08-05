@@ -158,6 +158,18 @@ fn is_tool_error(result: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// Control-character rejection is signaled by `isError:true` on the tool
+/// result, NOT by the user-facing error message (may change). The handler
+/// returns `Ok(CallToolResult::error(...))` — a tool-level error with no
+/// `code` (see crates/webfang_mcp/src/mcp_server/handlers/obsidian.rs).
+fn assert_control_chars_rejected(result: &Value) {
+    assert!(
+        is_tool_error(result),
+        "control chars must yield isError:true, got: {}",
+        tool_text(result)
+    );
+}
+
 /// A relative temporary directory that deletes itself on drop.
 ///
 /// `tempfile::TempDir` always returns an absolute path (it joins with
@@ -302,16 +314,7 @@ async fn test_build_obsidian_uri_rejects_control_chars() {
         .unwrap_or_else(|| panic!("expected result, got: {resp}"))
         .clone();
 
-    assert!(
-        is_tool_error(&result),
-        "control chars must yield isError:true, got: {}",
-        tool_text(&result)
-    );
-    let text = tool_text(&result);
-    assert!(
-        text.contains("caracteres de control no permitidos"),
-        "Spanish control-char error expected, got: {text}"
-    );
+    assert_control_chars_rejected(&result);
 }
 
 // ============================================================================
@@ -381,16 +384,11 @@ async fn test_open_in_obsidian_control_chars_validation_error() {
         .unwrap_or_else(|| panic!("expected result, got: {resp}"))
         .clone();
 
-    assert!(
-        is_tool_error(&result),
-        "control chars must yield isError:true, got: {}",
-        tool_text(&result)
-    );
+    assert_control_chars_rejected(&result);
+    // Rejection is signaled by `isError:true`, NOT the Spanish error message
+    // (user-facing text, may change). The handler returns
+    // `Ok(CallToolResult::error(...))` — a tool-level error with no `code`.
     let text = tool_text(&result);
-    assert!(
-        text.contains("caracteres de control no permitidos"),
-        "Spanish control-char error expected, got: {text}"
-    );
     assert!(
         !text.contains("Opened in Obsidian"),
         "no real app launch may be reported, got: {text}"

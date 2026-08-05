@@ -5,7 +5,6 @@ mod common;
 
 use common::MockVault;
 
-#[ignore = "resurrected: pending triage"]
 #[test]
 fn mock_vault_path_exists() {
     let vault = MockVault::new();
@@ -13,7 +12,6 @@ fn mock_vault_path_exists() {
     assert!(vault.path().is_dir(), "vault path should be a directory");
 }
 
-#[ignore = "resurrected: pending triage"]
 #[test]
 fn mock_vault_has_obsidian_directory() {
     let vault = MockVault::new();
@@ -22,7 +20,6 @@ fn mock_vault_has_obsidian_directory() {
     assert!(obsidian_dir.is_dir(), ".obsidian/ should be a directory");
 }
 
-#[ignore = "resurrected: pending triage"]
 #[test]
 fn mock_vault_has_obsidian_json() {
     let vault = MockVault::new();
@@ -40,7 +37,6 @@ fn mock_vault_has_obsidian_json() {
     assert!(vault_obj["fsPath"].is_string(), "fsPath should be a string");
 }
 
-#[ignore = "resurrected: pending triage"]
 #[test]
 fn mock_vault_has_workspace_json() {
     let vault = MockVault::new();
@@ -48,7 +44,6 @@ fn mock_vault_has_workspace_json() {
     assert!(ws_path.exists(), "workspace.json should exist");
 }
 
-#[ignore = "resurrected: pending triage"]
 #[test]
 fn mock_vault_has_test_note() {
     let vault = MockVault::new();
@@ -63,7 +58,6 @@ fn mock_vault_has_test_note() {
     assert!(content.contains("# Test Note"), "note should have heading");
 }
 
-#[ignore = "resurrected: pending triage"]
 #[test]
 fn mock_vault_is_recognized_as_vault() {
     let vault = MockVault::new();
@@ -73,7 +67,6 @@ fn mock_vault_is_recognized_as_vault() {
     );
 }
 
-#[ignore = "resurrected: pending triage"]
 #[test]
 fn mock_vault_metadata_json_content() {
     let vault = MockVault::new();

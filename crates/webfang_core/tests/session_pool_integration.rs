@@ -5,9 +5,9 @@
 
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use webfang_core::domain::clock::SystemClock;
+use webfang_core::domain::clock::{MockClock, SystemClock};
 use webfang_core::{DomainSessionPool, SessionId, SessionManager, SessionPoolConfig};
 
 // ===== ACQUIRE / RELEASE CYCLE =====
@@ -129,7 +129,10 @@ fn test_banned_session_recovers_after_cooldown() {
         max_exp: 1,
         ..Default::default()
     };
-    let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
+    // Inject a controllable clock so the cooldown is simulated deterministically
+    // instead of relying on real wall-clock time (no flaky thread::sleep).
+    let clock = MockClock::new(Instant::now());
+    let pool = DomainSessionPool::new(config, clock.handle());
 
     let id = pool.acquire("example.com").expect("should acquire");
     pool.report_failure("example.com", id, 429);
@@ -137,12 +140,8 @@ fn test_banned_session_recovers_after_cooldown() {
     // Immediately: banned
     assert!(pool.acquire("example.com").is_none());
 
-    // NOTE: This sleep is intentionally kept — the pool uses SystemClock and
-    // there's no FakeClock injection point in SessionPoolConfig. Eliminating
-    // this requires injecting a clock abstraction (trait object or feature-gated
-    // clock), which is a design change beyond this refactor scope.
-    // Wait past cooldown (2^1 * 1ms = 2ms)
-    thread::sleep(Duration::from_millis(50));
+    // Advance the clock past the cooldown (2^1 * 1ms = 2ms)
+    clock.advance(Duration::from_millis(100));
 
     assert!(
         pool.acquire("example.com").is_some(),

@@ -317,42 +317,50 @@ fn test_matryoshka_identity_for_384d() {
 // Full RAG Pipeline Integration Tests (require cached model)
 // ============================================================================
 
+/// Builds an offline-mode semantic cleaner from the default config.
+///
+/// The default config resolves the model from the local cache at
+/// `~/.cache/webfang/ai_models`. The cleaner is `.expect()`ed to initialize so
+/// that an absent model makes the test FAIL LOUDLY rather than silently
+/// passing. These pipeline tests are `#[ignore]`'d (see below), so they are
+/// excluded from default runs and never count as green; run them explicitly
+/// with `--ignored` only when the model cache is populated.
+async fn build_offline_cleaner() -> SemanticCleanerImpl {
+    let config = ModelConfig::default().with_offline_mode(true);
+    SemanticCleanerImpl::new(config)
+        .await
+        .expect("cached ONNX model required: run with --ignored only when ~/.cache/webfang/ai_models is populated")
+}
+
 /// Test full pipeline: HTML -> Chunk -> Tokenize -> Embed -> Score -> Filter
 ///
 /// This test verifies the complete RAG pipeline integration.
-/// Skips if model is not cached to avoid network dependency.
+/// Ignored by default because it requires the cached ONNX model.
 #[tokio::test]
 #[ignore = "requires cached ONNX model"]
 async fn test_semantic_cleaner_full_pipeline() {
-    let config = ModelConfig::default().with_offline_mode(true);
-    let cleaner = SemanticCleanerImpl::new(config).await;
+    let cleaner = build_offline_cleaner().await;
 
-    if let Ok(cleaner) = cleaner {
-        let html = "<article><p>Hello world. Test content for semantic cleaning.</p></article>";
-        let chunks = cleaner.clean(html).await;
+    let html = "<article><p>Hello world. Test content for semantic cleaning.</p></article>";
+    let chunks = cleaner.clean(html).await;
 
-        assert!(
-            chunks.is_ok(),
-            "Pipeline should succeed: {:?}",
-            chunks.err()
-        );
+    assert!(
+        chunks.is_ok(),
+        "Pipeline should succeed: {:?}",
+        chunks.err()
+    );
 
-        let chunks = chunks.unwrap();
-        eprintln!("Generated {} chunks", chunks.len());
-    } else {
-        eprintln!("SKIP: cleaner creation failed");
-    }
+    let chunks = chunks.unwrap();
+    eprintln!("Generated {} chunks", chunks.len());
 }
 
 /// Test semantic cleaner with longer content
 #[tokio::test]
 #[ignore = "requires cached ONNX model"]
 async fn test_semantic_cleaner_long_content() {
-    let config = ModelConfig::default().with_offline_mode(true);
-    let cleaner = SemanticCleanerImpl::new(config).await;
+    let cleaner = build_offline_cleaner().await;
 
-    if let Ok(cleaner) = cleaner {
-        let html = r#"
+    let html = r#"
             <article>
                 <h1>Test Article</h1>
                 <p>This is a comprehensive test article with multiple paragraphs.
@@ -371,19 +379,16 @@ async fn test_semantic_cleaner_long_content() {
             </article>
         "#;
 
-        let chunks = cleaner.clean(html).await;
+    let chunks = cleaner.clean(html).await;
 
-        assert!(
-            chunks.is_ok(),
-            "Pipeline should succeed: {:?}",
-            chunks.err()
-        );
+    assert!(
+        chunks.is_ok(),
+        "Pipeline should succeed: {:?}",
+        chunks.err()
+    );
 
-        let chunks = chunks.unwrap();
-        eprintln!("Generated {} chunks from long content", chunks.len());
-    } else {
-        eprintln!("SKIP: cleaner creation failed");
-    }
+    let chunks = chunks.unwrap();
+    eprintln!("Generated {} chunks from long content", chunks.len());
 }
 
 /// Test concurrent embedding generation

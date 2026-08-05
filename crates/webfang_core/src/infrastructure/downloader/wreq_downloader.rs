@@ -363,6 +363,35 @@ impl Downloader for WreqDownloader {
 }
 
 #[cfg(test)]
+mod test_support {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Mount a `GET /` mock returning `body` (200), then fetch it via a fresh
+    /// `WreqDownloader` and assert the basics (ok, status 200, body matches).
+    /// Returns the fetched `FetchedPage` so callers can add extra assertions.
+    pub(super) async fn fetch_mock_get(body: &str) -> FetchedPage {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&mock_server)
+            .await;
+
+        let downloader = WreqDownloader::new(10, 5, Profile::Chrome145, None).unwrap();
+        let url: Url = mock_server.uri().parse().unwrap();
+
+        let result = downloader.fetch(&url).await;
+        assert!(result.is_ok());
+        let page = result.unwrap();
+        assert_eq!(page.status, 200);
+        assert_eq!(page.html, body);
+        page
+    }
+}
+
+#[cfg(test)]
 #[cfg(not(miri))] // wreq uses boring-sys2 FFI (unsupported by Miri)
 mod tests {
     use super::*;
@@ -445,18 +474,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires network — wiremock tests below cover same scenario"]
-    async fn test_fetch_example_com() {
-        let downloader = WreqDownloader::new(10, 5, Profile::Chrome145, None).unwrap();
-        let url: Url = "https://example.com".parse().unwrap();
-
-        let result = downloader.fetch(&url).await;
-        assert!(result.is_ok());
-
-        let page = result.unwrap();
-        assert_eq!(page.status, 200);
-        assert!(!page.html.is_empty());
-        assert!(page.html.contains("Example Domain"));
+    async fn test_fetch_uses_mock_server() {
+        let expected_body = "<html><body><h1>mock</h1></body></html>";
+        super::test_support::fetch_mock_get(expected_body).await;
     }
 }
 
@@ -469,23 +489,8 @@ mod wiremock_tests {
 
     #[tokio::test]
     async fn test_fetch_200_returns_body() {
-        let mock_server = MockServer::start().await;
         let expected_body = "<html><body>Hello World</body></html>";
-
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(expected_body))
-            .mount(&mock_server)
-            .await;
-
-        let downloader = WreqDownloader::new(10, 5, Profile::Chrome145, None).unwrap();
-        let url: Url = mock_server.uri().parse().unwrap();
-
-        let result = downloader.fetch(&url).await;
-        assert!(result.is_ok());
-
-        let page = result.unwrap();
-        assert_eq!(page.status, 200);
+        let page = super::test_support::fetch_mock_get(expected_body).await;
         assert_eq!(page.html, expected_body);
     }
 

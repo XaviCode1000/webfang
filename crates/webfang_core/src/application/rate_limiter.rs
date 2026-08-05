@@ -137,7 +137,6 @@ mod tests {
     // ============================================================================
 
     #[tokio::test]
-    #[ignore = "timing-sensitive: run with cargo test -- --ignored"]
     async fn test_rate_limiter_until_ready_spreads_over_time() {
         // Test que N tasks concurrentes llamando until_ready() son espaciadas
         // Config: delay_ms=50ms, concurrency=1
@@ -174,7 +173,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "timing-sensitive: run with cargo test -- --ignored"]
+    #[ignore = "governor uses QuantaClock (real time), not injectable with domain::clock::MockClock; \
+                this test asserts elapsed < 50ms (upper-bound real-time) which flakes under CI load. \
+                Deterministic parallelism is covered by test_rate_limiting_burst_protection."]
     async fn test_rate_limiter_burst_allows_parallel_requests() {
         // Test que burst de N requests ocurren en paralelo
         // Config: delay_ms=100ms, concurrency=5
@@ -208,7 +209,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "timing-sensitive: run with cargo test -- --ignored"]
     async fn test_rate_limiter_concurrent_backpressure() {
         // Test que 20 tasks concurrentes no colapsan — se encolan correctamente
         let config = RateLimiterConfig::new(10, 1); // 10ms, burst=1
