@@ -47,7 +47,7 @@ pub mod private {
 /// # use webfang_core::domain::semantic_cleaner::SemanticCleaner;
 /// # async fn example(cleaner: &dyn SemanticCleaner) -> Result<(), Box<dyn std::error::Error>> {
 /// let html = "<html><body><p>Hello World</p></body></html>";
-/// let chunks = cleaner.clean(html).await?;
+/// let chunks = cleaner.clean("https://example.com", html).await?;
 /// println!("Generated {} chunks", chunks.len());
 /// # Ok(())
 /// # }
@@ -74,10 +74,12 @@ pub trait SemanticCleaner: private::Sealed + Send + Sync {
     /// 1. Strips HTML tags and extracts text
     /// 2. Splits text into semantic chunks (paragraphs, sections)
     /// 3. Validates chunk sizes against model token limits
-    /// 4. Returns chunks ready for embedding generation
+    /// 4. Scores relevance against the centroid of all chunk embeddings
+    /// 5. Returns chunks ready for embedding generation
     ///
     /// # Arguments
     ///
+    /// * `url` - Source URL of the HTML content (used for logging and diagnostics)
     /// * `html` - Raw HTML content to clean (borrowed, `&str` not `&String`)
     ///
     /// # Returns
@@ -99,7 +101,7 @@ pub trait SemanticCleaner: private::Sealed + Send + Sync {
     /// # use webfang_core::domain::semantic_cleaner::SemanticCleaner;
     /// # async fn example(cleaner: &dyn SemanticCleaner) -> Result<(), Box<dyn std::error::Error>> {
     /// let html = "<article><h1>Title</h1><p>Content here...</p></article>";
-    /// let chunks = cleaner.clean(html).await?;
+    /// let chunks = cleaner.clean("https://example.com/page", html).await?;
     ///
     /// for chunk in &chunks {
     ///     println!("Chunk {}: {} chars", chunk.id, chunk.content.len());
@@ -118,10 +120,11 @@ pub trait SemanticCleaner: private::Sealed + Send + Sync {
     ///
     /// Desugared to a boxed future (`Pin<Box<dyn Future + Send>>`) instead of
     /// `async fn` so the trait stays dyn-compatible (`Box<dyn SemanticCleaner>`).
-    /// The single lifetime `'a` ties `&self` and `html` to the returned future,
-    /// matching the `async-trait` macro's default desugaring.
+    /// The single lifetime `'a` ties `&self`, `url`, and `html` to the returned
+    /// future, matching the `async-trait` macro's default desugaring.
     fn clean<'a>(
         &'a self,
+        url: &'a str,
         html: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<DocumentChunk>, SemanticError>> + Send + 'a>>;
 

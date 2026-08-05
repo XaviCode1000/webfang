@@ -62,7 +62,7 @@
 //! let cleaner = SemanticCleanerImpl::new(config).await?;
 //!
 //! let html = "<article><p>Hello World</p></article>";
-//! let chunks = cleaner.clean(html).await?;
+//! let chunks = cleaner.clean("https://example.com", html).await?;
 //!
 //! println!("Generated {} chunks", chunks.len());
 //! # Ok(())

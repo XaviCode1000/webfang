@@ -44,7 +44,7 @@
 //! let cleaner = SemanticCleanerImpl::new(config).await?;
 //!
 //! let html = "<article><p>Hello world. Test content.</p></article>";
-//! let chunks = cleaner.clean(html).await?;
+//! let chunks = cleaner.clean("https://example.com", html).await?;
 //!
 //! println!("Generated {} chunks", chunks.len());
 //! # Ok(())
@@ -59,7 +59,7 @@ use futures::future::{try_join, try_join_all};
 use hf_hub::api::tokio::ApiBuilder;
 use hf_hub::{Cache as HfCache, Repo, RepoType};
 use sha2::{Digest, Sha256};
-use tracing::{debug, info, Instrument};
+use tracing::{debug, info, warn, Instrument};
 
 use crate::infrastructure_ai::cache_config::AiModel;
 use crate::infrastructure_ai::{
@@ -354,10 +354,12 @@ impl private::Sealed for SemanticCleanerImpl {}
 impl SemanticCleaner for SemanticCleanerImpl {
     fn clean<'a>(
         &'a self,
+        url: &'a str,
         html: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<DocumentChunk>, SemanticError>> + Send + 'a>> {
         Box::pin(async move {
             debug!(
+                url = %url,
                 html_length = html.len(),
                 "Starting full RAG pipeline: prune → chunk → tokenize → embed → score"
             );
@@ -432,7 +434,7 @@ impl SemanticCleaner for SemanticCleanerImpl {
             // Step 4: Score and filter (own-borrow-over-clone: borrow embeddings)
             // Following `own-borrow-over-clone`: borrow &chunks and &embeddings, don't clone
             // Following `opt-simd-portable`: RelevanceScorer uses SIMD cosine similarity
-            let filtered = self.filter_by_relevance(&chunks, &embeddings)?;
+            let filtered = self.filter_by_relevance(url, &chunks, &embeddings)?;
 
             debug!(
                 chunks_before = chunks.len(),
@@ -459,20 +461,22 @@ impl SemanticCleaner for SemanticCleanerImpl {
 impl SemanticCleanerImpl {
     /// Filter chunks by relevance score and **preserve embeddings**
     ///
-    /// Pairs each chunk with its embedding, scores against a reference,
-    /// filters by threshold, and **preserves** the embedding vectors in the output.
+    /// Pairs each chunk with its embedding, scores against the **centroid**
+    /// of all embeddings, filters by threshold, and **preserves** the embedding
+    /// vectors in the output.
     ///
-    /// **Critical bug fix**: Previously called `scorer.filter()` which discarded
-    /// embeddings via `.map(|(chunk, _)| chunk.clone())`, resulting in:
-    /// - "Generated 0 chunks with embeddings" log messages
-    /// - Empty embeddings fields in JSONL output
-    /// - Loss of 49536 dimensions of embedding data
+    /// **Centroid reference**: Using the mean-pooled centroid of all chunk
+    /// embeddings as the reference vector is more robust than using the first
+    /// chunk — which may be a navigation element, header, or other non-representative
+    /// content. The centroid captures the overall semantic center of the page.
     ///
-    /// **Solution**: Uses `scorer.filter_with_embeddings()` to preserve embeddings,
-    /// then restores them to each chunk before returning `Vec<DocumentChunk>`.
+    /// **Aggressive filtering detection**: Emits a `warn!` when >50% of chunks
+    /// are discarded, indicating a potential threshold misconfiguration or
+    /// off-topic page.
     ///
     /// # Arguments
     ///
+    /// * `url` - Source URL for diagnostics and warning logs
     /// * `chunks` - Slice of DocumentChunks (borrowed, following `own-borrow-over-clone`)
     /// * `embeddings` - Slice of embedding vectors (borrowed)
     ///
@@ -489,45 +493,14 @@ impl SemanticCleanerImpl {
     /// # Performance
     ///
     /// Uses SIMD-accelerated cosine similarity via `RelevanceScorer`.
-    /// Concurrent operations use arena allocator to reduce allocation overhead.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # #[cfg(feature = "ai")]
-    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// use webfang_ai::{SemanticCleaner, SemanticCleanerImpl, ModelConfig, SemanticError};
-    ///
-    /// // Create semantic cleaner (requires --features ai)
-    /// let config = ModelConfig::default();
-    /// let cleaner = SemanticCleanerImpl::new(config).await?;
-    ///
-    /// // Clean HTML content - will generate chunks with embeddings
-    /// let html = "<article><h1>Title</h1><p>Content here.</p></article>";
-    /// let chunks = cleaner.clean(html).await?;
-    ///
-    /// // Verify embeddings are present (bug fix validation)
-    /// let has_embeddings = chunks.first()
-    ///     .map(|c| c.embeddings.is_some())
-    ///     .ok_or_else(|| SemanticError::Inference(
-    ///         "No chunks returned from semantic cleaner. Check HTML content and AI model availability.".to_string()
-    ///     ))?;
-    /// assert!(has_embeddings, "embeddings should not be None after fix");
-    ///
-    /// // Embedding dimension: 384 for all-MiniLM-L6-v2 model
-    /// let dim = chunks.first()
-    ///     .map(|c| c.embeddings.as_ref().map(|e| e.len()))
-    ///     .ok_or(SemanticError::Inference("No chunks or Embeddings returned".to_string()))?;
-    /// assert_eq!(dim, Some(384));
-    /// # Ok(())
-    /// # }
-    /// ```
+    /// The centroid is mean-pooled in O(n×d) where n = chunks, d = embedding dim.
     ///
     /// See also:
     /// - [`SemanticCleaner::clean()`](SemanticCleaner::clean) - Full pipeline entry point
     /// - [`RelevanceScorer::filter_with_embeddings()`](RelevanceScorer::filter_with_embeddings)
     fn filter_by_relevance(
         &self,
+        url: &str,
         chunks: &[DocumentChunk],
         embeddings: &[Vec<f32>],
     ) -> Result<Vec<DocumentChunk>, SemanticError> {
@@ -541,6 +514,8 @@ impl SemanticCleanerImpl {
             )));
         }
 
+        let chunks_before = chunks.len();
+
         // Create (chunk, embedding) pairs
         // Following `mem-with-capacity`: pre-allocate
         let mut chunk_embedding_pairs = Vec::with_capacity(chunks.len());
@@ -549,16 +524,51 @@ impl SemanticCleanerImpl {
             chunk_embedding_pairs.push((chunk.clone(), embedding.clone()));
         }
 
-        // Use first embedding as reference (simple strategy)
-        // In production, this could be a query vector or domain-specific reference
-        let reference = embeddings.first().ok_or_else(|| {
-            SemanticError::Inference("No embeddings available for relevance scoring".to_string())
-        })?;
+        // Compute centroid (mean-pooled reference) of all embeddings.
+        // More robust than using embeddings.first() — the first chunk may be a
+        // nav element, header, or other non-representative content.
+        let embedding_dim = embeddings.first().map(|e| e.len()).unwrap_or(0);
+        if embedding_dim == 0 {
+            return Err(SemanticError::Inference(
+                "No embeddings available for relevance scoring".to_string(),
+            ));
+        }
+
+        let mut centroid = vec![0.0f32; embedding_dim];
+        for embedding in embeddings {
+            for (i, &val) in embedding.iter().enumerate() {
+                if i < centroid.len() {
+                    centroid[i] += val;
+                }
+            }
+        }
+        let n = embeddings.len() as f32;
+        for val in &mut centroid {
+            *val /= n;
+        }
 
         // Filter using scorer WITH embeddings preserved
         let filtered_with_embeddings: Vec<(DocumentChunk, Vec<f32>)> = self
             .scorer
-            .filter_with_embeddings(&chunk_embedding_pairs, Some(reference));
+            .filter_with_embeddings(&chunk_embedding_pairs, Some(&centroid));
+
+        let filtered_out = chunks_before - filtered_with_embeddings.len();
+
+        // Warn when filtering is aggressive (>50% discarded) — possible over-aggressive
+        // threshold or off-topic page. Structured fields for trace querying.
+        if chunks_before > 0 && filtered_out as f64 / chunks_before as f64 > 0.5 {
+            warn!(
+                url = %url,
+                chunks_before = chunks_before,
+                chunks_after = filtered_with_embeddings.len(),
+                filtered_out = filtered_out,
+                loss_ratio = format!(
+                    "{:.0}%",
+                    filtered_out as f64 / chunks_before as f64 * 100.0
+                ),
+                "AI relevance filter discarded >50% of chunks for this page — possible over-aggressive filtering"
+            );
+        }
 
         // Restore embeddings to chunks following `mem-preserving-embeddings`
         let mut result = Vec::with_capacity(filtered_with_embeddings.len());
