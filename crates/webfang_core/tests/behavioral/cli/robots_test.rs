@@ -75,3 +75,76 @@ async fn robots_txt_disallow_prevents_fetching() {
         "expected 1 request to seed /, got {seed_requests}"
     );
 }
+
+/// `--ignore-robots` overrides robots.txt: a path that would otherwise be
+/// blocked (Disallow: /private/) IS fetched when the flag is supplied (#542
+/// coverage extension). Observes the wiremock request log, no real network.
+#[tokio::test]
+async fn ignore_robots_flag_allows_disallowed_fetch() {
+    let t = BehavioralTest::new().await;
+
+    crate::common::mock_robots(&t.server, "User-agent: *\nDisallow: /private/\n").await;
+
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("<html><body><a href=\"/private/page\">Private</a></body></html>"),
+        )
+        .mount(&t.server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/private/page"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "<html><body><h1>Secret</h1><p>hidden content only reachable when robots are ignored.</p></body></html>",
+        ))
+        .mount(&t.server)
+        .await;
+
+    let base = t.server.uri();
+    let sitemap_url = format!("{base}/sitemap.xml");
+    let sitemap_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+ <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+     <url><loc>{base}/</loc></url>
+     <url><loc>{base}/private/page</loc></url>
+ </urlset>"#
+    );
+    crate::common::mock_sitemap(&t.server, &sitemap_url, &sitemap_xml).await;
+
+    let output = cmd()
+        .arg("--url")
+        .arg(&base)
+        .arg("--sitemap-url")
+        .arg(&sitemap_url)
+        .arg("--use-sitemap")
+        .arg("--ignore-robots")
+        .arg("--output")
+        .arg(t.out.path())
+        .arg("--quiet")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "expected success with --ignore-robots, got: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let requests = t.server.received_requests().await.unwrap();
+    let private_requests = requests
+        .iter()
+        .filter(|r| r.url.path().starts_with("/private"))
+        .count();
+    let seed_requests = requests.iter().filter(|r| r.url.path() == "/").count();
+
+    assert_eq!(
+        private_requests, 1,
+        "expected /private/page to be fetched when --ignore-robots is set (robots.txt is bypassed)"
+    );
+    assert!(
+        seed_requests >= 1,
+        "expected the seed / to be fetched, got {seed_requests}"
+    );
+}
