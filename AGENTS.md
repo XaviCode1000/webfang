@@ -486,8 +486,10 @@ Base the body on `.github/PULL_REQUEST_TEMPLATE.md`.
 ### Pre-commit gate (every commit)
 
 ```bash
-cargo check && cargo clippy -- -D warnings && cargo fmt
+cargo check && cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines && cargo fmt
 ```
+
+> ⚠️ **The clippy command MUST match CI exactly.** CI runs the strict gate above, which enables the `#516` complexity ratchets (`clippy::cognitive_complexity` + `clippy::too_many_lines`, thresholds in `clippy.toml`). Running a bare `cargo clippy -- -D warnings` locally will PASS while CI FAILS on any function >100 lines or over the cognitive-complexity limit. Always use the full command above before pushing.
 
 ### Cloud verification
 
@@ -506,7 +508,7 @@ gh run list --workflow=ci.yml --branch "$(git branch --show-current)" --limit 1 
 
 ### PR checklist
 
-- [ ] `cargo check` + `cargo clippy -- -D warnings` + `cargo fmt`
+- [ ] `cargo check` + `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines` + `cargo fmt`
 - [ ] `cargo nextest run` (at least affected module)
 - [ ] `detect_changes()` shows only expected symbols (worktrees: absolute path)
 - [ ] `detect_changes({scope:"compare", base_ref:"main"})` for regression review
@@ -573,7 +575,7 @@ needs auto-merge (e.g. transferring the repo to an organization with rulesets), 
 ```bash
 git branch --show-current    # Verify correct worktree BEFORE any edit
 cargo check                  # Verify compilation
-cargo clippy -- -D warnings  # Fix ALL warnings
+cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines  # Fix ALL warnings (matches CI strict gate, #516 ratchets)
 cargo fmt                    # Format
 ```
 
