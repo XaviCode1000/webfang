@@ -110,7 +110,7 @@ impl McpHandler {
             Ok(resp) => resp,
             Err(e) => return Ok(honest_error(format!("no se pudo obtener la página: {e}"))),
         };
-        let documents = match cleaner.clean(&response.body).await {
+        let documents = match cleaner.clean(&params.url, &response.body).await {
             Ok(docs) => docs,
             Err(e) => return Ok(honest_error(format!("error al limpiar el contenido: {e}"))),
         };

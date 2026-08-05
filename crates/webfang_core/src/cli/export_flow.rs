@@ -156,7 +156,7 @@ async fn clean_all_pages(
             let url = result.url.clone();
             let cleaner = std::sync::Arc::clone(cleaner);
             async move {
-                let chunks_result = cleaner.clean(&html_content).await;
+                let chunks_result = cleaner.clean(url.as_str(), &html_content).await;
                 (url, chunks_result, result.clone())
             }
         })
@@ -253,6 +253,7 @@ mod tests {
     impl SemanticCleaner for FailingCleaner {
         fn clean<'a>(
             &'a self,
+            _url: &'a str,
             _html: &'a str,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<DocumentChunk>, SemanticError>> + Send + 'a>>
         {

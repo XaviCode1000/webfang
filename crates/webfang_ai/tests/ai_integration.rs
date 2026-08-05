@@ -21,6 +21,9 @@ use webfang_ai::SemanticCleaner;
 use webfang_ai::SemanticError;
 use webfang_core::domain::DocumentChunk;
 
+/// Test URL for semantic cleaner calls
+const TEST_URL: &str = "https://example.com/test";
+
 // ============================================================================
 // Integration-only tests (not covered by unit tests)
 // ============================================================================
@@ -345,7 +348,7 @@ async fn test_semantic_cleaner_full_pipeline() {
     let cleaner = build_offline_cleaner().await;
 
     let html = "<article><p>Hello world. Test content for semantic cleaning.</p></article>";
-    let chunks = cleaner.clean(html).await;
+    let chunks = cleaner.clean(TEST_URL, html).await;
 
     assert!(
         chunks.is_ok(),
@@ -382,7 +385,7 @@ async fn test_semantic_cleaner_long_content() {
             </article>
         "#;
 
-    let chunks = cleaner.clean(html).await;
+    let chunks = cleaner.clean(TEST_URL, html).await;
 
     assert!(
         chunks.is_ok(),
@@ -449,7 +452,7 @@ async fn test_error_chunk_too_large() {
     let long_content = "Test. ".repeat(2000);
     let html = format!("<p>{long_content}</p>");
 
-    let result = cleaner.clean(&html).await;
+    let result = cleaner.clean(TEST_URL, &html).await;
 
     match result {
         Ok(chunks) => {
@@ -497,7 +500,7 @@ async fn test_pipeline_empty_input() {
         .expect("cached ONNX model required");
 
     let html = "";
-    let chunks = cleaner.clean(html).await;
+    let chunks = cleaner.clean(TEST_URL, html).await;
 
     assert!(chunks.is_ok(), "Empty input should not fail");
     let chunks = chunks.unwrap();
@@ -514,7 +517,7 @@ async fn test_pipeline_html_only() {
         .expect("cached ONNX model required");
 
     let html = "<div></div><span></span>";
-    let chunks = cleaner.clean(html).await;
+    let chunks = cleaner.clean(TEST_URL, html).await;
 
     assert!(chunks.is_ok(), "HTML-only input should not fail");
     let chunks = chunks.unwrap();

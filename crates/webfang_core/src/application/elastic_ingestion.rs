@@ -196,7 +196,7 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
         #[cfg(feature = "ai")]
         {
             if let Some(cleaner) = &self.cleaner {
-                self.cleaner_chunks(cleaner, &bytes).await
+                self.cleaner_chunks(cleaner, url, &bytes).await
             } else {
                 self.bridge_chunks(url, bytes, size).await
             }
@@ -342,11 +342,12 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
     async fn cleaner_chunks(
         &self,
         cleaner: &std::sync::Arc<dyn crate::domain::semantic_cleaner::SemanticCleaner>,
+        url: &str,
         bytes: &[u8],
     ) -> Result<Vec<crate::infrastructure::bridge::ProcessedChunk>, ScraperError> {
         let html = String::from_utf8_lossy(bytes);
         let doc_chunks = cleaner
-            .clean(&html)
+            .clean(url, &html)
             .await
             .map_err(|e| ScraperError::ingestion(format!("limpieza semántica falló: {e}")))?;
         Ok(doc_chunks

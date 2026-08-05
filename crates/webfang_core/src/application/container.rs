@@ -585,6 +585,7 @@ mod tests {
     impl crate::domain::semantic_cleaner::SemanticCleaner for FakeCleaner {
         fn clean<'a>(
             &'a self,
+            _url: &'a str,
             _html: &'a str,
         ) -> std::pin::Pin<
             Box<

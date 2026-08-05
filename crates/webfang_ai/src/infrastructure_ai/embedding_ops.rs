@@ -14,34 +14,34 @@ use wide::f32x8;
 
 /// SIMD-accelerated cosine similarity
 ///
-/// Computes cosine similarity between two vectors using AVX2 SIMD instructions.
+/// Computes true cosine similarity between two vectors using AVX2 SIMD for the
+/// dot product and scalar magnitude normalization.
 ///
 /// # Mathematical Background
 ///
-/// For normalized vectors (unit length), cosine similarity equals dot product:
 /// ```text
 /// cos(θ) = (A · B) / (||A|| × ||B||)
 /// ```
 ///
-/// When `||A|| = ||B|| = 1` (normalized):
-/// ```text
-/// cos(θ) = A · B = Σ(aᵢ × bᵢ)
-/// ```
-///
-/// The `all-MiniLM-L6-v2` model outputs normalized embeddings, so we can use
-/// dot product directly.
+/// Unlike a raw dot product, this function divides by both magnitudes so it
+/// produces correct cosine similarity for **any** input vectors — not just
+/// pre-normalized unit vectors. This is critical for
+/// [`RelevanceScorer::score`](crate::infrastructure_ai::RelevanceScorer::score),
+/// which does not normalize embeddings before scoring.
 ///
 /// # Arguments
 ///
-/// * `a` - First vector (should be normalized)
-/// * `b` - Second vector (should be normalized)
+/// * `a` - First vector
+/// * `b` - Second vector
 ///
 /// # Returns
 ///
 /// Cosine similarity in range [-1.0, 1.0]:
-/// - `1.0`: Identical vectors
-/// - `0.0`: Orthogonal (unrelated)
-/// - `-1.0`: Opposite vectors
+/// - `1.0`: Identical direction
+/// - `0.0`: Orthogonal (unrelated) or zero-magnitude vector
+/// - `-1.0`: Opposite direction
+///
+/// Returns `0.0` for empty inputs or when either vector has zero magnitude.
 ///
 /// # Examples
 ///
@@ -50,9 +50,9 @@ use wide::f32x8;
 /// # fn example() {
 /// use webfang_ai::infrastructure_ai::embedding_ops::cosine_similarity;
 ///
-/// // Identical vectors
-/// let vec = vec![0.5f32, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5];
-/// let sim = cosine_similarity(&vec, &vec);
+/// // Identical non-unit vectors — true cosine similarity normalizes magnitudes
+/// let v = vec![2.0f32, 0.0, 0.0, 0.0];
+/// let sim = cosine_similarity(&v, &v);
 /// assert!((sim - 1.0).abs() < 0.001);
 ///
 /// // Orthogonal vectors
@@ -65,8 +65,8 @@ use wide::f32x8;
 ///
 /// # Performance Notes
 ///
-/// - Uses `wide::f32x8` for 8-wide SIMD parallelism
-/// - Processes 8 floats per instruction on Haswell (AVX2)
+/// - Uses `wide::f32x8` for 8-wide SIMD parallelism on the dot product
+/// - Magnitudes are computed scalar (cheap relative to inference)
 /// - Falls back to scalar for remainder elements
 #[must_use]
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -104,7 +104,15 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         dot_product += a[i] * b[i];
     }
 
-    dot_product
+    // Compute magnitudes for true cosine similarity normalization
+    let mag_a: f32 = a[..len].iter().map(|x| x * x).sum::<f32>().sqrt();
+    let mag_b: f32 = b[..len].iter().map(|x| x * x).sum::<f32>().sqrt();
+
+    if mag_a == 0.0 || mag_b == 0.0 {
+        return 0.0;
+    }
+
+    dot_product / (mag_a * mag_b)
 }
 
 /// Compute dot product of two vectors (scalar fallback)
