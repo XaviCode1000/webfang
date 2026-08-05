@@ -1,0 +1,26 @@
+name: Documentation issue
+description: Something in the docs is missing, wrong, or unclear.
+title: "docs: "
+labels: ["type:docs"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Point to the exact doc and what's off. (Podés escribir el cuerpo en español.)
+  - type: input
+    id: location
+    attributes:
+      label: Doc / page
+      description: "Path or URL, e.g. `docs/debugging.md` or the README section."
+    validations:
+      required: true
+  - type: textarea
+    id: issue
+    attributes:
+      label: What's missing / wrong / unclear
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: Proposed change

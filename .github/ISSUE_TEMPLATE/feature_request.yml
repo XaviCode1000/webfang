@@ -1,0 +1,43 @@
+name: Feature request
+description: Propose a new capability or behavior change.
+title: "feat: "
+labels: ["type:feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem you're solving, not just a solution — the
+        maintainer decides the approach. (Podés escribir el cuerpo en español.)
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / use case
+      description: "What are you trying to do that webfang can't do today?"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What should webfang do? CLI flags, output shape, etc.
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround
+      description: How do you solve it today, if at all?
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Likely area
+      options:
+        - Crawler (core)
+        - AI / semantic cleaning
+        - TUI selector
+        - MCP server
+        - CLI / export / Obsidian
+        - CI / docs / tooling
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance hints
+      description: "Optional — how would we know this is done? (flags, behavior, tests)"

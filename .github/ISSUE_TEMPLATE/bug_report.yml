@@ -1,0 +1,61 @@
+name: Bug report
+description: Report a problem so it can be fixed — include evidence, not just symptoms.
+title: "fix: "
+labels: ["type:bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing this. Issues without reproduction steps will be
+        returned for more info. (Podés escribir el cuerpo del issue en español.)
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: One or two sentences — what failed and where.
+      placeholder: "webfang fetch https://example.com --clean-ai panics / hangs / returns wrong output"
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Exact command, flags, target URL, and any config used. Sanitize secrets.
+      value: |
+        ```
+        webfang fetch <url> [flags]
+        ```
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the error output. Internal logs/tracing are in English.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: "Trace file (`--trace-file out.jsonl`), logs, or screenshots. Redact tokens/secrets."
+  - type: dropdown
+    id: build
+    attributes:
+      label: Build
+      description: Which build are you running?
+      options:
+        - Default features
+        - '--features ai'
+        - Built from source (dev)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "Output of `webfang --version` (or `git rev-parse HEAD` when building from source)"
+    validations:
+      required: true
