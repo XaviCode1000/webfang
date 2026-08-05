@@ -1,8 +1,7 @@
 //! Export flow — handles result export (standard and AI-cleaned) and file saving.
 
 use std::path::{Path, PathBuf};
-#[allow(unused_imports)]
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::cli::error::CliExit;
 use crate::domain::ScrapedContent;
@@ -14,10 +13,16 @@ use crate::{
 };
 
 #[cfg(feature = "ai")]
+use tracing::{error, info};
+
+#[cfg(feature = "ai")]
 use crate::domain::semantic_cleaner::SemanticCleaner;
 
 #[cfg(feature = "ai")]
 use crate::domain::DocumentChunk;
+
+#[cfg(feature = "ai")]
+use crate::error::SemanticError;
 
 // ============================================================================
 // Export Results (RAG pipeline)
@@ -106,7 +111,7 @@ async fn run_ai_export(
         config.results.len()
     );
 
-    let cleaned_chunks = clean_all_pages(config.results, &cleaner).await;
+    let cleaned_chunks = clean_all_pages(config.results, &cleaner).await?;
 
     info!(
         "AI cleaning complete: {} chunks from {} pages",
@@ -131,12 +136,16 @@ async fn run_ai_export(
 }
 
 /// Run the cleaner over every scraped page concurrently and fold the results
-/// into a single chunk list, falling back to the raw content on failure.
+/// into a single chunk list.
+///
+/// Per-page failures fall back to the raw content, but a TOTAL failure (every
+/// page fails to clean) is treated as a model/config error and propagated as
+/// `Err` instead of silently exiting 0 (#543).
 #[cfg(feature = "ai")]
 async fn clean_all_pages(
     results: &[ScrapedContent],
     cleaner: &std::sync::Arc<dyn SemanticCleaner>,
-) -> Vec<DocumentChunk> {
+) -> Result<Vec<DocumentChunk>, CliExit> {
     let cleaning_tasks: Vec<_> = results
         .iter()
         .map(|result| {
@@ -156,6 +165,8 @@ async fn clean_all_pages(
     let cleaning_results = futures::future::join_all(cleaning_tasks).await;
 
     let mut cleaned_chunks: Vec<DocumentChunk> = Vec::with_capacity(results.len() * 2);
+    let mut failed = 0usize;
+    let mut first_error: Option<SemanticError> = None;
     for (url, chunks_result, result) in cleaning_results {
         match chunks_result {
             Ok(chunks) => {
@@ -167,16 +178,29 @@ async fn clean_all_pages(
                 }
             },
             Err(e) => {
-                warn!(
-                    "Failed to clean content for {}: {}. Using fallback.",
-                    url, e
-                );
+                failed += 1;
+                error!("Failed to clean content for {}: {}", url, e);
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
                 cleaned_chunks.push(DocumentChunk::from_scraped_content(&result));
             },
         }
     }
 
-    cleaned_chunks
+    // If EVERY page failed to clean, the cause is a model/config failure (not
+    // per-content), so propagate it instead of returning raw fallback chunks
+    // with a success exit code (#543 regression).
+    if failed == results.len() && !results.is_empty() {
+        let detail = first_error
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "sin detalle de error disponible".to_string());
+        return Err(CliExit::ConfigError(format!(
+            "Falló la limpieza semántica AI en todas las páginas (error de modelo/configuración): {detail}"
+        )));
+    }
+
+    Ok(cleaned_chunks)
 }
 
 // ============================================================================
@@ -196,5 +220,92 @@ pub fn save_files(
     if let Err(e) = save_results(results, output_dir, format, obsidian_options) {
         warn!("Failed to save individual files: {}", e);
         // Continue — file save is non-fatal, RAG export succeeded
+    }
+}
+
+#[cfg(all(test, feature = "ai"))]
+mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+
+    use crate::cli::error::CliExit;
+    use crate::domain::semantic_cleaner::{private::Sealed, SemanticCleaner};
+    use crate::domain::value_objects::ValidUrl;
+    use crate::domain::DocumentChunk;
+    use crate::domain::ScrapedContent;
+    use crate::error::SemanticError;
+
+    use super::clean_all_pages;
+
+    /// Mock cleaner that always fails — used to assert total-failure propagation.
+    struct FailingCleaner;
+
+    impl Sealed for FailingCleaner {}
+
+    impl SemanticCleaner for FailingCleaner {
+        fn clean<'a>(
+            &'a self,
+            _html: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<DocumentChunk>, SemanticError>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                Err(SemanticError::Inference(
+                    "mock cleaner always fails (#543 regression)".into(),
+                ))
+            })
+        }
+
+        fn max_tokens(&self) -> usize {
+            512
+        }
+
+        fn is_ready(&self) -> bool {
+            true
+        }
+    }
+
+    fn sample_result(url: &str, html: &str) -> ScrapedContent {
+        ScrapedContent {
+            title: String::new(),
+            content: String::new(),
+            url: ValidUrl::parse(url).expect("valid test url"),
+            excerpt: None,
+            author: None,
+            date: None,
+            html: Some(html.to_string()),
+            assets: Vec::new(),
+            correlation_id: None,
+        }
+    }
+
+    /// #543 regression: when EVERY page fails to clean, the pipeline must return
+    /// an error (non-zero exit) instead of silently exiting 0 with raw fallback.
+    #[tokio::test]
+    async fn test_clean_all_pages_total_failure_propagates_error() {
+        let cleaner: Arc<dyn SemanticCleaner> = Arc::new(FailingCleaner);
+        let results = vec![
+            sample_result("https://example.com/a", "<p>a</p>"),
+            sample_result("https://example.com/b", "<p>b</p>"),
+        ];
+
+        let outcome = clean_all_pages(&results, &cleaner).await;
+
+        match outcome {
+            Err(CliExit::ConfigError(msg)) => {
+                assert!(
+                    msg.contains("todas las páginas"),
+                    "error should indicate total failure: {msg}"
+                );
+            },
+            other => panic!(
+                "expected Err(CliExit::ConfigError) for total clean failure, got {}",
+                if other.is_err() {
+                    "a different error variant"
+                } else {
+                    "Ok"
+                }
+            ),
+        }
     }
 }

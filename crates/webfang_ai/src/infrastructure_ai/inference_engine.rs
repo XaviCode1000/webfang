@@ -5,7 +5,10 @@
 //! - Async inference via `spawn_blocking` (`async-spawn-blocking`)
 //! - Clone Arc before await (`async-clone-before-await`)
 //! - 384-dimensional embedding output for IBM Granite models
-//! - **3-input ONNX model**: input_ids, attention_mask, token_type_ids
+//! - **2 required ONNX inputs**: `input_ids` and `attention_mask`
+//! - **`token_type_ids` is OPTIONAL**: only sent when the model graph declares it
+//!   (ModernBert/Granite never declare it). The input set is resolved from the
+//!   graph at worker startup, not hardcoded (#543).
 //!
 //! # Design Decisions
 //!
@@ -28,12 +31,13 @@ use webfang_core::error::SemanticError;
 
 /// Input data for ONNX model inference
 ///
-/// The Granite embedding models require 3 input tensors:
+/// The Granite/ModernBert embedding models require 2 input tensors:
 /// 1. `input_ids` - Token IDs (vocab indices)
 /// 2. `attention_mask` - Which tokens are real (1) vs padding (0)
-/// 3. `token_type_ids` - Segment IDs (0 for single sentence)
 ///
-/// All vectors must have the same length (sequence length).
+/// `token_type_ids` is OPTIONAL and is only sent when the model graph declares
+/// it (forward-compat). All vectors must have the same length (sequence length).
+/// See [`InputPlan`] for how the actual input set is resolved from the graph.
 #[derive(Debug, Clone)]
 pub struct ModelInput {
     /// Token IDs (vocab indices)
@@ -95,6 +99,83 @@ impl ModelInput {
             attention_mask: vec![1i64; seq_len],
             token_type_ids: vec![0i64; seq_len],
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// InputPlan: resolve the real input set of the ONNX graph once per worker
+// ---------------------------------------------------------------------------
+
+/// Resolved ONNX input plan: the subset of inputs the model graph actually
+/// declares, in graph declaration order.
+///
+/// The Granite/ModernBert models only require `input_ids` and `attention_mask`.
+/// `token_type_ids` is OPTIONAL and is only fed when the graph declares it.
+/// Resolving the plan once at worker startup (instead of using a hardcoded
+/// 3-input assumption) is what fixes the `Invalid input name: token_type_ids`
+/// failure (#543): we never send an input the graph does not declare.
+#[derive(Debug, Clone)]
+pub struct InputPlan {
+    /// Owned input names in graph declaration order.
+    names: Vec<String>,
+}
+
+impl InputPlan {
+    /// Resolve a plan from the raw input names declared by the model graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SemanticError::Inference` if a required input (`input_ids` or
+    /// `attention_mask`) is missing, or if the graph declares an unsupported
+    /// input name (anything other than the three recognized tensors).
+    pub fn resolve(names: &[&str]) -> Result<Self, SemanticError> {
+        const REQUIRED: [&str; 2] = ["input_ids", "attention_mask"];
+        const KNOWN: [&str; 3] = ["input_ids", "attention_mask", "token_type_ids"];
+
+        let present: std::collections::HashSet<&str> = names.iter().copied().collect();
+        let missing: Vec<&str> = REQUIRED
+            .iter()
+            .copied()
+            .filter(|r| !present.contains(r))
+            .collect();
+        if !missing.is_empty() {
+            return Err(SemanticError::Inference(format!(
+                "missing required model inputs: {}",
+                missing.join(", ")
+            )));
+        }
+
+        for n in names {
+            if !KNOWN.contains(n) {
+                return Err(SemanticError::Inference(format!("unsupported input: {n}")));
+            }
+        }
+
+        Ok(Self {
+            names: names.iter().map(|n| n.to_string()).collect(),
+        })
+    }
+
+    /// Build a plan by introspecting a built `ort::Session`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`InputPlan::resolve`] errors when the graph's inputs do not
+    /// satisfy the required/known contract.
+    pub fn from_session(session: &Session) -> Result<Self, SemanticError> {
+        let owned: Vec<String> = session
+            .inputs()
+            .iter()
+            .map(|o| o.name().to_string())
+            .collect();
+        let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
+        Self::resolve(&borrowed)
+    }
+
+    /// Input names in graph declaration order.
+    #[must_use]
+    pub fn names(&self) -> &[String] {
+        &self.names
     }
 }
 
@@ -206,11 +287,28 @@ impl InferencePool {
                         },
                     };
 
+                    // Resolve the real input set ONCE (per worker), after the
+                    // session is built. This decouples feeding from the old
+                    // hardcoded 3-input assumption (#543).
+                    let plan = match InputPlan::from_session(&session) {
+                        Ok(plan) => plan,
+                        Err(e) => {
+                            error!(
+                                worker_id,
+                                error = %e,
+                                "Failed to resolve model input plan"
+                            );
+                            while receiver.recv().is_ok() {}
+                            return;
+                        },
+                    };
+
                     debug!(worker_id, "Worker ready, waiting for requests");
 
                     // Request loop
                     while let Ok(request) = receiver.recv() {
-                        let result = run_session_inference(&mut session, &request.input, variant);
+                        let result =
+                            run_session_inference(&mut session, &request.input, variant, &plan);
                         let _ = request.reply_tx.send(result);
                     }
 
@@ -316,49 +414,62 @@ impl Drop for InferencePool {
 ///
 /// Used by `InferencePool` workers that own persistent sessions.
 /// Handles tensor creation, session execution, mean pooling, and L2 normalization.
+///
+/// Inputs are built by iterating `plan.names` (the model graph's real input
+/// set), so an undeclared `token_type_ids` is simply never sent (#543).
 fn run_session_inference(
     session: &mut Session,
     input: &ModelInput,
     model_variant: AiModel,
+    plan: &InputPlan,
 ) -> Result<Vec<f32>, SemanticError> {
     let seq_len = input.seq_len();
     let model_native_dim = model_variant.embedding_dim();
     let model_output_dim = model_variant.output_dim();
 
-    // Build named input tensors using ndarray + Tensor::from_array
-    let input_ids_array =
-        ndarray::Array2::<i64>::from_shape_vec((1, seq_len), input.input_ids.clone()).map_err(
-            |e| SemanticError::Inference(format!("failed to create input_ids array: {e}")),
-        )?;
+    // Build named input tensors from the resolved plan, in graph order.
+    let mut named_inputs: Vec<(
+        std::borrow::Cow<'_, str>,
+        ort::session::SessionInputValue<'_>,
+    )> = Vec::with_capacity(plan.names.len());
 
-    let attention_mask_array =
-        ndarray::Array2::<i64>::from_shape_vec((1, seq_len), input.attention_mask.clone())
-            .map_err(|e| {
-                SemanticError::Inference(format!("failed to create attention_mask array: {e}"))
-            })?;
+    for name in plan.names() {
+        let array = match name.as_str() {
+            "input_ids" => {
+                ndarray::Array2::<i64>::from_shape_vec((1, seq_len), input.input_ids.clone())
+                    .map_err(|e| {
+                        SemanticError::Inference(format!("failed to create input_ids array: {e}"))
+                    })?
+            },
+            "attention_mask" => {
+                ndarray::Array2::<i64>::from_shape_vec((1, seq_len), input.attention_mask.clone())
+                    .map_err(|e| {
+                    SemanticError::Inference(format!("failed to create attention_mask array: {e}"))
+                })?
+            },
+            "token_type_ids" => {
+                ndarray::Array2::<i64>::from_shape_vec((1, seq_len), input.token_type_ids.clone())
+                    .map_err(|e| {
+                    SemanticError::Inference(format!("failed to create token_type_ids array: {e}"))
+                })?
+            },
+            other => {
+                return Err(SemanticError::Inference(format!(
+                    "unsupported input: {other}"
+                )));
+            },
+        };
 
-    let token_type_ids_array =
-        ndarray::Array2::<i64>::from_shape_vec((1, seq_len), input.token_type_ids.clone())
-            .map_err(|e| {
-                SemanticError::Inference(format!("failed to create token_type_ids array: {e}"))
-            })?;
+        let tensor = ort::value::Tensor::from_array(array).map_err(|e| {
+            SemanticError::Inference(format!("failed to create {name} tensor: {e}"))
+        })?;
 
-    // Run inference with named inputs
+        named_inputs.push((std::borrow::Cow::Borrowed(name.as_str()), tensor.into()));
+    }
+
+    // Run inference with the name->value map resolved from the graph.
     let outputs = session
-        .run(ort::inputs![
-            "input_ids" => ort::value::Tensor::from_array(input_ids_array)
-                .map_err(|e| SemanticError::Inference(format!(
-                    "failed to create input_ids tensor: {e}"
-                )))?,
-            "attention_mask" => ort::value::Tensor::from_array(attention_mask_array)
-                .map_err(|e| SemanticError::Inference(format!(
-                    "failed to create attention_mask tensor: {e}"
-                )))?,
-            "token_type_ids" => ort::value::Tensor::from_array(token_type_ids_array)
-                .map_err(|e| SemanticError::Inference(format!(
-                    "failed to create token_type_ids tensor: {e}"
-                )))?,
-        ])
+        .run(named_inputs)
         .map_err(|e| SemanticError::Inference(format!("model execution failed: {e}")))?;
 
     // Extract last_hidden_state output
@@ -530,5 +641,67 @@ mod tests {
             (norm - 1.0).abs() < 1e-5,
             "L2 norm should be 1.0, got {norm}"
         );
+    }
+
+    // --- InputPlan tests (pure, no ONNX model required) ---
+
+    /// #543 exact contract: a 2-input ModernBert graph (no token_type_ids)
+    /// resolves successfully and omits token_type_ids.
+    #[test]
+    fn test_input_plan_resolve_two_inputs_omits_token_type_ids() {
+        let plan = InputPlan::resolve(&["input_ids", "attention_mask"]);
+        let plan = plan.expect("2-input graph should resolve");
+        assert_eq!(plan.names(), &["input_ids", "attention_mask"]);
+    }
+
+    /// Forward-compat: a graph that declares all 3 inputs still resolves.
+    #[test]
+    fn test_input_plan_resolve_three_inputs_ok() {
+        let plan = InputPlan::resolve(&["input_ids", "attention_mask", "token_type_ids"]);
+        let plan = plan.expect("3-input graph should resolve");
+        assert_eq!(
+            plan.names(),
+            &["input_ids", "attention_mask", "token_type_ids"]
+        );
+    }
+
+    /// Missing required input `input_ids` is an error naming the missing input.
+    #[test]
+    fn test_input_plan_resolve_missing_input_ids_errors() {
+        let err =
+            InputPlan::resolve(&["attention_mask"]).expect_err("missing input_ids must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("input_ids"),
+            "error should name missing input: {msg}"
+        );
+        assert!(
+            msg.contains("missing required"),
+            "error should report missing required: {msg}"
+        );
+    }
+
+    /// An unsupported input name is rejected.
+    #[test]
+    fn test_input_plan_resolve_unsupported_input_errors() {
+        let err = InputPlan::resolve(&["input_ids", "attention_mask", "position_ids"])
+            .expect_err("unsupported input must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unsupported"),
+            "error should report unsupported: {msg}"
+        );
+        assert!(
+            msg.contains("position_ids"),
+            "error should name offending input: {msg}"
+        );
+    }
+
+    /// Inputs are matched by name, so graph order does not matter.
+    #[test]
+    fn test_input_plan_resolve_order_inverted_ok() {
+        let plan = InputPlan::resolve(&["attention_mask", "input_ids"]);
+        let plan = plan.expect("reordered 2-input graph should resolve");
+        assert_eq!(plan.names(), &["attention_mask", "input_ids"]);
     }
 }
