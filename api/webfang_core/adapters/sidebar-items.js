@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["detector","downloader","extractor","url_path"]};

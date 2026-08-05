@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["SitemapError"],"fn":["parse_sitemap","resolve_url"],"struct":["SitemapParser"],"type":["Result"]};

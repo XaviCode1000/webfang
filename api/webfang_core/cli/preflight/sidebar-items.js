@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["PreflightResult"],"fn":["apply_config_defaults","apply_tui_config","apply_tui_config_args","icon","preflight_check"]};

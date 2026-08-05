@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_BLOB_LEN","MAX_DOMAIN_LEN","MAX_PATH_LEN","MAX_URL_LEN"],"fn":["require_http_url","require_max_len","require_max_value_u16","require_max_value_u64","require_non_empty","require_one_of","require_safe_domain","require_safe_name","require_safe_path","require_safe_seed"]};

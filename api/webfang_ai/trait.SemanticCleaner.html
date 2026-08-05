@@ -1,0 +1,112 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Semantic Cleaner — AI-powered content cleaning interface"><title>SemanticCleaner in webfang_ai - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2" crossorigin href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-1a91846b.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="webfang_ai" data-themes="" data-resource-suffix="" data-rustdoc-version="1.88.0 (6b00bc388 2025-06-23)" data-channel="1.88.0" data-search-js="search-f7877310.js" data-settings-js="settings-5514c975.js" ><script src="../static.files/storage-4e99c027.js"></script><script defer src="sidebar-items.js"></script><script defer src="../static.files/main-7ef8a74a.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-893ab5e7.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-6580c154.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc trait"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="mobile-topbar"><button class="sidebar-menu-toggle" title="show sidebar"></button></nav><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../webfang_ai/index.html">webfang_<wbr>ai</a><span class="version">2.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Semantic<wbr>Cleaner</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#examples" title="Examples">Examples</a></li><li><a href="#errors" title="Errors">Errors</a></li><li><a href="#implementation-notes" title="Implementation Notes">Implementation Notes</a></li></ul><h3><a href="#required-methods">Required Methods</a></h3><ul class="block"><li><a href="#tymethod.clean" title="clean">clean</a></li><li><a href="#tymethod.is_ready" title="is_ready">is_ready</a></li><li><a href="#tymethod.max_tokens" title="max_tokens">max_tokens</a></li></ul><h3><a href="#implementors">Implementors</a></h3></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="index.html">In crate webfang_<wbr>ai</a></h2></div></div></nav><div class="sidebar-resizer"></div><main><div class="width-limiter"><rustdoc-search></rustdoc-search><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="index.html">webfang_ai</a></div><h1>Trait <span class="trait">SemanticCleaner</span><button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/webfang_core/domain/semantic_cleaner.rs.html#70">Source</a> </span></div><pre class="rust item-decl"><code>pub trait SemanticCleaner:
+    <a class="trait" href="../webfang_core/domain/semantic_cleaner/private/trait.Sealed.html" title="trait webfang_core::domain::semantic_cleaner::private::Sealed">Sealed</a>
+    + <a class="trait" href="https://doc.rust-lang.org/1.88.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a>
+    + <a class="trait" href="https://doc.rust-lang.org/1.88.0/core/marker/trait.Sync.html" title="trait core::marker::Sync">Sync</a> {
+    // Required methods
+    fn <a href="#tymethod.clean" class="fn">clean</a>&lt;'a&gt;(
+        &amp;'a self,
+        html: &amp;'a <a class="primitive" href="https://doc.rust-lang.org/1.88.0/std/primitive.str.html">str</a>,
+    ) -&gt; <a class="struct" href="https://doc.rust-lang.org/1.88.0/core/pin/struct.Pin.html" title="struct core::pin::Pin">Pin</a>&lt;<a class="struct" href="https://doc.rust-lang.org/1.88.0/alloc/boxed/struct.Box.html" title="struct alloc::boxed::Box">Box</a>&lt;dyn <a class="trait" href="https://doc.rust-lang.org/1.88.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="enum" href="https://doc.rust-lang.org/1.88.0/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="struct" href="https://doc.rust-lang.org/1.88.0/alloc/vec/struct.Vec.html" title="struct alloc::vec::Vec">Vec</a>&lt;<a class="struct" href="struct.DocumentChunk.html" title="struct webfang_ai::DocumentChunk">DocumentChunk</a>&gt;, <a class="enum" href="enum.SemanticError.html" title="enum webfang_ai::SemanticError">SemanticError</a>&gt;&gt; + <a class="trait" href="https://doc.rust-lang.org/1.88.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> + 'a&gt;&gt;;
+<span class="item-spacer"></span>    fn <a href="#tymethod.max_tokens" class="fn">max_tokens</a>(&amp;self) -&gt; <a class="primitive" href="https://doc.rust-lang.org/1.88.0/std/primitive.usize.html">usize</a>;
+<span class="item-spacer"></span>    fn <a href="#tymethod.is_ready" class="fn">is_ready</a>(&amp;self) -&gt; <a class="primitive" href="https://doc.rust-lang.org/1.88.0/std/primitive.bool.html">bool</a>;
+}</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Semantic Cleaner — AI-powered content cleaning interface</p>
+<p>This trait defines the contract for cleaning HTML content using AI models.
+Implementations use ONNX models (sentence-transformers) to:</p>
+<ul>
+<li>Split content into semantic chunks</li>
+<li>Validate chunk sizes (token limits)</li>
+<li>Prepare content for embedding generation</li>
+</ul>
+<h2 id="examples"><a class="doc-anchor" href="#examples">§</a>Examples</h2>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">let </span>html = <span class="string">"&lt;html&gt;&lt;body&gt;&lt;p&gt;Hello World&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;"</span>;
+<span class="kw">let </span>chunks = cleaner.clean(html).<span class="kw">await</span><span class="question-mark">?</span>;
+<span class="macro">println!</span>(<span class="string">"Generated {} chunks"</span>, chunks.len());</code></pre></div>
+<h2 id="errors"><a class="doc-anchor" href="#errors">§</a>Errors</h2>
+<p>Returns <a href="enum.SemanticError.html" title="enum webfang_ai::SemanticError"><code>SemanticError</code></a> in these cases:</p>
+<ul>
+<li><a href="enum.SemanticError.html#variant.ModelLoad" title="variant webfang_ai::SemanticError::ModelLoad"><code>SemanticError::ModelLoad</code></a>: Failed to load ONNX model from cache</li>
+<li><a href="enum.SemanticError.html#variant.Tokenize" title="variant webfang_ai::SemanticError::Tokenize"><code>SemanticError::Tokenize</code></a>: Tokenization failed (invalid input)</li>
+<li><a href="enum.SemanticError.html#variant.Inference" title="variant webfang_ai::SemanticError::Inference"><code>SemanticError::Inference</code></a>: ONNX inference failed</li>
+<li><a href="enum.SemanticError.html#variant.ChunkTooLarge" title="variant webfang_ai::SemanticError::ChunkTooLarge"><code>SemanticError::ChunkTooLarge</code></a>: Content exceeds model’s token limit</li>
+<li><a href="enum.SemanticError.html#variant.Download" title="variant webfang_ai::SemanticError::Download"><code>SemanticError::Download</code></a>: Model download failed (if auto-download enabled)</li>
+</ul>
+<h2 id="implementation-notes"><a class="doc-anchor" href="#implementation-notes">§</a>Implementation Notes</h2>
+<ul>
+<li>Implementations MUST be thread-safe (<code>Send + Sync</code>)</li>
+<li>Implementations MUST cache models to avoid reloading</li>
+<li>Implementations MUST use memory-mapped files for large models (<code>mem-zero-copy</code>)</li>
+</ul>
+</div></details><h2 id="required-methods" class="section-header">Required Methods<a href="#required-methods" class="anchor">§</a></h2><div class="methods"><details class="toggle method-toggle" open><summary><section id="tymethod.clean" class="method"><a class="src rightside" href="../src/webfang_core/domain/semantic_cleaner.rs.html#123-126">Source</a><h4 class="code-header">fn <a href="#tymethod.clean" class="fn">clean</a>&lt;'a&gt;(
+    &amp;'a self,
+    html: &amp;'a <a class="primitive" href="https://doc.rust-lang.org/1.88.0/std/primitive.str.html">str</a>,
+) -&gt; <a class="struct" href="https://doc.rust-lang.org/1.88.0/core/pin/struct.Pin.html" title="struct core::pin::Pin">Pin</a>&lt;<a class="struct" href="https://doc.rust-lang.org/1.88.0/alloc/boxed/struct.Box.html" title="struct alloc::boxed::Box">Box</a>&lt;dyn <a class="trait" href="https://doc.rust-lang.org/1.88.0/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="enum" href="https://doc.rust-lang.org/1.88.0/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="struct" href="https://doc.rust-lang.org/1.88.0/alloc/vec/struct.Vec.html" title="struct alloc::vec::Vec">Vec</a>&lt;<a class="struct" href="struct.DocumentChunk.html" title="struct webfang_ai::DocumentChunk">DocumentChunk</a>&gt;, <a class="enum" href="enum.SemanticError.html" title="enum webfang_ai::SemanticError">SemanticError</a>&gt;&gt; + <a class="trait" href="https://doc.rust-lang.org/1.88.0/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> + 'a&gt;&gt;</h4></section></summary><div class="docblock"><p>Clean HTML content and split into semantic chunks</p>
+<p>This is the main entry point for semantic cleaning. It:</p>
+<ol>
+<li>Strips HTML tags and extracts text</li>
+<li>Splits text into semantic chunks (paragraphs, sections)</li>
+<li>Validates chunk sizes against model token limits</li>
+<li>Returns chunks ready for embedding generation</li>
+</ol>
+<h5 id="arguments"><a class="doc-anchor" href="#arguments">§</a>Arguments</h5>
+<ul>
+<li><code>html</code> - Raw HTML content to clean (borrowed, <code>&amp;str</code> not <code>&amp;String</code>)</li>
+</ul>
+<h5 id="returns"><a class="doc-anchor" href="#returns">§</a>Returns</h5>
+<ul>
+<li><code>Ok(Vec&lt;DocumentChunk&gt;)</code> - Successfully cleaned chunks</li>
+<li><code>Err(SemanticError)</code> - Cleaning failed</li>
+</ul>
+<h5 id="errors-1"><a class="doc-anchor" href="#errors-1">§</a>Errors</h5>
+<p>Returns <a href="enum.SemanticError.html#variant.ChunkTooLarge" title="variant webfang_ai::SemanticError::ChunkTooLarge"><code>SemanticError::ChunkTooLarge</code></a> if any chunk exceeds the model’s
+token limit (32768 tokens for IBM Granite-97M).</p>
+<p>Returns <a href="enum.SemanticError.html#variant.Tokenize" title="variant webfang_ai::SemanticError::Tokenize"><code>SemanticError::Tokenize</code></a> if the input contains invalid UTF-8
+or special characters that break tokenization.</p>
+<h5 id="examples-1"><a class="doc-anchor" href="#examples-1">§</a>Examples</h5>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">let </span>html = <span class="string">"&lt;article&gt;&lt;h1&gt;Title&lt;/h1&gt;&lt;p&gt;Content here...&lt;/p&gt;&lt;/article&gt;"</span>;
+<span class="kw">let </span>chunks = cleaner.clean(html).<span class="kw">await</span><span class="question-mark">?</span>;
+
+<span class="kw">for </span>chunk <span class="kw">in </span><span class="kw-2">&amp;</span>chunks {
+    <span class="macro">println!</span>(<span class="string">"Chunk {}: {} chars"</span>, chunk.id, chunk.content.len());
+}</code></pre></div>
+<h5 id="performance"><a class="doc-anchor" href="#performance">§</a>Performance</h5>
+<ul>
+<li><strong>First call</strong>: May trigger model download (~90MB) + load (~100-500ms)</li>
+<li><strong>Subsequent calls</strong>: Cache hit, ~10-50ms per page</li>
+<li><strong>Memory</strong>: Uses memory-mapped files, ~90MB virtual memory (not RSS)</li>
+</ul>
+<h5 id="note"><a class="doc-anchor" href="#note">§</a>Note</h5>
+<p>Desugared to a boxed future (<code>Pin&lt;Box&lt;dyn Future + Send&gt;&gt;</code>) instead of
+<code>async fn</code> so the trait stays dyn-compatible (<code>Box&lt;dyn SemanticCleaner&gt;</code>).
+The single lifetime <code>'a</code> ties <code>&amp;self</code> and <code>html</code> to the returned future,
+matching the <code>async-trait</code> macro’s default desugaring.</p>
+</div></details><details class="toggle method-toggle" open><summary><section id="tymethod.max_tokens" class="method"><a class="src rightside" href="../src/webfang_core/domain/semantic_cleaner.rs.html#146">Source</a><h4 class="code-header">fn <a href="#tymethod.max_tokens" class="fn">max_tokens</a>(&amp;self) -&gt; <a class="primitive" href="https://doc.rust-lang.org/1.88.0/std/primitive.usize.html">usize</a></h4></section></summary><div class="docblock"><p>Get the model’s maximum token limit</p>
+<p>This is useful for validating content before processing.</p>
+<h5 id="returns-1"><a class="doc-anchor" href="#returns-1">§</a>Returns</h5>
+<p>Maximum number of tokens the model accepts per chunk.
+For <code>all-MiniLM-L6-v2</code>, this is 512 tokens.</p>
+<h5 id="examples-2"><a class="doc-anchor" href="#examples-2">§</a>Examples</h5>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">fn </span>example(cleaner: <span class="kw-2">&amp;</span><span class="kw">dyn </span>SemanticCleaner) {
+    <span class="kw">let </span>max_tokens = cleaner.max_tokens();
+    <span class="macro">println!</span>(<span class="string">"Model accepts up to {} tokens per chunk"</span>, max_tokens);
+}</code></pre></div>
+</div></details><details class="toggle method-toggle" open><summary><section id="tymethod.is_ready" class="method"><a class="src rightside" href="../src/webfang_core/domain/semantic_cleaner.rs.html#172">Source</a><h4 class="code-header">fn <a href="#tymethod.is_ready" class="fn">is_ready</a>(&amp;self) -&gt; <a class="primitive" href="https://doc.rust-lang.org/1.88.0/std/primitive.bool.html">bool</a></h4></section></summary><div class="docblock"><p>Check if the model is ready for inference</p>
+<p>This method verifies that:</p>
+<ul>
+<li>Model file exists in cache</li>
+<li>Model file passes SHA256 validation</li>
+<li>Model can be loaded into memory</li>
+</ul>
+<h5 id="returns-2"><a class="doc-anchor" href="#returns-2">§</a>Returns</h5>
+<ul>
+<li><code>true</code> - Model is ready</li>
+<li><code>false</code> - Model needs download or reload</li>
+</ul>
+<h5 id="examples-3"><a class="doc-anchor" href="#examples-3">§</a>Examples</h5>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">fn </span>example(cleaner: <span class="kw-2">&amp;</span><span class="kw">dyn </span>SemanticCleaner) {
+    <span class="kw">if </span>cleaner.is_ready() {
+        <span class="macro">println!</span>(<span class="string">"Model ready for inference"</span>);
+    } <span class="kw">else </span>{
+        <span class="macro">println!</span>(<span class="string">"Model needs download or reload"</span>);
+    }
+}</code></pre></div>
+</div></details></div><h2 id="implementors" class="section-header">Implementors<a href="#implementors" class="anchor">§</a></h2><div id="implementors-list"><section id="impl-SemanticCleaner-for-SemanticCleanerImpl" class="impl"><a class="src rightside" href="../src/webfang_ai/infrastructure_ai/semantic_cleaner_impl.rs.html#354-457">Source</a><a href="#impl-SemanticCleaner-for-SemanticCleanerImpl" class="anchor">§</a><h3 class="code-header">impl <a class="trait" href="trait.SemanticCleaner.html" title="trait webfang_ai::SemanticCleaner">SemanticCleaner</a> for <a class="struct" href="infrastructure_ai/semantic_cleaner_impl/struct.SemanticCleanerImpl.html" title="struct webfang_ai::infrastructure_ai::semantic_cleaner_impl::SemanticCleanerImpl">SemanticCleanerImpl</a></h3></section></div><script src="../trait.impl/webfang_core/domain/semantic_cleaner/trait.SemanticCleaner.js" async></script></section></div></main></body></html>

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["OutputPathError","UrlPathError"],"struct":["Domain","OutputPath","UrlPath"]};

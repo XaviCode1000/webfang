@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["DownloadError"],"mod":["chromiumoxide_downloader","cookie_bridge","hybrid_router","obscura_downloader","resource_governor","spa_detector","wreq_downloader"],"struct":["Cookie","FetchedPage"],"trait":["Downloader"]};

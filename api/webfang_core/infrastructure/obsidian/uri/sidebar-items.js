@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["build_obsidian_uri","extract_vault_name","open_in_obsidian","open_note","validate_obsidian_input"]};

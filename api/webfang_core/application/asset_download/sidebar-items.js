@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["download_assets_if_enabled"]};

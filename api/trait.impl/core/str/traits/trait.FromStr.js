@@ -1,0 +1,9 @@
+(function() {
+    var implementors = Object.fromEntries([["webfang_ai",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.88.0/core/str/traits/trait.FromStr.html\" title=\"trait core::str::traits::FromStr\">FromStr</a> for <a class=\"enum\" href=\"webfang_ai/infrastructure_ai/cache_config/enum.AiModel.html\" title=\"enum webfang_ai::infrastructure_ai::cache_config::AiModel\">AiModel</a>"]]],["webfang_core",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.88.0/core/str/traits/trait.FromStr.html\" title=\"trait core::str::traits::FromStr\">FromStr</a> for <a class=\"enum\" href=\"webfang_core/domain/js_strategy/enum.JsStrategy.html\" title=\"enum webfang_core::domain::js_strategy::JsStrategy\">JsStrategy</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.88.0/core/str/traits/trait.FromStr.html\" title=\"trait core::str::traits::FromStr\">FromStr</a> for <a class=\"enum\" href=\"webfang_core/infrastructure/observability/logging/enum.LogFormat.html\" title=\"enum webfang_core::infrastructure::observability::logging::LogFormat\">LogFormat</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.88.0/core/str/traits/trait.FromStr.html\" title=\"trait core::str::traits::FromStr\">FromStr</a> for <a class=\"struct\" href=\"webfang_core/domain/config/struct.ConcurrencyConfig.html\" title=\"struct webfang_core::domain::config::ConcurrencyConfig\">ConcurrencyConfig</a>"]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":57,"fragment_lengths":[347,1030]}

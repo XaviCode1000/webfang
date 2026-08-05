@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ErrorClass","ScraperError","SemanticError"],"type":["Result"]};

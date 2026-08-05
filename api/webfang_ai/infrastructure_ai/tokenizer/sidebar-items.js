@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_MAX_LENGTH"],"fn":["tokenize_text"],"mod":["special_tokens"],"struct":["MiniLmTokenizer","TokenBatch"]};

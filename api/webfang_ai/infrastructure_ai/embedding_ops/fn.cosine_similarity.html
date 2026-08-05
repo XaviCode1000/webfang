@@ -1,0 +1,41 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="SIMD-accelerated cosine similarity"><title>cosine_similarity in webfang_ai::infrastructure_ai::embedding_ops - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-1a91846b.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="webfang_ai" data-themes="" data-resource-suffix="" data-rustdoc-version="1.88.0 (6b00bc388 2025-06-23)" data-channel="1.88.0" data-search-js="search-f7877310.js" data-settings-js="settings-5514c975.js" ><script src="../../../static.files/storage-4e99c027.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../../static.files/main-7ef8a74a.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-893ab5e7.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-6580c154.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc fn"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="mobile-topbar"><button class="sidebar-menu-toggle" title="show sidebar"></button></nav><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../../webfang_ai/index.html">webfang_<wbr>ai</a><span class="version">2.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">cosine_<wbr>similarity</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#mathematical-background" title="Mathematical Background">Mathematical Background</a></li><li><a href="#arguments" title="Arguments">Arguments</a></li><li><a href="#returns" title="Returns">Returns</a></li><li><a href="#examples" title="Examples">Examples</a></li><li><a href="#performance-notes" title="Performance Notes">Performance Notes</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="index.html">In webfang_<wbr>ai::<wbr>infrastructure_<wbr>ai::<wbr>embedding_<wbr>ops</a></h2></div></div></nav><div class="sidebar-resizer"></div><main><div class="width-limiter"><rustdoc-search></rustdoc-search><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../../index.html">webfang_ai</a>::<wbr><a href="../index.html">infrastructure_ai</a>::<wbr><a href="index.html">embedding_ops</a></div><h1>Function <span class="fn">cosine_similarity</span><button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../../src/webfang_ai/infrastructure_ai/embedding_ops.rs.html#72-108">Source</a> </span></div><pre class="rust item-decl"><code>pub fn cosine_similarity(a: &amp;[<a class="primitive" href="https://doc.rust-lang.org/1.88.0/std/primitive.f32.html">f32</a>], b: &amp;[<a class="primitive" href="https://doc.rust-lang.org/1.88.0/std/primitive.f32.html">f32</a>]) -&gt; <a class="primitive" href="https://doc.rust-lang.org/1.88.0/std/primitive.f32.html">f32</a></code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>SIMD-accelerated cosine similarity</p>
+<p>Computes cosine similarity between two vectors using AVX2 SIMD instructions.</p>
+<h2 id="mathematical-background"><a class="doc-anchor" href="#mathematical-background">§</a>Mathematical Background</h2>
+<p>For normalized vectors (unit length), cosine similarity equals dot product:</p>
+<div class="example-wrap"><pre class="language-text"><code>cos(θ) = (A · B) / (||A|| × ||B||)</code></pre></div>
+<p>When <code>||A|| = ||B|| = 1</code> (normalized):</p>
+<div class="example-wrap"><pre class="language-text"><code>cos(θ) = A · B = Σ(aᵢ × bᵢ)</code></pre></div>
+<p>The <code>all-MiniLM-L6-v2</code> model outputs normalized embeddings, so we can use
+dot product directly.</p>
+<h2 id="arguments"><a class="doc-anchor" href="#arguments">§</a>Arguments</h2>
+<ul>
+<li><code>a</code> - First vector (should be normalized)</li>
+<li><code>b</code> - Second vector (should be normalized)</li>
+</ul>
+<h2 id="returns"><a class="doc-anchor" href="#returns">§</a>Returns</h2>
+<p>Cosine similarity in range [-1.0, 1.0]:</p>
+<ul>
+<li><code>1.0</code>: Identical vectors</li>
+<li><code>0.0</code>: Orthogonal (unrelated)</li>
+<li><code>-1.0</code>: Opposite vectors</li>
+</ul>
+<h2 id="examples"><a class="doc-anchor" href="#examples">§</a>Examples</h2>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>webfang_ai::infrastructure_ai::embedding_ops::cosine_similarity;
+
+<span class="comment">// Identical vectors
+</span><span class="kw">let </span>vec = <span class="macro">vec!</span>[<span class="number">0.5f32</span>, <span class="number">0.5</span>, <span class="number">0.5</span>, <span class="number">0.5</span>, <span class="number">0.5</span>, <span class="number">0.5</span>, <span class="number">0.5</span>, <span class="number">0.5</span>];
+<span class="kw">let </span>sim = cosine_similarity(<span class="kw-2">&amp;</span>vec, <span class="kw-2">&amp;</span>vec);
+<span class="macro">assert!</span>((sim - <span class="number">1.0</span>).abs() &lt; <span class="number">0.001</span>);
+
+<span class="comment">// Orthogonal vectors
+</span><span class="kw">let </span>a = <span class="macro">vec!</span>[<span class="number">1.0f32</span>, <span class="number">0.0</span>, <span class="number">0.0</span>, <span class="number">0.0</span>, <span class="number">0.0</span>, <span class="number">0.0</span>, <span class="number">0.0</span>, <span class="number">0.0</span>];
+<span class="kw">let </span>b = <span class="macro">vec!</span>[<span class="number">0.0f32</span>, <span class="number">1.0</span>, <span class="number">0.0</span>, <span class="number">0.0</span>, <span class="number">0.0</span>, <span class="number">0.0</span>, <span class="number">0.0</span>, <span class="number">0.0</span>];
+<span class="kw">let </span>sim = cosine_similarity(<span class="kw-2">&amp;</span>a, <span class="kw-2">&amp;</span>b);
+<span class="macro">assert!</span>(sim.abs() &lt; <span class="number">0.001</span>);</code></pre></div>
+<h2 id="performance-notes"><a class="doc-anchor" href="#performance-notes">§</a>Performance Notes</h2>
+<ul>
+<li>Uses <code>wide::f32x8</code> for 8-wide SIMD parallelism</li>
+<li>Processes 8 floats per instruction on Haswell (AVX2)</li>
+<li>Falls back to scalar for remainder elements</li>
+</ul>
+</div></details></section></div></main></body></html>

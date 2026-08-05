@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["extract_links","is_internal_link"],"struct":["HtmlLinkExtractor"]};

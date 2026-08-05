@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["extract_author"],"struct":["CssClassAuthorExtractor","ItempropAuthorExtractor","JsonLdAuthorExtractor","MetaTagAuthorExtractor"],"trait":["AuthorExtractor"]};

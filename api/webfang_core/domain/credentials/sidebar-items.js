@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["AccessToken","ApiKey","CredentialStore","SecretCredential","SensitiveString"],"type":["SecretString"]};

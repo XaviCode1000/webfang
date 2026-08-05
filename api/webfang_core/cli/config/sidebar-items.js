@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["init_logging","init_logging_dual","is_no_color","should_emit_emoji"],"struct":["ConfigDefaults"]};

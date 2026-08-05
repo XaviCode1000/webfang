@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["detect_vault","detect_vault_with_root","is_valid_vault"]};

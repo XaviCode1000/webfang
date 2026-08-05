@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["extract_all_assets","extract_documents","extract_images"],"struct":["AssetUrl"]};

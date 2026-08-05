@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["SemanticError"],"mod":["infrastructure_ai"],"struct":["DocumentChunk"],"trait":["SemanticCleaner"]};

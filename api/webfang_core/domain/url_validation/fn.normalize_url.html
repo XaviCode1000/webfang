@@ -1,0 +1,50 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Normalize a URL (remove fragments, strip www, remove default ports, etc.)"><title>normalize_url in webfang_core::domain::url_validation - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-1a91846b.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="webfang_core" data-themes="" data-resource-suffix="" data-rustdoc-version="1.88.0 (6b00bc388 2025-06-23)" data-channel="1.88.0" data-search-js="search-f7877310.js" data-settings-js="settings-5514c975.js" ><script src="../../../static.files/storage-4e99c027.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../../static.files/main-7ef8a74a.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-893ab5e7.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-6580c154.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc fn"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="mobile-topbar"><button class="sidebar-menu-toggle" title="show sidebar"></button></nav><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../../webfang_core/index.html">webfang_<wbr>core</a><span class="version">2.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">normalize_<wbr>url</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#arguments" title="Arguments">Arguments</a></li><li><a href="#examples" title="Examples">Examples</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="index.html">In webfang_<wbr>core::<wbr>domain::<wbr>url_<wbr>validation</a></h2></div></div></nav><div class="sidebar-resizer"></div><main><div class="width-limiter"><rustdoc-search></rustdoc-search><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../../index.html">webfang_core</a>::<wbr><a href="../index.html">domain</a>::<wbr><a href="index.html">url_validation</a></div><h1>Function <span class="fn">normalize_url</span><button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../../src/webfang_core/domain/url_validation.rs.html#281-307">Source</a> </span></div><pre class="rust item-decl"><code>pub fn normalize_url(url: &amp;<a class="primitive" href="https://doc.rust-lang.org/1.88.0/std/primitive.str.html">str</a>, strip_www: <a class="primitive" href="https://doc.rust-lang.org/1.88.0/std/primitive.bool.html">bool</a>) -&gt; <a class="struct" href="https://doc.rust-lang.org/1.88.0/alloc/string/struct.String.html" title="struct alloc::string::String">String</a></code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Normalize a URL (remove fragments, strip www, remove default ports, etc.)</p>
+<p>This is the <strong>canonical</strong> URL normalizer for the scraper. All URL
+normalization should go through this function. It lives in the domain layer
+so both the application deduplicators and the infrastructure crawlers share
+one canonical form for URL equivalence — two URLs that normalize to the same
+string are treated as the same document (#517).</p>
+<p>Options:</p>
+<ul>
+<li><code>strip_hash: true</code> — removes URL fragments (<code>#section</code>)</li>
+<li><code>strip_www</code> — removes <code>www.</code> prefix when <code>true</code> (caller controls behavior)</li>
+<li><code>remove_trailing_slash: false</code> — preserves trailing slashes on nested
+paths (<code>/page/</code> stays distinct from <code>/page</code>); a bare root is still
+canonicalized to <code>https://host</code> by url-normalize</li>
+<li><code>remove_query_parameters: All</code> — strips query strings for dedup</li>
+<li><code>sort_query_parameters: true</code> — consistent ordering</li>
+</ul>
+<p>After normalization, a trailing <code>/index.html</code> or <code>/index.htm</code> path segment
+is collapsed to <code>/</code> (case-insensitive, idempotent) so the same document is
+not stored under two URLs.</p>
+<p>Non-URLs (strings without a <code>://</code> scheme) are returned unchanged — a bare
+<code>not-a-valid-url</code> is never coerced into <code>http://not-a-valid-url</code>.</p>
+<h2 id="arguments"><a class="doc-anchor" href="#arguments">§</a>Arguments</h2>
+<ul>
+<li><code>url</code> - URL to normalize</li>
+<li><code>strip_www</code> - If <code>true</code>, removes <code>www.</code> prefix (e.g. <code>www.example.com</code> → <code>example.com</code>)</li>
+</ul>
+<h2 id="examples"><a class="doc-anchor" href="#examples">§</a>Examples</h2>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>webfang_core::domain::url_validation::normalize_url;
+
+<span class="macro">assert_eq!</span>(
+    normalize_url(<span class="string">"https://example.com/page#section"</span>, <span class="bool-val">true</span>),
+    <span class="string">"https://example.com/page"
+</span>);
+<span class="macro">assert_eq!</span>(
+    normalize_url(<span class="string">"https://www.example.com/page"</span>, <span class="bool-val">true</span>),
+    <span class="string">"https://example.com/page"
+</span>);
+<span class="macro">assert_eq!</span>(
+    normalize_url(<span class="string">"https://www.example.com/page"</span>, <span class="bool-val">false</span>),
+    <span class="string">"https://www.example.com/page"
+</span>);
+<span class="macro">assert_eq!</span>(
+    normalize_url(<span class="string">"https://example.com:443/page"</span>, <span class="bool-val">true</span>),
+    <span class="string">"https://example.com/page"
+</span>);
+<span class="macro">assert_eq!</span>(
+    normalize_url(<span class="string">"https://example.com/index.html"</span>, <span class="bool-val">true</span>),
+    <span class="string">"https://example.com"
+</span>);</code></pre></div>
+</div></details></section></div></main></body></html>

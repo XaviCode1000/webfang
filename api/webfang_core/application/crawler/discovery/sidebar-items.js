@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["discover_urls_for_tui","scrape_single_url_for_tui"]};

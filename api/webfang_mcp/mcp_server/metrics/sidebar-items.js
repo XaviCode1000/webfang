@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Outcome"],"fn":["domain_of"],"struct":["DomainStats","MetricsSnapshot","ScrapeEvent","ScrapeMetrics"]};

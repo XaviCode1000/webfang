@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["AssetNamingStrategy"],"fn":["quick_download"],"struct":["DownloadConfig","DownloadedAsset","Downloader"]};

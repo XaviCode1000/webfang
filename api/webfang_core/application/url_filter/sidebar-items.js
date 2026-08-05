@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["extract_domain","is_allowed","is_excluded","is_internal_link","matches_pattern"]};

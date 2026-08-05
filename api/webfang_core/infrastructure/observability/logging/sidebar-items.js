@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["LogFormat"],"fn":["init_json_logging","init_json_logging_dual"],"struct":["LogGuard"]};

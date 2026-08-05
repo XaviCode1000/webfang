@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["author_extractor","dom_inspector","fallback","readability"]};

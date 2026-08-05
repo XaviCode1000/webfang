@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["create_memory_pool","create_pool","setup_schema"],"struct":["SqliteVectorRepository"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ErrorType","ScrapeError","ScrapeProgress","ScrapeStatus"],"struct":["ErrorEntry","ProgressState","UrlState"]};

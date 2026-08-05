@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["AiConfig","BatchOptions","CrawlLimits","CrawlOptions","ExportOptions","IngestionTuning","NetworkOptions"]};

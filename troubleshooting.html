@@ -1,0 +1,300 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Troubleshooting - WebFang Documentation</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "navy";
+            const default_dark_theme = "navy";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">WebFang Documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/XaviCode1000/webfang" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h1>
+<p>Common problems and how to diagnose them with WebFang's built-in tracing.</p>
+<blockquote>
+<p>Generate a trace first: <code>webfang --url &lt;URL&gt; --trace-file debug.jsonl -vvv</code>,
+then query it with <code>scripts/analyze-trace.sh</code> or <code>jq</code>. See
+<a href="debugging.html">debugging.md</a> for the full query cookbook.</p>
+</blockquote>
+<hr />
+<h2 id="the-crawl-is-slow"><a class="header" href="#the-crawl-is-slow">The crawl is slow</a></h2>
+<p><strong>Diagnose:</strong></p>
+<pre><code class="language-bash">scripts/analyze-trace.sh debug.jsonl slow 20      # slowest spans
+scripts/analyze-trace.sh debug.jsonl stages       # time per pipeline stage
+</code></pre>
+<p><strong>Common causes:</strong></p>
+<ul>
+<li>A single stage dominates (e.g. <code>clean</code> with the AI feature) — check the
+<code>stages</code> distribution.</li>
+<li>Network latency / rate limiting — look for large gaps between <code>crawl_page</code>
+spans; consider <code>--delay</code> and concurrency tuning.</li>
+<li>Export bottleneck — check <code>export_batch</code> span durations.</li>
+</ul>
+<hr />
+<h2 id="pages-are-failing-silently"><a class="header" href="#pages-are-failing-silently">Pages are failing silently</a></h2>
+<p>Every operational error is logged as a structured <code>ERROR</code> event with <code>url</code>,
+<code>stage</code>, and (when available) <code>trace_id</code>.</p>
+<pre><code class="language-bash">scripts/analyze-trace.sh debug.jsonl errors       # all errors with context
+scripts/analyze-trace.sh debug.jsonl urls-failed  # unique failed URLs
+</code></pre>
+<p><strong>Common causes by <code>stage</code>:</strong></p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left"><code>stage</code></th><th style="text-align: left">Meaning</th><th style="text-align: left">Fix</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>fetch</code></td><td style="text-align: left">HTTP/network failure or WAF challenge</td><td style="text-align: left">Check connectivity; the site may be blocking — see WAF section below</td></tr>
+<tr><td style="text-align: left"><code>extract</code></td><td style="text-align: left">Content extraction produced too little text</td><td style="text-align: left">The page may be JS-rendered or non-article; try a CSS <code>--selector</code> or JS rendering</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="waf--bot-detection-blocks"><a class="header" href="#waf--bot-detection-blocks">WAF / bot detection blocks</a></h2>
+<pre><code class="language-bash">scripts/analyze-trace.sh debug.jsonl waf          # WAF challenges + banned domains
+</code></pre>
+<p>If you see <code>WAF challenge detected</code> errors:</p>
+<ul>
+<li>The site is presenting a CAPTCHA / challenge page. WebFang bans the domain
+for the rest of the crawl to avoid hammering it.</li>
+<li>Try a different TLS fingerprint profile (<code>--tls-emulation</code>) or JS rendering.</li>
+<li>Slow down (<code>--delay</code>, lower concurrency) to avoid rate-limit triggers.</li>
+</ul>
+<hr />
+<h2 id="i-cant-tell-which-logs-belong-to-one-page--one-crawl"><a class="header" href="#i-cant-tell-which-logs-belong-to-one-page--one-crawl">I can't tell which logs belong to one page / one crawl</a></h2>
+<ul>
+<li>One <strong>crawl</strong> shares a single <code>trace_id</code>. Filter by it:
+<pre><code class="language-bash">scripts/analyze-trace.sh debug.jsonl trace &lt;trace_id&gt;
+</code></pre>
+</li>
+<li>Each <strong>page</strong> is a <code>crawl_page</code> span with its own <code>span_id</code> under that
+<code>trace_id</code>.</li>
+</ul>
+<hr />
+<h2 id="non-deterministic-snapshot-failures-in-tests"><a class="header" href="#non-deterministic-snapshot-failures-in-tests">Non-deterministic snapshot failures in tests</a></h2>
+<p><code>correlation_id</code> / <code>trace_id</code> are internal and <code>#[serde(skip)]</code> on scraped
+output, so they never appear in scraped JSON/JSONL snapshots. If a <em>new</em>
+field you added is non-deterministic (timestamps, ports, temp paths, random
+IDs), redact it via <code>redact_nondeterministic()</code> in <code>tests/common/cli_harness.rs</code>.</p>
+<hr />
+<h2 id="async-deadlocks--starved-tasks"><a class="header" href="#async-deadlocks--starved-tasks">Async deadlocks / starved tasks</a></h2>
+<p>For concurrency bugs (a crawl hangs, tasks never complete), use the Tokio
+Console:</p>
+<pre><code class="language-bash">RUSTFLAGS="--cfg tokio_unstable" cargo run --features console -- --url &lt;URL&gt;
+</code></pre>
+<p>This shows live task states and poll times, making stuck tasks visible.</p>
+<hr />
+<h2 id="empty-or-poor-content"><a class="header" href="#empty-or-poor-content">Empty or poor content</a></h2>
+<ul>
+<li><code>content extraction failed</code> (<code>stage: extract</code>) — the fallback extractor got
+less than the minimum content. The page is likely JS-rendered, an
+interactive app, or not an article.</li>
+<li>Try <code>--selector '.main-content'</code> (or the right CSS selector for the site),
+or enable JS rendering for SPA content.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="testing.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="tui-unified-design.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="testing.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="tui-unified-design.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
+
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

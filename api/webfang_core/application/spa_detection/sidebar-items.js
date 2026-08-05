@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MIN_CONTENT_CHARS"],"fn":["detect_spa_content"],"struct":["SpaDetectionResult"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["profile_from_name","valid_profile_names"]};

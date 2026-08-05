@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["SpaReason","SpaSignal"],"fn":["detect_spa"]};

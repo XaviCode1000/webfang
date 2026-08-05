@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["batch_cosine_similarity","cosine_similarity","dot_product_scalar","euclidean_distance","find_most_similar","l2_normalize_safe","mean_pool","normalize"]};

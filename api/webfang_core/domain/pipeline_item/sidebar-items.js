@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["StageOutcome"],"struct":["ScrapedItem"],"trait":["PipelineStage"]};

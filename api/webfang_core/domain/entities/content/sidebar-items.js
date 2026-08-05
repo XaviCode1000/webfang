@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ValidationError"],"struct":["DocumentChunk","Draft","Exported","ScrapedContent","Validated"],"type":["DocumentChunkExported","DocumentChunkUnvalidated","DocumentChunkValidated"]};

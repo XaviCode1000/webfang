@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["CleanHtmlParams","CrawlSiteParams","CrawlWithSitemapParams","DetectSpaParams","DetectVaultParams","DiscoverUrlsParams","ExportFileParams","ExtractLinksParams","HtmlToMarkdownParams","ScrapeBatchParams","ScrapeUrlParams","ScrapeWithOptionsParams"]};

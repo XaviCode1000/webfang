@@ -1,0 +1,38 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Semantic Cleaner implementation — Full RAG Pipeline Integration"><title>webfang_ai::infrastructure_ai::semantic_cleaner_impl - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-1a91846b.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="webfang_ai" data-themes="" data-resource-suffix="" data-rustdoc-version="1.88.0 (6b00bc388 2025-06-23)" data-channel="1.88.0" data-search-js="search-f7877310.js" data-settings-js="settings-5514c975.js" ><script src="../../../static.files/storage-4e99c027.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../../static.files/main-7ef8a74a.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-893ab5e7.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-6580c154.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="mobile-topbar"><button class="sidebar-menu-toggle" title="show sidebar"></button></nav><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../../webfang_ai/index.html">webfang_<wbr>ai</a><span class="version">2.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module semantic_<wbr>cleaner_<wbr>impl</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#architecture" title="Architecture">Architecture</a></li><li><a href="#rust-skills-applied" title="Rust-Skills Applied">Rust-Skills Applied</a></li><li><a href="#examples" title="Examples">Examples</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="../index.html">In webfang_<wbr>ai::<wbr>infrastructure_<wbr>ai</a></h2></div></div></nav><div class="sidebar-resizer"></div><main><div class="width-limiter"><rustdoc-search></rustdoc-search><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../../index.html">webfang_ai</a>::<wbr><a href="../index.html">infrastructure_ai</a></div><h1>Module <span>semantic_cleaner_impl</span><button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../../src/webfang_ai/infrastructure_ai/semantic_cleaner_impl.rs.html#1-857">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Semantic Cleaner implementation — Full RAG Pipeline Integration</p>
+<p>This module provides the concrete implementation of the <a href="../../trait.SemanticCleaner.html" title="trait webfang_ai::SemanticCleaner"><code>SemanticCleaner</code></a>
+trait using the complete Phase 2 + Phase 3 pipeline:</p>
+<h2 id="architecture"><a class="doc-anchor" href="#architecture">§</a>Architecture</h2><div class="example-wrap"><pre class="language-text"><code>HTML Input
+    ↓
+[Chunker] Split into semantic chunks (arena allocator)
+    ↓
+[Tokenizer] Convert each chunk to token IDs
+    ↓
+[InferencePool] Generate embeddings (dedicated worker threads)
+    ↓
+[RelevanceScorer] Filter by threshold (SIMD cosine similarity)
+    ↓
+Vec&lt;DocumentChunk&gt; Output</code></pre></div><h2 id="rust-skills-applied"><a class="doc-anchor" href="#rust-skills-applied">§</a>Rust-Skills Applied</h2>
+<ul>
+<li><code>async-join-parallel</code>: Use <code>try_join_all</code> for concurrent embeddings</li>
+<li><code>mem-reuse-collections</code>: Pre-allocate <code>Vec::with_capacity</code>, reuse buffers</li>
+<li><code>own-borrow-over-clone</code>: Borrow <code>&amp;chunks</code>, <code>&amp;embeddings</code> - don’t clone</li>
+<li><code>async-spawn-blocking</code>: InferencePool uses dedicated worker threads</li>
+<li><code>err-context-chain</code>: Add <code>.context()</code> to errors</li>
+<li><code>anti-unwrap-abuse</code>: Use <code>?</code> operator, NO <code>.unwrap()</code> in prod</li>
+<li><code>anti-lock-across-await</code>: Don’t hold MutexGuard across <code>.await</code></li>
+<li><code>api-builder-pattern</code>: ModelConfig uses builder pattern</li>
+<li><code>type-newtype-ids</code>: Using <code>ChunkId</code> for type-safe IDs</li>
+<li><code>opt-simd-portable</code>: RelevanceScorer uses <code>wide::f32x8</code> SIMD</li>
+</ul>
+<h2 id="examples"><a class="doc-anchor" href="#examples">§</a>Examples</h2>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>webfang_ai::{SemanticCleanerImpl, ModelConfig};
+<span class="kw">use </span>webfang_ai::SemanticCleaner;
+
+<span class="kw">let </span>config = ModelConfig::default();
+<span class="kw">let </span>cleaner = SemanticCleanerImpl::new(config).<span class="kw">await</span><span class="question-mark">?</span>;
+
+<span class="kw">let </span>html = <span class="string">"&lt;article&gt;&lt;p&gt;Hello world. Test content.&lt;/p&gt;&lt;/article&gt;"</span>;
+<span class="kw">let </span>chunks = cleaner.clean(html).<span class="kw">await</span><span class="question-mark">?</span>;
+
+<span class="macro">println!</span>(<span class="string">"Generated {} chunks"</span>, chunks.len());</code></pre></div>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.ModelConfig.html" title="struct webfang_ai::infrastructure_ai::semantic_cleaner_impl::ModelConfig">Model<wbr>Config</a></dt><dd>Model configuration</dd><dt><a class="struct" href="struct.SemanticCleanerImpl.html" title="struct webfang_ai::infrastructure_ai::semantic_cleaner_impl::SemanticCleanerImpl">Semantic<wbr>Cleaner<wbr>Impl</a></dt><dd>Semantic Cleaner implementation using full RAG pipeline</dd></dl></section></div></main></body></html>

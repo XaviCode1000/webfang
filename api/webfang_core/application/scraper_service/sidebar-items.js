@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_INSTRUMENTED_BODY_SIZE"],"fn":["scrape_multiple_with_limit","scrape_with_config"],"struct":["ScrapeOutcome"]};

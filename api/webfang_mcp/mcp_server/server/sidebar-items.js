@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_MCP_ADDR"],"fn":["build_mcp_router","start_mcp_server"]};

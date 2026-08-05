@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["new_robots_cache","parse_crawl_delay"],"struct":["RobotsFetcher","RobotsRules"],"type":["RobotsCache"]};

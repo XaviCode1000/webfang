@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["PruneAggressiveness"],"struct":["LegibleContentPruner"],"trait":["ContentPruner"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["BannedDomain","BincodeCheckpoint","CheckpointPath","CrawlCheckpoint"],"trait":["CheckpointStore"]};

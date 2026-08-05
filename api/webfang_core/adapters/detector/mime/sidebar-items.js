@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["AssetType"],"fn":["detect_from_bytes","detect_from_path","detect_from_url","get_extension","get_mime_type","is_asset_url","is_document_url","is_image_url"]};

@@ -1,0 +1,359 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Testing - WebFang Documentation</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "navy";
+            const default_dark_theme = "navy";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">WebFang Documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/XaviCode1000/webfang" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="testing-guide"><a class="header" href="#testing-guide">Testing Guide</a></h1>
+<p>End-to-end (E2E) tests live as integration test crates under <code>tests/</code> and invoke the
+real <code>webfang</code> binary via <a href="https://docs.rs/assert_cmd"><code>assert_cmd</code></a>. Mock HTTP servers
+(<a href="https://docs.rs/wiremock"><code>wiremock</code></a>) stand in for target sites and <code>tempfile::TempDir</code>
+captures scrape output.</p>
+<h2 id="test-crates"><a class="header" href="#test-crates">Test crates</a></h2>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Crate</th><th style="text-align: left">File</th><th style="text-align: left">Gate</th><th style="text-align: left">What it covers</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>behavioral</code></td><td style="text-align: left"><code>tests/behavioral/main.rs</code></td><td style="text-align: left">default features</td><td style="text-align: left">Single-page scrape, CLI help, unreachable host, slow server, obsidian frontmatter</td></tr>
+<tr><td style="text-align: left"><code>cli_binary</code></td><td style="text-align: left"><code>tests/cli_binary_test.rs</code></td><td style="text-align: left">default features</td><td style="text-align: left"><code>--version</code>, <code>--help</code>, network-error exit codes</td></tr>
+<tr><td style="text-align: left"><code>cli_behavioral</code></td><td style="text-align: left"><code>tests/cli_behavioral_test.rs</code></td><td style="text-align: left"><code>feature = "images"</code> <strong>and</strong> <code>feature = "documents"</code></td><td style="text-align: left">Obsidian tag/metadata/wiki-link conversion, CSS-selector extraction, full-page extraction</td></tr>
+</tbody></table>
+</div>
+<p><code>cli_behavioral</code> is <code>#![cfg(all(feature = "images", feature = "documents"))]</code>. It is built
+and run by default; with <code>--no-default-features</code> it is skipped entirely (no <code>compile_error!</code>).</p>
+<h2 id="running-tests"><a class="header" href="#running-tests">Running tests</a></h2>
+<pre><code class="language-bash"># all E2E crates
+cargo nextest run --test behavioral --test cli_binary --test cli_behavioral
+
+# a single crate
+cargo nextest run --test cli_behavioral
+
+# a single test (libtest, prints the full snapshot diff on mismatch)
+cargo test --test cli_behavioral test_selector_h3_extracts_only_h3
+</code></pre>
+<p>Ignored tests (e.g. optional live-site checks) are excluded by default; run them with
+<code>cargo nextest run --test behavioral --run-ignored ignored-only</code>.</p>
+<h2 id="snapshot-testing-with-insta"><a class="header" href="#snapshot-testing-with-insta">Snapshot testing with <code>insta</code></a></h2>
+<p>Content assertions use <a href="https://insta.rs"><code>insta</code></a> snapshots instead of brittle
+<code>content.contains(...)</code> checks, so a full output change is reviewed as a diff rather than
+a silent boolean flip.</p>
+<h3 id="review-gate-red--green"><a class="header" href="#review-gate-red--green">Review gate (RED → GREEN)</a></h3>
+<p><code>cargo insta</code> is <strong>not installed</strong> in this environment. Use the env-var workflow instead:</p>
+<ol>
+<li>
+<p><strong>RED</strong> — first run fails because the <code>.snap</code> is missing or differs, and a
+<code>*.snap.new</code> pending file is written next to it:</p>
+<pre><code class="language-bash">cargo nextest run --test cli_behavioral
+</code></pre>
+</li>
+<li>
+<p><strong>GREEN</strong> — regenerate and accept the pending snapshots, then re-run with no flag to
+confirm they are now stable (no new <code>*.snap.new</code> should appear):</p>
+<pre><code class="language-bash">INSTA_UPDATE=always cargo nextest run --test cli_behavioral
+cargo nextest run --test cli_behavioral        # must stay green
+</code></pre>
+</li>
+<li>
+<p>Inspect the generated <code>*.snap</code> files, then stage them with the code change.</p>
+</li>
+</ol>
+<blockquote>
+<p><code>*.snap.new</code> is git-ignored (see <code>.gitignore</code>). Never commit a <code>*.snap.new</code>; commit the
+accepted <code>*.snap</code>.</p>
+</blockquote>
+<h3 id="where-snapshots-live"><a class="header" href="#where-snapshots-live">Where snapshots live</a></h3>
+<p><code>insta</code> resolves the snapshot directory from the module where <code>assert_snapshot!</code> <em>expands</em>.
+The thin <code>assert_snapshot_*</code> wrappers therefore live at each test crate's <strong>root module</strong> so
+snapshots land where the suite expects:</p>
+<ul>
+<li><code>tests/behavioral/snapshots/</code> — root <code>behavioral</code> snapshots</li>
+<li><code>tests/behavioral/cli/snapshots/</code> — obsidian snapshots (local helper inside <code>cli/obsidian_test.rs</code>)</li>
+<li><code>tests/snapshots/</code> — <code>cli_binary__*.snap</code> and <code>cli_behavioral__*.snap</code></li>
+</ul>
+<h2 id="redaction-conventions"><a class="header" href="#redaction-conventions">Redaction conventions</a></h2>
+<p>Scrape output embeds per-run, machine-specific, and non-deterministic values. A shared
+helper, <code>tests/common/cli_harness.rs::redact_nondeterministic</code>, collapses them <strong>before</strong>
+snapshotting so approved snapshots stay stable across machines and runs:</p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Leak</th><th style="text-align: left">Redacted to</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>TempDir</code> absolute path</td><td style="text-align: left"><code>&lt;OUT_DIR&gt;</code></td></tr>
+<tr><td style="text-align: left">ANSI color escape sequences</td><td style="text-align: left">(stripped)</td></tr>
+<tr><td style="text-align: left">ISO-8601 timestamps (<code>timestamp_utc</code>, <code>scrapeDate</code>, <code>scrape_date</code>, …) with or without fractional seconds and any offset/Z</td><td style="text-align: left"><code>&lt;TIMESTAMP&gt;</code></td></tr>
+<tr><td style="text-align: left">Wiremock <code>127.0.0.1:&lt;port&gt;</code></td><td style="text-align: left"><code>127.0.0.1:&lt;PORT&gt;</code></td></tr>
+</tbody></table>
+</div>
+<p><code>cli_behavioral</code> additionally emits a bare <code>date:</code> frontmatter field (date only, no time
+component) that the helper cannot catch, so <code>assert_content_snapshot</code> applies an insta
+<code>add_filter</code> for <code>date: \d{4}-\d{2}-\d{2}</code> → <code>date: [DATE]</code> (see
+<code>tests/cli_behavioral_test.rs</code>).</p>
+<h3 id="adding-a-new-snapshot-test"><a class="header" href="#adding-a-new-snapshot-test">Adding a new snapshot test</a></h3>
+<ol>
+<li>Build the scrape output through the shared harness (<code>BehavioralTest</code> / <code>cmd</code>).</li>
+<li>Call the crate's <code>assert_snapshot_*</code> wrapper (root module) or, for free-text content,
+<code>assert_content_snapshot</code> in <code>cli_behavioral</code>.</li>
+<li>If a new non-deterministic field appears, extend <code>redact_nondeterministic</code> (centralized)
+rather than adding a per-test hack.</li>
+<li>Generate + accept via <code>INSTA_UPDATE=always</code>, then verify with a plain run.</li>
+</ol>
+<h2 id="lint"><a class="header" href="#lint">Lint</a></h2>
+<pre><code class="language-bash">cargo clippy -p webfang_core --test behavioral --test cli_binary --test cli_behavioral -- -D warnings
+</code></pre>
+<p>Gate clippy on the specific test crates (not <code>--tests</code>): <code>webfang_core</code>'s own lib
+tests have a pre-existing <code>tokio::time::pause</code> failure that requires the <code>test-util</code>
+feature and is out of scope for E2E changes.</p>
+<h2 id="coverage-exclusions-lcov"><a class="header" href="#coverage-exclusions-lcov">Coverage exclusions (LCOV)</a></h2>
+<p>Defensive error paths — invariants by design — must not drag down the
+codecov/patch target (80% on new lines). Annotate them with LCOV exclusion
+markers (issue #527).</p>
+<h3 id="policy"><a class="header" href="#policy">Policy</a></h3>
+<p>Only annotate arms that "should not happen in normal operation":</p>
+<ul>
+<li>internal / mutex-poisoning / integer-overflow invariants</li>
+<li>compile-time-constant failures (CSS selectors, regexes, hardcoded URLs)</li>
+<li>panic/expect paths guarded by proven invariants (e.g. <code>NonZeroU32</code> after a
+zero-check, <code>chunks_exact</code> slice conversion)</li>
+</ul>
+<p>NEVER annotate business paths: reachable errors like HTTP connection failures,
+parse errors, or config validation. Reachable error handling is exercised by
+tests and counted like any other code.</p>
+<h3 id="syntax"><a class="header" href="#syntax">Syntax</a></h3>
+<ul>
+<li>Single statement: <code>// LCOV_EXCL_LINE</code> on its OWN comment line immediately
+ABOVE the code line — never inline on the code line.</li>
+<li>Multi-line arm/block: <code>// LCOV_EXCL_START</code> above the block and
+<code>// LCOV_EXCL_STOP</code> below it, each on its own line.</li>
+<li>Every marker site carries a justification comment starting with
+<code>// defensive: &lt;variant&gt; &lt;rationale&gt;</code> — merged into the marker line or as a
+preceding line.</li>
+</ul>
+<h3 id="safety-net"><a class="header" href="#safety-net">Safety net</a></h3>
+<p>Excluded paths are still mutation-tested: a surviving mutant in the weekly
+cargo-mutants baseline, or in a PR touching gated hot paths (<code>cargo-mutants</code>
+PR diff), is reported. The markers only affect coverage accounting — they do
+not affect mutant survival.</p>
+<h3 id="hot-path-rule"><a class="header" href="#hot-path-rule">Hot-path rule</a></h3>
+<p>In files under <code>.cargo/mutants.toml</code> globs, markers MUST be own-line comments
+(never inline) so the diff adds no mutable code lines.</p>
+<p>Never lower <code>codecov.yml</code> thresholds; use markers per path instead.</p>
+<h2 id="known-issues"><a class="header" href="#known-issues">Known Issues</a></h2>
+<h3 id="sitemap-discovery-regression-pre-existing"><a class="header" href="#sitemap-discovery-regression-pre-existing">Sitemap Discovery Regression (Pre-existing)</a></h3>
+<p>Seven behavioral tests are marked <code>#[ignore]</code> due to a pre-existing crawler regression
+where auto-discovered sitemaps exit with code 2 on mock-server scenarios.
+This is NOT related to the <code>insta</code> snapshot migration and was exposed when the
+root test suite was wired in PR-0 (these tests were previously unwired and never ran).</p>
+<p>Affected tests: <code>crawl_test.rs</code> (4 tests), <code>robots_test.rs</code> (1 test), and 2 tests
+in <code>cli_behavioral_test.rs</code> — all tagged with
+<code>#[ignore = "Pre-existing stale test, out of scope for insta migration"]</code>.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="debugging.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="troubleshooting.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="debugging.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="troubleshooting.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
+
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

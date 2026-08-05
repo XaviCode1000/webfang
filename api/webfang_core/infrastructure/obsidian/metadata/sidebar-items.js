@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ContentType"],"fn":["compute_reading_time","compute_word_count","detect_content_type","detect_language"],"struct":["ObsidianRichMetadata"]};
