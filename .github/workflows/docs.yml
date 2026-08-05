@@ -37,16 +37,24 @@ jobs:
       - uses: actions/checkout@v4
 
       # rust-toolchain.toml pins 1.88.0; install it FIRST so cargo-based steps
-      # (mdbook-linkcheck, rustdoc) never race toolchain bootstrap with the
-      # runner's sccache rustc-wrapper.
+      # (rustdoc) never race toolchain bootstrap with the runner's sccache
+      # rustc-wrapper. mdbook-linkcheck comes from a prebuilt release binary.
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rust-docs
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install mdbook-linkcheck
-        run: cargo install mdbook-linkcheck --locked
+      # Prebuilt binary from the project release (v0.7.7) — seconds instead of
+      # ~1.6 min per run spent compiling from crates.io via `cargo install`.
+      - name: Install mdbook-linkcheck (prebuilt binary)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/mdbook-linkcheck.zip \
+            https://github.com/Michael-F-Bryan/mdbook-linkcheck/releases/download/v0.7.7/mdbook-linkcheck.x86_64-unknown-linux-gnu.zip
+          unzip -o /tmp/mdbook-linkcheck.zip -d "$HOME/.cargo/bin"
+          chmod +x "$HOME/.cargo/bin/mdbook-linkcheck"
+          mdbook-linkcheck --version
 
       - name: Install mise toolchain (mdbook + pandoc)
         uses: jdx/mise-action@v2
@@ -82,16 +90,24 @@ jobs:
       - uses: actions/checkout@v4
 
       # rust-toolchain.toml pins 1.88.0; install it FIRST so cargo-based steps
-      # (mdbook-linkcheck, rustdoc) never race toolchain bootstrap with the
-      # runner's sccache rustc-wrapper.
+      # (rustdoc) never race toolchain bootstrap with the runner's sccache
+      # rustc-wrapper. mdbook-linkcheck comes from a prebuilt release binary.
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rust-docs
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install mdbook-linkcheck
-        run: cargo install mdbook-linkcheck --locked
+      # Prebuilt binary from the project release (v0.7.7) — seconds instead of
+      # ~1.6 min per run spent compiling from crates.io via `cargo install`.
+      - name: Install mdbook-linkcheck (prebuilt binary)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/mdbook-linkcheck.zip \
+            https://github.com/Michael-F-Bryan/mdbook-linkcheck/releases/download/v0.7.7/mdbook-linkcheck.x86_64-unknown-linux-gnu.zip
+          unzip -o /tmp/mdbook-linkcheck.zip -d "$HOME/.cargo/bin"
+          chmod +x "$HOME/.cargo/bin/mdbook-linkcheck"
+          mdbook-linkcheck --version
 
       - name: Install mise toolchain (mdbook + pandoc)
         uses: jdx/mise-action@v2
