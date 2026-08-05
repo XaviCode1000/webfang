@@ -188,6 +188,9 @@ docs:
     @echo "📚 Descargando documentación generada en CI..."
     @gh auth status >/dev/null 2>&1 || { echo "⚠️  Necesitás autenticarte: gh auth login"; exit 1; }
     @mkdir -p "$(dirname '{{wiki_output}}')"
+    # Siempre regenera: gh run download no sobrescribe un pull previo y falla
+    # con "file exists" si target/docs-llm ya existe.
+    @rm -rf target/docs-llm
     @gh run download -R XaviCode1000/webfang -n webfang-docs-llm -D target/docs-llm
     @cp target/docs-llm/webfang-docs-llm.md "{{wiki_output}}"
     @echo "✅ Documentación actualizada (desde CI, último run de main):"

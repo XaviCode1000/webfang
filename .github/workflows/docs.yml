@@ -195,6 +195,10 @@ jobs:
                       -e 's/<[^>]*>//g' \
                       -e 's/Show [0-9][0-9]* fields[[:space:]]*//g' \
                       -e 's/Show [0-9][0-9]* variants[[:space:]]*//g' \
+                      # Single H1 in the artifact: downgrade rustdoc page titles
+                      # (Struct/Function/Enum/.../List) to H3 under "## API Reference".
+                      # Safe: doctest hidden lines (# use ...) never match these words.
+                      -e 's/^# \(Struct\|Function\|Enum\|Trait\|Constant\|Type\|Crate\|Macro\|List\) /### \1 /' \
                 | sed -e '/^[[:space:]]*$/N;/^\n[[:space:]]*$/D' \
                 > "target/doc/$crate.md"
                 # Gate ONLY the cleaned API markdown. The Source Code section below
