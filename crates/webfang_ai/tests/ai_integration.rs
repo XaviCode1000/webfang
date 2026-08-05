@@ -325,8 +325,8 @@ fn test_matryoshka_identity_for_384d() {
 /// The default config resolves the model from the local cache at
 /// `~/.cache/webfang/ai_models`. The cleaner is `.expect()`ed to initialize so
 /// that an absent model makes the test FAIL LOUDLY rather than silently
-/// passing. These pipeline tests now run as part of the standard suite
-/// (model cache verified).
+/// passing. These pipeline tests are `#[ignore]`'d (require the cached ONNX
+/// model and must run serially to avoid OOM in CI).
 async fn build_offline_cleaner() -> SemanticCleanerImpl {
     let config = ModelConfig::default().with_offline_mode(true);
     SemanticCleanerImpl::new(config)
@@ -337,7 +337,10 @@ async fn build_offline_cleaner() -> SemanticCleanerImpl {
 /// Test full pipeline: HTML -> Chunk -> Tokenize -> Embed -> Score -> Filter
 ///
 /// This test verifies the complete RAG pipeline integration.
+/// Ignored by default: requires the cached ONNX model and must run serially
+/// (parallel ONNX model loading exhausts CI memory).
 #[tokio::test]
+#[ignore = "requires cached ONNX model"]
 async fn test_semantic_cleaner_full_pipeline() {
     let cleaner = build_offline_cleaner().await;
 
@@ -356,6 +359,7 @@ async fn test_semantic_cleaner_full_pipeline() {
 
 /// Test semantic cleaner with longer content
 #[tokio::test]
+#[ignore = "requires cached ONNX model"]
 async fn test_semantic_cleaner_long_content() {
     let cleaner = build_offline_cleaner().await;
 
@@ -432,6 +436,7 @@ fn test_relevance_filtering() {
 
 /// Test error handling: chunk too large
 #[tokio::test]
+#[ignore = "requires cached ONNX model"]
 async fn test_error_chunk_too_large() {
     let config = ModelConfig::default()
         .with_offline_mode(true)
@@ -484,6 +489,7 @@ async fn test_offline_mode_error() {
 
 /// Test pipeline with empty input
 #[tokio::test]
+#[ignore = "requires cached ONNX model"]
 async fn test_pipeline_empty_input() {
     let config = ModelConfig::default().with_offline_mode(true);
     let cleaner = SemanticCleanerImpl::new(config)
@@ -500,6 +506,7 @@ async fn test_pipeline_empty_input() {
 
 /// Test pipeline with HTML-only input (no text content)
 #[tokio::test]
+#[ignore = "requires cached ONNX model"]
 async fn test_pipeline_html_only() {
     let config = ModelConfig::default().with_offline_mode(true);
     let cleaner = SemanticCleanerImpl::new(config)
