@@ -118,6 +118,10 @@ pub struct VaultAiPorts {
     pub note_repository: Option<Arc<dyn NoteRepository>>,
     /// Text chunker for Markdown segmentation.
     pub text_chunker: Option<Arc<dyn TextChunker>>,
+
+    /// Semantic cleaner for AI-driven content extraction. `None` when the `ai`
+    /// feature is off or no cleaner was injected.
+    pub cleaner: Option<Arc<dyn SemanticCleaner>>,
 }
 
 impl Container {
@@ -331,6 +335,9 @@ impl Container {
         if let Some(chunker) = ports.text_chunker {
             self.text_chunker = Some(chunker);
         }
+        if let Some(cleaner) = ports.cleaner {
+            self.cleaner = Some(cleaner);
+        }
         self
     }
 
@@ -423,7 +430,10 @@ impl Container {
         sqlite_persistence::setup_schema(&pool).await?;
         let repository: DynVectorRepository = Arc::new(SqliteVectorRepository::new(pool));
 
-        let ingestion = Self::build_elastic(repository, &config)?;
+        let mut ingestion = Self::build_elastic(repository, &config)?;
+        if let Some(cleaner) = self.cleaner.clone() {
+            ingestion = ingestion.with_cleaner(cleaner);
+        }
         self.elastic_ingestion = Some(Arc::new(ingestion));
         Ok(self)
     }
@@ -450,7 +460,10 @@ impl Container {
         let repository: DynVectorRepository =
             Arc::new(crate::infrastructure::stream::StreamRepository::new(path)?);
 
-        let ingestion = Self::build_elastic(repository, &config)?;
+        let mut ingestion = Self::build_elastic(repository, &config)?;
+        if let Some(cleaner) = self.cleaner.clone() {
+            ingestion = ingestion.with_cleaner(cleaner);
+        }
         self.elastic_ingestion = Some(Arc::new(ingestion));
         Ok(self)
     }
