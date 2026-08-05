@@ -26,17 +26,18 @@ Closes #
 
 ## Test Plan
 
-<!-- Adapt to the change. For Rust work: -->
+<!-- Adapt to the change. For Rust work, use the exact CI gates (see AGENTS.md — a bare clippy passes locally but CI fails). -->
 - [ ] `cargo fmt --check` clean
-- [ ] `cargo clippy -- -D warnings` clean
+- [ ] `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines` clean
 - [ ] `cargo nextest run` passes
 - [ ] Manually verified the affected functionality
 
 ## Contributor Checklist
 
-- [ ] Linked an issue with `Closes/Fixes/Resolves #N`
+- [ ] Linked an approved issue (`status:approved`) with `Closes/Fixes/Resolves #N`
+- [ ] Branch name matches `type/description` (e.g. `fix/parser-crash`) — CI rejects others
 - [ ] Added exactly one `type:*` label
 - [ ] Conventional commit format (`type(scope): description`)
 - [ ] No `Co-Authored-By` / AI attribution trailers
 - [ ] Docs updated if behavior changed
-- [ ] Defensive error paths annotated with `// LCOV_EXCL_*` markers per docs/testing.md (issue #527)
+- [ ] Defensive error paths annotated with `// LCOV_EXCL_*` markers per docs/src/testing.md (issue #527)
