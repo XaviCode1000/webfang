@@ -397,3 +397,62 @@ fn webfang_path_no_ai() -> std::path::PathBuf {
 
     no_ai_target.join("debug").join("webfang")
 }
+
+/// Regression test for #569: `--clean-ai` must export the AI-cleaned chunks.
+///
+/// Before the fix, the semantic cleaner produced `DocumentChunk`s with empty
+/// `url`/`title`, and `validate()` silently discarded every one — the export
+/// file was never created while the log claimed success.
+#[tokio::test]
+#[ignore = "requires cached ONNX model"]
+async fn clean_ai_exports_chunks_regression_569() {
+    let t = BehavioralTest::new().await;
+
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(PAGE_HTML))
+        .expect(1)
+        .mount(&t.server)
+        .await;
+
+    t.scraper_cmd()
+        .arg("--single-page")
+        .arg("--clean-ai")
+        .arg("--quiet")
+        .assert()
+        .success();
+
+    // The export file MUST exist and contain at least one document.
+    let export_path = t.out.path().join("export.jsonl");
+    assert!(
+        export_path.exists(),
+        "export.jsonl must exist after --clean-ai: {:?}",
+        t.out.path()
+    );
+
+    let content = std::fs::read_to_string(&export_path).expect("read export.jsonl");
+    let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+    assert!(
+        !lines.is_empty(),
+        "export.jsonl must contain at least one document"
+    );
+
+    // Each line must be a valid DocumentChunk with non-empty url/title.
+    for line in &lines {
+        let json: serde_json::Value =
+            serde_json::from_str(line).expect("each line must be valid JSON");
+        let url = json["url"].as_str().expect("url field must be a string");
+        let title = json["title"]
+            .as_str()
+            .expect("title field must be a string");
+        let chunk_content = json["content"]
+            .as_str()
+            .expect("content field must be a string");
+        assert!(!url.is_empty(), "url must not be empty (#569 regression)");
+        assert!(
+            !title.is_empty(),
+            "title must not be empty (#569 regression)"
+        );
+        assert!(!chunk_content.is_empty(), "content must not be empty");
+    }
+}
