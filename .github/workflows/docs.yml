@@ -138,16 +138,18 @@ jobs:
           cp -r target/doc docs/book/api
           touch docs/book/.nojekyll
 
-      # Build the LLM / RAG markdown: clean text for a language model that needs
-      # the whole system. Single H1 (# WebFang Documentation) at the top; chapters,
-      # crate API sections, and source files are H3 under H2 parents so chunkers
-      # split cleanly. Three parts:
+      # Build the LLM / RAG markdown: clean text sized to fit NotebookLM's
+      # ~500k-word per-source limit (the full artifact measured 658k words).
+      # Single H1 (# WebFang Documentation) at the top; chapters and crate API
+      # sections are H3 under H2 parents so chunkers split cleanly. Two parts:
       #   1. Narrative (mdBook chapters) — chapter H1 downgraded to H3, no dupes.
       #   2. API reference (rustdoc via pandoc) — ALL noise stripped: <a>, "Expand
-      #      description", "§", "Copy item path", stray HTML tags, blank-line runs.
-      #   3. Full source code — crates/**/*.rs (production + per-crate tests) so
-      #      the model sees the implementation, not just signatures. (No root
-      #      `tests/` dir exists; integration tests live per-crate.)
+      #      description", "§", "Copy item path", stray HTML tags, blank-line runs,
+      #      plus the repeated "Blanket/Auto Trait Implementations" sections
+      #      (identical boilerplate on every type page).
+      # Excluded: raw source files (crates/**/*.rs — 308k of the 658k words) and
+      # the boilerplate sections above, which carry no semantics for a language
+      # model. Raw code stays available in the repo and on docs.rs.
       # Output: docs/book/webfang-docs-llm.md → uploaded as `webfang-docs-llm`,
       # consumed locally by `just docs`.
       - name: Build LLM markdown artifact
@@ -199,14 +201,12 @@ jobs:
                       -e 's/Show [0-9][0-9]* fields[[:space:]]*//g' \
                       -e 's/Show [0-9][0-9]* variants[[:space:]]*//g' \
                       -e 's/^# \(Struct\|Function\|Enum\|Trait\|Constant\|Type\|Crate\|Macro\|List\) /### \1 /' \
+                | awk 'BEGIN{skip=0} /^## Blanket Implementations|^## Auto Trait Implementations/{skip=1; next} skip && (/^## / || /^### (Struct|Function|Enum|Trait|Constant|Type|Crate|Macro|List) /){skip=0} !skip{print}' \
                 | sed -e '/^[[:space:]]*$/N;/^\n[[:space:]]*$/D' \
                 > "target/doc/$crate.md"
-                # Gate ONLY the cleaned API markdown. The Source Code section below
-                # intentionally contains HTML inside Rust string/test/doc-comment
-                # literals (e.g. extractor/html_cleaner/link_extractor tests), so a
-                # whole-file grep would false-positive there. The gate is also
-                # fence-aware: doctests may legitimately contain HTML inside
-                # ``` code fences (e.g. assert!(html.contains("<span"))).
+                # Gate ONLY the cleaned API markdown. The gate is fence-aware:
+                # doctests may legitimately contain HTML inside ``` code fences
+                # (e.g. assert!(html.contains("<span"))).
                 if awk 'BEGIN{f=0} /^```/{f=!f; next} !f && /Expand description|Copy item path|href="|<a |<span|<div|<abbr|<code|§/{bad=1} END{exit !bad}' "target/doc/$crate.md"; then
                   echo "::error::rustdoc noise not fully stripped for $crate"
                   exit 1
@@ -218,24 +218,6 @@ jobs:
               fi
             done
 
-            echo "## Source Code"
-            echo
-            # Every Rust source file in the workspace (production + per-crate tests),
-            # in a deterministic order so the artifact is reproducible. No root `tests/`
-            # dir exists; integration tests live under each crate. Files are emitted
-            # verbatim — they may contain HTML inside string/test/doc literals.
-            find crates -name '*.rs' -print0 \
-              | sort -z \
-              | while IFS= read -r -d '' fl; do
-                  echo "### \`$fl\`"
-                  echo
-                  echo '```rust'
-                  cat "$fl"
-                  echo '```'
-                  echo
-                  echo "---"
-                  echo
-                done
           } > "$OUT"
 
           echo "wrote $OUT ($(wc -l < "$OUT") lines)"
