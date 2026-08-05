@@ -20,6 +20,9 @@ typos = "1.42.3"                       # spell checker (aqua shorthand, pinned f
 "cargo:cargo-machete" = "latest"       # unused dependency detection
 "cargo:cargo-edit" = "latest"          # cargo add/rm/upgrade
 "cargo:cargo-udeps" = "latest"
+"aqua:rust-lang/mdBook" = "0.4.51"
+"aqua:jgm/pandoc" = "3.10.1"
+"cargo:mdbook-linkcheck" = "latest"
 
 # === Optional (uncomment when needed) ===
 # rust-analyzer = "latest"             # LSP — global install preferred

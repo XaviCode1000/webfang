@@ -7,7 +7,7 @@ Config form covers only 12/45 CLI flags (27%).
 
 ## Solution: Single `--tui` flag with two-phase flow
 
-```
+```text
 Phase 1: Config Form (collapsible sections)
   ├─ ▶ Target (collapsed by default)
   │    └─ url, selector
@@ -35,7 +35,7 @@ Phase 2: URL Selector (after config submitted)
 
 Since `ratatui-accordion` is reserved, implement with ratatui's `List` widget:
 
-```rust
+```rust,ignore
 struct ConfigSection {
     title: String,
     expanded: bool,

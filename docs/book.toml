@@ -1,0 +1,8 @@
+[book]
+title = "WebFang Documentation"
+authors = ["Xavi"]
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/XaviCode1000/webfang"
+default-theme = "navy"

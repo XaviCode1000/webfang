@@ -180,52 +180,24 @@ test-ci-quick:
 # Ruta del wiki combinado (NotebookLM / exportación PDF)
 wiki_output := "/var/home/xavi/Descargas/mdxportpdf/wiki-cargo-doc.md"
 
-# Genera documentación Markdown para NotebookLM (llms.txt compatible)
-# Usa cargo doc (HTML) + pandoc: el HTML es estable entre toolchains,
-# a diferencia del JSON de rustdoc (formato inestable que rompía rustdoc-md).
-# Requiere: pandoc (mise install aqua:jgm/pandoc)
+# Descarga la documentación combinada (narrativa + API rustdoc) generada en CI.
+# Todo el cómputo pesado (mdBook build/test/linkcheck + cargo doc + pandoc)
+# corre en GitHub Actions; localmente solo PULL del último run de main.
+# Requiere: gh CLI autenticado (gh auth login).
 docs:
-    @echo "📚 Generando documentación para NotebookLM..."
+    @echo "📚 Descargando documentación generada en CI..."
+    @gh auth status >/dev/null 2>&1 || { echo "⚠️  Necesitás autenticarte: gh auth login"; exit 1; }
     @mkdir -p "$(dirname '{{wiki_output}}')"
-    @for crate in webfang_core webfang_ai webfang_tui webfang_mcp; do \
-        echo "  → $crate..."; \
-        cargo doc -p $crate --no-deps 2>/dev/null; \
-        { \
-            pandoc -f html -t gfm --wrap=none "target/doc/$crate/index.html" 2>/dev/null; \
-            find "target/doc/$crate" -name '*.html' ! -name 'index.html' ! -path '*/src/*' -print0 \
-                | sort -z \
-                | while IFS= read -r -d '' f; do \
-                    pandoc -f html -t gfm --wrap=none "$f" 2>/dev/null; \
-                  done; \
-        } \
-        | sed -e 's/Copy item path//' \
-                  -e 's/<span[^>]*>//g' \
-                  -e 's/<\/span>//g' \
-                  -e 's/<div[^>]*>//g' \
-                  -e 's/<\/div>//g' \
-                  -e 's/Show [0-9][0-9]* fields[[:space:]]*//g' \
-                  -e 's/Show [0-9][0-9]* variants[[:space:]]*//g' \
-            > "target/doc/$crate.md"; \
-    done
-    @# Archivo combinado para NotebookLM / PDF
-    @echo "# WebFang Documentation" > "{{wiki_output}}"
-    @echo "" >> "{{wiki_output}}"
-    @echo "Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "{{wiki_output}}"
-    @echo "" >> "{{wiki_output}}"
-    @echo "---" >> "{{wiki_output}}"
-    @echo "" >> "{{wiki_output}}"
-    @for crate in webfang_core webfang_ai webfang_tui webfang_mcp; do \
-        if [ -f "target/doc/$crate.md" ]; then \
-            echo "# $crate" >> "{{wiki_output}}"; \
-            echo "" >> "{{wiki_output}}"; \
-            cat "target/doc/$crate.md" >> "{{wiki_output}}"; \
-            echo "" >> "{{wiki_output}}"; \
-            echo "---" >> "{{wiki_output}}"; \
-            echo "" >> "{{wiki_output}}"; \
-        fi; \
-    done
-    @echo "✅ Documentación generada:"
+    @gh run download -R XaviCode1000/webfang -n webfang-docs-llm -D target/docs-llm
+    @cp target/docs-llm/webfang-docs-llm.md "{{wiki_output}}"
+    @echo "✅ Documentación actualizada (desde CI, último run de main):"
     @ls -lh "{{wiki_output}}" | awk '{print "  " $NF " (" $5 ")"}'
-    @ls -lh target/doc/*.md 2>/dev/null | grep -v index | awk '{print "  " $NF " (" $5 ")"}'
-    @echo ""
-    @echo "📋 Para NotebookLM/PDF: {{wiki_output}}"
+
+# Preview local del mdBook (liviano, sin remoto): construye y sirve solo la
+# narrativa en http://localhost:3000. No genera rustdoc ni el artefacto LLM.
+docs-local:
+    @echo "🔧 Preview local del mdBook (sin remoto)..."
+    @mise install aqua:rust-lang/mdBook
+    @mdbook build docs
+    @echo "📖 Sirviendo en http://localhost:3000 — Ctrl+C para salir"
+    @mdbook serve docs -p 3000
