@@ -246,19 +246,38 @@ impl ResourceDownloader {
             // and we just verified `total_bytes + chunk_len <= max_size_bytes`
             // (≤ 25 MB), far below `u32::MAX`.
             if chunk_len > 0 {
-                self.semaphore
-                    .acquire_many(chunk_len as u32)
-                    .await
-                    .map_err(|_| {
-                        tracing::error!(
-                            %url,
-                            bytes = total_bytes,
-                            reason = "semaphore_inanition",
-                            "semáforo agotado: no hay permisos disponibles"
-                        );
-                        ScraperError::SemaphoreInanition
-                    })?
-                    .forget();
+                // Bound the semaphore acquisition so a mis-sized semaphore can
+                // never hang the pipeline. Tokio's batch semaphore enqueues a
+                // partial grant and waits for the remainder, which is an
+                // *unbounded* wait when the requested byte count exceeds the
+                // semaphore's total permits (the #544 deadlock). Wrapping the
+                // acquire in `timeout` converts that deadlock into a bounded
+                // `SemaphoreInanition`. The acquire future is cancellation-safe
+                // (dropping it on timeout releases no permits).
+                let permit = timeout(
+                    Duration::from_secs(self.config.chunk_timeout_seconds),
+                    self.semaphore.acquire_many(chunk_len as u32),
+                )
+                .await
+                .map_err(|_| {
+                    tracing::error!(
+                        %url,
+                        bytes = total_bytes,
+                        reason = "semaphore_acquire_timeout",
+                        "timeout adquiriendo permisos del semáforo (posible inanición)"
+                    );
+                    ScraperError::SemaphoreInanition
+                })?
+                .map_err(|_| {
+                    tracing::error!(
+                        %url,
+                        bytes = total_bytes,
+                        reason = "semaphore_inanition",
+                        "semáforo agotado: no hay permisos disponibles"
+                    );
+                    ScraperError::SemaphoreInanition
+                })?;
+                permit.forget();
                 guard.update_reservation(chunk_len);
             }
 
@@ -742,6 +761,54 @@ mod tests {
             semaphore.available_permits(),
             budget,
             "se adquirieron permisos pese al rechazo por Content-Length"
+        );
+    }
+
+    /// Regression for #544: a byte-weighted semaphore sized SMALLER than the
+    /// body must NEVER hang the downloader. The acquire is now bounded by a
+    /// timeout, so an unsatisfiable `acquire_many` (requested bytes exceed the
+    /// semaphore's total permits) surfaces `SemaphoreInanition` instead of
+    /// deadlocking forever. The outer `tokio::time::timeout(2s)` proves the
+    /// inner path is bounded: it must NOT return `Elapsed`.
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio::time::timeout hangs under Miri
+    async fn test_download_semaphore_inanition_no_deadlock() {
+        let mock_server = MockServer::start().await;
+        // `n` bytes delivered as the response body.
+        let n: usize = 256;
+        let body = vec![0x7Eu8; n];
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+            .mount(&mock_server)
+            .await;
+
+        let config = DownloadConfig {
+            global_timeout_seconds: 5,
+            // Short acquire timeout: the bounded-deadlock path is exercised fast.
+            chunk_timeout_seconds: 1,
+            max_size_bytes: 1024 * 1024,
+            ..DownloadConfig::default()
+        };
+        // Byte-sized semaphore with ONE fewer permit than the body: any
+        // byte-weighted acquire of the full body can never be satisfied.
+        let budget = n - 1;
+        let semaphore = Arc::new(Semaphore::new(budget));
+        let client = wreq::Client::builder()
+            .build()
+            .expect("fallo construyendo cliente wreq de prueba");
+        let downloader = ResourceDownloader::with_config(semaphore, client, config);
+        let url = format!("{}/", mock_server.uri());
+
+        // Outer bound: if the downloader truly hung, this would be `Elapsed`.
+        let result = tokio::time::timeout(Duration::from_secs(2), downloader.download(&url)).await;
+        let inner = result.expect(
+            "el downloader COLGÓ (Elapsed): el semáforo pequeño \
+            debió producir un error acotado, no un hang",
+        );
+        assert!(
+            matches!(inner, Err(ScraperError::SemaphoreInanition)),
+            "esperaba SemaphoreInanition acotado, obtuve: {inner:?}"
         );
     }
 }

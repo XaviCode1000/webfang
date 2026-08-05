@@ -340,6 +340,22 @@ impl Container {
     /// `StreamRepository` JSONL sink. Wires `RayonCpuPool` → `CpuBridge` →
     /// `ResourceDownloader` (byte-weighted semaphore) → `ElasticIngestion`.
     ///
+    /// Size the elastic-ingestion `Semaphore` in **BYTES** — the unit that
+    /// `ResourceDownloader` consumes via `acquire_many(chunk_len)` (one permit
+    /// == one byte). The RAM budget is the permit budget expressed directly in
+    /// bytes, so the semaphore total MUST equal `ram_budget_bytes` (capped at
+    /// `Semaphore::MAX_PERMITS`). This is the contract that prevents the #544
+    /// deadlock: had the semaphore been sized in *count* of resources
+    /// (`ram_budget / max_resource`), a single multi-byte chunk could request
+    /// more permits than exist and `acquire_many` would enqueue a partial grant
+    /// and wait forever (unbounded), hanging the pipeline.
+    #[must_use]
+    pub(crate) fn build_ingestion_semaphore_permits(ram_budget_bytes: u64) -> usize {
+        usize::try_from(ram_budget_bytes)
+            .unwrap_or(usize::MAX)
+            .min(tokio::sync::Semaphore::MAX_PERMITS)
+    }
+
     /// # Errors
     ///
     /// Returns an error if the Rayon pool or HTTP client fails to initialize.
@@ -359,8 +375,8 @@ impl Container {
 
         // 3. HTTP client for resource downloads (separate from scraping client)
         let client = crate::application::http_client::create_http_client()?;
-        let max_concurrent = (config.ram_budget_bytes / config.max_resource_bytes).max(1) as usize;
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+        let permits = Self::build_ingestion_semaphore_permits(config.ram_budget_bytes);
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(permits));
 
         // 4. Resource downloader with elastic semaphore (byte-weighted backpressure)
         let downloader = ResourceDownloader::with_config(
@@ -444,6 +460,7 @@ impl Container {
 mod tests {
     use super::*;
     use crate::domain::CrawlerConfig;
+    use crate::infrastructure::autotuning::{ElasticConfig, ElasticOverrides};
     use crate::infrastructure::config::ScraperConfig;
     use tempfile::TempDir;
 
@@ -589,5 +606,35 @@ mod tests {
             container.cleaner().is_some(),
             "cleaner() must be Some after with_cleaner injection"
         );
+    }
+
+    /// Regression for #544: the elastic-ingestion semaphore MUST be sized in
+    /// BYTES (the unit `ResourceDownloader` consumes via `acquire_many`), not in
+    /// a count of resources. With explicit overrides we fix the RAM budget and
+    /// assert the produced permit count covers `max_resource_bytes`.
+    ///
+    /// On the buggy wiring `permits = ram_budget/max_resource` (= 81 for these
+    /// values) which is smaller than `max_resource_bytes` (26_214_400) — the
+    /// assertion fails. After the fix `permits == ram_budget_bytes` (in bytes),
+    /// which is larger, so it passes.
+    #[test]
+    fn test_elastic_semaphore_sized_in_bytes() {
+        let overrides = ElasticOverrides {
+            cpu_cores: None,
+            ram_budget_bytes: Some(2 * 1024 * 1024 * 1024), // 2 GiB
+            max_resource_bytes: Some(25 * 1024 * 1024),     // 25 MiB
+            db_path: None,
+        };
+        let config = ElasticConfig::resolve(&overrides);
+        let permits = Container::build_ingestion_semaphore_permits(config.ram_budget_bytes);
+
+        assert!(
+            permits >= config.max_resource_bytes as usize,
+            "el semáforo debe inicializarse en BYTES (permits={permits}) >= \
+             max_resource_bytes={}",
+            config.max_resource_bytes
+        );
+        // Sanity: with 2 GiB budget the permit count equals the byte budget.
+        assert_eq!(permits, 2 * 1024 * 1024 * 1024);
     }
 }
