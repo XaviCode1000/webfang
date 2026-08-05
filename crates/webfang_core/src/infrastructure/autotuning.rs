@@ -241,7 +241,15 @@ pub struct ElasticOverrides {
 pub struct ElasticConfig {
     /// Detected/overridden CPU core count (Rayon pool size).
     pub cpu_cores: usize,
-    /// Detected/overridden RAM budget in bytes (semaphore permits).
+    /// Detected/overridden RAM budget in bytes.
+    ///
+    /// This value IS the elastic-ingestion `Semaphore` permit budget, expressed
+    /// directly in bytes (one permit == one byte). `ResourceDownloader` consumes
+    /// it via `acquire_many(chunk_len)`, so it MUST be sized in bytes — NOT in a
+    /// count of resources. It must be `>= max_resource_bytes`; otherwise a
+    /// single max-size resource could never acquire enough permits and the
+    /// pipeline would deadlock (issue #544). Capped at
+    /// `tokio::sync::Semaphore::MAX_PERMITS` by the wiring code.
     pub ram_budget_bytes: u64,
     /// Per-resource byte ceiling (default 25 MiB).
     pub max_resource_bytes: u64,
