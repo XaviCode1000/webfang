@@ -174,7 +174,14 @@ async fn clean_all_pages(
                     warn!("AI cleaner produced 0 chunks for: {}", url);
                     cleaned_chunks.push(DocumentChunk::from_scraped_content(&result));
                 } else {
-                    cleaned_chunks.extend(chunks);
+                    // The cleaner produces chunks with empty url/title (it only
+                    // sees raw HTML). Enrich each chunk with identity from its
+                    // source page so validate() passes and export succeeds (#569).
+                    cleaned_chunks.extend(
+                        chunks
+                            .into_iter()
+                            .map(|chunk| chunk.enrich_from_scraped_content(&result)),
+                    );
                 }
             },
             Err(e) => {

@@ -355,6 +355,48 @@ impl DocumentChunk<Draft> {
         self
     }
 
+    /// Enrich this AI-generated chunk with url/title/metadata from its source page.
+    ///
+    /// The semantic cleaner operates on raw HTML and produces `DocumentChunk`s
+    /// with empty `url`/`title`. Before these chunks can pass `validate()` and
+    /// be exported, they must inherit identity from the `ScrapedContent` they
+    /// originated from. This method performs that enrichment in place.
+    ///
+    /// Metadata (`excerpt`, `author`, `date`, `domain`) is merged: existing
+    /// entries from the AI chunk are preserved, and any missing keys are filled
+    /// from the scraped page.
+    #[must_use]
+    pub fn enrich_from_scraped_content(mut self, scraped: &ScrapedContent) -> Self {
+        self.url = scraped.url.to_string();
+        self.title = scraped.title.clone();
+
+        // Merge metadata from scraped page, preserving any AI-side entries.
+        if let Some(ref excerpt) = scraped.excerpt {
+            self.metadata
+                .entry("excerpt".to_string())
+                .or_insert_with(|| excerpt.clone());
+        }
+        if let Some(ref author) = scraped.author {
+            self.metadata
+                .entry("author".to_string())
+                .or_insert_with(|| author.clone());
+        }
+        if let Some(ref date) = scraped.date {
+            self.metadata
+                .entry("date".to_string())
+                .or_insert_with(|| date.clone());
+        }
+        if let Ok(url) = url::Url::parse(&scraped.url.to_string()) {
+            if let Some(host) = url.host_str() {
+                self.metadata
+                    .entry("domain".to_string())
+                    .or_insert_with(|| host.to_string());
+            }
+        }
+
+        self
+    }
+
     /// Validate this Draft DocumentChunk
     ///
     /// Returns Validated state if content is valid:
@@ -951,5 +993,107 @@ mod tests {
         assert!(ValidationError::InvalidMetadata("reason".to_string())
             .to_string()
             .contains("reason"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Regression tests for #569: AI chunks must inherit url/title from scraped page
+    // ---------------------------------------------------------------------------
+
+    /// `enrich_from_scraped_content` must fill empty url/title so validate() passes.
+    #[test]
+    fn test_enrich_from_scraped_content_fills_empty_fields() {
+        // Simulate an AI-generated chunk: has content + embeddings but no url/title.
+        let ai_chunk = DocumentChunk::new(
+            Uuid::new_v4(),
+            "", // empty url (from HtmlChunker)
+            "", // empty title (from HtmlChunker)
+            "AI-cleaned semantic content",
+        )
+        .with_embeddings(vec![0.1, 0.2, 0.3]);
+
+        let scraped = ScrapedContent {
+            title: "Source Page Title".to_string(),
+            content: "raw page content".to_string(),
+            url: ValidUrl::parse("https://example.com/article").unwrap(),
+            excerpt: Some("An excerpt".to_string()),
+            author: Some("Author Name".to_string()),
+            date: Some("2024-01-15".to_string()),
+            html: None,
+            assets: Vec::new(),
+            correlation_id: None,
+        };
+
+        let enriched = ai_chunk.enrich_from_scraped_content(&scraped);
+
+        assert_eq!(enriched.url, "https://example.com/article");
+        assert_eq!(enriched.title, "Source Page Title");
+        assert_eq!(enriched.content, "AI-cleaned semantic content");
+        assert_eq!(enriched.embeddings, Some(vec![0.1, 0.2, 0.3]));
+        assert_eq!(enriched.metadata["excerpt"], "An excerpt");
+        assert_eq!(enriched.metadata["author"], "Author Name");
+        assert_eq!(enriched.metadata["date"], "2024-01-15");
+        assert_eq!(enriched.metadata["domain"], "example.com");
+
+        // The enriched chunk must now pass validation (the core of #569).
+        assert!(
+            enriched.validate().is_ok(),
+            "enriched AI chunk must pass validation"
+        );
+    }
+
+    /// Enrichment must NOT overwrite existing metadata from the AI side.
+    #[test]
+    fn test_enrich_from_scraped_content_preserves_existing_metadata() {
+        let mut meta = HashMap::new();
+        meta.insert("author".to_string(), "AI-Inferred-Author".to_string());
+        meta.insert("custom_key".to_string(), "custom_value".to_string());
+
+        let ai_chunk = DocumentChunk::with_metadata(Uuid::new_v4(), "", "", "content", meta);
+
+        let scraped = ScrapedContent {
+            title: "Title".to_string(),
+            content: "content".to_string(),
+            url: ValidUrl::parse("https://example.com").unwrap(),
+            excerpt: None,
+            author: Some("Scraped-Author".to_string()),
+            date: None,
+            html: None,
+            assets: Vec::new(),
+            correlation_id: None,
+        };
+
+        let enriched = ai_chunk.enrich_from_scraped_content(&scraped);
+
+        // AI-side author is preserved, scraped author is NOT inserted.
+        assert_eq!(enriched.metadata["author"], "AI-Inferred-Author");
+        // Custom AI-side key is preserved.
+        assert_eq!(enriched.metadata["custom_key"], "custom_value");
+        // Domain is inserted (was missing).
+        assert_eq!(enriched.metadata["domain"], "example.com");
+    }
+
+    /// Enrichment with minimal scraped content (no optional fields) still works.
+    #[test]
+    fn test_enrich_from_scraped_content_minimal_scraped() {
+        let ai_chunk = DocumentChunk::new(Uuid::new_v4(), "", "", "AI content");
+
+        let scraped = ScrapedContent {
+            title: "Minimal".to_string(),
+            content: "raw".to_string(),
+            url: ValidUrl::parse("https://example.com").unwrap(),
+            excerpt: None,
+            author: None,
+            date: None,
+            html: None,
+            assets: Vec::new(),
+            correlation_id: None,
+        };
+
+        let enriched = ai_chunk.enrich_from_scraped_content(&scraped);
+
+        assert_eq!(enriched.url, "https://example.com/");
+        assert_eq!(enriched.title, "Minimal");
+        assert_eq!(enriched.metadata.len(), 1); // only domain
+        assert!(enriched.validate().is_ok());
     }
 }

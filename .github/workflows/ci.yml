@@ -229,6 +229,7 @@ jobs:
           echo "Verifying tokenizer SHA256..."
           echo "$TOKENIZER_BLOB_SHA  $TOKENIZER_BLOB_FILE" | sha256sum --check --status
           # Create hf_hub cache structure: refs/main + snapshot symlinks
+          mkdir -p "$MODEL_DIR/refs"
           echo "835ad14087e140460703cf0fae09f97d469d65c2" > "$MODEL_DIR/refs/main"
           ln -s "../../../blobs/$BLOB_SHA" "$SNAPSHOT_FILE"
           ln -s "../../blobs/$TOKENIZER_BLOB_SHA" "$SNAPSHOT_TOKENIZER"
@@ -237,9 +238,12 @@ jobs:
       - name: Pre-build test binary
         run: cargo build -p webfang_cli --bin webfang --all-features
       - run: cargo nextest run --all-features --test-threads 4 --retries 2
-      - name: AI integration tests (CLI+AI, MCP+AI)
+      - name: AI integration tests (CLI+AI, MCP+AI, AI crate)
         run: |
           set -e
+          # webfang_ai tests (#[ignore]'d, require model, run serially to avoid OOM)
+          cargo test -p webfang_ai --features ai --test ai_integration -- \
+            --ignored --test-threads=1 2>&1 | tail -5
           # CLI+AI tests (#[ignore]'d, require model)
           cargo test -p webfang_core --features ai --test behavioral -- \
             --ignored --test-threads=1 2>&1 | tail -5
