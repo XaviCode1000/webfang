@@ -37,13 +37,15 @@ use wiremock::{Mock, ResponseTemplate};
 /// so `assert_cmd::cargo_bin` cannot locate it from `webfang_core` tests
 /// — `CARGO_BIN_EXE_webfang` is only set for the crate that owns the binary.
 ///
-/// Hermeticity (#302): the binary is ALWAYS built with the feature set
-/// derived from the active `cfg!(feature = "ai")` gate — it is never reused
-/// on the sole basis of `target/debug/webfang` existing. A stale binary
-/// built without `ai` would otherwise be served to `--all-features` tests
-/// whose `--help` snapshots include AI-only flags. Cargo tracks features in
-/// its build fingerprint, so this is a ~0s no-op when the binary is already
-/// up to date and only rebuilds when the feature set actually differs.
+/// Hermeticity (#302): the binary is ALWAYS built with the EXACT feature set
+/// active in the test crate — never reused on the sole basis of
+/// `target/debug/webfang` existing. Features are derived individually via
+/// `cfg!()` so the binary matches the test's own configuration. This avoids
+/// dragging in `ui` (or any other feature) when the test crate does not have
+/// it enabled — a `--all-features` shortcut broke `headless_tui_fallback`
+/// tests under `--features ai` (issue #573): the test crate had `ui` OFF, but
+/// the binary was built with `ui` ON, so its `--tui` path printed the wrong
+/// message and the Spanish-message assertion failed.
 pub(crate) fn webfang_path() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("CARGO_BIN_EXE_webfang") {
         return std::path::PathBuf::from(p);
@@ -55,19 +57,43 @@ pub(crate) fn webfang_path() -> std::path::PathBuf {
         .and_then(|p| p.parent())
         .expect("resolve workspace root");
     let cargo = option_env!("CARGO").unwrap_or("cargo");
-    let build_args = if cfg!(feature = "ai") {
-        vec![
-            "build",
-            "-p",
-            "webfang_cli",
-            "--bin",
-            "webfang",
-            "--quiet",
-            "--all-features",
-        ]
-    } else {
-        vec!["build", "-p", "webfang_cli", "--bin", "webfang", "--quiet"]
-    };
+    let mut build_args = vec!["build", "-p", "webfang_cli", "--bin", "webfang", "--quiet"];
+    // Derive the exact feature set from the test crate's active features.
+    // Each `cfg!()` is a compile-time constant — zero runtime cost.
+    let mut active_features = Vec::new();
+    if cfg!(feature = "ai") {
+        active_features.push("ai");
+    }
+    if cfg!(feature = "adaptive-selectors") {
+        active_features.push("adaptive-selectors");
+    }
+    if cfg!(feature = "mcp") {
+        active_features.push("mcp");
+    }
+    if cfg!(feature = "persistence") {
+        active_features.push("persistence");
+    }
+    if cfg!(feature = "console") {
+        active_features.push("console");
+    }
+    if cfg!(feature = "dev-tracing") {
+        active_features.push("dev-tracing");
+    }
+    if cfg!(feature = "ui") {
+        active_features.push("ui");
+    }
+    if cfg!(feature = "images") {
+        active_features.push("images");
+    }
+    if cfg!(feature = "documents") {
+        active_features.push("documents");
+    }
+    let features_arg;
+    if !active_features.is_empty() {
+        features_arg = active_features.join(",");
+        build_args.push("--features");
+        build_args.push(&features_arg);
+    }
     let status = std::process::Command::new(cargo)
         .args(&build_args)
         .status()
