@@ -1,3 +1,4 @@
+mod ai_integration_test;
 mod batch_test;
 mod core_test;
 mod crawl_test;

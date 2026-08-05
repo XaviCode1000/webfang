@@ -1285,3 +1285,293 @@ async fn test_mcp_handler_construction_without_ai() {
         "search_obsidian must be registered with ai off, got: {names:?}"
     );
 }
+
+// ============================================================================
+// 7. MCP + AI — success + observability (issue #542, Phase 5)
+// ============================================================================
+
+/// Start a test MCP server whose `Container` carries a real AI semantic cleaner
+/// built from the local ONNX model cache (offline mode).
+///
+/// `#[cfg(feature = "ai")]` because the cleaner type (`SemanticCleanerImpl`)
+/// lives behind `webfang_ai`, which is an optional dependency of `webfang_mcp`.
+#[cfg(feature = "ai")]
+async fn start_test_server_with_ai() -> (String, tokio::task::JoinHandle<()>) {
+    use webfang_ai::infrastructure_ai::{ModelConfig, SemanticCleanerImpl};
+
+    let config = Config::default();
+    let container = Container::new(config.crawler, config.scraper)
+        .await
+        .expect("container creation failed");
+
+    // Resolve the model from the local cache — no network access.
+    let model_config = ModelConfig::default().with_offline_mode(true);
+    let cleaner = SemanticCleanerImpl::new(model_config)
+        .await
+        .expect("cached ONNX model required");
+
+    let container = container.with_cleaner(std::sync::Arc::new(cleaner));
+    let state = McpState::new(container);
+    let app = build_mcp_router(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let base_url = format!("http://{addr}");
+
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    for _ in 0..20 {
+        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    (base_url, handle)
+}
+
+/// Article HTML that Readability extracts deterministically.
+const MCP_AI_ARTICLE_HTML: &str = r#"<!DOCTYPE html>
+<html>
+<head><title>MCP AI Test</title></head>
+<body>
+<article>
+<h1>Semantic Cleaning via MCP</h1>
+<p>This article provides enough content for the semantic cleaner to produce
+real document chunks with embeddings. The extractor needs sufficient text
+to trigger readability extraction and the subsequent AI cleaning pipeline.</p>
+<p>A second paragraph ensures the chunker has enough material to work with.
+Multiple paragraphs stabilize extraction and give the embedding model
+meaningful tokens to process during inference.</p>
+</article>
+</body>
+</html>"#;
+
+/// REQ-MCP-AI-01: with the `ai` feature and the model cached, `tools/call
+/// semantic_cleaner` returns chunks with non-empty embeddings.
+#[cfg(feature = "ai")]
+#[tokio::test]
+#[ignore = "requires cached ONNX model"]
+async fn semantic_cleaner_with_cleaner_success() {
+    let (base_url, _handle) = start_test_server_with_ai().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    // Mock HTTP server that serves article HTML.
+    let mock = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(MCP_AI_ARTICLE_HTML))
+        .mount(&mock)
+        .await;
+
+    let resp = call_tool(
+        &client,
+        &base_url,
+        &session_id,
+        "semantic_cleaner",
+        json!({ "url": mock.uri() }),
+    )
+    .await;
+
+    let result = resp
+        .get("result")
+        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
+        .clone();
+    assert!(
+        !is_tool_error(&result),
+        "semantic_cleaner should succeed: {}",
+        tool_text(&result)
+    );
+
+    let text = tool_text(&result);
+    let parsed: Value = serde_json::from_str(&text).expect("response must parse as JSON");
+
+    let chunks = parsed.get("chunks").and_then(|v| v.as_u64()).unwrap_or(0);
+    assert!(chunks > 0, "should produce at least one chunk, got: {text}");
+
+    let embedding_dim = parsed
+        .get("embedding_dim")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    assert!(
+        embedding_dim > 0,
+        "embedding_dim should be non-zero, got: {text}"
+    );
+
+    let documents = parsed
+        .get("documents")
+        .and_then(|v| v.as_array())
+        .expect("documents array must be present");
+    assert!(!documents.is_empty(), "documents must not be empty");
+
+    // At least one document carries a non-empty embedding vector.
+    let has_embedding = documents.iter().any(|doc| {
+        doc.get("embeddings")
+            .and_then(|e| e.as_array())
+            .is_some_and(|arr| !arr.is_empty())
+    });
+    assert!(
+        has_embedding,
+        "at least one document must carry a non-empty embedding"
+    );
+}
+
+/// REQ-MCP-AI-02: `search_obsidian` without vault/index returns an honest
+/// `CallToolResult::error` (isError:true, Spanish).
+#[tokio::test]
+#[ignore = "requires cached ONNX model"]
+async fn search_obsidian_honest_error() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let resp = call_tool(
+        &client,
+        &base_url,
+        &session_id,
+        "search_obsidian",
+        json!({ "query": "rust async patterns" }),
+    )
+    .await;
+
+    let result = resp
+        .get("result")
+        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
+        .clone();
+    assert!(
+        is_tool_error(&result),
+        "search_obsidian must return isError:true without vault, got: {}",
+        tool_text(&result)
+    );
+}
+
+/// REQ-MCP-AI-03: `semantic_cleaner` generates traceable spans (the handler is
+/// `#[instrument]`-annotated). Verifies the tool succeeds AND that the response
+/// carries traceable structure (URL echo, chunk count, embedding dim).
+#[cfg(feature = "ai")]
+#[tokio::test]
+#[ignore = "requires cached ONNX model"]
+async fn mcp_ai_observability() {
+    let (base_url, _handle) = start_test_server_with_ai().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let mock = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(MCP_AI_ARTICLE_HTML))
+        .mount(&mock)
+        .await;
+
+    let url = mock.uri();
+    let resp = call_tool(
+        &client,
+        &base_url,
+        &session_id,
+        "semantic_cleaner",
+        json!({ "url": &url }),
+    )
+    .await;
+
+    let result = resp
+        .get("result")
+        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
+        .clone();
+    assert!(
+        !is_tool_error(&result),
+        "semantic_cleaner should succeed: {}",
+        tool_text(&result)
+    );
+
+    let text = tool_text(&result);
+    let parsed: Value = serde_json::from_str(&text).expect("response must parse as JSON");
+
+    // The instrumented handler echoes the URL and reports structured metrics.
+    assert_eq!(
+        parsed.get("url").and_then(|v| v.as_str()),
+        Some(url.as_str()),
+        "response should echo the instrumented URL"
+    );
+    assert!(
+        parsed.get("chunks").is_some(),
+        "response should report chunks (instrumented span result)"
+    );
+    assert!(
+        parsed.get("embedding_dim").is_some(),
+        "response should report embedding_dim (instrumented span result)"
+    );
+}
+
+/// REQ-MCP-AI-04: `semantic_cleaner` rejects a malformed URL with a JSON-RPC
+/// invalid-params error (-32602).
+#[tokio::test]
+#[ignore = "requires cached ONNX model"]
+async fn semantic_cleaner_invalid_url_reject() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let resp = call_tool(
+        &client,
+        &base_url,
+        &session_id,
+        "semantic_cleaner",
+        json!({ "url": "not a valid url" }),
+    )
+    .await;
+
+    let error = resp
+        .get("error")
+        .unwrap_or_else(|| panic!("invalid URL must return a JSON-RPC error, got: {resp}"));
+    let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+    assert_eq!(
+        code, -32602,
+        "invalid URL must map to JSON-RPC invalid-params (-32602), got: {error}"
+    );
+}
+
+/// REQ-MCP-AI-05: with the `ai` feature off, the MCP server still registers the
+/// AI tools (`semantic_cleaner` + `search_obsidian`). Registration is
+/// unconditional; the tools report honest errors when invoked without a cleaner.
+#[tokio::test]
+#[ignore = "requires cached ONNX model"]
+async fn mcp_ai_tools_registered_with_ai_off() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let body = mcp_request("tools/list", json!({}));
+    let resp = client
+        .post(format!("{base_url}/mcp"))
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("mcp-session-id", &session_id)
+        .json(&body)
+        .send()
+        .await
+        .expect("tools/list should succeed");
+    let text = resp.text().await.expect("read body");
+    let parsed = extract_json(&text).expect("tools/list must parse");
+
+    let tools = parsed
+        .get("result")
+        .and_then(|r| r.get("tools"))
+        .and_then(|t| t.as_array())
+        .unwrap_or_else(|| panic!("tools/list must return a tools array, got: {parsed}"));
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t.get("name")?.as_str())
+        .collect();
+
+    assert!(
+        names.contains(&"semantic_cleaner"),
+        "semantic_cleaner must be registered with ai off, got: {names:?}"
+    );
+    assert!(
+        names.contains(&"search_obsidian"),
+        "search_obsidian must be registered with ai off, got: {names:?}"
+    );
+}
