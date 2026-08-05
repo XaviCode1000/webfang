@@ -249,70 +249,7 @@ impl InferencePool {
             let handle = thread::Builder::new()
                 .name(format!("inference-worker-{worker_id}"))
                 .spawn(move || {
-                    // Build ONE session at startup — single-threaded
-                    let session_result = (|| -> Result<Session, SemanticError> {
-                        let mut builder = Session::builder().map_err(|e| {
-                            SemanticError::Inference(format!(
-                                "Failed to create ONNX session builder: {e}"
-                            ))
-                        })?;
-                        builder = builder
-                            .with_optimization_level(GraphOptimizationLevel::Level3)
-                            .map_err(|e| {
-                                SemanticError::Inference(format!(
-                                    "Failed to set optimization level: {e}"
-                                ))
-                            })?;
-                        builder = builder.with_intra_threads(1).map_err(|e| {
-                            SemanticError::Inference(format!("Failed to set intra threads: {e}"))
-                        })?;
-                        builder.commit_from_memory(&bytes).map_err(|e| {
-                            SemanticError::Inference(format!(
-                                "Failed to create ONNX session from memory: {e}"
-                            ))
-                        })
-                    })();
-
-                    let mut session = match session_result {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!(
-                                worker_id,
-                                error = %e,
-                                "Failed to build ONNX session"
-                            );
-                            // Drain channel so other workers aren't blocked
-                            while receiver.recv().is_ok() {}
-                            return;
-                        },
-                    };
-
-                    // Resolve the real input set ONCE (per worker), after the
-                    // session is built. This decouples feeding from the old
-                    // hardcoded 3-input assumption (#543).
-                    let plan = match InputPlan::from_session(&session) {
-                        Ok(plan) => plan,
-                        Err(e) => {
-                            error!(
-                                worker_id,
-                                error = %e,
-                                "Failed to resolve model input plan"
-                            );
-                            while receiver.recv().is_ok() {}
-                            return;
-                        },
-                    };
-
-                    debug!(worker_id, "Worker ready, waiting for requests");
-
-                    // Request loop
-                    while let Ok(request) = receiver.recv() {
-                        let result =
-                            run_session_inference(&mut session, &request.input, variant, &plan);
-                        let _ = request.reply_tx.send(result);
-                    }
-
-                    debug!(worker_id, "Worker exiting (channel disconnected)");
+                    worker_main(receiver, bytes, variant, worker_id);
                 })
                 .map_err(|e| {
                     SemanticError::Inference(format!("failed to spawn worker {worker_id}: {e}"))
@@ -404,6 +341,82 @@ impl Drop for InferencePool {
 
         info!(worker_count = self.worker_count, "InferencePool shut down");
     }
+}
+
+/// Builds a single-threaded ONNX session from model bytes in memory.
+fn build_session(bytes: &[u8]) -> Result<Session, SemanticError> {
+    let mut builder = Session::builder().map_err(|e| {
+        SemanticError::Inference(format!("Failed to create ONNX session builder: {e}"))
+    })?;
+    builder = builder
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .map_err(|e| SemanticError::Inference(format!("Failed to set optimization level: {e}")))?;
+    builder = builder
+        .with_intra_threads(1)
+        .map_err(|e| SemanticError::Inference(format!("Failed to set intra threads: {e}")))?;
+    builder.commit_from_memory(bytes).map_err(|e| {
+        SemanticError::Inference(format!("Failed to create ONNX session from memory: {e}"))
+    })
+}
+
+/// Drains the request channel so a failed worker does not block its peers.
+fn drain_channel(receiver: &crossbeam_channel::Receiver<WorkerRequest>) {
+    while receiver.recv().is_ok() {}
+}
+
+/// Logs a worker startup failure (session build or input-plan resolution) and
+/// drains the channel so peers aren't blocked, then the caller returns.
+fn report_worker_failure(
+    receiver: &Arc<crossbeam_channel::Receiver<WorkerRequest>>,
+    worker_id: usize,
+    stage: &str,
+    e: &SemanticError,
+) {
+    error!(worker_id, error = %e, "{stage}");
+    drain_channel(receiver);
+}
+
+/// Entry point for one inference worker thread.
+///
+/// Builds the ONNX session, resolves the model input plan once, then serves
+/// requests from the channel until it disconnects. On a build/resolve failure
+/// it drains the channel (so peers aren't blocked) and exits.
+fn worker_main(
+    receiver: Arc<crossbeam_channel::Receiver<WorkerRequest>>,
+    bytes: Arc<Vec<u8>>,
+    variant: AiModel,
+    worker_id: usize,
+) {
+    let session_result = build_session(&bytes);
+    let mut session = match session_result {
+        Ok(s) => s,
+        Err(e) => {
+            report_worker_failure(&receiver, worker_id, "Failed to build ONNX session", &e);
+            return;
+        },
+    };
+
+    let plan = match InputPlan::from_session(&session) {
+        Ok(plan) => plan,
+        Err(e) => {
+            report_worker_failure(
+                &receiver,
+                worker_id,
+                "Failed to resolve model input plan",
+                &e,
+            );
+            return;
+        },
+    };
+
+    debug!(worker_id, "Worker ready, waiting for requests");
+
+    while let Ok(request) = receiver.recv() {
+        let result = run_session_inference(&mut session, &request.input, variant, &plan);
+        let _ = request.reply_tx.send(result);
+    }
+
+    debug!(worker_id, "Worker exiting (channel disconnected)");
 }
 
 // ---------------------------------------------------------------------------

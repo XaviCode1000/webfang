@@ -237,48 +237,12 @@ impl ResourceDownloader {
                 return Err(ScraperError::PayloadTooLarge);
             }
 
-            // Acquire byte-weighted permits for THIS chunk before buffering it.
-            // `forget()` consumes the permit (no auto-release on Drop); the
-            // PermitGuard tracks the total and releases exactly this many on
-            // its own Drop — preventing the double-release / permit inflation.
-            //
-            // `chunk_len as u32` is safe: a network chunk is frame-sized (KB),
-            // and we just verified `total_bytes + chunk_len <= max_size_bytes`
-            // (≤ 25 MB), far below `u32::MAX`.
+            // Acquire byte-weighted permits for THIS chunk before buffering it
+            // (`forget()`ten so the `PermitGuard` owns the release on `Drop` —
+            // no double-release / permit inflation). Bounded by `acquire_chunk_permits`.
             if chunk_len > 0 {
-                // Bound the semaphore acquisition so a mis-sized semaphore can
-                // never hang the pipeline. Tokio's batch semaphore enqueues a
-                // partial grant and waits for the remainder, which is an
-                // *unbounded* wait when the requested byte count exceeds the
-                // semaphore's total permits (the #544 deadlock). Wrapping the
-                // acquire in `timeout` converts that deadlock into a bounded
-                // `SemaphoreInanition`. The acquire future is cancellation-safe
-                // (dropping it on timeout releases no permits).
-                let permit = timeout(
-                    Duration::from_secs(self.config.chunk_timeout_seconds),
-                    self.semaphore.acquire_many(chunk_len as u32),
-                )
-                .await
-                .map_err(|_| {
-                    tracing::error!(
-                        %url,
-                        bytes = total_bytes,
-                        reason = "semaphore_acquire_timeout",
-                        "timeout adquiriendo permisos del semáforo (posible inanición)"
-                    );
-                    ScraperError::SemaphoreInanition
-                })?
-                .map_err(|_| {
-                    tracing::error!(
-                        %url,
-                        bytes = total_bytes,
-                        reason = "semaphore_inanition",
-                        "semáforo agotado: no hay permisos disponibles"
-                    );
-                    ScraperError::SemaphoreInanition
-                })?;
-                permit.forget();
-                guard.update_reservation(chunk_len);
+                self.acquire_chunk_permits(url, &mut guard, chunk_len, total_bytes)
+                    .await?;
             }
 
             total_bytes += chunk_len;
@@ -286,6 +250,48 @@ impl ResourceDownloader {
         }
 
         Ok(buffer.to_vec())
+    }
+
+    /// Acquires byte-weighted permits for one streamed chunk with a bounded
+    /// timeout that converts the #544 deadlock (requested bytes > total permits)
+    /// into a `SemaphoreInanition` error. The permit is `forget()`ten so the
+    /// `PermitGuard` owns the release on `Drop` — no double-release / inflation.
+    async fn acquire_chunk_permits(
+        &self,
+        url: &str,
+        guard: &mut PermitGuard,
+        chunk_len: u64,
+        total_bytes: u64,
+    ) -> Result<(), ScraperError> {
+        // `chunk_len as u32` is safe: a network chunk is frame-sized (KB) and we
+        // already verified `total_bytes + chunk_len <= max_size_bytes` (≤ 25 MB),
+        // far below `u32::MAX`.
+        let permit = timeout(
+            Duration::from_secs(self.config.chunk_timeout_seconds),
+            self.semaphore.acquire_many(chunk_len as u32),
+        )
+        .await
+        .map_err(|_| {
+            tracing::error!(
+                %url,
+                bytes = total_bytes,
+                reason = "semaphore_acquire_timeout",
+                "timeout adquiriendo permisos del semáforo (posible inanición)"
+            );
+            ScraperError::SemaphoreInanition
+        })?
+        .map_err(|_| {
+            tracing::error!(
+                %url,
+                bytes = total_bytes,
+                reason = "semaphore_inanition",
+                "semáforo agotado: no hay permisos disponibles"
+            );
+            ScraperError::SemaphoreInanition
+        })?;
+        permit.forget();
+        guard.update_reservation(chunk_len);
+        Ok(())
     }
 }
 
