@@ -152,6 +152,25 @@ fn is_tool_error(result: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// Assert a WAF block verdict: the tool succeeds (`isError:false`) and its
+/// content begins with the stable ENGLISH prefix "WAF blocked:" (see
+/// crates/webfang_mcp/src/mcp_server/handlers/security.rs). No JSON-RPC
+/// `error.code` is produced on this path — the handler returns
+/// `Ok(CallToolResult::success(...))` — so we assert on the stable prefix
+/// rather than any localized message text. `label` disambiguates the call site.
+fn assert_waf_blocked(result: &Value, label: &str) {
+    assert!(
+        !is_tool_error(result),
+        "verify_waf_integrity should succeed: {}",
+        tool_text(result)
+    );
+    assert!(
+        tool_text(result).starts_with("WAF blocked:"),
+        "{label}, got: {}",
+        tool_text(result)
+    );
+}
+
 // ============================================================================
 // detect_waf — degraded mode (no HTTP context)
 // ============================================================================
@@ -302,22 +321,7 @@ async fn test_verify_waf_integrity_t1_challenge_blocks_degraded() {
         .unwrap_or_else(|| panic!("expected result, got: {resp}"))
         .clone();
 
-    assert!(
-        !is_tool_error(&result),
-        "verify_waf_integrity should succeed: {}",
-        tool_text(&result)
-    );
-    // The block verdict is reported as a SUCCESS result (isError:false) whose
-    // content begins with the stable ENGLISH prefix "WAF blocked:" (see
-    // crates/webfang_mcp/src/mcp_server/handlers/security.rs). No JSON-RPC
-    // `error.code` is produced on this path — the handler returns
-    // `Ok(CallToolResult::success(...))` — so we assert on the stable prefix
-    // rather than any localized message text.
-    assert!(
-        tool_text(&result).starts_with("WAF blocked:"),
-        "T1 challenge must block, got: {}",
-        tool_text(&result)
-    );
+    assert_waf_blocked(&result, "T1 challenge must block");
 }
 
 /// Additive context: a bare vendor fingerprint (T2) blocks when a correlated
@@ -345,22 +349,7 @@ async fn test_verify_waf_integrity_t2_with_waf_status_blocks() {
         .unwrap_or_else(|| panic!("expected result, got: {resp}"))
         .clone();
 
-    assert!(
-        !is_tool_error(&result),
-        "verify_waf_integrity should succeed: {}",
-        tool_text(&result)
-    );
-    // The block verdict is reported as a SUCCESS result (isError:false) whose
-    // content begins with the stable ENGLISH prefix "WAF blocked:" (see
-    // crates/webfang_mcp/src/mcp_server/handlers/security.rs). No JSON-RPC
-    // `error.code` is produced on this path — the handler returns
-    // `Ok(CallToolResult::success(...))` — so we assert on the stable prefix
-    // rather than any localized message text.
-    assert!(
-        tool_text(&result).starts_with("WAF blocked:"),
-        "T2 fingerprint + WAF status 403 must block, got: {}",
-        tool_text(&result)
-    );
+    assert_waf_blocked(&result, "T2 fingerprint + WAF status 403 must block");
 }
 
 /// Additive context: the SAME T2 body at an OK status (200) passes.
