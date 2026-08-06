@@ -349,9 +349,43 @@ fn collapse_index_path(url: &str) -> String {
     }
 }
 
+/// Return a URL path in canonical form for prefix/dedup comparison.
+///
+/// Strips a single trailing slash (except for the root `/`) so that `/docs/`
+/// and `/docs` compare equal. This is the canonical form used by
+/// sitemap-relevance filtering and vault path matching — anywhere two paths
+/// that differ only by a trailing slash must be treated as the same section.
+///
+/// # Examples
+///
+/// ```
+/// use webfang_core::domain::url_validation::canonical_path;
+///
+/// assert_eq!(canonical_path("/docs/"), "/docs");
+/// assert_eq!(canonical_path("/docs"), "/docs");
+/// assert_eq!(canonical_path("/"), "/");
+/// assert_eq!(canonical_path(""), "");
+/// ```
+pub fn canonical_path(path: &str) -> &str {
+    if path.len() > 1 && path.ends_with('/') {
+        &path[..path.len() - 1]
+    } else {
+        path
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_canonical_path_strips_trailing_slash() {
+        assert_eq!(canonical_path("/docs/"), "/docs");
+        assert_eq!(canonical_path("/docs"), "/docs");
+        assert_eq!(canonical_path("/"), "/");
+        assert_eq!(canonical_path(""), "");
+        assert_eq!(canonical_path("/a/b/c/"), "/a/b/c");
+    }
 
     #[test]
     fn test_validate_and_parse_url_success() {

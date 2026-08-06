@@ -426,7 +426,7 @@ impl ScraperError {
             Self::Export(_) => ErrorClass::InternalFatal,
             Self::ExportBatch(_) => ErrorClass::InternalFatal,
             Self::Conversion(_) => ErrorClass::InternalFatal,
-            Self::Semantic(_) => ErrorClass::InternalFatal,
+            Self::Semantic(inner) => inner.classify(),
             Self::Internal(_) => ErrorClass::InternalFatal,
             Self::CrawlLimit(_) => ErrorClass::PermanentFatal,
             Self::SitemapNotFound(_) => ErrorClass::PermanentFatal,
@@ -555,6 +555,37 @@ pub enum ErrorClass {
     PermanentFatal,
     /// Internal errors that indicate a bug (e.g., integer overflow, semaphore exhaustion)
     InternalFatal,
+    /// Domain-level error against a single item — fall back and continue the job.
+    ///
+    /// Unlike `PermanentFatal` (which means "abort everything"), this means
+    /// "this one page failed but the pipeline is healthy, so use raw content
+    /// and keep crawling". Example: [`SemanticError::ChunkTooLarge`] where a
+    /// chunk exceeds the user's `--max-tokens` limit.
+    DomainRecoverable,
+}
+
+impl SemanticError {
+    /// Classify this error by operational severity using the unified
+    /// [`ErrorClass`] taxonomy shared with [`crate::error::ScraperError`].
+    ///
+    /// Used by the export orchestrator to decide fail-fast vs fallback.
+    #[must_use]
+    pub const fn classify(&self) -> ErrorClass {
+        match self {
+            // A broken model or inference stack is an internal failure — abort.
+            Self::ModelLoad(_) | Self::Inference(_) | Self::InvalidThreshold { .. } => {
+                ErrorClass::InternalFatal
+            },
+            // ChunkTooLarge is recoverable at the job level — fall back to raw.
+            Self::ChunkTooLarge { .. } => ErrorClass::DomainRecoverable,
+            // Tokenize/Download/CacheValidation/OfflineMode: domain-level issues
+            // that don't indicate a broken pipeline — fall back and continue.
+            Self::Tokenize(_)
+            | Self::Download { .. }
+            | Self::CacheValidation { .. }
+            | Self::OfflineMode { .. } => ErrorClass::DomainRecoverable,
+        }
+    }
 }
 
 impl From<WreqError> for ScraperError {

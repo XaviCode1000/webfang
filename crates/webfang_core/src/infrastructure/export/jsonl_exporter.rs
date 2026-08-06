@@ -81,6 +81,10 @@ pub struct JsonlExporter {
 /// RAII wrapper around an exclusive file lock. While alive it holds the lock;
 /// on drop it releases the lock **and deletes the lock file** so no `.lock`
 /// orphan is left behind (issue #582).
+///
+/// `#[must_use]` warns if a caller acquires the lock but lets it drop
+/// immediately (a likely bug — the lock would be released before any write).
+#[must_use]
 struct FileLock {
     handle: std::fs::File,
     lock_path: PathBuf,

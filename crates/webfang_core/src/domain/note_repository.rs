@@ -93,6 +93,32 @@ pub trait NoteRepository: Send + Sync {
         embedding: Option<&'a [f32]>,
     ) -> BoxFuture<'a, Result<(), ScraperError>>;
 
+    /// Atomically register a note and persist all its chunks in one database
+    /// transaction.
+    ///
+    /// This replaces the separate [`save_note`](Self::save_note) +
+    /// [`save_note_chunk`](Self::save_note_chunk) calls when the caller has
+    /// all chunk data up front. A transaction guarantees that a note is never
+    /// persisted without its chunks — if the process panics or the embedding
+    /// batch fails after `save_note`, the whole operation rolls back instead
+    /// of leaving an unsearchable "ghost" note (#577 follow-up: atomicity).
+    ///
+    /// `chunks` is `[(text, embedding)]`. An empty `chunks` slice still
+    /// registers the note (so `sync_vault` won't re-index it) but writes no
+    /// chunk rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScraperError::Persistence`] on any database failure. The
+    /// transaction is rolled back automatically on error.
+    fn index_note_transactional<'a>(
+        &'a self,
+        path: &'a str,
+        content_hash: &'a str,
+        mtime_secs: i64,
+        chunks: &'a [(&'a str, Option<&'a [f32]>)],
+    ) -> BoxFuture<'a, Result<i64, ScraperError>>;
+
     /// Load all chunk vectors for in-memory ranking.
     ///
     /// Returns every indexed chunk with its embedding. Chunks without

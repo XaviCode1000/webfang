@@ -10,6 +10,7 @@ use url::Url;
 
 use crate::application::url_filter::is_allowed;
 use crate::domain::http_config::HttpClientConfig;
+use crate::domain::url_validation::canonical_path;
 use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl};
 use crate::infrastructure::crawler::{SitemapConfig, SitemapParser};
 
@@ -201,26 +202,16 @@ async fn parse_sitemap(parser: &SitemapParser, sitemap_url: &str) -> Result<Vec<
     Ok(urls)
 }
 
-/// Normalize a path for prefix comparison by stripping a single trailing
-/// slash (except for the root `/`). `/docs/` and `/docs` then compare equal.
-fn normalized_path(path: &str) -> &str {
-    if path.len() > 1 && path.ends_with('/') {
-        &path[..path.len() - 1]
-    } else {
-        path
-    }
-}
-
 /// Keep only sitemap URLs whose path shares the target's path prefix.
 ///
-/// Paths are compared after normalizing trailing slashes so that a seed of
+/// Paths are compared using the domain's [`canonical_path`] so that a seed of
 /// `/docs/` still matches a sitemap URL `/docs` (and vice-versa). Without this,
 /// `"/docs".starts_with("/docs/")` is `false` and the section index is silently
 /// dropped.
 fn filter_relevant_urls(urls: Vec<Url>, target_path: &str) -> Vec<Url> {
-    let target = normalized_path(target_path);
+    let target = canonical_path(target_path);
     urls.into_iter()
-        .filter(|url| normalized_path(url.path()).starts_with(target))
+        .filter(|url| canonical_path(url.path()).starts_with(target))
         .collect()
 }
 

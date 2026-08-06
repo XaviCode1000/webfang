@@ -183,33 +183,31 @@ impl VaultSearchService {
             .chunk_text(content)
             .map_err(ScraperError::Semantic)?;
 
-        // Step 2: Register the note so sync_vault recognizes it as indexed
-        // even when it produces no chunks. Without this, a note that yields 0
-        // chunks (below min_chunk_size) is never persisted and gets re-indexed
-        // on every sync (issue #577).
-        let note_id = self
+        // Step 2: Embed all chunks in a batch (skip when empty — no work to do).
+        let embeddings = if chunk_texts.is_empty() {
+            Vec::new()
+        } else {
+            self.embedding
+                .embed_batch(&chunk_texts)
+                .await
+                .map_err(ScraperError::Semantic)?
+        };
+
+        // Step 3: Atomically register the note and persist every chunk in one
+        // transaction. A single transaction guarantees that a note is never
+        // persisted without its chunks — if the process panics mid-way, the
+        // whole operation rolls back instead of leaving an unsearchable ghost
+        // note. Empty `chunk_texts` still registers the note so sync_vault won't
+        // re-index it on every run (#577 + follow-up: atomicity).
+        let chunks_with_embeddings: Vec<(&str, Option<&[f32]>)> = chunk_texts
+            .iter()
+            .zip(embeddings.iter())
+            .map(|(text, emb)| (text.as_str(), Some(emb.as_slice())))
+            .collect();
+        let _note_id = self
             .repository
-            .save_note(path, content_hash, mtime_secs)
+            .index_note_transactional(path, content_hash, mtime_secs, &chunks_with_embeddings)
             .await?;
-
-        if chunk_texts.is_empty() {
-            debug!(path, "no chunks produced — note registered with 0 chunks");
-            return Ok(0);
-        }
-
-        // Step 3: Embed all chunks in a batch.
-        let embeddings = self
-            .embedding
-            .embed_batch(&chunk_texts)
-            .await
-            .map_err(ScraperError::Semantic)?;
-
-        // Step 4: Persist each chunk with its embedding.
-        for (i, (text, emb)) in chunk_texts.iter().zip(embeddings.iter()).enumerate() {
-            self.repository
-                .save_note_chunk(note_id, i as i64, text, Some(emb))
-                .await?;
-        }
 
         debug!(path, chunks = chunk_texts.len(), "note indexed");
         Ok(chunk_texts.len())
@@ -522,6 +520,43 @@ mod tests {
                     embedding: embedding.unwrap_or_default().to_vec(),
                 });
                 Ok(())
+            })
+        }
+
+        fn index_note_transactional<'a>(
+            &'a self,
+            path: &'a str,
+            content_hash: &'a str,
+            mtime_secs: i64,
+            chunks: &'a [(&'a str, Option<&'a [f32]>)],
+        ) -> BoxFuture<'a, Result<i64, ScraperError>> {
+            Box::pin(async move {
+                let mut notes = self.notes.lock().unwrap();
+                let id = if let Some(existing) = notes.iter_mut().find(|n| n.path == path) {
+                    existing.content_hash = content_hash.to_owned();
+                    existing.mtime_secs = mtime_secs;
+                    1
+                } else {
+                    let mut id = self.next_id.lock().unwrap();
+                    *id += 1;
+                    notes.push(IndexedNoteMeta {
+                        path: path.to_owned(),
+                        content_hash: content_hash.to_owned(),
+                        mtime_secs,
+                    });
+                    *id
+                };
+                drop(notes);
+                let mut stored = self.chunks.lock().unwrap();
+                for (i, (text, emb)) in chunks.iter().enumerate() {
+                    stored.push(NoteChunkVector {
+                        note_path: String::new(),
+                        content: text.to_string(),
+                        chunk_index: i as i64,
+                        embedding: emb.unwrap_or(&[]).to_vec(),
+                    });
+                }
+                Ok(id)
             })
         }
 
