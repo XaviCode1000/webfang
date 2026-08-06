@@ -24,6 +24,9 @@ use crate::domain::DocumentChunk;
 #[cfg(feature = "ai")]
 use crate::error::SemanticError;
 
+#[cfg(feature = "ai")]
+use crate::error::ErrorClass;
+
 // ============================================================================
 // Export Results (RAG pipeline)
 // ============================================================================
@@ -166,6 +169,7 @@ async fn clean_all_pages(
 
     let mut cleaned_chunks: Vec<DocumentChunk> = Vec::with_capacity(results.len() * 2);
     let mut failed = 0usize;
+    let mut fallback = 0usize;
     let mut first_error: Option<SemanticError> = None;
     for (url, chunks_result, result) in cleaning_results {
         match chunks_result {
@@ -185,20 +189,55 @@ async fn clean_all_pages(
                 }
             },
             Err(e) => {
-                failed += 1;
-                error!("Failed to clean content for {}: {}", url, e);
-                if first_error.is_none() {
-                    first_error = Some(e);
+                // Classify the error by operational severity to decide
+                // fail-fast vs fallback (#581 follow-up: error classification).
+                match e.classify() {
+                    ErrorClass::InternalFatal => {
+                        // The model/inference stack is broken — retrying won't
+                        // help, so abort the whole crawl immediately instead of
+                        // burning CPU on 100 more pages that will all fail.
+                        return Err(CliExit::ConfigError(format!(
+                            "Falló la infraestructura de IA (error fatal, no reintentable): {e}"
+                        )));
+                    },
+                    ErrorClass::DomainRecoverable => {
+                        // ChunkTooLarge and similar: the chunk simply exceeds
+                        // the user's --max-tokens limit. Fall back to raw for
+                        // this page and count it as a fallback (so an all-
+                        // fallback job still surfaces an error, #543).
+                        warn!(
+                            "Chunk excede límite para {}, usando contenido raw: {}",
+                            url, e
+                        );
+                        cleaned_chunks.push(DocumentChunk::from_scraped_content(&result));
+                        fallback += 1;
+                        if first_error.is_none() {
+                            first_error = Some(e);
+                        }
+                        continue;
+                    },
+                    // SemanticError::classify() only returns InternalFatal or
+                    // DomainRecoverable, but handle the other classes
+                    // exhaustively so future variants don't silently fall through.
+                    ErrorClass::TransientRetriable
+                    | ErrorClass::TransientBackoff
+                    | ErrorClass::PermanentFatal => {
+                        failed += 1;
+                        error!("Falló limpieza de contenido para {}: {}", url, e);
+                        if first_error.is_none() {
+                            first_error = Some(e);
+                        }
+                        cleaned_chunks.push(DocumentChunk::from_scraped_content(&result));
+                    },
                 }
-                cleaned_chunks.push(DocumentChunk::from_scraped_content(&result));
             },
         }
     }
 
-    // If EVERY page failed to clean, the cause is a model/config failure (not
-    // per-content), so propagate it instead of returning raw fallback chunks
+    // If EVERY page failed or fell back, the cause is systemic (not per-
+    // content), so propagate it instead of returning raw fallback chunks
     // with a success exit code (#543 regression).
-    if failed == results.len() && !results.is_empty() {
+    if failed + fallback == results.len() && !results.is_empty() {
         let detail = first_error
             .map(|e| e.to_string())
             .unwrap_or_else(|| "sin detalle de error disponible".to_string());
@@ -289,6 +328,10 @@ mod tests {
 
     /// #543 regression: when EVERY page fails to clean, the pipeline must return
     /// an error (non-zero exit) instead of silently exiting 0 with raw fallback.
+    ///
+    /// With the ErrorClass fail-fast design (#581 follow-up), an infrastructure-
+    /// fatal error (Inference/ModelLoad) aborts the whole crawl on the FIRST
+    /// page instead of processing all pages just to discover they all fail.
     #[tokio::test]
     async fn test_clean_all_pages_total_failure_propagates_error() {
         let cleaner: Arc<dyn SemanticCleaner> = Arc::new(FailingCleaner);
@@ -299,20 +342,18 @@ mod tests {
 
         let outcome = clean_all_pages(&results, &cleaner).await;
 
+        // Inference error is InternalFatal → fail-fast: abort immediately with
+        // a config error instead of waiting for all pages to fail.
         match outcome {
             Err(CliExit::ConfigError(msg)) => {
                 assert!(
-                    msg.contains("todas las páginas"),
-                    "error should indicate total failure: {msg}"
+                    msg.contains("fatal") || msg.contains("infraestructura"),
+                    "error should indicate infrastructure failure: {msg}"
                 );
             },
             other => panic!(
-                "expected Err(CliExit::ConfigError) for total clean failure, got {}",
-                if other.is_err() {
-                    "a different error variant"
-                } else {
-                    "Ok"
-                }
+                "expected Err(CliExit::ConfigError) for infrastructure failure, got {:?}",
+                std::mem::discriminant(&other)
             ),
         }
     }

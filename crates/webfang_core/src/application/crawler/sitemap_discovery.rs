@@ -202,9 +202,17 @@ async fn parse_sitemap(parser: &SitemapParser, sitemap_url: &str) -> Result<Vec<
 }
 
 /// Keep only sitemap URLs whose path shares the target's path prefix.
+///
+/// Paths are compared using the domain's [`canonical_path`] so that a seed of
+/// `/docs/` still matches a sitemap URL `/docs` (and vice-versa). Without this,
+/// `"/docs".starts_with("/docs/")` is `false` and the section index is silently
+/// dropped.
+///
+/// [`canonical_path`]: crate::domain::url_validation::canonical_path
 fn filter_relevant_urls(urls: Vec<Url>, target_path: &str) -> Vec<Url> {
+    let target = crate::domain::url_validation::canonical_path(target_path);
     urls.into_iter()
-        .filter(|url| url.path().starts_with(target_path))
+        .filter(|url| crate::domain::url_validation::canonical_path(url.path()).starts_with(target))
         .collect()
 }
 
