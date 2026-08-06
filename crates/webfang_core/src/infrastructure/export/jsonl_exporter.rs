@@ -16,7 +16,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
 use serde::Serialize;
@@ -78,6 +78,49 @@ pub struct JsonlExporter {
     config: ExporterConfig,
 }
 
+/// RAII wrapper around an exclusive file lock. While alive it holds the lock;
+/// on drop it releases the lock **and deletes the lock file** so no `.lock`
+/// orphan is left behind (issue #582).
+struct FileLock {
+    handle: std::fs::File,
+    lock_path: PathBuf,
+}
+
+impl FileLock {
+    /// Acquire an exclusive lock at `<path>.jsonl.lock`.
+    fn acquire(path: &Path) -> ExportResult<Self> {
+        let lock_path = path.with_extension("jsonl.lock");
+        // M1 FIX: Write PID metadata to lock file for debugging
+        let mut lock_file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&lock_path)
+            .map_err(|e| ExporterError::WriteError(format!("{}: {}", lock_path.display(), e)))?;
+        use std::io::Write;
+        let _ = writeln!(lock_file, "pid={} op=exclusive_write", std::process::id());
+        // allow: fs2::FileExt::lock_exclusive, clippy misidentifies as std::io::FileExt (1.89+)
+        #[allow(clippy::incompatible_msrv)]
+        lock_file
+            .lock_exclusive()
+            .map_err(|e| ExporterError::WriteError(format!("failed to acquire file lock: {e}")))?;
+        Ok(Self {
+            handle: lock_file,
+            lock_path,
+        })
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        // Release the OS-level exclusive lock, then delete the lock file. Both
+        // best-effort: a failure here must not mask the real export result.
+        #[allow(clippy::incompatible_msrv)]
+        let _ = self.handle.unlock();
+        let _ = fs::remove_file(&self.lock_path);
+    }
+}
+
 impl JsonlExporter {
     /// Create a new JsonlExporter with the given configuration
     #[must_use]
@@ -102,22 +145,12 @@ impl JsonlExporter {
             fs::create_dir_all(parent).map_err(ExporterError::DirectoryCreation)?;
         }
 
-        // Acquire exclusive file lock to prevent concurrent writes
-        let lock_path = path.with_extension("jsonl.lock");
-        // M1 FIX: Write PID metadata to lock file for debugging
-        let mut lock_file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&lock_path)
-            .map_err(|e| ExporterError::WriteError(format!("{}: {}", lock_path.display(), e)))?;
-        use std::io::Write;
-        let _ = writeln!(lock_file, "pid={} op=exclusive_write", std::process::id());
-        // allow: fs2::FileExt::lock_exclusive, clippy misidentifies as std::io::FileExt (1.89+)
-        #[allow(clippy::incompatible_msrv)]
-        lock_file
-            .lock_exclusive()
-            .map_err(|e| ExporterError::WriteError(format!("failed to acquire file lock: {e}")))?;
+        // Acquire an exclusive file lock for the duration of this write, then
+        // release it (and delete the lock file) when the returned writer is
+        // dropped. A short-lived lock avoids blocking a second exporter pointing
+        // at the same file (e.g. the append path in `test_jsonl_exporter_append`),
+        // and deleting the file prevents orphaned `.lock` leftovers (issue #582).
+        let _lock = FileLock::acquire(&path)?;
 
         // Fix: Only truncate if file doesn't exist yet.
         // Prevents data loss when writer() is called multiple times
@@ -182,7 +215,7 @@ impl crate::domain::exporter::Exporter for JsonlExporter {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use tempfile::TempDir;
 
     use crate::domain::config::ExportFormat;
