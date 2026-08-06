@@ -185,6 +185,19 @@ async fn clean_all_pages(
                 }
             },
             Err(e) => {
+                // ChunkTooLarge is recoverable: the chunk simply exceeds the
+                // user's --max-tokens limit. Fall back to raw content for this
+                // page but do NOT count it toward the total-failure abort —
+                // otherwise a single oversized chunk (or a low --max-tokens
+                // value) would abort the whole crawl with exit 78 (#581).
+                if matches!(e, SemanticError::ChunkTooLarge { .. }) {
+                    warn!(
+                        "Chunk exceeds --max-tokens limit for {}, falling back to raw: {}",
+                        url, e
+                    );
+                    cleaned_chunks.push(DocumentChunk::from_scraped_content(&result));
+                    continue;
+                }
                 failed += 1;
                 error!("Failed to clean content for {}: {}", url, e);
                 if first_error.is_none() {
