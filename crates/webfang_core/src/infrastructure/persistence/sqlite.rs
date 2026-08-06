@@ -465,6 +465,58 @@ impl NoteRepository for SqliteVectorRepository {
         })
     }
 
+    fn index_note_transactional<'a>(
+        &'a self,
+        path: &'a str,
+        content_hash: &'a str,
+        mtime_secs: i64,
+        chunks: &'a [(&'a str, Option<&'a [f32]>)],
+    ) -> Pin<Box<dyn Future<Output = Result<i64, ScraperError>> + Send + 'a>> {
+        Box::pin(async move {
+            let path_owned = path.to_string();
+            let hash_owned = content_hash.to_string();
+            let chunks_owned: Vec<(String, Option<Vec<u8>>)> = chunks
+                .iter()
+                .map(|(text, emb)| (text.to_string(), emb.map(f32_slice_to_bytes)))
+                .collect();
+
+            let conn = self.pool.get().await.map_err(|e| {
+                ScraperError::persistence(format!("obtener conexión del pool: {e}"))
+            })?;
+            conn.interact(move |c| {
+                let tx = c.transaction()?;
+                tx.execute(
+                    "INSERT INTO notes (path, content_hash, mtime_secs, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, datetime('now'), datetime('now')) \
+                     ON CONFLICT(path) DO UPDATE SET \
+                       content_hash = excluded.content_hash, \
+                       mtime_secs = excluded.mtime_secs, \
+                       updated_at = datetime('now')",
+                    rusqlite::params![&path_owned, &hash_owned, mtime_secs],
+                )?;
+                let id = tx.query_row(
+                    "SELECT id FROM notes WHERE path = ?1",
+                    rusqlite::params![&path_owned],
+                    |row| row.get::<_, i64>(0),
+                )?;
+                for (i, (text, emb_blob)) in chunks_owned.into_iter().enumerate() {
+                    tx.execute(
+                        "INSERT INTO note_chunks (note_id, chunk_index, content, embedding_vector, created_at) \
+                         VALUES (?1, ?2, ?3, ?4, datetime('now'))",
+                        rusqlite::params![id, i as i64, &text, &emb_blob.as_deref()],
+                    )?;
+                }
+                tx.commit()?;
+                rusqlite::Result::<i64, rusqlite::Error>::Ok(id)
+            })
+            .await
+            .map_err(|e| {
+                ScraperError::persistence(format!("index_note_transactional (interact): {e}"))
+            })?
+            .map_err(|e| ScraperError::persistence(format!("index_note_transactional: {e}")))
+        })
+    }
+
     fn load_all_vectors(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<NoteChunkVector>, ScraperError>> + Send + '_>> {
