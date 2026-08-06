@@ -183,23 +183,26 @@ impl VaultSearchService {
             .chunk_text(content)
             .map_err(ScraperError::Semantic)?;
 
+        // Step 2: Register the note so sync_vault recognizes it as indexed
+        // even when it produces no chunks. Without this, a note that yields 0
+        // chunks (below min_chunk_size) is never persisted and gets re-indexed
+        // on every sync (issue #577).
+        let note_id = self
+            .repository
+            .save_note(path, content_hash, mtime_secs)
+            .await?;
+
         if chunk_texts.is_empty() {
-            debug!(path, "no chunks produced — skipping note");
+            debug!(path, "no chunks produced — note registered with 0 chunks");
             return Ok(0);
         }
 
-        // Step 2: Embed all chunks in a batch.
+        // Step 3: Embed all chunks in a batch.
         let embeddings = self
             .embedding
             .embed_batch(&chunk_texts)
             .await
             .map_err(ScraperError::Semantic)?;
-
-        // Step 3: Register the note.
-        let note_id = self
-            .repository
-            .save_note(path, content_hash, mtime_secs)
-            .await?;
 
         // Step 4: Persist each chunk with its embedding.
         for (i, (text, emb)) in chunk_texts.iter().zip(embeddings.iter()).enumerate() {
