@@ -136,7 +136,7 @@ impl McpHandler {
 
         let _permit = acquire_semaphore!(self, url_utils);
 
-        let matches = webfang_core::domain::matches_pattern(&params.url, &params.pattern);
+        let matches = webfang_core::domain::match_url_pattern(&params.url, &params.pattern);
         Ok(CallToolResult::success(vec![Content::text(
             matches.to_string(),
         )]))
@@ -470,7 +470,7 @@ mod handler_tests {
         let res = handler
             .match_url_pattern(Parameters(MatchUrlPatternParams {
                 url: "https://example.com/articles/1".to_string(),
-                pattern: "/articles/*".to_string(),
+                pattern: "**/articles/*".to_string(),
             }))
             .await
             .expect("match_url_pattern returns Ok");
