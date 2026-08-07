@@ -717,63 +717,51 @@ mod tests {
     // ISSUE #600 — absolute paths MUST be accepted for output_dir / vault_path
     // across every affected tool (these structs are `pub(crate)`, so the
     // contract is exercised here rather than from an external test crate).
-    // `..` traversal stays rejected.
+    // `..` traversal stays rejected. The shared `require_safe_path_allow_absolute`
+    // helper is already covered in `validation::tests`; these pin the per-struct
+    // `validate()` wiring without duplicating the helper's assertion body.
     // ========================================================================
 
+    const ABS_DIR: &str = "/tmp/webfang_verify";
+
+    /// Exercise every `output_dir`/`vault_path` param that was switched to
+    /// `require_safe_path_allow_absolute` (issue #600) and assert absolute
+    /// paths are accepted.
     #[test]
-    fn export_jsonl_accepts_absolute_output_dir() {
-        let params = ExportJsonlParams {
-            output_dir: Some("/tmp/webfang_verify".to_string()),
+    fn issue_600_absolute_paths_accepted() {
+        let jsonl = ExportJsonlParams {
+            output_dir: Some(ABS_DIR.to_string()),
             filename: Some("out".to_string()),
         };
-        assert!(
-            params.validate().is_ok(),
-            "absolute output_dir must be accepted"
-        );
-    }
-
-    #[test]
-    fn export_vector_accepts_absolute_output_dir() {
-        let params = ExportVectorParams {
-            output_dir: Some("/tmp/webfang_verify".to_string()),
+        let vector = ExportVectorParams {
+            output_dir: Some(ABS_DIR.to_string()),
             filename: Some("out".to_string()),
         };
-        assert!(
-            params.validate().is_ok(),
-            "absolute output_dir must be accepted"
-        );
-    }
-
-    #[test]
-    fn download_assets_accepts_absolute_output_dir() {
-        let params = DownloadAssetsParams {
+        let assets = DownloadAssetsParams {
             html: "<html></html>".to_string(),
             base_url: "https://example.com".to_string(),
             images: Some(true),
             documents: Some(false),
-            output_dir: Some("/tmp/webfang_verify".to_string()),
+            output_dir: Some(ABS_DIR.to_string()),
         };
-        assert!(
-            params.validate().is_ok(),
-            "absolute output_dir must be accepted"
-        );
-    }
-
-    #[test]
-    fn search_obsidian_accepts_absolute_vault_path() {
-        let params = SearchObsidianParams {
+        let obsidian = SearchObsidianParams {
             query: "hello".to_string(),
             vault_path: Some("/home/user/vault".to_string()),
             limit: None,
         };
-        assert!(
-            params.validate().is_ok(),
-            "absolute vault_path must be accepted"
-        );
+        for (name, params) in [
+            ("export_jsonl", jsonl.validate()),
+            ("export_vector", vector.validate()),
+            ("download_assets", assets.validate()),
+            ("search_obsidian", obsidian.validate()),
+        ] {
+            assert!(params.is_ok(), "{name}: absolute path must be accepted");
+        }
     }
 
+    /// Traversal must still be rejected even inside an absolute output_dir.
     #[test]
-    fn export_jsonl_rejects_traversal_in_absolute_output_dir() {
+    fn issue_600_traversal_still_rejected() {
         let params = ExportJsonlParams {
             output_dir: Some("/tmp/webfang_verify/../etc".to_string()),
             filename: Some("out".to_string()),

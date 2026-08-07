@@ -124,48 +124,12 @@ fn require_safe_path_rejects_oversize() {
     assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
 }
 
-// ===========================================================================
-// ISSUE #600 — output_dir / vault_path MUST accept absolute paths.
-// Regression guards: the `*Params` structs that previously forced relative-only
-// validation (require_safe_path) now use require_safe_path_allow_absolute, so a
-// user-supplied absolute path no longer yields a hard INVALID_PARAMS error.
-// `..` traversal is still rejected (defense preserved).
-// ===========================================================================
-
-#[test]
-fn export_file_params_accepts_absolute_output_dir() {
-    // Literal case from issue #600: /tmp/webfang_verify must be accepted.
-    // ExportFileParams is the only absolute-accepting struct exported as `pub`;
-    // the other export/obsidian/output_dir params use the same
-    // `require_safe_path_allow_absolute` helper (covered by the
-    // require_safe_path_allow_absolute_* tests above), so this exercises the
-    // real validate() path end-to-end.
-    let params = ExportFileParams {
-        output_dir: "/tmp/webfang_verify".to_string(),
-        filename: "out".to_string(),
-        format: "jsonl".to_string(),
-        content: "hello".to_string(),
-    };
-    assert!(
-        params.validate().is_ok(),
-        "absolute output_dir must be accepted"
-    );
-}
-
-#[test]
-fn export_file_params_still_rejects_traversal() {
-    // Traversal must still be rejected even for absolute output_dir.
-    let params = ExportFileParams {
-        output_dir: "/tmp/webfang_verify/../etc".to_string(),
-        filename: "out".to_string(),
-        format: "jsonl".to_string(),
-        content: "hello".to_string(),
-    };
-    assert!(
-        params.validate().is_err(),
-        "traversal must still be rejected"
-    );
-}
+// NOTE: absolute-path acceptance for the export/obsidian `output_dir` /
+// `vault_path` params (issue #600) is covered by the internal `params::tests`
+// module in `src/mcp_server/params.rs`, and `export_file` (the only `pub`
+// struct of this shape) is covered end-to-end by
+// `params_rejection_test.rs::export_file_accepts_absolute_output_dir`. The
+// `require_safe_path_allow_absolute_*` tests above cover the shared helper.
 
 // ===========================================================================
 // validation::require_max_len

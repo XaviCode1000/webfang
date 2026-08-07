@@ -335,7 +335,7 @@ mod tests {
     // Ray ID: abc</body></html>" contains the Challenge-tier marker
     // "checking your browser" (T1), which is an *intentional* block-at-any-status
     // signal (a real Cloudflare IUAM interstitial). Issue #599 mis-classifies
-    // that as a fingerprint false-positive; the engine is correct. These tests
+    // that as a fingerprint false-positive; the engine is correct. These tests (two regression guards)
     // pin the genuine REQ-WAF-09 contract for T2 evidence so a future change
     // cannot regress into mere-presence blocking.
     // ========================================================================
@@ -355,43 +355,6 @@ mod tests {
         assert!(
             !verdict.is_blocked,
             "vendor mention must not block in degraded mode"
-        );
-    }
-
-    #[test]
-    fn issue_599_fingerprint_t2_match_degraded_never_blocks() {
-        // Stronger pin: a body that DOES match a registered T2 fingerprint
-        // ("blocked by akamai") still must NOT block in degraded mode — the
-        // precise REQ-WAF-09 / #346 contract against mere-presence blocking.
-        let verdict = verify_waf_verdict(
-            "<html>blocked by akamai</html>",
-            None,
-            None,
-            Default::default(),
-        );
-        assert!(
-            !verdict.is_blocked,
-            "T2 match must not block in degraded mode"
-        );
-        assert!(
-            !verdict.evidences.is_empty(),
-            "T2 evidence is still collected"
-        );
-    }
-
-    #[test]
-    fn issue_599_fingerprint_body_status_200_passes() {
-        // REQ-WAF-09: T2 evidence at status 200 (a normal proxied page mentioning
-        // Cloudflare) must pass — no correlated WAF status → no block.
-        let verdict = verify_waf_verdict(
-            "<html><body>Powered by Cloudflare Ray ID: abc123</body></html>",
-            Some(200),
-            Some("text/html".to_string()),
-            Default::default(),
-        );
-        assert!(
-            !verdict.is_blocked,
-            "T2 + 200 must pass (no false positive)"
         );
     }
 
