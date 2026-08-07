@@ -515,6 +515,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(miri))] // wreq::Client → btls FFI unsupported by Miri
     async fn discovers_via_robots_absolute_directive() {
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
@@ -531,6 +532,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(miri))] // wreq::Client → btls FFI unsupported by Miri
     async fn discovers_via_robots_relative_directive() {
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
@@ -547,6 +549,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(miri))] // wreq::Client → btls FFI unsupported by Miri
     async fn discovers_via_fallback_location() {
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
@@ -565,6 +568,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(miri))] // wreq::Client → btls FFI unsupported by Miri
     async fn discovers_via_subpath_sitemap() {
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
@@ -589,6 +593,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(miri))] // wreq::Client → btls FFI unsupported by Miri
     async fn errors_when_no_sitemap_found() {
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
