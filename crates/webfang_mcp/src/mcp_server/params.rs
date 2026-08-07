@@ -19,8 +19,9 @@ use serde_json::Value;
 
 use crate::mcp_server::validation::{
     require_http_url, require_max_len, require_max_value_u16, require_max_value_u64,
-    require_non_empty, require_one_of, require_safe_domain, require_safe_name, require_safe_path,
-    require_safe_path_allow_absolute, require_safe_seed, MAX_BLOB_LEN,
+    require_non_empty, require_one_of, require_range_u64, require_safe_domain,
+    require_safe_filename, require_safe_name, require_safe_path, require_safe_path_allow_absolute,
+    require_safe_seed, MAX_BLOB_LEN,
 };
 
 const EXPORT_FORMATS: &[&str] = &["jsonl", "vector", "auto"];
@@ -90,7 +91,7 @@ pub struct ScrapeBatchParams {
 impl ScrapeBatchParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `urls` is empty, any URL is not
-    /// http(s), or `concurrency` exceeds 64.
+    /// http(s), `concurrency` exceeds 64, or `concurrency` is less than 1.
     pub fn validate(&self) -> Result<(), McpError> {
         if self.urls.is_empty() {
             return Err(McpError::invalid_params(
@@ -102,7 +103,7 @@ impl ScrapeBatchParams {
             require_http_url("urls[]", u)?;
         }
         if let Some(c) = self.concurrency {
-            require_max_value_u64("concurrency", c as u64, 64)?;
+            require_range_u64("concurrency", c as u64, 1, 64)?;
         }
         Ok(())
     }
@@ -123,14 +124,15 @@ pub struct CrawlSiteParams {
 impl CrawlSiteParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `url` is not a valid http(s) URL,
-    /// `max_depth` exceeds 10, or `max_pages` exceeds 100_000.
+    /// `max_depth` exceeds 10, `max_pages` exceeds 100_000, or `max_pages` is
+    /// less than 1.
     pub fn validate(&self) -> Result<(), McpError> {
         require_http_url("url", &self.url)?;
         if let Some(d) = self.max_depth {
             require_max_value_u64("max_depth", u64::from(d), 10)?;
         }
         if let Some(p) = self.max_pages {
-            require_max_value_u64("max_pages", u64::from(p), 100_000)?;
+            require_range_u64("max_pages", u64::from(p), 1, 100_000)?;
         }
         Ok(())
     }
@@ -418,7 +420,7 @@ impl ExportFileParams {
     /// the allowed formats, or `content` exceeds the maximum blob size.
     pub fn validate(&self) -> Result<(), McpError> {
         require_safe_path("output_dir", &self.output_dir)?;
-        require_safe_name("filename", &self.filename)?;
+        require_safe_filename("filename", &self.filename)?;
         require_one_of("format", &self.format, EXPORT_FORMATS)?;
         require_max_len("content", &self.content, MAX_BLOB_LEN)?;
         Ok(())
@@ -604,14 +606,14 @@ pub(crate) struct ExportJsonlParams {
 impl ExportJsonlParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `output_dir` (when present) is
-    /// not a safe relative path or `filename` (when present) is empty or too
-    /// long.
+    /// not a safe relative path or `filename` (when present) is not a single
+    /// flat component (no `..`, `/`, or subdirectory — issue #601).
     pub fn validate(&self) -> Result<(), McpError> {
         if let Some(d) = &self.output_dir {
             require_safe_path("output_dir", d)?;
         }
         if let Some(f) = &self.filename {
-            require_safe_name("filename", f)?;
+            require_safe_filename("filename", f)?;
         }
         Ok(())
     }
@@ -629,14 +631,14 @@ pub(crate) struct ExportVectorParams {
 impl ExportVectorParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `output_dir` (when present) is
-    /// not a safe relative path or `filename` (when present) is empty or too
-    /// long.
+    /// not a safe relative path or `filename` (when present) is not a single
+    /// flat component (no `..`, `/`, or subdirectory — issue #601).
     pub fn validate(&self) -> Result<(), McpError> {
         if let Some(d) = &self.output_dir {
             require_safe_path("output_dir", d)?;
         }
         if let Some(f) = &self.filename {
-            require_safe_name("filename", f)?;
+            require_safe_filename("filename", f)?;
         }
         Ok(())
     }

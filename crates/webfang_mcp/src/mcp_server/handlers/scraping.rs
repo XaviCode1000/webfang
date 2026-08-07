@@ -740,6 +740,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn zero_limits_are_rejected() {
+        // Bug #597: concurrency:0 deadlocks buffer_unordered(0).
+        // Bug #598: max_pages:0 panics mpsc::channel(0).
+        // Both must be rejected up front with invalid_params.
+        let batch = ScrapeBatchParams {
+            urls: vec!["https://example.com".to_string()],
+            concurrency: Some(0),
+        }
+        .validate();
+        assert!(batch.is_err(), "concurrency 0 must be rejected: {batch:?}");
+
+        let crawl = CrawlSiteParams {
+            url: "https://example.com".into(),
+            max_depth: None,
+            max_pages: Some(0),
+        }
+        .validate();
+        assert!(crawl.is_err(), "max_pages 0 must be rejected: {crawl:?}");
+    }
+
     #[tokio::test]
     async fn discover_urls_success_extracts_links() {
         let (handler, _tmp) = test_handler().await;
