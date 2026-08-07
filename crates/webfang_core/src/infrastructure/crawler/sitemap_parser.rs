@@ -264,6 +264,31 @@ impl SitemapParser {
         self.parse_with_depth(url, self.config.max_depth).await
     }
 
+    /// Validate a sitemap HTTP response: status MUST be checked before
+    /// content-type so a 404/5xx yields "not found" rather than the misleading
+    /// "unexpected content-type" (issue #590, bug #9). Returns the content-type
+    /// string on success for the caller's XML streaming path.
+    fn validate_response(status: wreq::StatusCode, content_type: &str, url: &str) -> Result<()> {
+        if !status.is_success() {
+            tracing::warn!("Sitemap URL returned non-2xx status: {status} from {url}");
+            return Err(SitemapError::HttpError(format!("server returned {status}")));
+        }
+        let is_xml = content_type.is_empty()
+            || content_type.contains("application/xml")
+            || content_type.contains("text/xml")
+            || content_type.contains("application/xhtml+xml")
+            || url.ends_with(".xml")
+            || url.ends_with(".xml.gz");
+        if !is_xml {
+            tracing::warn!(
+                "Sitemap URL returned non-XML content type: {} from {url}",
+                content_type
+            );
+            return Err(SitemapError::InvalidContentType(content_type.to_string()));
+        }
+        Ok(())
+    }
+
     /// Internal recursive parser with depth tracking
     async fn parse_with_depth(&self, url: &str, depth: u8) -> Result<Vec<Url>> {
         // Base case: max depth reached
@@ -286,28 +311,14 @@ impl SitemapParser {
             .await
             .map_err(|e| SitemapError::HttpError(e.to_string()))?;
 
-        // Validate content type
+        // Validate response: status checked before content-type (issue #590, bug #9).
+        let status = response.status();
         let content_type = response
             .headers()
             .get("content-type")
-            .map(|v| v.to_str().unwrap_or(""))
+            .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-
-        let is_xml = content_type.is_empty()
-            || content_type.contains("application/xml")
-            || content_type.contains("text/xml")
-            || content_type.contains("application/xhtml+xml")
-            || url.ends_with(".xml")
-            || url.ends_with(".xml.gz");
-
-        if !is_xml {
-            tracing::warn!(
-                "Sitemap URL returned non-XML content type: {} from {}",
-                content_type,
-                url
-            );
-            return Err(SitemapError::InvalidContentType(content_type.to_string()));
-        }
+        Self::validate_response(status, content_type, url)?;
 
         // Stream response with size limit
         use futures::StreamExt;
@@ -726,6 +737,35 @@ mod tests {
         assert!(urls
             .iter()
             .all(|u| u.scheme() == "http" || u.scheme() == "https"));
+    }
+
+    /// Bug #9 regression: a 404 response must yield SitemapError::HttpError
+    /// ("server returned 404"), NOT SitemapError::InvalidContentType. Status
+    /// MUST be checked BEFORE content-type (issue #590).
+    #[tokio::test]
+    async fn test_sitemap_404_yields_http_error_not_content_type() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let port = server.address().port();
+
+        Mock::given(path("/sitemap.xml"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("Not Found"))
+            .mount(&server)
+            .await;
+
+        let parser = SitemapParser::new().unwrap();
+        let result = parser
+            .parse_from_url(&format!("http://127.0.0.1:{port}/sitemap.xml"))
+            .await;
+
+        match result {
+            Err(SitemapError::HttpError(msg)) => {
+                assert!(msg.contains("404"), "error must reference 404, got: {msg}");
+            },
+            other => panic!("expected SitemapError::HttpError with 404, got: {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -549,6 +549,29 @@ mod tests {
         assert!(!is_internal_link("https://other.com/x", "www.example.com"));
     }
 
+    /// Bug #5 regression: normalize_url handles scheme-first order correctly.
+    /// Non-URLs (no ://) are returned as-is; Unicode URLs are normalized
+    /// without double-encoding (issue #590).
+    #[test]
+    fn normalize_url_non_url_returned_as_is() {
+        let result = normalize_url("not-a-url", false);
+        assert_eq!(result, "not-a-url", "non-URL must be returned unchanged");
+    }
+
+    #[test]
+    fn normalize_url_unicode_preserved_or_encoded() {
+        // A Unicode URL should be handled without panicking. The exact
+        // encoding depends on the url-normalize crate, but the result must
+        // be a valid non-empty string (issue #590, bug #5).
+        let input = "https://example.com/página";
+        let result = normalize_url(input, false);
+        assert!(!result.is_empty(), "result must not be empty");
+        assert!(
+            result.starts_with("https://example.com"),
+            "scheme and host must be preserved, got: {result}"
+        );
+    }
+
     #[test]
     fn is_internal_link_www_seed_full_url_is_internal() {
         // Seed passed as full URL with www (MCP tool path).

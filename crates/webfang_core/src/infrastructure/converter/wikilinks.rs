@@ -118,6 +118,11 @@ fn should_convert_wikilink(url_str: &str, base_domain: &str) -> Option<String> {
 pub fn convert_wiki_links(content: &str, base_domain: &str) -> String {
     let mut options = Options::all();
     options.remove(Options::ENABLE_SMART_PUNCTUATION);
+    // Disable footnotes and definition lists — they corrupt existing
+    // [[wiki-link]] syntax by interpreting `[^...]` and trailing `:` markers
+    // as structural elements (issue #590, bug #6).
+    options.remove(Options::ENABLE_FOOTNOTES);
+    options.remove(Options::ENABLE_DEFINITION_LIST);
 
     let parser = Parser::new_ext(content, options);
     transform_and_serialize(parser, base_domain)
@@ -615,6 +620,25 @@ mod tests {
         assert!(
             result.contains("https://example.com/page"),
             "Link URL must survive, got: {result}"
+        );
+    }
+
+    /// Bug #6 regression: footnote-style references like `[^1]` must NOT be
+    /// parsed as pulldown-cmark footnote references. With footnotes disabled,
+    /// they pass through as literal text (issue #590).
+    #[test]
+    fn test_footnote_syntax_not_parsed() {
+        let md = "See [^1] for details and [link](https://example.com/page).";
+        let result = convert_wiki_links(md, "example.com");
+        // [^1] must survive as literal text, not be consumed as a footnote.
+        assert!(
+            result.contains("[^1]"),
+            "footnote syntax must be preserved as text: {result}"
+        );
+        // The regular same-domain link should still be converted.
+        assert!(
+            result.contains("[[page"),
+            "same-domain link must be converted: {result}"
         );
     }
 

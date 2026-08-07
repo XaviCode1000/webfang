@@ -28,56 +28,70 @@ pub async fn download_assets_if_enabled(
         return Ok(Vec::new());
     }
 
-    #[cfg(any(feature = "images", feature = "documents"))]
+    // Use shared downloader when provided; create a fallback one otherwise
+    let owned_downloader;
+    let downloader: &dyn crate::domain::ports::AssetDownloaderPort = match _shared_downloader {
+        Some(dl) => dl,
+        None => {
+            owned_downloader =
+                crate::adapters::downloader::Downloader::new(_config.to_download_config())?;
+            &owned_downloader
+        },
+    };
+
+    // Extract URLs from HTML
+    let mut urls: Vec<String> = Vec::new();
     {
-        // Use shared downloader when provided; create a fallback one otherwise
-        let owned_downloader;
-        let downloader: &dyn crate::domain::ports::AssetDownloaderPort = match _shared_downloader {
-            Some(dl) => dl,
-            None => {
-                owned_downloader =
-                    crate::adapters::downloader::Downloader::new(_config.to_download_config())?;
-                &owned_downloader
-            },
-        };
-
-        // Extract URLs from HTML
-        let mut urls: Vec<String> = Vec::new();
-        {
-            let document = scraper::Html::parse_document(_html);
-            if _config.download_images {
-                let images = crate::extractor::extract_images(&document, _base_url);
-                urls.extend(images.into_iter().map(|a| a.url));
-            }
-            if _config.download_documents {
-                let docs = crate::extractor::extract_documents(&document, _base_url);
-                urls.extend(docs.into_iter().map(|a| a.url));
-            }
+        let document = scraper::Html::parse_document(_html);
+        if _config.download_images {
+            let images = crate::extractor::extract_images(&document, _base_url);
+            urls.extend(images.into_iter().map(|a| a.url));
         }
-
-        if urls.is_empty() {
-            return Ok(Vec::new());
+        if _config.download_documents {
+            let docs = crate::extractor::extract_documents(&document, _base_url);
+            urls.extend(docs.into_iter().map(|a| a.url));
         }
-
-        // Deduplicate URLs to avoid downloading the same asset multiple times
-        // (e.g., same image referenced from multiple <img> tags).
-        use std::collections::HashSet;
-        let mut seen = HashSet::with_capacity(urls.len());
-        urls.retain(|url| seen.insert(url.clone()));
-
-        tracing::info!(
-            "📦 Downloading {} assets via adapters::Downloader",
-            urls.len()
-        );
-
-        let results = downloader.download_batch(&urls).await?;
-
-        // Trait impl already returns domain::DownloadedAsset — collect directly
-        Ok(results)
     }
 
-    #[cfg(not(any(feature = "images", feature = "documents")))]
-    {
-        Ok(Vec::new())
+    if urls.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Deduplicate URLs to avoid downloading the same asset multiple times
+    // (e.g., same image referenced from multiple <img> tags).
+    use std::collections::HashSet;
+    let mut seen = HashSet::with_capacity(urls.len());
+    urls.retain(|url| seen.insert(url.clone()));
+
+    tracing::info!(
+        "📦 Downloading {} assets via adapters::Downloader",
+        urls.len()
+    );
+
+    let results = downloader.download_batch(&urls).await?;
+
+    // Trait impl already returns domain::DownloadedAsset — collect directly
+    Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use url::Url;
+
+    /// Bug #2 regression: when config.has_downloads() is false, the function
+    /// MUST return an empty vec without attempting any download — regardless
+    /// of feature flags (issue #590). Previously the cfg gate would skip the
+    /// inner block entirely; now the runtime check is the single gate.
+    #[tokio::test]
+    async fn download_assets_returns_empty_when_disabled() {
+        let config = crate::ScraperConfig::default(); // has_downloads() == false
+        let base_url = Url::parse("https://example.com").expect("valid url");
+        let html = r#"<html><body><img src="/image.png"></body></html>"#;
+
+        let result = download_assets_if_enabled(html, &base_url, &config, None)
+            .await
+            .expect("must return Ok");
+        assert!(result.is_empty(), "disabled config must yield empty vec");
     }
 }

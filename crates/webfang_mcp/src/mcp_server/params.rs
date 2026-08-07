@@ -20,7 +20,7 @@ use serde_json::Value;
 use crate::mcp_server::validation::{
     require_http_url, require_max_len, require_max_value_u16, require_max_value_u64,
     require_non_empty, require_one_of, require_safe_domain, require_safe_name, require_safe_path,
-    require_safe_seed, MAX_BLOB_LEN,
+    require_safe_path_allow_absolute, require_safe_seed, MAX_BLOB_LEN,
 };
 
 const EXPORT_FORMATS: &[&str] = &["jsonl", "vector", "auto"];
@@ -436,10 +436,10 @@ pub struct DetectVaultParams {
 impl DetectVaultParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `vault_path` is present but not a
-    /// safe relative path.
+    /// safe path (absolute paths allowed; `..` traversal still rejected).
     pub fn validate(&self) -> Result<(), McpError> {
         if let Some(p) = &self.vault_path {
-            require_safe_path("vault_path", p)?;
+            require_safe_path_allow_absolute("vault_path", p)?;
         }
         Ok(())
     }
