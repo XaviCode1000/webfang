@@ -6,6 +6,7 @@ expression: "&text"
   "total_events": 1,
   "success_count": 1,
   "error_count": 0,
+  "partial_count": 0,
   "domains": {
     "127.0.0.1": {
       "events": 1,
