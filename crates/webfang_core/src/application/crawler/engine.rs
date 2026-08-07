@@ -1054,10 +1054,6 @@ async fn crawl_site_with_options_inner(
 #[cfg(test)]
 #[cfg(not(miri))] // wiremock + wreq use boring-sys2 FFI (unsupported by Miri)
 mod tests {
-    // Test-only module: `.expect()` below assert on seeded mock-server URLs
-    // and `Engine::new` in a controlled test harness. Intentionally excluded
-    // from the production `deny(clippy::unwrap_used)` in `lib.rs`.
-    #![allow(clippy::unwrap_used)]
     use super::*;
     use url::Url;
     use wiremock::matchers::path;

@@ -81,10 +81,6 @@ impl Default for SharedConcurrencyLevel {
 
 #[cfg(test)]
 mod tests {
-    // Test-only module: the single `.join().unwrap()` below joins threads we
-    // just spawned in the same test; join cannot fail. Intentionally excluded
-    // from the production `deny(clippy::unwrap_used)` in `lib.rs`.
-    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
