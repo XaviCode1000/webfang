@@ -157,6 +157,40 @@ pub enum DownloadError {
     Cancelled,
 }
 
+// Manual `Clone`: `DownloadError` carries a `Box<dyn Error + Send + Sync>`
+// (the `Network` variant), which is not `Clone`. We reconstruct it by
+// downcasting a `std::io::Error` when possible (the common case for simulated
+// failures) and otherwise preserving the displayed cause in an `Internal`
+// variant. This keeps the type usable in test doubles that need an owned copy
+// of the error (e.g. `StubDownloader::fails_with`).
+impl Clone for DownloadError {
+    fn clone(&self) -> Self {
+        match self {
+            DownloadError::Network(e) => {
+                if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                    DownloadError::Network(Box::new(std::io::Error::new(
+                        io_err.kind(),
+                        io_err.to_string(),
+                    )))
+                } else {
+                    DownloadError::Internal(e.to_string())
+                }
+            },
+            DownloadError::Http { status, message } => DownloadError::Http {
+                status: *status,
+                message: message.clone(),
+            },
+            DownloadError::WafChallenge(s) => DownloadError::WafChallenge(s.clone()),
+            DownloadError::SpaDetected(s) => DownloadError::SpaDetected(s.clone()),
+            DownloadError::InvalidUrl(s) => DownloadError::InvalidUrl(s.clone()),
+            DownloadError::Timeout(s) => DownloadError::Timeout(*s),
+            DownloadError::Internal(s) => DownloadError::Internal(s.clone()),
+            DownloadError::ResourceExhausted(s) => DownloadError::ResourceExhausted(s.clone()),
+            DownloadError::Cancelled => DownloadError::Cancelled,
+        }
+    }
+}
+
 impl From<DownloadError> for crate::domain::CrawlError {
     fn from(err: DownloadError) -> Self {
         crate::domain::CrawlError::Download(Box::new(err))

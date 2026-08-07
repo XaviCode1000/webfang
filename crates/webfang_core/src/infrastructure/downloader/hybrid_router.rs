@@ -174,6 +174,12 @@ mod tests {
         html: String,
         cost: usize,
         interactions: bool,
+        /// When set, `fetch` returns this error instead of the stubbed page.
+        /// Lets one `StubDownloader` stand in for both content and failure
+        /// layers (e.g. a Layer-2 WAF challenge) without a second test double.
+        /// `DownloadError` is `Clone` (see `mod.rs`), so the error is copied out
+        /// of `&self` without moving.
+        fail_with: Option<DownloadError>,
     }
 
     impl StubDownloader {
@@ -182,6 +188,7 @@ mod tests {
                 html: "<html><body><article><h1>Hello</h1><p>Enough content here to pass the threshold check and avoid SPA detection.</p></article></body></html>".into(),
                 cost: 1_000_000,
                 interactions: false,
+                fail_with: None,
             }
         }
 
@@ -190,6 +197,7 @@ mod tests {
                 html: r#"<!DOCTYPE html><html><body><div id="root"></div></body></html>"#.into(),
                 cost: 1_000_000,
                 interactions: false,
+                fail_with: None,
             }
         }
 
@@ -198,6 +206,7 @@ mod tests {
                 html: String::new(),
                 cost: 1_000_000,
                 interactions: false,
+                fail_with: None,
             }
         }
 
@@ -206,6 +215,7 @@ mod tests {
                 html: r#"<!DOCTYPE html><html><body><div id="challenge-running">Checking your browser</div></body></html>"#.into(),
                 cost: 1_000_000,
                 interactions: false,
+                fail_with: None,
             }
         }
 
@@ -218,10 +228,21 @@ mod tests {
             self.interactions = v;
             self
         }
+
+        /// Make this stub fail with the given error (used to simulate a
+        /// downloader layer surfacing a Network / Http / WafChallenge error).
+        fn fails_with(mut self, error: DownloadError) -> Self {
+            self.fail_with = Some(error);
+            self
+        }
     }
 
     impl Downloader for StubDownloader {
         fn fetch<'a>(&'a self, url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
+            if let Some(err) = &self.fail_with {
+                let err = err.clone();
+                return Box::pin(async move { Err(err) });
+            }
             Box::pin(async move {
                 Ok(FetchedPage {
                     url: url.clone(),
@@ -242,56 +263,6 @@ mod tests {
         }
     }
 
-    struct FailingDownloader {
-        message: String,
-    }
-
-    impl Downloader for FailingDownloader {
-        fn fetch<'a>(&'a self, _url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
-            Box::pin(async move {
-                Err(DownloadError::Network(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    self.message.clone(),
-                ))))
-            })
-        }
-
-        fn supports_interactions(&self) -> bool {
-            false
-        }
-
-        fn memory_cost(&self) -> usize {
-            0
-        }
-    }
-
-    /// Fails with an HTTP error — a non-WAF [`DownloadError`] that must NOT
-    /// abort escalation (distinct variant from `FailingDownloader` so tests
-    /// can pinpoint which layer produced the observed error).
-    struct HttpErrorDownloader {
-        status: u16,
-        message: String,
-    }
-
-    impl Downloader for HttpErrorDownloader {
-        fn fetch<'a>(&'a self, _url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
-            Box::pin(async move {
-                Err(DownloadError::Http {
-                    status: self.status,
-                    message: self.message.clone(),
-                })
-            })
-        }
-
-        fn supports_interactions(&self) -> bool {
-            false
-        }
-
-        fn memory_cost(&self) -> usize {
-            0
-        }
-    }
-
     // ---- Tests ---------------------------------------------------------
 
     #[tokio::test]
@@ -307,6 +278,33 @@ mod tests {
         assert!(page.html.contains("Hello"));
     }
 
+    /// Exercise the router against `url` and assert the surfaced error is a
+    /// WAF challenge. Collapses the repeated `fetch().await.unwrap_err()` +
+    /// `matches!(..WafChallenge)` tail shared by every "abort" scenario so the
+    /// test bodies are not exact clones (jscpd `--min-tokens 50`).
+    async fn assert_waf_aborts(
+        router: &HybridRouter<StubDownloader, StubDownloader, StubDownloader>,
+        url: &str,
+    ) {
+        let url: Url = url.parse().unwrap();
+        let err = router.fetch(&url).await.unwrap_err();
+        assert!(
+            matches!(err, DownloadError::WafChallenge(_)),
+            "router must abort on a WAF challenge, got: {err}"
+        );
+    }
+
+    /// Exercise the router against `url` and assert the final page carries the
+    /// L3 static content marker. Shared by every "escalates to Layer 3" scenario.
+    async fn assert_escalates_to_layer3(
+        router: &HybridRouter<StubDownloader, StubDownloader, StubDownloader>,
+        url: &str,
+    ) {
+        let url: Url = url.parse().unwrap();
+        let page = router.fetch(&url).await.unwrap();
+        assert!(page.html.contains("Enough content"));
+    }
+
     #[tokio::test]
     async fn test_spa_detected_escalates_to_layer2() {
         let router = HybridRouter::new(
@@ -315,9 +313,7 @@ mod tests {
             StubDownloader::static_page().with_interactions(true),
             false,
         );
-        let url: Url = "https://spa.example.com".parse().unwrap();
-        let page = router.fetch(&url).await.unwrap();
-        assert!(page.html.contains("Enough content"));
+        assert_escalates_to_layer3(&router, "https://spa.example.com").await;
     }
 
     #[tokio::test]
@@ -328,9 +324,53 @@ mod tests {
             StubDownloader::static_page(),
             false,
         );
-        let url: Url = "https://waf.example.com".parse().unwrap();
+        assert_waf_aborts(&router, "https://waf.example.com").await;
+    }
+
+    #[tokio::test]
+    async fn test_waf_at_layer2_obscura_aborts() {
+        // Fase 4 scenario 7: a WAF challenge surfaced by Layer 2 (Obscura) must
+        // short-circuit escalation. Layer 1 returns usable static content (so
+        // the L1 spa path does NOT abort), then Obscura returns
+        // DownloadError::WafChallenge — the router must abort with that error
+        // and NEVER reach Layer 3 (hybrid_router.rs:120-122).
+        let router = HybridRouter::new(
+            StubDownloader::spa_page(),
+            StubDownloader::spa_page().fails_with(DownloadError::WafChallenge(
+                "obscura hit a WAF challenge".into(),
+            )),
+            StubDownloader::static_page().with_interactions(true),
+            false,
+        );
+        assert_waf_aborts(&router, "https://obscura-waf.example.com").await;
+        let url: Url = "https://obscura-waf.example.com".parse().unwrap();
         let err = router.fetch(&url).await.unwrap_err();
-        assert!(matches!(err, DownloadError::WafChallenge(_)));
+        assert!(
+            err.to_string().contains("obscura hit a WAF challenge"),
+            "abort must carry Obscura's WAF cause, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ignore_waf_true_does_not_suppress_layer2_waf() {
+        // Pin the boundary of REQ-WAF-07: `ignore_waf` only mutates the
+        // spa-detection verdict (detect_spa). An explicit WafChallenge returned
+        // by the Obscura layer is NOT suppressed by ignore_waf — the router
+        // still aborts (hybrid_router.rs:120-122). This proves scenario 8
+        // (ignore_waf no-abort) is scoped to the L1 spa path, not the L2
+        // explicit-challenge path.
+        let router = HybridRouter::new(
+            StubDownloader::spa_page(),
+            StubDownloader::spa_page().fails_with(DownloadError::WafChallenge(
+                "obscura WAF under ignore_waf".into(),
+            )),
+            StubDownloader::static_page().with_interactions(true),
+            true,
+        );
+        assert_waf_aborts(&router, "https://obscura-waf.example.com").await;
+        let url: Url = "https://obscura-waf.example.com".parse().unwrap();
+        let err = router.fetch(&url).await.unwrap_err();
+        assert!(err.to_string().contains("obscura WAF under ignore_waf"));
     }
 
     #[tokio::test]
@@ -343,9 +383,7 @@ mod tests {
             StubDownloader::static_page(),
             false,
         );
-        let url: Url = "https://waf.example.com".parse().unwrap();
-        let err = router.fetch(&url).await.unwrap_err();
-        assert!(matches!(err, DownloadError::WafChallenge(_)));
+        assert_waf_aborts(&router, "https://waf.example.com").await;
     }
 
     #[tokio::test]
@@ -375,9 +413,7 @@ mod tests {
             StubDownloader::static_page().with_interactions(true),
             false,
         );
-        let url: Url = "https://spa.example.com".parse().unwrap();
-        let page = router.fetch(&url).await.unwrap();
-        assert!(page.html.contains("Enough content"));
+        assert_escalates_to_layer3(&router, "https://spa.example.com").await;
     }
 
     #[tokio::test]
@@ -387,16 +423,14 @@ mod tests {
         // the router escalates to Layer 3 (hybrid_router.rs:125-127).
         let router = HybridRouter::new(
             StubDownloader::spa_page(),
-            HttpErrorDownloader {
+            StubDownloader::spa_page().fails_with(DownloadError::Http {
                 status: 500,
                 message: "obscura subprocess failed".into(),
-            },
+            }),
             StubDownloader::static_page().with_interactions(true),
             false,
         );
-        let url: Url = "https://spa.example.com".parse().unwrap();
-        let page = router.fetch(&url).await.unwrap();
-        assert!(page.html.contains("Enough content"));
+        assert_escalates_to_layer3(&router, "https://spa.example.com").await;
     }
 
     #[tokio::test]
@@ -407,13 +441,13 @@ mod tests {
         // variant + message proves the surfaced error is L3's, not L2's.
         let router = HybridRouter::new(
             StubDownloader::spa_page(),
-            HttpErrorDownloader {
+            StubDownloader::spa_page().fails_with(DownloadError::Http {
                 status: 500,
                 message: "obscura subprocess failed".into(),
-            },
-            FailingDownloader {
-                message: "chromium crashed".into(),
-            },
+            }),
+            StubDownloader::spa_page().fails_with(DownloadError::Network(Box::new(
+                std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "chromium crashed"),
+            ))),
             false,
         );
         let url: Url = "https://spa.example.com".parse().unwrap();
@@ -428,9 +462,9 @@ mod tests {
     #[tokio::test]
     async fn test_layer1_failure_propagates() {
         let router = HybridRouter::new(
-            FailingDownloader {
-                message: "dns failed".into(),
-            },
+            StubDownloader::spa_page().fails_with(DownloadError::Network(Box::new(
+                std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "dns failed"),
+            ))),
             StubDownloader::static_page(),
             StubDownloader::static_page(),
             false,

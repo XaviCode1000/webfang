@@ -269,6 +269,7 @@ impl ResultsAdapter {
 
 #[cfg(test)]
 mod tests {
+    // Test-only module: every `.unwrap()`/`.expect()` below operates on
     use super::*;
     use url::Url;
 

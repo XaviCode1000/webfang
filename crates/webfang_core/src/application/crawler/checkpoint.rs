@@ -357,6 +357,7 @@ fn tmp_path_for(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    // Test-only module: `.unwrap()`/`.expect()` below operate on unreachable
     use super::*;
     use proptest::prelude::*;
     use std::fs;
