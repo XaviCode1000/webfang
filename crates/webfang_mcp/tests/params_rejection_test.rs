@@ -415,6 +415,63 @@ async fn export_file_rejects_absolute_output_dir() {
     );
 }
 
+/// `export_file` rejects a path-traversal `filename` (issue #601).
+#[tokio::test]
+async fn export_file_rejects_filename_traversal() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let resp = call_tool(
+        &client,
+        &base_url,
+        &session_id,
+        "export_file",
+        json!({
+            "output_dir": "exports",
+            "filename": "../escape",
+            "format": "jsonl",
+            "content": "hello"
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        error_code(&resp),
+        Some(JSONRPC_INVALID_PARAMS),
+        "filename traversal must be rejected with -32602, got: {resp}"
+    );
+}
+
+/// `export_file` rejects a `filename` containing a subdirectory separator
+/// (issue #601).
+#[tokio::test]
+async fn export_file_rejects_filename_subdirectory() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let resp = call_tool(
+        &client,
+        &base_url,
+        &session_id,
+        "export_file",
+        json!({
+            "output_dir": "exports",
+            "filename": "sub/out",
+            "format": "jsonl",
+            "content": "hello"
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        error_code(&resp),
+        Some(JSONRPC_INVALID_PARAMS),
+        "filename subdirectory must be rejected with -32602, got: {resp}"
+    );
+}
+
 /// `export_file` rejects an unrecognized export format.
 #[tokio::test]
 async fn export_file_rejects_unknown_format() {

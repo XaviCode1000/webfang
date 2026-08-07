@@ -301,6 +301,114 @@ pub fn require_max_value_u64(field: &str, value: u64, max: u64) -> Result<(), Mc
     Ok(())
 }
 
+/// Validate that `value` is a single, flat filename component safe to join
+/// onto a base directory.
+///
+/// Unlike [`require_safe_name`] — which validates only length/emptiness and
+/// assumes the value is never used as a path component — this enforces, by
+/// structural decomposition, that the value cannot escape its parent directory
+/// when joined via `Path::join`. This is the fix for issue #601: a `filename`
+/// of `"../escape"` or `"sub/out"` must never reach `std::fs`.
+///
+/// Decomposition rules (Rust `Path::components`):
+/// 1. Exactly **one** component.
+/// 2. That component is of kind [`Component::Normal`] (rejects `ParentDir`
+///    (`..`), `CurDir` (`.`), `RootDir` (`/`), and `Prefix` (Windows drive)).
+/// 3. The component's string representation equals the original `value`
+///    byte-for-byte, so platform-specific separator filtering (`/` and `\`)
+///    cannot slip through.
+///
+/// # Errors
+/// Returns `McpError::invalid_params` if `value` is empty, oversize, or not a
+/// single flat `Normal` component.
+pub fn require_safe_filename(field: &str, value: &str) -> Result<(), McpError> {
+    if value.is_empty() {
+        return Err(invalid_params(field, "must not be empty"));
+    }
+    if value.len() > MAX_PATH_LEN {
+        return Err(invalid_params(
+            field,
+            format!("exceeds maximum length of {MAX_PATH_LEN} bytes"),
+        ));
+    }
+    // Reject separators explicitly so the rule is platform-independent: on
+    // Unix `\` is a legal filename byte, but we must never let a
+    // platform-specific component parse mask a real traversal risk (issue
+    // #601). `Path::components` below is the structural backstop.
+    if value.contains(['/', '\\']) {
+        return Err(invalid_params(
+            field,
+            "must be a single flat filename (no '/' or '\\' separators)",
+        ));
+    }
+    let mut components = Path::new(value).components();
+    let Some(component) = components.next() else {
+        return Err(invalid_params(field, "must be a single filename component"));
+    };
+    if components.next().is_some() {
+        return Err(invalid_params(
+            field,
+            "must not contain path separators or directory components",
+        ));
+    }
+    if !matches!(component, Component::Normal(_)) {
+        return Err(invalid_params(
+            field,
+            "must be a single flat filename (no '.', '..', '/', or drive prefix)",
+        ));
+    }
+    if component.as_os_str().to_string_lossy() != value {
+        return Err(invalid_params(
+            field,
+            "must be a single flat filename (no embedded separators)",
+        ));
+    }
+    Ok(())
+}
+
+/// A filename that is safe to join onto a base directory — guaranteed by
+/// construction (issue #601).
+///
+/// A value of this type can ONLY be produced by [`SanitizedFilename::try_from`]
+/// (or [`std::str::FromStr`]), which rejects anything that is not a single flat
+/// [`Component::Normal`]. Handlers must thread this type across layers instead
+/// of a raw `String`, so an unvalidated `..` can never reach `std::fs`.
+///
+/// This makes the "invalid state unrepresentable": the only way to obtain a
+/// `SanitizedFilename` is through validation, and the validation is exhaustive
+/// at the boundary. There is no `unsafe` escape hatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SanitizedFilename(String);
+
+impl SanitizedFilename {
+    /// Borrow the validated, flat filename.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SanitizedFilename {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::str::FromStr for SanitizedFilename {
+    type Err = McpError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        require_safe_filename("filename", s).map(|()| SanitizedFilename(s.to_string()))
+    }
+}
+
+impl TryFrom<&str> for SanitizedFilename {
+    type Error = McpError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        std::str::FromStr::from_str(value)
+    }
+}
+
 /// Validate that `value` does not exceed `max`.
 ///
 /// # Errors
@@ -359,5 +467,45 @@ mod tests {
         // Relative paths should still work (no regression).
         let result = require_safe_path_allow_absolute("vault_path", "my-vault");
         assert!(result.is_ok(), "relative path must be accepted: {result:?}");
+    }
+
+    // --- require_safe_filename (issue #601) ---------------------------------
+
+    #[test]
+    fn require_safe_filename_accepts_flat_name() {
+        assert!(require_safe_filename("filename", "doc").is_ok());
+        assert!(require_safe_filename("filename", "report-2026.json").is_ok());
+        assert!(require_safe_filename("filename", "a.b.c").is_ok());
+    }
+
+    #[test]
+    fn require_safe_filename_rejects_parent_traversal() {
+        // The exact payload from issue #601.
+        assert!(require_safe_filename("filename", "../escape").is_err());
+        assert!(require_safe_filename("filename", "sub/../escape").is_err());
+        assert!(require_safe_filename("filename", "..").is_err());
+    }
+
+    #[test]
+    fn require_safe_filename_rejects_subdirectory() {
+        // `sub/out` must not silently create nested directories.
+        assert!(require_safe_filename("filename", "sub/out").is_err());
+        assert!(require_safe_filename("filename", "a/b/c").is_err());
+    }
+
+    #[test]
+    fn require_safe_filename_rejects_separators_and_root() {
+        assert!(require_safe_filename("filename", "/etc/passwd").is_err());
+        assert!(require_safe_filename("filename", ".\\windows").is_err());
+        assert!(require_safe_filename("filename", "").is_err());
+        assert!(require_safe_filename("filename", ".").is_err());
+    }
+
+    #[test]
+    fn sanitized_filename_newtype_rejects_traversal() {
+        assert!("sub/out".parse::<SanitizedFilename>().is_err());
+        assert!("..".parse::<SanitizedFilename>().is_err());
+        let ok = "doc".parse::<SanitizedFilename>().expect("flat name valid");
+        assert_eq!(ok.as_str(), "doc");
     }
 }

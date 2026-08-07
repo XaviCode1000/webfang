@@ -12,6 +12,7 @@
 
 use super::McpHandler;
 use crate::mcp_server::params::*;
+use crate::mcp_server::validation::SanitizedFilename;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool;
@@ -35,10 +36,17 @@ fn export_results(
     results: &[ScrapedContent],
     output_dir: PathBuf,
     format: ExportFormat,
-    filename: &str,
+    filename: &SanitizedFilename,
 ) -> Result<CallToolResult, McpError> {
     let count = results.len();
-    match process_results(results, output_dir.clone(), format, filename, None, false) {
+    match process_results(
+        results,
+        output_dir.clone(),
+        format,
+        filename.as_str(),
+        None,
+        false,
+    ) {
         Ok(_) => {
             let path = resolve_export_path(&output_dir, filename, format);
             tracing::info!(documents = count, path = %path.display(), "export completed");
@@ -58,17 +66,25 @@ fn export_results(
 /// For concrete formats this is `{output_dir}/{filename}.{ext}`. For `Auto`
 /// the concrete extension is resolved from what actually exists (jsonl
 /// preferred, then json), so the reported path is always truthful.
-fn resolve_export_path(output_dir: &Path, filename: &str, format: ExportFormat) -> PathBuf {
+///
+/// `filename` is a [`SanitizedFilename`], so the join can never escape
+/// `output_dir` (issue #601).
+fn resolve_export_path(
+    output_dir: &Path,
+    filename: &SanitizedFilename,
+    format: ExportFormat,
+) -> PathBuf {
+    let name = filename.as_str();
     match format {
         ExportFormat::Auto => {
-            let jsonl = output_dir.join(format!("{filename}.jsonl"));
+            let jsonl = output_dir.join(format!("{name}.jsonl"));
             if jsonl.exists() {
                 jsonl
             } else {
-                output_dir.join(format!("{filename}.json"))
+                output_dir.join(format!("{name}.json"))
             }
         },
-        concrete => output_dir.join(format!("{filename}.{}", concrete.extension())),
+        concrete => output_dir.join(format!("{name}.{}", concrete.extension())),
     }
 }
 
@@ -150,7 +166,17 @@ impl McpHandler {
         })?;
 
         let output_dir = PathBuf::from(&params.output_dir);
+        // `filename` reaches the filesystem via `create_exporter` /
+        // `resolve_export_path`; it MUST be a validated [`SanitizedFilename`]
+        // so a `..` can never reach `std::fs` (issue #601). The raw string is
+        // still used for the synthetic URL / title below.
         let filename = params.filename.clone();
+        let safe_filename = SanitizedFilename::try_from(filename.as_str()).map_err(|_| {
+            McpError::invalid_params(
+                "nombre de archivo inválido",
+                Some(serde_json::Value::String("filename".to_string())),
+            )
+        })?;
 
         // Build a validated document chunk from the caller content. The chunk
         // id/timestamp are generated internally; the synthetic URL satisfies
@@ -181,7 +207,7 @@ impl McpHandler {
             },
         };
 
-        let exporter = match create_exporter(output_dir.clone(), &filename, format) {
+        let exporter = match create_exporter(output_dir.clone(), safe_filename.as_str(), format) {
             Ok(exporter) => exporter,
             Err(e) => {
                 return Ok(CallToolResult::error(vec![Content::text(format!(
@@ -192,7 +218,7 @@ impl McpHandler {
 
         match exporter.export(validated) {
             Ok(()) => {
-                let path = resolve_export_path(&output_dir, &filename, format);
+                let path = resolve_export_path(&output_dir, &safe_filename, format);
                 tracing::info!(documents = 1, path = %path.display(), "export completed");
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "Exportación completada: 1 documentos → {}",
@@ -219,7 +245,17 @@ impl McpHandler {
         let _permit = acquire_semaphore!(self, export);
 
         let output_dir = PathBuf::from(params.output_dir.as_deref().unwrap_or("./output"));
-        let filename = params.filename.as_deref().unwrap_or("export").to_string();
+        // Validated flat filename (issue #601): the raw `Option<String>` can
+        // only become a `SanitizedFilename` through exhaustive boundary
+        // validation, so the join in `export_results` can never escape
+        // `output_dir`.
+        let filename = SanitizedFilename::try_from(params.filename.as_deref().unwrap_or("export"))
+            .map_err(|_| {
+                McpError::invalid_params(
+                    "nombre de archivo inválido",
+                    Some(serde_json::Value::String("filename".to_string())),
+                )
+            })?;
 
         let results = match self.load_results().await {
             Ok(results) => results,
@@ -246,7 +282,14 @@ impl McpHandler {
         let _permit = acquire_semaphore!(self, export);
 
         let output_dir = PathBuf::from(params.output_dir.as_deref().unwrap_or("./output"));
-        let filename = params.filename.as_deref().unwrap_or("export").to_string();
+        // Validated flat filename (issue #601): see `export_jsonl` above.
+        let filename = SanitizedFilename::try_from(params.filename.as_deref().unwrap_or("export"))
+            .map_err(|_| {
+                McpError::invalid_params(
+                    "nombre de archivo inválido",
+                    Some(serde_json::Value::String("filename".to_string())),
+                )
+            })?;
 
         let results = match self.load_results().await {
             Ok(results) => results,
@@ -290,7 +333,16 @@ impl McpHandler {
 
         // The pipeline exports to the container's configured output directory.
         let output_dir = self.state.container.scraper_config.output_dir.clone();
-        export_results(&results, output_dir, format, "export")
+        // `export` is a compile-time-known flat name; if validation ever
+        // tightens, this surfaces as an honest invalid-params error rather
+        // than a panic.
+        let filename = SanitizedFilename::try_from("export").map_err(|_| {
+            McpError::invalid_params(
+                "nombre de archivo interno inválido",
+                Some(serde_json::Value::String("filename".to_string())),
+            )
+        })?;
+        export_results(&results, output_dir, format, &filename)
     }
 }
 
@@ -452,6 +504,48 @@ mod handler_tests {
             }))
             .await;
         assert!(res.is_err(), "invalid format must be a protocol error");
+    }
+
+    /// Issue #601 regression: a `filename` with `..` must be rejected at the
+    /// validation boundary (protocol error), never written outside
+    /// `output_dir`.
+    #[tokio::test]
+    async fn export_file_rejects_filename_traversal() {
+        let (handler, tmp) = test_handler().await;
+        let res = handler
+            .export_file(Parameters(ExportFileParams {
+                output_dir: tmp.path().to_string_lossy().to_string(),
+                filename: "../escape".to_string(),
+                format: "jsonl".to_string(),
+                content: "hello".to_string(),
+            }))
+            .await;
+        assert!(
+            res.is_err(),
+            "filename traversal '../escape' must be a protocol error"
+        );
+        // The file must NOT leak into the parent (repo root / CWD).
+        let escaped = std::env::current_dir().expect("cwd").join("escape.jsonl");
+        assert!(
+            !escaped.exists(),
+            "filename traversal wrote outside output_dir: {escaped:?}"
+        );
+    }
+
+    /// Issue #601 regression: a `filename` containing a subdirectory separator
+    /// must be rejected (no silent nested-dir creation).
+    #[tokio::test]
+    async fn export_file_rejects_filename_subdirectory() {
+        let (handler, tmp) = test_handler().await;
+        let res = handler
+            .export_file(Parameters(ExportFileParams {
+                output_dir: tmp.path().to_string_lossy().to_string(),
+                filename: "sub/out".to_string(),
+                format: "jsonl".to_string(),
+                content: "hello".to_string(),
+            }))
+            .await;
+        assert!(res.is_err(), "filename 'sub/out' must be a protocol error");
     }
 
     #[tokio::test]

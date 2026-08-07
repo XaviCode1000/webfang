@@ -19,8 +19,9 @@ use serde_json::Value;
 
 use crate::mcp_server::validation::{
     require_http_url, require_max_len, require_max_value_u16, require_max_value_u64,
-    require_non_empty, require_one_of, require_safe_domain, require_safe_name, require_safe_path,
-    require_safe_path_allow_absolute, require_safe_seed, MAX_BLOB_LEN,
+    require_non_empty, require_one_of, require_safe_domain, require_safe_filename,
+    require_safe_name, require_safe_path, require_safe_path_allow_absolute, require_safe_seed,
+    MAX_BLOB_LEN,
 };
 
 const EXPORT_FORMATS: &[&str] = &["jsonl", "vector", "auto"];
@@ -418,7 +419,7 @@ impl ExportFileParams {
     /// the allowed formats, or `content` exceeds the maximum blob size.
     pub fn validate(&self) -> Result<(), McpError> {
         require_safe_path("output_dir", &self.output_dir)?;
-        require_safe_name("filename", &self.filename)?;
+        require_safe_filename("filename", &self.filename)?;
         require_one_of("format", &self.format, EXPORT_FORMATS)?;
         require_max_len("content", &self.content, MAX_BLOB_LEN)?;
         Ok(())
@@ -604,14 +605,14 @@ pub(crate) struct ExportJsonlParams {
 impl ExportJsonlParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `output_dir` (when present) is
-    /// not a safe relative path or `filename` (when present) is empty or too
-    /// long.
+    /// not a safe relative path or `filename` (when present) is not a single
+    /// flat component (no `..`, `/`, or subdirectory — issue #601).
     pub fn validate(&self) -> Result<(), McpError> {
         if let Some(d) = &self.output_dir {
             require_safe_path("output_dir", d)?;
         }
         if let Some(f) = &self.filename {
-            require_safe_name("filename", f)?;
+            require_safe_filename("filename", f)?;
         }
         Ok(())
     }
@@ -629,14 +630,14 @@ pub(crate) struct ExportVectorParams {
 impl ExportVectorParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `output_dir` (when present) is
-    /// not a safe relative path or `filename` (when present) is empty or too
-    /// long.
+    /// not a safe relative path or `filename` (when present) is not a single
+    /// flat component (no `..`, `/`, or subdirectory — issue #601).
     pub fn validate(&self) -> Result<(), McpError> {
         if let Some(d) = &self.output_dir {
             require_safe_path("output_dir", d)?;
         }
         if let Some(f) = &self.filename {
-            require_safe_name("filename", f)?;
+            require_safe_filename("filename", f)?;
         }
         Ok(())
     }
