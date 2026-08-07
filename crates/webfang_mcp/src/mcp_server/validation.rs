@@ -158,39 +158,6 @@ pub fn require_safe_path_allow_absolute(field: &str, value: &str) -> Result<Path
     Ok(path.to_path_buf())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn require_safe_path_allow_absolute_accepts_absolute() {
-        // Bug #8 regression: absolute paths MUST be accepted (issue #590).
-        let result = require_safe_path_allow_absolute("vault_path", "/home/user/vault");
-        assert!(result.is_ok(), "absolute path must be accepted: {result:?}");
-        assert_eq!(result.unwrap().to_string_lossy(), "/home/user/vault");
-    }
-
-    #[test]
-    fn require_safe_path_allow_absolute_rejects_traversal() {
-        // `..` traversal must still be rejected even for absolute paths.
-        let result = require_safe_path_allow_absolute("vault_path", "/home/user/../etc/passwd");
-        assert!(result.is_err(), "traversal must be rejected: {result:?}");
-    }
-
-    #[test]
-    fn require_safe_path_allow_absolute_rejects_empty() {
-        let result = require_safe_path_allow_absolute("vault_path", "");
-        assert!(result.is_err(), "empty path must be rejected: {result:?}");
-    }
-
-    #[test]
-    fn require_safe_path_allow_absolute_accepts_relative() {
-        // Relative paths should still work (no regression).
-        let result = require_safe_path_allow_absolute("vault_path", "my-vault");
-        assert!(result.is_ok(), "relative path must be accepted: {result:?}");
-    }
-}
-
 /// Validate that `value` is at most `max_len` characters long.
 ///
 /// # Errors
@@ -359,5 +326,38 @@ pub fn require_one_of(field: &str, value: &str, options: &[&str]) -> Result<(), 
             field,
             format!("must be one of: {} (got '{value}')", options.join(", ")),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn require_safe_path_allow_absolute_accepts_absolute() {
+        // Bug #8 regression: absolute paths MUST be accepted (issue #590).
+        let result = require_safe_path_allow_absolute("vault_path", "/home/user/vault");
+        assert!(result.is_ok(), "absolute path must be accepted: {result:?}");
+        assert_eq!(result.unwrap().to_string_lossy(), "/home/user/vault");
+    }
+
+    #[test]
+    fn require_safe_path_allow_absolute_rejects_traversal() {
+        // `..` traversal must still be rejected even for absolute paths.
+        let result = require_safe_path_allow_absolute("vault_path", "/home/user/../etc/passwd");
+        assert!(result.is_err(), "traversal must be rejected: {result:?}");
+    }
+
+    #[test]
+    fn require_safe_path_allow_absolute_rejects_empty() {
+        let result = require_safe_path_allow_absolute("vault_path", "");
+        assert!(result.is_err(), "empty path must be rejected: {result:?}");
+    }
+
+    #[test]
+    fn require_safe_path_allow_absolute_accepts_relative() {
+        // Relative paths should still work (no regression).
+        let result = require_safe_path_allow_absolute("vault_path", "my-vault");
+        assert!(result.is_ok(), "relative path must be accepted: {result:?}");
     }
 }
