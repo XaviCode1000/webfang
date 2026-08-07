@@ -242,66 +242,19 @@ mod tests {
         }
     }
 
-    struct FailingDownloader {
-        message: String,
+    /// Single parametrized failing-downloader stub. Replaces the previous
+    /// `FailingDownloader` / `WafChallengeDownloader` / `HttpErrorDownloader`
+    /// trio (which were exact clones of this same `impl Downloader`). The
+    /// `make` closure builds the exact [`DownloadError`] each test needs
+    /// without requiring `DownloadError: Clone` and without duplicating the
+    /// trait boilerplate across three near-identical structs.
+    struct ErrDownloader {
+        make: fn() -> DownloadError,
     }
 
-    impl Downloader for FailingDownloader {
+    impl Downloader for ErrDownloader {
         fn fetch<'a>(&'a self, _url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
-            Box::pin(async move {
-                Err(DownloadError::Network(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    self.message.clone(),
-                ))))
-            })
-        }
-
-        fn supports_interactions(&self) -> bool {
-            false
-        }
-
-        fn memory_cost(&self) -> usize {
-            0
-        }
-    }
-
-    /// Fails with an HTTP error — a non-WAF [`DownloadError`] that must NOT
-    /// abort escalation (distinct variant from `FailingDownloader` so tests
-    /// can pinpoint which layer produced the observed error).
-    /// Fails with a WAF challenge — a [`DownloadError::WafChallenge`] that MUST
-    /// abort escalation regardless of which layer produces it (mirrors the
-    /// Obscura / Chromiumoxide layers surfacing a genuine WAF challenge).
-    struct WafChallengeDownloader {
-        message: String,
-    }
-
-    impl Downloader for WafChallengeDownloader {
-        fn fetch<'a>(&'a self, _url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
-            Box::pin(async move { Err(DownloadError::WafChallenge(self.message.clone())) })
-        }
-
-        fn supports_interactions(&self) -> bool {
-            false
-        }
-
-        fn memory_cost(&self) -> usize {
-            0
-        }
-    }
-
-    struct HttpErrorDownloader {
-        status: u16,
-        message: String,
-    }
-
-    impl Downloader for HttpErrorDownloader {
-        fn fetch<'a>(&'a self, _url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
-            Box::pin(async move {
-                Err(DownloadError::Http {
-                    status: self.status,
-                    message: self.message.clone(),
-                })
-            })
+            Box::pin(async move { Err((self.make)()) })
         }
 
         fn supports_interactions(&self) -> bool {
@@ -363,8 +316,8 @@ mod tests {
         // and NEVER reach Layer 3 (hybrid_router.rs:120-122).
         let router = HybridRouter::new(
             StubDownloader::spa_page(),
-            WafChallengeDownloader {
-                message: "obscura hit a WAF challenge".into(),
+            ErrDownloader {
+                make: || DownloadError::WafChallenge("obscura hit a WAF challenge".into()),
             },
             StubDownloader::static_page().with_interactions(true),
             false,
@@ -391,8 +344,8 @@ mod tests {
         // explicit-challenge path.
         let router = HybridRouter::new(
             StubDownloader::spa_page(),
-            WafChallengeDownloader {
-                message: "obscura WAF under ignore_waf".into(),
+            ErrDownloader {
+                make: || DownloadError::WafChallenge("obscura WAF under ignore_waf".into()),
             },
             StubDownloader::static_page().with_interactions(true),
             true,
@@ -457,9 +410,11 @@ mod tests {
         // the router escalates to Layer 3 (hybrid_router.rs:125-127).
         let router = HybridRouter::new(
             StubDownloader::spa_page(),
-            HttpErrorDownloader {
-                status: 500,
-                message: "obscura subprocess failed".into(),
+            ErrDownloader {
+                make: || DownloadError::Http {
+                    status: 500,
+                    message: "obscura subprocess failed".into(),
+                },
             },
             StubDownloader::static_page().with_interactions(true),
             false,
@@ -477,12 +432,19 @@ mod tests {
         // variant + message proves the surfaced error is L3's, not L2's.
         let router = HybridRouter::new(
             StubDownloader::spa_page(),
-            HttpErrorDownloader {
-                status: 500,
-                message: "obscura subprocess failed".into(),
+            ErrDownloader {
+                make: || DownloadError::Http {
+                    status: 500,
+                    message: "obscura subprocess failed".into(),
+                },
             },
-            FailingDownloader {
-                message: "chromium crashed".into(),
+            ErrDownloader {
+                make: || {
+                    DownloadError::Network(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionRefused,
+                        "chromium crashed",
+                    )))
+                },
             },
             false,
         );
@@ -498,8 +460,13 @@ mod tests {
     #[tokio::test]
     async fn test_layer1_failure_propagates() {
         let router = HybridRouter::new(
-            FailingDownloader {
-                message: "dns failed".into(),
+            ErrDownloader {
+                make: || {
+                    DownloadError::Network(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionRefused,
+                        "dns failed",
+                    )))
+                },
             },
             StubDownloader::static_page(),
             StubDownloader::static_page(),
