@@ -371,6 +371,7 @@ mod test_support {
     /// Mount a `GET /` mock returning `body` (200), then fetch it via a fresh
     /// `WreqDownloader` and assert the basics (ok, status 200, body matches).
     /// Returns the fetched `FetchedPage` so callers can add extra assertions.
+    #[allow(dead_code)]
     pub(super) async fn fetch_mock_get(body: &str) -> FetchedPage {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))

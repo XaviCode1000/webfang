@@ -788,6 +788,7 @@ mod tests {
         assert_eq!(filename, "rust-book.pdf");
     }
 
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
     #[test]
     fn test_generate_filename_content_disposition() {
         let temp_dir = TempDir::new().unwrap();
@@ -807,6 +808,7 @@ mod tests {
         assert_eq!(filename, "annual-report.pdf");
     }
 
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
     #[test]
     fn test_generate_filename_content_disposition_fallback() {
         let temp_dir = TempDir::new().unwrap();

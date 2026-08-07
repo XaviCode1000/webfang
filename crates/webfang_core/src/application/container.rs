@@ -408,14 +408,16 @@ impl Container {
     fn build_ingestion(
         repository: DynVectorRepository,
         config: &ElasticConfig,
-        cleaner: Option<Arc<dyn SemanticCleaner>>,
+        _cleaner: Option<Arc<dyn SemanticCleaner>>,
     ) -> Result<ElasticIngestion<DynVectorRepository>, Box<dyn std::error::Error + Send + Sync>>
     {
-        let mut ingestion = Self::build_elastic(repository, config)?;
+        let ingestion = Self::build_elastic(repository, config)?;
         #[cfg(feature = "ai")]
-        if let Some(cleaner) = cleaner {
-            ingestion = ingestion.with_cleaner(cleaner);
-        }
+        let ingestion = if let Some(cleaner) = _cleaner {
+            ingestion.with_cleaner(cleaner)
+        } else {
+            ingestion
+        };
         Ok(ingestion)
     }
 
