@@ -19,6 +19,7 @@ struct Frontmatter {
     /// Article/page title
     title: String,
     /// Original URL
+    #[serde(skip_serializing_if = "String::is_empty")]
     url: String,
     /// Publication/scrape date (YYYY-MM-DD)
     date: String,

@@ -343,6 +343,12 @@ const WAF_BODY_SIGNATURES: &[(&str, &str, WafTier, BoundaryMode)] = &[
         WafTier::Fingerprint,
         BoundaryMode::Bare,
     ), // folded from spa_detector
+    (
+        "h-captcha-response",
+        "hCaptcha",
+        WafTier::Challenge,
+        BoundaryMode::Phrase,
+    ), // hidden response field injected by the hCaptcha widget
     // ── DataDome ──
     (
         "datadome",
