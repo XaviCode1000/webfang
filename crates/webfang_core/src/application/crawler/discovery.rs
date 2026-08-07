@@ -95,6 +95,12 @@ pub async fn discover_urls_for_tui(
         let urls: Vec<Url> = discovered.into_iter().map(|d| d.url).collect();
 
         Ok(urls)
+    } else if config.max_depth == 0 {
+        // Depth 0 means "only seed URL" — skip link extraction entirely.
+        // `plan_urls` injects the seed URL in the DOM branch, so returning empty
+        // here yields exactly one page crawled (issue #583).
+        info!("max_depth is 0 — skipping DOM link extraction, crawling seed only");
+        Ok(Vec::new())
     } else {
         // DOM scraping - extract links from single page.
         // Honor the configured request timeout (#289). The connect timeout is
@@ -559,6 +565,79 @@ mod tests {
                 || msg.contains("timed out")
                 || msg.contains("timeout"),
             "expected connect-failure or timeout message, got: {msg}"
+        );
+    }
+
+    // #583 acceptance tests: DOM discovery must honor max_depth.
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_discover_urls_max_depth_zero_returns_empty() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // Seed page with 10 internal links — without the fix, all 10 would be
+        // returned and crawled regardless of max_depth.
+        let links: String = (1..=10)
+            .map(|i| format!(r#"<a href="https://example.com/page/{i}">Link {i}</a>"#))
+            .collect();
+        let html = format!("<html><body><a href=\"/\">Home</a>{links}</body></html>");
+
+        Mock::given(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(html))
+            .mount(&server)
+            .await;
+
+        let seed = Url::parse(&server.uri()).unwrap();
+        let config = CrawlerConfig::builder(seed).max_depth(0).build();
+
+        let urls = discover_urls_for_tui(&server.uri(), &config)
+            .await
+            .expect("discovery should succeed");
+
+        assert!(
+            urls.is_empty(),
+            "max_depth=0 must return no discovered URLs, got {}",
+            urls.len()
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_discover_urls_max_depth_one_returns_links() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let seed_url = server.uri();
+        // Links must share the seed's host to pass `is_internal_link`. The
+        // external host must be filtered out.
+        let html = format!(
+            r#"<html><body>
+            <a href="{seed_url}/page/1">Link 1</a>
+            <a href="{seed_url}/page/2">Link 2</a>
+            <a href="https://external.com/page">External</a>
+        </body></html>"#
+        );
+
+        Mock::given(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(html))
+            .mount(&server)
+            .await;
+
+        let seed = Url::parse(&seed_url).unwrap();
+        let config = CrawlerConfig::builder(seed).max_depth(1).build();
+
+        let urls = discover_urls_for_tui(&seed_url, &config)
+            .await
+            .expect("discovery should succeed");
+
+        // Internal links only (external.com filtered out by is_internal_link).
+        assert_eq!(
+            urls.len(),
+            2,
+            "max_depth=1 must return internal links from seed"
         );
     }
 
