@@ -301,6 +301,17 @@ pub fn require_max_value_u64(field: &str, value: u64, max: u64) -> Result<(), Mc
     Ok(())
 }
 
+/// Validate that `value >= min`.
+///
+/// # Errors
+/// Returns `McpError::invalid_params` if `value < min`.
+pub fn require_min_value_u64(field: &str, value: u64, min: u64) -> Result<(), McpError> {
+    if value < min {
+        return Err(invalid_params(field, format!("must be at least {min}")));
+    }
+    Ok(())
+}
+
 /// Validate that `value` is a single, flat filename component safe to join
 /// onto a base directory.
 ///
