@@ -446,21 +446,27 @@ async fn test_scrape_multiple_with_limit_returns_results() {
         .with_ok_response(url2.as_str(), html);
 
     let config = ScraperConfig::default();
-    let result = scrape_multiple_with_limit(&mock, &[url1, url2], &config, None)
+    let outcome = scrape_multiple_with_limit(&mock, &[url1, url2], &config, None)
         .await
         .expect("scrape_multiple_with_limit should succeed");
 
-    assert_eq!(result.len(), 2, "should return content from both URLs");
+    assert_eq!(
+        outcome.results.len(),
+        2,
+        "should return content from both URLs"
+    );
+    assert!(outcome.failed.is_empty(), "no failures expected");
 }
 
 #[tokio::test]
 async fn test_scrape_multiple_with_limit_empty_urls() {
     let mock = MockHttpClient::new();
     let config = ScraperConfig::default();
-    let result = scrape_multiple_with_limit(&mock, &[], &config, None)
+    let outcome = scrape_multiple_with_limit(&mock, &[], &config, None)
         .await
         .expect("empty URL list should return Ok");
-    assert!(result.is_empty());
+    assert!(outcome.results.is_empty());
+    assert!(outcome.failed.is_empty());
 }
 
 #[test]
@@ -807,14 +813,57 @@ async fn test_scrape_multiple_partial_failure() {
         .with_response(url_fail.as_str(), Err(HttpError::ClientError(404)));
 
     let config = ScraperConfig::default();
-    let result = scrape_multiple_with_limit(&mock, &[url_ok, url_fail], &config, None)
+    let outcome = scrape_multiple_with_limit(&mock, &[url_ok, url_fail], &config, None)
         .await
         .expect("should not fail overall even with partial URL failures");
 
     assert_eq!(
-        result.len(),
+        outcome.results.len(),
         1,
         "only the successful URL should produce content"
+    );
+
+    // Issue #591: failed URLs must be reported with error details
+    assert_eq!(outcome.failed.len(), 1, "one URL should be in failed");
+    assert_eq!(outcome.failed[0].url, "https://example.com/fail");
+    assert!(
+        outcome.failed[0].error.contains("404"),
+        "error message should mention 404"
+    );
+    assert_eq!(
+        outcome.failed[0].category,
+        webfang_core::application::scraper_service::ScrapeErrorCategory::PermanentFatal,
+        "404 should classify as permanent_fatal"
+    );
+}
+
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn test_scrape_multiple_all_failed_reports_all() {
+    let url1 = url::Url::parse("https://example.com/a").unwrap();
+    let url2 = url::Url::parse("https://example.com/b").unwrap();
+    let mock = MockHttpClient::new()
+        .with_response(url1.as_str(), Err(HttpError::ClientError(500)))
+        .with_response(url2.as_str(), Err(HttpError::ClientError(503)));
+
+    let config = ScraperConfig::default();
+    let outcome = scrape_multiple_with_limit(&mock, &[url1, url2], &config, None)
+        .await
+        .expect("batch with all failures should still succeed at batch level");
+
+    assert!(outcome.results.is_empty(), "no results when all fail");
+    assert_eq!(outcome.failed.len(), 2, "both URLs should be in failed");
+    assert_eq!(outcome.failed[0].url, "https://example.com/a");
+    assert_eq!(outcome.failed[1].url, "https://example.com/b");
+    // 5xx classifies as transient_retriable
+    use webfang_core::application::scraper_service::ScrapeErrorCategory;
+    assert_eq!(
+        outcome.failed[0].category,
+        ScrapeErrorCategory::TransientRetriable
+    );
+    assert_eq!(
+        outcome.failed[1].category,
+        ScrapeErrorCategory::TransientRetriable
     );
 }
 

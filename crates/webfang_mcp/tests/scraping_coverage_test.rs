@@ -399,7 +399,8 @@ async fn test_detect_spa_sufficient_content_not_spa() {
 // ============================================================================
 
 /// Failed URLs are logged but do not stop the batch: 2 OK + 1 error → a
-/// successful result with exactly the 2 scraped pages.
+/// successful result with exactly the 2 scraped pages + the failed URL in the
+/// `failed` array (issue #591).
 #[tokio::test]
 async fn test_scrape_batch_partial_results_on_failure() {
     let mock = MockServer::start().await;
@@ -445,15 +446,35 @@ async fn test_scrape_batch_partial_results_on_failure() {
     );
 
     let text = tool_text(&result);
-    let pages: Vec<Value> = serde_json::from_str(&text).expect("batch result must be a JSON array");
+    // Issue #591: response is now { results: [...], failed: [...] }
+    let outcome: Value = serde_json::from_str(&text).expect("batch result must be valid JSON");
+    let pages = outcome
+        .get("results")
+        .and_then(|v| v.as_array())
+        .expect("batch result must have a 'results' array");
     assert_eq!(
         pages.len(),
         2,
         "only the 2 successful pages should be returned, got: {text}"
     );
+
+    let failed = outcome
+        .get("failed")
+        .and_then(|v| v.as_array())
+        .expect("batch result must have a 'failed' array");
+    assert_eq!(
+        failed.len(),
+        1,
+        "one URL should be in the failed array, got: {text}"
+    );
+    assert_eq!(
+        failed[0]["url"],
+        format!("{}/c", mock.uri()),
+        "failed URL must be /c, got: {text}"
+    );
     assert!(
-        !text.contains("/c"),
-        "failed URL must not appear in the result, got: {text}"
+        failed[0]["error"].as_str().unwrap().contains("500"),
+        "error message should mention 500, got: {text}"
     );
 }
 

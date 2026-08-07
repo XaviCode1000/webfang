@@ -20,13 +20,21 @@ pub enum Outcome {
     Success,
     /// The underlying scraping operation returned `Err`.
     Error,
+    /// Partial success — some URLs succeeded, some failed (batch operations).
+    Partial,
 }
 
 impl Outcome {
-    /// Whether this outcome is a success.
+    /// Whether this outcome is a full success.
     #[must_use]
     pub fn is_success(self) -> bool {
         matches!(self, Self::Success)
+    }
+
+    /// Whether this outcome is partial (some successes, some failures).
+    #[must_use]
+    pub fn is_partial(self) -> bool {
+        matches!(self, Self::Partial)
     }
 }
 
@@ -64,6 +72,8 @@ pub struct ScrapeMetrics {
     total_events: usize,
     success_count: usize,
     error_count: usize,
+    /// Partial-success events (batch with some failures).
+    partial_count: usize,
     /// Per-domain breakdown; `BTreeMap` for deterministic order (DD-6).
     domains: BTreeMap<String, DomainStats>,
     /// Per-tool event counts; `BTreeMap` for deterministic order (DD-6).
@@ -91,12 +101,13 @@ impl ScrapeMetrics {
         match event.outcome {
             Outcome::Success => self.success_count += 1,
             Outcome::Error => self.error_count += 1,
+            Outcome::Partial => self.partial_count += 1,
         }
 
         let domain = self.domains.entry(event.domain.clone()).or_default();
         domain.events += 1;
         domain.pages += event.count;
-        if event.outcome == Outcome::Error {
+        if matches!(event.outcome, Outcome::Error | Outcome::Partial) {
             domain.errors += 1;
         }
 
@@ -122,6 +133,7 @@ impl ScrapeMetrics {
             total_events: self.total_events,
             success_count: self.success_count,
             error_count: self.error_count,
+            partial_count: self.partial_count,
             domains: self.domains.clone(),
             tools: self.tools.clone(),
             average_duration_ms,
@@ -141,6 +153,8 @@ pub struct MetricsSnapshot {
     pub success_count: usize,
     /// Number of error-outcome events.
     pub error_count: usize,
+    /// Number of partial-success events (batch with some failures).
+    pub partial_count: usize,
     /// Per-domain breakdown (sorted keys).
     pub domains: BTreeMap<String, DomainStats>,
     /// Per-tool event counts (sorted keys).
@@ -269,6 +283,7 @@ mod tests {
             "  \"total_events\": 3,",
             "  \"success_count\": 2,",
             "  \"error_count\": 1,",
+            "  \"partial_count\": 0,",
             "  \"domains\": {",
             "    \"a.com\": {",
             "      \"events\": 2,",

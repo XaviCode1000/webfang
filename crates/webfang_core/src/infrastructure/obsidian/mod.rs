@@ -15,6 +15,8 @@ pub use metadata::{
     compute_reading_time, compute_word_count, detect_content_type, detect_language,
     ObsidianRichMetadata,
 };
-pub use uri::{build_obsidian_uri, extract_vault_name, open_in_obsidian, open_note};
+pub use uri::{
+    build_obsidian_uri, extract_vault_name, open_in_obsidian, open_note, DispatchStatus,
+};
 pub use vault_detector::{detect_vault, detect_vault_with_root, is_valid_vault};
 pub use vault_reader::{read_vault_notes, VaultNote};

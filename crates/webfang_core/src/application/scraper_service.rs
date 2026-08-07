@@ -65,6 +65,64 @@ impl ScrapeOutcome {
     }
 }
 
+/// A failed URL in a batch scrape operation.
+///
+/// Carries the URL and a serializable error representation so the MCP layer
+/// can expose per-URL failures to the calling AI agent (issue #591).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ScrapeFailed {
+    /// The URL that failed to scrape.
+    pub url: String,
+    /// User-facing error message (Spanish, matching `ScraperError` Display).
+    pub error: String,
+    /// Operational classification of the error for retry/abort decisions.
+    pub category: ScrapeErrorCategory,
+}
+
+/// Serializable classification of a [`ScraperError`] for MCP consumers.
+///
+/// Mirrors [`crate::error::ErrorClass`] but owned (no lifetime) and
+/// serializable, so the MCP layer can embed it in JSON responses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrapeErrorCategory {
+    /// Transient — safe to retry immediately (5xx, connection reset).
+    TransientRetriable,
+    /// Transient — wait before retry (429, rate limit, timeout).
+    TransientBackoff,
+    /// Permanent — retry will not help (404, invalid URL, WAF).
+    PermanentFatal,
+    /// Internal — indicates a bug, not a runtime condition.
+    InternalFatal,
+    /// Domain recoverable — single item failed but pipeline is healthy.
+    DomainRecoverable,
+}
+
+impl From<crate::error::ErrorClass> for ScrapeErrorCategory {
+    fn from(class: crate::error::ErrorClass) -> Self {
+        match class {
+            crate::error::ErrorClass::TransientRetriable => Self::TransientRetriable,
+            crate::error::ErrorClass::TransientBackoff => Self::TransientBackoff,
+            crate::error::ErrorClass::PermanentFatal => Self::PermanentFatal,
+            crate::error::ErrorClass::InternalFatal => Self::InternalFatal,
+            crate::error::ErrorClass::DomainRecoverable => Self::DomainRecoverable,
+        }
+    }
+}
+
+/// Outcome of [`scrape_multiple_with_limit`]: successes + per-URL failures.
+///
+/// Replaces the bare `Vec<ScrapedContent>` return so callers can report
+/// exactly which URLs failed and why (issue #591 — `scrape_batch` observability).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ScrapeBatchOutcome {
+    /// Successfully scraped content.
+    pub results: Vec<ScrapedContent>,
+    /// URLs that failed, with error details preserved.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub failed: Vec<ScrapeFailed>,
+}
+
 /// Scrape a URL with asset downloading configuration
 ///
 /// Correlation contract (#501): the caller owns the run-root identity
@@ -455,9 +513,12 @@ pub async fn scrape_multiple_with_limit(
     urls: &[url::Url],
     config: &ScraperConfig,
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
-) -> Result<Vec<ScrapedContent>> {
+) -> Result<ScrapeBatchOutcome> {
     if urls.is_empty() {
-        return Ok(Vec::new());
+        return Ok(ScrapeBatchOutcome {
+            results: Vec::new(),
+            failed: Vec::new(),
+        });
     }
 
     // One run-root identity for the whole batch (#501): every
@@ -476,31 +537,47 @@ pub async fn scrape_multiple_with_limit(
         config.scraper_concurrency
     );
 
-    let results: Vec<Result<ScrapeOutcome>> =
-        stream::iter(urls.to_vec())
-            .map(|url| {
-                let config = config.clone();
-                let root = root_correlation.clone();
-                async move {
-                    scrape_with_config(client, &url, &config, downloader, None, None, &root).await
-                }
-            })
-            .buffer_unordered(config.scraper_concurrency)
-            .collect()
-            .await;
+    // Pair each URL with its result so failures can report which URL failed
+    // (ScrapeOutcome doesn't carry the source URL).
+    let results: Vec<(url::Url, Result<ScrapeOutcome>)> = stream::iter(urls.to_vec())
+        .map(|url| {
+            let config = config.clone();
+            let root = root_correlation.clone();
+            async move {
+                let result =
+                    scrape_with_config(client, &url, &config, downloader, None, None, &root).await;
+                (url, result)
+            }
+        })
+        .buffer_unordered(config.scraper_concurrency)
+        .collect()
+        .await;
 
     let mut all_content = Vec::new();
-    for result in results {
+    let mut failed = Vec::new();
+    for (url, result) in results {
         match result {
             Ok(outcome) => all_content.extend(outcome.results),
-            Err(e) => warn!("⚠️  Failed to scrape URL: {}", e),
+            Err(e) => {
+                let url_str = url.to_string();
+                warn!("⚠️  Failed to scrape {url_str}: {e}");
+                failed.push(ScrapeFailed {
+                    url: url_str,
+                    error: e.to_string(),
+                    category: e.classify().into(),
+                });
+            },
         }
     }
 
     info!(
-        "✅ Scraped {} pages from {} URLs",
+        "✅ Scraped {} pages from {} URLs ({} failed)",
         all_content.len(),
-        urls.len()
+        urls.len(),
+        failed.len()
     );
-    Ok(all_content)
+    Ok(ScrapeBatchOutcome {
+        results: all_content,
+        failed,
+    })
 }
