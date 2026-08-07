@@ -120,6 +120,21 @@ fn load_results_from(
     Ok(results)
 }
 
+/// Build a validated [`SanitizedFilename`] from an optional caller-supplied
+/// name, returning an `invalid_params` `McpError` on rejection.
+///
+/// Centralises the boundary validation so `export_file`, `export_jsonl`, and
+/// `export_vector` share one code path (keeps the duplication ratchet quiet
+/// and the contract in one place — issue #601).
+fn sanitized_filename_param(raw: Option<&str>) -> Result<SanitizedFilename, McpError> {
+    SanitizedFilename::try_from(raw.unwrap_or("export")).map_err(|_| {
+        McpError::invalid_params(
+            "nombre de archivo inválido",
+            Some(serde_json::Value::String("filename".to_string())),
+        )
+    })
+}
+
 impl McpHandler {
     /// Load all persisted crawl results, mapping operational failures to an
     /// honest `CallToolResult::error` (isError:true, Spanish).
@@ -171,12 +186,11 @@ impl McpHandler {
         // so a `..` can never reach `std::fs` (issue #601). The raw string is
         // still used for the synthetic URL / title below.
         let filename = params.filename.clone();
-        let safe_filename = SanitizedFilename::try_from(filename.as_str()).map_err(|_| {
-            McpError::invalid_params(
-                "nombre de archivo inválido",
-                Some(serde_json::Value::String("filename".to_string())),
-            )
-        })?;
+        // `filename` reaches the filesystem via `create_exporter` /
+        // `resolve_export_path`; it MUST be a validated [`SanitizedFilename`]
+        // so a `..` can never reach `std::fs` (issue #601). The raw string is
+        // still used for the synthetic URL / title below.
+        let safe_filename = sanitized_filename_param(Some(filename.as_str()))?;
 
         // Build a validated document chunk from the caller content. The chunk
         // id/timestamp are generated internally; the synthetic URL satisfies
@@ -245,17 +259,8 @@ impl McpHandler {
         let _permit = acquire_semaphore!(self, export);
 
         let output_dir = PathBuf::from(params.output_dir.as_deref().unwrap_or("./output"));
-        // Validated flat filename (issue #601): the raw `Option<String>` can
-        // only become a `SanitizedFilename` through exhaustive boundary
-        // validation, so the join in `export_results` can never escape
-        // `output_dir`.
-        let filename = SanitizedFilename::try_from(params.filename.as_deref().unwrap_or("export"))
-            .map_err(|_| {
-                McpError::invalid_params(
-                    "nombre de archivo inválido",
-                    Some(serde_json::Value::String("filename".to_string())),
-                )
-            })?;
+        // Validated flat filename (issue #601): see `sanitized_filename_param`.
+        let filename = sanitized_filename_param(params.filename.as_deref())?;
 
         let results = match self.load_results().await {
             Ok(results) => results,
@@ -282,14 +287,8 @@ impl McpHandler {
         let _permit = acquire_semaphore!(self, export);
 
         let output_dir = PathBuf::from(params.output_dir.as_deref().unwrap_or("./output"));
-        // Validated flat filename (issue #601): see `export_jsonl` above.
-        let filename = SanitizedFilename::try_from(params.filename.as_deref().unwrap_or("export"))
-            .map_err(|_| {
-                McpError::invalid_params(
-                    "nombre de archivo inválido",
-                    Some(serde_json::Value::String("filename".to_string())),
-                )
-            })?;
+        // Validated flat filename (issue #601): see `sanitized_filename_param`.
+        let filename = sanitized_filename_param(params.filename.as_deref())?;
 
         let results = match self.load_results().await {
             Ok(results) => results,
@@ -333,15 +332,9 @@ impl McpHandler {
 
         // The pipeline exports to the container's configured output directory.
         let output_dir = self.state.container.scraper_config.output_dir.clone();
-        // `export` is a compile-time-known flat name; if validation ever
-        // tightens, this surfaces as an honest invalid-params error rather
-        // than a panic.
-        let filename = SanitizedFilename::try_from("export").map_err(|_| {
-            McpError::invalid_params(
-                "nombre de archivo interno inválido",
-                Some(serde_json::Value::String("filename".to_string())),
-            )
-        })?;
+        // `export` is the compile-time-known default; the helper returns an
+        // honest invalid-params error if validation ever tightens.
+        let filename = sanitized_filename_param(None)?;
         export_results(&results, output_dir, format, &filename)
     }
 }
