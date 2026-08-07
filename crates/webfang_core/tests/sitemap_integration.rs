@@ -193,7 +193,9 @@ async fn test_parse_non_xml_content_type_returns_error() {
     );
 }
 
-/// HTTP 404 — returns NoUrlsFound (parser doesn't check status, only parses body).
+/// HTTP 404 — returns HttpError (status is checked before content-type).
+/// Bug #9 regression: non-2xx status MUST yield HttpError, not be silently
+/// parsed as XML (issue #590).
 #[tokio::test]
 async fn test_parse_http_404_returns_no_urls() {
     let mock = MockServer::start().await;
@@ -208,8 +210,8 @@ async fn test_parse_http_404_returns_no_urls() {
     let result = parser.parse_from_url(&url).await;
 
     assert!(
-        matches!(result, Err(SitemapError::NoUrlsFound)),
-        "expected NoUrlsFound for 404 body, got {result:?}"
+        matches!(result, Err(SitemapError::HttpError(_))),
+        "expected HttpError for 404, got {result:?}"
     );
 }
 

@@ -132,14 +132,11 @@ impl McpHandler {
 
         let title = params.title.as_deref().unwrap_or("Untitled");
         let url = params.url.as_deref().unwrap_or("");
+        let author = params.author.as_deref();
+        let excerpt = params.excerpt.as_deref();
+        let tags = params.tags.as_deref().unwrap_or(&[]);
         let fm = webfang_core::infrastructure::output::frontmatter::generate_with_metadata(
-            title,
-            url,
-            None,
-            None,
-            None,
-            &[],
-            None,
+            title, url, None, author, excerpt, tags, None,
         );
         Ok(CallToolResult::success(vec![Content::text(fm)]))
     }
@@ -345,6 +342,32 @@ mod tests {
             text.contains("example.com"),
             "frontmatter must include url: {text}"
         );
+    }
+
+    #[tokio::test]
+    async fn generate_frontmatter_honors_author_excerpt_tags() {
+        let (handler, _tmp) = test_handler().await;
+        // Bug #3 regression: params.author, params.excerpt, params.tags MUST
+        // be passed through to generate_with_metadata, not hardcoded to None/empty
+        // (issue #590).
+        let res = handler
+            .generate_frontmatter(Parameters(GenerateFrontmatterParams {
+                title: Some("My Post".to_string()),
+                url: Some("https://example.com/post".to_string()),
+                author: Some("Jane Doe".to_string()),
+                excerpt: Some("A brief summary".to_string()),
+                tags: Some(vec!["rust".to_string(), "web".to_string()]),
+            }))
+            .await
+            .expect("generate_frontmatter returns Ok");
+        let text = result_text(&res);
+        assert!(text.contains("Jane Doe"), "author must appear: {text}");
+        assert!(
+            text.contains("A brief summary"),
+            "excerpt must appear: {text}"
+        );
+        assert!(text.contains("rust"), "tag 'rust' must appear: {text}");
+        assert!(text.contains("web"), "tag 'web' must appear: {text}");
     }
 
     #[tokio::test]

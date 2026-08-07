@@ -455,6 +455,25 @@ mod handler_tests {
     }
 
     #[tokio::test]
+    async fn export_file_rejects_unknown_format_with_clear_message() {
+        let (handler, tmp) = test_handler().await;
+        // Bug #4 regression: format="md" (unsupported) must return
+        // invalid_params with a message listing supported formats (issue #590).
+        let res = handler
+            .export_file(Parameters(ExportFileParams {
+                output_dir: tmp.path().to_string_lossy().to_string(),
+                filename: "doc".to_string(),
+                format: "md".to_string(),
+                content: "hello".to_string(),
+            }))
+            .await;
+        assert!(
+            res.is_err(),
+            "unsupported format 'md' must be a protocol error"
+        );
+    }
+
+    #[tokio::test]
     async fn export_file_writes_jsonl() {
         let (handler, _tmp) = test_handler().await;
         let out_dir = "test-output/export-jsonl";

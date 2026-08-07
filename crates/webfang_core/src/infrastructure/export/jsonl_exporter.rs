@@ -65,8 +65,9 @@ impl Drop for FileLock {
     fn drop(&mut self) {
         // Release the OS-level exclusive lock, then delete the lock file. Both
         // best-effort: a failure here must not mask the real export result.
-        #[allow(clippy::incompatible_msrv)]
-        let _ = self.handle.unlock();
+        // Fully qualified syntax: avoids unstable_name_collisions with future
+        // std::fs::File::unlock (rust-lang/rust#48919).
+        let _ = fs2::FileExt::unlock(&self.handle);
         let _ = fs::remove_file(&self.lock_path);
     }
 }

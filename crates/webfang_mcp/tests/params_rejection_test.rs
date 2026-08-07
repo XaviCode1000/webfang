@@ -1,10 +1,12 @@
 //! End-to-end MCP parameter-validation rejection tests (issue #512, slice 2).
 //!
 //! Every test starts the real MCP server and invokes a tool over HTTP, then
-//! asserts on the JSON-RPC error *code* (never on message strings). The
+//! asserts on the JSON-RPC error *code* (never on message strings). Most
 //! handlers wire `params.validate()?` as the first statement, so invalid
 //! parameters are rejected at the protocol boundary with code `-32602`
 //! (invalid params) before any network access or semaphore acquisition.
+//! Exceptions: `validate_url` (returns tool-level `{"valid": false}`) and
+//! `detect_obsidian_vault` (accepts absolute paths) — see bug #590.
 //!
 //! Run with: cargo nextest run --test params_rejection_test --features mcp
 
@@ -225,9 +227,10 @@ async fn scrape_url_rejects_ftp_scheme() {
     );
 }
 
-/// `validate_url` rejects a `file://` URL.
+/// `validate_url` returns a tool-level result (not a protocol error) for a
+/// `file://` URL (bug #7 fix: tool reports parsed result instead of rejecting).
 #[tokio::test]
-async fn validate_url_rejects_file_scheme() {
+async fn validate_url_file_scheme_returns_tool_result() {
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
@@ -241,10 +244,20 @@ async fn validate_url_rejects_file_scheme() {
     )
     .await;
 
+    // After bug #7 fix: validate_url no longer calls params.validate()?.
+    // It returns a JSON tool result for ALL inputs (file:// is a valid URL per
+    // RFC 3986, so it reports valid:true with scheme:file).
     assert_eq!(
         error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "validate_url file:// scheme must be rejected with -32602, got: {resp}"
+        None,
+        "validate_url must NOT return protocol error, got: {resp}"
+    );
+    let result = resp
+        .get("result")
+        .unwrap_or_else(|| panic!("expected a tool result, got: {resp}"));
+    assert!(
+        !is_tool_error(result),
+        "validate_url file:// must not be a tool error"
     );
 }
 
@@ -459,9 +472,9 @@ async fn download_assets_rejects_output_dir_traversal() {
     );
 }
 
-/// `detect_obsidian_vault` rejects an absolute `vault_path`.
+/// `detect_obsidian_vault` accepts an absolute `vault_path` (bug #8 fix).
 #[tokio::test]
-async fn detect_obsidian_vault_rejects_absolute_path() {
+async fn detect_obsidian_vault_accepts_absolute_path() {
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
@@ -475,10 +488,12 @@ async fn detect_obsidian_vault_rejects_absolute_path() {
     )
     .await;
 
+    // After bug #8 fix: absolute paths are accepted (no -32602).
+    // The tool will return a result (vault not found, but not a validation error).
     assert_eq!(
         error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "absolute vault_path must be rejected with -32602, got: {resp}"
+        None,
+        "absolute vault_path must NOT be rejected with -32602, got: {resp}"
     );
 }
 

@@ -27,10 +27,11 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<ValidateUrlParams>,
     ) -> Result<CallToolResult, McpError> {
-        params.validate()?;
-
         let _permit = acquire_semaphore!(self, url_utils);
 
+        // Tool-level validation: never return a protocol error for invalid
+        // input. The acceptance criterion is a JSON result with `valid:false`
+        // so callers can reason about it programmatically (issue #590, bug #7).
         match url::Url::parse(&params.url) {
             Ok(u) => {
                 let info = serde_json::json!({
@@ -47,7 +48,7 @@ impl McpHandler {
                 )]))
             },
             Err(e) => {
-                let info = serde_json::json!({"valid": false, "error": e.to_string()});
+                let info = serde_json::json!({"valid": false, "reason": e.to_string()});
                 Ok(CallToolResult::success(vec![Content::text(
                     serde_json::to_string_pretty(&info)
                         .expect("serializing JSON to a string cannot fail"),
@@ -331,17 +332,24 @@ mod handler_tests {
     }
 
     #[tokio::test]
-    async fn validate_url_invalid() {
+    async fn validate_url_invalid_returns_json_not_error() {
         let (handler, _tmp) = test_handler().await;
-        // Params validation (#512) rejects unparseable URLs up front.
+        // Bug #7 regression: invalid URL must return a tool-level result
+        // with valid:false, NOT a protocol-level McpError (issue #590).
         let res = handler
             .validate_url(Parameters(ValidateUrlParams {
                 url: "not a url".to_string(),
             }))
-            .await;
+            .await
+            .expect("invalid URL must return Ok with JSON payload, not Err");
+        let text = result_text(&res);
         assert!(
-            res.is_err(),
-            "invalid URL must be a protocol error, got: {res:?}"
+            text.contains("\"valid\": false"),
+            "invalid URL must report valid:false, got: {text}"
+        );
+        assert!(
+            text.contains("reason"),
+            "invalid URL must include a reason field, got: {text}"
         );
     }
 

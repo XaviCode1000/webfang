@@ -125,6 +125,39 @@ fn has_windows_drive_prefix(value: &str) -> bool {
         && (bytes[2] == b'\\' || bytes[2] == b'/')
 }
 
+/// Validate that `value` is a safe filesystem path: non-empty, ≤
+/// [`MAX_PATH_LEN`], absolute paths ALLOWED (leading `/` accepted), and free
+/// of `..` traversal components.
+///
+/// Unlike [`require_safe_path`], this variant accepts absolute paths so
+/// tools like `detect_obsidian_vault` can accept `/home/user/vault`. Still
+/// rejects `..` traversal and oversize inputs.
+///
+/// # Errors
+/// Returns `McpError::invalid_params` for empty, oversize, or
+/// `..`-traversal paths.
+pub fn require_safe_path_allow_absolute(field: &str, value: &str) -> Result<PathBuf, McpError> {
+    if value.is_empty() {
+        return Err(invalid_params(field, "must not be empty"));
+    }
+    if value.len() > MAX_PATH_LEN {
+        return Err(invalid_params(
+            field,
+            format!("exceeds maximum length of {MAX_PATH_LEN} bytes"),
+        ));
+    }
+    let path = Path::new(value);
+    // Absolute paths are intentionally allowed — Obsidian vaults live at
+    // user-supplied absolute locations (issue #590, bug #8).
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(invalid_params(
+            field,
+            "must not contain '..' traversal components",
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
 /// Validate that `value` is at most `max_len` characters long.
 ///
 /// # Errors
@@ -293,5 +326,38 @@ pub fn require_one_of(field: &str, value: &str, options: &[&str]) -> Result<(), 
             field,
             format!("must be one of: {} (got '{value}')", options.join(", ")),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn require_safe_path_allow_absolute_accepts_absolute() {
+        // Bug #8 regression: absolute paths MUST be accepted (issue #590).
+        let result = require_safe_path_allow_absolute("vault_path", "/home/user/vault");
+        assert!(result.is_ok(), "absolute path must be accepted: {result:?}");
+        assert_eq!(result.unwrap().to_string_lossy(), "/home/user/vault");
+    }
+
+    #[test]
+    fn require_safe_path_allow_absolute_rejects_traversal() {
+        // `..` traversal must still be rejected even for absolute paths.
+        let result = require_safe_path_allow_absolute("vault_path", "/home/user/../etc/passwd");
+        assert!(result.is_err(), "traversal must be rejected: {result:?}");
+    }
+
+    #[test]
+    fn require_safe_path_allow_absolute_rejects_empty() {
+        let result = require_safe_path_allow_absolute("vault_path", "");
+        assert!(result.is_err(), "empty path must be rejected: {result:?}");
+    }
+
+    #[test]
+    fn require_safe_path_allow_absolute_accepts_relative() {
+        // Relative paths should still work (no regression).
+        let result = require_safe_path_allow_absolute("vault_path", "my-vault");
+        assert!(result.is_ok(), "relative path must be accepted: {result:?}");
     }
 }

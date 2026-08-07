@@ -86,6 +86,24 @@ pub fn clean_html(html: &str) -> String {
         for name in attr_names {
             if !PRESERVED_ATTRS.contains(&name.as_str()) {
                 el.remove_attribute(&name);
+                continue;
+            }
+            // Strip javascript: URLs from href/src to prevent XSS when the
+            // cleaned HTML is re-rendered (issue #590, bug #10). Case- and
+            // whitespace-insensitive so `javascript:`, `  JAVASCRIPT:` and
+            // `JavaScript:\t` are all caught.
+            if name == "href" || name == "src" {
+                if let Some(value) = el.get_attribute(&name) {
+                    let trimmed = value.trim_start();
+                    let scheme = trimmed
+                        .split_once(':')
+                        .map(|(s, _)| s.to_ascii_lowercase())
+                        .unwrap_or_default();
+                    if scheme == "javascript" {
+                        el.remove_attribute(&name);
+                        tracing::debug!("Stripped javascript: {} attribute", name);
+                    }
+                }
             }
         }
         Ok(())
@@ -198,6 +216,42 @@ mod tests {
             "href URL should be preserved"
         );
         assert!(!cleaned.contains("onclick"), "onclick should be stripped");
+    }
+
+    /// Bug #10 regression: `javascript:` URLs in href/src MUST be stripped
+    /// to prevent XSS when cleaned HTML is re-rendered (issue #590).
+    #[test]
+    fn test_clean_strips_javascript_scheme() {
+        let html = r#"<html><body><a href="javascript:alert(1)">click</a><img src="javascript:alert(2)"></body></html>"#;
+        let cleaned = clean_html(html);
+        assert!(
+            !cleaned.contains("javascript:alert"),
+            "javascript: scheme must be stripped: {cleaned}"
+        );
+    }
+
+    #[test]
+    fn test_clean_strips_javascript_scheme_case_insensitive() {
+        let html = r#"<a href="  JAVASCRIPT:alert(1)">click</a>"#;
+        let cleaned = clean_html(html);
+        assert!(
+            !cleaned.contains("alert"),
+            "case-insensitive javascript: must be stripped: {cleaned}"
+        );
+    }
+
+    #[test]
+    fn test_clean_preserves_https_scheme() {
+        let html = r#"<html><body><a href="https://example.com/page">safe</a><img src="https://example.com/img.png"></body></html>"#;
+        let cleaned = clean_html(html);
+        assert!(
+            cleaned.contains("https://example.com/page"),
+            "https href must be preserved: {cleaned}"
+        );
+        assert!(
+            cleaned.contains("https://example.com/img.png"),
+            "https src must be preserved: {cleaned}"
+        );
     }
 
     #[test]

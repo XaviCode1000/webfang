@@ -45,7 +45,7 @@ jobs:
         # (~390 MB, not cached in CI) and only pass locally with a cached model.
         # Excludes them so this (non-required) bug-discovery job stays green
         # instead of emitting false-failure noise.
-        run: cargo nextest run --workspace --all-features --run-ignored only --skip 'webfang_ai::ai_integration::' --no-fail-fast
+        run: cargo nextest run --workspace --all-features --run-ignored only --no-fail-fast --skip 'webfang_ai::ai_integration::'
       - name: Summary
         if: always()
         run: |

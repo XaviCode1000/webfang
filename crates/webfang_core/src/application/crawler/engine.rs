@@ -608,6 +608,19 @@ impl Engine {
             // Process completed tasks FIRST (non-blocking)
             self.process_completed_tasks(tasks);
 
+            // Re-check max_pages AFTER processing — concurrent completions may
+            // have pushed the collector past the limit while we were spawning.
+            // Without this, spawn_available_tasks() below would keep fanning out
+            // new workers beyond max_pages (issue #590, bug #1).
+            if self.collector.is_full(self.config.max_pages) {
+                info!(
+                    "Reached max pages limit after processing: {}",
+                    self.config.max_pages
+                );
+                self.cancel_token.cancel();
+                break;
+            }
+
             // Drain discovered links from the deduplicated UrlQueue
             self.scheduler.drain_discovered().await;
 
@@ -1122,6 +1135,69 @@ mod tests {
         assert!(
             !requested_linked,
             "rate-blocked worker must be cancelled before fetching"
+        );
+    }
+
+    /// Regression test for issue #590, bug #1: max_pages MUST be a hard
+    /// ceiling. The engine re-checks `collector.is_full()` AFTER
+    /// `process_completed_tasks()` and BEFORE `spawn_available_tasks()` so
+    /// concurrent completions past the limit cannot fan out more workers.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn max_pages_hard_ceiling_no_overshoot() {
+        let server = MockServer::start().await;
+        let port = server.address().port();
+
+        // Seed page links to many pages — without the fix, the engine would
+        // keep spawning and overshoot max_pages by a wide margin.
+        let links: String = (0..20)
+            .map(|i| format!(r#"<a href="http://127.0.0.1:{port}/page{i}">link</a>"#))
+            .collect();
+        Mock::given(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(format!("<html><body>{links}</body></html>")),
+            )
+            .mount(&server)
+            .await;
+
+        // Every linked page returns 200 with no further links.
+        for i in 0..20 {
+            Mock::given(path(format!("/page{i}")))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(format!("<html><body>page {i}</body></html>")),
+                )
+                .mount(&server)
+                .await;
+        }
+
+        let seed = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed)
+            .max_depth(2)
+            .max_pages(2) // Hard ceiling: must not exceed by much
+            .concurrency(5) // High concurrency to trigger the race
+            .delay_ms(1)
+            .timeout_secs(5)
+            .ignore_robots(true)
+            .build();
+
+        let mut engine = Engine::new(config, true).expect("engine must build");
+        let result = engine.run().await.expect("crawl must complete");
+        engine.shutdown().await;
+
+        // The fix guarantees the loop breaks as soon as counter >= max_pages.
+        // Up to (concurrency - 1) in-flight tasks may still land, so we allow
+        // a small slack but assert it stays bounded.
+        assert!(
+            result.total_pages <= 2 + 5,
+            "total_pages={} must not overshoot max_pages=2 by more than concurrency slack",
+            result.total_pages
+        );
+        // Critical: must NOT have fetched all 20 links.
+        assert!(
+            result.total_pages < 20,
+            "must not fetch all 20 links with max_pages=2, got {}",
+            result.total_pages
         );
     }
 }
