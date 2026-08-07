@@ -357,6 +357,11 @@ fn tmp_path_for(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    // Test-only module: `.unwrap()`/`.expect()` below operate on unreachable
+    // failures (TempDir creation, fs round-trips in a temp dir, literal
+    // timestamp parses). Intentionally excluded from the production
+    // `deny(clippy::unwrap_used)` in `lib.rs`.
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use proptest::prelude::*;
     use std::fs;

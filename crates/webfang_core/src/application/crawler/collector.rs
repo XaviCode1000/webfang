@@ -269,6 +269,11 @@ impl ResultsAdapter {
 
 #[cfg(test)]
 mod tests {
+    // Test-only module: every `.unwrap()`/`.expect()` below operates on
+    // unreachable-failure inputs (literal URL parses, TempDir/mock-server
+    // setup). Intentionally excluded from the production
+    // `deny(clippy::unwrap_used)` in `lib.rs`.
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use url::Url;
 

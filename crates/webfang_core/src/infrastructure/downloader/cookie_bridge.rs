@@ -148,6 +148,10 @@ fn path_matches(request_path: &str, cookie_path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    // Test-only module: `.parse().unwrap()` below parse hard-coded valid URLs
+    // that cannot fail. Intentionally excluded from the production
+    // `deny(clippy::unwrap_used)` in `lib.rs`.
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     fn make_cookie(name: &str, domain: &str, path: &str) -> Cookie {

@@ -197,6 +197,10 @@ impl From<ResourceError> for DownloadError {
 #[cfg(test)]
 #[cfg(not(miri))] // sysinfo uses sysconf (unsupported by Miri — but TSan covers the semaphore)
 mod tests {
+    // Test-only module: `.expect()` below assert on semaphore acquire/release
+    // in a controlled test harness. Intentionally excluded from the production
+    // `deny(clippy::unwrap_used)` in `lib.rs`.
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     use std::time::Duration;

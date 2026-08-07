@@ -268,6 +268,27 @@ mod tests {
     /// Fails with an HTTP error — a non-WAF [`DownloadError`] that must NOT
     /// abort escalation (distinct variant from `FailingDownloader` so tests
     /// can pinpoint which layer produced the observed error).
+    /// Fails with a WAF challenge — a [`DownloadError::WafChallenge`] that MUST
+    /// abort escalation regardless of which layer produces it (mirrors the
+    /// Obscura / Chromiumoxide layers surfacing a genuine WAF challenge).
+    struct WafChallengeDownloader {
+        message: String,
+    }
+
+    impl Downloader for WafChallengeDownloader {
+        fn fetch<'a>(&'a self, _url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
+            Box::pin(async move { Err(DownloadError::WafChallenge(self.message.clone())) })
+        }
+
+        fn supports_interactions(&self) -> bool {
+            false
+        }
+
+        fn memory_cost(&self) -> usize {
+            0
+        }
+    }
+
     struct HttpErrorDownloader {
         status: u16,
         message: String,
@@ -331,6 +352,55 @@ mod tests {
         let url: Url = "https://waf.example.com".parse().unwrap();
         let err = router.fetch(&url).await.unwrap_err();
         assert!(matches!(err, DownloadError::WafChallenge(_)));
+    }
+
+    #[tokio::test]
+    async fn test_waf_at_layer2_obscura_aborts() {
+        // Fase 4 scenario 7: a WAF challenge surfaced by Layer 2 (Obscura) must
+        // short-circuit escalation. Layer 1 returns usable static content (so
+        // the L1 spa path does NOT abort), then Obscura returns
+        // DownloadError::WafChallenge — the router must abort with that error
+        // and NEVER reach Layer 3 (hybrid_router.rs:120-122).
+        let router = HybridRouter::new(
+            StubDownloader::spa_page(),
+            WafChallengeDownloader {
+                message: "obscura hit a WAF challenge".into(),
+            },
+            StubDownloader::static_page().with_interactions(true),
+            false,
+        );
+        let url: Url = "https://obscura-waf.example.com".parse().unwrap();
+        let err = router.fetch(&url).await.unwrap_err();
+        assert!(
+            matches!(err, DownloadError::WafChallenge(_)),
+            "WAF at Obscura layer must abort escalation, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("obscura hit a WAF challenge"),
+            "abort must carry Obscura's WAF cause, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ignore_waf_true_does_not_suppress_layer2_waf() {
+        // Pin the boundary of REQ-WAF-07: `ignore_waf` only mutates the
+        // spa-detection verdict (detect_spa). An explicit WafChallenge returned
+        // by the Obscura layer is NOT suppressed by ignore_waf — the router
+        // still aborts (hybrid_router.rs:120-122). This proves scenario 8
+        // (ignore_waf no-abort) is scoped to the L1 spa path, not the L2
+        // explicit-challenge path.
+        let router = HybridRouter::new(
+            StubDownloader::spa_page(),
+            WafChallengeDownloader {
+                message: "obscura WAF under ignore_waf".into(),
+            },
+            StubDownloader::static_page().with_interactions(true),
+            true,
+        );
+        let url: Url = "https://obscura-waf.example.com".parse().unwrap();
+        let err = router.fetch(&url).await.unwrap_err();
+        assert!(matches!(err, DownloadError::WafChallenge(_)));
+        assert!(err.to_string().contains("obscura WAF under ignore_waf"));
     }
 
     #[tokio::test]
