@@ -421,25 +421,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [core, domain, infra-fast, infra-slow]
+        group: [core, domain]
         include:
           - group: core
             filter: "-- adapters:: application:: cli:: config:: di:: error::"
           - group: domain
             filter: "-- domain::"
-          # NOTE: These use positive module filters (-- infrastructure::<module>::)
-          # instead of the previous negative filter (-- infrastructure:: --skip X).
-          # New modules added to infrastructure:: must be explicitly assigned to one
-          # of the two groups below to run under Miri.
-          - group: infra-fast
-            filter: "-- infrastructure::cpu_pool:: -- infrastructure::stream:: -- infrastructure::error:: -- infrastructure::user_agent:: -- infrastructure::bridge:: -- infrastructure::output:: -- infrastructure::config:: -- infrastructure::autotuning:: -- infrastructure::content_processing:: -- infrastructure::scraper::"
-          - group: infra-slow
-            # wikilinks/syntax_highlight explicitly skipped — FFI-heavy, can't execute under Miri.
-            # downloader: only pure-Rust submodules (cookie_bridge/spa_detector) — FFI (wreq,
-            # obscura, chromiumoxide) and sysinfo-dependent (hybrid_router, resource_governor)
-            # excluded via --skip below / #[cfg(not(miri))] in their test modules (#515).
-            # resource_governor is covered by TSan (sanitizers.yml), where sysconf works.
-            filter: "-- infrastructure::crawler:: -- infrastructure::obsidian:: -- infrastructure::export:: -- infrastructure::http:: -- infrastructure::network:: -- infrastructure::converter:: -- infrastructure::downloader::cookie_bridge:: -- infrastructure::downloader::spa_detector:: --skip wikilinks --skip syntax_highlight"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -469,6 +456,77 @@ jobs:
           cargo miri test --lib -- \
             --skip wreq_downloader --skip obscura_downloader --skip chromiumoxide_downloader \
             ${{ matrix.filter }}
+
+  # ============================================================================
+  # MIRI INFRA-FAST: 10 modules, needs 60 min timeout (compilation under Miri
+  # is 5-10x slower; 10 modules × instrumented build exceeds the 30m default).
+  # NOTE: Positive module filters — new infrastructure:: modules must be
+  # explicitly assigned to one of the two infra jobs to run under Miri.
+  # ============================================================================
+  miri-infra-fast:
+    name: Miri (infra-fast)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - name: Cache Miri sysroot
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/miri
+          key: miri-sysroot-${{ runner.os }}-2026-07-01
+          restore-keys: |
+            miri-sysroot-${{ runner.os }}-
+      - name: Setup & Run Miri (infra-fast)
+        env:
+          MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-disable-isolation -Zmiri-ignore-leaks -Zmiri-seed=42 -Zmiri-permissive-provenance
+        run: |
+          cargo miri setup
+          cargo miri test --lib -- \
+            --skip wreq_downloader --skip obscura_downloader --skip chromiumoxide_downloader \
+            -- infrastructure::cpu_pool:: -- infrastructure::stream:: -- infrastructure::error:: -- infrastructure::user_agent:: -- infrastructure::bridge:: -- infrastructure::output:: -- infrastructure::config:: -- infrastructure::autotuning:: -- infrastructure::content_processing:: -- infrastructure::scraper::
+
+  # ============================================================================
+  # MIRI INFRA-SLOW: crawler/obsidian/export/http/network/converter + pure-Rust
+  # downloader submodules. 60 min timeout for the same reason as infra-fast.
+  # wikilinks/syntax_highlight explicitly skipped — FFI-heavy, can't execute
+  # under Miri. downloader: only pure-Rust submodules (cookie_bridge/spa_detector)
+  # — FFI (wreq, obscura, chromiumoxide) and sysinfo-dependent (hybrid_router,
+  # resource_governor) excluded via --skip / #[cfg(not(miri))] (#515).
+  # resource_governor is covered by TSan (sanitizers.yml), where sysconf works.
+  # ============================================================================
+  miri-infra-slow:
+    name: Miri (infra-slow)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - name: Cache Miri sysroot
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/miri
+          key: miri-sysroot-${{ runner.os }}-2026-07-01
+          restore-keys: |
+            miri-sysroot-${{ runner.os }}-
+      - name: Setup & Run Miri (infra-slow)
+        env:
+          MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-disable-isolation -Zmiri-ignore-leaks -Zmiri-seed=42 -Zmiri-permissive-provenance
+        run: |
+          cargo miri setup
+          cargo miri test --lib -- \
+            --skip wreq_downloader --skip obscura_downloader --skip chromiumoxide_downloader \
+            -- infrastructure::crawler:: -- infrastructure::obsidian:: -- infrastructure::export:: -- infrastructure::http:: -- infrastructure::network:: -- infrastructure::converter:: -- infrastructure::downloader::cookie_bridge:: -- infrastructure::downloader::spa_detector:: --skip wikilinks --skip syntax_highlight
 
   # ============================================================================
   # COVERAGE: PR gate + push-to-main + manual trigger
