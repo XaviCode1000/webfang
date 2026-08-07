@@ -95,11 +95,27 @@ impl std::fmt::Display for CrawlErrorCategory {
     }
 }
 
+/// HTTP status codes that signal a WAF-style challenge rather than a generic
+/// HTTP error. These are the access-denied / rate-limit family of responses
+/// (401 Unauthorized, 403 Forbidden, 429 Too Many Requests) that operators
+/// should attribute to WAF blocking in `errors_waf` (issue #603).
+#[inline]
+#[must_use]
+fn is_waf_status(status: u16) -> bool {
+    matches!(status, 401 | 403 | 429)
+}
+
 impl From<&CrawlError> for CrawlErrorCategory {
     fn from(err: &CrawlError) -> Self {
         match err {
             CrawlError::WafChallenge { .. } => Self::Waf,
-            CrawlError::Http { .. } | CrawlError::TransientHttp { .. } => Self::Http,
+            CrawlError::Http { status, .. } | CrawlError::TransientHttp { status, .. } => {
+                if is_waf_status(*status) {
+                    Self::Waf
+                } else {
+                    Self::Http
+                }
+            },
             CrawlError::Timeout => Self::Timeout,
             CrawlError::Network { .. } | CrawlError::Connection(..) | CrawlError::Download(..) => {
                 Self::Network
@@ -139,6 +155,47 @@ mod tests {
             url: "https://example.com".into(),
         };
         assert_eq!(CrawlErrorCategory::from(&err), CrawlErrorCategory::Http);
+    }
+
+    #[test]
+    fn categorize_waf_status_as_waf() {
+        // Issue #603: 401/403/429 are WAF challenges, not generic HTTP errors.
+        for status in [401u16, 403, 429] {
+            let err = CrawlError::Http {
+                status,
+                url: "https://example.com".into(),
+            };
+            assert_eq!(
+                CrawlErrorCategory::from(&err),
+                CrawlErrorCategory::Waf,
+                "status {status} must be classified as waf"
+            );
+
+            let err = CrawlError::TransientHttp {
+                status,
+                url: "https://example.com".into(),
+            };
+            assert_eq!(
+                CrawlErrorCategory::from(&err),
+                CrawlErrorCategory::Waf,
+                "transient status {status} must be classified as waf"
+            );
+        }
+    }
+
+    #[test]
+    fn categorize_other_http_status_as_http() {
+        for status in [400u16, 404, 500, 503] {
+            let err = CrawlError::Http {
+                status,
+                url: "https://example.com".into(),
+            };
+            assert_eq!(
+                CrawlErrorCategory::from(&err),
+                CrawlErrorCategory::Http,
+                "status {status} is a generic HTTP error, not waf"
+            );
+        }
     }
 
     #[test]

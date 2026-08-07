@@ -1116,6 +1116,34 @@ mod tests {
     }
 
     #[test]
+    fn http_403_increments_waf_category() {
+        // Issue #603: a 403 must be counted as errors_waf, not network/http.
+        let (error_count, breakdown) = counters();
+        handle_crawl_result(
+            Ok(Err(CrawlError::Http {
+                status: 403,
+                url: "https://example.com".into(),
+            })),
+            &error_count,
+            &breakdown,
+        );
+        assert_eq!(error_count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            breakdown[CrawlErrorCategory::Waf.index()].load(Ordering::SeqCst),
+            1
+        );
+        for cat in CrawlErrorCategory::ALL {
+            if cat != CrawlErrorCategory::Waf {
+                assert_eq!(
+                    breakdown[cat.index()].load(Ordering::SeqCst),
+                    0,
+                    "category {cat} must remain zero for a 403"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn crawl_error_category_is_derived_from_error() {
         let (error_count, breakdown) = counters();
         handle_crawl_result(
