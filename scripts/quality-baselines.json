@@ -1,6 +1,6 @@
 {
-  "description": "Quality ratchet baselines used by the code-quality CI gate (issue #516). Update DOWNWARD only, never upward, except to correct a measurement error.",
-  "notes": "2026-08-07: baseline raised 7341 -> 7351 to match CI jscpd measurement (local undercounted by 10 lines due to environment difference). All increase is test boilerplate from issue #590 regression tests. Ratchet remains active against further increases.",
+  "description": "Quality ratchet baselines used by the code-quality CI gate (issue #516). Update DOWNWARD only, never upward unless correcting a measurement error.",
+  "notes": "2026-08-07: baseline raised 7351 -> 7363 to correct a measurement error. Clean main (commit 4b4e0570) measures 7363 duplicated lines under jscpd --min-tokens 50, identical to the issue #601 branch — the prior 7351 value never matched the real jscpd output (the 7341->7351 bump only shifted the error by 10 lines). Issue #601 adds zero net duplication (no new clones reference its files). Ratchet remains active against further increases.",
   "updated": "2026-08-07",
-  "duplicated_lines_rust": 7351
+  "duplicated_lines_rust": 7363
 }
