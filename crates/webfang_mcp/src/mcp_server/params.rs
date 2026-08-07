@@ -19,7 +19,7 @@ use serde_json::Value;
 
 use crate::mcp_server::validation::{
     require_http_url, require_max_len, require_max_value_u16, require_max_value_u64,
-    require_min_value_u64, require_non_empty, require_one_of, require_safe_domain,
+    require_non_empty, require_one_of, require_range_u64, require_safe_domain,
     require_safe_filename, require_safe_name, require_safe_path, require_safe_path_allow_absolute,
     require_safe_seed, MAX_BLOB_LEN,
 };
@@ -103,8 +103,7 @@ impl ScrapeBatchParams {
             require_http_url("urls[]", u)?;
         }
         if let Some(c) = self.concurrency {
-            require_max_value_u64("concurrency", c as u64, 64)?;
-            require_min_value_u64("concurrency", c as u64, 1)?;
+            require_range_u64("concurrency", c as u64, 1, 64)?;
         }
         Ok(())
     }
@@ -133,8 +132,7 @@ impl CrawlSiteParams {
             require_max_value_u64("max_depth", u64::from(d), 10)?;
         }
         if let Some(p) = self.max_pages {
-            require_max_value_u64("max_pages", u64::from(p), 100_000)?;
-            require_min_value_u64("max_pages", u64::from(p), 1)?;
+            require_range_u64("max_pages", u64::from(p), 1, 100_000)?;
         }
         Ok(())
     }

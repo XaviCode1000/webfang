@@ -301,13 +301,16 @@ pub fn require_max_value_u64(field: &str, value: u64, max: u64) -> Result<(), Mc
     Ok(())
 }
 
-/// Validate that `value >= min`.
+/// Validate that `min <= value <= max`.
 ///
 /// # Errors
-/// Returns `McpError::invalid_params` if `value < min`.
-pub fn require_min_value_u64(field: &str, value: u64, min: u64) -> Result<(), McpError> {
+/// Returns `McpError::invalid_params` if `value` is outside the inclusive range.
+pub fn require_range_u64(field: &str, value: u64, min: u64, max: u64) -> Result<(), McpError> {
     if value < min {
         return Err(invalid_params(field, format!("must be at least {min}")));
+    }
+    if value > max {
+        return Err(invalid_params(field, format!("must be at most {max}")));
     }
     Ok(())
 }
