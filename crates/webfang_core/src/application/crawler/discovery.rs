@@ -738,6 +738,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(miri))] // lol_html → servo_arc triggers Tree Borrows UB (upstream, experimental model)
     async fn scrape_single_normal_html_extracts_title_and_content() {
         let html = r#"<html><head><title>Test Article</title></head>
 <body><article><h1>Heading</h1>
