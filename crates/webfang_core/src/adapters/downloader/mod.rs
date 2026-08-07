@@ -769,6 +769,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
     #[test]
     fn test_generate_filename_slug_strategy() {
         let temp_dir = TempDir::new().unwrap();
