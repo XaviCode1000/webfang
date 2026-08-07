@@ -95,12 +95,18 @@ impl McpHandler {
             &params.vault_name,
             &params.file_path,
         );
+        use webfang_core::infrastructure::obsidian::uri::DispatchStatus;
         match webfang_core::infrastructure::obsidian::uri::open_in_obsidian(&uri) {
-            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
-                "Opened in Obsidian: {uri}"
-            ))])),
+            Ok(DispatchStatus::Dispatched) => Ok(CallToolResult::success(vec![Content::text(
+                format!("Abriendo en Obsidian: {uri}"),
+            )])),
+            Ok(DispatchStatus::HandlerFailed) => {
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "⚠️ El manejador de URI falló (Obsidian puede no estar instalado). URI: {uri}"
+                ))]))
+            },
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "failed to open Obsidian: {e}"
+                "error al abrir Obsidian: {e}"
             ))])),
         }
     }

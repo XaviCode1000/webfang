@@ -208,16 +208,30 @@ impl McpHandler {
         )
         .await
         {
-            Ok(results) => {
+            Ok(outcome) => {
+                let failed_count = outcome.failed.len();
+                let outcome_type = if failed_count == 0 {
+                    Outcome::Success
+                } else if outcome.results.is_empty() {
+                    Outcome::Error
+                } else {
+                    Outcome::Partial
+                };
                 self.state.record_scrape(ScrapeEvent {
                     tool: "scrape_batch",
                     domain,
-                    outcome: Outcome::Success,
+                    outcome: outcome_type,
                     count,
                     duration: start.elapsed(),
                 });
-                tracing::info!("batch scrape complete: {} pages", results.len());
-                let content = serde_json::to_string_pretty(&results)
+                tracing::info!(
+                    "batch scrape complete: {} pages, {} failed",
+                    outcome.results.len(),
+                    failed_count
+                );
+                // Serialize the full outcome (results + failed) so the caller
+                // knows exactly which URLs failed and why (issue #591).
+                let content = serde_json::to_string_pretty(&outcome)
                     .unwrap_or_else(|_| "failed to serialize".into());
                 Ok(CallToolResult::success(vec![Content::text(content)]))
             },

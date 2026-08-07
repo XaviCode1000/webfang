@@ -73,17 +73,34 @@ pub fn validate_obsidian_input(vault_name: &str, file_path: &str) -> Result<(), 
     Ok(())
 }
 
-/// Open a note in Obsidian using the URI protocol (fire-and-forget).
+/// Result of dispatching an Obsidian URI to the OS handler (issue #591).
+///
+/// Replaces the bare `()` success value so callers can distinguish between
+/// "command dispatched" and "command failed to start".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchStatus {
+    /// The OS handler command was spawned and exited successfully.
+    /// The URI was delivered to the system's protocol handler.
+    Dispatched,
+    /// The handler command was spawned but exited with a non-zero status.
+    /// Obsidian may not be installed or the URI scheme is unregistered.
+    HandlerFailed,
+}
+
+/// Open a note in Obsidian using the URI protocol.
 ///
 /// Uses `xdg-open` on Linux, `open` on macOS, `start` on Windows.
-/// Non-blocking: spawns the process and returns immediately.
+/// Spawns the handler, waits briefly for exit, and reports whether the
+/// system's protocol handler accepted the URI (issue #591 — honest dispatch).
 ///
 /// # Arguments
 /// - `uri` — The obsidian:// URI to open
 ///
 /// # Returns
-/// `Ok(())` on spawn, `Err(String)` if command fails to start
-pub fn open_in_obsidian(uri: &str) -> Result<(), String> {
+/// `Ok(DispatchStatus::Dispatched)` if the handler exited cleanly,
+/// `Ok(DispatchStatus::HandlerFailed)` if the handler exited non-zero
+/// (Obsidian likely not installed), `Err(String)` if the command failed to start.
+pub fn open_in_obsidian(uri: &str) -> Result<DispatchStatus, String> {
     // The URI is fully percent-encoded by `build_obsidian_uri` (no raw
     // metacharacters or quotes can appear), and on Windows the empty `""`
     // title prevents `start` from consuming the URI as a window title.
@@ -97,13 +114,21 @@ pub fn open_in_obsidian(uri: &str) -> Result<(), String> {
         ("xdg-open", vec![uri])
     };
 
-    // Fire-and-forget: spawn and don't wait
-    std::process::Command::new(cmd)
+    // Spawn and wait for the handler to complete — xdg-open/open/start
+    // exit quickly after dispatching the URI. This gives us honest feedback
+    // about whether the protocol handler accepted the URI (issue #591).
+    let output = std::process::Command::new(cmd)
         .args(&args)
-        .spawn()
-        .map_err(|e| format!("failed to open URI: {e}"))?;
+        .stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("failed to launch Obsidian handler: {e}"))?;
 
-    Ok(())
+    if output.status.success() {
+        Ok(DispatchStatus::Dispatched)
+    } else {
+        Ok(DispatchStatus::HandlerFailed)
+    }
 }
 
 /// Extract vault name from a vault path (last directory component).
@@ -128,8 +153,8 @@ pub fn extract_vault_name(vault_path: &Path) -> String {
 /// - `file_path` — Path to the note relative to the vault root
 ///
 /// # Returns
-/// `Ok(())` if URI was opened (or spawned), `Err(String)` on failure
-pub fn open_note(vault_path: &Path, file_path: &Path) -> Result<(), String> {
+/// `Ok(DispatchStatus)` with the dispatch outcome, `Err(String)` on spawn failure
+pub fn open_note(vault_path: &Path, file_path: &Path) -> Result<DispatchStatus, String> {
     let vault_name = extract_vault_name(vault_path);
 
     // Get relative path from vault root
