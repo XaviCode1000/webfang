@@ -127,7 +127,7 @@ fn load_results_from(
 /// `export_vector` share one code path (keeps the duplication ratchet quiet
 /// and the contract in one place — issue #601).
 fn sanitized_filename_param(raw: Option<&str>) -> Result<SanitizedFilename, McpError> {
-    SanitizedFilename::try_from(raw.unwrap_or("export")).map_err(|_| {
+    std::str::FromStr::from_str(raw.unwrap_or("export")).map_err(|_| {
         McpError::invalid_params(
             "nombre de archivo inválido",
             Some(serde_json::Value::String("filename".to_string())),

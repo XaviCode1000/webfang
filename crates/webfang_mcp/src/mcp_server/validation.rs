@@ -72,6 +72,26 @@ pub fn require_http_url(field: &str, value: &str) -> Result<url::Url, McpError> 
 ///
 /// # Errors
 /// Returns `McpError::invalid_params` for empty, oversize, absolute, or
+/// Shared backstop: reject `..` (`ParentDir`) traversal components in `path`.
+///
+/// Every `require_safe_*` path validator calls this so the `..`-rejection
+/// logic and message live in exactly one place (duplication-ratchet quiet).
+fn reject_traversal_components(field: &str, path: &Path) -> Result<(), McpError> {
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(invalid_params(
+            field,
+            "must not contain '..' traversal components",
+        ));
+    }
+    Ok(())
+}
+
+/// Validate that `value` is a safe filesystem path: non-empty, ≤
+/// [`MAX_PATH_LEN`], relative (no leading `/`, no Windows drive letter), and
+/// free of `..` traversal components.
+///
+/// # Errors
+/// Returns `McpError::invalid_params` for empty, oversize, absolute, or
 /// `..`-traversal paths.
 pub fn require_safe_path(field: &str, value: &str) -> Result<PathBuf, McpError> {
     if value.is_empty() {
@@ -105,12 +125,7 @@ pub fn require_safe_path(field: &str, value: &str) -> Result<PathBuf, McpError> 
             "must be a relative path (no leading '/' or Windows drive letter)",
         ));
     }
-    if path.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err(invalid_params(
-            field,
-            "must not contain '..' traversal components",
-        ));
-    }
+    reject_traversal_components(field, path)?;
     Ok(path.to_path_buf())
 }
 
@@ -149,12 +164,7 @@ pub fn require_safe_path_allow_absolute(field: &str, value: &str) -> Result<Path
     let path = Path::new(value);
     // Absolute paths are intentionally allowed — Obsidian vaults live at
     // user-supplied absolute locations (issue #590, bug #8).
-    if path.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err(invalid_params(
-            field,
-            "must not contain '..' traversal components",
-        ));
-    }
+    reject_traversal_components(field, path)?;
     Ok(path.to_path_buf())
 }
 
@@ -369,14 +379,11 @@ pub fn require_safe_filename(field: &str, value: &str) -> Result<(), McpError> {
 /// A filename that is safe to join onto a base directory — guaranteed by
 /// construction (issue #601).
 ///
-/// A value of this type can ONLY be produced by [`SanitizedFilename::try_from`]
-/// (or [`std::str::FromStr`]), which rejects anything that is not a single flat
-/// [`Component::Normal`]. Handlers must thread this type across layers instead
-/// of a raw `String`, so an unvalidated `..` can never reach `std::fs`.
-///
-/// This makes the "invalid state unrepresentable": the only way to obtain a
-/// `SanitizedFilename` is through validation, and the validation is exhaustive
-/// at the boundary. There is no `unsafe` escape hatch.
+/// The only way to build one is [`std::str::FromStr`], which rejects anything
+/// that is not a single flat [`Component::Normal`]. Handlers thread this type
+/// across layers instead of a raw `String`, so an unvalidated `..` can never
+/// reach `std::fs`. Invalid state is unrepresentable: validation is exhaustive
+/// at the boundary, with no `unsafe` escape hatch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SanitizedFilename(String);
 
@@ -387,25 +394,11 @@ impl SanitizedFilename {
     }
 }
 
-impl std::fmt::Display for SanitizedFilename {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
 impl std::str::FromStr for SanitizedFilename {
     type Err = McpError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         require_safe_filename("filename", s).map(|()| SanitizedFilename(s.to_string()))
-    }
-}
-
-impl TryFrom<&str> for SanitizedFilename {
-    type Error = McpError;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        std::str::FromStr::from_str(value)
     }
 }
 
