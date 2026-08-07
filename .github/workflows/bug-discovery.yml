@@ -85,9 +85,7 @@ jobs:
         # env-dependent, and network-requiring tests.
         run: |
           cargo nextest run --workspace --all-features --run-ignored only --no-fail-fast \
-            --skip 'session_pool' \
-            --skip 'vault_detector' \
-            --skip 'cli_binary_test' \
+            -E 'not(test(/session_pool/) | test(/vault_detector/) | test(/cli_binary_test/))' \
             --test-threads 2
       - name: Summary
         if: always()
