@@ -387,9 +387,13 @@ async fn export_file_rejects_output_dir_traversal() {
     );
 }
 
-/// `export_file` rejects an absolute `output_dir`.
+/// `export_file` accepts an absolute `output_dir` (issue #600 fix).
+///
+/// Before the fix `require_safe_path` forced relative-only paths and a
+/// user-supplied absolute directory yielded a hard `-32602`. Absolute paths
+/// are now accepted (traversal is still rejected elsewhere).
 #[tokio::test]
-async fn export_file_rejects_absolute_output_dir() {
+async fn export_file_accepts_absolute_output_dir() {
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
@@ -410,8 +414,13 @@ async fn export_file_rejects_absolute_output_dir() {
 
     assert_eq!(
         error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "absolute output_dir must be rejected with -32602, got: {resp}"
+        None,
+        "absolute output_dir must NOT be rejected with -32602, got: {resp}"
+    );
+    let result = resp.get("result").unwrap_or(&Value::Null);
+    assert!(
+        !is_tool_error(result),
+        "absolute output_dir export must succeed, got: {resp}"
     );
 }
 

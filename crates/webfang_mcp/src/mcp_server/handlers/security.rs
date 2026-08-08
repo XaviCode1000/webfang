@@ -328,6 +328,56 @@ mod tests {
     }
 
     // ========================================================================
+    // ISSUE #599 — REQ-WAF-09 regression: Fingerprint (T2) NEVER blocks without
+    // a correlated WAF status (403/429/503/520-529), even in degraded mode and
+    // at status 200. The report's literal body
+    // "<html><body>Checking your browser before accessing. Powered by Cloudflare
+    // Ray ID: abc</body></html>" contains the Challenge-tier marker
+    // "checking your browser" (T1), which is an *intentional* block-at-any-status
+    // signal (a real Cloudflare IUAM interstitial). Issue #599 mis-classifies
+    // that as a fingerprint false-positive; the engine is correct. These tests (two regression guards)
+    // pin the genuine REQ-WAF-09 contract for T2 evidence so a future change
+    // cannot regress into mere-presence blocking.
+    // ========================================================================
+
+    #[test]
+    fn issue_599_fingerprint_body_degraded_never_blocks() {
+        // DEGRADED (no status/context): a body mentioning a WAF vendor without a
+        // correlated WAF status must NOT block (REQ-WAF-09). Here the text is a
+        // benign "Powered by Cloudflare Ray ID" mention; even if a T2 fingerprint
+        // matched, degraded mode never blocks on mere presence.
+        let verdict = verify_waf_verdict(
+            "<html><body>Powered by Cloudflare Ray ID: abc123</body></html>",
+            None,
+            None,
+            Default::default(),
+        );
+        assert!(
+            !verdict.is_blocked,
+            "vendor mention must not block in degraded mode"
+        );
+    }
+
+    #[test]
+    fn issue_599_challenge_body_blocks_at_200_by_design() {
+        // Documents the intentional contract: a genuine Challenge (T1) marker
+        // such as Cloudflare's "Checking your browser before accessing" IS a
+        // block at ANY status, including 200. This is why the issue #599 literal
+        // body blocks — it is a real interstitial, not a fingerprint false
+        // positive. Kept as a regression guard so the behaviour is explicit.
+        let verdict = verify_waf_verdict(
+            "Checking your browser before accessing. Powered by Cloudflare Ray ID: abc",
+            Some(200),
+            Some("text/html".to_string()),
+            Default::default(),
+        );
+        assert!(
+            verdict.is_blocked,
+            "T1 challenge must block at 200 (by design, not a bug)"
+        );
+    }
+
+    // ========================================================================
     // get_scrape_metrics — render_metrics honest rendering (REQ-04/05/10)
     // ========================================================================
 

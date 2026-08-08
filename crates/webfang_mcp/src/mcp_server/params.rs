@@ -415,11 +415,12 @@ pub struct ExportFileParams {
 
 impl ExportFileParams {
     /// # Errors
-    /// Returns `McpError::invalid_params` if `output_dir` is not a safe
-    /// relative path, `filename` is empty or too long, `format` is not one of
-    /// the allowed formats, or `content` exceeds the maximum blob size.
+    /// Returns `McpError::invalid_params` if `output_dir` is not a safe path
+    /// (absolute paths allowed — issue #600), `filename` is empty or too long,
+    /// `format` is not one of the allowed formats, or `content` exceeds the
+    /// maximum blob size.
     pub fn validate(&self) -> Result<(), McpError> {
-        require_safe_path("output_dir", &self.output_dir)?;
+        require_safe_path_allow_absolute("output_dir", &self.output_dir)?;
         require_safe_filename("filename", &self.filename)?;
         require_one_of("format", &self.format, EXPORT_FORMATS)?;
         require_max_len("content", &self.content, MAX_BLOB_LEN)?;
@@ -481,13 +482,13 @@ pub(crate) struct SearchObsidianParams {
 impl SearchObsidianParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `query` is empty or exceeds 1024
-    /// bytes, `vault_path` (when present) is not a safe relative path, or
-    /// `limit` exceeds 1000.
+    /// bytes, `vault_path` (when present) is not a safe path (absolute paths
+    /// allowed — issue #600), or `limit` exceeds 1000.
     pub fn validate(&self) -> Result<(), McpError> {
         require_non_empty("query", &self.query)?;
         require_max_len("query", &self.query, 1024)?;
         if let Some(p) = &self.vault_path {
-            require_safe_path("vault_path", p)?;
+            require_safe_path_allow_absolute("vault_path", p)?;
         }
         if let Some(l) = self.limit {
             require_max_value_u64("limit", l as u64, 1000)?;
@@ -520,12 +521,12 @@ impl DownloadAssetsParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `html` exceeds the maximum blob
     /// size, `base_url` is not a valid http(s) URL, or `output_dir` (when
-    /// present) is not a safe relative path.
+    /// present) is not a safe path (absolute paths allowed — issue #600).
     pub fn validate(&self) -> Result<(), McpError> {
         require_max_len("html", &self.html, MAX_BLOB_LEN)?;
         require_http_url("base_url", &self.base_url)?;
         if let Some(d) = &self.output_dir {
-            require_safe_path("output_dir", d)?;
+            require_safe_path_allow_absolute("output_dir", d)?;
         }
         Ok(())
     }
@@ -606,11 +607,12 @@ pub(crate) struct ExportJsonlParams {
 impl ExportJsonlParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `output_dir` (when present) is
-    /// not a safe relative path or `filename` (when present) is not a single
-    /// flat component (no `..`, `/`, or subdirectory — issue #601).
+    /// not a safe path (absolute paths allowed — issue #600) or `filename`
+    /// (when present) is not a single flat component (no `..`, `/`, or
+    /// subdirectory — issue #601).
     pub fn validate(&self) -> Result<(), McpError> {
         if let Some(d) = &self.output_dir {
-            require_safe_path("output_dir", d)?;
+            require_safe_path_allow_absolute("output_dir", d)?;
         }
         if let Some(f) = &self.filename {
             require_safe_filename("filename", f)?;
@@ -631,11 +633,12 @@ pub(crate) struct ExportVectorParams {
 impl ExportVectorParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `output_dir` (when present) is
-    /// not a safe relative path or `filename` (when present) is not a single
-    /// flat component (no `..`, `/`, or subdirectory — issue #601).
+    /// not a safe path (absolute paths allowed — issue #600) or `filename`
+    /// (when present) is not a single flat component (no `..`, `/`, or
+    /// subdirectory — issue #601).
     pub fn validate(&self) -> Result<(), McpError> {
         if let Some(d) = &self.output_dir {
-            require_safe_path("output_dir", d)?;
+            require_safe_path_allow_absolute("output_dir", d)?;
         }
         if let Some(f) = &self.filename {
             require_safe_filename("filename", f)?;
@@ -703,5 +706,69 @@ impl VerifyWafIntegrityParams {
             require_range_u64("status", u64::from(s), 100, 599)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // ISSUE #600 — absolute paths MUST be accepted for output_dir / vault_path
+    // across every affected tool (these structs are `pub(crate)`, so the
+    // contract is exercised here rather than from an external test crate).
+    // `..` traversal stays rejected. The shared `require_safe_path_allow_absolute`
+    // helper is already covered in `validation::tests`; these pin the per-struct
+    // `validate()` wiring without duplicating the helper's assertion body.
+    // ========================================================================
+
+    const ABS_DIR: &str = "/tmp/webfang_verify";
+
+    /// Exercise every `output_dir`/`vault_path` param that was switched to
+    /// `require_safe_path_allow_absolute` (issue #600) and assert absolute
+    /// paths are accepted.
+    #[test]
+    fn issue_600_absolute_paths_accepted() {
+        let jsonl = ExportJsonlParams {
+            output_dir: Some(ABS_DIR.to_string()),
+            filename: Some("out".to_string()),
+        };
+        let vector = ExportVectorParams {
+            output_dir: Some(ABS_DIR.to_string()),
+            filename: Some("out".to_string()),
+        };
+        let assets = DownloadAssetsParams {
+            html: "<html></html>".to_string(),
+            base_url: "https://example.com".to_string(),
+            images: Some(true),
+            documents: Some(false),
+            output_dir: Some(ABS_DIR.to_string()),
+        };
+        let obsidian = SearchObsidianParams {
+            query: "hello".to_string(),
+            vault_path: Some("/home/user/vault".to_string()),
+            limit: None,
+        };
+        for (name, params) in [
+            ("export_jsonl", jsonl.validate()),
+            ("export_vector", vector.validate()),
+            ("download_assets", assets.validate()),
+            ("search_obsidian", obsidian.validate()),
+        ] {
+            assert!(params.is_ok(), "{name}: absolute path must be accepted");
+        }
+    }
+
+    /// Traversal must still be rejected even inside an absolute output_dir.
+    #[test]
+    fn issue_600_traversal_still_rejected() {
+        let params = ExportJsonlParams {
+            output_dir: Some("/tmp/webfang_verify/../etc".to_string()),
+            filename: Some("out".to_string()),
+        };
+        assert!(
+            params.validate().is_err(),
+            "traversal must still be rejected"
+        );
     }
 }
