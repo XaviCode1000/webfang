@@ -271,6 +271,7 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
             .ignore_robots(opts.crawl.ignore_robots)
             .use_sitemap(opts.crawl.use_sitemap)
             .timeout_secs(opts.network.timeout_secs)
+            .delay_ms(opts.network.delay_ms)
             .tls_emulation(tls_emulation);
         if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
             crawler_config = crawler_config.sitemap_url(sitemap_url);
@@ -326,6 +327,8 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
         scraper_config.with_asset_exclude_patterns(opts.crawl.exclude_patterns.clone());
     scraper_config = scraper_config.with_asset_naming(parse_asset_naming(&opts.asset_naming));
     scraper_config = scraper_config.with_download_concurrency(opts.download_concurrency);
+    scraper_config = scraper_config.with_max_file_size(opts.network.max_file_size);
+    scraper_config = scraper_config.with_download_timeout(opts.network.download_timeout_secs);
 
     // Create shared Downloader once for connection pooling across all page scrapes.
     let shared_downloader = if scraper_config.has_downloads() {
