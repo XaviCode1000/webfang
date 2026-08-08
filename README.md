@@ -188,14 +188,16 @@ webfang --help
 
 ## MCP Server
 
-The MCP server provides **34 tools** for AI agent integration:
+The MCP server provides **34 tools** for AI agent integration.
+
+> **Note:** the `webfang` CLI does **not** expose a `--mcp` flag (running `webfang --mcp` fails with `error: unexpected argument '--mcp' found`). The MCP server lives in the `webfang_mcp` crate and is started via its examples below.
 
 ```bash
-# stdio mode (for OpenCode, Claude Desktop, Cursor)
-cargo run -p webfang_mcp --example mcp_server --quiet
+# HTTP mode (Streamable HTTP at http://127.0.0.1:8080/mcp)
+cargo run -p webfang_mcp --example mcp_server --features "mcp ai persistence"
 
-# HTTP mode
-cargo run -p webfang_mcp --example mcp_server
+# stdio mode (for OpenCode, Claude Desktop, Cursor; JSON-RPC over stdin/stdout)
+cargo run -p webfang_mcp --example mcp_server_stdio --features "mcp ai persistence"
 ```
 
 | Category | Tools |
