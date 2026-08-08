@@ -5,9 +5,14 @@
 # Developer gets feedback in <30s (toolchain), <60s (fmt), <3min (clippy), <8min (full).
 #
 # Pipeline flow:
-#   toolchain (15s) → fmt (30s) → clippy (2min) → test-core (3min) → test-full (5min)
+#   toolchain (15s) → fmt (30s) → clippy (2min) → test-core (15min) → test-full (20min cold cache)
 #   toolchain also runs dead-test detection (scripts/check_dead_tests.sh)
 #   test-core runs: unit tests (--lib) then integration/behavioral tests (--test '*')
+#   test-full runs: all features enabled (full workspace compile + test, NO AI inference)
+#   test-ai (NON-REQUIRED, parallel after clippy): AI integration tests with ONNX model.
+#     Does NOT block merge — these tests load a 372MB model and run real inference,
+#     which is too slow/flaky for the merge gate. Gated behind clippy to skip the
+#     model download on PRs that already fail the compile gate.
 #   security runs in parallel with tests (no Rust compile)
 #   feature-matrix runs after clippy (cargo-hack --each-feature, catches broken feature combos)
 #   mcp smoke runs after test-full
@@ -241,6 +246,70 @@ jobs:
       - name: Pre-build test binary
         run: cargo build -p webfang_cli --bin webfang --all-features
       - run: cargo nextest run --all-features --test-threads 4 --retries 2
+
+  # ============================================================================
+  # TEST AI (NON-REQUIRED): AI integration tests with ONNX model.
+  #
+  # These tests are #[ignore]'d by design — they load a 372MB ONNX model and run
+  # real inference, which is too slow and flaky for the merge gate. They run in
+  # parallel after clippy (NOT after test-full) so they don't add to the critical
+  # path. Gated behind clippy to avoid wasting the model download on PRs that
+  # already fail compilation.
+  #
+  # Does NOT block merge: the job name ("Tests (AI integration)") is deliberately
+  # distinct from the required check ("Tests (all features)"), so branch protection
+  # won't wait for it.
+  # ============================================================================
+  test-ai:
+    name: Tests (AI integration)
+    needs: [clippy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache ONNX model (Granite-97M)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub/
+          key: onnx-model-${{ runner.os }}-granite-97m-v1
+          restore-keys: |
+            onnx-model-${{ runner.os }}-granite-97m-
+      - name: Download ONNX model (cache miss)
+        run: |
+          set -e
+          MODEL_DIR="$HOME/.cache/huggingface/hub/models--ibm-granite--granite-embedding-97m-multilingual-r2"
+          BLOB_SHA="68e592b160673d30250824c1116bc6ab33f70efb22b97c9e1d7ce1e69c1c9d70"
+          TOKENIZER_BLOB_SHA="4f2842d568e2724370aec203652a42ac783c7937f8347a1a2cc7506d71f1582f"
+          BLOB_FILE="$MODEL_DIR/blobs/$BLOB_SHA"
+          TOKENIZER_BLOB_FILE="$MODEL_DIR/blobs/$TOKENIZER_BLOB_SHA"
+          SNAPSHOT_DIR="$MODEL_DIR/snapshots/835ad14087e140460703cf0fae09f97d469d65c2"
+          SNAPSHOT_FILE="$SNAPSHOT_DIR/onnx/model.onnx"
+          SNAPSHOT_TOKENIZER="$SNAPSHOT_DIR/tokenizer.json"
+          if [ -f "$SNAPSHOT_FILE" ] || [ -L "$SNAPSHOT_FILE" ]; then
+            echo "Model already cached, skipping download"
+            exit 0
+          fi
+          echo "Downloading Granite-97M ONNX model (~372MB)..."
+          mkdir -p "$MODEL_DIR/blobs"
+          mkdir -p "$SNAPSHOT_DIR/onnx"
+          curl -L --fail -o "$BLOB_FILE" \
+            "https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/main/onnx/model.onnx"
+          echo "Verifying model SHA256..."
+          echo "$BLOB_SHA  $BLOB_FILE" | sha256sum --check --status
+          echo "Downloading tokenizer.json..."
+          curl -L --fail -o "$TOKENIZER_BLOB_FILE" \
+            "https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/main/tokenizer.json"
+          echo "Verifying tokenizer SHA256..."
+          echo "$TOKENIZER_BLOB_SHA  $TOKENIZER_BLOB_FILE" | sha256sum --check --status
+          # Create hf_hub cache structure: refs/main + snapshot symlinks
+          mkdir -p "$MODEL_DIR/refs"
+          echo "835ad14087e140460703cf0fae09f97d469d65c2" > "$MODEL_DIR/refs/main"
+          ln -s "../../../blobs/$BLOB_SHA" "$SNAPSHOT_FILE"
+          ln -s "../../blobs/$TOKENIZER_BLOB_SHA" "$SNAPSHOT_TOKENIZER"
+          echo "Model + tokenizer downloaded, verified, and cached"
+          ls -lh "$BLOB_FILE"
       - name: AI integration tests (CLI+AI, MCP+AI, AI crate)
         run: |
           set -e
