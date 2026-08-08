@@ -3161,7 +3161,6 @@ name = "webfang-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
- "tokio",
  "url",
  "webfang_core",
 ]
