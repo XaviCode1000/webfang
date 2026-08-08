@@ -687,7 +687,7 @@ mod tests {
 
     #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
-    async fn test_downloader_precreates_directories() {
+    async fn test_downloader_lazy_directories() {
         let temp_dir = TempDir::new().unwrap();
         let config = DownloadConfig {
             output_dir: temp_dir.path().to_path_buf(),
@@ -696,20 +696,28 @@ mod tests {
             ..Default::default()
         };
 
-        // Create downloader (should pre-create directories)
-        let _downloader = Downloader::new(config).unwrap();
+        // Directories are created lazily on the first actual download (issue
+        // #606): when no assets are downloaded we must not litter the CWD with
+        // empty `output/` + subdir trees.
+        let downloader = Downloader::new(config).unwrap();
 
-        // Verify directories exist
         let images_path = temp_dir.path().join("test_images");
         let docs_path = temp_dir.path().join("test_docs");
 
         assert!(
-            images_path.exists(),
-            "Images directory should be pre-created"
+            !images_path.exists(),
+            "Images directory should not be pre-created"
         );
         assert!(
-            docs_path.exists(),
-            "Documents directory should be pre-created"
+            !docs_path.exists(),
+            "Documents directory should not be pre-created"
+        );
+
+        // A real download creates the subdir on demand via ensure_subdir.
+        downloader.ensure_subdir(&images_path).unwrap();
+        assert!(
+            images_path.exists(),
+            "Images directory should be created lazily on first download"
         );
     }
 
