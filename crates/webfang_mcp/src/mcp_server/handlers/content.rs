@@ -379,17 +379,22 @@ mod tests {
         assert!(text.contains("web"), "tag 'web' must appear: {text}");
     }
 
-    #[tokio::test]
-    async fn generate_rich_metadata_counts_words() {
+    async fn rich_meta(content: &str) -> (McpHandler, TempDir, serde_json::Value) {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .generate_rich_metadata(Parameters(GenerateRichMetadataParams {
-                content: Some("one two three four five".to_string()),
+                content: Some(content.to_string()),
             }))
             .await
             .expect("generate_rich_metadata returns Ok");
         let text = result_text(&res);
         let parsed: serde_json::Value = serde_json::from_str(&text).expect("rich metadata is JSON");
+        (handler, _tmp, parsed)
+    }
+
+    #[tokio::test]
+    async fn generate_rich_metadata_counts_words() {
+        let (_handler, _tmp, parsed) = rich_meta("one two three four five").await;
         assert_eq!(
             parsed.get("word_count").and_then(|v| v.as_u64()),
             Some(5),
@@ -411,17 +416,8 @@ mod tests {
 
     #[tokio::test]
     async fn generate_rich_metadata_detects_spanish() {
-        let (handler, _tmp) = test_handler().await;
-        let res = handler
-            .generate_rich_metadata(Parameters(GenerateRichMetadataParams {
-                content: Some(
-                    "El gato negro duerme tranquilamente en la casa de sus abuelos".to_string(),
-                ),
-            }))
-            .await
-            .expect("generate_rich_metadata returns Ok");
-        let text = result_text(&res);
-        let parsed: serde_json::Value = serde_json::from_str(&text).expect("rich metadata is JSON");
+        let (_handler, _tmp, parsed) =
+            rich_meta("El gato negro duerme tranquilamente en la casa de sus abuelos").await;
         assert_eq!(
             parsed.get("language").and_then(|v| v.as_str()),
             Some("spa"),
@@ -436,15 +432,7 @@ mod tests {
 
     #[tokio::test]
     async fn generate_rich_metadata_empty_reading_time_zero() {
-        let (handler, _tmp) = test_handler().await;
-        let res = handler
-            .generate_rich_metadata(Parameters(GenerateRichMetadataParams {
-                content: Some("".to_string()),
-            }))
-            .await
-            .expect("generate_rich_metadata returns Ok");
-        let text = result_text(&res);
-        let parsed: serde_json::Value = serde_json::from_str(&text).expect("rich metadata is JSON");
+        let (_handler, _tmp, parsed) = rich_meta("").await;
         assert_eq!(
             parsed.get("word_count").and_then(|v| v.as_u64()),
             Some(0),
@@ -459,17 +447,8 @@ mod tests {
 
     #[tokio::test]
     async fn generate_rich_metadata_detects_markdown() {
-        let (handler, _tmp) = test_handler().await;
-        let res = handler
-            .generate_rich_metadata(Parameters(GenerateRichMetadataParams {
-                content: Some(
-                    "# Title\n\nSome **bold** text with [a link](https://example.com).".to_string(),
-                ),
-            }))
-            .await
-            .expect("generate_rich_metadata returns Ok");
-        let text = result_text(&res);
-        let parsed: serde_json::Value = serde_json::from_str(&text).expect("rich metadata is JSON");
+        let (_handler, _tmp, parsed) =
+            rich_meta("# Title\n\nSome **bold** text with [a link](https://example.com).").await;
         assert_eq!(
             parsed.get("content_type").and_then(|v| v.as_str()),
             Some("markdown"),
