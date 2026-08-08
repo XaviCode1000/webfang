@@ -391,6 +391,22 @@ impl McpHandler {
         let port = self.state.container.http_client();
         match port.get(&params.url).await {
             Ok(resp) => {
+                // A non-2xx response (e.g. 404) is a genuine failure for URL
+                // discovery, not an empty link set (issue #606). Surface it as
+                // a tool error rather than a misleading empty `[]`.
+                if !(200..=299).contains(&resp.status) {
+                    self.state.record_scrape(ScrapeEvent {
+                        tool: "discover_urls",
+                        domain: domain_of(&params.url),
+                        outcome: Outcome::Error,
+                        count: 0,
+                        duration: start.elapsed(),
+                    });
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "HTTP error: status {}",
+                        resp.status
+                    ))]));
+                }
                 let html = resp.body;
                 match webfang_core::infrastructure::crawler::extract_links(&html, &params.url) {
                     Ok(links) => {
@@ -810,6 +826,30 @@ mod tests {
             json.get("isError").and_then(|v| v.as_bool()),
             Some(true),
             "http error must map to isError:true, got: {json}"
+        );
+    }
+
+    #[tokio::test]
+    async fn discover_urls_404_is_tool_error() {
+        let (handler, _tmp) = test_handler().await;
+        // Issue #606: a 404 is a genuine fetch failure, not an empty link set.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/missing"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        let res = handler
+            .discover_urls(Parameters(DiscoverUrlsParams {
+                url: format!("{}/missing", server.uri()),
+            }))
+            .await
+            .expect("discover_urls returns Ok on 404");
+        let json = serde_json::to_value(&res).expect("serialize");
+        assert_eq!(
+            json.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "404 must map to isError:true, got: {json}"
         );
     }
 

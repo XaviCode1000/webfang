@@ -18,10 +18,9 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::mcp_server::validation::{
-    require_http_url, require_max_len, require_max_value_u16, require_max_value_u64,
-    require_non_empty, require_one_of, require_range_u64, require_safe_domain,
-    require_safe_filename, require_safe_name, require_safe_path, require_safe_path_allow_absolute,
-    require_safe_seed, MAX_BLOB_LEN,
+    require_http_url, require_max_len, require_max_value_u64, require_non_empty, require_one_of,
+    require_range_u64, require_safe_domain, require_safe_filename, require_safe_name,
+    require_safe_path, require_safe_path_allow_absolute, require_safe_seed, MAX_BLOB_LEN,
 };
 
 const EXPORT_FORMATS: &[&str] = &["jsonl", "vector", "auto"];
@@ -115,7 +114,8 @@ impl ScrapeBatchParams {
 pub struct CrawlSiteParams {
     /// Base URL to crawl
     pub url: String,
-    /// Maximum crawl depth (default: 3)
+    /// Maximum crawl depth (default: 3, hard cap 10)
+    #[schemars(range(min = 1, max = 10))]
     pub max_depth: Option<u8>,
     /// Maximum pages to crawl (default: 100)
     pub max_pages: Option<u32>,
@@ -690,13 +690,17 @@ pub(crate) struct VerifyWafIntegrityParams {
 impl VerifyWafIntegrityParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `html` (when present) exceeds the
-    /// maximum blob size or `status` (when present) exceeds 599.
+    /// maximum blob size or `status` (when present) is not a valid HTTP status
+    /// code in the inclusive range [100,599].
     pub fn validate(&self) -> Result<(), McpError> {
         if let Some(h) = &self.html {
             require_max_len("html", h, MAX_BLOB_LEN)?;
         }
         if let Some(s) = self.status {
-            require_max_value_u16("status", s, 599)?;
+            // HTTP status codes are in [100,599]; 0 and out-of-range values are
+            // not valid status codes (issue #606). Reject at the param layer so
+            // the inspector never receives a meaningless status.
+            require_range_u64("status", u64::from(s), 100, 599)?;
         }
         Ok(())
     }

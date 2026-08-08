@@ -135,12 +135,9 @@ impl Downloader {
     /// Returns `ScraperError::Io` if directory creation fails.
     /// Returns `ScraperError::Config` if HTTP client build fails.
     pub fn new(config: DownloadConfig) -> Result<Self> {
-        // Pre-create directories ONCE (init-once pattern)
-        let images_path = config.output_dir.join(&config.images_dir);
-        let documents_path = config.output_dir.join(&config.documents_dir);
-
-        std::fs::create_dir_all(&images_path).map_err(ScraperError::Io)?;
-        std::fs::create_dir_all(&documents_path).map_err(ScraperError::Io)?;
+        // Directories are created lazily on the first actual download (issue
+        // #606): when no assets are downloaded we must not litter the CWD with
+        // empty `output/` + subdir trees.
 
         let client = Client::builder()
             .emulation(config.h2_profile)
@@ -150,6 +147,40 @@ impl Downloader {
             .map_err(|e| ScraperError::Config(format!("failed to build http client: {e}")))?;
 
         Ok(Self { client, config })
+    }
+
+    /// Lazily create a download subdir only when a real asset is about to be
+    /// persisted (issue #606). Avoids littering the CWD with empty dirs when
+    /// no assets are downloaded.
+    ///
+    /// # Errors
+    /// Returns `ScraperError::Io` if directory creation fails.
+    fn ensure_subdir(&self, path: &std::path::Path) -> Result<()> {
+        std::fs::create_dir_all(path).map_err(ScraperError::Io)
+    }
+
+    /// Disambiguate a filename that already exists on disk by appending a short
+    /// content-hash suffix (preserving the extension).
+    fn resolve_collision(
+        &self,
+        subdir: &std::path::Path,
+        filename: &str,
+        content_hash: &str,
+    ) -> std::path::PathBuf {
+        let hash_suffix = &content_hash[..8];
+        let stem = std::path::Path::new(filename)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("file");
+        let ext = std::path::Path::new(filename)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if ext.is_empty() {
+            subdir.join(format!("{stem}-{hash_suffix}"))
+        } else {
+            subdir.join(format!("{stem}-{hash_suffix}.{ext}"))
+        }
     }
 
     /// Download a single asset with true streaming to disk.
@@ -259,6 +290,9 @@ impl Downloader {
         };
 
         let subdir_path = self.config.output_dir.join(subdir);
+        // Lazily create the target subdir only when we are about to persist a
+        // real asset (issue #606) — not at `Downloader::new` time.
+        self.ensure_subdir(&subdir_path)?;
 
         // Create temp file with UUID (atomic operation pattern)
         let temp_path = subdir_path.join(format!("{}.tmp", Uuid::new_v4()));
@@ -307,24 +341,10 @@ impl Downloader {
             content_disposition_filename.as_deref(),
         );
         let mut final_path = subdir_path.join(&filename);
-
         // Slug/ContentDisposition naming can collide when different URLs produce
-        // the same filename. Append a short hash suffix to disambiguate.
+        // the same filename. Disambiguate with a short hash suffix.
         if final_path.exists() {
-            let hash_suffix = &content_hash[..8];
-            let stem = final_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("file");
-            let ext = final_path
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
-            if ext.is_empty() {
-                final_path = subdir_path.join(format!("{stem}-{hash_suffix}"));
-            } else {
-                final_path = subdir_path.join(format!("{stem}-{hash_suffix}.{ext}"));
-            }
+            final_path = self.resolve_collision(&subdir_path, &filename, &content_hash);
         }
 
         // Atomic rename
@@ -667,7 +687,7 @@ mod tests {
 
     #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
-    async fn test_downloader_precreates_directories() {
+    async fn test_downloader_lazy_directories() {
         let temp_dir = TempDir::new().unwrap();
         let config = DownloadConfig {
             output_dir: temp_dir.path().to_path_buf(),
@@ -676,20 +696,28 @@ mod tests {
             ..Default::default()
         };
 
-        // Create downloader (should pre-create directories)
-        let _downloader = Downloader::new(config).unwrap();
+        // Directories are created lazily on the first actual download (issue
+        // #606): when no assets are downloaded we must not litter the CWD with
+        // empty `output/` + subdir trees.
+        let downloader = Downloader::new(config).unwrap();
 
-        // Verify directories exist
         let images_path = temp_dir.path().join("test_images");
         let docs_path = temp_dir.path().join("test_docs");
 
         assert!(
-            images_path.exists(),
-            "Images directory should be pre-created"
+            !images_path.exists(),
+            "Images directory should not be pre-created"
         );
         assert!(
-            docs_path.exists(),
-            "Documents directory should be pre-created"
+            !docs_path.exists(),
+            "Documents directory should not be pre-created"
+        );
+
+        // A real download creates the subdir on demand via ensure_subdir.
+        downloader.ensure_subdir(&images_path).unwrap();
+        assert!(
+            images_path.exists(),
+            "Images directory should be created lazily on first download"
         );
     }
 

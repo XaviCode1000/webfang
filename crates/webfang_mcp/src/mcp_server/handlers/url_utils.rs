@@ -34,9 +34,23 @@ impl McpHandler {
         // so callers can reason about it programmatically (issue #590, bug #7).
         match url::Url::parse(&params.url) {
             Ok(u) => {
+                // Scheme allow-list (#606): only http/https are valid targets.
+                // Non-http schemes (ftp://, file://, gopher://, ...) and hosts
+                // that cannot be reached are rejected as `valid:false`.
+                let scheme = u.scheme();
+                if !matches!(scheme, "http" | "https") {
+                    let info = serde_json::json!({
+                        "valid": false,
+                        "reason": format!("unsupported scheme '{scheme}' (only http and https are allowed)"),
+                    });
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        serde_json::to_string_pretty(&info)
+                            .expect("serializing JSON to a string cannot fail"),
+                    )]));
+                }
                 let info = serde_json::json!({
                     "valid": true,
-                    "scheme": u.scheme(),
+                    "scheme": scheme,
                     "host": u.host_str().unwrap_or(""),
                     "port": u.port(),
                     "path": u.path(),
@@ -72,7 +86,11 @@ impl McpHandler {
 
         match url::Url::parse(&params.url) {
             Ok(u) => {
-                let domain = u.host_str().unwrap_or("");
+                // Strip the trailing root-label dot of a fully-qualified
+                // domain (e.g. `books.toscrape.com.` → `books.toscrape.com`),
+                // issue #606.
+                let host = u.host_str().unwrap_or("");
+                let domain = host.strip_suffix('.').unwrap_or(host);
                 Ok(CallToolResult::success(vec![Content::text(domain)]))
             },
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
@@ -354,6 +372,28 @@ mod handler_tests {
     }
 
     #[tokio::test]
+    async fn validate_url_rejects_non_http_scheme() {
+        let (handler, _tmp) = test_handler().await;
+        // Issue #606: a non-http(s) scheme must be reported valid:false, not
+        // accepted as valid:true.
+        let res = handler
+            .validate_url(Parameters(ValidateUrlParams {
+                url: "ftp://example.com/file".to_string(),
+            }))
+            .await
+            .expect("validate_url returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("\"valid\": false"),
+            "ftp scheme must be valid:false, got: {text}"
+        );
+        assert!(
+            text.contains("scheme"),
+            "reason must mention the scheme, got: {text}"
+        );
+    }
+
+    #[tokio::test]
     async fn extract_domain_valid() {
         let (handler, _tmp) = test_handler().await;
         let res = handler
@@ -364,6 +404,21 @@ mod handler_tests {
             .expect("extract_domain returns Ok");
         let text = result_text(&res);
         assert_eq!(text, "www.example.com", "domain extracted: {text}");
+    }
+
+    #[tokio::test]
+    async fn extract_domain_strips_trailing_dot() {
+        let (handler, _tmp) = test_handler().await;
+        // Issue #606: a fully-qualified domain with a trailing root-label dot
+        // must be normalized to strip the dot.
+        let res = handler
+            .extract_domain(Parameters(ExtractDomainParams {
+                url: "https://books.toscrape.com./path".to_string(),
+            }))
+            .await
+            .expect("extract_domain returns Ok");
+        let text = result_text(&res);
+        assert_eq!(text, "books.toscrape.com", "trailing dot stripped: {text}");
     }
 
     #[tokio::test]

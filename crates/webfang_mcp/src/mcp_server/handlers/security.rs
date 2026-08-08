@@ -214,6 +214,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn detect_waf_provider_hcaptcha_response_is_detected() {
+        // Issue #606: the hCaptcha response marker must be detected as a
+        // Challenge-tier provider (degraded mode blocks on it).
+        let html = r#"<input type="hidden" name="h-captcha-response" value="abc">"#;
+        assert_eq!(detect_waf_provider(html), Some("hCaptcha"));
+    }
+
+    // ========================================================================
+    // verify_waf_integrity — status range validation (issue #606)
+    // ========================================================================
+
+    #[test]
+    fn verify_waf_status_zero_is_rejected() {
+        let params = VerifyWafIntegrityParams {
+            html: Some("<html>clean</html>".to_string()),
+            headers: None,
+            status: Some(0),
+            content_type: None,
+        };
+        assert!(
+            params.validate().is_err(),
+            "status 0 must be rejected (not a valid HTTP status)"
+        );
+    }
+
+    #[test]
+    fn verify_waf_status_out_of_range_is_rejected() {
+        let params = VerifyWafIntegrityParams {
+            html: Some("<html>clean</html>".to_string()),
+            headers: None,
+            status: Some(600),
+            content_type: None,
+        };
+        assert!(
+            params.validate().is_err(),
+            "status 600 must be rejected (out of valid range)"
+        );
+    }
+
+    #[test]
+    fn verify_waf_status_valid_range_is_accepted() {
+        for s in [100u16, 200, 403, 599] {
+            let params = VerifyWafIntegrityParams {
+                html: Some("<html>clean</html>".to_string()),
+                headers: None,
+                status: Some(s),
+                content_type: None,
+            };
+            assert!(
+                params.validate().is_ok(),
+                "status {s} must be accepted within [100,599]"
+            );
+        }
+    }
+
     // ========================================================================
     // TASK-12 — verify_waf_integrity additive context (REQ-WAF-09)
     // ========================================================================

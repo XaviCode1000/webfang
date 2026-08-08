@@ -279,15 +279,22 @@ impl BackgroundWriter {
     }
 
     async fn run(mut self) {
-        let mut file = match self.open_log() {
-            Ok(f) => f,
-            Err(()) => return,
-        };
+        // The log file is opened lazily on the first actual write (issue #606):
+        // when nothing is ever persisted we must not litter the CWD with an
+        // empty `output/` directory and a 0-byte `crawl_results.bin`.
+        let mut file: Option<std::fs::File> = None;
 
         while let Some(cmd) = self.rx.recv().await {
             match cmd {
                 WriteCommand::Append { url, payload } => {
-                    self.append_record(&mut file, url, &payload);
+                    let file = match &mut file {
+                        Some(f) => f,
+                        None => match self.open_log() {
+                            Ok(f) => file.insert(f),
+                            Err(()) => return,
+                        },
+                    };
+                    self.append_record(file, url, &payload);
                 },
             }
         }
