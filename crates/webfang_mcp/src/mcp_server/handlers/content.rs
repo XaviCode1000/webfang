@@ -160,12 +160,21 @@ impl McpHandler {
 
         let word_count =
             webfang_core::infrastructure::obsidian::metadata::compute_word_count(content);
-        let reading_time =
-            webfang_core::infrastructure::obsidian::metadata::compute_reading_time(word_count);
+        // Empty content has no reading time; domain helper floors to 1 minute.
+        let reading_time = if word_count == 0 {
+            0
+        } else {
+            webfang_core::infrastructure::obsidian::metadata::compute_reading_time(word_count)
+        };
+        let language = webfang_core::infrastructure::obsidian::metadata::detect_language(content);
+        let content_type =
+            webfang_core::infrastructure::obsidian::metadata::detect_content_type_text(content);
 
         let meta = serde_json::json!({
             "word_count": word_count,
             "reading_time_minutes": reading_time,
+            "language": language,
+            "content_type": content_type,
         });
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&meta).expect("serializing JSON to a string cannot fail"),
@@ -370,17 +379,22 @@ mod tests {
         assert!(text.contains("web"), "tag 'web' must appear: {text}");
     }
 
-    #[tokio::test]
-    async fn generate_rich_metadata_counts_words() {
+    async fn rich_meta(content: &str) -> (McpHandler, TempDir, serde_json::Value) {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .generate_rich_metadata(Parameters(GenerateRichMetadataParams {
-                content: Some("one two three four five".to_string()),
+                content: Some(content.to_string()),
             }))
             .await
             .expect("generate_rich_metadata returns Ok");
         let text = result_text(&res);
         let parsed: serde_json::Value = serde_json::from_str(&text).expect("rich metadata is JSON");
+        (handler, _tmp, parsed)
+    }
+
+    #[tokio::test]
+    async fn generate_rich_metadata_counts_words() {
+        let (_handler, _tmp, parsed) = rich_meta("one two three four five").await;
         assert_eq!(
             parsed.get("word_count").and_then(|v| v.as_u64()),
             Some(5),
@@ -389,6 +403,56 @@ mod tests {
         assert!(
             parsed.get("reading_time_minutes").is_some(),
             "reading_time must be present: {parsed}"
+        );
+        assert!(
+            parsed.get("language").is_some(),
+            "language must be present: {parsed}"
+        );
+        assert!(
+            parsed.get("content_type").is_some(),
+            "content_type must be present: {parsed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_rich_metadata_detects_spanish() {
+        let (_handler, _tmp, parsed) =
+            rich_meta("El gato negro duerme tranquilamente en la casa de sus abuelos").await;
+        assert_eq!(
+            parsed.get("language").and_then(|v| v.as_str()),
+            Some("spa"),
+            "Spanish must be detected: {parsed}"
+        );
+        assert_eq!(
+            parsed.get("content_type").and_then(|v| v.as_str()),
+            Some("text"),
+            "plain text must be classified: {parsed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_rich_metadata_empty_reading_time_zero() {
+        let (_handler, _tmp, parsed) = rich_meta("").await;
+        assert_eq!(
+            parsed.get("word_count").and_then(|v| v.as_u64()),
+            Some(0),
+            "word_count must be 0: {parsed}"
+        );
+        assert_eq!(
+            parsed.get("reading_time_minutes").and_then(|v| v.as_u64()),
+            Some(0),
+            "empty content must have reading_time 0: {parsed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_rich_metadata_detects_markdown() {
+        let (_handler, _tmp, parsed) =
+            rich_meta("# Title\n\nSome **bold** text with [a link](https://example.com).").await;
+        assert_eq!(
+            parsed.get("content_type").and_then(|v| v.as_str()),
+            Some("markdown"),
+            "markdown must be classified: {parsed}"
         );
     }
 }

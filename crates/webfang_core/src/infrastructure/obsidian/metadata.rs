@@ -96,12 +96,44 @@ pub fn compute_reading_time(word_count: usize) -> usize {
     (word_count as f64 / 200.0).ceil() as usize
 }
 
-/// Detect the language of text using whatlang.
+/// Detect the language of text using a lightweight heuristic with a whatlang
+/// fallback.
 ///
-/// Only returns a language if detection is reliable.
-/// Caps input at ~1024 bytes for performance (always on char boundary).
+/// The heuristic is deterministic and dependency-light: it catches the common
+/// Spanish/English case via diacritics and stopwords, then defers to whatlang
+/// for everything else (only when detection is reliable).
 pub fn detect_language(content: &str) -> Option<String> {
-    // Limit to first ~1024 bytes for performance, always on char boundary
+    let lower = content.to_lowercase();
+
+    // Spanish diacritics are a strong, unambiguous signal.
+    if content.contains(['á', 'é', 'í', 'ó', 'ú', 'ñ', 'ü']) {
+        return Some("spa".to_string());
+    }
+
+    // Common Spanish stopwords.
+    const ES_STOPWORDS: &[&str] = &[
+        "el", "la", "los", "las", "un", "una", "unos", "unas", "de", "del", "en", "y", "es", "que",
+        "por", "con", "para", "su", "se", "lo", "como", "pero", "sus", "al", "aquí", "más", "muy",
+        "este", "esta", "fue", "son", "gato", "casa", "hola",
+    ];
+    const EN_STOPWORDS: &[&str] = &[
+        "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "for", "with", "is", "are",
+        "was", "were", "this", "that", "it", "as", "at", "by", "from", "your", "we", "you", "they",
+        "he", "she", "hello",
+    ];
+
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    let es_hits = words.iter().filter(|w| ES_STOPWORDS.contains(w)).count();
+    let en_hits = words.iter().filter(|w| EN_STOPWORDS.contains(w)).count();
+    if es_hits > 0 && es_hits >= en_hits {
+        return Some("spa".to_string());
+    }
+    if en_hits > 0 {
+        return Some("eng".to_string());
+    }
+
+    // Fallback to whatlang for other languages (reliable detections only).
+    // Limit to first ~1024 bytes for performance, always on char boundary.
     let sample = if content.len() > 1024 {
         let end = content
             .char_indices()
@@ -117,6 +149,25 @@ pub fn detect_language(content: &str) -> Option<String> {
     whatlang::detect(sample)
         .filter(|info| info.is_reliable())
         .map(|info| info.lang().code().to_string())
+}
+
+/// Classify content type from raw text alone (no URL), used by the
+/// `generate_rich_metadata` MCP tool.
+///
+/// Heuristic: HTML if it contains tags, Markdown if it contains markdown
+/// structures, otherwise plain `text`. This is intentionally lightweight and
+/// deterministic for tests.
+pub fn detect_content_type_text(content: &str) -> String {
+    if content.contains('<') && (content.contains("</") || content.contains("/>")) {
+        return "html".to_string();
+    }
+    let md_markers = [
+        "```", "# ", "## ", "### ", "- ", "* ", "> ", "[", "](", "---",
+    ];
+    if md_markers.iter().any(|m| content.contains(m)) {
+        return "markdown".to_string();
+    }
+    "text".to_string()
 }
 
 /// Detect content type from URL patterns and content heuristics.
