@@ -117,6 +117,14 @@ impl From<&CrawlError> for CrawlErrorCategory {
                 }
             },
             CrawlError::Timeout => Self::Timeout,
+            CrawlError::Network {
+                status_code: Some(status),
+                ..
+            } if matches!(*status, 401 | 403) => Self::Waf,
+            CrawlError::Network {
+                status_code: Some(429),
+                ..
+            } => Self::RateLimit,
             CrawlError::Network { .. } | CrawlError::Connection(..) | CrawlError::Download(..) => {
                 Self::Network
             },
@@ -220,6 +228,53 @@ mod tests {
             "reset",
         )));
         assert_eq!(CrawlErrorCategory::from(&err), CrawlErrorCategory::Network);
+    }
+
+    #[test]
+    fn categorize_network_with_waf_status_as_waf() {
+        // Issue #629: CrawlError::Network carrying a 401/403 status code (from
+        // http_client non-success responses) must promote to Waf, not Network.
+        for status in [401u16, 403] {
+            let err = CrawlError::Network {
+                message: format!("HTTP error: {status}"),
+                status_code: Some(status),
+            };
+            assert_eq!(
+                CrawlErrorCategory::from(&err),
+                CrawlErrorCategory::Waf,
+                "Network with status {status} must classify as waf"
+            );
+        }
+    }
+
+    #[test]
+    fn categorize_network_with_429_as_rate_limit() {
+        // Issue #629: CrawlError::Network carrying a 429 must promote to RateLimit.
+        let err = CrawlError::Network {
+            message: "HTTP error: 429".into(),
+            status_code: Some(429),
+        };
+        assert_eq!(
+            CrawlErrorCategory::from(&err),
+            CrawlErrorCategory::RateLimit,
+            "Network with status 429 must classify as rate_limit"
+        );
+    }
+
+    #[test]
+    fn categorize_network_with_generic_http_status_as_network() {
+        // Non-WAF status codes in Network variant stay as Network.
+        for status in [500u16, 502, 503] {
+            let err = CrawlError::Network {
+                message: format!("HTTP error: {status}"),
+                status_code: Some(status),
+            };
+            assert_eq!(
+                CrawlErrorCategory::from(&err),
+                CrawlErrorCategory::Network,
+                "Network with status {status} must stay as network"
+            );
+        }
     }
 
     #[test]
