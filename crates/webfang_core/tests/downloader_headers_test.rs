@@ -30,8 +30,16 @@ async fn wreq_downloader_populates_response_headers() {
         .await;
 
     let downloader: Box<dyn Downloader> = Box::new(
-        WreqDownloader::new(10, 5, HttpClientConfig::default().tls_emulation, None)
-            .expect("downloader builds"),
+        WreqDownloader::new(
+            10,
+            5,
+            HttpClientConfig::default().tls_emulation,
+            None,
+            3,
+            1000,
+            10000,
+        )
+        .expect("downloader builds"),
     );
     let url = Url::parse(&server.uri()).expect("wiremock URI is valid");
 
@@ -74,8 +82,16 @@ async fn wreq_downloader_headers_keys_are_lowercased() {
         .await;
 
     let downloader: Box<dyn Downloader> = Box::new(
-        WreqDownloader::new(10, 5, HttpClientConfig::default().tls_emulation, None)
-            .expect("downloader builds"),
+        WreqDownloader::new(
+            10,
+            5,
+            HttpClientConfig::default().tls_emulation,
+            None,
+            3,
+            1000,
+            10000,
+        )
+        .expect("downloader builds"),
     );
     let url = Url::parse(&server.uri()).expect("wiremock URI is valid");
 

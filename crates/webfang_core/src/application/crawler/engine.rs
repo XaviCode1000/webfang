@@ -232,6 +232,9 @@ impl Engine {
         strategy: JsStrategy,
         tls_emulation: Profile,
         ignore_waf: bool,
+        max_retries: u32,
+        backoff_base_ms: u64,
+        backoff_max_ms: u64,
     ) -> Result<Self, DownloadError> {
         let timeout = self.config.timeout_secs;
         let router = build_fetch_router(
@@ -246,6 +249,9 @@ impl Engine {
             // #509: the Full strategy's governor shares the engine token so
             // permit waits abort on shutdown.
             self.cancel_token.clone(),
+            max_retries,
+            backoff_base_ms,
+            backoff_max_ms,
         )?;
         self.js_strategy = strategy;
         self.fetch_router = Some(router);
@@ -841,6 +847,12 @@ pub struct EngineOptions {
     /// Defaults to `false`. When `true`, a genuine T1 challenge is treated per
     /// normal spa/static logic instead of aborting the fetch.
     pub ignore_waf: bool,
+    /// Maximum number of retry attempts for failed fetches.
+    pub max_retries: u32,
+    /// Base delay for exponential backoff (ms).
+    pub backoff_base_ms: u64,
+    /// Maximum delay for exponential backoff (ms).
+    pub backoff_max_ms: u64,
 }
 
 impl Default for EngineOptions {
@@ -853,6 +865,9 @@ impl Default for EngineOptions {
             autoscale_enabled: false,
             tls_emulation: Profile::Chrome145,
             ignore_waf: false,
+            max_retries: 3,
+            backoff_base_ms: 1000,
+            backoff_max_ms: 10000,
         }
     }
 }
@@ -1039,6 +1054,9 @@ async fn crawl_site_with_options_inner(
         options.js_strategy,
         options.tls_emulation,
         options.ignore_waf,
+        options.max_retries,
+        options.backoff_base_ms,
+        options.backoff_max_ms,
     )?;
 
     // Apply autoscale if enabled

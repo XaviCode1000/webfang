@@ -62,6 +62,7 @@ pub enum FetchRouter {
 /// # Errors
 ///
 /// Returns [`DownloadError::Internal`] if the wreq client cannot be built.
+#[allow(clippy::too_many_arguments)]
 pub fn build_fetch_router(
     strategy: &JsStrategy,
     timeout_secs: u64,
@@ -70,6 +71,9 @@ pub fn build_fetch_router(
     ignore_waf: bool,
     user_agent: Option<String>,
     cancel_token: CancellationToken,
+    max_retries: u32,
+    backoff_base_ms: u64,
+    backoff_max_ms: u64,
 ) -> Result<FetchRouter, DownloadError> {
     let connect_timeout = timeout_secs.min(10);
     Ok(match strategy {
@@ -78,9 +82,20 @@ pub fn build_fetch_router(
             connect_timeout,
             tls_emulation,
             user_agent,
+            max_retries,
+            backoff_base_ms,
+            backoff_max_ms,
         )?)),
         JsStrategy::Hybrid => {
-            let l1 = WreqDownloader::new(timeout_secs, connect_timeout, tls_emulation, user_agent)?;
+            let l1 = WreqDownloader::new(
+                timeout_secs,
+                connect_timeout,
+                tls_emulation,
+                user_agent,
+                max_retries,
+                backoff_base_ms,
+                backoff_max_ms,
+            )?;
             let l2 = ObscuraDownloader::new(timeout_secs);
             let l3 = ChromiumoxideDownloader::new(cookie_bridge);
             FetchRouter::Hybrid(Arc::new(HybridRouter::new(l1, l2, l3, ignore_waf)))
@@ -149,6 +164,9 @@ mod router_tests {
             false,
             None,
             CancellationToken::new(),
+            3,
+            1000,
+            10000,
         )
         .expect("static router must build");
         assert!(
@@ -167,6 +185,9 @@ mod router_tests {
             false,
             None,
             CancellationToken::new(),
+            3,
+            1000,
+            10000,
         )
         .expect("hybrid router must build");
         assert!(
@@ -185,6 +206,9 @@ mod router_tests {
             false,
             None,
             CancellationToken::new(),
+            3,
+            1000,
+            10000,
         )
         .expect("full router must build");
         assert!(

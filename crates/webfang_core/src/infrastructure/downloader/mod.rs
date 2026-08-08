@@ -40,7 +40,7 @@ use url::Url;
 /// use webfang_core::infrastructure::downloader::wreq_downloader::WreqDownloader;
 /// use webfang_core::infrastructure::downloader::Downloader;
 ///
-/// let downloader = WreqDownloader::new(30, 10, wreq_util::Profile::Chrome145, None).unwrap();
+/// let downloader = WreqDownloader::new(30, 10, wreq_util::Profile::Chrome145, None, 3, 1000, 10000).unwrap();
 /// let page = downloader.fetch(&"https://example.com".parse().unwrap()).await.unwrap();
 /// assert!(!page.html.is_empty());
 /// ```
