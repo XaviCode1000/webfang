@@ -148,6 +148,8 @@ async fn run_crawl_task_inner(
     ctx.pages_crawled
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
+    capture_content(&ctx, &url_str, &response);
+
     if !run_pipeline(&ctx, &url_str, &response).await {
         return Ok(());
     }
@@ -260,6 +262,18 @@ fn report_session_success(ctx: &CrawlTaskCtx, url_str: &str, session_id: Option<
             pool.report_success(domain, id);
         }
     }
+}
+
+/// Hand the fetched body to the content sink when one is configured (#631).
+///
+/// Capture happens right after a successful fetch and before pipeline gating,
+/// so a `Skip`/`Reject` outcome cannot silently drop the page from the export
+/// set. The sink is synchronous and must not block.
+fn capture_content(ctx: &CrawlTaskCtx, url_str: &str, response: &str) {
+    let Some(ref sink) = ctx.content_sink else {
+        return;
+    };
+    sink.capture(url_str, response);
 }
 
 /// Run the content pipeline if configured. Returns `true` when processing
@@ -655,6 +669,7 @@ mod tests {
                 link_extractor: self.link_extractor,
                 pipeline: self.pipeline,
                 output_stages: self.output_stages,
+                content_sink: None,
             })
         }
     }

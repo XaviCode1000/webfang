@@ -56,6 +56,113 @@ fn batch_empty_stdin_exits_64() {
 }
 
 // ---------------------------------------------------------------------------
+// --batch file output (#631): the full pipeline must write .md + .jsonl, not
+// skip export with an early return.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn batch_stdin_writes_markdown_and_jsonl() {
+    let server = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "<html><body><article>\
+                 <h1>Batch File Output</h1>\
+                 <p>Body text that must be written to disk.</p>\
+             </article></body></html>",
+        ))
+        .mount(&server)
+        .await;
+
+    cmd()
+        .arg("--batch")
+        .arg("--output")
+        .arg(out.path())
+        .write_stdin(format!("{}\n", server.uri()))
+        .timeout(Duration::from_secs(60))
+        .assert()
+        .success();
+
+    // `save_results` nests files under a per-host directory (e.g.
+    // `<output>/127.0.0.1/index.md`), so walk the tree rather than the top
+    // level only.
+    let md_files: Vec<_> = walk_dir(out.path())
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .collect();
+    let jsonl_path = out.path().join("export.jsonl");
+
+    assert!(
+        !md_files.is_empty(),
+        "--batch must write at least one .md file under --output (#631), dir: {:?}",
+        out.path()
+    );
+    assert!(
+        jsonl_path.exists(),
+        "--batch must write export.jsonl to --output (#631), dir: {:?}",
+        out.path()
+    );
+}
+
+/// Recursively collect files under `root` (depth-first, errors skipped).
+fn walk_dir(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                out.extend(walk_dir(&path));
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// --batch --resume (#637): the run must create a resume state file.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn batch_stdin_resume_creates_state_file() {
+    let server = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "<html><body><article><h1>Resume State</h1><p>x</p></article></body></html>",
+        ))
+        .mount(&server)
+        .await;
+
+    cmd()
+        .arg("--batch")
+        .arg("--resume")
+        .arg("--output")
+        .arg(out.path())
+        .env("XDG_CACHE_HOME", cache.path())
+        .write_stdin(format!("{}\n", server.uri()))
+        .timeout(Duration::from_secs(60))
+        .assert()
+        .success();
+
+    let state_files: Vec<_> = walk_dir(&cache.path().join("webfang/state"))
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .collect();
+    assert!(
+        !state_files.is_empty(),
+        "--batch --resume must create a state file (#637), cache: {:?}",
+        cache.path()
+    );
+}
+
+// ---------------------------------------------------------------------------
 // --batch-file
 // ---------------------------------------------------------------------------
 

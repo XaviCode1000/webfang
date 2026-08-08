@@ -27,6 +27,7 @@ use tracing::info;
 
 use super::processor::{BatchError, BatchProcessor, BatchResult};
 use super::{BatchJob, BatchJobStatus};
+use crate::application::crawler::content_sink::CrawlContentSink;
 use crate::domain::CrawlerConfig;
 use crate::error::ScraperError;
 
@@ -66,6 +67,16 @@ impl BatchManager {
             manager.jobs.push(job);
         }
         manager
+    }
+
+    /// Capture every fetched page body into `sink` (#631).
+    ///
+    /// Propagates to the underlying [`BatchProcessor`] so the CLI can export
+    /// the crawled content instead of discarding it with the crawl metadata.
+    #[must_use]
+    pub fn with_content_sink(mut self, sink: std::sync::Arc<dyn CrawlContentSink>) -> Self {
+        self.processor = self.processor.with_content_sink(sink);
+        self
     }
 
     /// Create a batch manager from a single batch job
