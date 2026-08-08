@@ -302,11 +302,11 @@ impl McpHandler {
         export_results(&results, output_dir, ExportFormat::Vector, &filename)
     }
 
-    /// Full export pipeline: load persisted results → export synchronously
+    /// Full export pipeline: scrape (when `url` is given) → export synchronously
     #[tool(
-        description = "Run the export pipeline synchronously: load persisted crawl results and export them to the specified format (jsonl, vector, or auto; default jsonl). Reports the real written path; never queues."
+        description = "Run the export pipeline synchronously: when `url` is provided, scrape it first; otherwise use persisted crawl results. Export to the specified format (jsonl, vector, or auto; default jsonl). Reports the real written path; never queues."
     )]
-    #[instrument(skip(self), fields(format, results))]
+    #[instrument(skip(self), fields(format, url, results))]
     async fn process_export_pipeline(
         &self,
         Parameters(params): Parameters<ProcessExportPipelineParams>,
@@ -323,12 +323,42 @@ impl McpHandler {
             )
         })?;
 
-        let results = match self.load_results().await {
-            Ok(results) => results,
-            Err(err) => return Ok(err),
+        // When a URL is supplied the pipeline scrapes it live (reusing the
+        // existing scraper service) and exports the fresh result; otherwise it
+        // falls back to persisted crawl results (issue #605).
+        let results = match &params.url {
+            Some(url_str) => {
+                let url = url::Url::parse(url_str).map_err(|e| {
+                    McpError::invalid_params(
+                        format!("URL inválida: {e}"),
+                        Some(serde_json::Value::String("url".to_string())),
+                    )
+                })?;
+                let client = self.state.container.http_client().as_ref();
+                match webfang_core::application::scraper_service::scrape_with_readability(
+                    client, &url,
+                )
+                .await
+                {
+                    Ok(results) => {
+                        tracing::info!(url = %url, documents = results.len(), "scrape completed");
+                        results
+                    },
+                    Err(e) => {
+                        return Ok(CallToolResult::error(vec![Content::text(format!(
+                            "error al rastrear {url}: {e}"
+                        ))]))
+                    },
+                }
+            },
+            None => match self.load_results().await {
+                Ok(results) => results,
+                Err(err) => return Ok(err),
+            },
         };
         let span = tracing::Span::current();
         span.record("format", format_str);
+        span.record("url", params.url.as_deref().unwrap_or(""));
         span.record("results", results.len());
 
         // The pipeline exports to the container's configured output directory.
@@ -676,6 +706,32 @@ mod handler_tests {
         assert!(
             text.contains("Exportación completada"),
             "pipeline export must report completion: {text}"
+        );
+    }
+
+    /// Issue #605 regression: when `url` is provided, the pipeline must scrape
+    /// it live instead of reading persisted results. With no network/seed this
+    /// surfaces as a scrape (network) error — never the persisted-only
+    /// "no hay resultados disponibles para exportar" message, which would
+    /// prove the `url` argument was ignored.
+    #[tokio::test]
+    async fn process_export_pipeline_with_url_invokes_scrape() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .process_export_pipeline(Parameters(ProcessExportPipelineParams {
+                url: Some("https://quotes.toscrape.com".to_string()),
+                format: Some("jsonl".to_string()),
+            }))
+            .await
+            .expect("process_export_pipeline returns Ok on scrape failure");
+        let text = result_text(&res);
+        assert!(
+            !text.contains("no hay resultados disponibles para exportar"),
+            "url branch must not fall back to persisted 'no results': {text}"
+        );
+        assert!(
+            text.contains("error al rastrear") || text.contains("Exportación completada"),
+            "url branch must attempt a live scrape: {text}"
         );
     }
 }
