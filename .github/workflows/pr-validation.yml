@@ -27,9 +27,10 @@ jobs:
             echo "::error::No se pudo resolver el head ref del PR (evento: ${{ github.event_name }})."
             exit 1
           fi
-          PR=$(gh pr list --repo "$REPO" --head "$HEAD_REF" --state open --json number -q '.[0].number' 2>/dev/null || true)
+          # REST API (deterministic): the "head" filter requires user:branch format.
+          PR=$(gh api "repos/$REPO/pulls?state=open&head=${{ github.event.pull_request.head.repo.owner.login || github.repository_owner }}:$HEAD_REF" --jq '.[0].number' 2>&1 || true)
           if ! printf '%s' "$PR" | grep -qE '^[0-9]+$'; then
-            echo "::error::No se pudo resolver el PR para la rama '$HEAD_REF' (evento: ${{ github.event_name }})."
+            echo "::error::No se pudo resolver el PR para la rama '$HEAD_REF' (evento: ${{ github.event_name }}). Detalle: $PR"
             exit 1
           fi
           echo "pr=$PR" >> "$GITHUB_OUTPUT"
