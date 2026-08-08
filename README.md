@@ -255,6 +255,8 @@ cargo +nightly miri test --lib
 
 **Miri status:** Domain + Core layers verified for Undefined Behavior. Infrastructure layer partially verified (servo_arc/btls FFI limitations documented).
 
+**Concurrency verification (DoD #507):** Miri valida las unidades lock-free puras (AtomicUsize counters, mpsc channel); la concurrencia de alto nivel se cubre con tests de integración que ejercitan CancellationToken/shutdown y backpressure (abort de stragglers, canales acotados).
+
 ---
 
 ## Developer Guide
