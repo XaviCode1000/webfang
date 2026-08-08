@@ -184,6 +184,20 @@ impl ScraperConfig {
         self
     }
 
+    /// Set maximum file size for asset downloads in bytes.
+    #[must_use]
+    pub fn with_max_file_size(mut self, max_file_size: Option<u64>) -> Self {
+        self.max_file_size = max_file_size;
+        self
+    }
+
+    /// Set timeout for individual asset downloads in seconds.
+    #[must_use]
+    pub fn with_download_timeout(mut self, timeout_secs: u64) -> Self {
+        self.download_timeout_secs = timeout_secs;
+        self
+    }
+
     /// Set the WAF/CAPTCHA detection bypass flag (REQ-WAF-07).
     #[must_use]
     pub fn with_ignore_waf(mut self, ignore_waf: bool) -> Self {
