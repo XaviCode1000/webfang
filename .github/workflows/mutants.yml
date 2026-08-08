@@ -35,6 +35,7 @@ on:
     # (docs, lints, CI) stay BLOCKED forever: GitHub treats a required check
     # that never ran as pending. The job decides internally via paths-filter
     # and reports SUCCESS when the diff has no gated hot-path changes.
+  merge_group:
   schedule:
     - cron: "0 3 * * 1"  # Mondays 03:00 UTC
   workflow_dispatch:
@@ -42,7 +43,7 @@ on:
 concurrency:
   # Bulkhead: PR runs and scheduled runs never cancel each other.
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -53,10 +54,11 @@ env:
 jobs:
   # ---------------------------------------------------------------------------
   # PR GATE — mutates only the diff. Any surviving mutant fails the job.
-  # Runs ONLY on pull_request (bulkhead: no base_ref on schedule).
+  # Runs on pull_request AND merge_group: the required check must be reported
+  # on the merge group too, or the queue blocks. Never on schedule (no base_ref).
   # ---------------------------------------------------------------------------
   mutants-pr:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     name: "cargo-mutants (PR diff)"
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -67,8 +69,13 @@ jobs:
           fetch-depth: 0
 
       - name: Generate PR diff
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
-          git diff "origin/${{ github.base_ref }}"...HEAD > git.diff
+          # merge_group carries its own base_ref; fall back to main when absent.
+          BASE="${BASE_REF}"
+          [ -z "$BASE" ] && BASE="main"
+          git diff "origin/$BASE"...HEAD > git.diff
 
       # Always reported check: when the diff touches no gated hot path,
       # the job short-circuits to SUCCESS instead of silently not running.

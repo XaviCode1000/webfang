@@ -24,12 +24,15 @@ on:
   push:
     branches: [main, develop]
   pull_request:
+  merge_group:
   schedule:
     - cron: "0 0 * * 1"  # Weekly Miri on Monday 00:00 UTC
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  # event_name in the group key: merge_group runs must not cancel (or be
+  # canceled by) pull_request runs on the same head branch.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 env:

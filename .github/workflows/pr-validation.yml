@@ -3,6 +3,7 @@ name: PR Validation
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+  merge_group:
 
 permissions:
   pull-requests: read
@@ -12,10 +13,38 @@ jobs:
     name: Validate PR metadata
     runs-on: ubuntu-latest
     steps:
+      # Resolve the real PR for both pull_request and merge_group runs.
+      # Fail closed: this is a required check — if the PR cannot be
+      # resolved, the check fails instead of silently passing.
+      - name: Resolve PR number
+        id: prnum
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref || github.event.merge_group.head_ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -z "$HEAD_REF" ]; then
+            echo "::error::No se pudo resolver el head ref del PR (evento: ${{ github.event_name }})."
+            exit 1
+          fi
+          # REST API (deterministic): the "head" filter requires user:branch format.
+          PR=$(gh api "repos/$REPO/pulls?state=open&head=${{ github.event.pull_request.head.repo.owner.login || github.repository_owner }}:$HEAD_REF" --jq '.[0].number' 2>&1 || true)
+          if ! printf '%s' "$PR" | grep -qE '^[0-9]+$'; then
+            echo "::error::No se pudo resolver el PR para la rama '$HEAD_REF' (evento: ${{ github.event_name }}). Detalle: $PR"
+            exit 1
+          fi
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
+          echo "Resolved PR #$PR"
+
       - name: Require linked issue
         env:
-          BODY: ${{ github.event.pull_request.body }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.prnum.outputs.pr }}
+          REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
+          BODY=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json body --jq '.body // ""')
           if ! printf '%s' "$BODY" | grep -qiE '(closes|fixes|resolves) #[0-9]+'; then
             echo "::error::El cuerpo del PR debe vincular una issue con 'Closes #N', 'Fixes #N' o 'Resolves #N'."
             exit 1
@@ -25,9 +54,10 @@ jobs:
       - name: Require exactly one type:* label
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ steps.prnum.outputs.pr }}
           REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
           count=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels \
             --jq '[.labels[].name | select(startswith("type:"))] | length')
           if [ "$count" -ne 1 ]; then
@@ -38,8 +68,12 @@ jobs:
 
       - name: Require conventional branch name
         env:
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.prnum.outputs.pr }}
+          REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
+          HEAD_REF=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefName --jq '.headRefName')
           if ! printf '%s' "$HEAD_REF" | grep -qE '^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)/[a-z0-9._-]+$'; then
             echo "::error::La rama '$HEAD_REF' debe seguir el patron type/description (ej: fix/mi-bug)."
             exit 1
