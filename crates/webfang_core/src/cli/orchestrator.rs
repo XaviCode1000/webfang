@@ -318,12 +318,10 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
     }
 
     // Wire asset download config from CLI args
+    // NOTE: crawl include/exclude patterns are intentionally NOT forwarded to
+    // asset config — assets have their own filter scope (#639).
     scraper_config =
         scraper_config.with_asset_h2_profile(parse_asset_h2_profile(&opts.network.h2_profile));
-    scraper_config =
-        scraper_config.with_asset_include_patterns(opts.crawl.include_patterns.clone());
-    scraper_config =
-        scraper_config.with_asset_exclude_patterns(opts.crawl.exclude_patterns.clone());
     scraper_config = scraper_config.with_asset_naming(parse_asset_naming(&opts.asset_naming));
     scraper_config = scraper_config.with_download_concurrency(opts.download_concurrency);
 
@@ -1003,6 +1001,48 @@ mod tests {
         assert_eq!(
             parse_asset_h2_profile("NetscapeNavigator"),
             wreq_util::Profile::Chrome145
+        );
+    }
+
+    // ===== Asset pattern decoupling tests (#639) =====
+
+    /// Regression test for #639: crawl include/exclude patterns must NOT
+    /// be forwarded to asset download config — assets have their own scope.
+    #[tokio::test]
+    async fn crawl_patterns_not_forwarded_to_asset_config() {
+        use crate::application::crawl_options::{CrawlLimits, NetworkOptions};
+        use crate::cli::orchestrator::prepare_phase;
+
+        let url = url::Url::parse("https://example.com").expect("valid url");
+        let opts = CrawlOptions {
+            url,
+            crawl: CrawlLimits {
+                include_patterns: vec!["/catalogue/*".to_string()],
+                exclude_patterns: vec!["/media/*".to_string()],
+                single_page: true, // Skip network discovery
+                ..Default::default()
+            },
+            network: NetworkOptions::default(),
+            ..Default::default()
+        };
+
+        let result = prepare_phase(&opts).await;
+        assert!(
+            result.is_ok(),
+            "prepare_phase must succeed: {:?}",
+            result.err()
+        );
+        let prepare = result.unwrap();
+
+        assert!(
+            prepare.scraper_config.asset_include_patterns.is_empty(),
+            "crawl include_patterns must NOT leak into asset config, got: {:?}",
+            prepare.scraper_config.asset_include_patterns
+        );
+        assert!(
+            prepare.scraper_config.asset_exclude_patterns.is_empty(),
+            "crawl exclude_patterns must NOT leak into asset config, got: {:?}",
+            prepare.scraper_config.asset_exclude_patterns
         );
     }
 }
