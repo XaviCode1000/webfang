@@ -175,9 +175,16 @@ pub fn normalize_seed_host(seed: &str) -> String {
 /// so both sides of the internal-link comparison are www-agnostic (#500).
 #[inline]
 fn strip_www_prefix(host: &str) -> String {
-    host.strip_prefix("www.")
-        .map(String::from)
-        .unwrap_or_else(|| host.to_string())
+    let lower = host.to_lowercase();
+    if let Some(stripped) = lower.strip_prefix("www.") {
+        if stripped.is_empty() {
+            host.to_string()
+        } else {
+            stripped.to_string()
+        }
+    } else {
+        host.to_string()
+    }
 }
 
 /// Check whether a URL is internal to a seed domain (same host or subdomain).
@@ -211,13 +218,22 @@ fn strip_www_prefix(host: &str) -> String {
 /// assert!(is_internal_link("https://gnu.org/page", "www.gnu.org"));
 /// assert!(is_internal_link("https://www.gnu.org/page", "gnu.org"));
 /// assert!(is_internal_link("https://www.gnu.org/page", "www.gnu.org"));
+/// // Case-insensitive hosts (RFC 1035) + consistent subdomain handling (#602):
+/// assert!(is_internal_link("https://books.toscrape.com/x", "BOOKS.toscrape.com"));
+/// assert!(is_internal_link("https://books.toscrape.com/x", "WWW.books.toscrape.com"));
+/// assert!(is_internal_link("https://books.toscrape.com/x", "m.books.toscrape.com"));
 /// ```
 #[inline]
 #[must_use]
 pub fn is_internal_link(url: &str, seed_domain: &str) -> bool {
-    let seed_host = normalize_seed_host(seed_domain);
+    let seed_host = normalize_seed_host(seed_domain).to_lowercase();
     extract_domain(url)
-        .map(|host| host == seed_host || host.ends_with(&format!(".{seed_host}")))
+        .map(|host| {
+            let host = host.to_lowercase();
+            host == seed_host
+                || host.ends_with(&format!(".{seed_host}"))
+                || seed_host.ends_with(&format!(".{host}"))
+        })
         .unwrap_or(false)
 }
 
@@ -578,6 +594,66 @@ mod tests {
         assert!(is_internal_link(
             "https://gnu.org/page",
             "https://www.gnu.org/"
+        ));
+    }
+
+    // ========================================================================
+    // Case-insensitive domain + consistent subdomain handling (#602)
+    //
+    // RFC 1035: hostnames are case-insensitive. A mixed-case seed or link host
+    // must not flip the internal/external verdict. Subdomain labels (www, m,
+    // etc.) must not break internal detection once the leading www. prefix is
+    // normalized away.
+    // ========================================================================
+
+    #[test]
+    fn is_internal_link_seed_uppercase_is_internal() {
+        // #602 repro: uppercase seed must match lowercase link host.
+        assert!(is_internal_link(
+            "https://books.toscrape.com/x",
+            "BOOKS.toscrape.com"
+        ));
+    }
+
+    #[test]
+    fn is_internal_link_uppercase_www_seed_stripped_is_internal() {
+        // #602 repro: uppercase www seed must not fall through to external.
+        assert!(is_internal_link(
+            "https://books.toscrape.com/x",
+            "WWW.books.toscrape.com"
+        ));
+    }
+
+    #[test]
+    fn is_internal_link_uppercase_link_seed_is_internal() {
+        // Reverse direction: uppercase link host vs lowercase seed.
+        assert!(is_internal_link(
+            "https://BOOKS.toscrape.com/x",
+            "books.toscrape.com"
+        ));
+    }
+
+    #[test]
+    fn is_internal_link_non_www_subdomain_label_is_internal() {
+        // #602 repro: m.books.toscrape.com must be internal to the seed host.
+        assert!(is_internal_link(
+            "https://books.toscrape.com/x",
+            "m.books.toscrape.com"
+        ));
+    }
+
+    #[test]
+    fn normalize_seed_host_strips_uppercase_www() {
+        assert_eq!(normalize_seed_host("WWW.gnu.org"), "gnu.org");
+        assert_eq!(normalize_seed_host("https://WWW.Gnu.Org/"), "gnu.org");
+    }
+
+    #[test]
+    fn is_internal_link_uppercase_external_is_external() {
+        // Case-insensitivity must not merge genuinely different hosts.
+        assert!(!is_internal_link(
+            "https://other.com/x",
+            "BOOKS.toscrape.com"
         ));
     }
 }
