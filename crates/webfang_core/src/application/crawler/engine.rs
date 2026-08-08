@@ -440,6 +440,16 @@ impl Engine {
         // Seed the scheduler (pushes onto the discovery queue and pending buffer)
         self.scheduler.seed(&config_clone.seed_url).await;
 
+        // Apply pattern filtering to seed — #634
+        let seed_str = config_clone.seed_url.as_str().to_string();
+        if !crate::application::url_filter::is_allowed(&seed_str, &config_clone) {
+            info!(
+                seed_url = %config_clone.seed_url,
+                "Seed URL excluded by pattern filters — exiting with empty result"
+            );
+            return Ok(CrawlResult::empty());
+        }
+
         let mut tasks = tokio::task::JoinSet::new();
 
         // Build shared task context once — all spawned tasks share this Arc
@@ -1197,6 +1207,70 @@ mod tests {
         assert!(
             result.total_pages < 20,
             "must not fetch all 20 links with max_pages=2, got {}",
+            result.total_pages
+        );
+    }
+
+    /// Regression test for #634: seed URL that matches an exclude pattern
+    /// MUST be filtered out — 0 pages crawled.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn seed_excluded_by_host_pattern_returns_empty() {
+        let server = MockServer::start().await;
+        let port = server.address().port();
+        Mock::given(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("<html><body>seed</body></html>"),
+            )
+            .mount(&server)
+            .await;
+
+        let seed = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed)
+            .max_depth(0)
+            .max_pages(10)
+            .exclude_pattern("127.0.0.1") // Exclude the seed host
+            .ignore_robots(true)
+            .build();
+
+        let mut engine = Engine::new(config, true).expect("engine must build");
+        let result = engine.run().await.expect("engine run must succeed");
+        engine.shutdown().await;
+
+        assert_eq!(
+            result.total_pages, 0,
+            "seed matching exclude pattern must produce 0 pages, got {}",
+            result.total_pages
+        );
+    }
+
+    /// Regression test for #634: seed URL that does NOT match an exclude
+    /// pattern MUST still be crawled (sanity check).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn seed_not_excluded_is_crawled() {
+        let server = MockServer::start().await;
+        let port = server.address().port();
+        Mock::given(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("<html><body>seed</body></html>"),
+            )
+            .mount(&server)
+            .await;
+
+        let seed = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed)
+            .max_depth(0)
+            .max_pages(10)
+            .exclude_pattern("other-host.com") // Does NOT match seed
+            .ignore_robots(true)
+            .build();
+
+        let mut engine = Engine::new(config, true).expect("engine must build");
+        let result = engine.run().await.expect("engine run must succeed");
+        engine.shutdown().await;
+
+        assert_eq!(
+            result.total_pages, 1,
+            "seed NOT matching exclude pattern must be crawled, got {} pages",
             result.total_pages
         );
     }
