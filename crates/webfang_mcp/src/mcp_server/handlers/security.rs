@@ -328,14 +328,12 @@ mod tests {
     }
 
     // ========================================================================
-    // ISSUE #599 — REQ-WAF-09 regression: Fingerprint (T2) NEVER blocks without
-    // a correlated WAF status (403/429/503/520-529), even in degraded mode and
-    // at status 200. The report's literal body
-    // "<html><body>Checking your browser before accessing. Powered by Cloudflare
-    // Ray ID: abc</body></html>" contains the Challenge-tier marker
-    // "checking your browser" (T1), which is an *intentional* block-at-any-status
-    // signal (a real Cloudflare IUAM interstitial). Issue #599 mis-classifies
-    // that as a fingerprint false-positive; the engine is correct. These tests (two regression guards)
+    // ISSUE #599 / #628 — REQ-WAF-09 regression: Fingerprint (T2) NEVER blocks
+    // without a correlated WAF status (403/429/503/520-529), even in degraded
+    // mode and at status 200. The pattern "Checking your browser" was
+    // mis-classified as Challenge-tier in #599-era code; it is a generic phrase
+    // that appears in benign content (articles about Cloudflare) and was
+    // reclasified to Fingerprint (#628). These tests (two regression guards)
     // pin the genuine REQ-WAF-09 contract for T2 evidence so a future change
     // cannot regress into mere-presence blocking.
     // ========================================================================
@@ -359,12 +357,11 @@ mod tests {
     }
 
     #[test]
-    fn issue_599_challenge_body_blocks_at_200_by_design() {
-        // Documents the intentional contract: a genuine Challenge (T1) marker
-        // such as Cloudflare's "Checking your browser before accessing" IS a
-        // block at ANY status, including 200. This is why the issue #599 literal
-        // body blocks — it is a real interstitial, not a fingerprint false
-        // positive. Kept as a regression guard so the behaviour is explicit.
+    fn issue_628_fingerprint_body_does_not_block_at_200() {
+        // Issue #628: "Checking your browser" was reclasified from Challenge to
+        // Fingerprint. With status 200 (no WAF correlation) it must NOT block —
+        // a legitimate page citing this phrase would be a false positive.
+        // Fingerprint evidence is collected but the verdict is not blocked.
         let verdict = verify_waf_verdict(
             "Checking your browser before accessing. Powered by Cloudflare Ray ID: abc",
             Some(200),
@@ -372,8 +369,27 @@ mod tests {
             Default::default(),
         );
         assert!(
+            !verdict.is_blocked,
+            "fingerprint must not block at status 200 (REQ-WAF-09)"
+        );
+        assert!(
+            verdict.evidences.iter().any(|e| e.provider == "Cloudflare"),
+            "fingerprint evidence should still be collected"
+        );
+    }
+
+    #[test]
+    fn issue_628_fingerprint_body_blocks_with_correlated_status() {
+        // Fingerprint-tier blocks when correlated with a WAF status (403/429/503/520-529).
+        let verdict = verify_waf_verdict(
+            "Checking your browser before accessing. Powered by Cloudflare Ray ID: abc",
+            Some(403),
+            Some("text/html".to_string()),
+            Default::default(),
+        );
+        assert!(
             verdict.is_blocked,
-            "T1 challenge must block at 200 (by design, not a bug)"
+            "fingerprint must block with correlated WAF status (REQ-WAF-09)"
         );
     }
 

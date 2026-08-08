@@ -11,7 +11,7 @@
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use webfang_core::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
+use webfang_core::infrastructure::http::waf_engine::{InspectionContext, WafInspector, WafTier};
 use wreq::header::HeaderMap;
 
 /// Degraded-mode (no HTTP context) body inspection helper for these tests.
@@ -77,11 +77,17 @@ async fn test_cloudflare_js_challenge_detection() {
     "#;
 
     let verdict = inspect_body(html);
-    // "Checking your browser" in the title is the first Challenge-tier evidence.
+    // The body carries Challenge-tier markers (challenge-platform, _cf_chl_opt)
+    // that block at any status. "Checking your browser" is Fingerprint-tier and
+    // contributes evidence but does not drive the block on its own.
     assert!(verdict.is_blocked);
-    assert_eq!(
-        verdict.evidences.first().map(|e| e.provider),
-        Some("Cloudflare")
+    assert!(
+        verdict
+            .evidences
+            .iter()
+            .any(|e| e.tier == WafTier::Challenge && e.provider.contains("Cloudflare")),
+        "expected a Cloudflare Challenge-tier evidence, got: {:?}",
+        verdict.evidences
     );
 }
 
