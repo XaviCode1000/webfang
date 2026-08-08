@@ -112,14 +112,14 @@ pub fn detect_language(content: &str) -> Option<String> {
 
     // Common Spanish stopwords.
     const ES_STOPWORDS: &[&str] = &[
-        "el", "la", "los", "las", "un", "una", "unos", "unas", "de", "del", "en", "y", "es",
-        "que", "por", "con", "para", "su", "se", "lo", "como", "pero", "sus", "al", "aquí",
-        "más", "muy", "este", "esta", "fue", "son", "gato", "casa", "hola",
+        "el", "la", "los", "las", "un", "una", "unos", "unas", "de", "del", "en", "y", "es", "que",
+        "por", "con", "para", "su", "se", "lo", "como", "pero", "sus", "al", "aquí", "más", "muy",
+        "este", "esta", "fue", "son", "gato", "casa", "hola",
     ];
     const EN_STOPWORDS: &[&str] = &[
-        "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "for", "with", "is",
-        "are", "was", "were", "this", "that", "it", "as", "at", "by", "from", "your", "we",
-        "you", "they", "he", "she", "hello",
+        "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "for", "with", "is", "are",
+        "was", "were", "this", "that", "it", "as", "at", "by", "from", "your", "we", "you", "they",
+        "he", "she", "hello",
     ];
 
     let words: Vec<&str> = lower.split_whitespace().collect();
