@@ -19,6 +19,7 @@ jobs:
       - name: Resolve PR number
         id: prnum
         env:
+          GH_TOKEN: ${{ github.token }}
           HEAD_REF: ${{ github.event.pull_request.head.ref || github.event.merge_group.head_ref }}
           REPO: ${{ github.repository }}
         run: |
