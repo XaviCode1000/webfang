@@ -102,6 +102,76 @@ pub fn matches_pattern(url_str: &str, pattern: &str) -> bool {
     }
 }
 
+/// Glob/substring match a URL against a pattern (MCP `match_url_pattern` tool).
+///
+/// Unlike [`matches_pattern`] (crawler's SSRF-safe dual-mode filter), this is a
+/// general-purpose matcher for the MCP surface. It supports:
+///
+/// - **Exact full URL** — `https://host/path` against the same URL → `true`.
+/// - **Globstar / wildcards** — `**/catalogue/*`, `*page*` (every `*` is a full
+///   wildcard matching across separators).
+/// - **Scheme-less host** — `host/path` patterns match the same raw input.
+/// - **Substring** — `*word*` and bare substrings match anywhere in the URL.
+///
+/// Scheme-less inputs are normalized with a synthetic `https://` prefix so the
+/// target string stays intact for matching (we match against the *original*
+/// input, not a parsed/normalized URL, to honor exact/substring cases).
+#[inline]
+#[must_use]
+pub fn match_url_pattern(url: &str, pattern: &str) -> bool {
+    if pattern.is_empty() || pattern == "*" {
+        return true;
+    }
+
+    // Treat the raw input as the match target so exact/substring/scheme-less
+    // cases behave as callers expect.
+    let target = url;
+
+    if has_glob_metachars(pattern) {
+        match glob_to_regex(pattern) {
+            Ok(re) => return re.is_match(target),
+            Err(_) => return false,
+        }
+    }
+
+    // No metachars: exact equality or substring match (covers scheme-less host).
+    target == pattern || target.contains(pattern)
+}
+
+/// Returns `true` if `pattern` contains glob metacharacters.
+#[inline]
+#[must_use]
+fn has_glob_metachars(pattern: &str) -> bool {
+    pattern.contains('*') || pattern.contains('?') || pattern.contains('[')
+}
+
+/// Convert a glob pattern to an anchored `regex::Regex`.
+///
+/// `**` and `*` both map to `.*` (full wildcard, matching across separators),
+/// `?` maps to `.`, and all other characters are regex-escaped.
+fn glob_to_regex(pattern: &str) -> Result<regex::Regex, regex::Error> {
+    let mut re = String::from("^");
+    let mut chars = pattern.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '*' => {
+                if chars.peek() == Some(&'*') {
+                    chars.next();
+                }
+                re.push_str(".*");
+            },
+            '?' => re.push('.'),
+            other => {
+                for e in regex::escape(&other.to_string()).chars() {
+                    re.push(e);
+                }
+            },
+        }
+    }
+    re.push('$');
+    regex::Regex::new(&re)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,5 +377,41 @@ mod tests {
             "https://blog.example.com/page",
             "*.example.com"
         ));
+    }
+
+    // ========== MCP match_url_pattern (issue #596) ==========
+
+    #[test]
+    fn test_match_url_pattern_exact_full_url() {
+        let url = "https://books.toscrape.com/catalogue/page-1.html";
+        assert!(match_url_pattern(url, url));
+    }
+
+    #[test]
+    fn test_match_url_pattern_globstar() {
+        let url = "https://books.toscrape.com/catalogue/page-1.html";
+        assert!(match_url_pattern(url, "**/catalogue/*"));
+    }
+
+    #[test]
+    fn test_match_url_pattern_substring() {
+        let url = "https://books.toscrape.com/catalogue/page-1.html";
+        assert!(match_url_pattern(url, "*page*"));
+    }
+
+    #[test]
+    fn test_match_url_pattern_scheme_less_host() {
+        let url = "https://books.toscrape.com/catalogue/page-1.html";
+        assert!(match_url_pattern(
+            url,
+            "books.toscrape.com/catalogue/page-1.html"
+        ));
+    }
+
+    #[test]
+    fn test_match_url_pattern_no_match() {
+        let url = "https://books.toscrape.com/catalogue/page-1.html";
+        assert!(!match_url_pattern(url, "nonexistent"));
+        assert!(!match_url_pattern(url, "**/admin/*"));
     }
 }

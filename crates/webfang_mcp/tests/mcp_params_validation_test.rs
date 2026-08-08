@@ -124,6 +124,13 @@ fn require_safe_path_rejects_oversize() {
     assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
 }
 
+// NOTE: absolute-path acceptance for the export/obsidian `output_dir` /
+// `vault_path` params (issue #600) is covered by the internal `params::tests`
+// module in `src/mcp_server/params.rs`, and `export_file` (the only `pub`
+// struct of this shape) is covered end-to-end by
+// `params_rejection_test.rs::export_file_accepts_absolute_output_dir`. The
+// `require_safe_path_allow_absolute_*` tests above cover the shared helper.
+
 // ===========================================================================
 // validation::require_max_len
 // ===========================================================================
