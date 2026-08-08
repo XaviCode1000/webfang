@@ -27,7 +27,7 @@ use crate::domain::credentials::CredentialStore;
 use crate::domain::embedding_port::EmbeddingPort;
 use crate::domain::note_repository::NoteRepository;
 use crate::domain::ports::HttpClientPort;
-use crate::domain::repository::DynVectorRepository;
+use crate::domain::repository::{DynVectorRepository, MultiVectorRepository};
 use crate::domain::semantic_cleaner::SemanticCleaner;
 use crate::domain::text_chunker::TextChunker;
 use crate::domain::{repositories::CrawlResultRepository, CrawlerConfig};
@@ -403,8 +403,8 @@ impl Container {
     }
 
     /// Build an [`ElasticIngestion`] and attach the AI semantic cleaner when
-    /// present under the `ai` feature. Shared by [`with_elastic`] and
-    /// [`with_stream`] so the injection logic lives in exactly one place.
+    /// present under the `ai` feature. Shared by [`with_elastic_ingestion`]
+    /// so the injection logic lives in exactly one place.
     fn build_ingestion(
         repository: DynVectorRepository,
         config: &ElasticConfig,
@@ -421,18 +421,22 @@ impl Container {
         Ok(ingestion)
     }
 
-    /// Activate the elastic ingestion pipeline with SQLite persistence.
+    /// Activate elastic ingestion across every requested vector sink at once.
     ///
-    /// Resolves `ElasticConfig` from the provided options, then wires
-    /// `RayonCpuPool` → `CpuBridge` → `SqliteVectorRepository` →
-    /// `ResourceDownloader` → `ElasticIngestion`. Only available under the
-    /// `persistence` feature.
+    /// `--elastic` (SQLite persistence) and `--output-vectors` (dependency-free
+    /// JSONL stream) are orthogonal **data destinations**, so this wires them
+    /// into a single `ElasticIngestion` over a [`MultiVectorRepository`]
+    /// fan-out — replacing the former mutually-exclusive `with_elastic` /
+    /// `with_stream` branch that silently dropped the JSONL sink (issue #636).
+    ///
+    /// Returns `self` unchanged (ingestion stays `None`) when no sink is active.
     ///
     /// # Errors
     ///
-    /// Returns an error if the Rayon pool or SQLite pool fails to initialize.
-    #[cfg(feature = "persistence")]
-    pub async fn with_elastic(
+    /// Returns an error if a SQLite pool cannot be created (under `persistence`
+    /// with `--elastic`), the JSONL output cannot be opened, or the Rayon pool /
+    /// HTTP client fails to initialize.
+    pub(crate) async fn with_elastic_ingestion(
         mut self,
         opts: &CrawlOptions,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
@@ -444,37 +448,32 @@ impl Container {
         };
         let config = ElasticConfig::resolve(&overrides);
 
-        // 3. SQLite pool → repository (WAL mode, auto-creates parent dir)
-        let pool = sqlite_persistence::create_pool(&config.db_path, config.db_pool_size)?;
-        sqlite_persistence::setup_schema(&pool).await?;
-        let repository: DynVectorRepository = Arc::new(SqliteVectorRepository::new(pool));
+        // Collect every active sink — both can coexist (orthogonal destinations).
+        let mut repos: Vec<DynVectorRepository> = Vec::new();
 
-        let ingestion = Self::build_ingestion(repository, &config, self.cleaner.clone())?;
-        self.elastic_ingestion = Some(Arc::new(ingestion));
-        Ok(self)
-    }
+        #[cfg(feature = "persistence")]
+        if opts.elastic.enabled {
+            let pool = sqlite_persistence::create_pool(&config.db_path, config.db_pool_size)?;
+            sqlite_persistence::setup_schema(&pool).await?;
+            repos.push(Arc::new(SqliteVectorRepository::new(pool)));
+        }
 
-    /// Activate the elastic ingestion pipeline with the dependency-free
-    /// `StreamRepository` JSONL sink (no SQLite). Available in every build; use
-    /// this for RAG vector export via `--output-vectors`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the output path cannot be opened for writing.
-    pub fn with_stream(
-        mut self,
-        opts: &CrawlOptions,
-        path: &str,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let overrides = crate::infrastructure::autotuning::ElasticOverrides {
-            cpu_cores: opts.elastic.cpu_cores,
-            ram_budget_bytes: opts.elastic.ram_budget_bytes,
-            max_resource_bytes: opts.elastic.max_resource_bytes,
-            db_path: None,
+        if let Some(ref path) = opts.elastic.output_vectors {
+            repos.push(Arc::new(
+                crate::infrastructure::stream::StreamRepository::new(path)?,
+            ));
+        }
+
+        // No sink requested → leave the ingestion untouched (`None`).
+        if repos.is_empty() {
+            return Ok(self);
+        }
+
+        // One sink → use it directly; multiple → fan out via MultiVectorRepository.
+        let repository: DynVectorRepository = match repos.len() {
+            1 => repos.pop().ok_or("no repository to activate")?,
+            _ => Arc::new(MultiVectorRepository::new(repos)),
         };
-        let config = ElasticConfig::resolve(&overrides);
-        let repository: DynVectorRepository =
-            Arc::new(crate::infrastructure::stream::StreamRepository::new(path)?);
 
         let ingestion = Self::build_ingestion(repository, &config, self.cleaner.clone())?;
         self.elastic_ingestion = Some(Arc::new(ingestion));

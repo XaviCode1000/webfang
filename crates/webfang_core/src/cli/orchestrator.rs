@@ -903,6 +903,30 @@ mod tests {
         assert!(result.is_ok(), "should not error: {:?}", result.err());
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "Container::new creates HttpClient with boring-sys2 FFI (unsupported by Miri)"
+    )]
+    #[tokio::test]
+    async fn build_elastic_ingestion_wires_both_sinks_not_exclusive() {
+        // Regression for #636: `--elastic` must NOT silently drop `--output-vectors`.
+        let tmp = tempfile::tempdir().expect("tempdir for vector sink");
+        let vec_path = tmp.path().join("out.jsonl");
+        let mut opts = CrawlOptions::default();
+        opts.elastic.enabled = true;
+        opts.elastic.output_vectors = Some(vec_path.to_string_lossy().into_owned());
+        let result = build_elastic_ingestion(
+            &opts,
+            crate::application::container::VaultAiPorts::default(),
+        )
+        .await;
+        assert!(result.is_ok(), "should not error: {:?}", result.err());
+        assert!(
+            vec_path.exists(),
+            "--output-vectors JSONL sink must be created even with --elastic (issue #636 regression)"
+        );
+    }
+
     // ===== AiConfig → ExportConfig wiring tests (Scenario 2.3.S2) =====
 
     #[test]
