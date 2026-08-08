@@ -43,10 +43,13 @@ jobs:
       - name: Cache ONNX model (Granite-97M)
         uses: actions/cache@v4
         with:
+          # Stable key: never bump the suffix so the cached model survives across
+          # merges. A changing key would invalidate the cache and force a re-download
+          # on every run. restore-keys keep older variants usable as fallback.
           path: ~/.cache/huggingface/hub/
-          key: onnx-model-${{ runner.os }}-granite-97m-v1
+          key: onnx-model-${{ runner.os }}-granite-97m
           restore-keys: |
-            onnx-model-${{ runner.os }}-granite-97m-
+            onnx-model-${{ runner.os }}-granite-97m
       - name: Download ONNX model (cache miss)
         run: |
           set -e
@@ -65,12 +68,15 @@ jobs:
           echo "Downloading Granite-97M ONNX model (~372MB)..."
           mkdir -p "$MODEL_DIR/blobs"
           mkdir -p "$SNAPSHOT_DIR/onnx"
-          curl -L --fail -o "$BLOB_FILE" \
+          # --retry 3 with retry-all-errors tolerates transient Hugging Face
+          # network failures / rate limits. curl resumes or retries the single
+          # transfer; the model is fetched at most once per run (guarded above).
+          curl -L --fail --retry 3 --retry-all-errors --retry-delay 5 -o "$BLOB_FILE" \
             "https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/main/onnx/model.onnx"
           echo "Verifying model SHA256..."
           echo "$BLOB_SHA  $BLOB_FILE" | sha256sum --check --status
           echo "Downloading tokenizer.json..."
-          curl -L --fail -o "$TOKENIZER_BLOB_FILE" \
+          curl -L --fail --retry 3 --retry-all-errors --retry-delay 5 -o "$TOKENIZER_BLOB_FILE" \
             "https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/main/tokenizer.json"
           echo "Verifying tokenizer SHA256..."
           echo "$TOKENIZER_BLOB_SHA  $TOKENIZER_BLOB_FILE" | sha256sum --check --status
