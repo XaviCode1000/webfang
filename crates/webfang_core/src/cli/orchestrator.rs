@@ -555,8 +555,8 @@ async fn load_batch_manager(
     if let Some(ref path) = opts.batch.batch_file {
         info!("Reading URLs from file: {}", path.display());
         BatchManager::from_file(path, crawler_config, opts.batch.concurrency).map_err(|e| {
-            error!(error = %e, "Failed to read URLs");
-            CliExit::NetworkError(format!("Failed to read URLs: {e}"))
+            error!(error = %e, "Failed to read URLs from file");
+            CliExit::IoError(format!("Failed to read URLs from file: {e}"))
         })
     } else {
         info!("Reading URLs from stdin");
@@ -575,14 +575,12 @@ async fn load_batch_manager_from_stdin(
         .await
     {
         Ok(result) => result.map_err(|e| {
-            error!(error = %e, "Failed to read URLs");
-            CliExit::NetworkError(format!("Failed to read URLs: {e}"))
+            error!(error = %e, "Failed to read URLs from stdin");
+            CliExit::IoError(format!("Failed to read URLs from stdin: {e}"))
         }),
         Err(join_err) => {
             error!(error = %join_err, "stdin read task panicked");
-            Err(CliExit::NetworkError(format!(
-                "Failed to read URLs: {join_err}"
-            )))
+            Err(CliExit::IoError(format!("Failed to read URLs: {join_err}")))
         },
     }
 }
