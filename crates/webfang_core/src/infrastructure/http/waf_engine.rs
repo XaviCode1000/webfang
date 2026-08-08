@@ -254,7 +254,7 @@ const WAF_BODY_SIGNATURES: &[(&str, &str, WafTier, BoundaryMode)] = &[
     (
         "Checking your browser",
         "Cloudflare",
-        WafTier::Challenge,
+        WafTier::Fingerprint,
         BoundaryMode::Phrase,
     ),
     (
@@ -1954,9 +1954,32 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_body_cloudflare_checking_browser() {
+    fn test_detect_body_cloudflare_checking_browser_degraded_does_not_block() {
+        // "Checking your browser" is Fingerprint-tier: in degraded mode (no status)
+        // it must NOT block (REQ-WAF-09). It is collected as evidence but the
+        // verdict is not blocked without a correlated WAF status.
         let html = "<html><body>Checking your browser before accessing...</body></html>";
         let verdict = WafInspector::inspect(html, &InspectionContext::default());
+        assert!(!verdict.is_blocked);
+        assert_eq!(
+            verdict.evidences.first().map(|e| e.provider),
+            Some("Cloudflare")
+        );
+        assert_eq!(
+            verdict.evidences.first().map(|e| e.tier),
+            Some(WafTier::Fingerprint)
+        );
+    }
+
+    #[test]
+    fn test_detect_body_cloudflare_checking_browser_blocks_with_waf_status() {
+        // Fingerprint-tier blocks when correlated with a WAF status (403/429/503/520-529).
+        let html = "<html><body>Checking your browser before accessing...</body></html>";
+        let ctx = InspectionContext {
+            status: Some(403),
+            ..Default::default()
+        };
+        let verdict = WafInspector::inspect(html, &ctx);
         assert!(verdict.is_blocked);
         assert_eq!(
             verdict.evidences.first().map(|e| e.provider),
