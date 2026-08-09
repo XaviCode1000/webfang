@@ -394,14 +394,14 @@ impl WreqDownloader {
                 match self.send_request(url, rotated_ua).await {
                     Ok(res) if res.status().is_success() => {
                         return self.build_page(res, url).await;
-                    }
+                    },
                     Ok(res) => {
                         // Rotated retry returned non-2xx (e.g., 429, 500).
                         // Capture its status and continue the loop so unified
                         // retry logic (429/5xx branch below) handles it.
                         last_status = res.status().as_u16();
                         continue;
-                    }
+                    },
                     Err(e) => return Err(e),
                 }
             }
