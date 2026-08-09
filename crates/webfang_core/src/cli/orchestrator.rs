@@ -645,7 +645,9 @@ fn build_batch_resume_store(opts: &CrawlOptions) -> Result<Option<StateStore>, C
     crate::application::export_factory::create_state_store(state_dir, &domain)
         .map(Some)
         .map_err(|e| {
-            CliExit::IoError(format!("No se pudo crear el almacén de estado para --resume: {e}"))
+            CliExit::IoError(format!(
+                "No se pudo crear el almacén de estado para --resume: {e}"
+            ))
         })
 }
 
