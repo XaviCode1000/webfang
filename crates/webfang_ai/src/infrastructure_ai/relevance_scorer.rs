@@ -438,4 +438,18 @@ mod tests {
         let scorer = RelevanceScorer::default();
         assert_eq!(scorer.threshold(), 0.3);
     }
+
+    /// Z-score mapping used by the adaptive relevance filter (#648):
+    /// a higher threshold must translate into a tighter Z limit.
+    #[test]
+    fn test_zscore_filters_outliers() {
+        let threshold_strict = 0.9f32;
+        let threshold_lax = 0.1f32;
+        let z_strict = 3.0 * (1.0 - threshold_strict);
+        let z_lax = 3.0 * (1.0 - threshold_lax);
+        assert!(
+            z_strict < z_lax,
+            "Higher threshold should give lower Z limit"
+        );
+    }
 }

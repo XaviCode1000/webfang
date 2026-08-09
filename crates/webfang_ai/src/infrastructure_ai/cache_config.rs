@@ -22,8 +22,9 @@ pub const DEFAULT_FALLBACK_MODEL_FILE: &str = "onnx/model.onnx";
 
 /// Expected SHA256 for Granite-311M ONNX model
 /// Verified via HuggingFace API: <https://huggingface.co/ibm-granite/granite-embedding-311m-multilingual-r2>
+/// Last verified: 2026-08-09
 pub const DEFAULT_FALLBACK_MODEL_SHA256: &str =
-    "49158cc56a6ae40b0ab0634706d7e524c33e105f358a6fb7ed4f63c5e1187fbe";
+    "75f9f258bf5013f5fe8a4dad61dd0fd16ac0cbaa7a106e3d3f41c2d04a42d541";
 
 /// Environment variable for model selection
 pub const MODEL_SELECTION_ENV: &str = "AI_MODEL_ID";
