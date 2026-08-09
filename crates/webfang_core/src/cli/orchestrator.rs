@@ -179,6 +179,26 @@ pub async fn run(
     }
 }
 
+/// Resolve the root directory that must contain the scraped Markdown AND the
+/// downloaded assets.
+///
+/// When Obsidian `--quick-save` is active, both must share the vault as their
+/// base so the vault stays self-contained (#638): if the `Downloader` keeps
+/// using `output_dir` (`-o`) while the Markdown goes to the vault, relative
+/// asset paths escape the vault and images stop rendering. The Downloader is a
+/// slave of the config — the orchestrator is responsible for converging the
+/// two persistence roots before handing them to the crawl/export engines.
+fn resolve_persistence_root(opts: &CrawlOptions) -> std::path::PathBuf {
+    if opts.export.quick_save {
+        opts.export
+            .obsidian_vault
+            .clone()
+            .unwrap_or_else(|| opts.export.output_dir.clone())
+    } else {
+        opts.export.output_dir.clone()
+    }
+}
+
 /// Export scraped results to files and run AI cleaning if requested.
 async fn export_phase(
     results: &[domain::ScrapedContent],
@@ -198,8 +218,7 @@ async fn export_phase(
     };
 
     let file_output_dir = if opts.export.quick_save {
-        let base = opts.export.obsidian_vault.as_deref().unwrap_or(&output_dir);
-        let inbox = base.join("_inbox");
+        let inbox = resolve_persistence_root(opts).join("_inbox");
         if !inbox.exists() {
             let _ = std::fs::create_dir_all(&inbox);
         }
@@ -305,7 +324,7 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
     };
 
     let mut scraper_config = ScraperConfig::default()
-        .with_output_dir(opts.export.output_dir.clone())
+        .with_output_dir(resolve_persistence_root(opts))
         .with_scraper_concurrency(opts.network.concurrency.resolve())
         .with_max_pages(opts.crawl.max_pages)
         .with_selector(opts.crawl.selector.clone())
