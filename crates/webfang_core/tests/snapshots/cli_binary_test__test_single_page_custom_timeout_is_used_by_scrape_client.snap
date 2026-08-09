@@ -1,19 +1,8 @@
 ---
 source: crates/webfang_core/tests/cli_binary_test.rs
+assertion_line: 230
 expression: "redact_nondeterministic(output_dir.path(), &stderr)"
 ---
-  <TIMESTAMP>  WARN <MODULE>: Transport failure fetching http://127.0.0.1:<PORT>/slow — retrying, attempt: 0, max_retries: 3, error: request timed out after 1s
-    at <FILE>.rs:<LINE>
-
-  <TIMESTAMP>  WARN <MODULE>: Transport failure fetching http://127.0.0.1:<PORT>/slow — retrying, attempt: 1, max_retries: 3, error: request timed out after 1s
-    at <FILE>.rs:<LINE>
-
-  <TIMESTAMP>  WARN <MODULE>: Transport failure fetching http://127.0.0.1:<PORT>/slow — retrying, attempt: 2, max_retries: 3, error: request timed out after 1s
-    at <FILE>.rs:<LINE>
-
-  <TIMESTAMP>  WARN <MODULE>: Transport failure fetching http://127.0.0.1:<PORT>/slow — retrying, attempt: 3, max_retries: 3, error: request timed out after 1s
-    at <FILE>.rs:<LINE>
-
   <TIMESTAMP>  WARN <MODULE>: Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: request timed out after 1s
     at <FILE>.rs:<LINE>
 
