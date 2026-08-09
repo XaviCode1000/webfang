@@ -3,8 +3,10 @@ on:
   schedule:
     - cron: "0 6 * * *"  # Diario 6AM
   workflow_dispatch: {}
-  pull_request:
-    paths: ["crates/**", "tests/**"]
+  # pull_request trigger removed: this workflow is for scheduled/on-demand
+  # production bug discovery, not PR validation. It downloads a ~372MB model
+  # and runs ignored tests, which causes mergeStateStatus=UNSTABLE while
+  # required checks are green (GitHub evaluates ALL checks, not just required).
 
 jobs:
   poisoned-env:
