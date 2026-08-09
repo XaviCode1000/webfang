@@ -2,10 +2,7 @@
 //!
 //! Orchestrates URL discovery, scraping, and export phases.
 
-use tracing::{error, info, instrument};
-
-#[cfg(not(feature = "ai"))]
-use tracing::warn;
+use tracing::{error, info, instrument, warn};
 
 use crate::application::batch::{BatchManager, BatchManagerSummary};
 use crate::application::crawl_options::CrawlOptions;
@@ -77,6 +74,13 @@ pub async fn run(
         println!("  {}", opts.url);
         return CliExit::Success;
     }
+    // Process-level graceful shutdown (#653). The guard owns ONE signal
+    // listener for the whole run; every phase observes its token cooperatively
+    // so a SIGINT drains in-flight work and still exports it, instead of being
+    // ignored until the operator escalates to SIGKILL.
+    let shutdown = crate::cli::shutdown::ShutdownGuard::install();
+    let cancel = shutdown.token();
+
     if opts.batch.enabled {
         // Batch mode uses the crawl Engine, which mints its own run-root
         // identity per crawl — do not mint one here.
@@ -85,6 +89,7 @@ pub async fn run(
             #[cfg(feature = "ai")]
             ai_cleaner,
             vault_ports,
+            &cancel,
         )
         .await;
     }
@@ -149,6 +154,7 @@ pub async fn run(
             .map(|d| d as &dyn crate::domain::ports::AssetDownloaderPort),
         engine_ref,
         &root_correlation,
+        &cancel,
     )
     .await
     {
@@ -388,6 +394,7 @@ struct PrepareResult {
 /// Returns [`crate::error::ScraperError`] if the configured H2/TLS profile name
 /// is not recognized or the fetch router's HTTP client cannot be built (a setup
 /// failure, before any URL is scraped).
+#[allow(clippy::too_many_arguments)]
 async fn scrape_phase(
     urls: &[url::Url],
     scraper_config: &ScraperConfig,
@@ -396,6 +403,7 @@ async fn scrape_phase(
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     engine: Option<&AdaptiveSelectorEngine>,
     root_correlation: &domain::CorrelationId,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<
     (
         Vec<domain::ScrapedContent>,
@@ -411,6 +419,7 @@ async fn scrape_phase(
         downloader,
         engine,
         root_correlation,
+        cancel,
     )
     .await
 }
@@ -509,6 +518,7 @@ async fn run_batch(
     opts: CrawlOptions,
     #[cfg(feature = "ai")] ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
     vault_ports: crate::application::container::VaultAiPorts,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> CliExit {
     // Resolve the TLS/H2 fingerprint once so the batch crawl engine honors
     // `--h2-profile` (#312). An unknown profile is a config error (exit 78),
@@ -518,7 +528,7 @@ async fn run_batch(
         Err(e) => return e,
     };
 
-    let (summary, sink) = match run_batch_crawl(&opts, tls_emulation).await {
+    let (summary, sink) = match run_batch_crawl(&opts, tls_emulation, cancel).await {
         Ok(pair) => pair,
         Err(e) => return e,
     };
@@ -590,12 +600,33 @@ async fn run_batch(
 async fn run_batch_crawl(
     opts: &CrawlOptions,
     tls_emulation: wreq_util::Profile,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(BatchManagerSummary, std::sync::Arc<BoundedFileSink>), CliExit> {
-    let crawler_config = build_batch_crawler_config(opts, tls_emulation);
-
     let sink = std::sync::Arc::new(build_batch_sink(opts).await?);
-    let mut manager = load_batch_manager(opts, crawler_config).await?;
-    manager = manager.with_content_sink(sink.clone());
+    let manager = prepare_batch_manager(opts, tls_emulation, sink.clone()).await?;
+
+    let summary = manager.process_all_summary_cancellable(cancel).await;
+    log_batch_summary(&summary);
+
+    if cancel.is_cancelled() {
+        warn!("shutdown requested — exporting the pages captured so far");
+    }
+
+    flush_batch_sink(&sink).await?;
+
+    Ok((summary, sink))
+}
+
+/// Load the batch manager, attach the capture sink, and assert it has work.
+async fn prepare_batch_manager(
+    opts: &CrawlOptions,
+    tls_emulation: wreq_util::Profile,
+    sink: std::sync::Arc<BoundedFileSink>,
+) -> Result<BatchManager, CliExit> {
+    let crawler_config = build_batch_crawler_config(opts, tls_emulation);
+    let manager = load_batch_manager(opts, crawler_config)
+        .await?
+        .with_content_sink(sink);
 
     if manager.url_count() == 0 {
         error!("No URLs provided for batch processing");
@@ -608,9 +639,14 @@ async fn run_batch_crawl(
         opts.batch.concurrency
     );
 
-    let summary = manager.process_all_summary().await;
-    log_batch_summary(&summary);
+    Ok(manager)
+}
 
+/// Flush the capture spool and fail loudly when the batch produced nothing.
+///
+/// An empty spool means `--batch` would write zero files while reporting
+/// success — the regression #631 fixed.
+async fn flush_batch_sink(sink: &BoundedFileSink) -> Result<(), CliExit> {
     let captured = sink.finish().await.map_err(|e| {
         error!(error = %e, "batch content spool flush failed");
         CliExit::IoError(format!("No se pudo volcar el contenido capturado: {e}"))
@@ -621,7 +657,7 @@ async fn run_batch_crawl(
         return Err(CliExit::NetworkError("Batch produced no content".into()));
     }
 
-    Ok((summary, sink))
+    Ok(())
 }
 
 /// Create the disk-backed capture sink for a batch run.

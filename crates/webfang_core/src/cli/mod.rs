@@ -14,6 +14,7 @@ pub mod orchestrator;
 pub mod parse;
 pub mod preflight;
 pub mod scrape_flow;
+pub mod shutdown;
 pub mod summary;
 pub mod url_discovery;
 pub mod wizard;

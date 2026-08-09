@@ -23,7 +23,8 @@
 
 use std::path::Path;
 
-use tracing::info;
+use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
 
 use super::processor::{BatchError, BatchProcessor, BatchResult};
 use super::{BatchJob, BatchJobStatus};
@@ -144,17 +145,49 @@ impl BatchManager {
     /// Each job is processed via [`BatchProcessor::process_batch`].
     /// Returns a vector of [`BatchResult`] for each job.
     pub async fn process_all(&self) -> Vec<Result<BatchResult, BatchError>> {
+        self.process_all_cancellable(&CancellationToken::new())
+            .await
+    }
+
+    /// Process all queued jobs, stopping early when `cancel` is fired.
+    ///
+    /// The in-flight job drains before returning, so its captured pages still
+    /// reach the sink; remaining jobs are skipped (#653).
+    pub async fn process_all_cancellable(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Vec<Result<BatchResult, BatchError>> {
         let mut results = Vec::with_capacity(self.jobs.len());
         for job in &self.jobs {
+            if cancel.is_cancelled() {
+                warn!(
+                    remaining = self.jobs.len() - results.len(),
+                    "shutdown requested — skipping remaining batch jobs"
+                );
+                break;
+            }
             info!("Processing batch job: {}", job.id);
-            results.push(self.processor.process_batch(job.clone()).await);
+            results.push(
+                self.processor
+                    .process_batch_cancellable(job.clone(), cancel)
+                    .await,
+            );
         }
         results
     }
 
     /// Process all queued jobs and return an aggregated summary
     pub async fn process_all_summary(&self) -> BatchManagerSummary {
-        let results = self.process_all().await;
+        self.process_all_summary_cancellable(&CancellationToken::new())
+            .await
+    }
+
+    /// Process all queued jobs with cancellation support and aggregate them.
+    pub async fn process_all_summary_cancellable(
+        &self,
+        cancel: &CancellationToken,
+    ) -> BatchManagerSummary {
+        let results = self.process_all_cancellable(cancel).await;
         let mut summary = BatchManagerSummary::default();
 
         // Consume by value: `ScraperError` is not `Clone`, so error tuples are
@@ -294,6 +327,23 @@ https://example.com/blog
         let manager = BatchManager::new(3);
         let results = manager.process_all().await;
         assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelled_manager_skips_every_queued_job() {
+        // Regression for #653: SIGINT/SIGTERM must stop the batch queue rather
+        // than being ignored until the whole run finishes.
+        let urls = vec!["https://a.com".to_string(), "https://b.com".to_string()];
+        let manager = BatchManager::from_urls(urls, test_config(), 2);
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let results = manager.process_all_cancellable(&cancel).await;
+        assert!(
+            results.is_empty(),
+            "no job may start after a shutdown signal"
+        );
     }
 
     #[tokio::test]
