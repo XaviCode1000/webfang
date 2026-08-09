@@ -18,6 +18,8 @@ pub const EXIT_EMPTY_DISCOVERY: u8 = 2;
 pub const EXIT_SCRAPER_FAILURE: u8 = 3;
 /// Exit 64 — Bad CLI arguments (sysexits EX_USAGE).
 pub const EXIT_USAGE_ERROR: u8 = 64;
+/// Exit 65 — Data format error (sysexits EX_DATAERR).
+pub const EXIT_DATA_ERROR: u8 = 65;
 /// Exit 69 — Infrastructure/network failure (sysexits EX_UNAVAILABLE).
 pub const EXIT_UNAVAILABLE: u8 = 69;
 /// Exit 74 — File I/O error (sysexits EX_IOERR).
@@ -117,7 +119,7 @@ pub fn format_cli_error(err: &CliError, no_color: bool) -> String {
 // ============================================================================
 
 /// Exit codes following sysexits convention:
-/// 0 = success, 64 = usage error, 69 = service unavailable (network/partial),
+/// 0 = success, 64 = usage error, 65 = data format error, 69 = service unavailable (network/partial),
 /// 74 = I/O error, 76 = protocol error, 78 = config error
 #[derive(Debug)]
 pub enum CliExit {
@@ -125,6 +127,8 @@ pub enum CliExit {
     Success,
     /// Exit 64 — bad usage / input
     UsageError(String),
+    /// Exit 65 — data format error (malformed XML, etc.)
+    DataFormatError(String),
     /// Exit 69 — network / service unavailable
     NetworkError(String),
     /// Exit 74 — I/O error
@@ -153,6 +157,10 @@ impl std::process::Termination for CliExit {
             CliExit::UsageError(msg) => {
                 eprintln!("Error: {msg}");
                 ExitCode::from(EXIT_USAGE_ERROR)
+            },
+            CliExit::DataFormatError(msg) => {
+                eprintln!("Error: {msg}");
+                ExitCode::from(EXIT_DATA_ERROR)
             },
             CliExit::NetworkError(msg) => {
                 eprintln!("Error: {msg}");
@@ -269,10 +277,19 @@ mod tests {
         assert_eq!(EXIT_EMPTY_DISCOVERY, 2);
         assert_eq!(EXIT_SCRAPER_FAILURE, 3);
         assert_eq!(EXIT_USAGE_ERROR, 64);
+        assert_eq!(EXIT_DATA_ERROR, 65);
         assert_eq!(EXIT_UNAVAILABLE, 69);
         assert_eq!(EXIT_IO_ERROR, 74);
         assert_eq!(EXIT_PROTOCOL, 76);
         assert_eq!(EXIT_CONFIG, 78);
+    }
+
+    // T-1.2: DataFormatError variant maps to exit 65
+    #[test]
+    fn test_cli_exit_data_format_error_exit_code() {
+        let exit = CliExit::DataFormatError("malformed XML".into());
+        let code = exit.report();
+        assert_eq!(code, ExitCode::from(EXIT_DATA_ERROR));
     }
 
     // T-1.3: EmptyDiscovery variant maps to exit 2
@@ -289,6 +306,7 @@ mod tests {
         let cases: Vec<(CliExit, u8)> = vec![
             (CliExit::Success, EXIT_SUCCESS),
             (CliExit::UsageError("test".into()), EXIT_USAGE_ERROR),
+            (CliExit::DataFormatError("test".into()), EXIT_DATA_ERROR),
             (CliExit::NetworkError("test".into()), EXIT_UNAVAILABLE),
             (CliExit::IoError("test".into()), EXIT_IO_ERROR),
             (CliExit::ProtocolError("test".into()), EXIT_PROTOCOL),

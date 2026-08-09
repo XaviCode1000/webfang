@@ -8,7 +8,7 @@
 use crate::application::url_filter::is_allowed;
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl};
-use crate::infrastructure::crawler::{SitemapConfig, SitemapParser, SitemapUrl};
+use crate::infrastructure::crawler::{SitemapConfig, SitemapError, SitemapParser, SitemapUrl};
 use tracing::{info, instrument};
 use url::Url;
 
@@ -190,14 +190,29 @@ fn build_sitemap_parser(
     )
 }
 
-/// Parse a sitemap URL, mapping parse failures to a [`CrawlError::Parse`].
+/// Parse a sitemap URL, mapping parse failures to a [`CrawlError`].
 async fn parse_sitemap(
     parser: &SitemapParser,
     sitemap_url: &str,
 ) -> Result<Vec<SitemapUrl>, CrawlError> {
     let urls = parser.parse_from_url(sitemap_url).await.map_err(|e| {
         tracing::error!("Failed to parse sitemap {}: {}", sitemap_url, e);
-        CrawlError::Parse(e.to_string())
+        // Preserve the specific error type for proper exit code mapping
+        match e {
+            SitemapError::HttpError { status, message } => CrawlError::Http {
+                status,
+                url: message,
+            },
+            SitemapError::XmlError(e) => CrawlError::Parse(format!("XML parsing failed: {e}")),
+            SitemapError::InvalidContentType(ct) => CrawlError::InvalidContentType(ct),
+            SitemapError::SitemapNotFound(url) => CrawlError::SitemapNotFound(url),
+            SitemapError::MaxDepthExceeded => CrawlError::SitemapDepthExceeded,
+            SitemapError::NoUrlsFound => CrawlError::SitemapEmpty,
+            SitemapError::DecompressionError(e) => {
+                CrawlError::Parse(format!("decompression failed: {e}"))
+            },
+            other => CrawlError::Parse(other.to_string()),
+        }
     })?;
     tracing::info!("Parsed {} total URLs from sitemap", urls.len());
     Ok(urls)

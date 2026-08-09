@@ -175,6 +175,10 @@ pub enum ScraperError {
     #[error("{0}")]
     CrawlLimit(String),
 
+    /// Sitemap contained no URLs (valid XML but empty urlset)
+    #[error("no URLs found in sitemap")]
+    SitemapEmpty,
+
     /// Sitemap not found during auto-discovery
     #[error("sitemap not found for {0}")]
     SitemapNotFound(String),
@@ -429,6 +433,7 @@ impl ScraperError {
             Self::Semantic(inner) => inner.classify(),
             Self::Internal(_) => ErrorClass::InternalFatal,
             Self::CrawlLimit(_) => ErrorClass::PermanentFatal,
+            Self::SitemapEmpty => ErrorClass::PermanentFatal,
             Self::SitemapNotFound(_) => ErrorClass::PermanentFatal,
             // Non-transient Network/Download (e.g. DNS resolution, TLS errors)
             Self::Network(_) | Self::Download(_) => ErrorClass::InternalFatal,
@@ -668,7 +673,7 @@ impl From<crate::domain::error::CrawlError> for ScraperError {
             } => ScraperError::Internal(format!(
                 "resource exhausted: {resource:?} limit={limit} actual={actual}"
             )),
-            CrawlError::SitemapEmpty => ScraperError::SitemapNotFound("empty sitemap".to_string()),
+            CrawlError::SitemapEmpty => ScraperError::SitemapEmpty,
             CrawlError::SitemapDepthExceeded => {
                 ScraperError::CrawlLimit("sitemap depth exceeded".to_string())
             },

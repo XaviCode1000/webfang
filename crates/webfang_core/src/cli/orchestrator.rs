@@ -14,6 +14,7 @@ use crate::cli::parse::parse_asset_naming;
 use crate::cli::scrape_flow::{apply_resume_mode, scrape_urls};
 use crate::cli::url_discovery::discover_urls;
 use crate::domain::http_config::HttpClientConfig;
+use crate::error::ScraperError;
 use crate::CrawlerConfig;
 use crate::ScraperConfig;
 
@@ -312,7 +313,37 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
 
         let discovered_urls = match discover_urls(&crawler_config, opts).await {
             Err(e) => {
-                return Err(CliExit::NetworkError(format!("URL discovery failed: {e}")));
+                // Map specific sitemap errors to their standardized exit codes
+                // per issue #656 (Bug 8: Standardized Exit Codes)
+                let exit = match &e {
+                    // HTTP 404/5xx from sitemap fetch → exit 2 (not found, not network error)
+                    ScraperError::Http { status, .. } if *status == 404 || *status >= 500 => {
+                        CliExit::EmptyDiscovery(format!("Sitemap not found (HTTP {status})"))
+                    },
+                    // Sitemap not found (auto-discovery failed) → exit 2
+                    ScraperError::SitemapNotFound(_) => {
+                        CliExit::EmptyDiscovery("No sitemap found at the expected URL".into())
+                    },
+                    // Sitemap empty (valid XML but no URLs) → exit 2
+                    ScraperError::SitemapEmpty => {
+                        CliExit::EmptyDiscovery("No URLs discovered from sitemaps".into())
+                    },
+                    // Malformed XML → exit 65 (data format error)
+                    ScraperError::Internal(msg) if msg.contains("parse") || msg.contains("XML") => {
+                        CliExit::DataFormatError(format!("Malformed sitemap XML: {msg}"))
+                    },
+                    // Invalid content type → exit 65 (data format error)
+                    ScraperError::Internal(msg) if msg.contains("invalid content type") => {
+                        CliExit::DataFormatError(format!("Invalid sitemap content type: {msg}"))
+                    },
+                    // Sitemap max depth exceeded → exit 69 (already mapped via CrawlLimit)
+                    ScraperError::CrawlLimit(msg) if msg.contains("sitemap depth") => {
+                        CliExit::NetworkError(format!("Sitemap depth limit exceeded: {msg}"))
+                    },
+                    // Default: network error (exit 69)
+                    _ => CliExit::NetworkError(format!("URL discovery failed: {e}")),
+                };
+                return Err(exit);
             },
             // Exit 2 only when the sitemap is the source of truth. In DOM mode an
             // empty discovery is not fatal: `plan_urls` injects the seed URL so

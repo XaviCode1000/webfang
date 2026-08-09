@@ -210,7 +210,7 @@ async fn test_parse_http_404_returns_no_urls() {
     let result = parser.parse_from_url(&url).await;
 
     assert!(
-        matches!(result, Err(SitemapError::HttpError(_))),
+        matches!(result, Err(SitemapError::HttpError { .. })),
         "expected HttpError for 404, got {result:?}"
     );
 }

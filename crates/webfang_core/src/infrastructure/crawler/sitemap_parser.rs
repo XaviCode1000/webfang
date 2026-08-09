@@ -49,8 +49,13 @@ pub enum SitemapError {
     InvalidUrl(#[from] url::ParseError),
 
     /// HTTP request to fetch the sitemap failed
-    #[error("http request failed: {0}")]
-    HttpError(String),
+    #[error("http request failed: {status}: {message}")]
+    HttpError {
+        /// HTTP status code
+        status: u16,
+        /// Error message
+        message: String,
+    },
 
     /// XML parsing of sitemap content failed
     #[error("XML parsing failed: {0}")]
@@ -91,6 +96,10 @@ pub enum SitemapError {
     /// Response Content-Type is not XML
     #[error("invalid content type: expected XML, got {0}")]
     InvalidContentType(String),
+
+    /// Decompression of compressed sitemap failed
+    #[error("decompression failed: {0}")]
+    DecompressionError(String),
 }
 
 /// Sitemap URL entry with metadata per sitemaps.org spec
@@ -298,7 +307,10 @@ impl SitemapParser {
     fn validate_response(status: wreq::StatusCode, content_type: &str, url: &str) -> Result<()> {
         if !status.is_success() {
             tracing::warn!("Sitemap URL returned non-2xx status: {status} from {url}");
-            return Err(SitemapError::HttpError(format!("server returned {status}")));
+            return Err(SitemapError::HttpError {
+                status: status.as_u16(),
+                message: format!("server returned {status}"),
+            });
         }
         let is_xml = content_type.is_empty()
             || content_type.contains("application/xml")
@@ -336,7 +348,10 @@ impl SitemapParser {
                 async move { client.get(&url).send().await }
             })
             .await
-            .map_err(|e| SitemapError::HttpError(e.to_string()))?;
+            .map_err(|e| SitemapError::HttpError {
+                status: 0, // Unknown status for network/connection errors
+                message: e.to_string(),
+            })?;
 
         // Validate response: status checked before content-type (issue #590, bug #9).
         let status = response.status();
@@ -353,7 +368,10 @@ impl SitemapParser {
         let mut raw_bytes = Vec::with_capacity(8192);
         let mut total_bytes = 0usize;
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| SitemapError::HttpError(e.to_string()))?;
+            let chunk = chunk.map_err(|e| SitemapError::HttpError {
+                status: 0, // Stream errors are connection errors
+                message: e.to_string(),
+            })?;
             total_bytes += chunk.len();
             if total_bytes > self.config.max_response_size {
                 tracing::warn!(
@@ -373,7 +391,7 @@ impl SitemapParser {
             .compression_handler
             .detect_and_decompress(&raw_bytes, url)
             .await
-            .map_err(|e| SitemapError::HttpError(e.to_string()))?;
+            .map_err(|e| SitemapError::DecompressionError(e.to_string()))?;
 
         // Parse using unified decompression handle
         let urls = if decompressed.is_empty() {
@@ -389,14 +407,20 @@ impl SitemapParser {
             // [3.7] MemoryManager: handle disk swapping for large index
             self.memory_manager
                 .handle_disk_swapping(&urls)
-                .map_err(|e| SitemapError::HttpError(e.to_string()))?;
+                .map_err(|e| SitemapError::HttpError {
+                    status: 0,
+                    message: format!("memory management failed: {e}"),
+                })?;
 
             self.parse_sitemap_index(&urls, depth - 1).await
         } else {
             // [3.7] MemoryManager: check memory limits before returning
             self.memory_manager
                 .handle_disk_swapping(&urls)
-                .map_err(|e| SitemapError::HttpError(e.to_string()))?;
+                .map_err(|e| SitemapError::HttpError {
+                    status: 0,
+                    message: format!("memory management failed: {e}"),
+                })?;
 
             // [3.8] BatchProcessor: apply crawl budget optimization
             let optimized_urls = self.batch_processor.apply_crawl_budget(urls, &self.config);
@@ -958,8 +982,11 @@ mod tests {
             .await;
 
         match result {
-            Err(SitemapError::HttpError(msg)) => {
-                assert!(msg.contains("404"), "error must reference 404, got: {msg}");
+            Err(SitemapError::HttpError { message, .. }) => {
+                assert!(
+                    message.contains("404"),
+                    "error must reference 404, got: {message}"
+                );
             },
             other => panic!("expected SitemapError::HttpError with 404, got: {other:?}"),
         }
