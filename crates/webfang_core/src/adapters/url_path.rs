@@ -122,9 +122,10 @@ impl UrlPath {
     /// Unlike the old behavior that mapped ALL trailing-slash URLs to `index.md`
     /// (causing collisions), this converts the full path into a unique filename:
     /// - `/` → `index.md`
-    /// - `/blog/post1/` → `blog-post1.md`
-    /// - `/blog/post2/` → `blog-post2.md`
-    /// - `/docs/api/v2/users/` → `docs-api-v2-users.md`
+    /// - `/blog/post1/` → `blog-post1_.md`
+    /// - `/blog/post2/` → `blog-post2_.md`
+    /// - `/docs/api/v2/users/` → `docs-api-v2-users_.md`
+    /// - Trailing-slash URLs get a `_` suffix to avoid colliding with `/blog/post1`
     ///
     /// # Security
     ///
@@ -167,6 +168,16 @@ impl UrlPath {
             format!("{sanitized}_safe")
         } else {
             sanitized
+        };
+
+        // Distinguish trailing-slash URLs from their slash-less counterparts
+        // (e.g. /a/ vs /a) so the writer does not silently overwrite one with
+        // the other. `ends_with_slash` is computed from the original input and
+        // survives the `raw` trimming above, so it reliably flags directory URLs.
+        let final_name = if self.ends_with_slash && !final_name.is_empty() {
+            format!("{final_name}_")
+        } else {
+            final_name
         };
 
         format!("{final_name}.{extension}")
@@ -273,7 +284,7 @@ impl OutputPath {
     /// Full path: ./output/{domain}/{dir}/{filename}
     ///
     /// Always uses unique filename mapping to avoid collisions:
-    /// `/blog/post1/` → `blog-post1.md` (not `index.md`)
+    /// `/blog/post1/` → `blog-post1_.md` (not `index.md`)
     pub fn to_full_path(&self) -> String {
         self.to_full_path_with_format(None)
     }
@@ -372,7 +383,7 @@ mod tests {
     fn test_url_path_nested_trailing_slash_unique() {
         // Trailing-slash URLs now produce unique filenames (no index.md collision)
         let path = UrlPath::from_url_path("/docs/api/");
-        assert_eq!(path.to_safe_filename(), "docs-api.md");
+        assert_eq!(path.to_safe_filename(), "docs-api_.md");
         assert_eq!(path.to_directory(), "docs/");
     }
 
@@ -381,6 +392,27 @@ mod tests {
         let path = UrlPath::from_url_path("/docs/api");
         assert_eq!(path.to_safe_filename(), "docs-api.md");
         assert_eq!(path.to_directory(), "docs/");
+    }
+
+    #[test]
+    fn test_to_safe_filename_distinguishes_trailing_slash() {
+        // /a/ and /a are distinct resources but both would serialize to "a.md"
+        // without the trailing-slash marker, causing silent data loss.
+        let dir = UrlPath::from_url_path("/a/");
+        let file = UrlPath::from_url_path("/a");
+        assert_ne!(dir.to_safe_filename(), file.to_safe_filename());
+        assert_eq!(dir.to_safe_filename(), "a_.md");
+        assert_eq!(file.to_safe_filename(), "a.md");
+
+        let nested_dir = UrlPath::from_url_path("/docs/api/");
+        let nested_file = UrlPath::from_url_path("/docs/api");
+        assert_ne!(
+            nested_dir.to_safe_filename(),
+            nested_file.to_safe_filename()
+        );
+        assert!(nested_dir.to_safe_filename().contains("api_"));
+        assert_eq!(nested_dir.to_safe_filename(), "docs-api_.md");
+        assert_eq!(nested_file.to_safe_filename(), "docs-api.md");
     }
 
     #[test]
@@ -402,9 +434,9 @@ mod tests {
         let path2 = UrlPath::from_url_path("/blog/post2/");
         let path3 = UrlPath::from_url_path("/blog/");
 
-        assert_eq!(path1.to_safe_filename(), "blog-post1.md");
-        assert_eq!(path2.to_safe_filename(), "blog-post2.md");
-        assert_eq!(path3.to_safe_filename(), "blog.md");
+        assert_eq!(path1.to_safe_filename(), "blog-post1_.md");
+        assert_eq!(path2.to_safe_filename(), "blog-post2_.md");
+        assert_eq!(path3.to_safe_filename(), "blog_.md");
 
         // All must be unique
         assert_ne!(path1.to_safe_filename(), path2.to_safe_filename());
@@ -418,7 +450,7 @@ mod tests {
         assert_eq!(output.to_folder_path(), "./output/geminicli.com/docs/");
         assert_eq!(
             output.to_full_path(),
-            "./output/geminicli.com/docs/docs-api.md"
+            "./output/geminicli.com/docs/docs-api_.md"
         );
     }
 
