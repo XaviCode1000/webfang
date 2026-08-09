@@ -206,7 +206,7 @@ async fn test_single_page_custom_timeout_is_used_by_scrape_client() {
                 .set_body_string("slow response content")
                 .set_delay(Duration::from_secs(2)),
         )
-        .expect(1)
+        .expect(4) // 1 initial + 3 retries (timeout is transient and retried, #649)
         .named("single-page timeout request")
         .mount(&mock_server)
         .await;

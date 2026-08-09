@@ -396,9 +396,21 @@ impl ScraperError {
         match self {
             // Network/Download: transient if the wrapped source is a known-retryable
             // io::Error kind (timeout, connection reset, etc.)
-            Self::Network(e) | Self::Download(e) if is_transient_network(e.as_ref()) => {
-                ErrorClass::TransientRetriable
+            // Download: delegate to the typed `DownloadError::classify` when the
+            // boxed cause is one (#649), so DNS/TLS/io-kind precision survives the
+            // erasure. Falls back to the source-chain heuristic otherwise.
+            Self::Download(e) => {
+                if let Some(dl_err) =
+                    e.downcast_ref::<crate::infrastructure::downloader::DownloadError>()
+                {
+                    dl_err.classify()
+                } else if is_transient_network(e.as_ref()) {
+                    ErrorClass::TransientRetriable
+                } else {
+                    ErrorClass::InternalFatal
+                }
             },
+            Self::Network(e) if is_transient_network(e.as_ref()) => ErrorClass::TransientRetriable,
             Self::Http { status, .. } if *status >= 500 => ErrorClass::TransientRetriable,
             Self::Http { status, .. } if *status == 429 => ErrorClass::TransientBackoff,
             Self::GlobalTimeout => ErrorClass::TransientBackoff,
@@ -430,8 +442,8 @@ impl ScraperError {
             Self::Internal(_) => ErrorClass::InternalFatal,
             Self::CrawlLimit(_) => ErrorClass::PermanentFatal,
             Self::SitemapNotFound(_) => ErrorClass::PermanentFatal,
-            // Non-transient Network/Download (e.g. DNS resolution, TLS errors)
-            Self::Network(_) | Self::Download(_) => ErrorClass::InternalFatal,
+            // Non-transient Network (e.g. DNS resolution, TLS errors)
+            Self::Network(_) => ErrorClass::InternalFatal,
         }
     }
 }

@@ -16,6 +16,7 @@ use wreq::Client;
 use wreq_util::Profile;
 
 use super::{Cookie, DownloadError, Downloader, FetchedPage};
+use crate::error::ErrorClass;
 use crate::infrastructure::user_agent::UserAgentCache;
 
 /// Estimated memory cost of a wreq client instance in bytes.
@@ -49,8 +50,7 @@ pub struct WreqDownloader {
     /// disabled: the operator asked to be identified exactly as configured.
     pinned_ua: Option<String>,
     max_retries: u32,
-    /// Base delay for exponential backoff — reserved for future jitter implementation.
-    #[allow(dead_code)]
+    /// Base delay for the exponential backoff applied to retriable failures.
     backoff_base_ms: u64,
     backoff_max_ms: u64,
 }
@@ -262,70 +262,33 @@ impl WreqDownloader {
             if e.is_timeout() {
                 DownloadError::Timeout(self.timeout_secs)
             } else {
-                DownloadError::Network(Box::new(e))
+                DownloadError::from(e)
             }
         })
     }
 
-    #[instrument(
-        skip(self),
-        fields(
-            url = %url,
-            // D5: stable identity of the shared pooled `Client` (Arc inner ptr).
-            // Constant across fetches => observable proof of connection-pool reuse
-            // (no silent re-handshake per request). See MAPA item 7.
-            client_id = %format!("{:p}", Arc::as_ptr(&self.client))
-        )
-    )]
-    async fn fetch_inner(&self, url: &Url) -> Result<FetchedPage, DownloadError> {
-        debug!("Fetching URL: {}", url);
+    /// Calculate the exponential backoff delay for a given attempt, capped at
+    /// `backoff_max_ms`.
+    fn backoff_delay_ms(&self, attempt: u32) -> u64 {
+        self.backoff_base_ms
+            .saturating_mul(2_u64.saturating_pow(attempt))
+            .min(self.backoff_max_ms)
+    }
 
-        let mut response = self.send_request(url, None).await?;
-        let mut status = response.status().as_u16();
-
-        // 403: one implicit retry with rotated User-Agent (mirrors HttpClient).
-        // Pinned UA (#503): the operator asked to be identified exactly as
-        // configured ("--user-agent QA-Bot/9.9" means QA-Bot or fail), so pool
-        // rotation is skipped and the 403 falls through to normal error handling.
-        if status == 403 && self.pinned_ua.is_none() {
-            warn!("403 Forbidden from {url} — retrying with rotated User-Agent");
-            let agents = UserAgentCache::fallback_agents();
-            let rotated_ua = agents.get(1).map(String::as_str);
-            response = self.send_request(url, rotated_ua).await?;
-            status = response.status().as_u16();
+    /// Sleep before the next attempt — skipped on the final one, where the
+    /// loop is about to exit and the delay would only add dead latency.
+    async fn sleep_before_retry(&self, attempt: u32, delay_ms: u64) {
+        if attempt < self.max_retries {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         }
+    }
 
-        // 429: backoff retry up to max_retries times, honouring Retry-After.
-        if status == 429 {
-            let delay_ms = parse_retry_after_ms(&response, self.backoff_max_ms);
-            warn!(
-                delay_ms = delay_ms,
-                "429 Rate Limited from {url} — retrying after {delay_ms}ms"
-            );
-            let mut succeeded = false;
-            for _ in 0..self.max_retries {
-                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                response = self.send_request(url, None).await?;
-                status = response.status().as_u16();
-                if response.status().is_success() {
-                    succeeded = true;
-                    break;
-                }
-            }
-            if !succeeded {
-                return Err(DownloadError::Http {
-                    status: 429,
-                    message: "HTTP 429".to_string(),
-                });
-            }
-        }
-
-        // Remaining non-2xx → terminal error.
-        if !response.status().is_success() {
-            let message = format!("HTTP {status}");
-            return Err(DownloadError::Http { status, message });
-        }
-
+    /// Consume a successful response into a [`FetchedPage`].
+    async fn build_page(
+        &self,
+        response: wreq::Response,
+        url: &Url,
+    ) -> Result<FetchedPage, DownloadError> {
         let status = response.status().as_u16();
 
         // Extract cookies before consuming the response body
@@ -347,10 +310,7 @@ impl WreqDownloader {
             })
             .collect();
 
-        let html = response
-            .text()
-            .await
-            .map_err(|e| DownloadError::Network(Box::new(e)))?;
+        let html = response.text().await.map_err(DownloadError::from)?;
 
         debug!(
             "Fetched {} ({} bytes, {} cookies)",
@@ -366,6 +326,107 @@ impl WreqDownloader {
             headers,
             cookies,
         })
+    }
+
+    #[instrument(
+        skip(self),
+        fields(
+            url = %url,
+            // D5: stable identity of the shared pooled `Client` (Arc inner ptr).
+            // Constant across fetches => observable proof of connection-pool reuse
+            // (no silent re-handshake per request). See MAPA item 7.
+            client_id = %format!("{:p}", Arc::as_ptr(&self.client))
+        )
+    )]
+    async fn fetch_inner(&self, url: &Url) -> Result<FetchedPage, DownloadError> {
+        debug!("Fetching URL: {}", url);
+
+        let mut last_status: u16 = 0;
+        let mut last_error: Option<DownloadError> = None;
+
+        for attempt in 0..=self.max_retries {
+            let response = match self.send_request(url, None).await {
+                Ok(res) => res,
+                Err(dl_err) => {
+                    if matches!(dl_err.classify(), ErrorClass::PermanentFatal) {
+                        return Err(dl_err);
+                    }
+                    warn!(
+                        attempt = attempt,
+                        max_retries = self.max_retries,
+                        error = %dl_err,
+                        "Transport failure fetching {url} — retrying"
+                    );
+                    last_error = Some(dl_err);
+                    self.sleep_before_retry(attempt, self.backoff_delay_ms(attempt))
+                        .await;
+                    continue;
+                },
+            };
+
+            last_status = response.status().as_u16();
+            last_error = None;
+
+            if response.status().is_success() {
+                return self.build_page(response, url).await;
+            }
+
+            // 403: one implicit retry with rotated User-Agent (mirrors HttpClient).
+            // Pinned UA (#503): the operator asked to be identified exactly as
+            // configured, so pool rotation is skipped and the 403 falls through
+            // to normal terminal-error handling.
+            if last_status == 403 && attempt == 0 && self.pinned_ua.is_none() {
+                if let Some(page) = self.retry_with_rotated_ua(url).await? {
+                    return Ok(page);
+                }
+            }
+
+            // Unified retry for 429 (rate limit) and 5xx (server error, #649).
+            if last_status == 429 || (500..=599).contains(&last_status) {
+                let delay_ms = if last_status == 429 {
+                    parse_retry_after_ms(&response, self.backoff_max_ms)
+                } else {
+                    self.backoff_delay_ms(attempt)
+                };
+                warn!(
+                    attempt = attempt,
+                    max_retries = self.max_retries,
+                    status = last_status,
+                    delay_ms = delay_ms,
+                    "Retrying {url} after status {last_status}"
+                );
+                self.sleep_before_retry(attempt, delay_ms).await;
+                continue;
+            }
+
+            // Terminal error (4xx and anything else non-retriable).
+            return Err(DownloadError::Http {
+                status: last_status,
+                message: format!("HTTP {last_status}"),
+            });
+        }
+
+        // Retries exhausted — surface the LAST observed status, not a hardcoded
+        // one (#649 Bug 5): a run that started at 429 and ended at 500 must
+        // report 500.
+        Err(last_error.unwrap_or(DownloadError::Http {
+            status: last_status,
+            message: format!("retries exhausted at status {last_status}"),
+        }))
+    }
+
+    /// One implicit retry under a rotated pool User-Agent after a 403.
+    ///
+    /// Returns `Ok(Some(page))` when the rotated identity succeeds, `Ok(None)`
+    /// when it does not (the caller keeps its normal retry/terminal logic).
+    async fn retry_with_rotated_ua(&self, url: &Url) -> Result<Option<FetchedPage>, DownloadError> {
+        warn!("403 Forbidden from {url} — retrying with rotated User-Agent");
+        let agents = UserAgentCache::fallback_agents();
+        let rotated_ua = agents.get(1).map(String::as_str);
+        match self.send_request(url, rotated_ua).await {
+            Ok(res) if res.status().is_success() => self.build_page(res, url).await.map(Some),
+            _ => Ok(None),
+        }
     }
 }
 
@@ -745,6 +806,74 @@ mod wiremock_tests {
             .expect("second fetch succeeds with the pinned UA");
         assert_eq!(page.status, 200);
         assert_eq!(page.html, "<html>still pinned</html>");
+    }
+
+    // ------------------------------------------------------------------
+    // Network resilience (#649)
+    // ------------------------------------------------------------------
+
+    /// 5xx must trigger the unified retry loop: 1 initial attempt + 3 retries.
+    #[tokio::test]
+    async fn test_5xx_retry_fires() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = Arc::clone(&counter);
+
+        Mock::given(method("GET"))
+            .respond_with(move |_req: &wiremock::Request| {
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(500)
+            })
+            .mount(&server)
+            .await;
+
+        let downloader =
+            WreqDownloader::new(10, 5, Profile::Chrome145, None, 3, 1, 5).expect("client builds");
+        let url: Url = format!("{}/", server.uri()).parse().expect("valid url");
+
+        let result = downloader.fetch(&url).await;
+        assert!(result.is_err(), "5xx exhaustion must surface as an error");
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            4,
+            "Expected 1 + 3 retries = 4 requests"
+        );
+    }
+
+    /// Retry exhaustion must report the LAST observed status, not a hardcoded
+    /// 429 (#649 Bug 5).
+    #[tokio::test]
+    async fn test_429_exhaustion_returns_last_status() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = Arc::clone(&counter);
+
+        Mock::given(method("GET"))
+            .respond_with(move |_req: &wiremock::Request| {
+                let count = counter_clone.fetch_add(1, Ordering::SeqCst);
+                if count < 2 {
+                    ResponseTemplate::new(429).insert_header("retry-after", "0")
+                } else {
+                    ResponseTemplate::new(500)
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let downloader =
+            WreqDownloader::new(10, 5, Profile::Chrome145, None, 3, 1, 5).expect("client builds");
+        let url: Url = format!("{}/", server.uri()).parse().expect("valid url");
+
+        match downloader.fetch(&url).await {
+            Err(DownloadError::Http { status: 500, .. }) => {},
+            other => panic!("Expected status 500, got {other:?}"),
+        }
     }
 
     /// Unpinned baseline: the pre-#503 rotation behavior is preserved —

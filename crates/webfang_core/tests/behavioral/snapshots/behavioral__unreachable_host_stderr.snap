@@ -5,9 +5,12 @@ expression: redacted
   <TIMESTAMP>  WARN <MODULE>: Failed to fetch robots.txt for 127.0.0.1: error sending request for uri (http://127.0.0.1:<PORT>/robots.txt): client error (Connect)
     at <FILE>.rs:<LINE>
 
-  <TIMESTAMP>  WARN <MODULE>: Failed to scrape http://127.0.0.1:<PORT>/: error de red: network error: error sending request for uri (http://127.0.0.1:<PORT>/): client error (Connect)
+  <TIMESTAMP>  WARN <MODULE>: Transport failure fetching http://127.0.0.1:<PORT>/ — retrying, attempt: 0, max_retries: 0, error: I/O error: Connection refused (os error 111)
     at <FILE>.rs:<LINE>
 
-Failed to scrape http://127.0.0.1:<PORT>/: error de red: network error: error sending request for uri (http://127.0.0.1:<PORT>/): client error (Connect)
+  <TIMESTAMP>  WARN <MODULE>: Failed to scrape http://127.0.0.1:<PORT>/: error de red: I/O error: Connection refused (os error 111)
+    at <FILE>.rs:<LINE>
+
+Failed to scrape http://127.0.0.1:<PORT>/: error de red: I/O error: Connection refused (os error 111)
 No pages were successfully scraped
 Error: No pages were successfully scraped

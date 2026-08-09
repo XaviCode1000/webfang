@@ -224,6 +224,11 @@ impl HttpClient {
                         .handle_server_error(url, response, status.as_u16(), &ua)
                         .await
                 },
+                code if (300..=399).contains(&code) => {
+                    // The redirect policy already handled the follow; reaching
+                    // here means the redirect could not be resolved (#649).
+                    return Err(HttpError::ClientError(code));
+                },
                 code if (400..=499).contains(&code) => {
                     return Err(HttpError::ClientError(code));
                 },

@@ -120,6 +120,25 @@ pub enum DownloadError {
     #[error("network error: {0}")]
     Network(#[source] Box<dyn std::error::Error + Send + Sync>),
 
+    /// DNS resolution failure (NXDOMAIN, resolution error).
+    ///
+    /// Distinct from [`Tls`](Self::Tls) and [`Io`](Self::Io) so callers can
+    /// classify a non-resolvable host as permanently fatal (#649).
+    #[error("DNS error: {0}")]
+    Dns(String),
+
+    /// TLS/SSL failure (expired cert, self-signed, hostname mismatch).
+    #[error("TLS error: {0}")]
+    Tls(String),
+
+    /// I/O error with preserved [`std::io::ErrorKind`] for classification.
+    ///
+    /// Mid-body peer drops (`UnexpectedEof`, `ConnectionReset`) reach this
+    /// variant with their kind intact, so retry logic can treat them as
+    /// transient instead of a bug (#649).
+    #[error("I/O error: {0}")]
+    Io(#[source] std::io::Error),
+
     /// HTTP error response (non-2xx status).
     #[error("HTTP {status}: {message}")]
     #[allow(missing_docs)] // enum variant fields can't have pub(crate) visibility
@@ -176,6 +195,9 @@ impl Clone for DownloadError {
                     DownloadError::Internal(e.to_string())
                 }
             },
+            DownloadError::Dns(s) => DownloadError::Dns(s.clone()),
+            DownloadError::Tls(s) => DownloadError::Tls(s.clone()),
+            DownloadError::Io(e) => DownloadError::Io(std::io::Error::new(e.kind(), e.to_string())),
             DownloadError::Http { status, message } => DownloadError::Http {
                 status: *status,
                 message: message.clone(),
@@ -189,6 +211,80 @@ impl Clone for DownloadError {
             DownloadError::Cancelled => DownloadError::Cancelled,
         }
     }
+}
+
+impl From<wreq::Error> for DownloadError {
+    /// Walk the transport error's cause chain to recover a typed variant.
+    ///
+    /// `wreq` erases the root cause behind its own error type, so DNS, TLS and
+    /// I/O failures are otherwise indistinguishable (#649). The first typed
+    /// `io::Error` wins (kind preserved); otherwise the cause text is matched
+    /// for DNS/TLS markers before falling back to
+    /// [`Network`](DownloadError::Network).
+    fn from(e: wreq::Error) -> Self {
+        use std::error::Error as _;
+
+        let mut source = e.source();
+        while let Some(s) = source {
+            if let Some(io_err) = s.downcast_ref::<std::io::Error>() {
+                return DownloadError::Io(std::io::Error::new(io_err.kind(), io_err.to_string()));
+            }
+            let msg = s.to_string().to_lowercase();
+            if msg.contains("dns") || msg.contains("resolve") {
+                return DownloadError::Dns(s.to_string());
+            }
+            if msg.contains("tls") || msg.contains("certificate") || msg.contains("ssl") {
+                return DownloadError::Tls(s.to_string());
+            }
+            source = s.source();
+        }
+        DownloadError::Network(Box::new(e))
+    }
+}
+
+impl DownloadError {
+    /// Classify this download error by operational severity.
+    ///
+    /// Mirrors [`crate::error::ScraperError::classify`] but operates on the
+    /// typed variants, so no string-matching heuristic is needed (#649).
+    #[must_use]
+    pub fn classify(&self) -> crate::error::ErrorClass {
+        use crate::error::ErrorClass;
+
+        match self {
+            Self::Io(e) if is_transient_io(e) => ErrorClass::TransientRetriable,
+            Self::Io(_) => ErrorClass::InternalFatal,
+            Self::Dns(_) | Self::Tls(_) => ErrorClass::PermanentFatal,
+            Self::Timeout(_) => ErrorClass::TransientBackoff,
+            Self::Http { status, .. } if (500..=599).contains(status) => {
+                ErrorClass::TransientRetriable
+            },
+            Self::Http { status: 429, .. } => ErrorClass::TransientBackoff,
+            Self::Http { status, .. } if (400..=499).contains(status) => ErrorClass::PermanentFatal,
+            Self::Http { .. } => ErrorClass::PermanentFatal,
+            Self::WafChallenge(_) | Self::SpaDetected(_) => ErrorClass::PermanentFatal,
+            Self::InvalidUrl(_) => ErrorClass::PermanentFatal,
+            Self::Network(_) => ErrorClass::InternalFatal,
+            Self::Internal(_) => ErrorClass::InternalFatal,
+            Self::ResourceExhausted(_) => ErrorClass::InternalFatal,
+            Self::Cancelled => ErrorClass::InternalFatal,
+        }
+    }
+}
+
+/// Whether an I/O failure is a recoverable transport hiccup.
+///
+/// `UnexpectedEof` covers the mid-body peer drop that previously surfaced as
+/// `InternalFatal` (exit 3) instead of a retriable transport error (#649).
+fn is_transient_io(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind::{
+        BrokenPipe, ConnectionAborted, ConnectionReset, TimedOut, UnexpectedEof,
+    };
+
+    matches!(
+        e.kind(),
+        ConnectionReset | ConnectionAborted | BrokenPipe | TimedOut | UnexpectedEof
+    )
 }
 
 impl From<DownloadError> for crate::domain::CrawlError {
@@ -251,6 +347,78 @@ mod tests {
 
         let err = DownloadError::Timeout(30);
         assert!(err.to_string().contains("30"));
+    }
+
+    #[test]
+    fn test_dns_error_classifies_as_permanent_fatal() {
+        let err = DownloadError::Dns("NXDOMAIN: example.invalid".into());
+        assert_eq!(err.classify(), crate::error::ErrorClass::PermanentFatal);
+    }
+
+    #[test]
+    fn test_tls_error_classifies_as_permanent_fatal() {
+        let err = DownloadError::Tls("certificate expired".into());
+        assert_eq!(err.classify(), crate::error::ErrorClass::PermanentFatal);
+    }
+
+    #[test]
+    fn test_connection_reset_is_transient() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "peer closed");
+        let err = DownloadError::Io(io_err);
+        assert_eq!(err.classify(), crate::error::ErrorClass::TransientRetriable);
+    }
+
+    #[test]
+    fn test_peer_drop_mid_body_is_transient() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "truncated");
+        let err = DownloadError::Io(io_err);
+        assert_eq!(
+            err.classify(),
+            crate::error::ErrorClass::TransientRetriable,
+            "Peer drop during body read should be transient, not InternalFatal"
+        );
+    }
+
+    #[test]
+    fn test_scraper_error_download_dns_classifies_as_permanent_fatal() {
+        use crate::error::ScraperError;
+        let dl_err = DownloadError::Dns("NXDOMAIN".into());
+        let scraper: ScraperError = dl_err.into();
+        assert_eq!(scraper.classify(), crate::error::ErrorClass::PermanentFatal);
+    }
+
+    #[test]
+    fn test_scraper_error_download_connection_reset_is_transient() {
+        use crate::error::ScraperError;
+        let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
+        let dl_err = DownloadError::Io(io_err);
+        let scraper: ScraperError = dl_err.into();
+        assert_eq!(
+            scraper.classify(),
+            crate::error::ErrorClass::TransientRetriable
+        );
+    }
+
+    #[test]
+    fn test_download_error_clone_preserves_new_variants() {
+        let dns = DownloadError::Dns("NXDOMAIN".into()).clone();
+        assert!(matches!(dns, DownloadError::Dns(ref s) if s == "NXDOMAIN"));
+
+        let tls = DownloadError::Tls("expired".into()).clone();
+        assert!(matches!(tls, DownloadError::Tls(ref s) if s == "expired"));
+
+        let io = DownloadError::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "truncated",
+        ))
+        .clone();
+        match io {
+            DownloadError::Io(e) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+                assert!(e.to_string().contains("truncated"));
+            },
+            other => panic!("expected Io variant, got {other:?}"),
+        }
     }
 
     #[test]

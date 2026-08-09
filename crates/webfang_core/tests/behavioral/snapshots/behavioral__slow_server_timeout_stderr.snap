@@ -2,6 +2,9 @@
 source: crates/webfang_core/tests/behavioral/main.rs
 expression: redacted
 ---
+  <TIMESTAMP>  WARN <MODULE>: Transport failure fetching http://127.0.0.1:<PORT>/slow — retrying, attempt: 0, max_retries: 0, error: request timed out after 1s
+    at <FILE>.rs:<LINE>
+
   <TIMESTAMP>  WARN <MODULE>: Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: request timed out after 1s
     at <FILE>.rs:<LINE>
 
