@@ -356,14 +356,26 @@ mod tests {
         // Table of (error, expected class, label) — keeps classification rules
         // in one place instead of N near-identical `assert_eq!` tests.
         let cases: &[(DownloadError, ErrorClass)] = &[
-            (DownloadError::Dns("NXDOMAIN".into()), ErrorClass::PermanentFatal),
-            (DownloadError::Tls("certificate expired".into()), ErrorClass::PermanentFatal),
             (
-                DownloadError::Io(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "peer")),
+                DownloadError::Dns("NXDOMAIN".into()),
+                ErrorClass::PermanentFatal,
+            ),
+            (
+                DownloadError::Tls("certificate expired".into()),
+                ErrorClass::PermanentFatal,
+            ),
+            (
+                DownloadError::Io(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "peer",
+                )),
                 ErrorClass::TransientRetriable,
             ),
             (
-                DownloadError::Io(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "trunc")),
+                DownloadError::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "trunc",
+                )),
                 ErrorClass::TransientRetriable,
             ),
             (
@@ -371,9 +383,27 @@ mod tests {
                 ErrorClass::InternalFatal,
             ),
             (DownloadError::Timeout(1), ErrorClass::TransientBackoff),
-            (DownloadError::Http { status: 503, message: "x".into() }, ErrorClass::TransientRetriable),
-            (DownloadError::Http { status: 429, message: "x".into() }, ErrorClass::TransientBackoff),
-            (DownloadError::Http { status: 404, message: "x".into() }, ErrorClass::PermanentFatal),
+            (
+                DownloadError::Http {
+                    status: 503,
+                    message: "x".into(),
+                },
+                ErrorClass::TransientRetriable,
+            ),
+            (
+                DownloadError::Http {
+                    status: 429,
+                    message: "x".into(),
+                },
+                ErrorClass::TransientBackoff,
+            ),
+            (
+                DownloadError::Http {
+                    status: 404,
+                    message: "x".into(),
+                },
+                ErrorClass::PermanentFatal,
+            ),
         ];
         for (err, expected) in cases {
             assert_eq!(err.classify(), *expected, "variant classification mismatch");
