@@ -348,7 +348,13 @@ impl WreqDownloader {
             let response = match self.send_request(url, None).await {
                 Ok(res) => res,
                 Err(dl_err) => {
-                    if matches!(dl_err.classify(), ErrorClass::PermanentFatal) {
+                    // Per-request timeouts are the configured ceiling: retrying against
+                    // the same dead peer doubles wall time without any chance of success.
+                    // Mid-body transients (Io::ConnectionReset / UnexpectedEof) DO retry
+                    // (#649 mid-body transient fix). Only Timeout is terminal here.
+                    if matches!(dl_err, DownloadError::Timeout(_))
+                        || matches!(dl_err.classify(), ErrorClass::PermanentFatal)
+                    {
                         return Err(dl_err);
                     }
                     warn!(
@@ -375,9 +381,28 @@ impl WreqDownloader {
             // Pinned UA (#503): the operator asked to be identified exactly as
             // configured, so pool rotation is skipped and the 403 falls through
             // to normal terminal-error handling.
+            //
+            // IMPORTANT: The rotated-UA retry MUST capture its response and status
+            // so the unified retry loop can correctly handle 429/5xx that the
+            // rotated attempt may return. The old helper `retry_with_rotated_ua`
+            // discarded the non-2xx response, causing 403→429→200 sequences to
+            // fail because the 429 was silently consumed.
             if last_status == 403 && attempt == 0 && self.pinned_ua.is_none() {
-                if let Some(page) = self.retry_with_rotated_ua(url).await? {
-                    return Ok(page);
+                let agents = UserAgentCache::fallback_agents();
+                let rotated_ua = agents.get(1).map(String::as_str);
+                warn!("403 Forbidden from {url} — retrying with rotated User-Agent");
+                match self.send_request(url, rotated_ua).await {
+                    Ok(res) if res.status().is_success() => {
+                        return self.build_page(res, url).await;
+                    }
+                    Ok(res) => {
+                        // Rotated retry returned non-2xx (e.g., 429, 500).
+                        // Capture its status and continue the loop so unified
+                        // retry logic (429/5xx branch below) handles it.
+                        last_status = res.status().as_u16();
+                        continue;
+                    }
+                    Err(e) => return Err(e),
                 }
             }
 
@@ -413,20 +438,6 @@ impl WreqDownloader {
             status: last_status,
             message: format!("retries exhausted at status {last_status}"),
         }))
-    }
-
-    /// One implicit retry under a rotated pool User-Agent after a 403.
-    ///
-    /// Returns `Ok(Some(page))` when the rotated identity succeeds, `Ok(None)`
-    /// when it does not (the caller keeps its normal retry/terminal logic).
-    async fn retry_with_rotated_ua(&self, url: &Url) -> Result<Option<FetchedPage>, DownloadError> {
-        warn!("403 Forbidden from {url} — retrying with rotated User-Agent");
-        let agents = UserAgentCache::fallback_agents();
-        let rotated_ua = agents.get(1).map(String::as_str);
-        match self.send_request(url, rotated_ua).await {
-            Ok(res) if res.status().is_success() => self.build_page(res, url).await.map(Some),
-            _ => Ok(None),
-        }
     }
 }
 
