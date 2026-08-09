@@ -63,7 +63,7 @@ async fn test_parse_valid_sitemap_from_mock_server() {
 
     assert_eq!(urls.len(), 3, "should extract 3 URLs from sitemap");
 
-    let strings: Vec<String> = urls.iter().map(|u| u.to_string()).collect();
+    let strings: Vec<String> = urls.iter().map(|u| u.url.to_string()).collect();
     assert!(strings.contains(&"https://example.com/page1".to_string()));
     assert!(strings.contains(&"https://example.com/page2".to_string()));
     assert!(strings.contains(&"https://example.com/page3".to_string()));
@@ -109,7 +109,7 @@ async fn test_parse_sitemap_with_namespaces() {
     let urls = parser.parse_from_url(&url).await.unwrap();
 
     assert_eq!(urls.len(), 1, "should extract the one loc URL");
-    assert_eq!(urls[0].as_str(), "https://example.com/gallery");
+    assert_eq!(urls[0].url.as_str(), "https://example.com/gallery");
 }
 
 // ===== EDGE CASES =====

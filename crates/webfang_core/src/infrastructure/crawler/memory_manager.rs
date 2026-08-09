@@ -4,6 +4,7 @@
 //! and disk swapping for extremely large datasets.
 
 use crate::domain::UrlBatch;
+use crate::infrastructure::crawler::SitemapUrl;
 use std::collections::VecDeque;
 use url::Url;
 
@@ -93,7 +94,7 @@ impl MemoryManager {
     /// When the number of URLs exceeds the memory limit, this method
     /// writes URLs to disk in chunks and provides a reference to the
     /// on-disk storage.
-    pub(crate) fn handle_disk_swapping(&self, urls: &[Url]) -> Result<()> {
+    pub(crate) fn handle_disk_swapping(&self, urls: &[SitemapUrl]) -> Result<()> {
         if !self.enable_disk_swap {
             // Disk swapping disabled, check memory limit
             // Each URL takes roughly 2KB when stored in memory
@@ -117,7 +118,7 @@ impl MemoryManager {
             let file_path = temp_dir.join(format!("urls_chunk_{chunk_idx}.txt"));
             let mut content = String::new();
             for url in chunk {
-                content.push_str(url.as_str());
+                content.push_str(url.url.as_str());
                 content.push('\n');
             }
 
@@ -139,6 +140,7 @@ impl Default for MemoryManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::crawler::SitemapUrl;
     use std::fs;
     use tempfile::TempDir;
 
@@ -174,8 +176,8 @@ mod tests {
     fn test_handle_disk_swapping_without_swap() {
         let manager = MemoryManager::new();
         let urls = vec![
-            Url::parse("https://example.com/1").unwrap(),
-            Url::parse("https://example.com/2").unwrap(),
+            SitemapUrl::new(Url::parse("https://example.com/1").unwrap()),
+            SitemapUrl::new(Url::parse("https://example.com/2").unwrap()),
         ];
 
         // Should succeed without disk swap enabled
@@ -188,8 +190,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let manager = MemoryManager::with_disk_swap(temp_dir.path().to_path_buf());
 
-        let urls: Vec<Url> = (0..15_000)
-            .map(|i| Url::parse(&format!("https://example.com/page{i}")).unwrap())
+        let urls: Vec<SitemapUrl> = (0..15_000)
+            .map(|i| SitemapUrl::new(Url::parse(&format!("https://example.com/page{i}")).unwrap()))
             .collect();
 
         // Should write chunks to disk
@@ -211,8 +213,8 @@ mod tests {
         let manager = MemoryManager::with_memory_limit(1); // 1MB limit
                                                            // 525 URLs * 2000 bytes = 1,050,000 bytes >= 1,048,576 bytes (1MB)
         let url_count_that_exceeds = 525;
-        let urls: Vec<Url> = (0..url_count_that_exceeds)
-            .map(|i| Url::parse(&format!("https://example.com/page{i}")).unwrap())
+        let urls: Vec<SitemapUrl> = (0..url_count_that_exceeds)
+            .map(|i| SitemapUrl::new(Url::parse(&format!("https://example.com/page{i}")).unwrap()))
             .collect();
 
         // Should fail due to memory limit when disk swap disabled

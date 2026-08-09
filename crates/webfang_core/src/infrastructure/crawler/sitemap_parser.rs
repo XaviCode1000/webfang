@@ -36,7 +36,6 @@ use crate::domain::{CrawlError, UrlValidatorTrait};
 use async_compression::tokio::bufread::GzipDecoder;
 use quick_xml::events::Event;
 use quick_xml::Reader;
-use std::collections::HashSet;
 use thiserror::Error;
 use url::Url;
 
@@ -92,6 +91,34 @@ pub enum SitemapError {
     /// Response Content-Type is not XML
     #[error("invalid content type: expected XML, got {0}")]
     InvalidContentType(String),
+}
+
+/// Sitemap URL entry with metadata per sitemaps.org spec
+///
+/// Includes optional `<lastmod>`, `<priority>`, and `<changefreq>` fields.
+/// Following **api-common-traits**: implements Debug, Clone, PartialEq.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SitemapUrl {
+    /// The URL location (required)
+    pub url: Url,
+    /// Last modification date (RFC 3339 / W3C datetime)
+    pub lastmod: Option<String>,
+    /// Priority 0.0 - 1.0
+    pub priority: Option<f32>,
+    /// Change frequency: always, hourly, daily, weekly, monthly, yearly, never
+    pub changefreq: Option<String>,
+}
+
+impl SitemapUrl {
+    /// Create a new SitemapUrl with just the required URL field
+    pub fn new(url: Url) -> Self {
+        Self {
+            url,
+            lastmod: None,
+            priority: None,
+            changefreq: None,
+        }
+    }
 }
 
 /// Result type for sitemap operations
@@ -260,7 +287,7 @@ impl SitemapParser {
     /// # Errors
     ///
     /// Returns `SitemapError` if parsing fails or no URLs found
-    pub async fn parse_from_url(&self, url: &str) -> Result<Vec<Url>> {
+    pub async fn parse_from_url(&self, url: &str) -> Result<Vec<SitemapUrl>> {
         self.parse_with_depth(url, self.config.max_depth).await
     }
 
@@ -290,7 +317,7 @@ impl SitemapParser {
     }
 
     /// Internal recursive parser with depth tracking
-    async fn parse_with_depth(&self, url: &str, depth: u8) -> Result<Vec<Url>> {
+    async fn parse_with_depth(&self, url: &str, depth: u8) -> Result<Vec<SitemapUrl>> {
         // Base case: max depth reached
         if depth == 0 {
             return Err(SitemapError::MaxDepthExceeded);
@@ -380,7 +407,7 @@ impl SitemapParser {
 
     /// Parse gzip-compressed sitemap
     #[allow(dead_code)]
-    async fn parse_gzip_sitemap(&self, bytes: &[u8], base_url: &Url) -> Result<Vec<Url>> {
+    async fn parse_gzip_sitemap(&self, bytes: &[u8], base_url: &Url) -> Result<Vec<SitemapUrl>> {
         use tokio::io::{AsyncReadExt, BufReader};
         let reader = BufReader::new(bytes);
         let mut decoder = GzipDecoder::new(reader);
@@ -404,40 +431,108 @@ impl SitemapParser {
     }
 
     /// Parse XML sitemap (zero-allocation streaming)
-    async fn parse_xml_sitemap(&self, bytes: &[u8], base_url: &Url) -> Result<Vec<Url>> {
+    #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+    async fn parse_xml_sitemap(&self, bytes: &[u8], base_url: &Url) -> Result<Vec<SitemapUrl>> {
         let mut reader = Reader::from_reader(bytes);
 
-        let mut urls = HashSet::new();
+        let mut urls = Vec::new();
         let mut buf = Vec::new();
+        let mut in_url = false;
         let mut in_loc = false;
+        let mut in_lastmod = false;
+        let mut in_priority = false;
+        let mut in_changefreq = false;
+        let mut current_url: Option<Url> = None;
+        let mut current_lastmod: Option<String> = None;
+        let mut current_priority: Option<f32> = None;
+        let mut current_changefreq: Option<String> = None;
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) if e.name().as_ref() == b"loc" => {
+                Ok(Event::Start(ref e)) if e.name().as_ref() == b"url" => {
+                    in_url = true;
+                    // Reset current entry fields
+                    current_url = None;
+                    current_lastmod = None;
+                    current_priority = None;
+                    current_changefreq = None;
+                },
+                Ok(Event::End(ref e)) if e.name().as_ref() == b"url" => {
+                    in_url = false;
+                    if let Some(ref url) = current_url {
+                        // [3.5] UrlValidator integration: filter invalid patterns
+                        let validation = self.url_validator.filter_invalid_patterns(url);
+                        match validation {
+                            crate::domain::ValidationResult::Valid => {
+                                urls.push(SitemapUrl {
+                                    url: url.clone(),
+                                    lastmod: current_lastmod.clone(),
+                                    priority: current_priority,
+                                    changefreq: current_changefreq.clone(),
+                                });
+                            },
+                            crate::domain::ValidationResult::Invalid(reason) => {
+                                tracing::debug!("Filtered invalid URL: {} — {}", url, reason);
+                            },
+                            crate::domain::ValidationResult::NeedsRedirect(new_url) => {
+                                // Follow redirect by replacing URL
+                                urls.push(SitemapUrl {
+                                    url: new_url,
+                                    lastmod: current_lastmod.clone(),
+                                    priority: current_priority,
+                                    changefreq: current_changefreq.clone(),
+                                });
+                            },
+                        }
+                    }
+                },
+                Ok(Event::Start(ref e)) if in_url && e.name().as_ref() == b"loc" => {
                     in_loc = true;
                 },
                 Ok(Event::Text(ref e)) if in_loc => {
                     if let Ok(text) = e.decode() {
                         if let Some(url) = resolve_url(base_url, &text) {
-                            // [3.5] UrlValidator integration: filter invalid patterns
-                            let validation = self.url_validator.filter_invalid_patterns(&url);
-                            match validation {
-                                crate::domain::ValidationResult::Valid => {
-                                    urls.insert(url);
-                                },
-                                crate::domain::ValidationResult::Invalid(reason) => {
-                                    tracing::debug!("Filtered invalid URL: {} — {}", url, reason);
-                                },
-                                crate::domain::ValidationResult::NeedsRedirect(new_url) => {
-                                    // Follow redirect by replacing URL
-                                    urls.insert(new_url);
-                                },
-                            }
+                            current_url = Some(url);
                         }
                     }
                 },
-                Ok(Event::End(ref e)) if e.name().as_ref() == b"loc" => {
+                Ok(Event::End(ref e)) if in_loc && e.name().as_ref() == b"loc" => {
                     in_loc = false;
+                },
+                Ok(Event::Start(ref e)) if in_url && e.name().as_ref() == b"lastmod" => {
+                    in_lastmod = true;
+                },
+                Ok(Event::Text(ref e)) if in_lastmod => {
+                    if let Ok(text) = e.decode() {
+                        current_lastmod = Some(text.trim().to_string());
+                    }
+                },
+                Ok(Event::End(ref e)) if in_lastmod && e.name().as_ref() == b"lastmod" => {
+                    in_lastmod = false;
+                },
+                Ok(Event::Start(ref e)) if in_url && e.name().as_ref() == b"priority" => {
+                    in_priority = true;
+                },
+                Ok(Event::Text(ref e)) if in_priority => {
+                    if let Ok(text) = e.decode() {
+                        if let Ok(p) = text.trim().parse::<f32>() {
+                            current_priority = Some(p.clamp(0.0, 1.0));
+                        }
+                    }
+                },
+                Ok(Event::End(ref e)) if in_priority && e.name().as_ref() == b"priority" => {
+                    in_priority = false;
+                },
+                Ok(Event::Start(ref e)) if in_url && e.name().as_ref() == b"changefreq" => {
+                    in_changefreq = true;
+                },
+                Ok(Event::Text(ref e)) if in_changefreq => {
+                    if let Ok(text) = e.decode() {
+                        current_changefreq = Some(text.trim().to_string());
+                    }
+                },
+                Ok(Event::End(ref e)) if in_changefreq && e.name().as_ref() == b"changefreq" => {
+                    in_changefreq = false;
                 },
                 Ok(Event::Eof) => break,
                 Err(e) => return Err(SitemapError::XmlError(e)),
@@ -449,24 +544,43 @@ impl SitemapParser {
         if urls.is_empty() {
             Err(SitemapError::NoUrlsFound)
         } else {
-            Ok(urls.into_iter().collect())
+            // Deduplicate by URL (preserve first occurrence with metadata)
+            urls.sort_by(|a, b| a.url.cmp(&b.url));
+            urls.dedup_by(|a, b| a.url == b.url);
+
+            // Sort for deterministic ordering: priority desc, then lastmod desc
+            urls.sort_by(|a, b| {
+                let pri_a = a.priority.unwrap_or(0.5);
+                let pri_b = b.priority.unwrap_or(0.5);
+                pri_b
+                    .partial_cmp(&pri_a)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| b.lastmod.cmp(&a.lastmod))
+            });
+            Ok(urls)
         }
     }
 
     /// Check if URLs are sitemap index entries
-    fn is_sitemap_index(&self, urls: &[Url]) -> bool {
+    fn is_sitemap_index(&self, urls: &[SitemapUrl]) -> bool {
         urls.iter()
-            .any(|u| u.path().ends_with(".xml") || u.path().ends_with(".xml.gz"))
+            .any(|u| u.url.path().ends_with(".xml") || u.url.path().ends_with(".xml.gz"))
     }
 
     /// Parse sitemap index recursively
-    async fn parse_sitemap_index(&self, sitemap_urls: &[Url], depth: u8) -> Result<Vec<Url>> {
+    async fn parse_sitemap_index(
+        &self,
+        sitemap_urls: &[SitemapUrl],
+        depth: u8,
+    ) -> Result<Vec<SitemapUrl>> {
         use futures::stream::{self, StreamExt};
 
-        let mut all_urls = HashSet::new();
+        let mut all_urls = Vec::new();
 
         let results = stream::iter(sitemap_urls.iter().cloned())
-            .map(|url| async move { self.parse_with_depth(url.as_str(), depth).await })
+            .map(|sitemap_url| async move {
+                self.parse_with_depth(sitemap_url.url.as_str(), depth).await
+            })
             .buffered(self.config.concurrency)
             .collect::<Vec<_>>()
             .await;
@@ -481,7 +595,20 @@ impl SitemapParser {
         if all_urls.is_empty() {
             Err(SitemapError::NoUrlsFound)
         } else {
-            Ok(all_urls.into_iter().collect())
+            // Deduplicate by URL across all merged results
+            all_urls.sort_by(|a, b| a.url.cmp(&b.url));
+            all_urls.dedup_by(|a, b| a.url == b.url);
+
+            // Sort for deterministic ordering across all merged results
+            all_urls.sort_by(|a, b| {
+                let pri_a = a.priority.unwrap_or(0.5);
+                let pri_b = b.priority.unwrap_or(0.5);
+                pri_b
+                    .partial_cmp(&pri_a)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| b.lastmod.cmp(&a.lastmod))
+            });
+            Ok(all_urls)
         }
     }
 
@@ -506,10 +633,10 @@ impl SitemapParser {
 
 /// Parse sitemap XML content using quick-xml (streaming parser)
 ///
-/// Standalone streaming parser for sitemap `<loc>` entries, extracted from the
-/// application layer (issue #442): XML parsing is an infrastructure concern and
-/// lives here alongside [`SitemapParser`]. Relative URLs are resolved against
-/// `base_url`.
+/// Standalone streaming parser for sitemap entries with metadata,
+/// extracted from the application layer (issue #442): XML parsing is an
+/// infrastructure concern and lives here alongside [`SitemapParser`].
+/// Relative URLs are resolved against `base_url`.
 ///
 /// Following **xml-no-regex**: Uses quick-xml instead of regex for XML parsing.
 /// Following **mem-stream-processing**: Streaming approach avoids loading entire DOM.
@@ -517,36 +644,58 @@ impl SitemapParser {
 /// # Arguments
 ///
 /// * `xml_content` - XML content of the sitemap
-/// * `base_url` - Base URL to resolve relative `<loc>` entries against
+/// * `base_url` - Base URL to resolve relative entries against
 ///
 /// # Returns
 ///
-/// * `Ok(Vec<String>)` - List of URLs
+/// * `Ok(Vec<SitemapUrl>)` - List of URLs with metadata
 /// * `Err(CrawlError)` - Parse error
+#[allow(clippy::too_many_lines)]
 pub fn parse_sitemap(
     xml_content: &str,
     base_url: &Url,
-) -> std::result::Result<Vec<String>, CrawlError> {
+) -> std::result::Result<Vec<SitemapUrl>, CrawlError> {
     let mut reader = Reader::from_str(xml_content);
     let mut buf = Vec::new();
     let mut urls = Vec::new();
+    let mut in_url = false;
     let mut in_loc = false;
+    let mut in_lastmod = false;
+    let mut in_priority = false;
+    let mut in_changefreq = false;
+    let mut current_url: Option<Url> = None;
+    let mut current_lastmod: Option<String> = None;
+    let mut current_priority: Option<f32> = None;
+    let mut current_changefreq: Option<String> = None;
 
     loop {
         buf.clear();
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e) | Event::Empty(ref e)) if e.name().as_ref() == b"loc" => {
-                in_loc = true;
+            Ok(Event::Start(ref e) | Event::Empty(ref e)) if e.name().as_ref() == b"url" => {
+                in_url = true;
+                current_url = None;
+                current_lastmod = None;
+                current_priority = None;
+                current_changefreq = None;
             },
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"loc" => {
-                in_loc = false;
+            Ok(Event::End(ref e)) if in_url && e.name().as_ref() == b"url" => {
+                in_url = false;
+                if let Some(ref url) = current_url {
+                    urls.push(SitemapUrl {
+                        url: url.clone(),
+                        lastmod: current_lastmod.clone(),
+                        priority: current_priority,
+                        changefreq: current_changefreq.clone(),
+                    });
+                }
+            },
+            Ok(Event::Start(ref e)) if in_url && e.name().as_ref() == b"loc" => {
+                in_loc = true;
             },
             Ok(Event::Text(ref e)) if in_loc => {
                 let text = e.decode().map_err(|e| CrawlError::Parse(e.to_string()))?;
                 let url_str = text.trim();
                 if !url_str.is_empty() {
-                    // Resolve relative URLs against base_url
-                    // Following url-join-relative: use base_url.join() for relative paths
                     let resolved =
                         if url_str.starts_with("http://") || url_str.starts_with("https://") {
                             Url::parse(url_str).ok()
@@ -554,15 +703,13 @@ pub fn parse_sitemap(
                             base_url.join(url_str).ok()
                         };
                     if let Some(url) = resolved {
-                        urls.push(url.to_string());
+                        current_url = Some(url);
                     }
                 }
             },
             Ok(Event::CData(ref e)) if in_loc => {
-                // Handle CDATA sections - BytesCData derefs to [u8]
                 let url_str = String::from_utf8_lossy(e).trim().to_string();
                 if !url_str.is_empty() {
-                    // Resolve relative URLs against base_url
                     let resolved =
                         if url_str.starts_with("http://") || url_str.starts_with("https://") {
                             Url::parse(&url_str).ok()
@@ -570,15 +717,65 @@ pub fn parse_sitemap(
                             base_url.join(&url_str).ok()
                         };
                     if let Some(url) = resolved {
-                        urls.push(url.to_string());
+                        current_url = Some(url);
                     }
                 }
+            },
+            Ok(Event::End(ref e)) if in_loc && e.name().as_ref() == b"loc" => {
+                in_loc = false;
+            },
+            Ok(Event::Start(ref e)) if in_url && e.name().as_ref() == b"lastmod" => {
+                in_lastmod = true;
+            },
+            Ok(Event::Text(ref e)) if in_lastmod => {
+                if let Ok(text) = e.decode() {
+                    current_lastmod = Some(text.trim().to_string());
+                }
+            },
+            Ok(Event::End(ref e)) if in_lastmod && e.name().as_ref() == b"lastmod" => {
+                in_lastmod = false;
+            },
+            Ok(Event::Start(ref e)) if in_url && e.name().as_ref() == b"priority" => {
+                in_priority = true;
+            },
+            Ok(Event::Text(ref e)) if in_priority => {
+                if let Ok(text) = e.decode() {
+                    if let Ok(p) = text.trim().parse::<f32>() {
+                        current_priority = Some(p.clamp(0.0, 1.0));
+                    }
+                }
+            },
+            Ok(Event::End(ref e)) if in_priority && e.name().as_ref() == b"priority" => {
+                in_priority = false;
+            },
+            Ok(Event::Start(ref e)) if in_url && e.name().as_ref() == b"changefreq" => {
+                in_changefreq = true;
+            },
+            Ok(Event::Text(ref e)) if in_changefreq => {
+                if let Ok(text) = e.decode() {
+                    current_changefreq = Some(text.trim().to_string());
+                }
+            },
+            Ok(Event::End(ref e)) if in_changefreq && e.name().as_ref() == b"changefreq" => {
+                in_changefreq = false;
             },
             Ok(Event::Eof) => break,
             Err(e) => return Err(CrawlError::Parse(e.to_string())),
             _ => {},
         }
     }
+
+    // Sort for deterministic ordering: priority desc, then lastmod desc
+    urls.sort_by(|a, b| a.url.cmp(&b.url));
+    urls.dedup_by(|a, b| a.url == b.url);
+    urls.sort_by(|a, b| {
+        let pri_a = a.priority.unwrap_or(0.5);
+        let pri_b = b.priority.unwrap_or(0.5);
+        pri_b
+            .partial_cmp(&pri_a)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.lastmod.cmp(&a.lastmod))
+    });
 
     Ok(urls)
 }
@@ -606,7 +803,7 @@ mod tests {
         assert_eq!(urls.len(), 3);
         assert!(urls
             .iter()
-            .any(|u| u.as_str() == "https://example.com/page1"));
+            .any(|u| u.url.as_str() == "https://example.com/page1"));
     }
 
     #[tokio::test]
@@ -690,14 +887,14 @@ mod tests {
         let parser = SitemapParser::new().unwrap();
 
         let index_urls = vec![
-            Url::parse("https://example.com/sitemap1.xml").unwrap(),
-            Url::parse("https://example.com/sitemap2.xml.gz").unwrap(),
+            SitemapUrl::new(Url::parse("https://example.com/sitemap1.xml").unwrap()),
+            SitemapUrl::new(Url::parse("https://example.com/sitemap2.xml.gz").unwrap()),
         ];
         assert!(parser.is_sitemap_index(&index_urls));
 
         let regular_urls = vec![
-            Url::parse("https://example.com/page1").unwrap(),
-            Url::parse("https://example.com/page2").unwrap(),
+            SitemapUrl::new(Url::parse("https://example.com/page1").unwrap()),
+            SitemapUrl::new(Url::parse("https://example.com/page2").unwrap()),
         ];
         assert!(!parser.is_sitemap_index(&regular_urls));
     }
@@ -736,7 +933,7 @@ mod tests {
         assert_eq!(urls.len(), 2);
         assert!(urls
             .iter()
-            .all(|u| u.scheme() == "http" || u.scheme() == "https"));
+            .all(|u| u.url.scheme() == "http" || u.url.scheme() == "https"));
     }
 
     /// Bug #9 regression: a 404 response must yield SitemapError::HttpError
@@ -882,7 +1079,9 @@ mod tests {
     #[test]
     fn test_is_sitemap_index_xml_gz() {
         let parser = SitemapParser::new().unwrap();
-        let urls = vec![Url::parse("https://example.com/sitemap.xml.gz").unwrap()];
+        let urls = vec![SitemapUrl::new(
+            Url::parse("https://example.com/sitemap.xml.gz").unwrap(),
+        )];
         assert!(parser.is_sitemap_index(&urls));
     }
 
@@ -890,8 +1089,8 @@ mod tests {
     fn test_is_sitemap_index_mixed() {
         let parser = SitemapParser::new().unwrap();
         let urls = vec![
-            Url::parse("https://example.com/page1").unwrap(),
-            Url::parse("https://example.com/sitemap2.xml").unwrap(),
+            SitemapUrl::new(Url::parse("https://example.com/page1").unwrap()),
+            SitemapUrl::new(Url::parse("https://example.com/sitemap2.xml").unwrap()),
         ];
         assert!(parser.is_sitemap_index(&urls));
     }
@@ -900,8 +1099,8 @@ mod tests {
     fn test_is_sitemap_index_no_xml() {
         let parser = SitemapParser::new().unwrap();
         let urls = vec![
-            Url::parse("https://example.com/page1.html").unwrap(),
-            Url::parse("https://example.com/page2.json").unwrap(),
+            SitemapUrl::new(Url::parse("https://example.com/page1.html").unwrap()),
+            SitemapUrl::new(Url::parse("https://example.com/page2.json").unwrap()),
         ];
         assert!(!parser.is_sitemap_index(&urls));
     }

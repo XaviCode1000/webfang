@@ -406,9 +406,9 @@ mod tests {
         let base = Url::parse("https://example.com").unwrap();
         let urls = parse_sitemap(xml, &base).unwrap();
         assert_eq!(urls.len(), 3);
-        assert_eq!(urls[0], "https://example.com/page1");
-        assert_eq!(urls[1], "https://example.com/page2");
-        assert_eq!(urls[2], "https://example.com/page3");
+        assert_eq!(urls[0].url.as_str(), "https://example.com/page1");
+        assert_eq!(urls[1].url.as_str(), "https://example.com/page2");
+        assert_eq!(urls[2].url.as_str(), "https://example.com/page3");
     }
 
     #[test]
@@ -422,8 +422,12 @@ mod tests {
         let base = Url::parse("https://example.com").unwrap();
         let urls = parse_sitemap(xml, &base).unwrap();
         assert_eq!(urls.len(), 2);
-        assert!(urls.contains(&"https://example.com/page1".to_string()));
-        assert!(urls.contains(&"https://example.com/page2".to_string()));
+        assert!(urls
+            .iter()
+            .any(|u| u.url.as_str() == "https://example.com/page1"));
+        assert!(urls
+            .iter()
+            .any(|u| u.url.as_str() == "https://example.com/page2"));
     }
 
     #[test]
@@ -439,7 +443,7 @@ mod tests {
         let base = Url::parse("https://example.com").unwrap();
         let urls = parse_sitemap(xml, &base).unwrap();
         assert_eq!(urls.len(), 1);
-        assert_eq!(urls[0], "https://example.com/page1");
+        assert_eq!(urls[0].url.as_str(), "https://example.com/page1");
     }
 
     #[test]
@@ -473,8 +477,12 @@ mod tests {
         let base = Url::parse("https://example.com").unwrap();
         let urls = parse_sitemap(xml, &base).unwrap();
         assert_eq!(urls.len(), 2);
-        assert!(urls.contains(&"https://example.com/page1".to_string()));
-        assert!(urls.contains(&"https://external.com/page2".to_string()));
+        assert!(urls
+            .iter()
+            .any(|u| u.url.as_str() == "https://example.com/page1"));
+        assert!(urls
+            .iter()
+            .any(|u| u.url.as_str() == "https://external.com/page2"));
     }
 
     // #289 acceptance tests: the TUI DOM discovery path must honor CrawlerConfig
