@@ -12,16 +12,18 @@
 //!
 //! # Design Decisions
 //!
-//! - **ort::Session is !Send**: Each `run_inference` creates a local `ort::Session` inside
-//!   `spawn_blocking` and destroys it before returning. Model bytes are stored as
-//!   `Arc<Vec<u8>>` for cheap cross-thread sharing without the `!Send` constraint.
+//! - **One shared session**: the pool builds a single `ort::Session` before spawning
+//!   workers and shares it as `Arc<Mutex<Session>>`. `Session::run` takes `&mut self`
+//!   in ort 2.0, so the `Mutex` is required — it costs nothing because the request
+//!   channel already serializes work per worker. Building one session per worker
+//!   duplicated the whole model graph in RSS on every CPU core (#648).
 //! - **384-dim invariant**: Granite-97M is natively 384d; Granite-311M uses Matryoshka
 //!   truncation to 384d. No runtime dimension discovery needed.
 //! - **spawn_blocking**: CPU-intensive ONNX inference runs in blocking pool to avoid
 //!   starving async runtime.
 //! - **No locks across await**: Clone Arc before async operations.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use tracing::{debug, instrument};
@@ -195,20 +197,29 @@ struct WorkerRequest {
     reply_tx: oneshot::Sender<Result<Vec<f32>, SemanticError>>,
 }
 
+/// One `ort::Session` shared by every worker thread.
+///
+/// `Session::run` requires `&mut self` in ort 2.0, so the session is guarded by
+/// a `Mutex`. Contention is irrelevant: the request channel already serializes
+/// the work each worker performs.
+type SharedSession = Arc<Mutex<Session>>;
+
 /// Pool of dedicated worker threads for ONNX inference.
 ///
-/// Each worker owns one persistent `ort::Session` with `intra_threads(1)`.
-/// Requests are dispatched via a bounded crossbeam channel; results return
-/// through per-request tokio oneshot channels.
+/// All workers share ONE persistent `ort::Session` built with `intra_threads(1)`
+/// and guarded by a `Mutex`. Requests are dispatched via a bounded crossbeam
+/// channel; results return through per-request tokio oneshot channels.
 ///
 /// # Thread Safety
 ///
 /// - `Send + Sync`: crossbeam Sender and JoinHandle are both Send+Sync
 /// - `Clone`: cheap clone (sender is internally reference-counted)
-/// - `Drop`: disconnects channel (workers exit) and joins all threads
+/// - `Drop`: releases the shared session, disconnects the channel (workers
+///   exit) and joins all threads
 pub struct InferencePool {
     request_tx: crossbeam_channel::Sender<WorkerRequest>,
     _worker_handles: Vec<thread::JoinHandle<()>>,
+    shared_session: Option<SharedSession>,
     model_variant: AiModel,
     worker_count: usize,
 }
@@ -218,6 +229,7 @@ impl Clone for InferencePool {
         Self {
             request_tx: self.request_tx.clone(),
             _worker_handles: Vec::new(), // handles are not cloneable; only sender matters
+            shared_session: None,        // clones never own the session lifecycle
             model_variant: self.model_variant,
             worker_count: self.worker_count,
         }
@@ -227,42 +239,42 @@ impl Clone for InferencePool {
 impl InferencePool {
     /// Create a new inference pool with dedicated worker threads.
     ///
-    /// Each worker builds one `ort::Session` at startup with `intra_threads(1)`.
+    /// The `ort::Session` is built ONCE with `intra_threads(1)` and shared by
+    /// every worker through `Arc<Mutex<Session>>`, so the model graph is
+    /// resident in memory a single time instead of once per CPU core (#648).
     /// Spawns `(num_cpus - 1).max(1)` OS threads.
+    ///
+    /// When the session cannot be built (invalid model bytes), the pool is still
+    /// created: a drainer thread consumes pending requests so callers get a
+    /// prompt error instead of blocking forever.
     ///
     /// # Errors
     ///
-    /// Returns `SemanticError::Inference` if any worker fails to build its session
-    /// or if a thread fails to spawn.
+    /// Returns `SemanticError::Inference` if a thread fails to spawn.
     pub fn new(model_bytes: Arc<Vec<u8>>, model_variant: AiModel) -> Result<Self, SemanticError> {
         let worker_count = (num_cpus::get() - 1).max(1);
         let (request_tx, receiver) = crossbeam_channel::bounded::<WorkerRequest>(worker_count);
         let receiver = Arc::new(receiver);
 
-        let mut worker_handles = Vec::with_capacity(worker_count);
-
-        for worker_id in 0..worker_count {
-            let receiver = Arc::clone(&receiver);
-            let bytes = Arc::clone(&model_bytes);
-            let variant = model_variant;
-
-            let handle = thread::Builder::new()
-                .name(format!("inference-worker-{worker_id}"))
-                .spawn(move || {
-                    worker_main(receiver, bytes, variant, worker_id);
-                })
-                .map_err(|e| {
-                    SemanticError::Inference(format!("failed to spawn worker {worker_id}: {e}"))
-                })?;
-
-            worker_handles.push(handle);
-        }
+        let (shared_session, worker_handles) = match prepare_shared_session(&model_bytes) {
+            Ok((session, plan)) => {
+                let session: SharedSession = Arc::new(Mutex::new(session));
+                let handles =
+                    spawn_workers(&receiver, &session, &plan, model_variant, worker_count)?;
+                (Some(session), handles)
+            },
+            Err(e) => {
+                error!(error = %e, "Failed to initialize shared ONNX session");
+                (None, spawn_drainer(&receiver)?)
+            },
+        };
 
         info!(worker_count, ?model_variant, "InferencePool created");
 
         Ok(Self {
             request_tx,
             _worker_handles: worker_handles,
+            shared_session,
             model_variant,
             worker_count,
         })
@@ -331,6 +343,11 @@ impl Drop for InferencePool {
         let (dummy_tx, _dummy_rx) = crossbeam_channel::bounded(1);
         drop(std::mem::replace(&mut self.request_tx, dummy_tx));
 
+        // Release the pool's handle on the shared session BEFORE joining, so the
+        // only remaining Arc references belong to workers that are already
+        // exiting. The session itself is freed when the last worker drops it.
+        drop(self.shared_session.take());
+
         // Join all worker threads
         for (i, handle) in self._worker_handles.drain(..).enumerate() {
             match handle.join() {
@@ -359,60 +376,94 @@ fn build_session(bytes: &[u8]) -> Result<Session, SemanticError> {
     })
 }
 
-/// Drains the request channel so a failed worker does not block its peers.
+/// Drains the request channel so a failed pool does not block its callers.
 fn drain_channel(receiver: &crossbeam_channel::Receiver<WorkerRequest>) {
     while receiver.recv().is_ok() {}
 }
 
-/// Logs a worker startup failure (session build or input-plan resolution) and
-/// drains the channel so peers aren't blocked, then the caller returns.
-fn report_worker_failure(
+/// Build the single shared session and resolve its input plan once.
+fn prepare_shared_session(bytes: &[u8]) -> Result<(Session, InputPlan), SemanticError> {
+    let session = build_session(bytes)?;
+    let plan = InputPlan::from_session(&session)?;
+    Ok((session, plan))
+}
+
+/// Spawn the worker threads that share the single session.
+fn spawn_workers(
     receiver: &Arc<crossbeam_channel::Receiver<WorkerRequest>>,
-    worker_id: usize,
-    stage: &str,
-    e: &SemanticError,
-) {
-    error!(worker_id, error = %e, "{stage}");
-    drain_channel(receiver);
+    session: &SharedSession,
+    plan: &InputPlan,
+    variant: AiModel,
+    worker_count: usize,
+) -> Result<Vec<thread::JoinHandle<()>>, SemanticError> {
+    let mut handles = Vec::with_capacity(worker_count);
+
+    for worker_id in 0..worker_count {
+        let receiver = Arc::clone(receiver);
+        let session = Arc::clone(session);
+        let plan = plan.clone();
+
+        let handle = thread::Builder::new()
+            .name(format!("inference-worker-{worker_id}"))
+            .spawn(move || {
+                worker_main(&receiver, &session, variant, &plan, worker_id);
+            })
+            .map_err(|e| {
+                SemanticError::Inference(format!("failed to spawn worker {worker_id}: {e}"))
+            })?;
+
+        handles.push(handle);
+    }
+
+    Ok(handles)
+}
+
+/// Spawn a single drainer thread used when the shared session cannot be built.
+///
+/// Without it, callers would block on a bounded channel nobody reads.
+fn spawn_drainer(
+    receiver: &Arc<crossbeam_channel::Receiver<WorkerRequest>>,
+) -> Result<Vec<thread::JoinHandle<()>>, SemanticError> {
+    let receiver = Arc::clone(receiver);
+    let handle = thread::Builder::new()
+        .name("inference-drainer".to_string())
+        .spawn(move || {
+            drain_channel(&receiver);
+        })
+        .map_err(|e| SemanticError::Inference(format!("failed to spawn drainer thread: {e}")))?;
+
+    Ok(vec![handle])
 }
 
 /// Entry point for one inference worker thread.
 ///
-/// Builds the ONNX session, resolves the model input plan once, then serves
-/// requests from the channel until it disconnects. On a build/resolve failure
-/// it drains the channel (so peers aren't blocked) and exits.
+/// Serves requests from the channel until it disconnects, locking the shared
+/// session for the duration of each inference call.
 fn worker_main(
-    receiver: Arc<crossbeam_channel::Receiver<WorkerRequest>>,
-    bytes: Arc<Vec<u8>>,
+    receiver: &crossbeam_channel::Receiver<WorkerRequest>,
+    session: &SharedSession,
     variant: AiModel,
+    plan: &InputPlan,
     worker_id: usize,
 ) {
-    let session_result = build_session(&bytes);
-    let mut session = match session_result {
-        Ok(s) => s,
-        Err(e) => {
-            report_worker_failure(&receiver, worker_id, "Failed to build ONNX session", &e);
-            return;
-        },
-    };
-
-    let plan = match InputPlan::from_session(&session) {
-        Ok(plan) => plan,
-        Err(e) => {
-            report_worker_failure(
-                &receiver,
-                worker_id,
-                "Failed to resolve model input plan",
-                &e,
-            );
-            return;
-        },
-    };
-
     debug!(worker_id, "Worker ready, waiting for requests");
 
     while let Ok(request) = receiver.recv() {
-        let result = run_session_inference(&mut session, &request.input, variant, &plan);
+        // A poisoned mutex means another worker panicked mid-inference: the
+        // shared session is no longer trustworthy, so every request fails fast
+        // instead of panicking this thread too. The crate denies `expect_used`.
+        let result = match session.lock() {
+            Ok(mut guard) => run_session_inference(&mut guard, &request.input, variant, plan),
+            Err(_) => {
+                error!(
+                    worker_id,
+                    "Shared ONNX session mutex poisoned by a previous worker panic"
+                );
+                Err(SemanticError::Inference(
+                    "shared ONNX session poisoned by a previous worker panic".to_string(),
+                ))
+            },
+        };
         let _ = request.reply_tx.send(result);
     }
 

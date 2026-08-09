@@ -62,6 +62,7 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn, Instrument};
 
 use crate::infrastructure_ai::cache_config::AiModel;
+use crate::infrastructure_ai::embedding_ops::cosine_similarity;
 use crate::infrastructure_ai::{
     ContentPruner, HtmlChunker, InferencePool, LegibleContentPruner, MiniLmTokenizer,
     RelevanceScorer,
@@ -547,10 +548,49 @@ impl SemanticCleanerImpl {
             *val /= n;
         }
 
-        // Filter using scorer WITH embeddings preserved
-        let filtered_with_embeddings: Vec<(DocumentChunk, Vec<f32>)> = self
-            .scorer
-            .filter_with_embeddings(&chunk_embedding_pairs, Some(&centroid));
+        // Z-score adaptive thresholding.
+        //
+        // An absolute cosine-similarity threshold is inert on homogeneous pages:
+        // every chunk scores high against a centroid computed from those same
+        // chunks. Instead we measure how far each chunk sits from the centroid
+        // and drop statistical outliers, so `--threshold` actually modulates
+        // strictness (#648).
+        let distances: Vec<f32> = chunk_embedding_pairs
+            .iter()
+            .map(|(_, emb)| 1.0 - cosine_similarity(emb, &centroid))
+            .collect();
+
+        let sample_count = distances.len() as f32;
+        let mean_dist = distances.iter().sum::<f32>() / sample_count;
+        let variance = distances
+            .iter()
+            .map(|d| (d - mean_dist).powi(2))
+            .sum::<f32>()
+            / sample_count;
+        let std_dev = variance.sqrt();
+
+        // threshold 1.0 → Z=0 (only exact centroid matches)
+        // threshold 0.7 → Z=0.9
+        // threshold 0.0 → Z=3.0 (keeps ~99.7%, filters extreme outliers)
+        let z_limit = 3.0 * (1.0 - self.scorer.threshold());
+
+        let filtered_with_embeddings: Vec<(DocumentChunk, Vec<f32>)> = chunk_embedding_pairs
+            .into_iter()
+            .zip(distances.iter())
+            .filter(|(_, &distance)| {
+                let z_score = (distance - mean_dist).abs() / std_dev.max(1e-6);
+                z_score <= z_limit
+            })
+            .map(|((chunk, emb), _)| (chunk, emb))
+            .collect();
+
+        debug!(
+            url = %url,
+            mean_distance = mean_dist,
+            std_dev = std_dev,
+            z_limit = z_limit,
+            "Applied Z-score adaptive relevance filtering"
+        );
 
         let filtered_out = chunks_before - filtered_with_embeddings.len();
 

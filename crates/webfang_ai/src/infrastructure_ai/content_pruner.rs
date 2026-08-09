@@ -5,6 +5,8 @@
 
 use std::fmt;
 
+use tracing::info;
+
 /// Aggressiveness level for content pruning.
 ///
 /// Controls how aggressively `legible` strips non-content elements.
@@ -54,6 +56,20 @@ impl LegibleContentPruner {
     pub fn standard() -> Self {
         Self::new(PruneAggressiveness::Standard)
     }
+
+    /// Detect structural listing pages (product grids, directories) where
+    /// `legible::parse` would destroy content by classifying it as boilerplate.
+    ///
+    /// Uses a link-density heuristic: a high link count relative to total HTML
+    /// size indicates a navigation-heavy listing page rather than prose.
+    fn is_structural_listing(&self, html: &str) -> bool {
+        let link_count = html.matches("<a ").count();
+        if link_count < 5 {
+            return false;
+        }
+        let text_len = html.len();
+        (text_len as f32 / link_count as f32) < 50.0
+    }
 }
 
 impl fmt::Debug for LegibleContentPruner {
@@ -71,6 +87,16 @@ impl ContentPruner for LegibleContentPruner {
         // Fallback: empty input returns empty string
         if html.trim().is_empty() {
             return String::new();
+        }
+
+        // Listing pages (product grids, directories) are shredded by the
+        // readability heuristics — skip pruning and keep the original markup.
+        if self.is_structural_listing(html) {
+            info!(
+                html_len = html.len(),
+                "Structural listing detected — skipping readability pruning"
+            );
+            return html.to_string();
         }
 
         // Attempt legible parsing
@@ -187,6 +213,26 @@ mod tests {
     fn prune_preserves_aggressiveness_setting() {
         let pruner = LegibleContentPruner::new(PruneAggressiveness::Aggressive);
         assert_eq!(pruner.aggressiveness(), PruneAggressiveness::Aggressive);
+    }
+
+    #[test]
+    fn test_listing_page_skips_pruning() {
+        let pruner = LegibleContentPruner::standard();
+        // High link-density HTML (product grid pattern)
+        let listing_html = "<html><body>
+        <a href=\"/p/1\">Product 1</a>
+        <a href=\"/p/2\">Product 2</a>
+        <a href=\"/p/3\">Product 3</a>
+        <a href=\"/p/4\">Product 4</a>
+        <a href=\"/p/5\">Product 5</a>
+        <a href=\"/p/6\">Product 6</a>
+    </body></html>";
+        let result = pruner.prune(listing_html);
+        assert!(
+            result.len() > 100,
+            "Listing page should not be gutted: got {} chars",
+            result.len()
+        );
     }
 
     #[test]
