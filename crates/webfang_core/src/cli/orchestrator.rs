@@ -9,6 +9,7 @@ use tracing::warn;
 
 use crate::application::batch::{BatchManager, BatchManagerSummary};
 use crate::application::crawl_options::CrawlOptions;
+use crate::application::crawler::InMemoryContentSink;
 use crate::cli::elastic::{build_elastic_ingestion, run_elastic_ingestion};
 use crate::cli::error::CliExit;
 use crate::cli::export_flow::{run_export, save_files, ExportConfig};
@@ -79,7 +80,13 @@ pub async fn run(
     if opts.batch.enabled {
         // Batch mode uses the crawl Engine, which mints its own run-root
         // identity per crawl — do not mint one here.
-        return run_batch(opts).await;
+        return run_batch(
+            opts,
+            #[cfg(feature = "ai")]
+            ai_cleaner,
+            vault_ports,
+        )
+        .await;
     }
 
     // Run-root correlation identity (#501): the whole operation owns ONE
@@ -179,6 +186,26 @@ pub async fn run(
     }
 }
 
+/// Resolve the root directory that must contain the scraped Markdown AND the
+/// downloaded assets.
+///
+/// When Obsidian `--quick-save` is active, both must share the vault as their
+/// base so the vault stays self-contained (#638): if the `Downloader` keeps
+/// using `output_dir` (`-o`) while the Markdown goes to the vault, relative
+/// asset paths escape the vault and images stop rendering. The Downloader is a
+/// slave of the config — the orchestrator is responsible for converging the
+/// two persistence roots before handing them to the crawl/export engines.
+fn resolve_persistence_root(opts: &CrawlOptions) -> std::path::PathBuf {
+    if opts.export.quick_save {
+        opts.export
+            .obsidian_vault
+            .clone()
+            .unwrap_or_else(|| opts.export.output_dir.clone())
+    } else {
+        opts.export.output_dir.clone()
+    }
+}
+
 /// Export scraped results to files and run AI cleaning if requested.
 async fn export_phase(
     results: &[domain::ScrapedContent],
@@ -198,8 +225,7 @@ async fn export_phase(
     };
 
     let file_output_dir = if opts.export.quick_save {
-        let base = opts.export.obsidian_vault.as_deref().unwrap_or(&output_dir);
-        let inbox = base.join("_inbox");
+        let inbox = resolve_persistence_root(opts).join("_inbox");
         if !inbox.exists() {
             let _ = std::fs::create_dir_all(&inbox);
         }
@@ -271,6 +297,7 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
             .ignore_robots(opts.crawl.ignore_robots)
             .use_sitemap(opts.crawl.use_sitemap)
             .timeout_secs(opts.network.timeout_secs)
+            .delay_ms(opts.network.delay_ms)
             .tls_emulation(tls_emulation);
         if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
             crawler_config = crawler_config.sitemap_url(sitemap_url);
@@ -304,7 +331,7 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
     };
 
     let mut scraper_config = ScraperConfig::default()
-        .with_output_dir(opts.export.output_dir.clone())
+        .with_output_dir(resolve_persistence_root(opts))
         .with_scraper_concurrency(opts.network.concurrency.resolve())
         .with_max_pages(opts.crawl.max_pages)
         .with_selector(opts.crawl.selector.clone())
@@ -318,14 +345,14 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
     }
 
     // Wire asset download config from CLI args
+    // NOTE: crawl include/exclude patterns are intentionally NOT forwarded to
+    // asset config — assets have their own filter scope (#639).
     scraper_config =
         scraper_config.with_asset_h2_profile(parse_asset_h2_profile(&opts.network.h2_profile));
-    scraper_config =
-        scraper_config.with_asset_include_patterns(opts.crawl.include_patterns.clone());
-    scraper_config =
-        scraper_config.with_asset_exclude_patterns(opts.crawl.exclude_patterns.clone());
     scraper_config = scraper_config.with_asset_naming(parse_asset_naming(&opts.asset_naming));
     scraper_config = scraper_config.with_download_concurrency(opts.download_concurrency);
+    scraper_config = scraper_config.with_max_file_size(opts.network.max_file_size);
+    scraper_config = scraper_config.with_download_timeout(opts.network.download_timeout_secs);
 
     // Create shared Downloader once for connection pooling across all page scrapes.
     let shared_downloader = if scraper_config.has_downloads() {
@@ -471,8 +498,18 @@ fn scraper_failure_for_internal_fatal(
     })
 }
 
-/// Run batch processing mode: crawl multiple URLs from stdin or file
-async fn run_batch(opts: CrawlOptions) -> CliExit {
+/// Run batch processing mode: crawl multiple URLs from stdin or file.
+///
+/// The batch pipeline captures every fetched page body through a shared
+/// [`InMemoryContentSink`] and then runs the full export / elastic / resume
+/// pipeline — the same stages `run()` applies to single-page mode, so
+/// `--batch` actually writes `.md` + `.jsonl` and honors `--elastic` /
+/// `--resume` (#631, #637).
+async fn run_batch(
+    opts: CrawlOptions,
+    #[cfg(feature = "ai")] ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
+    vault_ports: crate::application::container::VaultAiPorts,
+) -> CliExit {
     // Resolve the TLS/H2 fingerprint once so the batch crawl engine honors
     // `--h2-profile` (#312). An unknown profile is a config error (exit 78),
     // matching the scrape phase — never silently crawl with a wrong fingerprint.
@@ -481,16 +518,92 @@ async fn run_batch(opts: CrawlOptions) -> CliExit {
         Err(e) => return e,
     };
 
-    let crawler_config = build_batch_crawler_config(&opts, tls_emulation);
-
-    let manager = match load_batch_manager(&opts, crawler_config).await {
-        Ok(m) => m,
+    let (summary, captured) = match run_batch_crawl(&opts, tls_emulation).await {
+        Ok(pair) => pair,
         Err(e) => return e,
     };
 
+    let (results, failures) = match extract_batch_content(captured, &opts).await {
+        Ok(pair) => pair,
+        Err(e) => return e,
+    };
+
+    // Resume mode (#637): construct the state store so `export_phase` can mark
+    // each URL as processed — no URL filtering, they were already crawled.
+    let state_store = match build_batch_resume_store(&opts) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+
+    let elastic_ingestion = match build_elastic_ingestion(&opts, vault_ports).await {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+
+    #[cfg(not(feature = "ai"))]
+    if opts.elastic.output_vectors.is_some() && opts.ai {
+        warn!(
+            "--output-vectors specified with --clean-ai but AI feature is not compiled in. \
+             The output file will be created but no embedding vectors will be written. \
+             Rebuild with --features ai to generate embeddings."
+        );
+    }
+
+    if let Err(e) = run_batch_elastic(&elastic_ingestion, &results).await {
+        return e;
+    }
+
+    // Print extraction failures to stderr (crawl failures are already logged
+    // via `log_batch_summary`). Do NOT short-circuit here: always export the
+    // pages we did capture so `--batch` writes `.md` + `.jsonl` even on partial
+    // failure (#631).
+    let _ = report_phase(&results, &failures, opts.verbosity);
+
+    #[cfg(feature = "ai")]
+    {
+        export_phase(&results, &opts, state_store.as_ref(), ai_cleaner).await;
+    }
+    #[cfg(not(feature = "ai"))]
+    {
+        export_phase(&results, &opts, state_store.as_ref()).await;
+    }
+
+    // Final exit code aggregates BOTH crawl-level and extraction-level outcomes
+    // with `#537` severity routing: partial success -> 69, all-fail with an
+    // internal fatal error -> 3, otherwise 0. Crawl failures were only logged
+    // above, so this is the only place the batch's true status surfaces.
+    let total_failed = summary.failed + failures.len();
+    let mut all_errors = summary.errors;
+    all_errors.extend(failures);
+    batch_exit_code(results.len(), total_failed, &all_errors)
+}
+
+/// Crawl every batch URL through the engine, capturing each fetched body, and
+/// return the run summary plus the captured pages. Performs the no-URL /
+/// no-content guards so `--batch` fails loudly instead of writing nothing
+/// (#631).
+async fn run_batch_crawl(
+    opts: &CrawlOptions,
+    tls_emulation: wreq_util::Profile,
+) -> Result<
+    (
+        BatchManagerSummary,
+        Vec<crate::application::crawler::CapturedPage>,
+    ),
+    CliExit,
+> {
+    let crawler_config = build_batch_crawler_config(opts, tls_emulation);
+
+    let sink = std::sync::Arc::new(InMemoryContentSink::new());
+    let mut manager = match load_batch_manager(opts, crawler_config).await {
+        Ok(m) => m,
+        Err(e) => return Err(e),
+    };
+    manager = manager.with_content_sink(sink.clone());
+
     if manager.job_count() == 0 {
         error!("No URLs provided for batch processing");
-        return CliExit::UsageError("No URLs provided".into());
+        return Err(CliExit::UsageError("No URLs provided".into()));
     }
 
     info!(
@@ -500,10 +613,131 @@ async fn run_batch(opts: CrawlOptions) -> CliExit {
     );
 
     let summary = manager.process_all_summary().await;
-
     log_batch_summary(&summary);
 
-    batch_exit_code(summary.succeeded, summary.failed, &summary.errors)
+    let captured = sink.take_pages();
+    if captured.is_empty() {
+        error!("Batch captured no page bodies — nothing to export");
+        return Err(CliExit::NetworkError("Batch produced no content".into()));
+    }
+
+    Ok((summary, captured))
+}
+
+/// Build the resume [`StateStore`] for `--resume` (#637) so `export_phase`
+/// can mark each already-crawled URL as processed. Returns `None` when
+/// `--resume` is off.
+fn build_batch_resume_store(opts: &CrawlOptions) -> Result<Option<StateStore>, CliExit> {
+    if !opts.crawl.resume {
+        return Ok(None);
+    }
+    let state_dir = opts.crawl.state_dir.clone().unwrap_or_else(|| {
+        let cache_base = std::env::var("XDG_CACHE_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".cache")
+            });
+        cache_base.join("webfang").join("state")
+    });
+    let domain = opts.url.host_str().unwrap_or("batch").to_string();
+    crate::application::export_factory::create_state_store(state_dir, &domain)
+        .map(Some)
+        .map_err(|e| {
+            CliExit::IoError(format!(
+                "No se pudo crear el almacén de estado para --resume: {e}"
+            ))
+        })
+}
+
+/// Run the elastic / output-vectors ingestion for the batch pipeline (#636,
+/// #637) and release the ingestion handle afterwards.
+async fn run_batch_elastic(
+    ingestion: &Option<
+        std::sync::Arc<
+            crate::application::elastic_ingestion::ElasticIngestion<
+                crate::domain::repository::DynVectorRepository,
+            >,
+        >,
+    >,
+    results: &[domain::ScrapedContent],
+) -> Result<(), CliExit> {
+    if let Some(ref ingestion) = ingestion {
+        run_elastic_ingestion(ingestion, results)
+            .await
+            .map_err(|e| CliExit::IoError(format!("Falló la ingesta de vectores: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Convert the batch-captured pages into [`ScrapedContent`] and collect
+/// per-page extraction failures.
+///
+/// Each captured body goes through the same [`extract_content`] path as
+/// single-page mode: Readability → text fallback → binary detection. Pages
+/// that fail extraction are logged and reported; the `exit_code` decision
+/// is made afterwards by `report_phase`.
+///
+/// The batch crawl had one fetch per URL, so `CrawlTaskCtx` uses the default
+/// asset downloader (`None`) — the same behavior as `--no-images` /
+/// `--no-documents`.
+///
+/// # Errors
+///
+/// Returns [`CliExit`] when the first target URL cannot be parsed or the
+/// extraction encounters a fatal setup error. Per-page failures are
+/// collected in the `failures` vec instead of aborting the whole batch.
+async fn extract_batch_content(
+    pages: Vec<crate::application::crawler::CapturedPage>,
+    opts: &CrawlOptions,
+) -> Result<
+    (
+        Vec<domain::ScrapedContent>,
+        Vec<(String, crate::error::ScraperError)>,
+    ),
+    CliExit,
+> {
+    let scraper_config = ScraperConfig::default()
+        .with_output_dir(opts.export.output_dir.clone())
+        .with_selector(opts.crawl.selector.clone())
+        .with_ignore_waf(opts.crawl.ignore_waf);
+
+    let root_correlation = domain::CorrelationId::new();
+    let mut results = Vec::with_capacity(pages.len());
+    let mut failures: Vec<(String, crate::error::ScraperError)> = Vec::new();
+
+    for page in pages {
+        let page_correlation = root_correlation.child();
+        let url = match url::Url::parse(&page.url) {
+            Ok(u) => u,
+            Err(e) => {
+                failures.push((
+                    page.url,
+                    crate::error::ScraperError::invalid_url(format!(
+                        "No se pudo parsear la URL capturada: {e}",
+                    )),
+                ));
+                continue;
+            },
+        };
+
+        match crate::application::crawler::extract_content(
+            &page.html,
+            &url,
+            &scraper_config,
+            None,
+            None,
+            &page_correlation,
+        )
+        .await
+        {
+            Ok(content) => results.push(content),
+            Err(e) => failures.push((page.url, e)),
+        }
+    }
+
+    Ok((results, failures))
 }
 
 /// Print the batch completion summary and log each failed URL.
@@ -555,8 +789,8 @@ async fn load_batch_manager(
     if let Some(ref path) = opts.batch.batch_file {
         info!("Reading URLs from file: {}", path.display());
         BatchManager::from_file(path, crawler_config, opts.batch.concurrency).map_err(|e| {
-            error!(error = %e, "Failed to read URLs");
-            CliExit::NetworkError(format!("Failed to read URLs: {e}"))
+            error!(error = %e, "Failed to read URLs from file");
+            CliExit::IoError(format!("Failed to read URLs from file: {e}"))
         })
     } else {
         info!("Reading URLs from stdin");
@@ -575,14 +809,12 @@ async fn load_batch_manager_from_stdin(
         .await
     {
         Ok(result) => result.map_err(|e| {
-            error!(error = %e, "Failed to read URLs");
-            CliExit::NetworkError(format!("Failed to read URLs: {e}"))
+            error!(error = %e, "Failed to read URLs from stdin");
+            CliExit::IoError(format!("Failed to read URLs from stdin: {e}"))
         }),
         Err(join_err) => {
             error!(error = %join_err, "stdin read task panicked");
-            Err(CliExit::NetworkError(format!(
-                "Failed to read URLs: {join_err}"
-            )))
+            Err(CliExit::IoError(format!("Failed to read URLs: {join_err}")))
         },
     }
 }
@@ -903,6 +1135,30 @@ mod tests {
         assert!(result.is_ok(), "should not error: {:?}", result.err());
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "Container::new creates HttpClient with boring-sys2 FFI (unsupported by Miri)"
+    )]
+    #[tokio::test]
+    async fn build_elastic_ingestion_wires_both_sinks_not_exclusive() {
+        // Regression for #636: `--elastic` must NOT silently drop `--output-vectors`.
+        let tmp = tempfile::tempdir().expect("tempdir for vector sink");
+        let vec_path = tmp.path().join("out.jsonl");
+        let mut opts = CrawlOptions::default();
+        opts.elastic.enabled = true;
+        opts.elastic.output_vectors = Some(vec_path.to_string_lossy().into_owned());
+        let result = build_elastic_ingestion(
+            &opts,
+            crate::application::container::VaultAiPorts::default(),
+        )
+        .await;
+        assert!(result.is_ok(), "should not error: {:?}", result.err());
+        assert!(
+            vec_path.exists(),
+            "--output-vectors JSONL sink must be created even with --elastic (issue #636 regression)"
+        );
+    }
+
     // ===== AiConfig → ExportConfig wiring tests (Scenario 2.3.S2) =====
 
     #[test]
@@ -1003,6 +1259,48 @@ mod tests {
         assert_eq!(
             parse_asset_h2_profile("NetscapeNavigator"),
             wreq_util::Profile::Chrome145
+        );
+    }
+
+    // ===== Asset pattern decoupling tests (#639) =====
+
+    /// Regression test for #639: crawl include/exclude patterns must NOT
+    /// be forwarded to asset download config — assets have their own scope.
+    #[tokio::test]
+    async fn crawl_patterns_not_forwarded_to_asset_config() {
+        use crate::application::crawl_options::{CrawlLimits, NetworkOptions};
+        use crate::cli::orchestrator::prepare_phase;
+
+        let url = url::Url::parse("https://example.com").expect("valid url");
+        let opts = CrawlOptions {
+            url,
+            crawl: CrawlLimits {
+                include_patterns: vec!["/catalogue/*".to_string()],
+                exclude_patterns: vec!["/media/*".to_string()],
+                single_page: true, // Skip network discovery
+                ..Default::default()
+            },
+            network: NetworkOptions::default(),
+            ..Default::default()
+        };
+
+        let result = prepare_phase(&opts).await;
+        assert!(
+            result.is_ok(),
+            "prepare_phase must succeed: {:?}",
+            result.err()
+        );
+        let prepare = result.unwrap();
+
+        assert!(
+            prepare.scraper_config.asset_include_patterns.is_empty(),
+            "crawl include_patterns must NOT leak into asset config, got: {:?}",
+            prepare.scraper_config.asset_include_patterns
+        );
+        assert!(
+            prepare.scraper_config.asset_exclude_patterns.is_empty(),
+            "crawl exclude_patterns must NOT leak into asset config, got: {:?}",
+            prepare.scraper_config.asset_exclude_patterns
         );
     }
 }

@@ -196,6 +196,8 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
                 backoff_max_ms: args.crawler.backoff_max_ms,
                 download_images: args.crawler.download_images || args.crawler.download_assets,
                 download_documents: args.crawler.download_documents || args.crawler.download_assets,
+                max_file_size: Some(args.crawler.max_file_size),
+                download_timeout_secs: args.crawler.download_timeout,
                 h2_profile: args.crawler.h2_profile,
                 js_strategy: args.crawler.js_strategy,
                 obscura_binary: args.crawler.obscura_binary,
@@ -354,5 +356,47 @@ mod tests {
         let args = Args::try_parse_from(["webfang"]).expect("valid args");
         assert!(args.positional_url.is_none());
         assert!(args.crawler.url.is_none());
+    }
+
+    // ========================================================================
+    // #640 — --batch-concurrency 0 must be rejected at parse time (exit 64)
+    // ========================================================================
+
+    #[test]
+    fn batch_concurrency_zero_is_rejected() {
+        clean_env();
+        let result = Args::try_parse_from([
+            "webfang",
+            "-u",
+            "https://example.com",
+            "--batch-concurrency",
+            "0",
+        ]);
+        assert!(
+            result.is_err(),
+            "--batch-concurrency 0 must fail clap validation, not panic at runtime"
+        );
+    }
+
+    #[test]
+    fn batch_concurrency_positive_is_accepted() {
+        clean_env();
+        let args = Args::try_parse_from([
+            "webfang",
+            "-u",
+            "https://example.com",
+            "--batch-concurrency",
+            "3",
+        ])
+        .expect("valid args");
+        assert_eq!(args.export.batch_concurrency, 3);
+    }
+
+    #[test]
+    fn batch_concurrency_default_is_five() {
+        clean_env();
+        let args =
+            Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
+        assert_eq!(args.export.batch_concurrency, 5);
     }
 }

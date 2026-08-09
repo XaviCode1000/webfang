@@ -35,7 +35,7 @@ const WREQ_MEMORY_COST: usize = 1_024 * 1_024; // ~1 MB
 /// use webfang_core::infrastructure::downloader::wreq_downloader::WreqDownloader;
 /// use webfang_core::infrastructure::downloader::Downloader;
 ///
-/// let downloader = WreqDownloader::new(30, 10, wreq_util::Profile::Chrome145, None).unwrap();
+/// let downloader = WreqDownloader::new(30, 10, wreq_util::Profile::Chrome145, None, 3, 1000, 10000).unwrap();
 /// let page = downloader.fetch(&"https://example.com".parse().unwrap()).await.unwrap();
 /// assert_eq!(page.status, 200);
 /// ```
@@ -48,6 +48,11 @@ pub struct WreqDownloader {
     /// all retries — carries it. When set, the 403 pool-rotation retry is
     /// disabled: the operator asked to be identified exactly as configured.
     pinned_ua: Option<String>,
+    max_retries: u32,
+    /// Base delay for exponential backoff — reserved for future jitter implementation.
+    #[allow(dead_code)]
+    backoff_base_ms: u64,
+    backoff_max_ms: u64,
 }
 
 impl WreqDownloader {
@@ -74,6 +79,9 @@ impl WreqDownloader {
         connect_timeout_secs: u64,
         tls_emulation: Profile,
         user_agent: Option<String>,
+        max_retries: u32,
+        backoff_base_ms: u64,
+        backoff_max_ms: u64,
     ) -> Result<Self, DownloadError> {
         let pool_size = std::cmp::max(6, num_cpus::get() - 1);
 
@@ -103,6 +111,9 @@ impl WreqDownloader {
             timeout_secs = timeout_secs,
             connect_timeout_secs = connect_timeout_secs,
             ua = user_agent.as_deref().unwrap_or("emulation-default"),
+            max_retries = max_retries,
+            backoff_base_ms = backoff_base_ms,
+            backoff_max_ms = backoff_max_ms,
             "WreqDownloader created"
         );
 
@@ -110,6 +121,9 @@ impl WreqDownloader {
             client: Arc::new(client),
             timeout_secs,
             pinned_ua: user_agent,
+            max_retries,
+            backoff_base_ms,
+            backoff_max_ms,
         })
     }
 
@@ -121,6 +135,9 @@ impl WreqDownloader {
             client: Arc::new(client),
             timeout_secs,
             pinned_ua: None,
+            max_retries: 3,
+            backoff_base_ms: 1000,
+            backoff_max_ms: 10000,
         }
     }
 
@@ -209,14 +226,15 @@ fn parse_set_cookie(header: &str, url: &Url) -> Option<Cookie> {
 /// Parse the `Retry-After` header (integer seconds) into milliseconds.
 ///
 /// Returns the delay in ms, defaulting to 1000ms if the header is absent or unparseable.
-fn parse_retry_after_ms(response: &wreq::Response) -> u64 {
-    response
+fn parse_retry_after_ms(response: &wreq::Response, max_ms: u64) -> u64 {
+    let raw_ms = response
         .headers()
         .get("retry-after")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.trim().parse::<u64>().ok())
         .unwrap_or(1)
-        .saturating_mul(1000)
+        .saturating_mul(1000);
+    raw_ms.min(max_ms)
 }
 
 impl WreqDownloader {
@@ -277,12 +295,15 @@ impl WreqDownloader {
             status = response.status().as_u16();
         }
 
-        // 429: backoff retry up to 3 times, honouring Retry-After.
+        // 429: backoff retry up to max_retries times, honouring Retry-After.
         if status == 429 {
-            let delay_ms = parse_retry_after_ms(&response);
-            warn!("429 Rate Limited from {url} — retrying after {delay_ms}ms");
+            let delay_ms = parse_retry_after_ms(&response, self.backoff_max_ms);
+            warn!(
+                delay_ms = delay_ms,
+                "429 Rate Limited from {url} — retrying after {delay_ms}ms"
+            );
             let mut succeeded = false;
-            for _ in 0..3 {
+            for _ in 0..self.max_retries {
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 response = self.send_request(url, None).await?;
                 status = response.status().as_u16();
@@ -380,7 +401,8 @@ mod test_support {
             .mount(&mock_server)
             .await;
 
-        let downloader = WreqDownloader::new(10, 5, Profile::Chrome145, None).unwrap();
+        let downloader =
+            WreqDownloader::new(10, 5, Profile::Chrome145, None, 3, 1000, 10000).unwrap();
         let url: Url = mock_server.uri().parse().unwrap();
 
         let result = downloader.fetch(&url).await;
@@ -399,7 +421,8 @@ mod tests {
 
     #[test]
     fn test_wreq_downloader_creation() {
-        let downloader = WreqDownloader::new(30, 10, Profile::Chrome145, None).unwrap();
+        let downloader =
+            WreqDownloader::new(30, 10, Profile::Chrome145, None, 3, 1000, 10000).unwrap();
         assert!(!downloader.supports_interactions());
         assert_eq!(downloader.memory_cost(), WREQ_MEMORY_COST);
     }
@@ -410,7 +433,7 @@ mod tests {
         // with it (triangulation: the parameter reaches the builder instead of
         // a hardcoded default).
         for profile in [Profile::Chrome145, Profile::Chrome131, Profile::Firefox135] {
-            let downloader = WreqDownloader::new(30, 10, profile, None)
+            let downloader = WreqDownloader::new(30, 10, profile, None, 3, 1000, 10000)
                 .unwrap_or_else(|e| panic!("client must build for profile {profile:?}: {e}"));
             assert!(!downloader.supports_interactions());
         }
@@ -505,7 +528,8 @@ mod wiremock_tests {
             .mount(&mock_server)
             .await;
 
-        let downloader = WreqDownloader::new(10, 5, Profile::Chrome145, None).unwrap();
+        let downloader =
+            WreqDownloader::new(10, 5, Profile::Chrome145, None, 3, 1000, 10000).unwrap();
         let url: Url = format!("{}/notfound", mock_server.uri()).parse().unwrap();
 
         let result = downloader.fetch(&url).await;
@@ -530,7 +554,8 @@ mod wiremock_tests {
             .mount(&mock_server)
             .await;
 
-        let downloader = WreqDownloader::new(10, 5, Profile::Chrome145, None).unwrap();
+        let downloader =
+            WreqDownloader::new(10, 5, Profile::Chrome145, None, 3, 1000, 10000).unwrap();
         let url: Url = mock_server.uri().parse().unwrap();
 
         let result = downloader.fetch(&url).await;
@@ -562,7 +587,8 @@ mod wiremock_tests {
             .mount(&mock_server)
             .await;
 
-        let downloader = WreqDownloader::new(10, 5, Profile::Chrome145, None).unwrap();
+        let downloader =
+            WreqDownloader::new(10, 5, Profile::Chrome145, None, 3, 1000, 10000).unwrap();
         let url: Url = format!("{}/redirect", mock_server.uri()).parse().unwrap();
 
         let result = downloader.fetch(&url).await;
@@ -594,8 +620,16 @@ mod wiremock_tests {
             .mount(&mock_server)
             .await;
 
-        let downloader =
-            WreqDownloader::new(10, 5, Profile::Chrome145, Some(PINNED_UA.to_string())).unwrap();
+        let downloader = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            Some(PINNED_UA.to_string()),
+            3,
+            1000,
+            10000,
+        )
+        .unwrap();
         let url: Url = mock_server.uri().parse().unwrap();
 
         let page = downloader
@@ -681,8 +715,16 @@ mod wiremock_tests {
             .mount(&mock_server)
             .await;
 
-        let downloader =
-            WreqDownloader::new(10, 5, Profile::Chrome145, Some(PINNED_UA.to_string())).unwrap();
+        let downloader = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            Some(PINNED_UA.to_string()),
+            3,
+            1000,
+            10000,
+        )
+        .unwrap();
         let url: Url = mock_server.uri().parse().unwrap();
 
         // First fetch: 403 is terminal — rotation is disabled when pinned.
@@ -732,7 +774,8 @@ mod wiremock_tests {
             .mount(&mock_server)
             .await;
 
-        let downloader = WreqDownloader::new(10, 5, Profile::Chrome145, None).unwrap();
+        let downloader =
+            WreqDownloader::new(10, 5, Profile::Chrome145, None, 3, 1000, 10000).unwrap();
         let url: Url = mock_server.uri().parse().unwrap();
 
         let page = downloader

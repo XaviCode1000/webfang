@@ -73,7 +73,7 @@ pub struct ExportArgs {
     pub batch_file: Option<std::path::PathBuf>,
 
     /// Maximum concurrent URLs in batch mode
-    #[arg(long, default_value = "5", env = "WEBFANG_BATCH_CONCURRENCY")]
+    #[arg(long, default_value = "5", env = "WEBFANG_BATCH_CONCURRENCY", value_parser = parse_batch_concurrency)]
     #[clap(next_help_heading = "Batch Processing")]
     pub batch_concurrency: usize,
 
@@ -92,4 +92,19 @@ pub struct ExportArgs {
     )]
     #[clap(next_help_heading = "Item Pipeline")]
     pub pipeline_output: PipelineOutputFormat,
+}
+
+/// Validate `--batch-concurrency` is greater than zero.
+///
+/// Clap's `value_parser!(usize)` does not expose `.range()` in the derive API,
+/// so a custom parser enforces the invariant at the system boundary (#640).
+fn parse_batch_concurrency(s: &str) -> Result<usize, String> {
+    let value: usize = s
+        .parse()
+        .map_err(|_| format!("`{s}` no es un número entero válido"))?;
+    if value == 0 {
+        Err("batch-concurrency debe ser > 0".to_string())
+    } else {
+        Ok(value)
+    }
 }

@@ -35,6 +35,7 @@ use tokio::task::JoinSet;
 use tracing::{error, info, instrument, warn};
 
 use super::BatchJob;
+use crate::application::crawler::content_sink::CrawlContentSink;
 use crate::domain::{CrawlError, CrawlErrorCategory, CrawlerConfig};
 use crate::error::ScraperError;
 
@@ -70,6 +71,11 @@ pub struct BatchResult {
 pub struct BatchProcessor {
     max_concurrent_jobs: usize,
     semaphore: Arc<Semaphore>,
+    /// Optional sink that captures every fetched page body (#631).
+    ///
+    /// Shared across all concurrent crawls in the batch, so the CLI ends up
+    /// with one collection covering every URL in the run.
+    content_sink: Option<Arc<dyn CrawlContentSink>>,
 }
 
 impl BatchProcessor {
@@ -89,7 +95,18 @@ impl BatchProcessor {
         Ok(Self {
             max_concurrent_jobs: max_concurrent,
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
+            content_sink: None,
         })
+    }
+
+    /// Capture every fetched page body into `sink` (#631).
+    ///
+    /// Without a sink the batch crawl discards page content and the CLI has
+    /// nothing to export — the root cause of `--batch` writing zero files.
+    #[must_use]
+    pub fn with_content_sink(mut self, sink: Arc<dyn CrawlContentSink>) -> Self {
+        self.content_sink = Some(sink);
+        self
     }
 
     /// Get the maximum concurrency limit
@@ -130,6 +147,7 @@ impl BatchProcessor {
         for url_str in &job.urls {
             let url = url_str.clone();
             let config = base_config.clone();
+            let sink = self.content_sink.clone();
             let permit = self
                 .semaphore
                 .clone()
@@ -142,7 +160,7 @@ impl BatchProcessor {
 
             join_set.spawn(async move {
                 let _permit = permit; // Hold permit for duration of task
-                let result = process_single_url(&url, config).await;
+                let result = process_single_url(&url, config, sink).await;
                 (url, result)
             });
         }
@@ -205,6 +223,7 @@ impl BatchProcessor {
 async fn process_single_url(
     url: &str,
     base_config: CrawlerConfig,
+    content_sink: Option<Arc<dyn CrawlContentSink>>,
 ) -> Result<crate::domain::CrawlResult, CrawlError> {
     let parsed_url =
         url::Url::parse(url).map_err(|e| CrawlError::InvalidUrl(format!("{url}: {e}")))?;
@@ -221,7 +240,12 @@ async fn process_single_url(
         .include_patterns(base_config.include_patterns.clone())
         .build();
 
-    let result = crate::application::crawler::engine::crawl_site(config).await?;
+    let result = match content_sink {
+        Some(sink) => {
+            crate::application::crawler::engine::crawl_site_capturing(config, sink).await?
+        },
+        None => crate::application::crawler::engine::crawl_site(config).await?,
+    };
 
     // Treat any crawl errors (timeouts, etc.) as failures for batch processing,
     // but preserve severity (#537): the engine already partitioned them into

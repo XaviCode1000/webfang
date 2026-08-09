@@ -19,6 +19,7 @@ use super::checkpoint::{
 };
 use super::collector::ResultsCollector;
 use super::concurrency_level::{ConcurrencyLevel, SharedConcurrencyLevel};
+use super::content_sink::CrawlContentSink;
 use super::crawl_scheduler::CrawlScheduler;
 use super::crawl_task::{handle_crawl_result, run_crawl_task};
 use super::fetch_router::{build_fetch_router, FetchRouter};
@@ -92,6 +93,8 @@ pub struct Engine {
     cookie_bridge: Arc<RwLock<CookieBridge>>,
     /// Domains currently banned due to WAF or rate limiting.
     banned_domains: Arc<RwLock<Vec<BannedDomain>>>,
+    /// Optional sink capturing every fetched page body (#631).
+    content_sink: Option<Arc<dyn CrawlContentSink>>,
     /// Optional item pipeline for processing scraped content.
     pipeline: Option<Arc<PipelineExecutor>>,
     /// Output stages that receive items after pipeline processing.
@@ -157,6 +160,7 @@ impl Engine {
             fetch_router: None,
             cookie_bridge: Arc::new(RwLock::new(CookieBridge::new())),
             banned_domains: Arc::new(RwLock::new(Vec::new())),
+            content_sink: None,
             pipeline: None,
             output_stages: Vec::new(),
             signal_handle: None,
@@ -232,6 +236,9 @@ impl Engine {
         strategy: JsStrategy,
         tls_emulation: Profile,
         ignore_waf: bool,
+        max_retries: u32,
+        backoff_base_ms: u64,
+        backoff_max_ms: u64,
     ) -> Result<Self, DownloadError> {
         let timeout = self.config.timeout_secs;
         let router = build_fetch_router(
@@ -246,6 +253,9 @@ impl Engine {
             // #509: the Full strategy's governor shares the engine token so
             // permit waits abort on shutdown.
             self.cancel_token.clone(),
+            max_retries,
+            backoff_base_ms,
+            backoff_max_ms,
         )?;
         self.js_strategy = strategy;
         self.fetch_router = Some(router);
@@ -293,6 +303,17 @@ impl Engine {
         if let Ok(mut banned) = self.banned_domains.write() {
             *banned = domains;
         }
+        self
+    }
+
+    /// Capture every fetched page body into `sink` (#631).
+    ///
+    /// [`CrawlResult`] is metadata only; without a sink the crawl discards the
+    /// bodies after link extraction and callers (batch mode) have nothing to
+    /// export. The sink is shared, so several engines can feed one collection.
+    #[must_use]
+    pub fn with_content_sink(mut self, sink: Arc<dyn CrawlContentSink>) -> Self {
+        self.content_sink = Some(sink);
         self
     }
 
@@ -440,6 +461,16 @@ impl Engine {
         // Seed the scheduler (pushes onto the discovery queue and pending buffer)
         self.scheduler.seed(&config_clone.seed_url).await;
 
+        // Apply pattern filtering to seed — #634
+        let seed_str = config_clone.seed_url.as_str().to_string();
+        if !crate::application::url_filter::is_allowed(&seed_str, &config_clone) {
+            info!(
+                seed_url = %config_clone.seed_url,
+                "Seed URL excluded by pattern filters — exiting with empty result"
+            );
+            return Ok(CrawlResult::empty());
+        }
+
         let mut tasks = tokio::task::JoinSet::new();
 
         // Build shared task context once — all spawned tasks share this Arc
@@ -559,6 +590,7 @@ impl Engine {
                 router: self.fetch_router.clone(),
             }),
             link_extractor: Arc::new(ports::ProductionLinkExtractor),
+            content_sink: self.content_sink.clone(),
             pipeline: self.pipeline.as_ref().map(|p| {
                 Arc::new(ports::ProductionPipeline {
                     executor: Arc::clone(p),
@@ -841,6 +873,12 @@ pub struct EngineOptions {
     /// Defaults to `false`. When `true`, a genuine T1 challenge is treated per
     /// normal spa/static logic instead of aborting the fetch.
     pub ignore_waf: bool,
+    /// Maximum number of retry attempts for failed fetches.
+    pub max_retries: u32,
+    /// Base delay for exponential backoff (ms).
+    pub backoff_base_ms: u64,
+    /// Maximum delay for exponential backoff (ms).
+    pub backoff_max_ms: u64,
 }
 
 impl Default for EngineOptions {
@@ -853,6 +891,9 @@ impl Default for EngineOptions {
             autoscale_enabled: false,
             tls_emulation: Profile::Chrome145,
             ignore_waf: false,
+            max_retries: 3,
+            backoff_base_ms: 1000,
+            backoff_max_ms: 10000,
         }
     }
 }
@@ -894,7 +935,26 @@ impl Default for EngineOptions {
 /// # }
 /// ```
 pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError> {
-    crawl_site_inner(config, CorrelationId::new()).await
+    crawl_site_inner(config, CorrelationId::new(), None).await
+}
+
+/// Crawl a website and capture every fetched page body into `sink`.
+///
+/// Same crawl semantics as [`crawl_site`], but the raw body of each fetched
+/// page is handed to the sink before link extraction discards it.
+/// [`CrawlResult`] carries metadata only, so this is the only way for a caller
+/// to obtain crawl content without a second HTTP round-trip — the gap that
+/// made `--batch` write zero files (#631).
+///
+/// # Errors
+///
+/// Returns [`CrawlError`] when the engine cannot be constructed or the crawl
+/// loop fails, exactly as [`crawl_site`] does.
+pub async fn crawl_site_capturing(
+    config: CrawlerConfig,
+    sink: Arc<dyn CrawlContentSink>,
+) -> Result<CrawlResult, CrawlError> {
+    crawl_site_inner(config, CorrelationId::new(), Some(sink)).await
 }
 
 /// Inner implementation of [`crawl_site`].
@@ -906,7 +966,7 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
 /// guard crosses an `.await` (#519).
 #[instrument(
     name = "crawl_site",
-    skip(config, correlation_id),
+    skip(config, correlation_id, content_sink),
     fields(
         correlation_id = %correlation_id,
         trace_id = %correlation_id.trace_id(),
@@ -920,6 +980,7 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
 async fn crawl_site_inner(
     config: CrawlerConfig,
     correlation_id: CorrelationId,
+    content_sink: Option<Arc<dyn CrawlContentSink>>,
 ) -> Result<CrawlResult, CrawlError> {
     info!(
         "Starting crawl from {} with max_depth={} max_pages={}",
@@ -928,6 +989,9 @@ async fn crawl_site_inner(
 
     let ignore_robots = config.ignore_robots;
     let mut engine = Engine::new(config, ignore_robots)?.with_correlation_id(correlation_id);
+    if let Some(sink) = content_sink {
+        engine = engine.with_content_sink(sink);
+    }
     let result = engine.run().await;
     engine.shutdown().await;
     result
@@ -1039,6 +1103,9 @@ async fn crawl_site_with_options_inner(
         options.js_strategy,
         options.tls_emulation,
         options.ignore_waf,
+        options.max_retries,
+        options.backoff_base_ms,
+        options.backoff_max_ms,
     )?;
 
     // Apply autoscale if enabled
@@ -1197,6 +1264,70 @@ mod tests {
         assert!(
             result.total_pages < 20,
             "must not fetch all 20 links with max_pages=2, got {}",
+            result.total_pages
+        );
+    }
+
+    /// Regression test for #634: seed URL that matches an exclude pattern
+    /// MUST be filtered out — 0 pages crawled.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn seed_excluded_by_host_pattern_returns_empty() {
+        let server = MockServer::start().await;
+        let port = server.address().port();
+        Mock::given(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("<html><body>seed</body></html>"),
+            )
+            .mount(&server)
+            .await;
+
+        let seed = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed)
+            .max_depth(0)
+            .max_pages(10)
+            .exclude_pattern("127.0.0.1") // Exclude the seed host
+            .ignore_robots(true)
+            .build();
+
+        let mut engine = Engine::new(config, true).expect("engine must build");
+        let result = engine.run().await.expect("engine run must succeed");
+        engine.shutdown().await;
+
+        assert_eq!(
+            result.total_pages, 0,
+            "seed matching exclude pattern must produce 0 pages, got {}",
+            result.total_pages
+        );
+    }
+
+    /// Regression test for #634: seed URL that does NOT match an exclude
+    /// pattern MUST still be crawled (sanity check).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn seed_not_excluded_is_crawled() {
+        let server = MockServer::start().await;
+        let port = server.address().port();
+        Mock::given(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("<html><body>seed</body></html>"),
+            )
+            .mount(&server)
+            .await;
+
+        let seed = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed)
+            .max_depth(0)
+            .max_pages(10)
+            .exclude_pattern("other-host.com") // Does NOT match seed
+            .ignore_robots(true)
+            .build();
+
+        let mut engine = Engine::new(config, true).expect("engine must build");
+        let result = engine.run().await.expect("engine run must succeed");
+        engine.shutdown().await;
+
+        assert_eq!(
+            result.total_pages, 1,
+            "seed NOT matching exclude pattern must be crawled, got {} pages",
             result.total_pages
         );
     }

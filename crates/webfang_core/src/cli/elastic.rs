@@ -69,9 +69,14 @@ pub(super) async fn run_elastic_ingestion(
 
 /// Build the elastic ingestion pipeline for the run.
 ///
+/// `--elastic` and `--output-vectors` are orthogonal vector *destinations*
+/// (issue #636), so both can be active at once:
+///
 /// - `persistence` ON + `--elastic` → SQLite-backed `SqliteVectorRepository`.
 /// - `--output-vectors <path|->` → dependency-free `StreamRepository` JSONL sink
 ///   (available in every build, including the lightweight core binary).
+/// - both → a single `ElasticIngestion` over a `MultiVectorRepository` fan-out,
+///   persisting to SQLite **and** streaming JSONL in the same run.
 /// - otherwise → `None` (no ingestion).
 ///
 /// `vault_ports` (#433) carries the optional vault-search AI ports assembled by
@@ -106,31 +111,18 @@ pub(super) async fn build_elastic_ingestion(
         },
     };
 
-    let built = {
-        #[cfg(feature = "persistence")]
-        {
-            if opts.elastic.enabled {
-                container.with_elastic(opts).await
-            } else if let Some(ref path) = opts.elastic.output_vectors {
-                container.with_stream(opts, path)
-            } else {
-                Ok(container)
-            }
-        }
-        #[cfg(not(feature = "persistence"))]
-        {
-            if let Some(ref path) = opts.elastic.output_vectors {
-                container.with_stream(opts, path)
-            } else {
-                Ok(container)
-            }
-        }
+    // Wire every active sink (`--elastic` AND/OR `--output-vectors`) into a
+    // single ElasticIngestion over a MultiVectorRepository fan-out (issue #636).
+    // The Container returns itself untouched when no sink is active, so
+    // `elastic_ingestion` stays `None` and no ingestion runs.
+    let container = match container.with_elastic_ingestion(opts).await {
+        Ok(c) => c,
+        Err(e) => {
+            return Err(CliExit::IoError(format!(
+                "no se pudo inicializar la ingesta de vectores: {e}"
+            )))
+        },
     };
 
-    match built {
-        Ok(c) => Ok(c.elastic_ingestion),
-        Err(e) => Err(CliExit::IoError(format!(
-            "no se pudo inicializar la ingesta de vectores: {e}"
-        ))),
-    }
+    Ok(container.elastic_ingestion)
 }

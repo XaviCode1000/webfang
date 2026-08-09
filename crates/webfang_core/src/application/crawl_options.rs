@@ -159,6 +159,10 @@ pub struct NetworkOptions {
     pub download_images: bool,
     /// Download documents from the page.
     pub download_documents: bool,
+    /// Maximum file size for asset downloads in bytes (None = 50MB default).
+    pub max_file_size: Option<u64>,
+    /// Timeout for individual asset downloads in seconds.
+    pub download_timeout_secs: u64,
     /// TLS/HTTP2 profile name (e.g. Chrome145).
     pub h2_profile: String,
     /// JavaScript rendering strategy (static, hybrid, full).
@@ -254,6 +258,8 @@ impl Default for NetworkOptions {
             backoff_max_ms: 10000,
             download_images: false,
             download_documents: false,
+            max_file_size: None,
+            download_timeout_secs: 30,
             h2_profile: "Chrome145".to_owned(),
             js_strategy: JsStrategy::default(),
             obscura_binary: "obscura".to_owned(),

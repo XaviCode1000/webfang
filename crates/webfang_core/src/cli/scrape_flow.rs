@@ -163,6 +163,9 @@ pub async fn scrape_urls(
         // #509: the scrape flow has no shutdown policy yet — pass an inert
         // token so Full-strategy governor waits keep pre-#509 behavior.
         tokio_util::sync::CancellationToken::new(),
+        http_config.max_retries,
+        http_config.backoff_base_ms,
+        http_config.backoff_max_ms,
     )?;
 
     let _total_urls = urls.len();
