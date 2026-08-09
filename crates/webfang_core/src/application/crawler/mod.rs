@@ -2,6 +2,7 @@
 //!
 //! This module contains the crawler service and its supporting components.
 
+pub mod bounded_sink;
 pub mod checkpoint;
 pub mod collector;
 pub mod concurrency_level;
@@ -16,6 +17,7 @@ pub(crate) mod ports;
 pub mod progress;
 pub mod sitemap_discovery;
 
+pub use bounded_sink::{BoundedFileSink, BoundedSinkError, CapturedPageReader};
 pub use collector::{ResultsAdapter, ResultsCollector};
 pub use concurrency_level::{ConcurrencyLevel, SharedConcurrencyLevel};
 pub use content_sink::{CapturedPage, CrawlContentSink, InMemoryContentSink};

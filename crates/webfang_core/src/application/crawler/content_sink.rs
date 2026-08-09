@@ -15,7 +15,11 @@
 use std::sync::Mutex;
 
 /// A page body captured mid-crawl, before extraction.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serializable so a disk-backed sink
+/// ([`BoundedFileSink`](super::bounded_sink::BoundedFileSink)) can spool it as
+/// one JSONL record per page instead of buffering the whole batch in RAM.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CapturedPage {
     /// Absolute URL the body was fetched from.
     pub url: String,

@@ -9,7 +9,7 @@ use tracing::warn;
 
 use crate::application::batch::{BatchManager, BatchManagerSummary};
 use crate::application::crawl_options::CrawlOptions;
-use crate::application::crawler::InMemoryContentSink;
+use crate::application::crawler::BoundedFileSink;
 use crate::cli::elastic::{build_elastic_ingestion, run_elastic_ingestion};
 use crate::cli::error::CliExit;
 use crate::cli::export_flow::{run_export, save_files, ExportConfig};
@@ -500,11 +500,11 @@ fn scraper_failure_for_internal_fatal(
 
 /// Run batch processing mode: crawl multiple URLs from stdin or file.
 ///
-/// The batch pipeline captures every fetched page body through a shared
-/// [`InMemoryContentSink`] and then runs the full export / elastic / resume
+/// The batch pipeline spools every fetched page body through a shared
+/// [`BoundedFileSink`] and then runs the full export / elastic / resume
 /// pipeline — the same stages `run()` applies to single-page mode, so
 /// `--batch` actually writes `.md` + `.jsonl` and honors `--elastic` /
-/// `--resume` (#631, #637).
+/// `--resume` (#631, #637), with bounded memory (#653).
 async fn run_batch(
     opts: CrawlOptions,
     #[cfg(feature = "ai")] ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
@@ -518,12 +518,14 @@ async fn run_batch(
         Err(e) => return e,
     };
 
-    let (summary, captured) = match run_batch_crawl(&opts, tls_emulation).await {
+    let (summary, sink) = match run_batch_crawl(&opts, tls_emulation).await {
         Ok(pair) => pair,
         Err(e) => return e,
     };
 
-    let (results, failures) = match extract_batch_content(captured, &opts).await {
+    let extracted = extract_batch_content(&sink, &opts).await;
+    discard_batch_spool(&sink).await;
+    let (results, failures) = match extracted {
         Ok(pair) => pair,
         Err(e) => return e,
     };
@@ -578,27 +580,21 @@ async fn run_batch(
     batch_exit_code(results.len(), total_failed, &all_errors)
 }
 
-/// Crawl every batch URL through the engine, capturing each fetched body, and
-/// return the run summary plus the captured pages. Performs the no-URL /
-/// no-content guards so `--batch` fails loudly instead of writing nothing
-/// (#631).
+/// Crawl every batch URL through the engine, spooling each fetched body to
+/// disk, and return the run summary plus the sink holding the spool. Performs
+/// the no-URL / no-content guards so `--batch` fails loudly instead of writing
+/// nothing (#631).
+///
+/// The sink is a [`BoundedFileSink`], not an in-memory buffer: a large batch of
+/// heavy pages must not grow the resident set without a ceiling (#653).
 async fn run_batch_crawl(
     opts: &CrawlOptions,
     tls_emulation: wreq_util::Profile,
-) -> Result<
-    (
-        BatchManagerSummary,
-        Vec<crate::application::crawler::CapturedPage>,
-    ),
-    CliExit,
-> {
+) -> Result<(BatchManagerSummary, std::sync::Arc<BoundedFileSink>), CliExit> {
     let crawler_config = build_batch_crawler_config(opts, tls_emulation);
 
-    let sink = std::sync::Arc::new(InMemoryContentSink::new());
-    let mut manager = match load_batch_manager(opts, crawler_config).await {
-        Ok(m) => m,
-        Err(e) => return Err(e),
-    };
+    let sink = std::sync::Arc::new(build_batch_sink(opts).await?);
+    let mut manager = load_batch_manager(opts, crawler_config).await?;
     manager = manager.with_content_sink(sink.clone());
 
     if manager.url_count() == 0 {
@@ -615,13 +611,51 @@ async fn run_batch_crawl(
     let summary = manager.process_all_summary().await;
     log_batch_summary(&summary);
 
-    let captured = sink.take_pages();
-    if captured.is_empty() {
+    let captured = sink.finish().await.map_err(|e| {
+        error!(error = %e, "batch content spool flush failed");
+        CliExit::IoError(format!("No se pudo volcar el contenido capturado: {e}"))
+    })?;
+
+    if captured == 0 {
         error!("Batch captured no page bodies — nothing to export");
         return Err(CliExit::NetworkError("Batch produced no content".into()));
     }
 
-    Ok((summary, captured))
+    Ok((summary, sink))
+}
+
+/// Create the disk-backed capture sink for a batch run.
+///
+/// The spool lives under the output directory so it shares the run's storage
+/// budget and is cleaned up by [`discard_batch_spool`] once extraction is done.
+async fn build_batch_sink(opts: &CrawlOptions) -> Result<BoundedFileSink, CliExit> {
+    let spool_path = opts.export.output_dir.join(".webfang-batch-capture.jsonl");
+    // One buffered page per concurrent crawl, plus headroom, keeps the writer
+    // from becoming the bottleneck without unbounding memory.
+    let buffer = opts
+        .batch
+        .concurrency
+        .saturating_mul(2)
+        .max(crate::application::crawler::bounded_sink::DEFAULT_SINK_BUFFER);
+    BoundedFileSink::new(spool_path, buffer).await.map_err(|e| {
+        error!(error = %e, "batch content spool could not be created");
+        CliExit::IoError(format!(
+            "No se pudo crear el archivo temporal de captura: {e}"
+        ))
+    })
+}
+
+/// Remove the batch capture spool once its pages have been extracted.
+///
+/// Best-effort: a leftover spool is noise, not a failure of the run.
+async fn discard_batch_spool(sink: &BoundedFileSink) {
+    if let Err(e) = tokio::fs::remove_file(sink.spool_path()).await {
+        tracing::debug!(
+            error = %e,
+            spool = %sink.spool_path().display(),
+            "batch capture spool could not be removed"
+        );
+    }
 }
 
 /// Build the resume [`StateStore`] for `--resume` (#637) so `export_phase`
@@ -674,10 +708,11 @@ async fn run_batch_elastic(
 /// Convert the batch-captured pages into [`ScrapedContent`] and collect
 /// per-page extraction failures.
 ///
-/// Each captured body goes through the same [`extract_content`] path as
-/// single-page mode: Readability → text fallback → binary detection. Pages
-/// that fail extraction are logged and reported; the `exit_code` decision
-/// is made afterwards by `report_phase`.
+/// Pages are streamed one at a time from the sink's spool (#653) — the raw
+/// bodies are never all resident at once. Each body goes through the same
+/// [`extract_content`] path as single-page mode: Readability → text fallback →
+/// binary detection. Pages that fail extraction are logged and reported; the
+/// `exit_code` decision is made afterwards by `report_phase`.
 ///
 /// The batch crawl had one fetch per URL, so `CrawlTaskCtx` uses the default
 /// asset downloader (`None`) — the same behavior as `--no-images` /
@@ -685,11 +720,11 @@ async fn run_batch_elastic(
 ///
 /// # Errors
 ///
-/// Returns [`CliExit`] when the first target URL cannot be parsed or the
-/// extraction encounters a fatal setup error. Per-page failures are
-/// collected in the `failures` vec instead of aborting the whole batch.
+/// Returns [`CliExit`] when the capture spool cannot be read or decoded.
+/// Per-page failures are collected in the `failures` vec instead of aborting
+/// the whole batch.
 async fn extract_batch_content(
-    pages: Vec<crate::application::crawler::CapturedPage>,
+    sink: &BoundedFileSink,
     opts: &CrawlOptions,
 ) -> Result<
     (
@@ -704,10 +739,18 @@ async fn extract_batch_content(
         .with_ignore_waf(opts.crawl.ignore_waf);
 
     let root_correlation = domain::CorrelationId::new();
-    let mut results = Vec::with_capacity(pages.len());
+    let mut results = Vec::new();
     let mut failures: Vec<(String, crate::error::ScraperError)> = Vec::new();
 
-    for page in pages {
+    let mut reader = sink.reader().await.map_err(|e| {
+        error!(error = %e, "batch capture spool could not be opened");
+        CliExit::IoError(format!("No se pudo leer el contenido capturado: {e}"))
+    })?;
+
+    while let Some(page) = reader.next_page().await.map_err(|e| {
+        error!(error = %e, "batch capture spool could not be decoded");
+        CliExit::IoError(format!("No se pudo leer el contenido capturado: {e}"))
+    })? {
         let page_correlation = root_correlation.child();
         let url = match url::Url::parse(&page.url) {
             Ok(u) => u,

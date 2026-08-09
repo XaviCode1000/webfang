@@ -34,6 +34,7 @@ pub mod adaptive_engine;
 pub use batch::{
     BatchJob, BatchManager, BatchManagerSummary, BatchProcessor, BatchProgress, BatchResult,
 };
+pub use crawler::bounded_sink::{BoundedFileSink, BoundedSinkError, CapturedPageReader};
 pub use crawler::collector::{ResultsAdapter, ResultsCollector};
 pub use crawler::content_sink::{CapturedPage, CrawlContentSink, InMemoryContentSink};
 pub use crawler::engine::EngineOptions;
