@@ -288,6 +288,25 @@ async fn run_dry_run(opts: CrawlOptions) -> CliExit {
         Err(e) => return CliExit::ConfigError(e.to_string()),
     };
 
+    let crawler_config = build_crawler_config_for_discovery(&opts, tls_emulation);
+
+    let discovered = match crate::cli::url_discovery::discover_urls(&crawler_config, &opts).await {
+        Ok(urls) => urls,
+        Err(e) => return CliExit::NetworkError(format!("URL discovery failed: {e}")),
+    };
+
+    println!("\nDry-run: {} URL(s) would be scraped:", discovered.len());
+    for url in &discovered {
+        println!("  {url}");
+    }
+    CliExit::Success
+}
+
+/// Build a `CrawlerConfig` for URL discovery (shared by dry-run, prepare, and batch).
+fn build_crawler_config_for_discovery(
+    opts: &CrawlOptions,
+    tls_emulation: wreq_util::Profile,
+) -> CrawlerConfig {
     let mut crawler_config = CrawlerConfig::builder(opts.url.clone())
         .max_pages(opts.crawl.max_pages)
         .max_depth(opts.crawl.max_depth)
@@ -301,18 +320,7 @@ async fn run_dry_run(opts: CrawlOptions) -> CliExit {
     if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
         crawler_config = crawler_config.sitemap_url(sitemap_url);
     }
-    let crawler_config = crawler_config.build();
-
-    let discovered = match crate::cli::url_discovery::discover_urls(&crawler_config, &opts).await {
-        Ok(urls) => urls,
-        Err(e) => return CliExit::NetworkError(format!("URL discovery failed: {e}")),
-    };
-
-    println!("\nDry-run: {} URL(s) would be scraped:", discovered.len());
-    for url in &discovered {
-        println!("  {url}");
-    }
-    CliExit::Success
+    crawler_config.build()
 }
 
 /// Prepare scraper config and discover URLs.
@@ -329,20 +337,7 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
         let tls_emulation = HttpClientConfig::profile_from_name(&opts.network.h2_profile)
             .map_err(|e| CliExit::ConfigError(e.to_string()))?;
 
-        let mut crawler_config = CrawlerConfig::builder(opts.url.clone())
-            .max_pages(opts.crawl.max_pages)
-            .max_depth(opts.crawl.max_depth)
-            .include_patterns(opts.crawl.include_patterns.clone())
-            .exclude_patterns(opts.crawl.exclude_patterns.clone())
-            .ignore_robots(opts.crawl.ignore_robots)
-            .use_sitemap(opts.crawl.use_sitemap)
-            .timeout_secs(opts.network.timeout_secs)
-            .delay_ms(opts.network.delay_ms)
-            .tls_emulation(tls_emulation);
-        if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
-            crawler_config = crawler_config.sitemap_url(sitemap_url);
-        }
-        let crawler_config = crawler_config.build();
+        let crawler_config = build_crawler_config_for_discovery(opts, tls_emulation);
 
         let discovered_urls = match discover_urls(&crawler_config, opts).await {
             Err(e) => {

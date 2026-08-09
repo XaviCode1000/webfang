@@ -4,17 +4,21 @@ use crate::BehavioralTest;
 use wiremock::matchers::method;
 use wiremock::{Mock, ResponseTemplate};
 
-#[tokio::test]
-async fn dry_run_produces_zero_files() {
+/// Sets up the standard discovery mock and returns the BehavioralTest.
+async fn setup_dry_run_test() -> BehavioralTest {
     let t = BehavioralTest::new().await;
-
-    // Mock the seed URL for discovery (returns minimal HTML)
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(200).set_body_string("<html><body>test</body></html>"))
         .expect(1) // one discovery request
         .named("dry-run discovery request")
         .mount(&t.server)
         .await;
+    t
+}
+
+#[tokio::test]
+async fn dry_run_produces_zero_files() {
+    let t = setup_dry_run_test().await;
 
     t.scraper_cmd()
         .arg("--dry-run")
@@ -35,15 +39,7 @@ async fn dry_run_produces_zero_files() {
 
 #[tokio::test]
 async fn dry_run_makes_discovery_request_only() {
-    let t = BehavioralTest::new().await;
-
-    // Mock the seed URL for discovery (returns minimal HTML)
-    Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("<html><body>test</body></html>"))
-        .expect(1) // one discovery request, no scrape requests
-        .named("dry-run discovery request only")
-        .mount(&t.server)
-        .await;
+    let t = setup_dry_run_test().await;
 
     t.scraper_cmd()
         .arg("--dry-run")
@@ -62,15 +58,7 @@ async fn dry_run_makes_discovery_request_only() {
 
 #[tokio::test]
 async fn dry_run_with_single_page_still_produces_nothing() {
-    let t = BehavioralTest::new().await;
-
-    // Mock the seed URL for discovery (returns minimal HTML)
-    Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("<html><body>test</body></html>"))
-        .expect(1) // one discovery request
-        .named("dry-run discovery request")
-        .mount(&t.server)
-        .await;
+    let t = setup_dry_run_test().await;
 
     t.scraper_cmd()
         .arg("--single-page")
