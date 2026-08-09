@@ -350,53 +350,49 @@ mod tests {
     }
 
     #[test]
-    fn test_dns_error_classifies_as_permanent_fatal() {
-        let err = DownloadError::Dns("NXDOMAIN: example.invalid".into());
-        assert_eq!(err.classify(), crate::error::ErrorClass::PermanentFatal);
+    fn test_download_error_classify_variants() {
+        use crate::error::ErrorClass;
+
+        // Table of (error, expected class, label) — keeps classification rules
+        // in one place instead of N near-identical `assert_eq!` tests.
+        let cases: &[(DownloadError, ErrorClass)] = &[
+            (DownloadError::Dns("NXDOMAIN".into()), ErrorClass::PermanentFatal),
+            (DownloadError::Tls("certificate expired".into()), ErrorClass::PermanentFatal),
+            (
+                DownloadError::Io(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "peer")),
+                ErrorClass::TransientRetriable,
+            ),
+            (
+                DownloadError::Io(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "trunc")),
+                ErrorClass::TransientRetriable,
+            ),
+            (
+                DownloadError::Io(std::io::Error::other("bug")),
+                ErrorClass::InternalFatal,
+            ),
+            (DownloadError::Timeout(1), ErrorClass::TransientBackoff),
+            (DownloadError::Http { status: 503, message: "x".into() }, ErrorClass::TransientRetriable),
+            (DownloadError::Http { status: 429, message: "x".into() }, ErrorClass::TransientBackoff),
+            (DownloadError::Http { status: 404, message: "x".into() }, ErrorClass::PermanentFatal),
+        ];
+        for (err, expected) in cases {
+            assert_eq!(err.classify(), *expected, "variant classification mismatch");
+        }
     }
 
     #[test]
-    fn test_tls_error_classifies_as_permanent_fatal() {
-        let err = DownloadError::Tls("certificate expired".into());
-        assert_eq!(err.classify(), crate::error::ErrorClass::PermanentFatal);
-    }
+    fn test_scraper_error_delegates_download_classification() {
+        use crate::error::{ErrorClass, ScraperError};
 
-    #[test]
-    fn test_connection_reset_is_transient() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "peer closed");
-        let err = DownloadError::Io(io_err);
-        assert_eq!(err.classify(), crate::error::ErrorClass::TransientRetriable);
-    }
+        let dns: ScraperError = DownloadError::Dns("NXDOMAIN".into()).into();
+        assert_eq!(dns.classify(), ErrorClass::PermanentFatal);
 
-    #[test]
-    fn test_peer_drop_mid_body_is_transient() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "truncated");
-        let err = DownloadError::Io(io_err);
-        assert_eq!(
-            err.classify(),
-            crate::error::ErrorClass::TransientRetriable,
-            "Peer drop during body read should be transient, not InternalFatal"
-        );
-    }
-
-    #[test]
-    fn test_scraper_error_download_dns_classifies_as_permanent_fatal() {
-        use crate::error::ScraperError;
-        let dl_err = DownloadError::Dns("NXDOMAIN".into());
-        let scraper: ScraperError = dl_err.into();
-        assert_eq!(scraper.classify(), crate::error::ErrorClass::PermanentFatal);
-    }
-
-    #[test]
-    fn test_scraper_error_download_connection_reset_is_transient() {
-        use crate::error::ScraperError;
-        let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
-        let dl_err = DownloadError::Io(io_err);
-        let scraper: ScraperError = dl_err.into();
-        assert_eq!(
-            scraper.classify(),
-            crate::error::ErrorClass::TransientRetriable
-        );
+        let transient: ScraperError = DownloadError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "reset",
+        ))
+        .into();
+        assert_eq!(transient.classify(), ErrorClass::TransientRetriable);
     }
 
     #[test]

@@ -812,51 +812,21 @@ mod wiremock_tests {
     // Network resilience (#649)
     // ------------------------------------------------------------------
 
-    /// 5xx must trigger the unified retry loop: 1 initial attempt + 3 retries.
+    /// 5xx must trigger the unified retry loop (1 initial + 3 retries), and
+    /// exhaustion must report the LAST observed status — not a hardcoded 429
+    /// (#649 Bugs 2 & 5). One server exercises both: first reply 429, then 500.
     #[tokio::test]
-    async fn test_5xx_retry_fires() {
+    async fn test_unified_retry_fires_and_reports_last_status() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
 
         let server = MockServer::start().await;
         let counter = Arc::new(AtomicUsize::new(0));
-        let counter_clone = Arc::clone(&counter);
+        let counter_clone_if = Arc::clone(&counter);
 
         Mock::given(method("GET"))
             .respond_with(move |_req: &wiremock::Request| {
-                counter_clone.fetch_add(1, Ordering::SeqCst);
-                ResponseTemplate::new(500)
-            })
-            .mount(&server)
-            .await;
-
-        let downloader =
-            WreqDownloader::new(10, 5, Profile::Chrome145, None, 3, 1, 5).expect("client builds");
-        let url: Url = format!("{}/", server.uri()).parse().expect("valid url");
-
-        let result = downloader.fetch(&url).await;
-        assert!(result.is_err(), "5xx exhaustion must surface as an error");
-        assert_eq!(
-            counter.load(Ordering::SeqCst),
-            4,
-            "Expected 1 + 3 retries = 4 requests"
-        );
-    }
-
-    /// Retry exhaustion must report the LAST observed status, not a hardcoded
-    /// 429 (#649 Bug 5).
-    #[tokio::test]
-    async fn test_429_exhaustion_returns_last_status() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
-
-        let server = MockServer::start().await;
-        let counter = Arc::new(AtomicUsize::new(0));
-        let counter_clone = Arc::clone(&counter);
-
-        Mock::given(method("GET"))
-            .respond_with(move |_req: &wiremock::Request| {
-                let count = counter_clone.fetch_add(1, Ordering::SeqCst);
+                let count = counter_clone_if.fetch_add(1, Ordering::SeqCst);
                 if count < 2 {
                     ResponseTemplate::new(429).insert_header("retry-after", "0")
                 } else {
@@ -870,10 +840,17 @@ mod wiremock_tests {
             WreqDownloader::new(10, 5, Profile::Chrome145, None, 3, 1, 5).expect("client builds");
         let url: Url = format!("{}/", server.uri()).parse().expect("valid url");
 
+        // 2×429 + 2×500 = 4 requests; the 5xx half proves Bug 2, the final
+        // 500 status proves Bug 5 (last observed status, not hardcoded 429).
         match downloader.fetch(&url).await {
             Err(DownloadError::Http { status: 500, .. }) => {},
-            other => panic!("Expected status 500, got {other:?}"),
+            other => panic!("Expected status 500 after 429→500 run, got {other:?}"),
         }
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            4,
+            "Expected 2×429 + 2×500 = 4 requests"
+        );
     }
 
     /// Unpinned baseline: the pre-#503 rotation behavior is preserved —
