@@ -328,6 +328,10 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
                     ScraperError::SitemapEmpty => {
                         CliExit::EmptyDiscovery("No URLs discovered from sitemaps".into())
                     },
+                    // All child sitemaps in index failed → exit 65 (data format error)
+                    ScraperError::Internal(msg) if msg.contains("all child sitemaps failed") => {
+                        CliExit::DataFormatError(format!("Sitemap index error: {msg}"))
+                    },
                     // Malformed XML → exit 65 (data format error)
                     ScraperError::Internal(msg) if msg.contains("parse") || msg.contains("XML") => {
                         CliExit::DataFormatError(format!("Malformed sitemap XML: {msg}"))

@@ -36,6 +36,8 @@ use crate::domain::{CrawlError, UrlValidatorTrait};
 use async_compression::tokio::bufread::GzipDecoder;
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use url::Url;
 
@@ -100,6 +102,10 @@ pub enum SitemapError {
     /// Decompression of compressed sitemap failed
     #[error("decompression failed: {0}")]
     DecompressionError(String),
+
+    /// All child sitemaps in an index failed to parse
+    #[error("all {0} child sitemaps failed: {1}")]
+    AllChildrenFailed(usize, String),
 }
 
 /// Sitemap URL entry with metadata per sitemaps.org spec
@@ -297,7 +303,9 @@ impl SitemapParser {
     ///
     /// Returns `SitemapError` if parsing fails or no URLs found
     pub async fn parse_from_url(&self, url: &str) -> Result<Vec<SitemapUrl>> {
-        self.parse_with_depth(url, self.config.max_depth).await
+        let visited = Arc::new(Mutex::new(HashSet::new()));
+        self.parse_with_depth(url, self.config.max_depth, &visited)
+            .await
     }
 
     /// Validate a sitemap HTTP response: status MUST be checked before
@@ -329,7 +337,12 @@ impl SitemapParser {
     }
 
     /// Internal recursive parser with depth tracking
-    async fn parse_with_depth(&self, url: &str, depth: u8) -> Result<Vec<SitemapUrl>> {
+    async fn parse_with_depth(
+        &self,
+        url: &str,
+        depth: u8,
+        visited: &Arc<Mutex<HashSet<Url>>>,
+    ) -> Result<Vec<SitemapUrl>> {
         // Base case: max depth reached
         if depth == 0 {
             return Err(SitemapError::MaxDepthExceeded);
@@ -412,7 +425,7 @@ impl SitemapParser {
                     message: format!("memory management failed: {e}"),
                 })?;
 
-            self.parse_sitemap_index(&urls, depth - 1).await
+            self.parse_sitemap_index(&urls, depth - 1, visited).await
         } else {
             // [3.7] MemoryManager: check memory limits before returning
             self.memory_manager
@@ -462,6 +475,7 @@ impl SitemapParser {
         let mut urls = Vec::new();
         let mut buf = Vec::new();
         let mut in_url = false;
+        let mut in_sitemap = false;
         let mut in_loc = false;
         let mut in_lastmod = false;
         let mut in_priority = false;
@@ -510,7 +524,27 @@ impl SitemapParser {
                         }
                     }
                 },
-                Ok(Event::Start(ref e)) if in_url && e.name().as_ref() == b"loc" => {
+                Ok(Event::Start(ref e)) if e.name().as_ref() == b"sitemap" => {
+                    in_sitemap = true;
+                    // Reset current entry fields
+                    current_url = None;
+                    current_lastmod = None;
+                },
+                Ok(Event::End(ref e)) if e.name().as_ref() == b"sitemap" => {
+                    in_sitemap = false;
+                    if let Some(ref url) = current_url {
+                        // Sitemap index entries don't have priority/changefreq
+                        urls.push(SitemapUrl {
+                            url: url.clone(),
+                            lastmod: current_lastmod.clone(),
+                            priority: None,
+                            changefreq: None,
+                        });
+                    }
+                },
+                Ok(Event::Start(ref e))
+                    if (in_url || in_sitemap) && e.name().as_ref() == b"loc" =>
+                {
                     in_loc = true;
                 },
                 Ok(Event::Text(ref e)) if in_loc => {
@@ -523,7 +557,9 @@ impl SitemapParser {
                 Ok(Event::End(ref e)) if in_loc && e.name().as_ref() == b"loc" => {
                     in_loc = false;
                 },
-                Ok(Event::Start(ref e)) if in_url && e.name().as_ref() == b"lastmod" => {
+                Ok(Event::Start(ref e))
+                    if (in_url || in_sitemap) && e.name().as_ref() == b"lastmod" =>
+                {
                     in_lastmod = true;
                 },
                 Ok(Event::Text(ref e)) if in_lastmod => {
@@ -596,14 +632,39 @@ impl SitemapParser {
         &self,
         sitemap_urls: &[SitemapUrl],
         depth: u8,
+        visited: &Arc<Mutex<HashSet<Url>>>,
     ) -> Result<Vec<SitemapUrl>> {
         use futures::stream::{self, StreamExt};
 
         let mut all_urls = Vec::new();
+        let mut failures = Vec::new();
 
-        let results = stream::iter(sitemap_urls.iter().cloned())
-            .map(|sitemap_url| async move {
-                self.parse_with_depth(sitemap_url.url.as_str(), depth).await
+        // First, filter out already-visited URLs and add new ones to visited
+        let mut urls_to_parse = Vec::new();
+        for sitemap_url in sitemap_urls {
+            let url = sitemap_url.url.clone();
+            let mut visited_lock = visited.lock().map_err(|e| SitemapError::HttpError {
+                status: 0,
+                message: format!("failed to acquire visited lock: {e}"),
+            })?;
+            if visited_lock.contains(&url) {
+                tracing::warn!("Skipping already-visited sitemap (loop detected): {}", url);
+                failures.push((url, SitemapError::InvalidStructure));
+            } else {
+                visited_lock.insert(url.clone());
+                urls_to_parse.push((url, sitemap_url.clone()));
+            }
+        }
+
+        // Parse unvisited URLs concurrently
+        let visited_clone = visited.clone();
+        let results = stream::iter(urls_to_parse)
+            .map(move |(url, _sitemap_url)| {
+                let visited = visited_clone.clone();
+                async move {
+                    let result = self.parse_with_depth(url.as_str(), depth, &visited).await;
+                    result.map_err(|e| (url, e))
+                }
             })
             .buffered(self.config.concurrency)
             .collect::<Vec<_>>()
@@ -612,11 +673,24 @@ impl SitemapParser {
         for result in results {
             match result {
                 Ok(urls) => all_urls.extend(urls),
-                Err(e) => tracing::warn!("Failed to parse sitemap: {}", e),
+                Err((url, e)) => {
+                    tracing::warn!("Failed to parse sitemap {}: {}", url, e);
+                    failures.push((url, e));
+                },
             }
         }
 
         if all_urls.is_empty() {
+            if !failures.is_empty() {
+                let failure_msgs: Vec<String> = failures
+                    .iter()
+                    .map(|(url, e)| format!("{url}: {e}"))
+                    .collect();
+                return Err(SitemapError::AllChildrenFailed(
+                    failures.len(),
+                    failure_msgs.join("; "),
+                ));
+            }
             Err(SitemapError::NoUrlsFound)
         } else {
             // Deduplicate by URL across all merged results

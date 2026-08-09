@@ -232,3 +232,428 @@ async fn test_parse_sitemap_no_content_type_accepted() {
 
     assert_eq!(urls.len(), 3, "should parse sitemap without Content-Type");
 }
+
+// ===== SITEMAP INDEX RECURSION TESTS =====
+
+/// Helper to create a sitemap index XML with mock server base URL
+fn sitemap_index_with_base(base_url: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <sitemap>
+        <loc>{base_url}/sitemap1.xml</loc>
+        <lastmod>2024-01-15</lastmod>
+    </sitemap>
+    <sitemap>
+        <loc>{base_url}/sitemap2.xml</loc>
+        <lastmod>2024-01-10</lastmod>
+    </sitemap>
+</sitemapindex>"#
+    )
+}
+
+/// Helper to create sitemap 1 XML
+const SITEMAP_1: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>https://example.com/page1</loc></url>
+    <url><loc>https://example.com/page2</loc></url>
+</urlset>"#;
+
+/// Helper to create sitemap 2 XML
+const SITEMAP_2: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>https://example.com/page3</loc></url>
+    <url><loc>https://example.com/page4</loc></url>
+</urlset>"#;
+
+/// Sitemap index with multiple child sitemaps — recursively parses all.
+#[tokio::test]
+async fn test_parse_sitemap_index_recurses() {
+    let mock = MockServer::start().await;
+    let base_url = mock.uri();
+    let index_xml = sitemap_index_with_base(&base_url);
+
+    Mock::given(method("GET"))
+        .and(path("/sitemap-index.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(index_xml)
+                .insert_header("content-type", "application/xml"),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sitemap1.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(SITEMAP_1)
+                .insert_header("content-type", "application/xml"),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sitemap2.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(SITEMAP_2)
+                .insert_header("content-type", "application/xml"),
+        )
+        .mount(&mock)
+        .await;
+
+    let parser = parser();
+    let url = format!("{}/sitemap-index.xml", mock.uri());
+    let urls = parser.parse_from_url(&url).await.unwrap();
+
+    assert_eq!(
+        urls.len(),
+        4,
+        "should parse all 4 URLs from both child sitemaps"
+    );
+    let strings: Vec<String> = urls.iter().map(|u| u.url.to_string()).collect();
+    assert!(strings.contains(&"https://example.com/page1".to_string()));
+    assert!(strings.contains(&"https://example.com/page2".to_string()));
+    assert!(strings.contains(&"https://example.com/page3".to_string()));
+    assert!(strings.contains(&"https://example.com/page4".to_string()));
+}
+
+/// Sitemap index where one child returns 404 — other children still parsed.
+#[tokio::test]
+async fn test_sitemap_index_partial_failure_continues() {
+    let mock = MockServer::start().await;
+    let base_url = mock.uri();
+    let index_xml = sitemap_index_with_base(&base_url);
+
+    Mock::given(method("GET"))
+        .and(path("/sitemap-index.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(index_xml)
+                .insert_header("content-type", "application/xml"),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sitemap1.xml"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sitemap2.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(SITEMAP_2)
+                .insert_header("content-type", "application/xml"),
+        )
+        .mount(&mock)
+        .await;
+
+    let parser = parser();
+    let url = format!("{}/sitemap-index.xml", mock.uri());
+    let urls = parser.parse_from_url(&url).await.unwrap();
+
+    // Should still parse the successful child
+    assert_eq!(
+        urls.len(),
+        2,
+        "should parse URLs from successful child only"
+    );
+    let strings: Vec<String> = urls.iter().map(|u| u.url.to_string()).collect();
+    assert!(strings.contains(&"https://example.com/page3".to_string()));
+    assert!(strings.contains(&"https://example.com/page4".to_string()));
+}
+
+/// Sitemap index where ALL children fail — returns AllChildrenFailed error.
+#[tokio::test]
+async fn test_sitemap_index_all_children_failed() {
+    let mock = MockServer::start().await;
+    let base_url = mock.uri();
+    let index_xml = sitemap_index_with_base(&base_url);
+
+    Mock::given(method("GET"))
+        .and(path("/sitemap-index.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(index_xml)
+                .insert_header("content-type", "application/xml"),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sitemap1.xml"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sitemap2.xml"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&mock)
+        .await;
+
+    let parser = parser();
+    let url = format!("{}/sitemap-index.xml", mock.uri());
+    let result = parser.parse_from_url(&url).await;
+
+    assert!(
+        matches!(result, Err(SitemapError::AllChildrenFailed(count, _)) if count == 2),
+        "expected AllChildrenFailed with count=2, got {result:?}"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("all 2 child sitemaps failed"));
+    assert!(err_msg.contains("sitemap1.xml"));
+    assert!(err_msg.contains("sitemap2.xml"));
+}
+
+/// Sitemap index with malformed XML child — error included in AllChildrenFailed.
+#[tokio::test]
+async fn test_sitemap_index_malformed_child_included_in_error() {
+    let mock = MockServer::start().await;
+    let base_url = mock.uri();
+    let index_xml = sitemap_index_with_base(&base_url);
+
+    Mock::given(method("GET"))
+        .and(path("/sitemap-index.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(index_xml)
+                .insert_header("content-type", "application/xml"),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sitemap1.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("not valid xml {{{")
+                .insert_header("content-type", "application/xml"),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sitemap2.xml"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&mock)
+        .await;
+
+    let parser = parser();
+    let url = format!("{}/sitemap-index.xml", mock.uri());
+    let result = parser.parse_from_url(&url).await;
+
+    assert!(
+        matches!(result, Err(SitemapError::AllChildrenFailed(count, _)) if count == 2),
+        "expected AllChildrenFailed with count=2, got {result:?}"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("all 2 child sitemaps failed"));
+    assert!(err_msg.contains("XML") || err_msg.contains("parse") || err_msg.contains("404"));
+}
+
+/// Self-referential sitemap index (loop) — detected and skipped.
+#[tokio::test]
+async fn test_sitemap_index_self_reference_loop_detected() {
+    let mock = MockServer::start().await;
+    let base_url = mock.uri();
+
+    // Sitemap index that references itself
+    let self_ref_index = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <sitemap>
+        <loc>{base_url}/sitemap-index.xml</loc>
+    </sitemap>
+</sitemapindex>"#
+    );
+
+    Mock::given(method("GET"))
+        .and(path("/sitemap-index.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(self_ref_index)
+                .insert_header("content-type", "application/xml"),
+        )
+        .mount(&mock)
+        .await;
+
+    let parser = parser();
+    let url = format!("{}/sitemap-index.xml", mock.uri());
+    let result = parser.parse_from_url(&url).await;
+
+    // Should detect the loop and return NoUrlsFound (no children parsed)
+    // or AllChildrenFailed if it tries to fetch itself again
+    assert!(result.is_err(), "self-referential sitemap should fail");
+}
+
+/// Mutually referential sitemap indexes (A -> B -> A) — loop detected.
+#[tokio::test]
+async fn test_sitemap_index_mutual_reference_loop_detected() {
+    let mock = MockServer::start().await;
+    let base_url = mock.uri();
+
+    let index_a = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <sitemap><loc>{base_url}/index-b.xml</loc></sitemap>
+</sitemapindex>"#
+    );
+
+    let index_b = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <sitemap><loc>{base_url}/index-a.xml</loc></sitemap>
+</sitemapindex>"#
+    );
+
+    Mock::given(method("GET"))
+        .and(path("/index-a.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(index_a)
+                .insert_header("content-type", "application/xml"),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/index-b.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(index_b)
+                .insert_header("content-type", "application/xml"),
+        )
+        .mount(&mock)
+        .await;
+
+    let parser = parser();
+    let url = format!("{}/index-a.xml", mock.uri());
+    let result = parser.parse_from_url(&url).await;
+
+    // Should detect the loop and not infinite recurse
+    assert!(result.is_err(), "mutual reference sitemap should fail");
+}
+
+/// Sitemap index with valid child and self-reference — valid child parsed, loop skipped.
+#[tokio::test]
+async fn test_sitemap_index_mixed_valid_and_loop() {
+    let mock = MockServer::start().await;
+    let base_url = mock.uri();
+
+    let mixed_index = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <sitemap><loc>{base_url}/valid-child.xml</loc></sitemap>
+    <sitemap><loc>{base_url}/loop-index.xml</loc></sitemap>
+</sitemapindex>"#
+    );
+
+    let valid_child = r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>https://example.com/page1</loc></url>
+</urlset>"#;
+
+    let loop_index = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <sitemap><loc>{base_url}/loop-index.xml</loc></sitemap>
+</sitemapindex>"#
+    );
+
+    Mock::given(method("GET"))
+        .and(path("/mixed-index.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(mixed_index)
+                .insert_header("content-type", "application/xml"),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/valid-child.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(valid_child)
+                .insert_header("content-type", "application/xml"),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/loop-index.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(loop_index)
+                .insert_header("content-type", "application/xml"),
+        )
+        .mount(&mock)
+        .await;
+
+    let parser = parser();
+    let url = format!("{}/mixed-index.xml", mock.uri());
+    let urls = parser.parse_from_url(&url).await.unwrap();
+
+    // Should parse the valid child and skip the loop
+    assert_eq!(urls.len(), 1, "should parse valid child, skip loop");
+    assert_eq!(urls[0].url.as_str(), "https://example.com/page1");
+}
+
+/// Sitemap index deduplicates URLs across multiple children.
+#[tokio::test]
+async fn test_sitemap_index_deduplicates_across_children() {
+    let mock = MockServer::start().await;
+    let base_url = mock.uri();
+
+    let index_with_overlap = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <sitemap><loc>{base_url}/sitemap-a.xml</loc></sitemap>
+    <sitemap><loc>{base_url}/sitemap-b.xml</loc></sitemap>
+</sitemapindex>"#
+    );
+
+    let sitemap_a = r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>https://example.com/page1</loc></url>
+    <url><loc>https://example.com/page2</loc></url>
+</urlset>"#;
+
+    let sitemap_b = r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>https://example.com/page2</loc></url>
+    <url><loc>https://example.com/page3</loc></url>
+</urlset>"#;
+
+    Mock::given(method("GET"))
+        .and(path("/index-overlap.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(index_with_overlap)
+                .insert_header("content-type", "application/xml"),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sitemap-a.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(sitemap_a)
+                .insert_header("content-type", "application/xml"),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sitemap-b.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(sitemap_b)
+                .insert_header("content-type", "application/xml"),
+        )
+        .mount(&mock)
+        .await;
+
+    let parser = parser();
+    let url = format!("{}/index-overlap.xml", mock.uri());
+    let urls = parser.parse_from_url(&url).await.unwrap();
+
+    assert_eq!(urls.len(), 3, "should deduplicate page2 across children");
+    let strings: Vec<String> = urls.iter().map(|u| u.url.to_string()).collect();
+    assert!(strings.contains(&"https://example.com/page1".to_string()));
+    assert!(strings.contains(&"https://example.com/page2".to_string()));
+    assert!(strings.contains(&"https://example.com/page3".to_string()));
+}

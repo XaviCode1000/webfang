@@ -211,6 +211,9 @@ async fn parse_sitemap(
             SitemapError::DecompressionError(e) => {
                 CrawlError::Parse(format!("decompression failed: {e}"))
             },
+            SitemapError::AllChildrenFailed(count, details) => {
+                CrawlError::Parse(format!("all {count} child sitemaps failed: {details}"))
+            },
             other => CrawlError::Parse(other.to_string()),
         }
     })?;
