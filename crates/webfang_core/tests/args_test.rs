@@ -32,7 +32,7 @@ fn test_elastic_flags_parsed_from_cli() {
     ])
     .expect("flags must parse");
     assert_eq!(args.export.cpu_cores, Some(4));
-    assert_eq!(args.export.ram_budget.as_deref(), Some("8GB"));
+    assert_eq!(args.export.ram_budget, Some(8 * 1024 * 1024 * 1024));
     assert_eq!(
         args.export.db_path.as_deref(),
         Some(Path::new("/tmp/elastic.db"))
@@ -64,6 +64,30 @@ fn test_ram_budget_accepts_plain_bytes_and_suffixes() {
         args.elastic_overrides().ram_budget_bytes,
         Some(2048 * 1024 * 1024)
     );
+}
+
+#[test]
+fn test_cpu_cores_and_reject_invalid_values() {
+    clean_env();
+
+    let cases: &[(&str, &str, &str)] = &[
+        ("--cpu-cores", "0", "cpu-cores debe ser > 0"),
+        ("--ram-budget", "0", "ram-budget debe ser > 0"),
+        (
+            "--ram-budget",
+            "banana",
+            "no es un tamaño de memoria válido",
+        ),
+    ];
+
+    for (flag, value, expected_msg) in cases {
+        let err = Args::try_parse_from(["webfang", flag, value])
+            .expect_err(&format!("{flag} {value} must be rejected"));
+        assert!(
+            err.to_string().contains(expected_msg),
+            "unexpected error for {flag} {value}: {err}"
+        );
+    }
 }
 
 // ========================================================================
@@ -124,7 +148,7 @@ fn args_with_all_fields_set() -> Args {
             format: webfang_core::OutputFormat::Json,
             export_format: webfang_core::ExportFormat::Vector,
             cpu_cores: Some(6),
-            ram_budget: Some("4GB".into()),
+            ram_budget: Some(4 * 1024 * 1024 * 1024),
             db_path: Some(std::path::PathBuf::from("/tmp/test.db")),
             elastic: true,
             output_vectors: None,
@@ -1012,7 +1036,7 @@ proptest! {
         cpu_cores in proptest::option::of(1usize..32),
         ram_gb in proptest::option::of(1u64..128),
     ) {
-        let ram_budget = ram_gb.map(|g| format!("{g}GB"));
+        let ram_budget = ram_gb.map(|g| g * 1024 * 1024 * 1024);
 
         let args = Args {
             subcommand: None,
@@ -1066,7 +1090,7 @@ proptest! {
                 format: webfang_core::OutputFormat::Markdown,
                 export_format: webfang_core::ExportFormat::Jsonl,
                 cpu_cores,
-                ram_budget: ram_budget.clone(),
+                ram_budget,
                 db_path: None,
                 elastic: true,
                 ..Default::default()

@@ -23,7 +23,8 @@
 
 use std::path::Path;
 
-use tracing::info;
+use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
 
 use super::processor::{BatchError, BatchProcessor, BatchResult};
 use super::{BatchJob, BatchJobStatus};
@@ -58,15 +59,29 @@ impl BatchManager {
 
     /// Create a batch manager from a list of URLs using a shared config
     ///
-    /// Each URL becomes a single-item batch job. All jobs share the same
-    /// [`CrawlerConfig`] (seed URL is overridden per job).
+    /// All URLs land in ONE [`BatchJob`] so [`BatchProcessor::process_batch`]
+    /// can fan them out across its semaphore. One job per URL (the previous
+    /// shape) made `--batch-concurrency` a no-op: each job held a single URL,
+    /// the semaphore never contended, and jobs ran strictly sequentially
+    /// (#653).
     pub fn from_urls(urls: Vec<String>, config: CrawlerConfig, max_concurrent: usize) -> Self {
         let mut manager = Self::new(max_concurrent);
-        for (i, url) in urls.iter().enumerate() {
-            let job = BatchJob::new(format!("job-{i}"), vec![url.clone()], config.clone());
-            manager.jobs.push(job);
+        if urls.is_empty() {
+            return manager;
         }
         manager
+            .jobs
+            .push(BatchJob::new("batch-all".to_string(), urls, config));
+        manager
+    }
+
+    /// Total number of URLs queued across every job.
+    ///
+    /// [`job_count`](Self::job_count) is now 1 for a whole batch (#653), so
+    /// callers reporting batch size must use this instead.
+    #[must_use]
+    pub fn url_count(&self) -> usize {
+        self.jobs.iter().map(|j| j.urls.len()).sum()
     }
 
     /// Capture every fetched page body into `sink` (#631).
@@ -130,17 +145,49 @@ impl BatchManager {
     /// Each job is processed via [`BatchProcessor::process_batch`].
     /// Returns a vector of [`BatchResult`] for each job.
     pub async fn process_all(&self) -> Vec<Result<BatchResult, BatchError>> {
+        self.process_all_cancellable(&CancellationToken::new())
+            .await
+    }
+
+    /// Process all queued jobs, stopping early when `cancel` is fired.
+    ///
+    /// The in-flight job drains before returning, so its captured pages still
+    /// reach the sink; remaining jobs are skipped (#653).
+    pub async fn process_all_cancellable(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Vec<Result<BatchResult, BatchError>> {
         let mut results = Vec::with_capacity(self.jobs.len());
         for job in &self.jobs {
+            if cancel.is_cancelled() {
+                warn!(
+                    remaining = self.jobs.len() - results.len(),
+                    "shutdown requested — skipping remaining batch jobs"
+                );
+                break;
+            }
             info!("Processing batch job: {}", job.id);
-            results.push(self.processor.process_batch(job.clone()).await);
+            results.push(
+                self.processor
+                    .process_batch_cancellable(job.clone(), cancel)
+                    .await,
+            );
         }
         results
     }
 
     /// Process all queued jobs and return an aggregated summary
     pub async fn process_all_summary(&self) -> BatchManagerSummary {
-        let results = self.process_all().await;
+        self.process_all_summary_cancellable(&CancellationToken::new())
+            .await
+    }
+
+    /// Process all queued jobs with cancellation support and aggregate them.
+    pub async fn process_all_summary_cancellable(
+        &self,
+        cancel: &CancellationToken,
+    ) -> BatchManagerSummary {
+        let results = self.process_all_cancellable(cancel).await;
         let mut summary = BatchManagerSummary::default();
 
         // Consume by value: `ScraperError` is not `Clone`, so error tuples are
@@ -216,7 +263,10 @@ mod tests {
             "https://example.com/about".to_string(),
         ];
         let manager = BatchManager::from_urls(urls, test_config(), 3);
-        assert_eq!(manager.job_count(), 2);
+        // #653: every URL shares ONE job so the processor's semaphore governs
+        // concurrency instead of the manager's sequential job loop.
+        assert_eq!(manager.job_count(), 1);
+        assert_eq!(manager.url_count(), 2);
     }
 
     #[test]
@@ -256,7 +306,8 @@ https://example.com/blog
         std::fs::write(&file_path, "https://a.com\nhttps://b.com\n").unwrap();
 
         let manager = BatchManager::from_file(&file_path, test_config(), 2).unwrap();
-        assert_eq!(manager.job_count(), 2);
+        assert_eq!(manager.job_count(), 1);
+        assert_eq!(manager.url_count(), 2);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -267,7 +318,7 @@ https://example.com/blog
         let manager = BatchManager::from_urls(urls, test_config(), 1);
         let statuses = manager.statuses();
         assert_eq!(statuses.len(), 1);
-        assert_eq!(statuses[0].0, "job-0");
+        assert_eq!(statuses[0].0, "batch-all");
         assert_eq!(*statuses[0].1, BatchJobStatus::Pending);
     }
 
@@ -276,6 +327,23 @@ https://example.com/blog
         let manager = BatchManager::new(3);
         let results = manager.process_all().await;
         assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelled_manager_skips_every_queued_job() {
+        // Regression for #653: SIGINT/SIGTERM must stop the batch queue rather
+        // than being ignored until the whole run finishes.
+        let urls = vec!["https://a.com".to_string(), "https://b.com".to_string()];
+        let manager = BatchManager::from_urls(urls, test_config(), 2);
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let results = manager.process_all_cancellable(&cancel).await;
+        assert!(
+            results.is_empty(),
+            "no job may start after a shutdown signal"
+        );
     }
 
     #[tokio::test]

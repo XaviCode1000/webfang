@@ -36,14 +36,14 @@ pub struct ExportArgs {
 
     // ========== Elastic Ingestion (Issue #51, PR5) ==========
     /// CPU core override for the elastic ingestion Rayon pool (else auto-detect)
-    #[arg(long, env = "WEBFANG_CPU_CORES")]
+    #[arg(long, env = "WEBFANG_CPU_CORES", value_parser = parse_cpu_cores)]
     #[clap(next_help_heading = "Elastic Ingestion")]
     pub cpu_cores: Option<usize>,
 
     /// RAM budget override for the byte-weighted semaphore (`8GB`, `2048MB`, or bytes)
-    #[arg(long, env = "WEBFANG_RAM_BUDGET")]
+    #[arg(long, env = "WEBFANG_RAM_BUDGET", value_parser = parse_ram_budget)]
     #[clap(next_help_heading = "Elastic Ingestion")]
-    pub ram_budget: Option<String>,
+    pub ram_budget: Option<u64>,
 
     /// SQLite database path override for persisted resources/chunks
     #[arg(long, env = "WEBFANG_DB_PATH")]
@@ -92,6 +92,37 @@ pub struct ExportArgs {
     )]
     #[clap(next_help_heading = "Item Pipeline")]
     pub pipeline_output: PipelineOutputFormat,
+}
+
+/// Validate `--cpu-cores` is a positive integer.
+///
+/// A zero core count would size the Rayon pool to nothing; rejecting it at the
+/// system boundary keeps the invalid value out of the autotuning resolver
+/// (#653).
+fn parse_cpu_cores(s: &str) -> Result<usize, String> {
+    let value: usize = s
+        .parse()
+        .map_err(|_| format!("`{s}` no es un número entero válido"))?;
+    if value == 0 {
+        Err("cpu-cores debe ser > 0".to_string())
+    } else {
+        Ok(value)
+    }
+}
+
+/// Parse and validate `--ram-budget` into bytes.
+///
+/// Accepts plain bytes or a binary suffix (`8GB`, `2048MB`). An unparseable or
+/// zero budget is rejected here instead of being silently dropped by
+/// `Option::and_then` further down the pipeline (#653).
+fn parse_ram_budget(s: &str) -> Result<u64, String> {
+    let value = crate::infrastructure::autotuning::parse_ram_bytes(s)
+        .ok_or_else(|| format!("`{s}` no es un tamaño de memoria válido"))?;
+    if value == 0 {
+        Err("ram-budget debe ser > 0".to_string())
+    } else {
+        Ok(value)
+    }
 }
 
 /// Validate `--batch-concurrency` is greater than zero.

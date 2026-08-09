@@ -115,20 +115,20 @@ impl From<Shell> for clap_complete::Shell {
 impl Args {
     /// Build [`ElasticOverrides`] (PR5) from the elastic-ingestion CLI flags.
     ///
-    /// `--ram-budget` is parsed via [`parse_ram_bytes`] so it accepts suffixed
-    /// values (`8GB`, `2048MB`, plain bytes). The result feeds
+    /// `--ram-budget` is already parsed to bytes by the clap value parser, which
+    /// accepts suffixed values (`8GB`, `2048MB`, plain bytes) and rejects zero
+    /// or malformed input at the boundary (#653). The result feeds
     /// [`ElasticConfig::resolve`] → Rayon pool size, byte-weighted semaphore,
     /// and SQLite path.
     ///
     /// [`ElasticConfig::resolve`]: crate::infrastructure::autotuning::ElasticConfig::resolve
-    /// [`parse_ram_bytes`]: crate::infrastructure::autotuning::parse_ram_bytes
     /// [`ElasticOverrides`]: crate::infrastructure::autotuning::ElasticOverrides
     #[must_use]
     pub fn elastic_overrides(&self) -> crate::infrastructure::autotuning::ElasticOverrides {
-        use crate::infrastructure::autotuning::{parse_ram_bytes, ElasticOverrides};
+        use crate::infrastructure::autotuning::ElasticOverrides;
         ElasticOverrides {
             cpu_cores: self.export.cpu_cores,
-            ram_budget_bytes: self.export.ram_budget.as_deref().and_then(parse_ram_bytes),
+            ram_budget_bytes: self.export.ram_budget,
             max_resource_bytes: None,
             db_path: self.export.db_path.clone(),
         }

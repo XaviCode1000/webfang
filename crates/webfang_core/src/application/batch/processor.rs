@@ -32,6 +32,7 @@ use std::sync::Arc;
 
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, instrument, warn};
 
 use super::BatchJob;
@@ -124,7 +125,26 @@ impl BatchProcessor {
     ///
     /// Returns an error if the batch job itself is malformed (e.g., empty URLs).
     #[instrument(name = "process_batch", skip(self, job), fields(job_id = %job.id, url_count = job.urls.len()))]
-    pub async fn process_batch(&self, mut job: BatchJob) -> Result<BatchResult, BatchError> {
+    pub async fn process_batch(&self, job: BatchJob) -> Result<BatchResult, BatchError> {
+        self.process_batch_cancellable(job, &CancellationToken::new())
+            .await
+    }
+
+    /// Process a batch job, stopping early when `cancel` is fired.
+    ///
+    /// On cancellation no further URL is dispatched, but every already-spawned
+    /// task is drained to completion so its captured content still reaches the
+    /// sink — an abrupt drop would lose the pages already fetched (#653).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`process_batch`](Self::process_batch).
+    #[instrument(name = "process_batch_cancellable", skip(self, job, cancel), fields(job_id = %job.id, url_count = job.urls.len()))]
+    pub async fn process_batch_cancellable(
+        &self,
+        mut job: BatchJob,
+        cancel: &CancellationToken,
+    ) -> Result<BatchResult, BatchError> {
         if job.urls.is_empty() {
             return Err(BatchError::EmptyBatch);
         }
@@ -144,7 +164,16 @@ impl BatchProcessor {
         let mut join_set = JoinSet::new();
         let mut errors: Vec<(String, ScraperError)> = Vec::new();
 
+        let mut cancelled = false;
         for url_str in &job.urls {
+            if cancel.is_cancelled() {
+                cancelled = true;
+                warn!(
+                    job_id = %job.id,
+                    "shutdown requested — no further URLs will be dispatched"
+                );
+                break;
+            }
             let url = url_str.clone();
             let config = base_config.clone();
             let sink = self.content_sink.clone();
@@ -196,7 +225,11 @@ impl BatchProcessor {
         let failed = progress.failed();
         let total = progress.total();
 
-        job.complete();
+        if cancelled {
+            job.fail("cancelled by shutdown signal".to_string());
+        } else {
+            job.complete();
+        }
 
         info!(
             "Batch job {} completed: {succeeded}/{total} succeeded, {failed} failed",
@@ -351,6 +384,31 @@ mod tests {
             matches!(err, BatchError::InvalidConcurrency),
             "expected InvalidConcurrency, got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_batch_dispatches_no_urls() {
+        // Regression for #653: a shutdown signal must stop the batch from
+        // dispatching further URLs instead of running to completion.
+        let processor = BatchProcessor::new(2).unwrap();
+        let config = CrawlerConfig::new(Url::parse("https://example.com").unwrap());
+        let job = BatchJob::new(
+            "cancelled".to_string(),
+            (0..8).map(|i| format!("https://example.com/{i}")).collect(),
+            config,
+        );
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result = processor
+            .process_batch_cancellable(job, &cancel)
+            .await
+            .expect("a cancelled batch still reports its (empty) result");
+
+        assert_eq!(result.succeeded, 0, "no URL may be crawled after shutdown");
+        assert_eq!(result.failed, 0, "skipped URLs are not failures");
+        assert!(result.errors.is_empty());
     }
 
     #[tokio::test]

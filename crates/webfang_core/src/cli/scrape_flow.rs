@@ -1,6 +1,9 @@
 //! Scraping flow logic extracted from orchestrator.
 
 use std::path::PathBuf;
+
+use futures::stream::StreamExt;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use url::Url;
 
@@ -132,6 +135,10 @@ fn filter_processed_urls(urls_to_scrape: Vec<Url>, store: &StateStore) -> Vec<Ur
 /// (`opts.network.h2_profile`) is not recognized, or if the fetch router's HTTP
 /// client cannot be built. Both are setup failures that abort the whole batch
 /// before any URL is scraped.
+// The parameter list is the scrape phase's full dependency set (config,
+// observer, downloader, adaptive engine, correlation root, shutdown token).
+// Bundling them into a struct would only move the same wiring one level up.
+#[allow(clippy::too_many_arguments)]
 pub async fn scrape_urls(
     urls: &[Url],
     scraper_config: &ScraperConfig,
@@ -140,6 +147,7 @@ pub async fn scrape_urls(
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     engine: Option<&AdaptiveSelectorEngine>,
     root_correlation: &CorrelationId,
+    cancel: &CancellationToken,
 ) -> Result<
     (
         Vec<ScrapedContent>,
@@ -160,9 +168,9 @@ pub async fn scrape_urls(
         // of dropping it on the floor. `http_config` stays usable below —
         // only this field moves out.
         http_config.user_agent,
-        // #509: the scrape flow has no shutdown policy yet — pass an inert
-        // token so Full-strategy governor waits keep pre-#509 behavior.
-        tokio_util::sync::CancellationToken::new(),
+        // #653: the run's shutdown token, so Full-strategy governor waits abort
+        // on SIGINT/SIGTERM instead of hanging until their own timeout.
+        cancel.clone(),
         http_config.max_retries,
         http_config.backoff_base_ms,
         http_config.backoff_max_ms,
@@ -190,20 +198,58 @@ pub async fn scrape_urls(
         robots_fetcher: &robots_fetcher,
     };
 
-    for url in urls_to_process {
-        // Per-page identity: child of the run root — shared trace_id, fresh
-        // span_id (#501).
-        let page_correlation = root_correlation.child();
+    // Honor `--concurrency` (#653): the previous sequential loop made the flag
+    // a no-op on the default scrape path. `buffer_unordered` keeps at most
+    // `concurrency` fetches in flight; the enumerated index restores the
+    // original URL order afterwards so output stays deterministic.
+    let concurrency = opts.network.concurrency.resolve().max(1);
+    info!(
+        concurrency,
+        urls = processing_count,
+        "scraping with bounded concurrency"
+    );
 
-        match scrape_one_url(&url, &ctx, opts, observer, &page_correlation).await {
+    let mut ordered: Vec<(usize, Option<ScrapeOutcome>)> =
+        futures::stream::iter(urls_to_process.into_iter().enumerate())
+            .map(|(index, url)| {
+                let ctx = &ctx;
+                async move {
+                    // Shutdown (#653): stop starting new pages, but let the ones
+                    // already in flight finish so their content still reaches
+                    // the export phase.
+                    if cancel.is_cancelled() {
+                        return (index, None);
+                    }
+                    // Per-page identity: child of the run root — shared trace_id, fresh
+                    // span_id (#501).
+                    let page_correlation = root_correlation.child();
+                    let outcome =
+                        scrape_one_url(&url, ctx, opts, observer, &page_correlation).await;
+                    (index, Some((url, outcome)))
+                }
+            })
+            .buffer_unordered(concurrency)
+            .collect()
+            .await;
+
+    ordered.sort_by_key(|(index, _)| *index);
+
+    let mut skipped = 0usize;
+    for (_, slot) in ordered {
+        let Some((url, outcome)) = slot else {
+            skipped += 1;
+            continue;
+        };
+        match outcome {
             Ok(Some(content)) => results.push(content),
             // Robots.txt blocked — skipped, not a failure.
             Ok(None) => {},
-            Err(e) => {
-                let url_str = url.as_str().to_string();
-                failures.push((url_str, e));
-            },
+            Err(e) => failures.push((url.as_str().to_string(), e)),
         }
+    }
+
+    if skipped > 0 {
+        warn!(skipped, "shutdown requested — URLs left unscraped");
     }
 
     let total_successful = results.len();
@@ -214,6 +260,14 @@ pub async fn scrape_urls(
 
     Ok((results, failures))
 }
+
+/// Result of one page scrape: the URL plus its outcome (content, robots-skip,
+/// or failure). Kept as an alias so the concurrent pipeline's element type
+/// stays readable.
+type ScrapeOutcome = (
+    Url,
+    Result<Option<ScrapedContent>, crate::error::ScraperError>,
+);
 
 /// Shared per-URL dependencies for a single scrape, bundled to keep the
 /// per-page helper's signature small.
@@ -322,10 +376,54 @@ fn build_http_client_config(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_resume_mode, build_http_client_config, RobotsFetcher};
+    use super::{apply_resume_mode, build_http_client_config, scrape_urls, RobotsFetcher};
     use crate::application::crawl_options::CrawlOptions;
     use tempfile::TempDir;
+    use tokio_util::sync::CancellationToken;
     use url::Url;
+
+    // ===== shutdown tests (#653) =====
+
+    #[cfg_attr(miri, ignore)] // btls/wreq FFI (BoringSSL TLS_method) not supported by Miri
+    #[tokio::test]
+    async fn a_cancelled_run_scrapes_nothing() {
+        // Regression for #653: a shutdown signal must stop new page fetches.
+        // The URLs point at a closed port — if any were actually fetched they
+        // would land in `failures` instead of being silently skipped.
+        let urls: Vec<Url> = (0..4)
+            .map(|i| {
+                Url::parse(&format!("http://127.0.0.1:1/{i}")).expect("loopback URL must parse")
+            })
+            .collect();
+        let opts = CrawlOptions {
+            crawl: crate::application::crawl_options::CrawlLimits {
+                ignore_robots: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let (results, failures) = scrape_urls(
+            &urls,
+            &crate::ScraperConfig::default(),
+            &opts,
+            &crate::application::progress_observer::NoopObserver,
+            None,
+            None,
+            &crate::domain::CorrelationId::new(),
+            &cancel,
+        )
+        .await
+        .expect("setup must succeed even when cancelled");
+
+        assert!(results.is_empty(), "no page may be scraped after shutdown");
+        assert!(
+            failures.is_empty(),
+            "skipped URLs are not failures, got: {failures:?}"
+        );
+    }
 
     // ===== build_http_client_config tests =====
 
