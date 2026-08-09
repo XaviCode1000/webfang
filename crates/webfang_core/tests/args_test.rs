@@ -73,7 +73,11 @@ fn test_cpu_cores_and_reject_invalid_values() {
     let cases: &[(&str, &str, &str)] = &[
         ("--cpu-cores", "0", "cpu-cores debe ser > 0"),
         ("--ram-budget", "0", "ram-budget debe ser > 0"),
-        ("--ram-budget", "banana", "no es un tamaño de memoria válido"),
+        (
+            "--ram-budget",
+            "banana",
+            "no es un tamaño de memoria válido",
+        ),
     ];
 
     for (flag, value, expected_msg) in cases {
