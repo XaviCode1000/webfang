@@ -196,6 +196,7 @@ impl UrlPath {
             // if upstream URL normalization is bypassed.
             let sanitized = dir
                 .split('/')
+                .filter(|component| !component.is_empty())
                 .map(|component| {
                     if component == "." || component == ".." {
                         "_".to_string()
@@ -592,6 +593,48 @@ mod tests {
                 "backslash leaked for {input}: {filename}"
             );
         }
+    }
+
+    #[test]
+    fn test_to_directory_collapses_double_slash() {
+        // A path with duplicate slashes (//double//slash) must not produce empty
+        // directory segments on disk. The directory must be a single-slash path
+        // with no `//` runs, and the resulting filename must contain no slash.
+        let output = OutputPath::from_url("http://example.com//double//slash").unwrap();
+        let dir = output.path().to_directory();
+        assert!(
+            !dir.contains("//"),
+            "directory must not contain empty segments: {dir}"
+        );
+        let full = output.to_full_path();
+        assert!(
+            !full.contains("//"),
+            "full path must not contain empty segments: {full}"
+        );
+        assert_eq!(dir, "double/");
+        assert_eq!(full, "./output/example.com/double/double--slash.md");
+    }
+
+    #[test]
+    fn test_to_directory_collapses_leading_and_trailing_slash_runs() {
+        let output = OutputPath::from_url("http://example.com///a///b///c").unwrap();
+        let dir = output.path().to_directory();
+        assert!(!dir.contains("//"), "directory leaked a slash run: {dir}");
+        assert_eq!(dir, "a/b/");
+        let full = output.to_full_path();
+        assert!(!full.contains("//"), "full path leaked a slash run: {full}");
+    }
+
+    #[test]
+    fn test_trailing_slash_still_distinct_from_file() {
+        // Regression for Bug 5: /a/ and /a must remain distinct resources after
+        // the slash-collapse fix. The trailing-slash marker (`a_.md`) must survive.
+        let dir = UrlPath::from_url_path("/a/");
+        let file = UrlPath::from_url_path("/a");
+        assert_ne!(dir.to_safe_filename(), file.to_safe_filename());
+        assert_eq!(dir.to_safe_filename(), "a_.md");
+        assert_eq!(file.to_safe_filename(), "a.md");
+        assert_eq!(dir.to_directory(), file.to_directory());
     }
 
     #[test]
