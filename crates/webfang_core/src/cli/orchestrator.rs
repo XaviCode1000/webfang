@@ -518,34 +518,10 @@ async fn run_batch(
         Err(e) => return e,
     };
 
-    let crawler_config = build_batch_crawler_config(&opts, tls_emulation);
-
-    let sink = std::sync::Arc::new(InMemoryContentSink::new());
-    let mut manager = match load_batch_manager(&opts, crawler_config).await {
-        Ok(m) => m,
+    let (summary, captured) = match run_batch_crawl(&opts, tls_emulation).await {
+        Ok(pair) => pair,
         Err(e) => return e,
     };
-    manager = manager.with_content_sink(sink.clone());
-
-    if manager.job_count() == 0 {
-        error!("No URLs provided for batch processing");
-        return CliExit::UsageError("No URLs provided".into());
-    }
-
-    info!(
-        "Starting batch processing: {} jobs, concurrency={}",
-        manager.job_count(),
-        opts.batch.concurrency
-    );
-
-    let summary = manager.process_all_summary().await;
-    log_batch_summary(&summary);
-
-    let captured = sink.take_pages();
-    if captured.is_empty() {
-        error!("Batch captured no page bodies — nothing to export");
-        return CliExit::NetworkError("Batch produced no content".into());
-    }
 
     let (results, failures) = match extract_batch_content(captured, &opts).await {
         Ok(pair) => pair,
@@ -554,29 +530,9 @@ async fn run_batch(
 
     // Resume mode (#637): construct the state store so `export_phase` can mark
     // each URL as processed — no URL filtering, they were already crawled.
-    let state_store: Option<StateStore> = if opts.crawl.resume {
-        let state_dir = opts.crawl.state_dir.clone().unwrap_or_else(|| {
-            let cache_base = std::env::var("XDG_CACHE_HOME")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| {
-                    dirs::home_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                        .join(".cache")
-                });
-            cache_base.join("webfang").join("state")
-        });
-
-        let domain = opts.url.host_str().unwrap_or("batch").to_string();
-        match crate::application::export_factory::create_state_store(state_dir, &domain) {
-            Ok(store) => Some(store),
-            Err(e) => {
-                return CliExit::IoError(format!(
-                    "No se pudo crear el almacén de estado para --resume: {e}",
-                ));
-            },
-        }
-    } else {
-        None
+    let state_store = match build_batch_resume_store(&opts) {
+        Ok(s) => s,
+        Err(e) => return e,
     };
 
     let elastic_ingestion = match build_elastic_ingestion(&opts, vault_ports).await {
@@ -593,14 +549,9 @@ async fn run_batch(
         );
     }
 
-    if let Some(ref ingestion) = elastic_ingestion {
-        if let Err(e) = run_elastic_ingestion(ingestion, &results).await {
-            return CliExit::IoError(format!("Falló la ingesta de vectores: {e}"));
-        }
+    if let Err(e) = run_batch_elastic(&elastic_ingestion, &results).await {
+        return e;
     }
-
-    drop(elastic_ingestion);
-    tokio::task::yield_now().await;
 
     // Print extraction failures to stderr (crawl failures are already logged
     // via `log_batch_summary`). Do NOT short-circuit here: always export the
@@ -625,6 +576,97 @@ async fn run_batch(
     let mut all_errors = summary.errors;
     all_errors.extend(failures);
     batch_exit_code(results.len(), total_failed, &all_errors)
+}
+
+/// Crawl every batch URL through the engine, capturing each fetched body, and
+/// return the run summary plus the captured pages. Performs the no-URL /
+/// no-content guards so `--batch` fails loudly instead of writing nothing
+/// (#631).
+async fn run_batch_crawl(
+    opts: &CrawlOptions,
+    tls_emulation: wreq_util::Profile,
+) -> Result<
+    (
+        BatchManagerSummary,
+        Vec<crate::application::crawler::CapturedPage>,
+    ),
+    CliExit,
+> {
+    let crawler_config = build_batch_crawler_config(opts, tls_emulation);
+
+    let sink = std::sync::Arc::new(InMemoryContentSink::new());
+    let mut manager = match load_batch_manager(opts, crawler_config).await {
+        Ok(m) => m,
+        Err(e) => return Err(e),
+    };
+    manager = manager.with_content_sink(sink.clone());
+
+    if manager.job_count() == 0 {
+        error!("No URLs provided for batch processing");
+        return Err(CliExit::UsageError("No URLs provided".into()));
+    }
+
+    info!(
+        "Starting batch processing: {} jobs, concurrency={}",
+        manager.job_count(),
+        opts.batch.concurrency
+    );
+
+    let summary = manager.process_all_summary().await;
+    log_batch_summary(&summary);
+
+    let captured = sink.take_pages();
+    if captured.is_empty() {
+        error!("Batch captured no page bodies — nothing to export");
+        return Err(CliExit::NetworkError("Batch produced no content".into()));
+    }
+
+    Ok((summary, captured))
+}
+
+/// Build the resume [`StateStore`] for `--resume` (#637) so `export_phase`
+/// can mark each already-crawled URL as processed. Returns `None` when
+/// `--resume` is off.
+fn build_batch_resume_store(opts: &CrawlOptions) -> Result<Option<StateStore>, CliExit> {
+    if !opts.crawl.resume {
+        return Ok(None);
+    }
+    let state_dir = opts.crawl.state_dir.clone().unwrap_or_else(|| {
+        let cache_base = std::env::var("XDG_CACHE_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".cache")
+            });
+        cache_base.join("webfang").join("state")
+    });
+    let domain = opts.url.host_str().unwrap_or("batch").to_string();
+    crate::application::export_factory::create_state_store(state_dir, &domain)
+        .map(Some)
+        .map_err(|e| {
+            CliExit::IoError(format!("No se pudo crear el almacén de estado para --resume: {e}"))
+        })
+}
+
+/// Run the elastic / output-vectors ingestion for the batch pipeline (#636,
+/// #637) and release the ingestion handle afterwards.
+async fn run_batch_elastic(
+    ingestion: &Option<
+        std::sync::Arc<
+            crate::application::elastic_ingestion::ElasticIngestion<
+                crate::domain::repository::DynVectorRepository,
+            >,
+        >,
+    >,
+    results: &[domain::ScrapedContent],
+) -> Result<(), CliExit> {
+    if let Some(ref ingestion) = ingestion {
+        run_elastic_ingestion(ingestion, results)
+            .await
+            .map_err(|e| CliExit::IoError(format!("Falló la ingesta de vectores: {e}")))?;
+    }
+    Ok(())
 }
 
 /// Convert the batch-captured pages into [`ScrapedContent`] and collect
