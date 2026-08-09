@@ -31,6 +31,7 @@ use super::memory_manager::MemoryManager;
 use super::retry_policy::RetryPolicy;
 use super::sitemap_config::SitemapConfig;
 use super::url_validator::UrlValidator;
+use crate::domain::url_validation::is_internal_link;
 use crate::domain::{CrawlError, UrlValidatorTrait};
 #[allow(unused_imports)]
 use async_compression::tokio::bufread::GzipDecoder;
@@ -132,13 +133,22 @@ pub fn resolve_url(base: &Url, input: &str) -> Option<Url> {
         return None;
     }
 
-    // Fast path: already absolute
+    // Fast path: already absolute - allow any absolute URL (explicit user intent)
     if input.starts_with("http://") || input.starts_with("https://") {
         return Url::parse(input).ok();
     }
 
-    // Use RFC 3986 resolution via url::Url::join
-    base.join(input).ok()
+    // RFC 3986 resolution for relative and protocol-relative URLs
+    let resolved = base.join(input).ok()?;
+
+    // Bug 3: post-resolution host validation (SSRF protection for protocol-relative/relative URLs)
+    let seed_host = base.host_str().unwrap_or_default();
+    if is_internal_link(resolved.as_str(), seed_host) {
+        Some(resolved)
+    } else {
+        tracing::warn!(%resolved, "SSRF: protocol-relative URL escaped seed domain");
+        None
+    }
 }
 
 /// Zero-allocation streaming sitemap parser
@@ -210,9 +220,10 @@ impl SitemapParser {
         tls_emulation: wreq_util::Profile,
     ) -> std::result::Result<Self, CrawlError> {
         let http_client = Self::build_client(tls_emulation)?;
+        let max_decompressed_size = config.max_decompressed_size;
         Ok(Self {
             config,
-            compression_handler: CompressionHandler::new(),
+            compression_handler: CompressionHandler::with_max_size(max_decompressed_size),
             url_validator: UrlValidator::with_profile(tls_emulation)?,
             retry_policy: RetryPolicy::new(),
             memory_manager: MemoryManager::new(),
@@ -349,15 +360,18 @@ impl SitemapParser {
             .map_err(|e| SitemapError::HttpError(e.to_string()))?;
 
         // Parse using unified decompression handle
-        let urls = if decompressed.is_empty() {
+        let (urls, is_index) = if decompressed.is_empty() {
             return Err(SitemapError::NoUrlsFound);
         } else {
             self.parse_xml_sitemap(&decompressed, &base_url).await?
         };
 
-        // Check if sitemap index (recursive)
-        if self.is_sitemap_index(&urls) {
-            tracing::debug!("Detected sitemap index, recursing (depth: {})", depth);
+        // Check if sitemap index (recursive) - Bug 7: use root element detection
+        if is_index {
+            tracing::debug!(
+                "Detected sitemap index (root element), recursing (depth: {})",
+                depth
+            );
 
             // [3.7] MemoryManager: handle disk swapping for large index
             self.memory_manager
@@ -400,24 +414,49 @@ impl SitemapParser {
             ));
         }
 
-        self.parse_xml_sitemap(&decompressed, base_url).await
+        let (urls, _is_index) = self.parse_xml_sitemap(&decompressed, base_url).await?;
+        Ok(urls)
     }
 
     /// Parse XML sitemap (zero-allocation streaming)
-    async fn parse_xml_sitemap(&self, bytes: &[u8], base_url: &Url) -> Result<Vec<Url>> {
+    async fn parse_xml_sitemap(&self, bytes: &[u8], base_url: &Url) -> Result<(Vec<Url>, bool)> {
         let mut reader = Reader::from_reader(bytes);
 
         let mut urls = HashSet::new();
         let mut buf = Vec::new();
-        let mut in_loc = false;
+        let mut root_tag: Option<Vec<u8>> = None;
+        let mut is_index = false;
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) if e.name().as_ref() == b"loc" => {
-                    in_loc = true;
-                },
-                Ok(Event::Text(ref e)) if in_loc => {
-                    if let Ok(text) = e.decode() {
+                Ok(Event::Start(ref e)) => {
+                    let name = e.name();
+
+                    // Bug 7: classify by root element, not extension
+                    if root_tag.is_none() {
+                        root_tag = match name.as_ref() {
+                            b"sitemapindex" => {
+                                is_index = true;
+                                Some(name.as_ref().to_vec())
+                            },
+                            b"urlset" => Some(name.as_ref().to_vec()),
+                            _ => return Err(SitemapError::InvalidStructure),
+                        };
+                    }
+
+                    if name.as_ref() == b"loc" {
+                        let mut text_buf = Vec::new();
+                        // Bug 1+2: consume Text + CDATA + GeneralRef until </loc>
+                        // quick-xml does internal unescape of & etc.
+                        reader
+                            .read_text_into(name, &mut text_buf)
+                            .map_err(SitemapError::XmlError)?;
+                        let mut text = String::from_utf8_lossy(&text_buf).to_string();
+                        // read_text_into includes the closing tag, strip it
+                        if let Some(end_pos) = text.rfind("</loc>") {
+                            text.truncate(end_pos);
+                        }
+
                         if let Some(url) = resolve_url(base_url, &text) {
                             // [3.5] UrlValidator integration: filter invalid patterns
                             let validation = self.url_validator.filter_invalid_patterns(&url);
@@ -436,9 +475,6 @@ impl SitemapParser {
                         }
                     }
                 },
-                Ok(Event::End(ref e)) if e.name().as_ref() == b"loc" => {
-                    in_loc = false;
-                },
                 Ok(Event::Eof) => break,
                 Err(e) => return Err(SitemapError::XmlError(e)),
                 _ => {},
@@ -449,14 +485,8 @@ impl SitemapParser {
         if urls.is_empty() {
             Err(SitemapError::NoUrlsFound)
         } else {
-            Ok(urls.into_iter().collect())
+            Ok((urls.into_iter().collect(), is_index))
         }
-    }
-
-    /// Check if URLs are sitemap index entries
-    fn is_sitemap_index(&self, urls: &[Url]) -> bool {
-        urls.iter()
-            .any(|u| u.path().ends_with(".xml") || u.path().ends_with(".xml.gz"))
     }
 
     /// Parse sitemap index recursively
@@ -598,7 +628,7 @@ mod tests {
 
         let parser = SitemapParser::new().unwrap();
         let base = Url::parse("https://example.com").unwrap();
-        let urls = parser
+        let (urls, _is_index) = parser
             .parse_xml_sitemap(xml.as_bytes(), &base)
             .await
             .unwrap();
@@ -620,7 +650,7 @@ mod tests {
 
         let parser = SitemapParser::new().unwrap();
         let base = Url::parse("https://example.com").unwrap();
-        let urls = parser
+        let (urls, _is_index) = parser
             .parse_xml_sitemap(xml.as_bytes(), &base)
             .await
             .unwrap();
@@ -685,22 +715,23 @@ mod tests {
         assert_eq!(config.concurrency, 5);
     }
 
-    #[test]
-    fn test_is_sitemap_index() {
-        let parser = SitemapParser::new().unwrap();
-
-        let index_urls = vec![
-            Url::parse("https://example.com/sitemap1.xml").unwrap(),
-            Url::parse("https://example.com/sitemap2.xml.gz").unwrap(),
-        ];
-        assert!(parser.is_sitemap_index(&index_urls));
-
-        let regular_urls = vec![
-            Url::parse("https://example.com/page1").unwrap(),
-            Url::parse("https://example.com/page2").unwrap(),
-        ];
-        assert!(!parser.is_sitemap_index(&regular_urls));
-    }
+    // is_sitemap_index tests removed - root element detection is now used instead of URL extension
+    // #[test]
+    // fn test_is_sitemap_index() {
+    //     let parser = SitemapParser::new().unwrap();
+    //
+    //     let index_urls = vec![
+    //         Url::parse("https://example.com/sitemap1.xml").unwrap(),
+    //         Url::parse("https://example.com/sitemap2.xml.gz").unwrap(),
+    //     ];
+    //     assert!(parser.is_sitemap_index(&index_urls));
+    //
+    //     let regular_urls = vec![
+    //         Url::parse("https://example.com/page1").unwrap(),
+    //         Url::parse("https://example.com/page2").unwrap(),
+    //     ];
+    //     assert!(!parser.is_sitemap_index(&regular_urls));
+    // }
 
     #[test]
     fn test_parser_has_gzip() {
@@ -728,7 +759,7 @@ mod tests {
 
         let parser = SitemapParser::new().unwrap();
         let base = Url::parse("https://example.com").unwrap();
-        let urls = parser
+        let (urls, _is_index) = parser
             .parse_xml_sitemap(xml.as_bytes(), &base)
             .await
             .unwrap();
@@ -782,7 +813,7 @@ mod tests {
 
         let parser = SitemapParser::new().unwrap();
         let base = Url::parse("https://example.com").unwrap();
-        let urls = parser
+        let (urls, _is_index) = parser
             .parse_xml_sitemap(xml.as_bytes(), &base)
             .await
             .unwrap();
@@ -811,8 +842,8 @@ mod tests {
         let resolved = resolve_url(&base, "/page").unwrap();
         assert_eq!(resolved.as_str(), "https://example.com/page");
 
-        let resolved = resolve_url(&base, "//other/page").unwrap();
-        assert_eq!(resolved.as_str(), "https://other/page");
+        // Protocol-relative URL to different host is blocked by SSRF protection (Bug 3)
+        assert!(resolve_url(&base, "//other/page").is_none());
     }
 
     #[test]
@@ -878,33 +909,33 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // Gap C: is_sitemap_index — various URL patterns
-    #[test]
-    fn test_is_sitemap_index_xml_gz() {
-        let parser = SitemapParser::new().unwrap();
-        let urls = vec![Url::parse("https://example.com/sitemap.xml.gz").unwrap()];
-        assert!(parser.is_sitemap_index(&urls));
-    }
-
-    #[test]
-    fn test_is_sitemap_index_mixed() {
-        let parser = SitemapParser::new().unwrap();
-        let urls = vec![
-            Url::parse("https://example.com/page1").unwrap(),
-            Url::parse("https://example.com/sitemap2.xml").unwrap(),
-        ];
-        assert!(parser.is_sitemap_index(&urls));
-    }
-
-    #[test]
-    fn test_is_sitemap_index_no_xml() {
-        let parser = SitemapParser::new().unwrap();
-        let urls = vec![
-            Url::parse("https://example.com/page1.html").unwrap(),
-            Url::parse("https://example.com/page2.json").unwrap(),
-        ];
-        assert!(!parser.is_sitemap_index(&urls));
-    }
+    // Gap C: is_sitemap_index tests removed - root element detection is now used instead of URL extension
+    // #[test]
+    // fn test_is_sitemap_index_xml_gz() {
+    //     let parser = SitemapParser::new().unwrap();
+    //     let urls = vec![Url::parse("https://example.com/sitemap.xml.gz").unwrap()];
+    //     assert!(parser.is_sitemap_index(&urls));
+    // }
+    //
+    // #[test]
+    // fn test_is_sitemap_index_mixed() {
+    //     let parser = SitemapParser::new().unwrap();
+    //     let urls = vec![
+    //         Url::parse("https://example.com/page1").unwrap(),
+    //         Url::parse("https://example.com/sitemap2.xml").unwrap(),
+    //     ];
+    //     assert!(parser.is_sitemap_index(&urls));
+    // }
+    //
+    // #[test]
+    // fn test_is_sitemap_index_no_xml() {
+    //     let parser = SitemapParser::new().unwrap();
+    //     let urls = vec![
+    //         Url::parse("https://example.com/page1.html").unwrap(),
+    //         Url::parse("https://example.com/page2.json").unwrap(),
+    //     ];
+    //     assert!(!parser.is_sitemap_index(&urls));
+    // }
 
     #[test]
     fn test_max_depth_accessor() {

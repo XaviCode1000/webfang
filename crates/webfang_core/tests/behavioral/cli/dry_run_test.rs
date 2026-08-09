@@ -1,4 +1,4 @@
-//! Dry-run mode: no files produced, no network requests.
+//! Dry-run mode: discovers URLs but produces no files and no scrape requests.
 
 use crate::BehavioralTest;
 use wiremock::matchers::method;
@@ -8,10 +8,11 @@ use wiremock::{Mock, ResponseTemplate};
 async fn dry_run_produces_zero_files() {
     let t = BehavioralTest::new().await;
 
+    // Mock the seed URL for discovery (returns minimal HTML)
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(200).set_body_string("<html><body>test</body></html>"))
-        .expect(0) // must not be called
-        .named("dry-run must not fetch")
+        .expect(1) // one discovery request
+        .named("dry-run discovery request")
         .mount(&t.server)
         .await;
 
@@ -33,13 +34,14 @@ async fn dry_run_produces_zero_files() {
 }
 
 #[tokio::test]
-async fn dry_run_makes_zero_requests() {
+async fn dry_run_makes_discovery_request_only() {
     let t = BehavioralTest::new().await;
 
+    // Mock the seed URL for discovery (returns minimal HTML)
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(200).set_body_string("<html><body>test</body></html>"))
-        .expect(0)
-        .named("dry-run must not make any requests")
+        .expect(1) // one discovery request, no scrape requests
+        .named("dry-run discovery request only")
         .mount(&t.server)
         .await;
 
@@ -52,8 +54,8 @@ async fn dry_run_makes_zero_requests() {
     let requests = t.server.received_requests().await.unwrap();
     assert_eq!(
         requests.len(),
-        0,
-        "dry-run should make zero HTTP requests, got {}",
+        1,
+        "dry-run should make exactly one discovery request, got {}",
         requests.len()
     );
 }
@@ -62,9 +64,11 @@ async fn dry_run_makes_zero_requests() {
 async fn dry_run_with_single_page_still_produces_nothing() {
     let t = BehavioralTest::new().await;
 
+    // Mock the seed URL for discovery (returns minimal HTML)
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(200).set_body_string("<html><body>test</body></html>"))
-        .expect(0)
+        .expect(1) // one discovery request
+        .named("dry-run discovery request")
         .mount(&t.server)
         .await;
 

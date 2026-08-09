@@ -70,9 +70,7 @@ pub async fn run(
     vault_ports: crate::application::container::VaultAiPorts,
 ) -> CliExit {
     if opts.export.dry_run {
-        println!("Dry-run: 1 URL(s) would be scraped:");
-        println!("  {}", opts.url);
-        return CliExit::Success;
+        return run_dry_run(opts).await;
     }
     // Process-level graceful shutdown (#653). The guard owns ONE signal
     // listener for the whole run; every phase observes its token cooperatively
@@ -279,6 +277,42 @@ async fn export_phase(
             e
         },
     }
+}
+
+/// Run dry-run: discover URLs and print them without scraping.
+async fn run_dry_run(opts: CrawlOptions) -> CliExit {
+    // Bug 4: honest dry-run - call real URL discovery
+    info!("Dry-run: discovering URLs without scraping...");
+    let tls_emulation = match HttpClientConfig::profile_from_name(&opts.network.h2_profile) {
+        Ok(profile) => profile,
+        Err(e) => return CliExit::ConfigError(e.to_string()),
+    };
+
+    let mut crawler_config = CrawlerConfig::builder(opts.url.clone())
+        .max_pages(opts.crawl.max_pages)
+        .max_depth(opts.crawl.max_depth)
+        .include_patterns(opts.crawl.include_patterns.clone())
+        .exclude_patterns(opts.crawl.exclude_patterns.clone())
+        .ignore_robots(opts.crawl.ignore_robots)
+        .use_sitemap(opts.crawl.use_sitemap)
+        .timeout_secs(opts.network.timeout_secs)
+        .delay_ms(opts.network.delay_ms)
+        .tls_emulation(tls_emulation);
+    if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
+        crawler_config = crawler_config.sitemap_url(sitemap_url);
+    }
+    let crawler_config = crawler_config.build();
+
+    let discovered = match crate::cli::url_discovery::discover_urls(&crawler_config, &opts).await {
+        Ok(urls) => urls,
+        Err(e) => return CliExit::NetworkError(format!("URL discovery failed: {e}")),
+    };
+
+    println!("\nDry-run: {} URL(s) would be scraped:", discovered.len());
+    for url in &discovered {
+        println!("  {url}");
+    }
+    CliExit::Success
 }
 
 /// Prepare scraper config and discover URLs.
