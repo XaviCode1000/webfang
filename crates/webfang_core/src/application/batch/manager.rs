@@ -58,15 +58,29 @@ impl BatchManager {
 
     /// Create a batch manager from a list of URLs using a shared config
     ///
-    /// Each URL becomes a single-item batch job. All jobs share the same
-    /// [`CrawlerConfig`] (seed URL is overridden per job).
+    /// All URLs land in ONE [`BatchJob`] so [`BatchProcessor::process_batch`]
+    /// can fan them out across its semaphore. One job per URL (the previous
+    /// shape) made `--batch-concurrency` a no-op: each job held a single URL,
+    /// the semaphore never contended, and jobs ran strictly sequentially
+    /// (#653).
     pub fn from_urls(urls: Vec<String>, config: CrawlerConfig, max_concurrent: usize) -> Self {
         let mut manager = Self::new(max_concurrent);
-        for (i, url) in urls.iter().enumerate() {
-            let job = BatchJob::new(format!("job-{i}"), vec![url.clone()], config.clone());
-            manager.jobs.push(job);
+        if urls.is_empty() {
+            return manager;
         }
         manager
+            .jobs
+            .push(BatchJob::new("batch-all".to_string(), urls, config));
+        manager
+    }
+
+    /// Total number of URLs queued across every job.
+    ///
+    /// [`job_count`](Self::job_count) is now 1 for a whole batch (#653), so
+    /// callers reporting batch size must use this instead.
+    #[must_use]
+    pub fn url_count(&self) -> usize {
+        self.jobs.iter().map(|j| j.urls.len()).sum()
     }
 
     /// Capture every fetched page body into `sink` (#631).
@@ -216,7 +230,10 @@ mod tests {
             "https://example.com/about".to_string(),
         ];
         let manager = BatchManager::from_urls(urls, test_config(), 3);
-        assert_eq!(manager.job_count(), 2);
+        // #653: every URL shares ONE job so the processor's semaphore governs
+        // concurrency instead of the manager's sequential job loop.
+        assert_eq!(manager.job_count(), 1);
+        assert_eq!(manager.url_count(), 2);
     }
 
     #[test]
@@ -256,7 +273,8 @@ https://example.com/blog
         std::fs::write(&file_path, "https://a.com\nhttps://b.com\n").unwrap();
 
         let manager = BatchManager::from_file(&file_path, test_config(), 2).unwrap();
-        assert_eq!(manager.job_count(), 2);
+        assert_eq!(manager.job_count(), 1);
+        assert_eq!(manager.url_count(), 2);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -267,7 +285,7 @@ https://example.com/blog
         let manager = BatchManager::from_urls(urls, test_config(), 1);
         let statuses = manager.statuses();
         assert_eq!(statuses.len(), 1);
-        assert_eq!(statuses[0].0, "job-0");
+        assert_eq!(statuses[0].0, "batch-all");
         assert_eq!(*statuses[0].1, BatchJobStatus::Pending);
     }
 

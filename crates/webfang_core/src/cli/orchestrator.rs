@@ -601,14 +601,14 @@ async fn run_batch_crawl(
     };
     manager = manager.with_content_sink(sink.clone());
 
-    if manager.job_count() == 0 {
+    if manager.url_count() == 0 {
         error!("No URLs provided for batch processing");
         return Err(CliExit::UsageError("No URLs provided".into()));
     }
 
     info!(
-        "Starting batch processing: {} jobs, concurrency={}",
-        manager.job_count(),
+        "Starting batch processing: {} URLs, concurrency={}",
+        manager.url_count(),
         opts.batch.concurrency
     );
 
