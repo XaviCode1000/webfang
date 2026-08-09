@@ -67,37 +67,23 @@ fn test_ram_budget_accepts_plain_bytes_and_suffixes() {
 }
 
 #[test]
-fn test_cpu_cores_rejects_zero() {
+fn test_cpu_cores_and_reject_invalid_values() {
     clean_env();
-    let err = Args::try_parse_from(["webfang", "--cpu-cores", "0"])
-        .expect_err("zero cpu-cores must be rejected");
-    assert!(
-        err.to_string().contains("cpu-cores debe ser > 0"),
-        "unexpected error: {err}"
-    );
-}
 
-#[test]
-fn test_ram_budget_rejects_zero() {
-    clean_env();
-    let err = Args::try_parse_from(["webfang", "--ram-budget", "0"])
-        .expect_err("zero ram-budget must be rejected");
-    assert!(
-        err.to_string().contains("ram-budget debe ser > 0"),
-        "unexpected error: {err}"
-    );
-}
+    let cases: &[(&str, &str, &str)] = &[
+        ("--cpu-cores", "0", "cpu-cores debe ser > 0"),
+        ("--ram-budget", "0", "ram-budget debe ser > 0"),
+        ("--ram-budget", "banana", "no es un tamaño de memoria válido"),
+    ];
 
-#[test]
-fn test_ram_budget_rejects_garbage() {
-    clean_env();
-    let err = Args::try_parse_from(["webfang", "--ram-budget", "banana"])
-        .expect_err("malformed ram-budget must be rejected");
-    assert!(
-        err.to_string()
-            .contains("no es un tamaño de memoria válido"),
-        "unexpected error: {err}"
-    );
+    for (flag, value, expected_msg) in cases {
+        let err = Args::try_parse_from(["webfang", flag, value])
+            .expect_err(&format!("{flag} {value} must be rejected"));
+        assert!(
+            err.to_string().contains(expected_msg),
+            "unexpected error for {flag} {value}: {err}"
+        );
+    }
 }
 
 // ========================================================================

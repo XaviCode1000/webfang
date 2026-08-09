@@ -343,14 +343,16 @@ mod tests {
         // Buffer of 1 forces the deferred-send path for most captures.
         let sink = Arc::new(sink_in(&dir, 1).await);
 
-        let mut tasks = tokio::task::JoinSet::new();
+        let mut handles = Vec::with_capacity(64);
         for i in 0..64 {
             let sink = Arc::clone(&sink);
-            tasks.spawn(async move {
+            handles.push(tokio::spawn(async move {
                 sink.capture(&format!("https://example.com/{i}"), "<p>body</p>");
-            });
+            }));
         }
-        while tasks.join_next().await.is_some() {}
+        for h in handles {
+            h.await.expect("capture task panicked");
+        }
 
         // Deferred sends run on spawned tasks; yield until every capture landed.
         while sink.captured() < 64 {
