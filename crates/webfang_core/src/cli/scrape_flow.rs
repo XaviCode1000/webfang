@@ -1,6 +1,8 @@
 //! Scraping flow logic extracted from orchestrator.
 
 use std::path::PathBuf;
+
+use futures::stream::StreamExt;
 use tracing::{info, warn};
 use url::Url;
 
@@ -190,19 +192,42 @@ pub async fn scrape_urls(
         robots_fetcher: &robots_fetcher,
     };
 
-    for url in urls_to_process {
-        // Per-page identity: child of the run root — shared trace_id, fresh
-        // span_id (#501).
-        let page_correlation = root_correlation.child();
+    // Honor `--concurrency` (#653): the previous sequential loop made the flag
+    // a no-op on the default scrape path. `buffer_unordered` keeps at most
+    // `concurrency` fetches in flight; the enumerated index restores the
+    // original URL order afterwards so output stays deterministic.
+    let concurrency = opts.network.concurrency.resolve().max(1);
+    info!(
+        concurrency,
+        urls = processing_count,
+        "scraping with bounded concurrency"
+    );
 
-        match scrape_one_url(&url, &ctx, opts, observer, &page_correlation).await {
+    let mut ordered: Vec<(usize, ScrapeOutcome)> =
+        futures::stream::iter(urls_to_process.into_iter().enumerate())
+            .map(|(index, url)| {
+                let ctx = &ctx;
+                async move {
+                    // Per-page identity: child of the run root — shared trace_id, fresh
+                    // span_id (#501).
+                    let page_correlation = root_correlation.child();
+                    let outcome =
+                        scrape_one_url(&url, ctx, opts, observer, &page_correlation).await;
+                    (index, (url, outcome))
+                }
+            })
+            .buffer_unordered(concurrency)
+            .collect()
+            .await;
+
+    ordered.sort_by_key(|(index, _)| *index);
+
+    for (_, (url, outcome)) in ordered {
+        match outcome {
             Ok(Some(content)) => results.push(content),
             // Robots.txt blocked — skipped, not a failure.
             Ok(None) => {},
-            Err(e) => {
-                let url_str = url.as_str().to_string();
-                failures.push((url_str, e));
-            },
+            Err(e) => failures.push((url.as_str().to_string(), e)),
         }
     }
 
@@ -214,6 +239,14 @@ pub async fn scrape_urls(
 
     Ok((results, failures))
 }
+
+/// Result of one page scrape: the URL plus its outcome (content, robots-skip,
+/// or failure). Kept as an alias so the concurrent pipeline's element type
+/// stays readable.
+type ScrapeOutcome = (
+    Url,
+    Result<Option<ScrapedContent>, crate::error::ScraperError>,
+);
 
 /// Shared per-URL dependencies for a single scrape, bundled to keep the
 /// per-page helper's signature small.
