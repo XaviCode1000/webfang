@@ -805,6 +805,10 @@ fn resolve_batch_tls_emulation(opts: &CrawlOptions) -> Result<wreq_util::Profile
 }
 
 /// Build the crawler config for the batch engine, honoring `--h2-profile`.
+///
+/// `--delay-ms` and `--concurrency` are propagated here (#653): without them
+/// the batch engine crawled at full speed with its own default concurrency,
+/// making both flags silent no-ops on the `--batch` path.
 fn build_batch_crawler_config(
     opts: &CrawlOptions,
     tls_emulation: wreq_util::Profile,
@@ -817,6 +821,8 @@ fn build_batch_crawler_config(
         .ignore_robots(opts.crawl.ignore_robots)
         .use_sitemap(opts.crawl.use_sitemap)
         .timeout_secs(opts.network.timeout_secs)
+        .delay_ms(opts.network.delay_ms)
+        .concurrency(opts.network.concurrency.resolve())
         .tls_emulation(tls_emulation);
     if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
         crawler_config = crawler_config.sitemap_url(sitemap_url);
@@ -932,10 +938,40 @@ fn parse_asset_h2_profile(s: &str) -> wreq_util::Profile {
 #[cfg(test)]
 mod tests {
     use super::{
-        batch_exit_code, build_elastic_ingestion, format_failure, parse_asset_h2_profile, plan_urls,
+        batch_exit_code, build_batch_crawler_config, build_elastic_ingestion, format_failure,
+        parse_asset_h2_profile, plan_urls,
     };
     use crate::application::crawl_options::CrawlOptions;
     use crate::cli::error::CliExit;
+
+    // ===== build_batch_crawler_config tests (#653) =====
+
+    #[test]
+    fn batch_config_propagates_delay_and_concurrency() {
+        // Regression for #653: `--delay-ms` and `--concurrency` were dropped on
+        // the batch path, so per-URL rate limiting never engaged.
+        let mut opts = CrawlOptions::default();
+        opts.network.delay_ms = 750;
+        opts.network.concurrency = crate::ConcurrencyConfig::new(4);
+
+        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145);
+
+        assert_eq!(config.delay_ms, 750, "--delay-ms must reach the crawler");
+        assert_eq!(
+            config.concurrency, 4,
+            "--concurrency must reach the crawler"
+        );
+    }
+
+    #[test]
+    fn batch_config_zero_delay_disables_throttling() {
+        let mut opts = CrawlOptions::default();
+        opts.network.delay_ms = 0;
+
+        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145);
+
+        assert_eq!(config.delay_ms, 0);
+    }
 
     // ===== format_failure tests =====
 
