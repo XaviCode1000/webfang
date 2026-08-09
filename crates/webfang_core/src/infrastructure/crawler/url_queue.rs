@@ -20,7 +20,7 @@ use dashmap::DashSet;
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use crate::domain::url_validation::normalize_url;
+use crate::domain::url_validation::{normalize_url, NormalizeConfig, RemoveQueryParameters};
 use crate::domain::DiscoveredUrl;
 
 /// Source of a discovered URL, used for priority scoring.
@@ -154,7 +154,13 @@ impl UrlQueue {
         // The URL is normalized to its canonical form BEFORE hashing (#517):
         // the seed enters the queue raw while links arrive already normalized,
         // so a raw/equivalently-spelled duplicate must still be rejected here.
-        let canonical = normalize_url(url.url.as_str(), true);
+        let canonical = normalize_url(
+            url.url.as_str(),
+            &NormalizeConfig {
+                strip_www: true,
+                query_policy: RemoveQueryParameters::All,
+            },
+        );
         let hash = self.rs.hash_one(&canonical);
         if !self.seen.insert(hash) {
             debug!("Duplicate URL in queue: {}", url.url);

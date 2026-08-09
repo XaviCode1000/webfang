@@ -12,6 +12,7 @@ use scraper::{Html, Selector};
 use tracing::debug;
 use url::Url;
 
+use crate::domain::url_validation::{NormalizeConfig, RemoveQueryParameters};
 use crate::domain::LinkExtractor;
 
 /// Extract all crawlable links from HTML content
@@ -85,9 +86,19 @@ pub fn extract_links(html: &str, base_url: &str) -> Result<Vec<String>, crate::d
             // Resolve relative URLs
             match base.join(href) {
                 Ok(absolute_url) => {
-                    let normalized = normalize_url(absolute_url.as_str(), true);
-                    if !links.contains(&normalized) {
-                        links.push(normalized);
+                    // Preserve the raw absolute URL (query string included) for
+                    // fetching; only use the canonical (query-stripped) form as
+                    // the dedup key so paginated variants still collapse (#651).
+                    let fetch_url = absolute_url.as_str().to_string();
+                    let dedup_key = normalize_url(
+                        &fetch_url,
+                        &NormalizeConfig {
+                            strip_www: true,
+                            query_policy: RemoveQueryParameters::All,
+                        },
+                    );
+                    if !links.contains(&dedup_key) {
+                        links.push(fetch_url);
                     }
                 },
                 Err(e) => {
@@ -250,11 +261,23 @@ mod tests {
     #[test]
     fn test_normalize_url_remove_fragment() {
         assert_eq!(
-            normalize_url("https://example.com/page#section", true),
+            normalize_url(
+                "https://example.com/page#section",
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All
+                }
+            ),
             "https://example.com/page"
         );
         assert_eq!(
-            normalize_url("https://example.com/page#top", true),
+            normalize_url(
+                "https://example.com/page#top",
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All
+                }
+            ),
             "https://example.com/page"
         );
     }
@@ -262,11 +285,23 @@ mod tests {
     #[test]
     fn test_normalize_url_preserve_trailing_slash() {
         assert_eq!(
-            normalize_url("https://example.com/page/", true),
+            normalize_url(
+                "https://example.com/page/",
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All
+                }
+            ),
             "https://example.com/page/"
         );
         assert_eq!(
-            normalize_url("https://example.com/page/#section", true),
+            normalize_url(
+                "https://example.com/page/#section",
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All
+                }
+            ),
             "https://example.com/page/"
         );
     }
@@ -274,25 +309,49 @@ mod tests {
     #[test]
     fn test_normalize_url_no_change() {
         assert_eq!(
-            normalize_url("https://example.com/page", true),
+            normalize_url(
+                "https://example.com/page",
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All
+                }
+            ),
             "https://example.com/page"
         );
     }
 
     #[test]
     fn test_normalize_url_invalid() {
-        let result = normalize_url("not-a-valid-url", true);
+        let result = normalize_url(
+            "not-a-valid-url",
+            &NormalizeConfig {
+                strip_www: true,
+                query_policy: RemoveQueryParameters::All,
+            },
+        );
         assert_eq!(result, "not-a-valid-url");
     }
 
     #[test]
     fn test_normalize_url_strips_www() {
         assert_eq!(
-            normalize_url("https://www.example.com/page", true),
+            normalize_url(
+                "https://www.example.com/page",
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All
+                }
+            ),
             "https://example.com/page"
         );
         assert_eq!(
-            normalize_url("https://www.example.com/page/", true),
+            normalize_url(
+                "https://www.example.com/page/",
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All
+                }
+            ),
             "https://example.com/page/"
         );
     }
@@ -300,7 +359,13 @@ mod tests {
     #[test]
     fn test_normalize_url_keeps_www_when_disabled() {
         assert_eq!(
-            normalize_url("https://www.example.com/page", false),
+            normalize_url(
+                "https://www.example.com/page",
+                &NormalizeConfig {
+                    strip_www: false,
+                    query_policy: RemoveQueryParameters::All
+                }
+            ),
             "https://www.example.com/page"
         );
     }
@@ -308,11 +373,23 @@ mod tests {
     #[test]
     fn test_normalize_url_removes_default_port() {
         assert_eq!(
-            normalize_url("https://example.com:443/page", true),
+            normalize_url(
+                "https://example.com:443/page",
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All
+                }
+            ),
             "https://example.com/page"
         );
         assert_eq!(
-            normalize_url("http://example.com:80/page", true),
+            normalize_url(
+                "http://example.com:80/page",
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All
+                }
+            ),
             "http://example.com/page"
         );
     }
@@ -326,7 +403,13 @@ mod tests {
         // Collapses to the canonical root form. url-normalize drops the bare
         // root slash, so this is "https://example.com" (not ".../").
         assert_eq!(
-            normalize_url("https://example.com/index.html", true),
+            normalize_url(
+                "https://example.com/index.html",
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All
+                }
+            ),
             "https://example.com"
         );
     }
@@ -334,7 +417,13 @@ mod tests {
     #[test]
     fn test_normalize_url_index_htm() {
         assert_eq!(
-            normalize_url("https://example.com/index.htm", true),
+            normalize_url(
+                "https://example.com/index.htm",
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All
+                }
+            ),
             "https://example.com"
         );
     }
@@ -343,7 +432,13 @@ mod tests {
     fn test_normalize_url_nested_index_html() {
         // Nested paths keep their trailing slash.
         assert_eq!(
-            normalize_url("https://example.com/docs/index.html", true),
+            normalize_url(
+                "https://example.com/docs/index.html",
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All
+                }
+            ),
             "https://example.com/docs/"
         );
     }
@@ -351,7 +446,13 @@ mod tests {
     #[test]
     fn test_normalize_url_index_html_case_insensitive() {
         assert_eq!(
-            normalize_url("https://example.com/INDEX.HTML", true),
+            normalize_url(
+                "https://example.com/INDEX.HTML",
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All
+                }
+            ),
             "https://example.com"
         );
     }
@@ -359,20 +460,44 @@ mod tests {
     #[test]
     fn test_normalize_url_index_html_idempotent() {
         // "/" and "/index.html" canonicalize to the SAME string (dedup, #344).
-        let root = normalize_url("https://example.com/", true);
-        let from_index = normalize_url("https://example.com/index.html", true);
+        let root = normalize_url(
+            "https://example.com/",
+            &NormalizeConfig {
+                strip_www: true,
+                query_policy: RemoveQueryParameters::All,
+            },
+        );
+        let from_index = normalize_url(
+            "https://example.com/index.html",
+            &NormalizeConfig {
+                strip_www: true,
+                query_policy: RemoveQueryParameters::All,
+            },
+        );
         assert_eq!(root, "https://example.com");
         assert_eq!(from_index, root);
 
         // Normalizing an already-normalized URL is a no-op (idempotent).
-        let again = normalize_url(&from_index, true);
+        let again = normalize_url(
+            &from_index,
+            &NormalizeConfig {
+                strip_www: true,
+                query_policy: RemoveQueryParameters::All,
+            },
+        );
         assert_eq!(again, from_index);
     }
 
     #[test]
     fn test_normalize_url_not_index_php() {
         assert_eq!(
-            normalize_url("https://example.com/index.php", true),
+            normalize_url(
+                "https://example.com/index.php",
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All
+                }
+            ),
             "https://example.com/index.php"
         );
     }
@@ -380,7 +505,13 @@ mod tests {
     #[test]
     fn test_normalize_url_index_html_in_filename() {
         assert_eq!(
-            normalize_url("https://example.com/my-index.html", true),
+            normalize_url(
+                "https://example.com/my-index.html",
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All
+                }
+            ),
             "https://example.com/my-index.html"
         );
     }
@@ -428,8 +559,9 @@ mod tests {
         "#;
 
         let links = extract_links(html, "https://example.com").unwrap();
-        // Empty href resolves to the base URL itself (no trailing slash added)
-        assert!(links.contains(&"https://example.com".to_string()));
+        // Empty href resolves to the base URL; the RAW fetch URL is preserved
+        // (trailing slash kept) while dedup still collapses query variants (#651).
+        assert!(links.contains(&"https://example.com/".to_string()));
         assert!(links.contains(&"https://example.com/page".to_string()));
     }
 

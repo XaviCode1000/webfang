@@ -9,6 +9,7 @@
 //! - `own-slice-over-accept`: Accept &str not &String
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use webfang_core::domain::url_validation::{NormalizeConfig, RemoveQueryParameters};
 use webfang_core::infrastructure::crawler::{extract_links, normalize_url};
 
 /// Generate HTML with n links for benchmarking
@@ -66,7 +67,13 @@ fn bench_extract_links_large(c: &mut Criterion) {
 fn bench_normalize_url_simple(c: &mut Criterion) {
     c.bench_function("normalize_url_simple", |b| {
         b.iter(|| {
-            let result = normalize_url(black_box("https://example.com/page"), true);
+            let result = normalize_url(
+                black_box("https://example.com/page"),
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All,
+                },
+            );
             assert!(!result.is_empty());
             black_box(result)
         })
@@ -76,7 +83,13 @@ fn bench_normalize_url_simple(c: &mut Criterion) {
 fn bench_normalize_url_relative(c: &mut Criterion) {
     c.bench_function("normalize_url_relative", |b| {
         b.iter(|| {
-            let result = normalize_url(black_box("/page?id=1&sort=name"), true);
+            let result = normalize_url(
+                black_box("/page?id=1&sort=name"),
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All,
+                },
+            );
             assert!(!result.is_empty());
             black_box(result)
         })
@@ -86,7 +99,13 @@ fn bench_normalize_url_relative(c: &mut Criterion) {
 fn bench_normalize_url_with_fragment(c: &mut Criterion) {
     c.bench_function("normalize_url_with_fragment", |b| {
         b.iter(|| {
-            let result = normalize_url(black_box("https://example.com/page#section"), true);
+            let result = normalize_url(
+                black_box("https://example.com/page#section"),
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All,
+                },
+            );
             assert!(!result.contains('#'));
             black_box(result)
         })
