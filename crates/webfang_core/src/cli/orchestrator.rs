@@ -12,7 +12,7 @@ use crate::cli::error::CliExit;
 use crate::cli::export_flow::{run_export, save_files, ExportConfig};
 use crate::cli::parse::parse_asset_naming;
 use crate::cli::scrape_flow::{apply_resume_mode, scrape_urls};
-use crate::cli::url_discovery::discover_urls;
+use crate::cli::url_discovery::{discover_urls, discover_urls_recursive};
 use crate::domain::http_config::HttpClientConfig;
 use crate::CrawlerConfig;
 use crate::ScraperConfig;
@@ -310,22 +310,33 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
         }
         let crawler_config = crawler_config.build();
 
-        let discovered_urls = match discover_urls(&crawler_config, opts).await {
-            Err(e) => {
-                return Err(CliExit::NetworkError(format!("URL discovery failed: {e}")));
-            },
-            // Exit 2 only when the sitemap is the source of truth. In DOM mode an
-            // empty discovery is not fatal: `plan_urls` injects the seed URL so
-            // the site itself is still scraped (#488). The message is always the
-            // sitemap one: this guard no longer fires in DOM mode (#495 made the
-            // message context-aware; the link-extraction branch is now unreachable
-            // here because an empty DOM discovery flows to `plan_urls`).
-            Ok(urls) if urls.is_empty() && opts.crawl.use_sitemap => {
-                return Err(CliExit::EmptyDiscovery(
-                    "No URLs discovered from sitemaps".into(),
-                ));
-            },
-            Ok(urls) => urls,
+        // Sitemap mode is the source of truth (depth-agnostic XML), so keep the
+        // existing single-pass sitemap discovery. DOM mode must run the recursive
+        // crawl Engine so `--max-depth` is honored (bug #651): the legacy
+        // `discover_urls_for_tui` path did one fetch and silently ignored depth.
+        let discovered_urls = if opts.crawl.use_sitemap {
+            match discover_urls(&crawler_config, opts).await {
+                Err(e) => {
+                    return Err(CliExit::NetworkError(format!("URL discovery failed: {e}")));
+                },
+                // Exit 2 only when the sitemap is the source of truth.
+                Ok(urls) if urls.is_empty() => {
+                    return Err(CliExit::EmptyDiscovery(
+                        "No URLs discovered from sitemaps".into(),
+                    ));
+                },
+                Ok(urls) => urls,
+            }
+        } else {
+            // Recursive BFS discovery respects max_depth/max_pages/robots/
+            // patterns; the existing scrape_phase + export_phase still own
+            // content extraction and on-disk output.
+            match discover_urls_recursive(crawler_config, opts).await {
+                Err(e) => {
+                    return Err(CliExit::NetworkError(format!("URL discovery failed: {e}")));
+                },
+                Ok(urls) => urls,
+            }
         };
 
         plan_urls(

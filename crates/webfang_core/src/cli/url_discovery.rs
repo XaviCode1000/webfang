@@ -7,6 +7,7 @@ use tracing::warn;
 use url::Url;
 
 use crate::application::crawl_options::CrawlOptions;
+use crate::application::crawler::crawl_site;
 use crate::application::discover_urls_for_tui;
 use crate::cli::SelectedUrls;
 use crate::error::Result as ScraperResult;
@@ -54,6 +55,54 @@ pub async fn discover_urls(
             }
         },
     };
+
+    if let Some(pb) = discovery_pb {
+        pb.finish_with_message(format!("Found {} URLs", discovered_urls.len()).to_owned());
+    }
+
+    Ok(discovered_urls)
+}
+
+/// Recursively discover URLs by running the real crawl Engine (BFS).
+///
+/// The default (non-interactive, non-sitemap) DOM crawl path previously called
+/// `discover_urls_for_tui`, which performs a SINGLE fetch and one round of link
+/// extraction — so `--max-depth` was silently ignored and every crawl behaved
+/// like depth 1 (bug #651). This routes discovery through [`crawl_site`], the
+/// same recursive engine the batch and MCP paths use, so `max_depth`,
+/// `max_pages`, robots, and include/exclude patterns are all honored.
+///
+/// The Engine returns a metadata-only `CrawlResult` (the set of fetched URLs);
+/// the rich content extraction and on-disk export stay in the CLI's existing
+/// `scrape_phase` / `export_phase`, which consume this URL list exactly as the
+/// old single-level discovery produced it — so output location and format are
+/// unchanged. Interactive TUI selection keeps using `discover_urls_for_tui` at
+/// depth 1 and is untouched by this path.
+pub async fn discover_urls_recursive(
+    crawler_config: CrawlerConfig,
+    opts: &CrawlOptions,
+) -> ScraperResult<Vec<Url>> {
+    let discovery_pb = if !opts.export.quiet {
+        let pb = ProgressBar::new_spinner();
+        pb.set_draw_target(ProgressDrawTarget::stderr());
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        // The spinner template is a hardcoded constant; parsing cannot fail.
+        #[allow(clippy::expect_used)]
+        let style = ProgressStyle::default_spinner()
+            .template("{spinner} {msg}")
+            .expect("valid spinner template");
+        pb.set_style(style);
+        pb.set_message("Discovering URLs (recursive)...");
+        Some(pb)
+    } else {
+        None
+    };
+
+    // The Engine itself respects max_depth etc.; map its error to the same
+    // error type `discover_urls` used to surface.
+    let result = crawl_site(crawler_config).await?;
+
+    let discovered_urls: Vec<Url> = result.urls.into_iter().map(|d| d.url).collect();
 
     if let Some(pb) = discovery_pb {
         pb.finish_with_message(format!("Found {} URLs", discovered_urls.len()).to_owned());
