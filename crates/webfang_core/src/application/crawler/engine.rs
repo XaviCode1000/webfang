@@ -19,6 +19,7 @@ use super::checkpoint::{
 };
 use super::collector::ResultsCollector;
 use super::concurrency_level::{ConcurrencyLevel, SharedConcurrencyLevel};
+use super::content_sink::CrawlContentSink;
 use super::crawl_scheduler::CrawlScheduler;
 use super::crawl_task::{handle_crawl_result, run_crawl_task};
 use super::fetch_router::{build_fetch_router, FetchRouter};
@@ -92,6 +93,8 @@ pub struct Engine {
     cookie_bridge: Arc<RwLock<CookieBridge>>,
     /// Domains currently banned due to WAF or rate limiting.
     banned_domains: Arc<RwLock<Vec<BannedDomain>>>,
+    /// Optional sink capturing every fetched page body (#631).
+    content_sink: Option<Arc<dyn CrawlContentSink>>,
     /// Optional item pipeline for processing scraped content.
     pipeline: Option<Arc<PipelineExecutor>>,
     /// Output stages that receive items after pipeline processing.
@@ -157,6 +160,7 @@ impl Engine {
             fetch_router: None,
             cookie_bridge: Arc::new(RwLock::new(CookieBridge::new())),
             banned_domains: Arc::new(RwLock::new(Vec::new())),
+            content_sink: None,
             pipeline: None,
             output_stages: Vec::new(),
             signal_handle: None,
@@ -299,6 +303,17 @@ impl Engine {
         if let Ok(mut banned) = self.banned_domains.write() {
             *banned = domains;
         }
+        self
+    }
+
+    /// Capture every fetched page body into `sink` (#631).
+    ///
+    /// [`CrawlResult`] is metadata only; without a sink the crawl discards the
+    /// bodies after link extraction and callers (batch mode) have nothing to
+    /// export. The sink is shared, so several engines can feed one collection.
+    #[must_use]
+    pub fn with_content_sink(mut self, sink: Arc<dyn CrawlContentSink>) -> Self {
+        self.content_sink = Some(sink);
         self
     }
 
@@ -575,6 +590,7 @@ impl Engine {
                 router: self.fetch_router.clone(),
             }),
             link_extractor: Arc::new(ports::ProductionLinkExtractor),
+            content_sink: self.content_sink.clone(),
             pipeline: self.pipeline.as_ref().map(|p| {
                 Arc::new(ports::ProductionPipeline {
                     executor: Arc::clone(p),
@@ -919,7 +935,26 @@ impl Default for EngineOptions {
 /// # }
 /// ```
 pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError> {
-    crawl_site_inner(config, CorrelationId::new()).await
+    crawl_site_inner(config, CorrelationId::new(), None).await
+}
+
+/// Crawl a website and capture every fetched page body into `sink`.
+///
+/// Same crawl semantics as [`crawl_site`], but the raw body of each fetched
+/// page is handed to the sink before link extraction discards it.
+/// [`CrawlResult`] carries metadata only, so this is the only way for a caller
+/// to obtain crawl content without a second HTTP round-trip — the gap that
+/// made `--batch` write zero files (#631).
+///
+/// # Errors
+///
+/// Returns [`CrawlError`] when the engine cannot be constructed or the crawl
+/// loop fails, exactly as [`crawl_site`] does.
+pub async fn crawl_site_capturing(
+    config: CrawlerConfig,
+    sink: Arc<dyn CrawlContentSink>,
+) -> Result<CrawlResult, CrawlError> {
+    crawl_site_inner(config, CorrelationId::new(), Some(sink)).await
 }
 
 /// Inner implementation of [`crawl_site`].
@@ -931,7 +966,7 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
 /// guard crosses an `.await` (#519).
 #[instrument(
     name = "crawl_site",
-    skip(config, correlation_id),
+    skip(config, correlation_id, content_sink),
     fields(
         correlation_id = %correlation_id,
         trace_id = %correlation_id.trace_id(),
@@ -945,6 +980,7 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
 async fn crawl_site_inner(
     config: CrawlerConfig,
     correlation_id: CorrelationId,
+    content_sink: Option<Arc<dyn CrawlContentSink>>,
 ) -> Result<CrawlResult, CrawlError> {
     info!(
         "Starting crawl from {} with max_depth={} max_pages={}",
@@ -953,6 +989,9 @@ async fn crawl_site_inner(
 
     let ignore_robots = config.ignore_robots;
     let mut engine = Engine::new(config, ignore_robots)?.with_correlation_id(correlation_id);
+    if let Some(sink) = content_sink {
+        engine = engine.with_content_sink(sink);
+    }
     let result = engine.run().await;
     engine.shutdown().await;
     result

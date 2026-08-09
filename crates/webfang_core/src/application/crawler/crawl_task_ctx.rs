@@ -11,6 +11,7 @@ use std::sync::{Arc, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::application::crawler::checkpoint::BannedDomain;
+use crate::application::crawler::content_sink::CrawlContentSink;
 use crate::application::crawler::ports::{
     ContentPipeline, CrawlResultCollector, LinkExtractorPort, PageFetcher, RobotsChecker,
 };
@@ -56,4 +57,10 @@ pub struct CrawlTaskCtx {
     // --- Pipeline ---
     pub(crate) pipeline: Option<Arc<dyn ContentPipeline>>,
     pub(crate) output_stages: Vec<Arc<Box<dyn OutputStage>>>,
+
+    /// Optional sink that captures every fetched page body (#631).
+    ///
+    /// `CrawlResult` is metadata only, so without this the crawl discards the
+    /// content and batch mode has nothing to export.
+    pub(crate) content_sink: Option<Arc<dyn CrawlContentSink>>,
 }
