@@ -5,13 +5,12 @@
 //! were extracted from `discovery.rs` (issue #442) to separate the sitemap
 //! infrastructure concern from DOM-link discovery.
 
-use tracing::{info, instrument};
-use url::Url;
-
 use crate::application::url_filter::is_allowed;
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl};
-use crate::infrastructure::crawler::{SitemapConfig, SitemapParser};
+use crate::infrastructure::crawler::{SitemapConfig, SitemapError, SitemapParser, SitemapUrl};
+use tracing::{info, instrument};
+use url::Url;
 
 /// Crawl site using sitemap (preferred method - FASE 3)
 ///
@@ -191,11 +190,32 @@ fn build_sitemap_parser(
     )
 }
 
-/// Parse a sitemap URL, mapping parse failures to a [`CrawlError::Parse`].
-async fn parse_sitemap(parser: &SitemapParser, sitemap_url: &str) -> Result<Vec<Url>, CrawlError> {
+/// Parse a sitemap URL, mapping parse failures to a [`CrawlError`].
+async fn parse_sitemap(
+    parser: &SitemapParser,
+    sitemap_url: &str,
+) -> Result<Vec<SitemapUrl>, CrawlError> {
     let urls = parser.parse_from_url(sitemap_url).await.map_err(|e| {
         tracing::error!("Failed to parse sitemap {}: {}", sitemap_url, e);
-        CrawlError::Parse(e.to_string())
+        // Preserve the specific error type for proper exit code mapping
+        match e {
+            SitemapError::HttpError { status, message } => CrawlError::Http {
+                status,
+                url: message,
+            },
+            SitemapError::XmlError(e) => CrawlError::Parse(format!("XML parsing failed: {e}")),
+            SitemapError::InvalidContentType(ct) => CrawlError::InvalidContentType(ct),
+            SitemapError::SitemapNotFound(url) => CrawlError::SitemapNotFound(url),
+            SitemapError::MaxDepthExceeded => CrawlError::SitemapDepthExceeded,
+            SitemapError::NoUrlsFound => CrawlError::SitemapEmpty,
+            SitemapError::DecompressionError(e) => {
+                CrawlError::Parse(format!("decompression failed: {e}"))
+            },
+            SitemapError::AllChildrenFailed(count, details) => {
+                CrawlError::Parse(format!("all {count} child sitemaps failed: {details}"))
+            },
+            other => CrawlError::Parse(other.to_string()),
+        }
     })?;
     tracing::info!("Parsed {} total URLs from sitemap", urls.len());
     Ok(urls)
@@ -209,10 +229,12 @@ async fn parse_sitemap(parser: &SitemapParser, sitemap_url: &str) -> Result<Vec<
 /// dropped.
 ///
 /// [`canonical_path`]: crate::domain::url_validation::canonical_path
-fn filter_relevant_urls(urls: Vec<Url>, target_path: &str) -> Vec<Url> {
+fn filter_relevant_urls(urls: Vec<SitemapUrl>, target_path: &str) -> Vec<SitemapUrl> {
     let target = crate::domain::url_validation::canonical_path(target_path);
     urls.into_iter()
-        .filter(|url| crate::domain::url_validation::canonical_path(url.path()).starts_with(target))
+        .filter(|url| {
+            crate::domain::url_validation::canonical_path(url.url.path()).starts_with(target)
+        })
         .collect()
 }
 
@@ -225,17 +247,17 @@ fn filter_relevant_urls(urls: Vec<Url>, target_path: &str) -> Vec<Url> {
 /// whatever discovery returns verbatim — there is no later depth gate (the Engine's
 /// `run_crawl_task` check is a separate, non-CLI code path).
 fn build_discovered_urls(
-    relevant_urls: Vec<Url>,
+    relevant_urls: Vec<SitemapUrl>,
     base: &Url,
     config: &CrawlerConfig,
 ) -> Vec<DiscoveredUrl> {
     let max_depth = config.max_depth;
     relevant_urls
         .into_iter()
-        .filter(|url| is_allowed(url.as_str(), config))
+        .filter(|url| is_allowed(url.url.as_str(), config))
         .filter_map(|url| {
-            let depth = if url == *base { 0 } else { 1 };
-            (depth <= max_depth).then(|| DiscoveredUrl::html(url, depth, base.clone()))
+            let depth = if url.url == *base { 0 } else { 1 };
+            (depth <= max_depth).then(|| DiscoveredUrl::html(url.url, depth, base.clone()))
         })
         .collect()
 }
@@ -291,7 +313,7 @@ async fn crawl_with_subpath_sitemaps(
         // Sub-path sitemap URLs are at depth 1 (one hop from seed)
         Ok(all_urls
             .into_iter()
-            .map(|url| DiscoveredUrl::html(url, 1, base.clone()))
+            .map(|sitemap_url| DiscoveredUrl::html(sitemap_url.url, 1, base.clone()))
             .collect())
     }
 }
@@ -302,7 +324,7 @@ async fn probe_subpath_sitemaps_for_crawl(
     base: &Url,
     client: &wreq::Client,
     parser: &SitemapParser,
-) -> Vec<Url> {
+) -> Vec<SitemapUrl> {
     let segments: Vec<_> = base.path().split('/').filter(|s| !s.is_empty()).collect();
     let mut all_urls = Vec::new();
 
@@ -326,7 +348,7 @@ async fn try_subpath_sitemap(
     client: &wreq::Client,
     parser: &SitemapParser,
     candidate: &str,
-) -> Option<Vec<Url>> {
+) -> Option<Vec<SitemapUrl>> {
     let sitemap_url = base.join(candidate).ok()?;
     let sitemap_str = sitemap_url.as_str();
     tracing::debug!("Trying sub-path sitemap: {}", sitemap_str);
@@ -339,7 +361,10 @@ async fn try_subpath_sitemap(
 }
 
 /// Parse a discovered sub-path sitemap, logging the URL count on success.
-async fn parse_subpath_sitemap(parser: &SitemapParser, sitemap_str: &str) -> Option<Vec<Url>> {
+async fn parse_subpath_sitemap(
+    parser: &SitemapParser,
+    sitemap_str: &str,
+) -> Option<Vec<SitemapUrl>> {
     match parser.parse_from_url(sitemap_str).await {
         Ok(urls) => {
             tracing::info!(

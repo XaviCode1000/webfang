@@ -36,7 +36,7 @@ async fn sitemap_valid_discovers_all_urls() {
     let urls = parser.parse_from_url(&url).await.unwrap();
 
     assert_eq!(urls.len(), 3, "should discover 3 URLs from valid sitemap");
-    let strings: Vec<String> = urls.iter().map(|u| u.to_string()).collect();
+    let strings: Vec<String> = urls.iter().map(|u| u.url.to_string()).collect();
     assert!(strings.contains(&"https://example.com/page1".to_string()));
     assert!(strings.contains(&"https://example.com/page2".to_string()));
     assert!(strings.contains(&"https://example.com/page3".to_string()));
@@ -240,7 +240,7 @@ async fn sitemap_with_namespaces() {
         !urls.is_empty(),
         "should extract at least 1 URL despite namespaces"
     );
-    assert_eq!(urls[0].as_str(), "https://example.com/gallery");
+    assert_eq!(urls[0].url.as_str(), "https://example.com/gallery");
 }
 
 /// Non-XML content type on non-.xml path → InvalidContentType error.

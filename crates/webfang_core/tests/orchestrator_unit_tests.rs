@@ -39,7 +39,7 @@ async fn sitemap_valid_xml_discovers_urls() {
     let urls = parser.parse_from_url(&url).await.unwrap();
 
     assert_eq!(urls.len(), 2, "should discover 2 URLs from sitemap");
-    let strings: Vec<String> = urls.iter().map(|u| u.to_string()).collect();
+    let strings: Vec<String> = urls.iter().map(|u| u.url.to_string()).collect();
     assert!(strings.contains(&"https://example.com/page1".to_string()));
     assert!(strings.contains(&"https://example.com/page2".to_string()));
 }
