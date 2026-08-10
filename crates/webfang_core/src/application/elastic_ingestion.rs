@@ -36,6 +36,7 @@ use sha2::{Digest, Sha256};
 use tracing::{error, info, warn};
 
 use crate::domain::repository::VectorRepository;
+use crate::domain::url_validation::{normalize_url, NormalizeConfig, RemoveQueryParameters};
 use crate::error::ScraperError;
 use crate::infrastructure::bridge::CpuBridge;
 use crate::infrastructure::config::AutotuningConfig;
@@ -158,16 +159,38 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
         Ok(())
     }
 
-    /// Dedup short-circuit: when the content hash is already persisted, log and
-    /// return `true` so the caller skips CPU cleaning and persistence.
+    /// Dedup short-circuit: when the content hash is already persisted for the
+    /// SAME URL, log and return `true` so the caller skips CPU cleaning and
+    /// persistence.
+    ///
+    /// Uses a composite key `(normalized_url, content_hash)`: a hash match alone
+    /// is insufficient — two different URLs with identical content (mirrored
+    /// pages, default server pages) must NOT deduplicate each other. When the
+    /// hash matches but the normalized URL differs, ingestion continues.
     async fn is_duplicate(&self, url: &str, hash: &str) -> Result<bool, ScraperError> {
-        if let Some(existing) = self.repository.resource_exists_by_hash(hash).await? {
-            info!(
-                %url,
-                existing_url = %existing,
-                "recurso ya persistido: omitiendo pipeline (dedup)"
+        if let Some(existing_url) = self.repository.resource_exists_by_hash(hash).await? {
+            let canonical_existing = normalize_url(
+                &existing_url,
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All,
+                },
             );
-            return Ok(true);
+            let canonical_current = normalize_url(
+                url,
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All,
+                },
+            );
+            if canonical_existing == canonical_current {
+                warn!(
+                    %url,
+                    existing_url = %existing_url,
+                    "recurso ya persistido: omitiendo pipeline (dedup)"
+                );
+                return Ok(true);
+            }
         }
         Ok(false)
     }
@@ -754,6 +777,53 @@ mod tests {
                 after_second,
                 (1, 1),
                 "dedup must prevent duplicate resource and chunk rows"
+            );
+        }
+
+        /// Regression test for #652 Bug 6: two DIFFERENT URLs with identical
+        /// content hash must NOT deduplicate each other.
+        /// Composite key is (normalized_url, content_hash) — hash collision
+        /// alone is insufficient.
+        #[tokio::test]
+        async fn test_is_duplicate_different_urls_same_hash_not_deduped() {
+            let repo = InMemoryRepo::default();
+            let hash = "abc123";
+
+            // Pre-populate the repo: hash exists for URL A.
+            {
+                let mut state = repo.state.lock().expect("repo mutex poisoned");
+                state.resources.insert(
+                    hash.to_string(),
+                    (
+                        "http://host:8942/index.html".to_string(),
+                        "title".to_string(),
+                        100,
+                    ),
+                );
+            }
+
+            let orc = make_orchestrator(repo.clone());
+
+            // Same hash, different URL → NOT a duplicate.
+            let result = orc
+                .is_duplicate("http://host:8943/index.html", hash)
+                .await
+                .expect("is_duplicate must not error");
+            assert!(!result, "different URL with same hash must NOT dedup");
+
+            // Same hash, same URL → IS a duplicate.
+            let result = orc
+                .is_duplicate("http://host:8942/index.html", hash)
+                .await
+                .expect("is_duplicate must not error");
+            assert!(result, "same URL with same hash must dedup");
+
+            // Verify the repo state was unchanged (no ingestion happened).
+            let state = repo.state.lock().expect("repo mutex poisoned");
+            assert_eq!(state.resources.len(), 1, "no new resource inserted");
+            assert!(
+                state.chunks.is_empty(),
+                "no chunks inserted (is_duplicate is a read-only check)"
             );
         }
     }

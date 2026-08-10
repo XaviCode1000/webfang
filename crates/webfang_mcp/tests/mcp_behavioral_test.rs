@@ -649,7 +649,7 @@ async fn test_export_jsonl_writes_real_file() {
         let obj: Value = serde_json::from_str(line).expect("each JSONL line must be valid JSON");
         assert_eq!(
             obj.get("metadata_version").and_then(|v| v.as_str()),
-            Some("2.0.0"),
+            Some("2.1.0"),
             "JSONL line must carry the webfang metadata schema"
         );
         if obj

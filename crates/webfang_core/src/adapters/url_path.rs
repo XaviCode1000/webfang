@@ -117,6 +117,42 @@ impl UrlPath {
         Ok(Self::from_url_path(parsed.path()))
     }
 
+    /// Create an [`UrlPath`] from a full URL, preserving query + fragment.
+    ///
+    /// Unlike [`Self::from_url`], this appends a sanitized query/fragment suffix
+    /// to `raw` so that URLs differing only only by query params or fragments
+    /// produce distinct filenames (no silent overwrite).
+    ///
+    /// Special characters (`?`, `&`, `:`, `=`, `#`, `/`) in the query/fragment
+    /// are replaced with `_`. `is_root` and `ends_with_slash` reflect the path only.
+    pub fn from_url_with_query(url: &str) -> Result<Self, UrlPathError> {
+        let parsed = url::Url::parse(url).map_err(|e| UrlPathError::InvalidUrl(e.to_string()))?;
+        let path = parsed.path();
+        let mut base = Self::from_url_path(path);
+
+        let query_part = parsed.query().unwrap_or("");
+        let fragment = parsed.fragment().unwrap_or("");
+
+        if query_part.is_empty() && fragment.is_empty() {
+            return Ok(base);
+        }
+
+        let mut suffix = String::new();
+        if !query_part.is_empty() {
+            suffix.push('_');
+            suffix.push_str(&Self::sanitize_query_part(query_part));
+        }
+        if !fragment.is_empty() {
+            suffix.push('_');
+            suffix.push_str(&Self::sanitize_query_part(fragment));
+        }
+
+        base.raw.push_str(&suffix);
+        base.is_root = false;
+        base.ends_with_slash = false;
+        Ok(base)
+    }
+
     /// Generate a unique filename from the full URL path, avoiding collisions.
     ///
     /// Unlike the old behavior that mapped ALL trailing-slash URLs to `index.md`
@@ -212,6 +248,18 @@ impl UrlPath {
         }
     }
 
+    /// Sanitize a query or fragment string for use in a filename.
+    ///
+    /// Replaces special characters (`?`, `&`, `:`, `=`, `#`, `/`) with `_`.
+    fn sanitize_query_part(s: &str) -> String {
+        s.chars()
+            .map(|c| match c {
+                '?' | '&' | ':' | '=' | '#' | '/' => '_',
+                c => c,
+            })
+            .collect()
+    }
+
     fn sanitize_path_segment(s: &str) -> String {
         // Whitelist: only alphanumeric + '-' '_' '.' survive. Everything else
         // (including path separators '/', '\\', and shell metacharacters) maps to '_'.
@@ -263,6 +311,16 @@ impl OutputPath {
         let parsed =
             url::Url::parse(url).map_err(|e| OutputPathError::InvalidUrl(e.to_string()))?;
         let path = UrlPath::from_url_path(parsed.path());
+        Ok(Self { domain, path })
+    }
+
+    /// Construct an [`OutputPath`] from a full URL, preserving query + fragment.
+    ///
+    /// Uses [`UrlPath::from_url_with_query`] so that URLs differing only by
+    /// query params or fragments produce distinct filenames.
+    pub fn from_url_with_query(url: &str) -> Result<Self, OutputPathError> {
+        let domain = Domain::from_url(url)?;
+        let path = UrlPath::from_url_with_query(url)?;
         Ok(Self { domain, path })
     }
 
@@ -340,6 +398,9 @@ pub enum OutputPathError {
     /// The domain portion of the URL is invalid.
     #[error("Domain error: {0}")]
     Domain(#[from] DomainError),
+    /// The path portion of the URL is invalid.
+    #[error("Path error: {0}")]
+    Path(#[from] UrlPathError),
 }
 
 // ============================================================================
@@ -647,5 +708,66 @@ mod tests {
         let dir = path.to_directory();
         assert!(!dir.contains(".."), "traversal segment leaked: {dir}");
         assert_eq!(dir, "a/_/b/");
+    }
+
+    // ========================================================================
+    // BUG-001: Query/Fragment Preservation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_from_url_with_query_distinguishes_ids() {
+        let path1 = UrlPath::from_url_with_query("http://host/item.html?id=1").unwrap();
+        let path2 = UrlPath::from_url_with_query("http://host/item.html?id=2").unwrap();
+        let path3 = UrlPath::from_url_with_query("http://host/item.html?id=3").unwrap();
+
+        assert_ne!(path1.to_safe_filename(), path2.to_safe_filename());
+        assert_ne!(path1.to_safe_filename(), path3.to_safe_filename());
+        assert_ne!(path2.to_safe_filename(), path3.to_safe_filename());
+    }
+
+    #[test]
+    fn test_from_url_with_query_preserves_fragment() {
+        let path = UrlPath::from_url_with_query("http://host/page.html#section-a").unwrap();
+        let filename = path.to_safe_filename();
+        assert!(
+            filename.contains("section-a"),
+            "fragment not preserved in filename: {filename}"
+        );
+    }
+
+    #[test]
+    fn test_from_url_with_query_no_query_matches_from_url() {
+        // URLs without query/fragment behave identically to from_url
+        let with_query = UrlPath::from_url_with_query("http://host/docs/api").unwrap();
+        let plain = UrlPath::from_url("http://host/docs/api").unwrap();
+        assert_eq!(with_query.to_safe_filename(), plain.to_safe_filename());
+    }
+
+    #[test]
+    fn test_from_url_with_query_sanitizes_special_chars() {
+        let path = UrlPath::from_url_with_query("http://host/page.html?a=1&b=2").unwrap();
+        let filename = path.to_safe_filename();
+        // ? and & and = should be replaced with _
+        assert!(!filename.contains('?'), "? leaked: {filename}");
+        assert!(!filename.contains('&'), "& leaked: {filename}");
+        assert!(!filename.contains('='), "= leaked: {filename}");
+    }
+
+    #[test]
+    fn test_from_url_with_query_combined_query_and_fragment() {
+        let path = UrlPath::from_url_with_query("http://host/doc.html?v=2#changelog").unwrap();
+        let filename = path.to_safe_filename();
+        assert!(filename.contains("v_2"), "query not preserved: {filename}");
+        assert!(
+            filename.contains("changelog"),
+            "fragment not preserved: {filename}"
+        );
+    }
+
+    #[test]
+    fn test_output_path_from_url_with_query_distinguishes() {
+        let op1 = OutputPath::from_url_with_query("https://example.com/item?id=1").unwrap();
+        let op2 = OutputPath::from_url_with_query("https://example.com/item?id=2").unwrap();
+        assert_ne!(op1.to_full_path(), op2.to_full_path());
     }
 }
