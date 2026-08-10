@@ -13,6 +13,24 @@ use crate::cli::SelectedUrls;
 use crate::error::Result as ScraperResult;
 use crate::CrawlerConfig;
 
+/// Build the discovery progress spinner, or `None` when quiet is enabled.
+fn build_discovery_progress_bar(opts: &CrawlOptions, message: &str) -> Option<ProgressBar> {
+    if opts.export.quiet {
+        return None;
+    }
+    let pb = ProgressBar::new_spinner();
+    pb.set_draw_target(ProgressDrawTarget::stderr());
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+    // The spinner template is a hardcoded constant; parsing cannot fail.
+    #[allow(clippy::expect_used)]
+    let style = ProgressStyle::default_spinner()
+        .template("{spinner} {msg}")
+        .expect("valid spinner template");
+    pb.set_style(style);
+    pb.set_message(message.to_owned());
+    Some(pb)
+}
+
 /// Discover URLs with progress bar.
 ///
 /// Returns `Err` on network/timeout errors instead of silently swallowing them.
@@ -20,21 +38,7 @@ pub async fn discover_urls(
     crawler_config: &CrawlerConfig,
     opts: &CrawlOptions,
 ) -> ScraperResult<Vec<Url>> {
-    let discovery_pb = if !opts.export.quiet {
-        let pb = ProgressBar::new_spinner();
-        pb.set_draw_target(ProgressDrawTarget::stderr());
-        pb.enable_steady_tick(std::time::Duration::from_millis(100));
-        // The spinner template is a hardcoded constant; parsing cannot fail.
-        #[allow(clippy::expect_used)]
-        let style = ProgressStyle::default_spinner()
-            .template("{spinner} {msg}")
-            .expect("valid spinner template");
-        pb.set_style(style);
-        pb.set_message("Discovering URLs...");
-        Some(pb)
-    } else {
-        None
-    };
+    let discovery_pb = build_discovery_progress_bar(opts, "Discovering URLs...");
 
     let discovered_urls = match discover_urls_for_tui(opts.url.as_str(), crawler_config).await {
         Ok(urls) => urls,
@@ -82,21 +86,7 @@ pub async fn discover_urls_recursive(
     crawler_config: CrawlerConfig,
     opts: &CrawlOptions,
 ) -> ScraperResult<Vec<Url>> {
-    let discovery_pb = if !opts.export.quiet {
-        let pb = ProgressBar::new_spinner();
-        pb.set_draw_target(ProgressDrawTarget::stderr());
-        pb.enable_steady_tick(std::time::Duration::from_millis(100));
-        // The spinner template is a hardcoded constant; parsing cannot fail.
-        #[allow(clippy::expect_used)]
-        let style = ProgressStyle::default_spinner()
-            .template("{spinner} {msg}")
-            .expect("valid spinner template");
-        pb.set_style(style);
-        pb.set_message("Discovering URLs (recursive)...");
-        Some(pb)
-    } else {
-        None
-    };
+    let discovery_pb = build_discovery_progress_bar(opts, "Discovering URLs (recursive)...");
 
     // The Engine itself respects max_depth etc.; map its error to the same
     // error type `discover_urls` used to surface.
