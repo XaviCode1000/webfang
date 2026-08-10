@@ -96,7 +96,7 @@ fn save_as_markdown(
     use std::fs;
 
     for item in results {
-        let output_path: OutputPath = match OutputPath::from_url(item.url.as_str()) {
+        let output_path: OutputPath = match OutputPath::from_url_with_query(item.url.as_str()) {
             Ok(p) => p,
             Err(e) => {
                 warn!("Failed to parse URL {}: {}, using fallback", item.url, e);
@@ -284,12 +284,24 @@ fn save_as_text(
     Ok(())
 }
 
-/// Save results as JSON
+/// Save results as JSON, appending to any existing `results.json`.
+///
+/// Two runs into the same output directory accumulate entries instead of
+/// overwriting, matching the `export.jsonl` append behavior (#652).
 fn save_as_json(results: &[ScrapedContent], output_dir: &Path) -> Result<()> {
     use std::fs;
 
     let json_path = output_dir.join("results.json");
-    let json = serde_json::to_string_pretty(results)?;
+
+    let mut merged = if json_path.exists() {
+        let existing = fs::read_to_string(&json_path)?;
+        serde_json::from_str::<Vec<ScrapedContent>>(&existing)?
+    } else {
+        Vec::new()
+    };
+    merged.extend_from_slice(results);
+
+    let json = serde_json::to_string_pretty(&merged)?;
     fs::write(&json_path, json)?;
     tracing::info!("💾 Saved: {}", json_path.display());
 
@@ -354,6 +366,48 @@ mod tests {
 
         let json_path = output_dir.join("results.json");
         assert!(json_path.exists());
+    }
+
+    /// #652: second save must append, not overwrite.
+    #[test]
+    fn test_save_as_json_appends_on_second_call() {
+        let temp_dir = TempDir::new().unwrap();
+        let output_dir = temp_dir.path();
+
+        let first = vec![ScrapedContent {
+            title: "First".to_string(),
+            content: "First content".to_string(),
+            url: ValidUrl::parse("https://a.com").unwrap(),
+            excerpt: None,
+            author: None,
+            date: None,
+            html: None,
+            assets: Vec::new(),
+            correlation_id: None,
+        }];
+
+        let second = vec![ScrapedContent {
+            title: "Second".to_string(),
+            content: "Second content".to_string(),
+            url: ValidUrl::parse("https://b.com").unwrap(),
+            excerpt: None,
+            author: None,
+            date: None,
+            html: None,
+            assets: Vec::new(),
+            correlation_id: None,
+        }];
+
+        save_as_json(&first, output_dir).unwrap();
+        save_as_json(&second, output_dir).unwrap();
+
+        let json_path = output_dir.join("results.json");
+        let content = std::fs::read_to_string(&json_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 2, "both runs must be present");
+        assert_eq!(arr[0]["title"], "First");
+        assert_eq!(arr[1]["title"], "Second");
     }
 
     // === rewrite_image_urls_to_relative tests ===
