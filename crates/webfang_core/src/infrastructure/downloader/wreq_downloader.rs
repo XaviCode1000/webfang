@@ -409,9 +409,17 @@ impl WreqDownloader {
             // Unified retry for 429 (rate limit) and 5xx (server error, #649).
             if last_status == 429 || (500..=599).contains(&last_status) {
                 let delay_ms = if last_status == 429 {
-                    parse_retry_after_ms(&response, self.backoff_max_ms)
+                    // BUG 6 fix: use max(Retry-After, exponential_backoff) instead of fixed constant.
+                    // parse_retry_after_ms returns the server's requested delay (capped at backoff_max_ms).
+                    // backoff_delay_ms returns exponential delay (also capped).
+                    // max() ensures we never retry faster than the server asked,
+                    // but also never slower than our own exponential strategy.
+                    std::cmp::max(
+                        parse_retry_after_ms(&response, self.backoff_max_ms),
+                        self.backoff_delay_ms(attempt),
+                    )
                 } else {
-                    self.backoff_delay_ms(attempt)
+                    self.backoff_delay_ms(attempt) // 5xx already correct
                 };
                 warn!(
                     attempt = attempt,

@@ -304,14 +304,15 @@ impl HttpClient {
         response: wreq::Response,
         ua: &str,
     ) -> HttpResult<String> {
+        // BUG 6 fix: when Retry-After is absent, fall back to exponential backoff
+        // instead of a fixed 1-second delay.
         let retry_after = response
             .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1);
+            .and_then(|s| s.parse().ok());
 
-        debug!("429 Rate Limited, retry after {}s", retry_after);
+        debug!("429 Rate Limited, retry after {:?}s", retry_after);
 
         retry_with_backoff(
             &self.client,
@@ -319,9 +320,10 @@ impl HttpClient {
             &self.config,
             ua,
             RetryPolicy {
-                retry_after_secs: Some(retry_after),
+                // None → compute_backoff_delay falls through to exponential path
+                retry_after_secs: retry_after,
                 retryable: |code: u16| code == 429 || (500..=599).contains(&code),
-                exhausted: HttpError::RateLimited(retry_after),
+                exhausted: HttpError::RateLimited(retry_after.unwrap_or(0)),
                 label: "429",
             },
         )

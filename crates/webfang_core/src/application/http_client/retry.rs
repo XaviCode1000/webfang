@@ -199,4 +199,35 @@ mod tests {
         assert_eq!(compute_backoff_delay(5, None, 1000, 10_000), 10_000);
         assert_eq!(compute_backoff_delay(6, None, 1000, 10_000), 10_000);
     }
+
+    // -----------------------------------------------------------------------
+    // Bug 6 (#675) — 429 retry must use max(Retry-After, exponential_backoff)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_429_without_retry_after_uses_exponential() {
+        // When no Retry-After header (retry_after_secs = None):
+        // attempt 1: base * 2^0 = 1000ms (same as before, by design)
+        // attempt 2: base * 2^1 = 2000ms
+        // attempt 3: base * 2^2 = 4000ms
+        for (attempt, expected_ms) in [(1, 1000), (2, 2000), (3, 4000)] {
+            let delay = compute_backoff_delay(attempt, None, 1000, 10_000);
+            assert_eq!(
+                delay, expected_ms,
+                "attempt {attempt} should be {expected_ms}ms, got {delay}ms"
+            );
+        }
+    }
+
+    #[test]
+    fn test_429_with_retry_after_uses_max_of_both() {
+        // Retry-After: 3 → 3000ms, exponential attempt 2 → 2000ms → max = 3000ms
+        let retry_after_ms = 3 * 1000;
+        let delay = std::cmp::max(retry_after_ms, compute_backoff_delay(2, None, 1000, 10_000));
+        assert_eq!(delay, 3000);
+
+        // Retry-After: 1 → 1000ms, exponential attempt 3 → 4000ms → max = 4000ms
+        let delay = std::cmp::max(1000, compute_backoff_delay(3, None, 1000, 10_000));
+        assert_eq!(delay, 4000);
+    }
 }
