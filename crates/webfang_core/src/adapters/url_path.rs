@@ -395,15 +395,19 @@ mod tests {
         assert_eq!(path.to_directory(), "docs/");
     }
 
-    #[test]
-    fn test_to_safe_filename_distinguishes_trailing_slash() {
-        // /a/ and /a are distinct resources but both would serialize to "a.md"
-        // without the trailing-slash marker, causing silent data loss.
+    /// /a/ and /a are distinct resources but both would serialize to "a.md"
+    /// without the trailing-slash marker, causing silent data loss.
+    fn assert_trailing_slash_filename_marker() {
         let dir = UrlPath::from_url_path("/a/");
         let file = UrlPath::from_url_path("/a");
         assert_ne!(dir.to_safe_filename(), file.to_safe_filename());
         assert_eq!(dir.to_safe_filename(), "a_.md");
         assert_eq!(file.to_safe_filename(), "a.md");
+    }
+
+    #[test]
+    fn test_to_safe_filename_distinguishes_trailing_slash() {
+        assert_trailing_slash_filename_marker();
 
         let nested_dir = UrlPath::from_url_path("/docs/api/");
         let nested_file = UrlPath::from_url_path("/docs/api");
@@ -628,12 +632,12 @@ mod tests {
     #[test]
     fn test_trailing_slash_still_distinct_from_file() {
         // Regression for Bug 5: /a/ and /a must remain distinct resources after
-        // the slash-collapse fix. The trailing-slash marker (`a_.md`) must survive.
+        // the slash-collapse fix. The filename marker (`a_.md`) is covered by
+        // `assert_trailing_slash_filename_marker`; here we only assert the
+        // directory collapse (Bug 4 regression) is preserved.
+        assert_trailing_slash_filename_marker();
         let dir = UrlPath::from_url_path("/a/");
         let file = UrlPath::from_url_path("/a");
-        assert_ne!(dir.to_safe_filename(), file.to_safe_filename());
-        assert_eq!(dir.to_safe_filename(), "a_.md");
-        assert_eq!(file.to_safe_filename(), "a.md");
         assert_eq!(dir.to_directory(), file.to_directory());
     }
 
