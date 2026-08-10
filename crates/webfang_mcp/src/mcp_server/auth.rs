@@ -50,16 +50,14 @@ pub async fn validate_auth(
         .and_then(|v| v.to_str().ok());
 
     match auth_header {
-        Some(value) if value == format!("Bearer {expected}") => {
-            Ok(next.run(request).await)
-        }
+        Some(value) if value == format!("Bearer {expected}") => Ok(next.run(request).await),
         _ => {
             tracing::warn!(
                 remote = ?request.uri(),
                 "rejected unauthenticated request"
             );
             Err(StatusCode::UNAUTHORIZED)
-        }
+        },
     }
 }
 
@@ -72,10 +70,7 @@ mod tests {
 
     fn app_with_token(token: Option<Arc<str>>) -> axum::Router {
         axum::Router::new()
-            .route(
-                "/test",
-                axum::routing::get(|| async { "ok" }),
-            )
+            .route("/test", axum::routing::get(|| async { "ok" }))
             .layer(axum::middleware::from_fn_with_state(
                 AuthState {
                     expected_token: token,

@@ -12,7 +12,7 @@ use clap::Parser;
 use webfang_core::adapters::downloader::{DownloadConfig, Downloader};
 use webfang_core::config::Config;
 use webfang_core::di::{Container, ContainerExt};
-use webfang_mcp::mcp_server::server::{start_mcp_server, DEFAULT_MCP_ADDR, ServerOptions};
+use webfang_mcp::mcp_server::server::{start_mcp_server, ServerOptions, DEFAULT_MCP_ADDR};
 use webfang_mcp::mcp_server::McpState;
 
 /// Webfang MCP Server — Streamable HTTP transport.

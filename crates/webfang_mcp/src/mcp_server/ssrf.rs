@@ -28,10 +28,7 @@ pub async fn validate_url_no_ssrf(url: &url::Url) -> Result<(), McpError> {
     let addrs: Vec<_> = lookup_host(format!("{host}:{port}"))
         .await
         .map_err(|e| {
-            McpError::invalid_params(
-                format!("error de resolución DNS para '{host}': {e}"),
-                None,
-            )
+            McpError::invalid_params(format!("error de resolución DNS para '{host}': {e}"), None)
         })?
         .collect();
 
@@ -65,9 +62,7 @@ pub async fn validate_url_no_ssrf(url: &url::Url) -> Result<(), McpError> {
 /// - IPv6: loopback (::1), unique-local (fc00::/7).
 fn is_forbidden_ip(ip: &IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback() || v4.is_private() || v4.is_link_local() || is_cgnat(v4)
-        }
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local() || is_cgnat(v4),
         IpAddr::V6(v6) => v6.is_loopback() || is_ipv6_unique_local(v6),
     }
 }

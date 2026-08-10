@@ -20,6 +20,7 @@ use webfang_core::adapters::downloader::{DownloadConfig, Downloader};
 use webfang_core::config::Config;
 use webfang_core::di::Container;
 use webfang_mcp::mcp_server::server::build_mcp_router;
+use webfang_mcp::mcp_server::server::ServerOptions;
 use webfang_mcp::mcp_server::state::McpState;
 
 /// Start a test MCP server on a random port. Pass `Some(downloader)` to inject
@@ -36,7 +37,7 @@ async fn start_server(
         Some(d) => McpState::new(container).with_downloader(d),
         None => McpState::new(container),
     };
-    let app = build_mcp_router(state);
+    let app = build_mcp_router(state, &ServerOptions::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();

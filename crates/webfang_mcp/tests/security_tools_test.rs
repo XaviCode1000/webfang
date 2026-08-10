@@ -22,6 +22,7 @@ use wreq::Client;
 use webfang_core::config::Config;
 use webfang_core::di::Container;
 use webfang_mcp::mcp_server::server::build_mcp_router;
+use webfang_mcp::mcp_server::server::ServerOptions;
 use webfang_mcp::mcp_server::state::McpState;
 
 // ============================================================================
@@ -34,7 +35,7 @@ async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
         .await
         .expect("container creation failed");
     let state = McpState::new(container);
-    let app = build_mcp_router(state);
+    let app = build_mcp_router(state, &ServerOptions::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();

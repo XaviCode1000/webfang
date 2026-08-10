@@ -10,23 +10,22 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::State;
-use tokio_util::sync::CancellationToken;
-use axum::{Router, middleware};
+use axum::{middleware, Router};
 use governor::{
-    Quota,
     clock::DefaultClock,
     state::{InMemoryState, NotKeyed},
-    RateLimiter as GovernorLimiter,
+    Quota, RateLimiter as GovernorLimiter,
 };
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager, tower::StreamableHttpService,
 };
+use tokio_util::sync::CancellationToken;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
-use super::auth::{AuthState, validate_auth};
+use super::auth::{validate_auth, AuthState};
 use super::panic_hook::setup_panic_hook;
 use super::state::McpState;
 use super::McpHandler;
@@ -115,7 +114,7 @@ async fn rate_limit_middleware(
                 "rate limit exceeded — rejecting with 429"
             );
             Err(axum::http::StatusCode::TOO_MANY_REQUESTS)
-        }
+        },
     }
 }
 
@@ -419,10 +418,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_token_propagates_to_clones() {
         let config = Config::default();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let container = rt
-            .block_on(Container::new(config.crawler, config.scraper))
-            .unwrap();
+        let container = Container::from_config(config).await.unwrap();
         let state = McpState::new(container);
         let state2 = state.clone();
 
