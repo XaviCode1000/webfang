@@ -794,7 +794,11 @@ mod tests {
                 let mut state = repo.state.lock().expect("repo mutex poisoned");
                 state.resources.insert(
                     hash.to_string(),
-                    ("http://host:8942/index.html".to_string(), "title".to_string(), 100),
+                    (
+                        "http://host:8942/index.html".to_string(),
+                        "title".to_string(),
+                        100,
+                    ),
                 );
             }
 
@@ -817,7 +821,10 @@ mod tests {
             // Verify the repo state was unchanged (no ingestion happened).
             let state = repo.state.lock().expect("repo mutex poisoned");
             assert_eq!(state.resources.len(), 1, "no new resource inserted");
-            assert!(state.chunks.is_empty(), "no chunks inserted (is_duplicate is a read-only check)");
+            assert!(
+                state.chunks.is_empty(),
+                "no chunks inserted (is_duplicate is a read-only check)"
+            );
         }
     }
 
@@ -860,5 +867,4 @@ mod tests {
             "non-empty digest must also be lowercase hex, got: {sample}"
         );
     }
-
 }

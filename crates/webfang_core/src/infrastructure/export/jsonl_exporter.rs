@@ -133,7 +133,11 @@ impl<'a> WebfangMetadata<'a> {
             .and_then(|v| v.parse::<usize>().ok())
             .or_else(|| {
                 let count = chunk.content.split_whitespace().count();
-                if count > 0 { Some(count) } else { None }
+                if count > 0 {
+                    Some(count)
+                } else {
+                    None
+                }
             });
 
         let reading_time = chunk

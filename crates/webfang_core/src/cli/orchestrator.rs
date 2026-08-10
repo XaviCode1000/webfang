@@ -1518,7 +1518,12 @@ mod tests {
         opts.elastic.output_vectors = Some("vectors.jsonl".to_string());
         let cancel = tokio_util::sync::CancellationToken::new();
 
-        let exit = run_batch(opts, crate::application::container::VaultAiPorts::default(), &cancel).await;
+        let exit = run_batch(
+            opts,
+            crate::application::container::VaultAiPorts::default(),
+            &cancel,
+        )
+        .await;
 
         assert!(
             matches!(exit, CliExit::ConfigError(_)),
