@@ -7,6 +7,14 @@ use rmcp::ErrorData as McpError;
 use std::net::IpAddr;
 use tokio::net::lookup_host;
 
+/// Check if SSRF protection is enabled (based on environment variable).
+///
+/// SSRF is enabled by default. Set `WEBFANG_MCP_DISABLE_SSRF=1` to disable
+/// for testing environments (e.g., when wiremock runs on 127.0.0.1).
+fn is_ssrf_enabled() -> bool {
+    std::env::var("WEBFANG_MCP_DISABLE_SSRF").is_err()
+}
+
 /// Validate that a URL doesn't point to internal/private/forbidden IPs.
 ///
 /// Resolves the host via DNS and checks every returned address against a
@@ -17,6 +25,14 @@ use tokio::net::lookup_host;
 /// Returns `McpError::invalid_params` if the URL has no host, DNS resolution
 /// fails, or any resolved IP falls within a forbidden range.
 pub async fn validate_url_no_ssrf(url: &url::Url) -> Result<(), McpError> {
+    // Skip validation if SSRF is disabled (e.g., in tests)
+    if !is_ssrf_enabled() {
+        tracing::debug!(url = %url, "SSRF protection skipped (disabled via env var)");
+        return Ok(());
+    }
+
+    tracing::debug!(url = %url, "SSRF protection enabled, validating");
+
     let host = url
         .host_str()
         .ok_or_else(|| McpError::invalid_params("URL sin host".to_string(), None))?;

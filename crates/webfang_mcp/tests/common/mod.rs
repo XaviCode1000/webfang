@@ -8,6 +8,11 @@
 //! a test file, then call `common::start_test_server()` and friends. The helpers
 //! are intentionally `pub` but only a subset is used by any given binary, so the
 //! module carries `#![allow(dead_code)]`.
+//!
+//! **SSRf Note**: `start_test_server()` and related functions disable SSRF
+//! protection by setting `WEBFANG_MCP_DISABLE_SSRF=1` before building the router.
+//! This is required because wiremock uses 127.0.0.1 for its mock HTTP server,
+//! which SSRF protection blocks by design.
 
 #![allow(dead_code)]
 
@@ -22,6 +27,14 @@ use webfang_mcp::mcp_server::server::build_mcp_router;
 use webfang_mcp::mcp_server::server::ServerOptions;
 use webfang_mcp::mcp_server::state::McpState;
 
+/// Initialize SSRF disable flag for tests (idempotent).
+fn init_ssrf_disabled() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+    });
+}
+
 /// Start a test MCP server on a random port and return the base URL.
 ///
 /// NOTE: `Container::new` creates real HTTP clients (wreq) and a real service
@@ -29,11 +42,15 @@ use webfang_mcp::mcp_server::state::McpState;
 /// ephemeral and scoped to the test, so real infrastructure gives confidence
 /// that the MCP server works end-to-end with the actual application state.
 pub async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
+    // Disable SSRF protection for tests (uses 127.0.0.1 for wiremock)
+    init_ssrf_disabled();
+
     let config = Config::default();
     let container = Container::new(config.crawler, config.scraper)
         .await
         .expect("container creation failed");
     let state = McpState::new(container);
+
     let app = build_mcp_router(state, &ServerOptions::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -61,6 +78,9 @@ pub async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
 pub async fn start_server(
     downloader: Option<std::sync::Arc<webfang_core::adapters::downloader::Downloader>>,
 ) -> (String, tokio::task::JoinHandle<()>) {
+    // Disable SSRF protection for tests (uses 127.0.0.1 for wiremock)
+    std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+
     let config = Config::default();
     let container = Container::new(config.crawler, config.scraper)
         .await
@@ -69,6 +89,7 @@ pub async fn start_server(
         Some(d) => McpState::new(container).with_downloader(d),
         None => McpState::new(container),
     };
+
     let app = build_mcp_router(state, &ServerOptions::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -145,6 +166,10 @@ pub async fn start_seeded_server(
     }
 
     let state = McpState::new(container);
+
+    // Disable SSRF protection for tests (uses 127.0.0.1 for wiremock)
+    std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+
     let app = build_mcp_router(state, &ServerOptions::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -5,6 +5,9 @@
 //! - tools/list returns available tools
 //! - Invalid session handling
 //!
+//! **SSRf Note**: Tests use wiremock on 127.0.0.1, which SSRF protection blocks.
+//! SSRF is disabled by the test harness.
+//!
 //! Run with: cargo nextest run --test mcp_behavioral_test
 
 #![cfg(feature = "mcp")]
@@ -19,6 +22,14 @@ use webfang_core::di::Container;
 use webfang_mcp::mcp_server::server::build_mcp_router;
 use webfang_mcp::mcp_server::server::ServerOptions;
 use webfang_mcp::mcp_server::state::McpState;
+
+/// Initialize SSRF disable flag for tests (idempotent).
+fn init_ssrf_disabled() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+    });
+}
 
 /// JSON-RPC standard error code for "Method not found" (JSON-RPC 2.0 spec).
 const JSONRPC_METHOD_NOT_FOUND: i64 = -32601;
@@ -42,6 +53,9 @@ fn parse_jsonrpc_error_code(body: &str) -> Option<i64> {
 
 /// Start a test MCP server on a random port and return the base URL.
 async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
+    // Disable SSRF before building the router
+    init_ssrf_disabled();
+
     let config = Config::default();
     let container = Container::new(config.crawler, config.scraper)
         .await
@@ -1298,6 +1312,9 @@ async fn test_mcp_handler_construction_without_ai() {
 /// lives behind `webfang_ai`, which is an optional dependency of `webfang_mcp`.
 #[cfg(feature = "ai")]
 async fn start_test_server_with_ai() -> (String, tokio::task::JoinHandle<()>) {
+    // Disable SSRF before building the router
+    init_ssrf_disabled();
+
     use webfang_ai::infrastructure_ai::{ModelConfig, SemanticCleanerImpl};
 
     let config = Config::default();

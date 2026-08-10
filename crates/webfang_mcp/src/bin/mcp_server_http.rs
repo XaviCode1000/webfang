@@ -10,10 +10,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::Parser;
 use webfang_core::adapters::downloader::{DownloadConfig, Downloader};
-use webfang_core::config::Config;
-use webfang_core::di::{Container, ContainerExt};
 use webfang_mcp::mcp_server::server::{start_mcp_server, ServerOptions, DEFAULT_MCP_ADDR};
-use webfang_mcp::mcp_server::McpState;
+use webfang_mcp::mcp_server::{build_container_with_ai, McpState};
 
 /// Webfang MCP Server — Streamable HTTP transport.
 #[derive(Parser, Debug)]
@@ -61,44 +59,14 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let config = Config::default();
-    let container = Container::from_config(config)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to build container: {e}"))?;
-
-    // REQ-07: construct and inject the AI semantic cleaner behind the `ai`
-    // feature, mirroring the CLI (main.rs). Construction is OPT-IN via the
-    // `--enable-ai` flag so a plain `cargo run` smoke run does not download
-    // the ~390 MB ONNX model at startup. The block shadows `container` with a
-    // cleaner-backed one; shadowing (not `mut`) keeps the off-build warning-free.
-    #[cfg(feature = "ai")]
-    let container = if args.enable_ai {
-        let variant = webfang_ai::AiModel::from_env_or_default();
-        let model_config = webfang_ai::ModelConfig::default().with_model_variant(variant);
-        // Wire the semantic cleaner (clean_html / semantic_cleaner tools), then
-        // share its ONNX pool + tokenizer with the vault-search ports (#433) so
-        // the model is loaded exactly once. The vault ports are wired only when
-        // the cleaner succeeds — they reuse the components it resolved.
-        match webfang_ai::SemanticCleanerImpl::new(model_config).await {
-            Ok(cleaner) => {
-                let (pool, tokenizer) = cleaner.shared_inference();
-                let container = container.with_cleaner(Arc::new(cleaner));
-                webfang_mcp::mcp_server::ai_wiring::wire_ai_ports(container, pool, tokenizer).await
-            },
-            Err(e) => {
-                tracing::warn!("semantic cleaner unavailable, continuing without AI: {e}");
-                container
-            },
-        }
-    } else {
-        container
-    };
-
     // Keep the `enable_ai` flag honest when compiled without the `ai` feature.
     #[cfg(not(feature = "ai"))]
     if args.enable_ai {
         tracing::warn!("--enable-ai requested but the `ai` feature is not compiled in; ignoring");
     }
+
+    // Build container with optional AI wiring (shared with mcp_server_stdio.rs)
+    let container = build_container_with_ai(args.enable_ai).await;
 
     // Inject a shared Downloader so `download_assets` reuses one connection
     // pool across tool calls. The default config writes to `./downloads`
@@ -113,6 +81,11 @@ async fn main() -> Result<()> {
         rate_burst: args.burst,
         auth_token: args.auth_token,
     };
+
+    // Disable SSRF for testing with env var, otherwise use default (enabled)
+    if std::env::var("WEBFANG_MCP_DISABLE_SSRF").is_ok() {
+        tracing::debug!("SSRF protection disabled (test mode)");
+    }
 
     start_mcp_server(state, args.bind, opts).await
 }
