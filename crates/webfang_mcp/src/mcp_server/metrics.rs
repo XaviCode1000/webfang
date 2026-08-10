@@ -179,6 +179,22 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
+    static GLOBAL_SUBSCRIBER_INIT: std::sync::Once = std::sync::Once::new();
+
+    /// Set a global fmt subscriber (sink writer) so every `tracing` callsite
+    /// registers with `Interest::always()` instead of the `Interest::never()`
+    /// that gets cached process-wide when a thread hits a callsite with no
+    /// subscriber active (see [`record_emits_structured_tracing_event`]).
+    fn ensure_global_subscriber() {
+        GLOBAL_SUBSCRIBER_INIT.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(
+                tracing_subscriber::fmt()
+                    .with_writer(std::io::sink)
+                    .finish(),
+            );
+        });
+    }
+
     /// Build the canonical fixture: 2 success events on `a.com` (counts 3, 5)
     /// and 1 error event on `b.com` (count 0), durations 100/200/300ms, all via
     /// the `scrape_url` tool. Mean duration = (100+200+300)/3 = 200ms.
@@ -339,13 +355,23 @@ mod tests {
     /// REQ-09: each record emits ONE structured tracing event carrying
     /// tool/domain/success/duration_ms/pages (English field names/values).
     ///
-    /// Captures via a SCOPED `with_default` subscriber (no global state).
-    /// `#[serial]` keeps this test exclusive under `cargo test` (libtest runs
-    /// tests on shared threads; nextest isolates per process, cargo test does
-    /// not) so the capturing subscriber can never be shadowed by another test.
+    /// `tracing` caches per-callsite `Interest` process-wide: if a NON-serial
+    /// test calls [`ScrapeMetrics::record`] without a subscriber active, its
+    /// thread registers the `"scrape recorded"` callsite as `Interest::never()`
+    /// and that decision is cached forever — this test's scoped `with_default`
+    /// subscriber would then never receive the event, even with `#[serial]`
+    /// (serial_test only excludes other `#[serial]` tests).
+    ///
+    /// Fix: [`ensure_global_subscriber`] (invoked before capture) installs a
+    /// global fmt subscriber writing to sink, so every callsite registers with
+    /// `Interest::always()`; `set_global_default` also triggers a global
+    /// interest rebuild that recovers already-poisoned callsites. The global is
+    /// a fallback only — the per-test `with_default` below still overrides it
+    /// for capture on the test thread.
     #[test]
     #[serial]
     fn record_emits_structured_tracing_event() {
+        ensure_global_subscriber();
         use tracing::field::{Field, Visit};
         use tracing_subscriber::layer::Layer;
         use tracing_subscriber::prelude::*;
