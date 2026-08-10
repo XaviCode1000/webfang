@@ -31,7 +31,7 @@ use webfang_mcp::mcp_server::state::McpState;
 fn init_ssrf_disabled() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let _ = std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
     });
 }
 

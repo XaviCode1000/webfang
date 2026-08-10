@@ -407,11 +407,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build MCP server
-        run: cargo build --example mcp_server --all-features
+        run: cargo build --bin webfang-mcp --bin webfang-mcp-stdio --all-features
       - name: Validate MCP handshake
         timeout-minutes: 2
         run: |
-          ./target/debug/examples/mcp_server &
+          ./target/debug/webfang-mcp &
           MCP_PID=$!
           for i in $(seq 1 15); do
             if curl -sf --max-time 2 http://127.0.0.1:8080/mcp -X POST \
