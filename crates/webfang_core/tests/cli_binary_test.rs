@@ -199,6 +199,9 @@ async fn test_single_page_custom_timeout_is_used_by_scrape_client() {
     let mock_server = MockServer::start().await;
     let output_dir = TempDir::new().expect("create temp output dir");
 
+    // Per-request timeout is the configured ceiling: it is terminal (not retried).
+    // Mid-body transients (ConnectionReset, UnexpectedEof) ARE retried (#649).
+    // This test verifies the timeout is respected and exits 69 after ONE attempt.
     Mock::given(method("GET"))
         .and(path("/slow"))
         .respond_with(
@@ -206,7 +209,7 @@ async fn test_single_page_custom_timeout_is_used_by_scrape_client() {
                 .set_body_string("slow response content")
                 .set_delay(Duration::from_secs(2)),
         )
-        .expect(1)
+        .expect(1) // timeout is terminal → exactly 1 request
         .named("single-page timeout request")
         .mount(&mock_server)
         .await;
