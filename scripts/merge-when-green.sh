@@ -11,7 +11,7 @@
 #   2. Verifies mergeStateStatus is CLEAN (not BEHIND, BLOCKED, or CONFLICT).
 #   3. Squash-merges with `gh pr merge --squash`, then deletes the remote head
 #      branch for same-owner PRs. Local branch/worktree cleanup is left to the
-#      post-merge runbook (remove the worktree, then delete the local branch).
+#      post-merge runbook (see 'Post-merge runbook' below).
 #
 # Exit codes:
 #   0  PR merged.
@@ -31,6 +31,26 @@
 #   - Does NOT auto-rebase if BEHIND. The maintainer should rebase and re-push,
 #     then re-run the script. Single maintainer, ~30s, no automation needed.
 #   - Requires `gh` authenticated with repo scope.
+#
+# Post-merge runbook — run from the main checkout (branch `main`) after this
+# script succeeds:
+#   1. Verify the merge landed:
+#      gh pr view <N> --json state,mergeCommit          # state: MERGED
+#   2. Sync main (ff-only):
+#      git fetch origin && git merge --ff-only origin/main
+#   3. Remove the worktree, then the local branch (order matters):
+#      git worktree remove ~/Projects/webfang-worktrees/<dir>
+#      git branch -D <branch>
+#      git worktree prune
+#   4. Verify the handoff:
+#      git worktree list          # only ~/Projects/webfang
+#      git status --short         # empty
+#   Verification checklist:
+#     - gh pr view <N>                 -> state: MERGED
+#     - git ls-remote origin <branch>  -> empty (script already deleted the remote)
+#     - git worktree list              -> only ~/Projects/webfang
+#     - git status --short             -> empty
+#     - Linked issue closes itself     -> Closes #N in the PR body
 #
 # See: docs of Fase 0 measurement (AGENTS.md, project memory) — CI is ~8.5 min,
 # this script saves the human loop of checking back every few minutes.
