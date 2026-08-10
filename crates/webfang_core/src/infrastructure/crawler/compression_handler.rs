@@ -93,34 +93,26 @@ impl CompressionHandler {
             return Ok(content.to_vec());
         }
 
-        // Try each detected format in order
+        // Try each detected format in order - fail closed on error
         for format in formats {
             match format {
                 CompressionType::Gzip => {
-                    if let Ok(decompressed) = self.decompress_gzip(content).await {
-                        return Ok(decompressed);
-                    }
+                    return self.decompress_gzip(content).await;
                 },
                 CompressionType::Deflate => {
-                    if let Ok(decompressed) = self.decompress_deflate(content).await {
-                        return Ok(decompressed);
-                    }
+                    return self.decompress_deflate(content).await;
                 },
                 CompressionType::Brotli => {
-                    if let Ok(decompressed) = self.decompress_brotli(content).await {
-                        return Ok(decompressed);
-                    }
+                    return self.decompress_brotli(content).await;
                 },
                 CompressionType::Zstd => {
-                    if let Ok(decompressed) = self.decompress_zstd(content).await {
-                        return Ok(decompressed);
-                    }
+                    return self.decompress_zstd(content).await;
                 },
                 CompressionType::None => {},
             }
         }
 
-        // If no format worked, return original content
+        // No supported compression format found
         Ok(content.to_vec())
     }
 
