@@ -120,11 +120,9 @@ pub async fn run(
     };
 
     #[cfg(not(feature = "ai"))]
-    if opts.elastic.output_vectors.is_some() && opts.ai {
-        warn!(
-            "--output-vectors specified with --clean-ai but AI feature is not compiled in. \
-             The output file will be created but no embedding vectors will be written. \
-             Rebuild with --features ai to generate embeddings."
+    if opts.elastic.output_vectors.is_some() {
+        return CliExit::ConfigError(
+            "Se requiere compilar con '--features ai' para usar --output-vectors".to_string(),
         );
     }
 
@@ -217,6 +215,15 @@ async fn export_phase(
     state_store: Option<&StateStore>,
     #[cfg(feature = "ai")] ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
 ) -> CliExit {
+    if opts.export.output_dir == std::path::Path::new("-") {
+        return CliExit::UsageError(
+            "\"-o -\" no está soportado para exportación multi-archivo. \
+             Usa \"--output-vectors -\" para exportar vectores a stdout, \
+             o especifica un directorio de salida."
+                .to_string(),
+        );
+    }
+
     let output_dir = opts.export.output_dir.clone();
 
     let obsidian_options = ObsidianOptions {
@@ -560,6 +567,13 @@ async fn run_batch(
     vault_ports: crate::application::container::VaultAiPorts,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> CliExit {
+    #[cfg(not(feature = "ai"))]
+    if opts.elastic.output_vectors.is_some() {
+        return CliExit::ConfigError(
+            "Se requiere compilar con '--features ai' para usar --output-vectors".to_string(),
+        );
+    }
+
     // Resolve the TLS/H2 fingerprint once so the batch crawl engine honors
     // `--h2-profile` (#312). An unknown profile is a config error (exit 78),
     // matching the scrape phase — never silently crawl with a wrong fingerprint.
@@ -591,15 +605,6 @@ async fn run_batch(
         Ok(v) => v,
         Err(e) => return e,
     };
-
-    #[cfg(not(feature = "ai"))]
-    if opts.elastic.output_vectors.is_some() && opts.ai {
-        warn!(
-            "--output-vectors specified with --clean-ai but AI feature is not compiled in. \
-             The output file will be created but no embedding vectors will be written. \
-             Rebuild with --features ai to generate embeddings."
-        );
-    }
 
     if let Err(e) = run_batch_elastic(&elastic_ingestion, &results).await {
         return e;
@@ -1020,6 +1025,9 @@ mod tests {
     use crate::application::crawl_options::CrawlOptions;
     use crate::cli::error::CliExit;
 
+    #[cfg(not(feature = "ai"))]
+    use super::{run, run_batch};
+
     // ===== build_batch_crawler_config tests (#653) =====
 
     #[test]
@@ -1417,6 +1425,34 @@ mod tests {
         );
     }
 
+    // ===== Bug #652: reject `-o -` for multi-file export =====
+
+    #[cfg_attr(
+        miri,
+        ignore = "export_phase touches filesystem (create_dir_all) unsupported by Miri"
+    )]
+    #[tokio::test]
+    async fn export_phase_rejects_stdout_as_output_dir() {
+        use crate::cli::orchestrator::export_phase;
+
+        let mut opts = CrawlOptions::default();
+        opts.export.output_dir = std::path::PathBuf::from("-");
+
+        let exit = export_phase(
+            &[],
+            &opts,
+            None,
+            #[cfg(feature = "ai")]
+            None,
+        )
+        .await;
+
+        assert!(
+            matches!(exit, CliExit::UsageError(_)),
+            "Expected UsageError when output_dir is '-', got: {exit:?}"
+        );
+    }
+
     // ===== Asset pattern decoupling tests (#639) =====
 
     /// Regression test for #639: crawl include/exclude patterns must NOT
@@ -1456,6 +1492,37 @@ mod tests {
             prepare.scraper_config.asset_exclude_patterns.is_empty(),
             "crawl exclude_patterns must NOT leak into asset config, got: {:?}",
             prepare.scraper_config.asset_exclude_patterns
+        );
+    }
+
+    // ===== output_vectors without ai feature (#652) =====
+
+    #[cfg(not(feature = "ai"))]
+    #[tokio::test]
+    async fn run_returns_config_error_when_output_vectors_without_ai() {
+        let mut opts = CrawlOptions::default();
+        opts.elastic.output_vectors = Some("vectors.jsonl".to_string());
+
+        let exit = run(opts, crate::application::container::VaultAiPorts::default()).await;
+
+        assert!(
+            matches!(exit, CliExit::ConfigError(_)),
+            "expected CliExit::ConfigError, got {exit:?}"
+        );
+    }
+
+    #[cfg(not(feature = "ai"))]
+    #[tokio::test]
+    async fn run_batch_returns_config_error_when_output_vectors_without_ai() {
+        let mut opts = CrawlOptions::default();
+        opts.elastic.output_vectors = Some("vectors.jsonl".to_string());
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        let exit = run_batch(opts, crate::application::container::VaultAiPorts::default(), &cancel).await;
+
+        assert!(
+            matches!(exit, CliExit::ConfigError(_)),
+            "expected CliExit::ConfigError, got {exit:?}"
         );
     }
 }
