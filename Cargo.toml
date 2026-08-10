@@ -124,8 +124,13 @@ inquire = "0.9"
 # MCP features
 rmcp = { version = "1.7", features = ["server", "macros", "schemars", "transport-streamable-http-server"] }
 axum = "0.8"
-tower-http = { version = "0.6", features = ["trace"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "limit", "timeout"] }
 schemars = "1.0"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+nonzero_ext = "0.3"
 
 # Competitive Features
 crc32fast = "1"

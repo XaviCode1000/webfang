@@ -6210,6 +6210,8 @@ version = "2.0.0"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
+ "clap",
+ "governor",
  "insta",
  "proptest",
  "rmcp",
@@ -6220,6 +6222,8 @@ dependencies = [
  "serial_test",
  "tempfile",
  "tokio",
+ "tokio-util",
+ "tower 0.5.3",
  "tower-http",
  "tracing",
  "tracing-subscriber",

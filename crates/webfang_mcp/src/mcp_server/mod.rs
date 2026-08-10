@@ -11,11 +11,14 @@
 
 #[macro_use]
 pub mod macros;
+pub mod auth;
 pub mod handlers;
 pub mod metrics;
+pub mod panic_hook;
 pub mod params;
 pub mod selector_service;
 pub mod server;
+pub mod ssrf;
 pub mod state;
 pub mod validation;
 
