@@ -14,7 +14,7 @@ use url::Url;
 
 use super::checkpoint::BannedDomain;
 use super::crawl_task_ctx::CrawlTaskCtx;
-use super::ports::waf_challenge_message;
+use super::ports::{waf_challenge_message, FetchOutcome};
 use crate::application::pipeline::{ScrapedItem, StageOutcome};
 use crate::application::url_filter::is_allowed;
 use crate::domain::session_port::SessionId;
@@ -125,7 +125,6 @@ async fn run_crawl_task_inner(
 ) -> Result<(), CrawlError> {
     let url_str = discovered_url.url.as_str().to_string();
     let url_depth = discovered_url.depth;
-    let parent_url = discovered_url.url.clone();
 
     // Acquire a per-domain session when the pool is enabled. `Err(())` means
     // the pool had no available session for this domain — skip the URL.
@@ -139,8 +138,14 @@ async fn run_crawl_task_inner(
     let parsed_url =
         url::Url::parse(&url_str).map_err(|e| CrawlError::Internal(format!("invalid URL: {e}")))?;
 
-    let (response, fetched_cookies) =
-        fetch_page(&ctx, &parsed_url, &url_str, &page_correlation).await?;
+    let outcome = fetch_page(&ctx, &parsed_url, &url_str, &page_correlation).await?;
+    // The post-redirect URL is where the content actually lives. It drives
+    // output keying, deduplication, relative-link resolution, and the recorded
+    // result, so aliases collapse onto one document instead of producing
+    // duplicate content (#651, Bug 3).
+    let final_url = outcome.final_url.clone();
+    let response = outcome.body;
+    let fetched_cookies = outcome.cookies;
 
     ingest_cookies(&ctx, &fetched_cookies);
     report_session_success(&ctx, &url_str, session_id);
@@ -148,17 +153,19 @@ async fn run_crawl_task_inner(
     ctx.pages_crawled
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    capture_content(&ctx, &url_str, &response);
+    capture_content(&ctx, final_url.as_str(), &response);
 
-    if !run_pipeline(&ctx, &url_str, &response).await {
+    if !run_pipeline(&ctx, final_url.as_str(), &response, outcome.status).await {
         return Ok(());
     }
 
-    if let Err(e) = ctx.collector.send_result(discovered_url).await {
+    let mut result_url = discovered_url.clone();
+    result_url.url = final_url.clone();
+    if let Err(e) = ctx.collector.send_result(result_url).await {
         debug!("Failed to send result: {}", e);
     }
 
-    extract_and_queue_links(&ctx, &response, &url_str, url_depth, &parent_url).await;
+    extract_and_queue_links(&ctx, &response, final_url.as_str(), url_depth, &final_url).await;
 
     Ok(())
 }
@@ -192,9 +199,9 @@ async fn fetch_page(
     parsed_url: &Url,
     url_str: &str,
     page_correlation: &CorrelationId,
-) -> Result<(String, Vec<Cookie>), CrawlError> {
+) -> Result<FetchOutcome, CrawlError> {
     match ctx.fetcher.fetch_page(parsed_url, &ctx.config).await {
-        Ok((html, cookies)) => Ok((html, cookies)),
+        Ok(outcome) => Ok(outcome),
         Err(e) => {
             if let Some(waf_msg) = waf_challenge_message(&e) {
                 ban_waf_domain(ctx, parsed_url, &waf_msg);
@@ -279,7 +286,7 @@ fn capture_content(ctx: &CrawlTaskCtx, url_str: &str, response: &str) {
 /// Run the content pipeline if configured. Returns `true` when processing
 /// should continue (no pipeline, or `Continue`); `false` when the item was
 /// skipped or rejected (the caller should stop processing this page).
-async fn run_pipeline(ctx: &CrawlTaskCtx, url_str: &str, response: &str) -> bool {
+async fn run_pipeline(ctx: &CrawlTaskCtx, url_str: &str, response: &str, status_code: u16) -> bool {
     let Some(ref pipeline) = ctx.pipeline else {
         return true;
     };
@@ -288,7 +295,7 @@ async fn run_pipeline(ctx: &CrawlTaskCtx, url_str: &str, response: &str) -> bool
         raw_html: response.to_string(),
         text_content: None,
         metadata: std::collections::HashMap::new(),
-        status_code: 200,
+        status_code,
         embeddings: None,
     };
     match pipeline.execute_pipeline(item).await {
@@ -380,7 +387,8 @@ mod tests {
 
     use super::*;
     use crate::application::crawler::ports::{
-        ContentPipeline, CrawlResultCollector, LinkExtractorPort, PageFetcher, RobotsChecker,
+        ContentPipeline, CrawlResultCollector, FetchOutcome, LinkExtractorPort, PageFetcher,
+        RobotsChecker,
     };
     use crate::application::pipeline::stages::output::OutputError;
     use crate::application::pipeline::OutputStage;
@@ -402,6 +410,7 @@ mod tests {
 
     struct MockPageFetcher {
         behavior: FetchBehavior,
+        final_url: Option<Url>,
     }
 
     impl PageFetcher for MockPageFetcher {
@@ -409,11 +418,15 @@ mod tests {
             &'a self,
             _url: &'a Url,
             _config: &'a crate::domain::CrawlerConfig,
-        ) -> Pin<Box<dyn Future<Output = Result<(String, Vec<Cookie>), CrawlError>> + Send + 'a>>
-        {
+        ) -> Pin<Box<dyn Future<Output = Result<FetchOutcome, CrawlError>> + Send + 'a>> {
             Box::pin(async move {
                 match &self.behavior {
-                    FetchBehavior::Success(html, cookies) => Ok((html.clone(), cookies.clone())),
+                    FetchBehavior::Success(html, cookies) => Ok(FetchOutcome {
+                        body: html.clone(),
+                        final_url: self.final_url.clone().unwrap_or_else(|| _url.clone()),
+                        cookies: cookies.clone(),
+                        status: 200,
+                    }),
                     FetchBehavior::WafError(msg) => Err(CrawlError::WafChallenge {
                         provider: msg.clone(),
                         kind: crate::domain::error::WafDetectionKind::BodySignature,
@@ -571,6 +584,7 @@ mod tests {
                         "<html><body>hello</body></html>".to_string(),
                         Vec::new(),
                     ),
+                    final_url: None,
                 }),
                 robots: Arc::new(MockRobotsChecker {
                     allowed: true,
@@ -709,6 +723,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_redirect_propagates_final_url_to_collector() {
+        // Bug 3 (#651): a redirect /redirect/5 -> /final must be recorded under
+        // /final, not the requested /redirect/5, or aliases collapse into
+        // duplicate content.
+        let (collector, sent) = mock_collector();
+        let ctx = TestCtxBuilder::new(collector)
+            .fetcher(Arc::new(MockPageFetcher {
+                behavior: FetchBehavior::Success("<html></html>".to_string(), Vec::new()),
+                final_url: Some(Url::parse("https://example.com/final").expect("valid URL")),
+            }))
+            .build();
+        let url = test_url("https://example.com/redirect/5", 0);
+
+        let result = run_crawl_task(ctx, url).await;
+        assert!(result.is_ok());
+        let sent = sent.lock().expect("lock not poisoned");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].url.as_str(), "https://example.com/final");
+    }
+
+    #[tokio::test]
     async fn test_fetch_success_increments_pages_crawled() {
         let (collector, _) = mock_collector();
         let ctx = TestCtxBuilder::new(collector).build();
@@ -728,6 +763,7 @@ mod tests {
         let ctx = TestCtxBuilder::new(collector)
             .fetcher(Arc::new(MockPageFetcher {
                 behavior: FetchBehavior::WafError("Cloudflare".to_string()),
+                final_url: None,
             }))
             .build();
         let banned = Arc::clone(&ctx.banned_domains);
@@ -745,6 +781,7 @@ mod tests {
         let ctx = TestCtxBuilder::new(collector)
             .fetcher(Arc::new(MockPageFetcher {
                 behavior: FetchBehavior::WafError("Cloudflare".to_string()),
+                final_url: None,
             }))
             .build();
 
@@ -758,6 +795,7 @@ mod tests {
         let ctx = TestCtxBuilder::new(collector)
             .fetcher(Arc::new(MockPageFetcher {
                 behavior: FetchBehavior::NetworkError("connection refused".to_string()),
+                final_url: None,
             }))
             .build();
         let banned = Arc::clone(&ctx.banned_domains);
@@ -1069,6 +1107,7 @@ mod tests {
         let ctx = TestCtxBuilder::new(collector)
             .fetcher(Arc::new(MockPageFetcher {
                 behavior: FetchBehavior::Success("<html></html>".to_string(), vec![cookie]),
+                final_url: None,
             }))
             .build();
         let bridge = Arc::clone(&ctx.cookie_bridge);
@@ -1086,6 +1125,7 @@ mod tests {
         let ctx = TestCtxBuilder::new(collector)
             .fetcher(Arc::new(MockPageFetcher {
                 behavior: FetchBehavior::Success("<html></html>".to_string(), Vec::new()),
+                final_url: None,
             }))
             .build();
         let bridge = Arc::clone(&ctx.cookie_bridge);
