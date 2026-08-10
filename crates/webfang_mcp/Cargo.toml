@@ -24,11 +24,17 @@ webfang_ai = { workspace = true, optional = true }
 # MCP
 rmcp = { workspace = true }
 axum = { workspace = true }
+tower = { workspace = true }
 tower-http = { workspace = true }
 schemars = { workspace = true }
+governor = { workspace = true }
+
+# CLI
+clap = { workspace = true }
 
 # Async
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
@@ -44,6 +50,14 @@ tracing-subscriber = { workspace = true }
 # Utilities
 url = { workspace = true }
 wreq = { workspace = true }
+
+[[bin]]
+name = "webfang-mcp"
+path = "src/bin/mcp_server_http.rs"
+
+[[bin]]
+name = "webfang-mcp-stdio"
+path = "src/bin/mcp_server_stdio.rs"
 
 [dev-dependencies]
 webfang_core = { workspace = true }

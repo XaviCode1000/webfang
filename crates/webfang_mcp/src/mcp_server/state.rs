@@ -7,6 +7,7 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 
 use crate::mcp_server::metrics::{MetricsSnapshot, ScrapeEvent, ScrapeMetrics};
 use webfang_core::adapters::downloader::Downloader;
@@ -69,6 +70,8 @@ pub struct McpState {
     /// Process-lifetime scrape metrics, shared across all per-session clones
     /// (REQ-06). Locked only in short synchronous sections (REQ-07).
     pub metrics: Arc<Mutex<ScrapeMetrics>>,
+    /// Cancellation token for graceful shutdown propagation.
+    pub cancel_token: CancellationToken,
 }
 
 /// Semaphore instances for each tool category.
@@ -104,6 +107,7 @@ impl McpState {
             downloader: None,
             inspector: None,
             metrics: Arc::new(Mutex::new(ScrapeMetrics::default())),
+            cancel_token: CancellationToken::new(),
         }
     }
 
@@ -118,7 +122,16 @@ impl McpState {
             downloader: None,
             inspector: None,
             metrics: Arc::new(Mutex::new(ScrapeMetrics::default())),
+            cancel_token: CancellationToken::new(),
         }
+    }
+
+    /// Trigger graceful shutdown by cancelling the token.
+    ///
+    /// All clones of this state share the same token (via `Arc` interior
+    /// mutability), so a single call propagates to all holders.
+    pub fn shutdown_signal(&self) {
+        self.cancel_token.cancel();
     }
 
     /// Set a shared Downloader for connection pooling across tool calls.

@@ -10,7 +10,8 @@
 //!
 //! All HTTP is wiremock (no real network); all time/randomness is injected.
 //!
-//! Run with: cargo nextest run -p webfang_mcp --features mcp --test scraping_coverage_test
+//! **SSRf Note**: These tests use wiremock on 127.0.0.1 which SSRF blocks.
+//! Run with: `WEBFANG_MCP_DISABLE_SSRF=1 cargo nextest run -p webfang_mcp --features mcp --test scraping_coverage_test`
 
 #![cfg(feature = "mcp")]
 
@@ -24,6 +25,7 @@ use wreq::Client;
 use webfang_core::config::Config;
 use webfang_core::di::Container;
 use webfang_mcp::mcp_server::server::build_mcp_router;
+use webfang_mcp::mcp_server::server::ServerOptions;
 use webfang_mcp::mcp_server::state::McpState;
 
 /// Minimal article HTML that Readability extracts deterministically (mirrors
@@ -47,17 +49,28 @@ const SUFFICIENT_HTML: &str = r#"<!DOCTYPE html>
 </body>
 </html>"#;
 
+/// Initialize SSRF disable flag for tests (idempotent).
+fn init_ssrf_disabled() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+    });
+}
+
 // ============================================================================
 // Harness helpers — local copies (each integration test binary is standalone).
 // ============================================================================
 
 async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
+    // Disable SSRF before building the router
+    init_ssrf_disabled();
+
     let config = Config::default();
     let container = Container::new(config.crawler, config.scraper)
         .await
         .expect("container creation failed");
     let state = McpState::new(container);
-    let app = build_mcp_router(state);
+    let app = build_mcp_router(state, &ServerOptions::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
@@ -339,10 +352,17 @@ async fn test_detect_spa_short_content_with_root_marker() {
 
     let parsed: Value =
         serde_json::from_str(&tool_text(&result)).expect("SPA result must be valid JSON");
-    assert_eq!(
-        parsed.get("url").and_then(|v| v.as_str()),
-        Some(mock.uri().as_str()),
-        "SPA result must report the analyzed URL"
+    let reported_url = parsed.get("url").and_then(|v| v.as_str());
+    assert!(
+        reported_url.is_some(),
+        "SPA result must report a URL, got: {parsed}"
+    );
+    let mock_uri = mock.uri();
+    let url_str = reported_url.unwrap();
+    // Mock URI normalization: wiremock URI may have trailing slash or not
+    assert!(
+        url_str == mock_uri.as_str() || url_str.trim_end_matches('/') == mock_uri.as_str(),
+        "SPA result must report the analyzed URL, expected: {mock_uri}, got: {url_str}"
     );
     assert_eq!(
         parsed.get("has_spa_markers").and_then(|v| v.as_bool()),

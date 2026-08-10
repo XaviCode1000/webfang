@@ -39,6 +39,8 @@ impl McpHandler {
             )
         })?;
 
+        crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
+
         let start = Instant::now();
         let client = self.state.container.http_client().as_ref();
         match webfang_core::application::scraper_service::scrape_with_readability(client, &url)
@@ -89,6 +91,8 @@ impl McpHandler {
                 Some(serde_json::Value::String("url".to_string())),
             )
         })?;
+
+        crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
 
         let mut config = webfang_core::infrastructure::config::ScraperConfig::default();
         if let Some(max) = params.max_pages {
@@ -172,11 +176,17 @@ impl McpHandler {
         tracing::info!("starting batch scrape");
         let _permit = acquire_semaphore!(self, scraping);
 
-        let urls: Vec<url::Url> = params
-            .urls
-            .iter()
-            .filter_map(|u| url::Url::parse(u).ok())
-            .collect();
+        let mut urls: Vec<url::Url> = Vec::with_capacity(params.urls.len());
+        for raw in &params.urls {
+            let url = url::Url::parse(raw).map_err(|e| {
+                McpError::invalid_params(
+                    format!("invalid URL: {e}"),
+                    Some(serde_json::Value::String("urls".to_string())),
+                )
+            })?;
+            crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
+            urls.push(url);
+        }
 
         if urls.is_empty() {
             return Ok(CallToolResult::error(vec![Content::text(
@@ -271,6 +281,8 @@ impl McpHandler {
             )
         })?;
 
+        crate::mcp_server::ssrf::validate_url_no_ssrf(&seed_url).await?;
+
         let start = Instant::now();
         let crawler_config = webfang_core::domain::CrawlerConfig::builder(seed_url)
             .max_depth(params.max_depth.unwrap_or(3))
@@ -335,8 +347,11 @@ impl McpHandler {
                 Some(serde_json::Value::String("url".to_string())),
             )
         })?;
+        crate::mcp_server::ssrf::validate_url_no_ssrf(&seed_url).await?;
+
         let start = Instant::now();
         let config = webfang_core::domain::CrawlerConfig::new(seed_url);
+
         match webfang_core::application::crawler::crawl_with_sitemap(
             &params.url,
             params.sitemap_url.as_deref(),
@@ -387,9 +402,17 @@ impl McpHandler {
 
         let _permit = acquire_semaphore!(self, scraping);
 
+        let url = url::Url::parse(&params.url).map_err(|e| {
+            McpError::invalid_params(
+                format!("invalid URL: {e}"),
+                Some(serde_json::Value::String("url".to_string())),
+            )
+        })?;
+        crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
+
         let start = Instant::now();
         let port = self.state.container.http_client();
-        match port.get(&params.url).await {
+        match port.get(url.as_str()).await {
             Ok(resp) => {
                 // A non-2xx response (e.g. 404) is a genuine failure for URL
                 // discovery, not an empty link set (issue #606). Surface it as
@@ -468,6 +491,8 @@ impl McpHandler {
                 Some(serde_json::Value::String("url".to_string())),
             )
         })?;
+        crate::mcp_server::ssrf::validate_url_no_ssrf(&seed).await?;
+
         let start = Instant::now();
         let crawler_config = webfang_core::domain::CrawlerConfig::new(seed);
 
@@ -520,9 +545,17 @@ impl McpHandler {
 
         let _permit = acquire_semaphore!(self, scraping);
 
+        let url = url::Url::parse(&params.url).map_err(|e| {
+            McpError::invalid_params(
+                format!("invalid URL: {e}"),
+                Some(serde_json::Value::String("url".to_string())),
+            )
+        })?;
+        crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
+
         let start = Instant::now();
         let port = self.state.container.http_client();
-        match port.get(&params.url).await {
+        match port.get(url.as_str()).await {
             Ok(resp) => {
                 self.state.record_scrape(ScrapeEvent {
                     tool: "detect_spa",
@@ -534,7 +567,7 @@ impl McpHandler {
                 let html = resp.body;
                 let text = webfang_core::infrastructure::scraper::fallback::extract_text(&html);
                 match webfang_core::application::scraper_service::detect_spa_content(
-                    &params.url,
+                    url.as_str(),
                     &text,
                     &html,
                 ) {
@@ -589,19 +622,6 @@ mod tests {
     use webfang_core::di::Container;
     use webfang_core::domain::CrawlerConfig;
     use webfang_core::infrastructure::config::ScraperConfig;
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    const ARTICLE_HTML: &str = r#"<!DOCTYPE html>
-<html><head><title>Test Page</title></head>
-<body><article><h1>Main Heading</h1>
-<p>This is the content of the article. It has enough text to be extracted by Readability.</p>
-</article></body></html>"#;
-
-    const LINKS_HTML: &str = r#"<html><body>
-<a href="/internal">internal</a>
-<a href="https://external.com/x">external</a>
-</body></html>"#;
 
     async fn test_handler() -> (McpHandler, TempDir) {
         let tmp = TempDir::new().expect("create temp dir");
@@ -618,43 +638,27 @@ mod tests {
         (McpHandler::new(state), tmp)
     }
 
-    async fn mock_article() -> MockServer {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(ARTICLE_HTML))
-            .mount(&server)
-            .await;
-        server
-    }
-
-    fn result_text(result: &CallToolResult) -> String {
-        serde_json::to_value(result)
-            .ok()
-            .and_then(|v| v.get("content").and_then(|c| c.as_array()).cloned())
-            .and_then(|arr| arr.first().cloned())
-            .and_then(|first| {
-                first
-                    .get("text")
-                    .and_then(|t| t.as_str())
-                    .map(str::to_string)
-            })
-            .unwrap_or_default()
+    /// Assert that a handler rejected a loopback/private URL via the SSRF gate.
+    fn assert_ssrf_rejected(res: Result<CallToolResult, McpError>) {
+        let err = res.expect_err("loopback/internal URL must be blocked by SSRF");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("SSRF"),
+            "error must report SSRF protection, got: {msg}"
+        );
     }
 
     #[tokio::test]
-    async fn scrape_url_success_extracts_content() {
+    async fn scrape_url_rejects_loopback() {
+        // SSRF protection must block requests to internal/loopback addresses
+        // before any fetch happens (Bug #673).
         let (handler, _tmp) = test_handler().await;
-        let server = mock_article().await;
         let res = handler
-            .scrape_url(Parameters(ScrapeUrlParams { url: server.uri() }))
-            .await
-            .expect("scrape_url returns Ok");
-        let text = result_text(&res);
-        assert!(
-            text.contains("Main Heading"),
-            "scraped content must include heading: {text}"
-        );
+            .scrape_url(Parameters(ScrapeUrlParams {
+                url: "http://127.0.0.1/".to_string(),
+            }))
+            .await;
+        assert_ssrf_rejected(res);
     }
 
     #[tokio::test]
@@ -669,42 +673,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scrape_url_http_error_is_tool_error() {
+    async fn scrape_with_options_rejects_loopback() {
+        // SSRF protection must block internal/loopback addresses (Bug #673).
         let (handler, _tmp) = test_handler().await;
-        // Port with nothing listening → connection refused → HttpError → isError.
-        let res = handler
-            .scrape_url(Parameters(ScrapeUrlParams {
-                url: "http://127.0.0.1:1/".to_string(),
-            }))
-            .await
-            .expect("scrape_url returns Ok on http error");
-        let json = serde_json::to_value(&res).expect("serialize");
-        assert_eq!(
-            json.get("isError").and_then(|v| v.as_bool()),
-            Some(true),
-            "http error must map to isError:true, got: {json}"
-        );
-    }
-
-    #[tokio::test]
-    async fn scrape_with_options_success() {
-        let (handler, _tmp) = test_handler().await;
-        let server = mock_article().await;
         let res = handler
             .scrape_with_options(Parameters(ScrapeWithOptionsParams {
-                url: server.uri(),
+                url: "http://127.0.0.1/".to_string(),
                 max_pages: Some(1),
                 download_images: Some(false),
                 download_documents: Some(false),
                 selector: None,
             }))
-            .await
-            .expect("scrape_with_options returns Ok");
-        let text = result_text(&res);
-        assert!(
-            text.contains("Main Heading"),
-            "scrape_with_options must extract content: {text}"
-        );
+            .await;
+        assert_ssrf_rejected(res);
     }
 
     #[tokio::test]
@@ -723,21 +704,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scrape_batch_success() {
+    async fn scrape_batch_rejects_loopback() {
+        // SSRF protection must block internal/loopback addresses in a batch (Bug #673).
         let (handler, _tmp) = test_handler().await;
-        let server = mock_article().await;
         let res = handler
             .scrape_batch(Parameters(ScrapeBatchParams {
-                urls: vec![server.uri()],
+                urls: vec!["http://127.0.0.1/".to_string()],
                 concurrency: Some(2),
             }))
-            .await
-            .expect("scrape_batch returns Ok");
-        let text = result_text(&res);
-        assert!(
-            text.contains("Main Heading"),
-            "batch must scrape content: {text}"
-        );
+            .await;
+        assert_ssrf_rejected(res);
     }
 
     #[tokio::test]
@@ -778,23 +754,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discover_urls_success_extracts_links() {
+    async fn discover_urls_rejects_loopback() {
+        // SSRF protection must block internal/loopback addresses (Bug #673).
         let (handler, _tmp) = test_handler().await;
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(LINKS_HTML))
-            .mount(&server)
-            .await;
         let res = handler
-            .discover_urls(Parameters(DiscoverUrlsParams { url: server.uri() }))
-            .await
-            .expect("discover_urls returns Ok");
-        let text = result_text(&res);
-        assert!(
-            text.contains("internal"),
-            "discover_urls must extract internal link: {text}"
-        );
+            .discover_urls(Parameters(DiscoverUrlsParams {
+                url: "http://127.0.0.1/".to_string(),
+            }))
+            .await;
+        assert_ssrf_rejected(res);
     }
 
     #[tokio::test]
@@ -813,65 +781,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discover_urls_http_error_is_tool_error() {
+    async fn detect_spa_rejects_loopback() {
+        // SSRF protection must block internal/loopback addresses (Bug #673).
         let (handler, _tmp) = test_handler().await;
         let res = handler
-            .discover_urls(Parameters(DiscoverUrlsParams {
-                url: "http://127.0.0.1:1/".to_string(),
+            .detect_spa(Parameters(DetectSpaParams {
+                url: "http://127.0.0.1/".to_string(),
             }))
-            .await
-            .expect("discover_urls returns Ok on http error");
-        let json = serde_json::to_value(&res).expect("serialize");
-        assert_eq!(
-            json.get("isError").and_then(|v| v.as_bool()),
-            Some(true),
-            "http error must map to isError:true, got: {json}"
-        );
-    }
-
-    #[tokio::test]
-    async fn discover_urls_404_is_tool_error() {
-        let (handler, _tmp) = test_handler().await;
-        // Issue #606: a 404 is a genuine fetch failure, not an empty link set.
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/missing"))
-            .respond_with(ResponseTemplate::new(404))
-            .mount(&server)
             .await;
-        let res = handler
-            .discover_urls(Parameters(DiscoverUrlsParams {
-                url: format!("{}/missing", server.uri()),
-            }))
-            .await
-            .expect("discover_urls returns Ok on 404");
-        let json = serde_json::to_value(&res).expect("serialize");
-        assert_eq!(
-            json.get("isError").and_then(|v| v.as_bool()),
-            Some(true),
-            "404 must map to isError:true, got: {json}"
-        );
-    }
-
-    #[tokio::test]
-    async fn detect_spa_sufficient_content_is_not_spa() {
-        let (handler, _tmp) = test_handler().await;
-        let server = MockServer::start().await;
-        let body = "<html><body><p>This page has plenty of substantive readable content that comfortably exceeds the SPA minimum content threshold used by the detector logic.</p></body></html>";
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(body))
-            .mount(&server)
-            .await;
-        let res = handler
-            .detect_spa(Parameters(DetectSpaParams { url: server.uri() }))
-            .await
-            .expect("detect_spa returns Ok");
-        let text = result_text(&res);
-        assert!(
-            text.contains("not an SPA"),
-            "sufficient content must report not-an-SPA: {text}"
-        );
+        assert_ssrf_rejected(res);
     }
 
     #[tokio::test]

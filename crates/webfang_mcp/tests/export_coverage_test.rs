@@ -21,6 +21,7 @@ use webfang_core::di::Container;
 use webfang_core::domain::{CrawlerConfig, ScrapedContent, ValidUrl};
 use webfang_core::infrastructure::config::ScraperConfig;
 use webfang_mcp::mcp_server::server::build_mcp_router;
+use webfang_mcp::mcp_server::server::ServerOptions;
 use webfang_mcp::mcp_server::state::McpState;
 
 // ============================================================================
@@ -71,7 +72,7 @@ async fn start_seeded_server(n: usize) -> (String, tokio::task::JoinHandle<()>, 
     }
 
     let state = McpState::new(container);
-    let app = build_mcp_router(state);
+    let app = build_mcp_router(state, &ServerOptions::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
