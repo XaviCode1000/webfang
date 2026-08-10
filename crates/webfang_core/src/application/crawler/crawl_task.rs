@@ -737,9 +737,17 @@ mod tests {
         let url = test_url("https://example.com/redirect/5", 0);
 
         let result = run_crawl_task(ctx, url).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "redirect crawl should succeed, got: {:?}",
+            result.err()
+        );
         let sent = sent.lock().expect("lock not poisoned");
-        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            sent.len(),
+            1,
+            "exactly one result must reach the collector after a redirect"
+        );
         assert_eq!(sent[0].url.as_str(), "https://example.com/final");
     }
 
