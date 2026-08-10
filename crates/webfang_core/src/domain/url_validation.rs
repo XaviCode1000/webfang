@@ -2,6 +2,7 @@
 
 use crate::error::ScraperError;
 use crate::Result;
+pub use url_normalize::RemoveQueryParameters;
 
 /// Validate and parse a URL string using the `url` crate (RFC 3986 compliant).
 ///
@@ -263,39 +264,67 @@ pub fn is_internal_link(url: &str, seed_domain: &str) -> bool {
 ///
 /// # Arguments
 ///
+/// Configuration for [`normalize_url`].
+///
+/// The URL rewriter must PRESERVE query strings on the URL that is actually
+/// fetched (the query is part of the resource identity — e.g. paginated
+/// `/list?page=N`), while the canonical (query-stripped) form is only used as a
+/// dedup key. `NormalizeConfig` makes that intent injectable instead of
+/// hard-coding `RemoveQueryParameters::All` for every call site.
+///
+/// * `strip_www` — if `true`, removes the `www.` prefix.
+/// * `query_policy` — controls query-parameter removal. Use `All` for a dedup
+///   key, `None` to preserve the query for fetching (issue #651).
+pub struct NormalizeConfig {
+    /// If `true`, removes the `www.` prefix (e.g. `www.example.com` → `example.com`).
+    pub strip_www: bool,
+    /// Query-parameter removal policy. `All` produces a canonical dedup key;
+    /// `None` preserves the query string for fetching.
+    pub query_policy: RemoveQueryParameters,
+}
+
+/// Normalize a URL to a canonical form.
+///
+/// # Arguments
+///
 /// * `url` - URL to normalize
-/// * `strip_www` - If `true`, removes `www.` prefix (e.g. `www.example.com` → `example.com`)
+/// * `config` - [`NormalizeConfig`] controlling `www` stripping and query handling
 ///
 /// # Examples
 ///
 /// ```
-/// use webfang_core::domain::url_validation::normalize_url;
+/// use webfang_core::domain::url_validation::{normalize_url, NormalizeConfig};
+/// use url_normalize::RemoveQueryParameters;
+///
+/// let dedup = NormalizeConfig { strip_www: true, query_policy: RemoveQueryParameters::All };
+/// assert_eq!(
+///     normalize_url("https://example.com/page#section", &dedup),
+///     "https://example.com/page"
+/// );
+/// assert_eq!(
+///     normalize_url("https://www.example.com/page", &dedup),
+///     "https://example.com/page"
+/// );
+///
+/// let keep_query = NormalizeConfig { strip_www: true, query_policy: RemoveQueryParameters::None };
+/// assert_eq!(
+///     normalize_url("https://example.com/collection?page=1", &keep_query),
+///     "https://example.com/collection?page=1"
+/// );
 ///
 /// assert_eq!(
-///     normalize_url("https://example.com/page#section", true),
+///     normalize_url("https://example.com:443/page", &dedup),
 ///     "https://example.com/page"
 /// );
 /// assert_eq!(
-///     normalize_url("https://www.example.com/page", true),
-///     "https://example.com/page"
-/// );
-/// assert_eq!(
-///     normalize_url("https://www.example.com/page", false),
-///     "https://www.example.com/page"
-/// );
-/// assert_eq!(
-///     normalize_url("https://example.com:443/page", true),
-///     "https://example.com/page"
-/// );
-/// assert_eq!(
-///     normalize_url("https://example.com/index.html", true),
+///     normalize_url("https://example.com/index.html", &dedup),
 ///     "https://example.com"
 /// );
 /// ```
 #[inline]
 #[must_use]
-pub fn normalize_url(url: &str, strip_www: bool) -> String {
-    use url_normalize::{normalize_url as normalize, Options, RemoveQueryParameters};
+pub fn normalize_url(url: &str, config: &NormalizeConfig) -> String {
+    use url_normalize::{normalize_url as normalize, Options};
 
     // Non-URLs (no scheme) should not be normalized — return as-is.
     // This prevents "not-a-valid-url" → "http://not-a-valid-url" conversion.
@@ -303,12 +332,22 @@ pub fn normalize_url(url: &str, strip_www: bool) -> String {
         return url.to_string();
     }
 
+    // RemoveQueryParameters is neither Copy nor Clone (the `List` variant owns a
+    // Box<dyn Fn>), so an owned copy must be reconstructed from the borrowed
+    // config. None/All round-trip exactly; `List` is never used by any caller,
+    // so it falls back to All for the URL-rewriter path.
+    let query_policy = match config.query_policy {
+        RemoveQueryParameters::None => RemoveQueryParameters::None,
+        RemoveQueryParameters::All => RemoveQueryParameters::All,
+        RemoveQueryParameters::List(_) => RemoveQueryParameters::All,
+    };
+
     let opts = Options {
         strip_hash: true,
         remove_trailing_slash: false,
-        remove_query_parameters: RemoveQueryParameters::All,
+        remove_query_parameters: query_policy,
         sort_query_parameters: true,
-        strip_www,
+        strip_www: config.strip_www,
         force_https: false,
         ..Options::default()
     };
@@ -570,7 +609,11 @@ mod tests {
     /// without double-encoding (issue #590).
     #[test]
     fn normalize_url_non_url_returned_as_is() {
-        let result = normalize_url("not-a-url", false);
+        let config = NormalizeConfig {
+            strip_www: false,
+            query_policy: RemoveQueryParameters::All,
+        };
+        let result = normalize_url("not-a-url", &config);
         assert_eq!(result, "not-a-url", "non-URL must be returned unchanged");
     }
 
@@ -579,8 +622,12 @@ mod tests {
         // A Unicode URL should be handled without panicking. The exact
         // encoding depends on the url-normalize crate, but the result must
         // be a valid non-empty string (issue #590, bug #5).
+        let config = NormalizeConfig {
+            strip_www: false,
+            query_policy: RemoveQueryParameters::All,
+        };
         let input = "https://example.com/página";
-        let result = normalize_url(input, false);
+        let result = normalize_url(input, &config);
         assert!(!result.is_empty(), "result must not be empty");
         assert!(
             result.starts_with("https://example.com"),
@@ -595,6 +642,46 @@ mod tests {
             "https://gnu.org/page",
             "https://www.gnu.org/"
         ));
+    }
+
+    // ========================================================================
+    // Issue #651 (bug 1): query strings must be preserved for fetching but
+    // stripped for the dedup key. These are the regression tests for the
+    // injectable NormalizeConfig.
+    // ========================================================================
+
+    #[test]
+    fn normalize_url_preserves_query_for_fetch() {
+        // query_policy: None keeps the query string so the fetcher requests the
+        // real paginated resource, not a collapsed /list.
+        let config = NormalizeConfig {
+            strip_www: true,
+            query_policy: RemoveQueryParameters::None,
+        };
+        let result = normalize_url("https://example.com/list?page=1&sort=asc", &config);
+        assert!(
+            result.contains("page=1"),
+            "query must be preserved: {result}"
+        );
+        assert!(
+            result.contains("sort=asc"),
+            "query must be preserved: {result}"
+        );
+    }
+
+    #[test]
+    fn normalize_url_strips_query_for_dedup() {
+        // query_policy: All produces the canonical dedup key that collapses
+        // query variants (the same document under /list?page=1 and /list?page=2).
+        let config = NormalizeConfig {
+            strip_www: true,
+            query_policy: RemoveQueryParameters::All,
+        };
+        let result = normalize_url("https://example.com/list?page=1&sort=asc", &config);
+        assert!(
+            !result.contains("page"),
+            "dedup key must strip the query: {result}"
+        );
     }
 
     // ========================================================================

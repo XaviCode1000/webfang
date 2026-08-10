@@ -11,6 +11,7 @@ use url::Url;
 
 use crate::application::url_filter::is_allowed;
 use crate::domain::http_config::HttpClientConfig;
+use crate::domain::url_validation::{NormalizeConfig, RemoveQueryParameters};
 use crate::domain::{CorrelationId, CrawlerConfig, ScrapedContent, ValidUrl};
 use crate::error::{Result as ScraperResult, ScraperError};
 use crate::infrastructure::crawler::binary_utils::derive_filename_from_response;
@@ -147,13 +148,22 @@ pub async fn discover_urls_for_tui(
         // Filter and normalize URLs
         let mut urls = Vec::new();
         for link in links {
-            let normalized = normalize_url(&link, true);
-            if let Ok(parsed_url) = Url::parse(&normalized) {
+            // Canonical (query-stripped) form for the dedup-style internal/allowed
+            // checks, but parse and push the ORIGINAL link so the fetched URL
+            // keeps its query string (#651).
+            let canonical = normalize_url(
+                &link,
+                &NormalizeConfig {
+                    strip_www: true,
+                    query_policy: RemoveQueryParameters::All,
+                },
+            );
+            if let Ok(parsed_url) = Url::parse(&link) {
                 // Check if internal link
                 if let Some(seed_domain) = base.host_str() {
-                    if is_internal_link(&normalized, seed_domain) {
+                    if is_internal_link(&canonical, seed_domain) {
                         // Check if allowed by filters
-                        if is_allowed(&normalized, config) {
+                        if is_allowed(&canonical, config) {
                             urls.push(parsed_url);
                         }
                     }

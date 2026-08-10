@@ -1,5 +1,6 @@
 ---
 source: crates/webfang_core/tests/cli_binary_test.rs
+assertion_line: 230
 expression: "redact_nondeterministic(output_dir.path(), &stderr)"
 ---
   <TIMESTAMP>  WARN <MODULE>: Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: request timed out after 1s

@@ -611,3 +611,144 @@ async fn crawl_js_strategy_respects_timeout_secs() {
         "request should have timed out, but command succeeded"
     );
 }
+
+/// Mount a two-level DOM scenario used by the `--max-depth` gating tests:
+/// - `/` links to `/page1` and `/page2`;
+/// - `/page1` links to `/deep`;
+/// - `/page2` and `/deep` return minimal HTML.
+async fn mount_dom_depth_scenario(server: &wiremock::MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "<html><body><a href=\"/page1\">Page 1</a><a href=\"/page2\">Page 2</a></body></html>",
+        ))
+        .mount(server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/page1"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(
+                "<html><body><a href=\"/deep\">Deep</a><h1>Page 1</h1></body></html>",
+            ),
+        )
+        .mount(server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/page2"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("<html><body><article><h1>Page 2</h1></article></body></html>"),
+        )
+        .mount(server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/deep"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("<html><body><article><h1>Deep</h1></article></body></html>"),
+        )
+        .mount(server)
+        .await;
+}
+
+/// Regression for bug #651: with `--max-depth 1` the recursive crawl must NOT
+/// fetch URLs beyond the first hop, so `/deep` (reachable only via `/page1`)
+/// is never requested. This proves `--max-depth` is now honored in the default
+/// (non-sitemap, non-interactive) DOM crawl.
+#[tokio::test]
+async fn max_depth_one_excludes_deeper_links() {
+    let t = BehavioralTest::new().await;
+    mount_dom_depth_scenario(&t.server).await;
+
+    let output = cmd()
+        .arg("--url")
+        .arg(t.server.uri())
+        .arg("--ignore-robots")
+        .arg("--max-depth")
+        .arg("1")
+        .arg("--output")
+        .arg(t.out.path())
+        .arg("--quiet")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "expected success, got: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let requests = t.server.received_requests().await.unwrap();
+    let deep_requests = requests.iter().filter(|r| r.url.path() == "/deep").count();
+    let page1_requests = requests.iter().filter(|r| r.url.path() == "/page1").count();
+    let page2_requests = requests.iter().filter(|r| r.url.path() == "/page2").count();
+
+    assert_eq!(
+        deep_requests, 0,
+        "expected 0 requests to /deep with max-depth 1, got {deep_requests}"
+    );
+    assert!(
+        page1_requests >= 1,
+        "expected /page1 to be crawled, got {page1_requests}"
+    );
+    assert!(
+        page2_requests >= 1,
+        "expected /page2 to be crawled, got {page2_requests}"
+    );
+
+    let md_files = t.find_files("md");
+    // Seed `/`, `/page1`, `/page2` — but NOT `/deep`.
+    assert_eq!(
+        md_files.len(),
+        3,
+        "expected 3 .md files (seed + page1 + page2), got {}",
+        md_files.len()
+    );
+}
+
+/// Control for `max_depth_one_excludes_deeper_links`: with `--max-depth 2` the
+/// same scenario must fetch `/deep`, proving the gate is depth-driven and not a
+/// hard cap on the crawl.
+#[tokio::test]
+async fn max_depth_two_includes_deeper_links() {
+    let t = BehavioralTest::new().await;
+    mount_dom_depth_scenario(&t.server).await;
+
+    let output = cmd()
+        .arg("--url")
+        .arg(t.server.uri())
+        .arg("--ignore-robots")
+        .arg("--max-depth")
+        .arg("2")
+        .arg("--output")
+        .arg(t.out.path())
+        .arg("--quiet")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        output.status.success(),
+        "expected success, got: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let requests = t.server.received_requests().await.unwrap();
+    let deep_requests = requests.iter().filter(|r| r.url.path() == "/deep").count();
+
+    assert!(
+        deep_requests >= 1,
+        "expected >=1 request to /deep with max-depth 2, got {deep_requests}"
+    );
+
+    let md_files = t.find_files("md");
+    // Seed `/`, `/page1`, `/page2`, `/deep`.
+    assert_eq!(
+        md_files.len(),
+        4,
+        "expected 4 .md files (seed + page1 + page2 + deep), got {}",
+        md_files.len()
+    );
+}

@@ -24,7 +24,7 @@
 
 use dashmap::DashSet;
 
-use crate::domain::url_validation::normalize_url;
+use crate::domain::url_validation::{normalize_url, NormalizeConfig, RemoveQueryParameters};
 
 /// Lock-free URL deduplicator.
 ///
@@ -80,7 +80,13 @@ impl UrlDeduplicator {
     /// `https://example.com/page#top` collide on one key.
     #[must_use]
     pub fn try_insert(&self, url: &str) -> bool {
-        let canonical = normalize_url(url, true);
+        let canonical = normalize_url(
+            url,
+            &NormalizeConfig {
+                strip_www: true,
+                query_policy: RemoveQueryParameters::All,
+            },
+        );
         self.seen.insert(self.rs.hash_one(&canonical))
     }
 

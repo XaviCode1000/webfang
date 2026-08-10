@@ -22,10 +22,29 @@ use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl};
 use crate::infrastructure::crawler::{extract_links, fetch_url, RobotsFetcher};
 use crate::infrastructure::downloader::{Cookie, DownloadError, Downloader};
 
+/// Outcome of fetching a single page.
+///
+/// Carries the response body, the final URL after any redirects, the cookies
+/// set by the server, and the HTTP status code. Propagating `final_url`
+/// (rather than the requested URL) lets the crawl key deduplication and output
+/// on the document's true location, avoiding duplicate content under multiple
+/// redirect aliases (#651, Bug 3).
+pub(crate) struct FetchOutcome {
+    /// Raw HTML body of the page.
+    pub body: String,
+    /// Final URL after redirects — where the content actually lives.
+    pub final_url: Url,
+    /// Cookies set by the server during the request.
+    pub cookies: Vec<Cookie>,
+    /// HTTP status code.
+    pub status: u16,
+}
+
 /// Fetches a web page. Unifies the `FetchRouter` and static `fetch_url()` paths.
 ///
-/// Returns `(html, cookies)`. The WAF variant is preserved in the error so
-/// `run_crawl_task` can apply domain-banning logic.
+/// Returns a [`FetchOutcome`] carrying the final post-redirect URL. The WAF
+/// variant is preserved in the error so `run_crawl_task` can apply domain-banning
+/// logic.
 pub(crate) trait PageFetcher: Send + Sync {
     /// Fetch the page at `url` using the given crawl configuration.
     ///
@@ -36,7 +55,7 @@ pub(crate) trait PageFetcher: Send + Sync {
         &'a self,
         url: &'a Url,
         config: &'a CrawlerConfig,
-    ) -> BoxFuture<'a, Result<(String, Vec<Cookie>), CrawlError>>;
+    ) -> BoxFuture<'a, Result<FetchOutcome, CrawlError>>;
 }
 
 /// Checks robots.txt rules for a URL.
@@ -89,16 +108,26 @@ impl PageFetcher for ProductionPageFetcher {
         &'a self,
         url: &'a Url,
         config: &'a CrawlerConfig,
-    ) -> BoxFuture<'a, Result<(String, Vec<Cookie>), CrawlError>> {
+    ) -> BoxFuture<'a, Result<FetchOutcome, CrawlError>> {
         Box::pin(async move {
             if let Some(ref router) = self.router {
                 match router.fetch(url).await {
-                    Ok(page) => Ok((page.html, page.cookies)),
+                    Ok(page) => Ok(FetchOutcome {
+                        body: page.html,
+                        final_url: page.url,
+                        cookies: page.cookies,
+                        status: page.status,
+                    }),
                     Err(e) => Err(e.into()),
                 }
             } else {
                 let html = fetch_url(url.as_str(), config).await?;
-                Ok((html, Vec::new()))
+                Ok(FetchOutcome {
+                    body: html,
+                    final_url: url.clone(),
+                    cookies: Vec::new(),
+                    status: 200,
+                })
             }
         })
     }
@@ -180,5 +209,26 @@ pub(crate) fn waf_challenge_message(err: &CrawlError) -> Option<String> {
                 None
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_fetch_outcome_preserves_final_url() {
+        let requested = Url::parse("https://example.com/redirect/5").expect("valid URL");
+        let final_url = Url::parse("https://example.com/final").expect("valid URL");
+        let outcome = FetchOutcome {
+            body: "<html></html>".to_string(),
+            final_url: final_url.clone(),
+            cookies: Vec::new(),
+            status: 200,
+        };
+        assert_eq!(outcome.final_url, final_url);
+        assert_ne!(outcome.final_url, requested);
+        assert_eq!(outcome.body, "<html></html>");
+        assert_eq!(outcome.status, 200);
     }
 }

@@ -12,9 +12,8 @@ use crate::cli::error::CliExit;
 use crate::cli::export_flow::{run_export, save_files, ExportConfig};
 use crate::cli::parse::parse_asset_naming;
 use crate::cli::scrape_flow::{apply_resume_mode, scrape_urls};
-use crate::cli::url_discovery::discover_urls;
+use crate::cli::url_discovery::{discover_urls, discover_urls_recursive};
 use crate::domain::http_config::HttpClientConfig;
-use crate::error::ScraperError;
 use crate::CrawlerConfig;
 use crate::ScraperConfig;
 
@@ -340,56 +339,33 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
 
         let crawler_config = build_crawler_config_for_discovery(opts, tls_emulation);
 
-        let discovered_urls = match discover_urls(&crawler_config, opts).await {
-            Err(e) => {
-                // Map specific sitemap errors to their standardized exit codes
-                // per issue #656 (Bug 8: Standardized Exit Codes)
-                let exit = match &e {
-                    // HTTP 404/5xx from sitemap fetch → exit 2 (not found, not network error)
-                    ScraperError::Http { status, .. } if *status == 404 || *status >= 500 => {
-                        CliExit::EmptyDiscovery(format!("Sitemap not found (HTTP {status})"))
-                    },
-                    // Sitemap not found (auto-discovery failed) → exit 2
-                    ScraperError::SitemapNotFound(_) => {
-                        CliExit::EmptyDiscovery("No sitemap found at the expected URL".into())
-                    },
-                    // Sitemap empty (valid XML but no URLs) → exit 2
-                    ScraperError::SitemapEmpty => {
-                        CliExit::EmptyDiscovery("No URLs discovered from sitemaps".into())
-                    },
-                    // All child sitemaps in index failed → exit 65 (data format error)
-                    ScraperError::Internal(msg) if msg.contains("all child sitemaps failed") => {
-                        CliExit::DataFormatError(format!("Sitemap index error: {msg}"))
-                    },
-                    // Malformed XML → exit 65 (data format error)
-                    ScraperError::Internal(msg) if msg.contains("parse") || msg.contains("XML") => {
-                        CliExit::DataFormatError(format!("Malformed sitemap XML: {msg}"))
-                    },
-                    // Invalid content type → exit 65 (data format error)
-                    ScraperError::Internal(msg) if msg.contains("invalid content type") => {
-                        CliExit::DataFormatError(format!("Invalid sitemap content type: {msg}"))
-                    },
-                    // Sitemap max depth exceeded → exit 69 (already mapped via CrawlLimit)
-                    ScraperError::CrawlLimit(msg) if msg.contains("sitemap depth") => {
-                        CliExit::NetworkError(format!("Sitemap depth limit exceeded: {msg}"))
-                    },
-                    // Default: network error (exit 69)
-                    _ => CliExit::NetworkError(format!("URL discovery failed: {e}")),
-                };
-                return Err(exit);
-            },
-            // Exit 2 only when the sitemap is the source of truth. In DOM mode an
-            // empty discovery is not fatal: `plan_urls` injects the seed URL so
-            // the site itself is still scraped (#488). The message is always the
-            // sitemap one: this guard no longer fires in DOM mode (#495 made the
-            // message context-aware; the link-extraction branch is now unreachable
-            // here because an empty DOM discovery flows to `plan_urls`).
-            Ok(urls) if urls.is_empty() && opts.crawl.use_sitemap => {
-                return Err(CliExit::EmptyDiscovery(
-                    "No URLs discovered from sitemaps".into(),
-                ));
-            },
-            Ok(urls) => urls,
+        // Sitemap mode is the source of truth (depth-agnostic XML), so keep the
+        // existing single-pass sitemap discovery. DOM mode must run the recursive
+        // crawl Engine so `--max-depth` is honored (bug #651): the legacy
+        // `discover_urls_for_tui` path did one fetch and silently ignored depth.
+        let discovered_urls = if opts.crawl.use_sitemap {
+            match discover_urls(&crawler_config, opts).await {
+                Err(e) => {
+                    return Err(CliExit::NetworkError(format!("URL discovery failed: {e}")));
+                },
+                // Exit 2 only when the sitemap is the source of truth.
+                Ok(urls) if urls.is_empty() => {
+                    return Err(CliExit::EmptyDiscovery(
+                        "No URLs discovered from sitemaps".into(),
+                    ));
+                },
+                Ok(urls) => urls,
+            }
+        } else {
+            // Recursive BFS discovery respects max_depth/max_pages/robots/
+            // patterns; the existing scrape_phase + export_phase still own
+            // content extraction and on-disk output.
+            match discover_urls_recursive(crawler_config, opts).await {
+                Err(e) => {
+                    return Err(CliExit::NetworkError(format!("URL discovery failed: {e}")));
+                },
+                Ok(urls) => urls,
+            }
         };
 
         plan_urls(

@@ -122,9 +122,10 @@ impl UrlPath {
     /// Unlike the old behavior that mapped ALL trailing-slash URLs to `index.md`
     /// (causing collisions), this converts the full path into a unique filename:
     /// - `/` → `index.md`
-    /// - `/blog/post1/` → `blog-post1.md`
-    /// - `/blog/post2/` → `blog-post2.md`
-    /// - `/docs/api/v2/users/` → `docs-api-v2-users.md`
+    /// - `/blog/post1/` → `blog-post1_.md`
+    /// - `/blog/post2/` → `blog-post2_.md`
+    /// - `/docs/api/v2/users/` → `docs-api-v2-users_.md`
+    /// - Trailing-slash URLs get a `_` suffix to avoid colliding with `/blog/post1`
     ///
     /// # Security
     ///
@@ -169,6 +170,16 @@ impl UrlPath {
             sanitized
         };
 
+        // Distinguish trailing-slash URLs from their slash-less counterparts
+        // (e.g. /a/ vs /a) so the writer does not silently overwrite one with
+        // the other. `ends_with_slash` is computed from the original input and
+        // survives the `raw` trimming above, so it reliably flags directory URLs.
+        let final_name = if self.ends_with_slash && !final_name.is_empty() {
+            format!("{final_name}_")
+        } else {
+            final_name
+        };
+
         format!("{final_name}.{extension}")
     }
 
@@ -185,6 +196,7 @@ impl UrlPath {
             // if upstream URL normalization is bypassed.
             let sanitized = dir
                 .split('/')
+                .filter(|component| !component.is_empty())
                 .map(|component| {
                     if component == "." || component == ".." {
                         "_".to_string()
@@ -273,7 +285,7 @@ impl OutputPath {
     /// Full path: ./output/{domain}/{dir}/{filename}
     ///
     /// Always uses unique filename mapping to avoid collisions:
-    /// `/blog/post1/` → `blog-post1.md` (not `index.md`)
+    /// `/blog/post1/` → `blog-post1_.md` (not `index.md`)
     pub fn to_full_path(&self) -> String {
         self.to_full_path_with_format(None)
     }
@@ -372,7 +384,7 @@ mod tests {
     fn test_url_path_nested_trailing_slash_unique() {
         // Trailing-slash URLs now produce unique filenames (no index.md collision)
         let path = UrlPath::from_url_path("/docs/api/");
-        assert_eq!(path.to_safe_filename(), "docs-api.md");
+        assert_eq!(path.to_safe_filename(), "docs-api_.md");
         assert_eq!(path.to_directory(), "docs/");
     }
 
@@ -381,6 +393,27 @@ mod tests {
         let path = UrlPath::from_url_path("/docs/api");
         assert_eq!(path.to_safe_filename(), "docs-api.md");
         assert_eq!(path.to_directory(), "docs/");
+    }
+
+    #[test]
+    fn test_to_safe_filename_distinguishes_trailing_slash() {
+        // /a/ and /a are distinct resources but both would serialize to "a.md"
+        // without the trailing-slash marker, causing silent data loss.
+        let dir = UrlPath::from_url_path("/a/");
+        let file = UrlPath::from_url_path("/a");
+        assert_ne!(dir.to_safe_filename(), file.to_safe_filename());
+        assert_eq!(dir.to_safe_filename(), "a_.md");
+        assert_eq!(file.to_safe_filename(), "a.md");
+
+        let nested_dir = UrlPath::from_url_path("/docs/api/");
+        let nested_file = UrlPath::from_url_path("/docs/api");
+        assert_ne!(
+            nested_dir.to_safe_filename(),
+            nested_file.to_safe_filename()
+        );
+        assert!(nested_dir.to_safe_filename().contains("api_"));
+        assert_eq!(nested_dir.to_safe_filename(), "docs-api_.md");
+        assert_eq!(nested_file.to_safe_filename(), "docs-api.md");
     }
 
     #[test]
@@ -402,9 +435,9 @@ mod tests {
         let path2 = UrlPath::from_url_path("/blog/post2/");
         let path3 = UrlPath::from_url_path("/blog/");
 
-        assert_eq!(path1.to_safe_filename(), "blog-post1.md");
-        assert_eq!(path2.to_safe_filename(), "blog-post2.md");
-        assert_eq!(path3.to_safe_filename(), "blog.md");
+        assert_eq!(path1.to_safe_filename(), "blog-post1_.md");
+        assert_eq!(path2.to_safe_filename(), "blog-post2_.md");
+        assert_eq!(path3.to_safe_filename(), "blog_.md");
 
         // All must be unique
         assert_ne!(path1.to_safe_filename(), path2.to_safe_filename());
@@ -418,7 +451,7 @@ mod tests {
         assert_eq!(output.to_folder_path(), "./output/geminicli.com/docs/");
         assert_eq!(
             output.to_full_path(),
-            "./output/geminicli.com/docs/docs-api.md"
+            "./output/geminicli.com/docs/docs-api_.md"
         );
     }
 
@@ -560,6 +593,48 @@ mod tests {
                 "backslash leaked for {input}: {filename}"
             );
         }
+    }
+
+    #[test]
+    fn test_to_directory_collapses_double_slash() {
+        // A path with duplicate slashes (//double//slash) must not produce empty
+        // directory segments on disk. The directory must be a single-slash path
+        // with no `//` runs, and the resulting filename must contain no slash.
+        let output = OutputPath::from_url("http://example.com//double//slash").unwrap();
+        let dir = output.path().to_directory();
+        assert!(
+            !dir.contains("//"),
+            "directory must not contain empty segments: {dir}"
+        );
+        let full = output.to_full_path();
+        assert!(
+            !full.contains("//"),
+            "full path must not contain empty segments: {full}"
+        );
+        assert_eq!(dir, "double/");
+        assert_eq!(full, "./output/example.com/double/double--slash.md");
+    }
+
+    #[test]
+    fn test_to_directory_collapses_leading_and_trailing_slash_runs() {
+        let output = OutputPath::from_url("http://example.com///a///b///c").unwrap();
+        let dir = output.path().to_directory();
+        assert!(!dir.contains("//"), "directory leaked a slash run: {dir}");
+        assert_eq!(dir, "a/b/");
+        let full = output.to_full_path();
+        assert!(!full.contains("//"), "full path leaked a slash run: {full}");
+    }
+
+    #[test]
+    fn test_trailing_slash_still_distinct_from_file() {
+        // Regression for Bug 5: /a/ and /a must remain distinct resources after
+        // the slash-collapse fix. The trailing-slash marker (`a_.md`) must survive.
+        let dir = UrlPath::from_url_path("/a/");
+        let file = UrlPath::from_url_path("/a");
+        assert_ne!(dir.to_safe_filename(), file.to_safe_filename());
+        assert_eq!(dir.to_safe_filename(), "a_.md");
+        assert_eq!(file.to_safe_filename(), "a.md");
+        assert_eq!(dir.to_directory(), file.to_directory());
     }
 
     #[test]
