@@ -38,7 +38,6 @@ fuzz/coverage/
 openspec/
 sdd/
 specs/
-scripts/
 
 # MiMo Code
 .mimocode/
