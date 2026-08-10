@@ -180,9 +180,25 @@ impl ValidUrl {
     /// assert!(invalid.is_err());
     /// ```
     pub fn parse(s: &str) -> crate::Result<Self> {
-        Ok(Self(url::Url::parse(s).map_err(|e| {
-            crate::ScraperError::invalid_url(e.to_string())
-        })?))
+        let mut parsed =
+            url::Url::parse(s).map_err(|e| crate::ScraperError::invalid_url(e.to_string()))?;
+
+        // Bug #675-2: reject non-HTTP(S) schemes early (fail-fast).
+        // `url::Url::parse` accepts WHATWG-valid schemes like `data:`, `blob:`,
+        // `file:`, `ftp:` — none are fetchable by the crawler.
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(crate::ScraperError::invalid_url(format!(
+                "Scheme '{}' no soportado. Solo http:// y https://",
+                parsed.scheme()
+            )));
+        }
+
+        // Bug #675-5: strip credentials to prevent secret leaks
+        // into logs, frontmatter, and exports.
+        let _ = parsed.set_username("");
+        let _ = parsed.set_password(None);
+
+        Ok(Self(parsed))
     }
 
     /// Get reference to inner url::Url
@@ -281,11 +297,39 @@ mod tests {
     }
 
     #[test]
-    fn test_valid_url_ftp_scheme_accepted() {
-        // url::Url::parse accepts ftp:// — ValidUrl wraps it without scheme filtering.
-        // This test documents current behavior: ftp scheme is NOT rejected.
+    fn test_valid_url_rejects_ftp_scheme() {
         let result = ValidUrl::parse("ftp://example.com/file");
-        assert!(result.is_ok());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("ftp"), "Error should mention the scheme");
+    }
+
+    #[test]
+    fn test_valid_url_rejects_data_scheme() {
+        assert!(ValidUrl::parse("data:text/html,<h1>hi</h1>").is_err());
+        assert!(ValidUrl::parse("blob:https://example.com/uuid").is_err());
+        assert!(ValidUrl::parse("file:///etc/passwd").is_err());
+    }
+
+    #[test]
+    fn test_valid_url_strips_credentials() {
+        let url = ValidUrl::parse("https://user:pass@example.com/path")
+            .expect("should parse valid https URL");
+        assert_eq!(url.as_str(), "https://example.com/path");
+        assert!(url.as_url().username().is_empty());
+        assert!(url.as_url().password().is_none());
+    }
+
+    #[test]
+    fn test_valid_url_accepts_http_https() {
+        assert!(ValidUrl::parse("https://example.com").is_ok());
+        assert!(ValidUrl::parse("http://example.com:8080/path?q=1").is_ok());
+    }
+
+    #[test]
+    fn test_valid_url_no_credentials_unchanged() {
+        let url = ValidUrl::parse("https://example.com/path").expect("plain https should parse");
+        assert_eq!(url.as_str(), "https://example.com/path");
     }
 
     // ========================================================================
