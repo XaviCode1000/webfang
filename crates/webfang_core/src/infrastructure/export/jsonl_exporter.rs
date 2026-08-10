@@ -3,7 +3,7 @@
 //! Exports DocumentChunk to JSON Lines format (one JSON object per line).
 //! Optimized for streaming writes and large datasets.
 //!
-//! ## Metadata Schema (v2.0.0)
+//! ## Metadata Schema (v2.1.0)
 //!
 //! Each JSONL line includes:
 //! - `url`: Source URL
@@ -11,8 +11,14 @@
 //! - `title`: Document title (optional)
 //! - `content`: Extracted text content
 //! - `checksum_sha256`: SHA-256 hash of content for deduplication
-//! - `metadata_version`: Schema version ("2.0.0")
+//! - `metadata_version`: Schema version ("2.1.0")
 //! - `content_length`: Character count for quick filtering
+//! - `word_count`: Word count (optional, from metadata or computed)
+//! - `reading_time`: Estimated reading time in minutes (optional)
+//! - `language`: Detected language (optional)
+//! - `content_type`: Content type classification (optional)
+//! - `scrape_date`: Date of scrape (optional)
+//! - `extra_metadata`: Additional metadata HashMap (optional)
 
 use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
@@ -72,7 +78,7 @@ impl Drop for FileLock {
     }
 }
 
-/// Webfang JSONL metadata schema (v2.0.0)
+/// Webfang JSONL metadata schema (v2.1.0)
 ///
 /// Wraps DocumentChunkValidated with additional fields for
 /// RAG pipeline integration and content deduplication.
@@ -92,6 +98,24 @@ pub struct WebfangMetadata<'a> {
     pub metadata_version: &'static str,
     /// Character count for quick filtering
     pub content_length: usize,
+    /// Word count (from metadata or computed from content)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub word_count: Option<usize>,
+    /// Estimated reading time in minutes (from metadata or computed)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reading_time: Option<usize>,
+    /// Detected language
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// Content type classification
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    /// Date of scrape (ISO 8601)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scrape_date: Option<String>,
+    /// Additional metadata (excerpt, author, etc.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_metadata: Option<std::collections::HashMap<String, String>>,
 }
 
 impl<'a> WebfangMetadata<'a> {
@@ -103,14 +127,45 @@ impl<'a> WebfangMetadata<'a> {
         hasher.update(chunk.content.as_bytes());
         let checksum = format!("{:x}", hasher.finalize());
 
+        let word_count = chunk
+            .metadata
+            .get("word_count")
+            .and_then(|v| v.parse::<usize>().ok())
+            .or_else(|| {
+                let count = chunk.content.split_whitespace().count();
+                if count > 0 { Some(count) } else { None }
+            });
+
+        let reading_time = chunk
+            .metadata
+            .get("reading_time")
+            .and_then(|v| v.parse::<usize>().ok())
+            .or_else(|| word_count.map(|wc| (wc / 200).max(1)));
+
+        let language = chunk.metadata.get("language").cloned();
+        let content_type = chunk.metadata.get("content_type").cloned();
+        let scrape_date = chunk.metadata.get("scrape_date").cloned();
+
+        let extra_metadata = if chunk.metadata.is_empty() {
+            None
+        } else {
+            Some(chunk.metadata.clone())
+        };
+
         Self {
             url: &chunk.url,
             timestamp_utc: chunk.timestamp.to_rfc3339(),
             title: Some(&chunk.title),
             content: &chunk.content,
             checksum_sha256: checksum,
-            metadata_version: "2.0.0",
+            metadata_version: "2.1.0",
             content_length: chunk.content.chars().count(),
+            word_count,
+            reading_time,
+            language,
+            content_type,
+            scrape_date,
+            extra_metadata,
         }
     }
 }
@@ -329,5 +384,96 @@ mod tests {
         let content = fs::read_to_string(&output_path).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn test_webfang_metadata_v210_schema_version() {
+        let chunk = create_test_chunk("Version Test");
+        let metadata = WebfangMetadata::from_chunk(&chunk);
+        assert_eq!(metadata.metadata_version, "2.1.0");
+    }
+
+    #[test]
+    fn test_webfang_metadata_v210_serialization_empty_metadata() {
+        let chunk = create_test_chunk("Empty Meta");
+        let metadata = WebfangMetadata::from_chunk(&chunk);
+        let json = serde_json::to_string(&metadata).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(value["metadata_version"], "2.1.0");
+        // word_count and reading_time are computed from content when not in metadata
+        assert!(value.get("word_count").is_some());
+        assert!(value.get("reading_time").is_some());
+        // These are only present when metadata provides them
+        assert!(value.get("language").is_none());
+        assert!(value.get("content_type").is_none());
+        assert!(value.get("scrape_date").is_none());
+        assert!(value.get("extra_metadata").is_none());
+    }
+
+    #[test]
+    fn test_webfang_metadata_v210_with_rich_metadata() {
+        use crate::domain::Validated;
+        use chrono::Utc;
+        use uuid::Uuid;
+
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("word_count".to_string(), "42".to_string());
+        meta.insert("reading_time".to_string(), "2".to_string());
+        meta.insert("language".to_string(), "es".to_string());
+        meta.insert("content_type".to_string(), "article".to_string());
+        meta.insert("scrape_date".to_string(), "2026-08-10".to_string());
+        meta.insert("author".to_string(), "Jane Doe".to_string());
+        meta.insert("excerpt".to_string(), "A summary".to_string());
+
+        let chunk = crate::domain::DocumentChunkValidated {
+            id: Uuid::new_v4(),
+            url: "https://example.com/rich".to_string(),
+            title: "Rich Metadata".to_string(),
+            content: "This is the main content body.".to_string(),
+            metadata: meta,
+            timestamp: Utc::now(),
+            embeddings: None,
+            correlation_id: None,
+            _state: std::marker::PhantomData::<Validated>,
+        };
+
+        let metadata = WebfangMetadata::from_chunk(&chunk);
+        let json = serde_json::to_string(&metadata).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(value["metadata_version"], "2.1.0");
+        assert_eq!(value["word_count"], 42);
+        assert_eq!(value["reading_time"], 2);
+        assert_eq!(value["language"], "es");
+        assert_eq!(value["content_type"], "article");
+        assert_eq!(value["scrape_date"], "2026-08-10");
+
+        let extra = value["extra_metadata"].as_object().unwrap();
+        assert_eq!(extra["author"], "Jane Doe");
+        assert_eq!(extra["excerpt"], "A summary");
+    }
+
+    #[test]
+    fn test_webfang_metadata_v210_computed_word_count() {
+        use crate::domain::Validated;
+        use chrono::Utc;
+        use uuid::Uuid;
+
+        let chunk = crate::domain::DocumentChunkValidated {
+            id: Uuid::new_v4(),
+            url: "https://example.com/auto".to_string(),
+            title: "Auto Word Count".to_string(),
+            content: "one two three four five".to_string(),
+            metadata: std::collections::HashMap::new(),
+            timestamp: Utc::now(),
+            embeddings: None,
+            correlation_id: None,
+            _state: std::marker::PhantomData::<Validated>,
+        };
+
+        let metadata = WebfangMetadata::from_chunk(&chunk);
+        assert_eq!(metadata.word_count, Some(5));
+        assert_eq!(metadata.reading_time, Some(1));
     }
 }
