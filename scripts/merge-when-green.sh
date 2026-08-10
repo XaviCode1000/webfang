@@ -9,7 +9,9 @@
 #   1. Polls `gh pr checks <N> --watch --required --fail-fast` until all required
 #      checks are SUCCESS or one FAILS/CANCELS.
 #   2. Verifies mergeStateStatus is CLEAN (not BEHIND, BLOCKED, or CONFLICT).
-#   3. Squash-merges with `gh pr merge --squash --delete-branch`.
+#   3. Squash-merges with `gh pr merge --squash`, then deletes the remote head
+#      branch for same-owner PRs. Local branch/worktree cleanup is left to the
+#      post-merge runbook (remove the worktree, then delete the local branch).
 #
 # Exit codes:
 #   0  PR merged.
@@ -21,6 +23,11 @@
 # Notes:
 #   - Respects branch protection: uses `gh pr merge --squash` (NOT --admin, NOT
 #     the synchronous PUT bypass). Required checks must be green before merge.
+#   - Never passes `--delete-branch`: in the worktree flow the head branch is
+#     checked out in a sibling worktree, and Git refuses to delete a branch that
+#     is any worktree's HEAD (linked-worktree invariant). `gh` would return
+#     rc=1 after a successful merge trying to delete the local branch. Remote
+#     cleanup here + local cleanup in the runbook keep exit codes truthful.
 #   - Does NOT auto-rebase if BEHIND. The maintainer should rebase and re-push,
 #     then re-run the script. Single maintainer, ~30s, no automation needed.
 #   - Requires `gh` authenticated with repo scope.
@@ -116,17 +123,52 @@ case "$state" in
 esac
 
 # --- 3. Merge (or report dry-run) -------------------------------------------
+# Resolve head branch + owner up front. The remote head branch is deleted only
+# for same-owner PRs; fork PRs keep their branch on the fork's remote. The local
+# branch is NEVER deleted here (see the worktree note in the header).
+head_branch="$(gh pr view "$pr_number" --json headRefName --jq .headRefName)"
+head_owner="$(gh pr view "$pr_number" --json headRepositoryOwner --jq .headRepositoryOwner.login)"
+base_owner="$(gh repo view --json owner --jq .owner.login)"
+
+delete_remote=0
+if [[ -n "$head_branch" && "$head_owner" == "$base_owner" ]]; then
+  delete_remote=1
+fi
+
 if [[ $dry_run -eq 1 ]]; then
-  echo "==> [DRY RUN] would run: gh pr merge ${pr_number} --squash --delete-branch"
+  echo "==> [DRY RUN] would run: gh pr merge ${pr_number} --squash"
+  if [[ $delete_remote -eq 1 ]]; then
+    echo "==> [DRY RUN] would delete remote branch: ${head_branch}"
+  fi
+  echo "==> [DRY RUN] local branch/worktree cleanup remains in post-merge runbook."
   exit 0
 fi
 
-echo "==> Merging PR #${pr_number} (squash) and deleting branch..."
-if gh pr merge "$pr_number" --squash --delete-branch; then
-  echo "    merged ✓"
-  exit 0
-else
+echo "==> Merging PR #${pr_number} (squash)..."
+if ! gh pr merge "$pr_number" --squash; then
   rc=$?
   echo "error: gh pr merge failed (rc=${rc})" >&2
   exit 4
 fi
+echo "    merged."
+
+if [[ $delete_remote -eq 1 ]]; then
+  echo "==> Deleting remote branch '${head_branch}' (local cleanup: runbook)."
+  if git push origin --delete "refs/heads/${head_branch}"; then
+    echo "    remote branch deleted."
+  else
+    if ! refs="$(git ls-remote origin "refs/heads/${head_branch}")"; then
+      echo "warning: merge succeeded, but remote branch cleanup could not be verified." >&2
+      exit 0
+    fi
+
+    if [[ -n "$refs" ]]; then
+      echo "warning: merge succeeded but remote branch '${head_branch}' still exists." >&2
+      exit 0
+    fi
+
+    echo "    remote branch already absent."
+  fi
+fi
+
+exit 0
