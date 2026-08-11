@@ -49,7 +49,9 @@ use webfang_core::{init_logging_dual, is_no_color, Args, Commands};
 #[cfg(feature = "ui")]
 use webfang_tui::tui::modal::HelpModal;
 #[cfg(feature = "ui")]
-use webfang_tui::tui::{App, AppMode, AppResult, CollapsibleConfig, Header, StatusBar};
+use webfang_tui::tui::{
+    run_selector, App, AppMode, AppResult, CollapsibleConfig, Header, StatusBar,
+};
 
 /// Check if running in CI environment.
 fn is_ci() -> bool {
@@ -130,12 +132,125 @@ async fn run_unified_tui() -> Result<Option<serde_json::Value>, CliExit> {
     };
 
     // =========================================================================
-    // Phase 2: URL Selection (using config values)
+    // Phase 2: Discovery + URL Selection
     // =========================================================================
-    // The URL will be extracted from config and used for discovery.
-    // For now, return the config values. The orchestrator will handle
-    // URL discovery and selection based on the config.
-    Ok(Some(config_values))
+    let selected_urls = run_url_selection_phase(&config_values).await?;
+
+    let mut combined = config_values;
+    combined["selected_urls"] = serde_json::to_value(&selected_urls)
+        .map_err(|e| CliExit::UsageError(format!("Error serializando URLs: {e}")))?;
+    Ok(Some(combined))
+}
+
+/// Run Phase 2: discover URLs from seed and run interactive selector.
+#[cfg(feature = "ui")]
+async fn run_url_selection_phase(
+    config_values: &serde_json::Value,
+) -> Result<Vec<url::Url>, CliExit> {
+    use webfang_core::application::crawler::discovery::discover_urls_for_tui;
+
+    let seed_url_str = config_values
+        .get("url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            tracing::error!("URL base faltante en configuración TUI");
+            CliExit::UsageError("URL base es obligatoria en la TUI".into())
+        })?;
+
+    let seed_url = url::Url::parse(seed_url_str).map_err(|e| {
+        tracing::error!(error = %e, "URL base inválida");
+        CliExit::UsageError(format!("URL base inválida: {e}"))
+    })?;
+
+    let crawler_config = build_crawler_config_from_json(seed_url, config_values);
+
+    tracing::info!(url = %seed_url_str, "Starting TUI discovery phase");
+    let discovered = discover_urls_for_tui(seed_url_str, &crawler_config)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Fallo en descubrimiento de URLs");
+            CliExit::UsageError(format!("Fallo en descubrimiento: {e}"))
+        })?;
+
+    if discovered.is_empty() {
+        tracing::warn!("No URLs discovered");
+        return Err(CliExit::UsageError(
+            "No se encontraron URLs. Revise la URL base o la configuración.".into(),
+        ));
+    }
+
+    let selected = run_selector(&discovered).await.map_err(|e| {
+        tracing::error!(error = %e, "Error en selector de URLs");
+        CliExit::UsageError(format!("Error en selector: {e}"))
+    })?;
+
+    if selected.is_empty() {
+        return Err(CliExit::UsageError(
+            "Selección cancelada por el usuario".into(),
+        ));
+    }
+
+    Ok(selected)
+}
+
+/// Build CrawlerConfig from TUI JSON config (manual bridge — CrawlerConfig has no Deserialize).
+fn build_crawler_config_from_json(
+    seed_url: url::Url,
+    config_values: &serde_json::Value,
+) -> webfang_core::domain::CrawlerConfig {
+    use webfang_core::domain::CrawlerConfig;
+
+    let mut builder = CrawlerConfig::builder(seed_url);
+
+    if let Some(d) = config_values.get("max_depth").and_then(|v| v.as_u64()) {
+        builder = builder.max_depth(d as u8);
+    }
+    if let Some(p) = config_values.get("max_pages").and_then(|v| v.as_u64()) {
+        builder = builder.max_pages(p as usize);
+    }
+    if let Some(c) = config_values.get("concurrency").and_then(|v| v.as_u64()) {
+        builder = builder.concurrency(c as usize);
+    }
+    if let Some(d) = config_values.get("delay_ms").and_then(|v| v.as_u64()) {
+        builder = builder.delay_ms(d);
+    }
+    if let Some(t) = config_values.get("timeout_secs").and_then(|v| v.as_u64()) {
+        builder = builder.timeout_secs(t);
+    }
+    if let Some(ua) = config_values.get("user_agent").and_then(|v| v.as_str()) {
+        builder = builder.user_agent(ua);
+    }
+    if let Some(sm) = config_values.get("use_sitemap").and_then(|v| v.as_bool()) {
+        builder = builder.use_sitemap(sm);
+    }
+    if let Some(sm_url) = config_values.get("sitemap_url").and_then(|v| v.as_str()) {
+        if !sm_url.is_empty() {
+            builder = builder.sitemap_url(sm_url);
+        }
+    }
+    if let Some(ir) = config_values.get("ignore_robots").and_then(|v| v.as_bool()) {
+        builder = builder.ignore_robots(ir);
+    }
+    if let Some(inc) = config_values.get("include").and_then(|v| v.as_array()) {
+        let patterns: Vec<String> = inc
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        if !patterns.is_empty() {
+            builder = builder.include_patterns(patterns);
+        }
+    }
+    if let Some(exc) = config_values.get("exclude").and_then(|v| v.as_array()) {
+        let patterns: Vec<String> = exc
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        if !patterns.is_empty() {
+            builder = builder.exclude_patterns(patterns);
+        }
+    }
+
+    builder.build()
 }
 
 /// Prompt for URL using inquire (interactive mode).
@@ -273,7 +388,7 @@ async fn handle_tui_mode(mut args: Args) -> Result<Args, CliExit> {
         let tui_result = run_unified_tui().await;
         match tui_result {
             Ok(Some(config_values)) => {
-                // Apply TUI config values to args (overrides CLI values)
+                apply_selected_urls(&mut args, &config_values);
                 args = preflight::apply_tui_config_args(args, &config_values);
                 println!("Config applied from TUI.");
             },
@@ -295,6 +410,7 @@ async fn handle_tui_mode(mut args: Args) -> Result<Args, CliExit> {
         let tui_result = run_unified_tui().await;
         match tui_result {
             Ok(Some(config_values)) => {
+                apply_selected_urls(&mut args, &config_values);
                 args = preflight::apply_tui_config_args(args, &config_values);
             },
             Ok(None) => return Err(CliExit::Success),
@@ -304,13 +420,73 @@ async fn handle_tui_mode(mut args: Args) -> Result<Args, CliExit> {
     Ok(args)
 }
 
+/// Apply Phase 2 selected URLs to args (multi-URL → batch file).
+#[cfg(feature = "ui")]
+fn apply_selected_urls(args: &mut Args, config_values: &serde_json::Value) {
+    let Some(selected_urls) = config_values
+        .get("selected_urls")
+        .and_then(|v| v.as_array())
+    else {
+        return;
+    };
+
+    let urls: Vec<String> = selected_urls
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+
+    if urls.is_empty() {
+        return;
+    }
+
+    args.crawler.url = Some(urls[0].clone());
+
+    if urls.len() > 1 {
+        let batch_file =
+            std::env::temp_dir().join(format!("webfang_batch_{}.txt", uuid::Uuid::now_v7()));
+
+        match write_batch_file(&batch_file, &urls) {
+            Ok(()) => {
+                tracing::info!(path = %batch_file.display(), urls = urls.len(), "Batch file created from TUI selection");
+                args.export.batch = true;
+                args.export.batch_file = Some(batch_file);
+            },
+            Err(e) => {
+                let msg = format!("{e:?}");
+                tracing::error!(error = %msg, "Error creando batch temporal desde TUI");
+            },
+        }
+    }
+}
+
+/// Write URLs to a temp batch file (one URL per line).
+#[cfg(feature = "ui")]
+fn write_batch_file(path: &std::path::Path, urls: &[String]) -> Result<(), CliExit> {
+    use std::io::Write;
+
+    let mut file = std::fs::File::create(path)
+        .map_err(|e| CliExit::ConfigError(format!("Error creando archivo batch: {e}")))?;
+
+    for url in urls {
+        writeln!(file, "{url}")
+            .map_err(|e| CliExit::ConfigError(format!("Error escribiendo batch: {e}")))?;
+    }
+
+    Ok(())
+}
+
 /// When `ui` is OFF, any TUI flag triggers a graceful Spanish error (spec S2.2).
 #[cfg(not(feature = "ui"))]
 async fn handle_tui_mode(args: Args) -> Result<Args, CliExit> {
     if args.tui.tui || args.tui.config_tui || args.tui.interactive {
-        eprintln!("TUI no disponible: compilar con --features ui");
+        eprintln!("Error: La interfaz TUI no está disponible en esta compilación.");
+        eprintln!();
+        eprintln!("Para habilitarla, compile con el feature 'ui' del crate CLI");
+        eprintln!("desde la raíz del workspace:");
+        eprintln!("  cargo run -p webfang_cli --features ui -- --tui");
         return Err(CliExit::UsageError(
-            "TUI no disponible: compilar con --features ui".into(),
+            "La TUI no está disponible: recompile con 'cargo run -p webfang_cli --features ui'"
+                .into(),
         ));
     }
     Ok(args)

@@ -6124,6 +6124,7 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+ "uuid",
  "webfang_ai",
  "webfang_core",
  "webfang_tui",
