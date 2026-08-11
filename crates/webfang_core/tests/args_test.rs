@@ -577,6 +577,8 @@ proptest! {
                 download_concurrency: 3,
                 download_assets: false,
                 trace_file: None,
+                headers: vec![],
+                cookies: vec![],
             },
             export: ExportArgs {
                 output: std::path::PathBuf::from("out"),
@@ -684,6 +686,8 @@ proptest! {
                 download_concurrency: 3,
                 download_assets: false,
                 trace_file: None,
+                headers: vec![],
+                cookies: vec![],
             },
             export: ExportArgs {
                 output: std::path::PathBuf::from("out"),
@@ -770,6 +774,8 @@ proptest! {
                 download_concurrency: 3,
                 download_assets: false,
                 trace_file: None,
+                headers: vec![],
+                cookies: vec![],
             },
             export: ExportArgs {
                 output: std::path::PathBuf::from("out"),
@@ -850,6 +856,8 @@ proptest! {
                 download_concurrency: 3,
                 download_assets: false,
                 trace_file: None,
+                headers: vec![],
+                cookies: vec![],
             },
             export: ExportArgs {
                 output: std::path::PathBuf::from(&output),
@@ -934,6 +942,8 @@ proptest! {
                 download_concurrency: 3,
                 download_assets: false,
                 trace_file: None,
+                headers: vec![],
+                cookies: vec![],
             },
             export: ExportArgs {
                 output: std::path::PathBuf::from("out"),
@@ -1010,6 +1020,8 @@ proptest! {
                 download_concurrency: 3,
                 download_assets: false,
                 trace_file: None,
+                headers: vec![],
+                cookies: vec![],
             },
             export: ExportArgs {
                 output: std::path::PathBuf::from("out"),
@@ -1084,6 +1096,8 @@ proptest! {
                 download_concurrency: 3,
                 download_assets: false,
                 trace_file: None,
+                headers: vec![],
+                cookies: vec![],
             },
             export: ExportArgs {
                 output: std::path::PathBuf::from("out"),

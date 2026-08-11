@@ -19,6 +19,35 @@ use thiserror::Error;
 use crate::domain::DomainError;
 use crate::OutputFormat;
 
+/// Maximum safe filename length in bytes. POSIX ext4 limit is 255;
+/// we reserve margin for the file extension and parent directory name.
+const MAX_FILENAME_BODY_BYTES: usize = 180;
+
+/// Truncate `s` to `max_bytes` using a deterministic hash suffix to
+/// prevent collisions between distinct long URLs.
+fn truncate_with_hash(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut hasher);
+    let hash_val = hasher.finish();
+
+    // Reserve 9 bytes: "_" + 8 hex chars = 9 chars
+    let prefix_budget = max_bytes.saturating_sub(9);
+    // Find the last valid UTF-8 char boundary at or below prefix_budget
+    let safe_cut = s
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= prefix_budget)
+        .last()
+        .unwrap_or(0);
+
+    format!("{}_{:08x}", &s[..safe_cut], hash_val & 0xFFFF_FFFF)
+}
+
 /// Windows reserved device names (case-insensitive)
 /// https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file
 ///
@@ -147,7 +176,10 @@ impl UrlPath {
             suffix.push_str(&Self::sanitize_query_part(fragment));
         }
 
-        base.raw.push_str(&suffix);
+        // Truncate suffix to prevent ENAMETOOLONG when a URL carries many
+        // (or very long) query params — see issue #675 Bug 1.
+        let safe_suffix = truncate_with_hash(&suffix, MAX_FILENAME_BODY_BYTES);
+        base.raw.push_str(&safe_suffix);
         base.is_root = false;
         base.ends_with_slash = false;
         Ok(base)
@@ -769,5 +801,70 @@ mod tests {
         let op1 = OutputPath::from_url_with_query("https://example.com/item?id=1").unwrap();
         let op2 = OutputPath::from_url_with_query("https://example.com/item?id=2").unwrap();
         assert_ne!(op1.to_full_path(), op2.to_full_path());
+    }
+
+    // ========================================================================
+    // BUG-001 (issue #675): Filename overflow — ENAMETOOLONG prevention
+    // ========================================================================
+
+    #[test]
+    fn test_truncate_with_hash_short_string_unchanged() {
+        let short = "example_path_segment";
+        assert_eq!(truncate_with_hash(short, 180), short);
+    }
+
+    #[test]
+    fn test_truncate_with_hash_long_string_truncated() {
+        let long = "a".repeat(500);
+        let result = truncate_with_hash(&long, 180);
+        assert!(
+            result.len() <= 180,
+            "result {} bytes, expected <= 180",
+            result.len()
+        );
+        assert!(result.contains('_'), "should contain hash separator");
+    }
+
+    #[test]
+    fn test_truncate_with_hash_deterministic() {
+        let url = "https://example.com/page?a=1&b=2&c=3&d=4&e=5&f=6";
+        let r1 = truncate_with_hash(url, 180);
+        let r2 = truncate_with_hash(url, 180);
+        assert_eq!(r1, r2, "must be deterministic");
+    }
+
+    #[test]
+    fn test_truncate_with_hash_different_urls_different_hashes() {
+        let base = "https://example.com/page?";
+        let url_a = format!("{base}key=aaa");
+        let url_b = format!("{base}key=bbb");
+        let long_a = format!("{}{}", url_a, "&x=1".repeat(50));
+        let long_b = format!("{}{}", url_b, "&x=1".repeat(50));
+        let ta = truncate_with_hash(&long_a, 180);
+        let tb = truncate_with_hash(&long_b, 180);
+        assert_ne!(ta, tb, "distinct URLs must produce distinct filenames");
+    }
+
+    #[test]
+    fn test_url_with_100_query_params_no_overflow() {
+        let mut url = "https://example.com/page?".to_string();
+        for i in 0..100 {
+            url.push_str(&format!("param{i}=value{i}&"));
+        }
+        let result = UrlPath::from_url_with_query(&url);
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        assert!(
+            path.raw.len() <= 255,
+            "filename {} bytes exceeds ext4 limit",
+            path.raw.len()
+        );
+    }
+
+    #[test]
+    fn test_truncate_no_utf8_panic() {
+        let s = "áéíóú".repeat(50); // 2-byte chars
+        let result = truncate_with_hash(&s, 180);
+        assert!(result.len() <= 180);
     }
 }

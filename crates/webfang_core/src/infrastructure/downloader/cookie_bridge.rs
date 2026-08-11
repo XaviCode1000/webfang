@@ -48,6 +48,22 @@ impl CookieBridge {
         self.upsert(cookie);
     }
 
+    /// Seed an initial cookie into the jar before the first request.
+    ///
+    /// Used to inject `--cookie` CLI values so authenticated crawls work
+    /// without a prior login round-trip. The domain is derived from the
+    /// seed URL at request time.
+    pub fn seed(&mut self, name: &str, value: &str, domain: &str) {
+        self.add(Cookie {
+            name: name.to_string(),
+            value: value.to_string(),
+            domain: domain.to_string(),
+            path: "/".to_string(),
+            http_only: true,
+            secure: true,
+        });
+    }
+
     /// Get all stored cookies.
     pub fn cookies(&self) -> &[Cookie] {
         &self.cookies
@@ -274,6 +290,29 @@ mod tests {
     fn test_path_matches_prefix() {
         assert!(path_matches("/admin/settings", "/admin"));
         assert!(!path_matches("/public", "/admin"));
+    }
+
+    #[test]
+    fn test_seed_adds_cookie_to_jar() {
+        let mut bridge = CookieBridge::new();
+        bridge.seed("session", "abc123", "example.com");
+        assert_eq!(bridge.len(), 1);
+
+        let url: Url = "https://example.com/page".parse().unwrap();
+        let matched = bridge.cookies_for_url(&url);
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].name, "session");
+        assert_eq!(matched[0].value, "abc123");
+        assert!(matched[0].http_only);
+        assert!(matched[0].secure);
+    }
+
+    #[test]
+    fn test_seed_multiple_cookies() {
+        let mut bridge = CookieBridge::new();
+        bridge.seed("session", "abc", "example.com");
+        bridge.seed("csrf", "xyz", "example.com");
+        assert_eq!(bridge.len(), 2);
     }
 
     #[test]

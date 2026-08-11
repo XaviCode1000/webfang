@@ -201,6 +201,24 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
                 h2_profile: args.crawler.h2_profile,
                 js_strategy: args.crawler.js_strategy,
                 obscura_binary: args.crawler.obscura_binary,
+                custom_headers: args
+                    .crawler
+                    .headers
+                    .iter()
+                    .filter_map(|h| {
+                        h.split_once(':')
+                            .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+                    })
+                    .collect(),
+                initial_cookies: args
+                    .crawler
+                    .cookies
+                    .iter()
+                    .filter_map(|c| {
+                        c.split_once('=')
+                            .map(|(k, v)| (k.to_string(), v.to_string()))
+                    })
+                    .collect(),
             },
             export: ExportOptions {
                 output_format: args.export.format,
@@ -398,5 +416,117 @@ mod tests {
         let args =
             Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
         assert_eq!(args.export.batch_concurrency, 5);
+    }
+
+    // ========================================================================
+    // #675 — --cookie and --header flags
+    // ========================================================================
+
+    #[test]
+    fn header_flag_parses_single() {
+        clean_env();
+        let args = Args::try_parse_from([
+            "webfang",
+            "-u",
+            "https://example.com",
+            "-H",
+            "Authorization: Bearer TOKEN",
+        ])
+        .expect("valid args");
+        assert_eq!(
+            args.crawler.headers,
+            vec!["Authorization: Bearer TOKEN".to_string()]
+        );
+    }
+
+    #[test]
+    fn header_flag_parses_multiple() {
+        clean_env();
+        let args = Args::try_parse_from([
+            "webfang",
+            "-u",
+            "https://example.com",
+            "-H",
+            "Authorization: Bearer TOKEN",
+            "-H",
+            "X-Custom: value",
+        ])
+        .expect("valid args");
+        assert_eq!(
+            args.crawler.headers,
+            vec![
+                "Authorization: Bearer TOKEN".to_string(),
+                "X-Custom: value".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn cookie_flag_parses_single() {
+        clean_env();
+        let args = Args::try_parse_from([
+            "webfang",
+            "-u",
+            "https://example.com",
+            "--cookie",
+            "session=abc123",
+        ])
+        .expect("valid args");
+        assert_eq!(args.crawler.cookies, vec!["session=abc123".to_string()]);
+    }
+
+    #[test]
+    fn cookie_flag_parses_multiple() {
+        clean_env();
+        let args = Args::try_parse_from([
+            "webfang",
+            "-u",
+            "https://example.com",
+            "--cookie",
+            "session=abc123",
+            "--cookie",
+            "csrf=xyz",
+        ])
+        .expect("valid args");
+        assert_eq!(
+            args.crawler.cookies,
+            vec!["session=abc123".to_string(), "csrf=xyz".to_string()]
+        );
+    }
+
+    #[test]
+    fn headers_propagate_to_crawl_options() {
+        clean_env();
+        let args = Args::try_parse_from([
+            "webfang",
+            "-u",
+            "https://example.com",
+            "-H",
+            "Authorization: Bearer TOKEN",
+        ])
+        .expect("valid args");
+        let opts = crate::application::crawl_options::CrawlOptions::from(args);
+        assert_eq!(
+            opts.network.custom_headers,
+            vec![("Authorization".to_string(), "Bearer TOKEN".to_string())]
+        );
+    }
+
+    #[test]
+    fn cookies_propagate_to_crawl_options() {
+        clean_env();
+        let args = Args::try_parse_from([
+            "webfang",
+            "-u",
+            "https://example.com",
+            "--cookie",
+            "session=abc123",
+        ])
+        .expect("valid args");
+        let opts = crate::application::crawl_options::CrawlOptions::from(args);
+        assert_eq!(
+            opts.network.initial_cookies,
+            vec![("session".to_string(), "abc123".to_string())]
+        );
     }
 }
