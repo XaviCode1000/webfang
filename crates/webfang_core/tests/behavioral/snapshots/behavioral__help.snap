@@ -1,5 +1,6 @@
 ---
-source: crates/webfang_core/../../tests/behavioral/main.rs
+source: crates/webfang_core/tests/behavioral/main.rs
+assertion_line: 58
 expression: value.into()
 ---
 CLI Arguments for the webfang binary.
@@ -192,6 +193,20 @@ Options:
           Custom User-Agent header value (overrides Chrome 145 default)
           
           [env: WEBFANG_USER_AGENT=]
+
+  -H, --header <NAME: VALUE>
+          Inject a custom HTTP header as `Name: Value` (repeatable).
+          
+          Overrides any default header with the same (case-insensitive) name. Example: `-H "Authorization: Bearer TOKEN"`.
+          
+          [env: WEBFANG_HEADER=]
+
+      --cookie <NAME=VALUE>
+          Inject a custom cookie as `name=value` (repeatable).
+          
+          Seeded into the cookie jar before the first request so authenticated crawls work without a prior login round-trip. Example: `--cookie "session=abc123"`.
+          
+          [env: WEBFANG_COOKIE=]
 
       --max-file-size <MAX_FILE_SIZE>
           Maximum file size to download in bytes (default: 50MB)
