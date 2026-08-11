@@ -371,8 +371,6 @@ impl Component for UrlSelectorState {
     }
 
     fn draw(&mut self, f: &mut Frame, rect: Rect) -> Result<()> {
-        // Update visible height so auto-scroll works correctly
-        self.visible_height = rect.height as usize;
         let selector = UrlSelector::new(self);
         selector.render(f, rect);
         Ok(())
