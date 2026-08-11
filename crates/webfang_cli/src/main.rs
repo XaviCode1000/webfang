@@ -148,7 +148,6 @@ async fn run_url_selection_phase(
     config_values: &serde_json::Value,
 ) -> Result<Vec<url::Url>, CliExit> {
     use webfang_core::application::crawler::discovery::discover_urls_for_tui;
-    use webfang_core::domain::CrawlerConfig;
 
     let seed_url_str = config_values
         .get("url")
@@ -162,6 +161,44 @@ async fn run_url_selection_phase(
         tracing::error!(error = %e, "URL base inválida");
         CliExit::UsageError(format!("URL base inválida: {e}"))
     })?;
+
+    let crawler_config = build_crawler_config_from_json(seed_url, config_values);
+
+    tracing::info!(url = %seed_url_str, "Starting TUI discovery phase");
+    let discovered = discover_urls_for_tui(seed_url_str, &crawler_config)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Fallo en descubrimiento de URLs");
+            CliExit::UsageError(format!("Fallo en descubrimiento: {e}"))
+        })?;
+
+    if discovered.is_empty() {
+        tracing::warn!("No URLs discovered");
+        return Err(CliExit::UsageError(
+            "No se encontraron URLs. Revise la URL base o la configuración.".into(),
+        ));
+    }
+
+    let selected = run_selector(&discovered).await.map_err(|e| {
+        tracing::error!(error = %e, "Error en selector de URLs");
+        CliExit::UsageError(format!("Error en selector: {e}"))
+    })?;
+
+    if selected.is_empty() {
+        return Err(CliExit::UsageError(
+            "Selección cancelada por el usuario".into(),
+        ));
+    }
+
+    Ok(selected)
+}
+
+/// Build CrawlerConfig from TUI JSON config (manual bridge — CrawlerConfig has no Deserialize).
+fn build_crawler_config_from_json(
+    seed_url: url::Url,
+    config_values: &serde_json::Value,
+) -> webfang_core::domain::CrawlerConfig {
+    use webfang_core::domain::CrawlerConfig;
 
     let mut builder = CrawlerConfig::builder(seed_url);
 
@@ -213,35 +250,7 @@ async fn run_url_selection_phase(
         }
     }
 
-    let crawler_config = builder.build();
-
-    tracing::info!(url = %seed_url_str, "Starting TUI discovery phase");
-    let discovered = discover_urls_for_tui(seed_url_str, &crawler_config)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "Fallo en descubrimiento de URLs");
-            CliExit::UsageError(format!("Fallo en descubrimiento: {e}"))
-        })?;
-
-    if discovered.is_empty() {
-        tracing::warn!("No URLs discovered");
-        return Err(CliExit::UsageError(
-            "No se encontraron URLs. Revise la URL base o la configuración.".into(),
-        ));
-    }
-
-    let selected = run_selector(&discovered).await.map_err(|e| {
-        tracing::error!(error = %e, "Error en selector de URLs");
-        CliExit::UsageError(format!("Error en selector: {e}"))
-    })?;
-
-    if selected.is_empty() {
-        return Err(CliExit::UsageError(
-            "Selección cancelada por el usuario".into(),
-        ));
-    }
-
-    Ok(selected)
+    builder.build()
 }
 
 /// Prompt for URL using inquire (interactive mode).
