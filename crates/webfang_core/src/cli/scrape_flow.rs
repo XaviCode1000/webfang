@@ -157,7 +157,16 @@ pub async fn scrape_urls(
 > {
     // Build the fetch router from the configured JS strategy.
     let http_config = build_http_client_config(opts)?;
-    let cookie_bridge = std::sync::Arc::new(std::sync::RwLock::new(CookieBridge::new()));
+    let mut cookie_bridge = CookieBridge::new();
+    if let Some(first_url) = urls.first() {
+        let domain = first_url.host_str().unwrap_or("").to_string();
+        if !domain.is_empty() {
+            for (name, value) in &opts.network.initial_cookies {
+                cookie_bridge.seed(name, value, &domain);
+            }
+        }
+    }
+    let cookie_bridge = std::sync::Arc::new(std::sync::RwLock::new(cookie_bridge));
     let router = build_fetch_router(
         &opts.network.js_strategy,
         http_config.timeout_secs,
@@ -370,6 +379,7 @@ fn build_http_client_config(
         timeout_secs: opts.network.timeout_secs,
         tls_emulation: HttpClientConfig::profile_from_name(&opts.network.h2_profile)?,
         ignore_waf: opts.crawl.ignore_waf,
+        custom_headers: opts.network.custom_headers.clone(),
         ..HttpClientConfig::default()
     })
 }

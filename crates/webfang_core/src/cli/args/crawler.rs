@@ -251,6 +251,34 @@ pub struct CrawlerArgs {
     #[clap(next_help_heading = "HTTP Client Settings")]
     pub user_agent: Option<String>,
 
+    /// Inject a custom HTTP header as `Name: Value` (repeatable).
+    ///
+    /// Overrides any default header with the same (case-insensitive) name.
+    /// Example: `-H "Authorization: Bearer TOKEN"`.
+    #[arg(
+        short = 'H',
+        long = "header",
+        value_name = "NAME: VALUE",
+        env = "WEBFANG_HEADER",
+        value_delimiter = ';'
+    )]
+    #[clap(next_help_heading = "HTTP Client Settings")]
+    pub headers: Vec<String>,
+
+    /// Inject a custom cookie as `name=value` (repeatable).
+    ///
+    /// Seeded into the cookie jar before the first request so authenticated
+    /// crawls work without a prior login round-trip.
+    /// Example: `--cookie "session=abc123"`.
+    #[arg(
+        long = "cookie",
+        value_name = "NAME=VALUE",
+        env = "WEBFANG_COOKIE",
+        value_delimiter = ';'
+    )]
+    #[clap(next_help_heading = "HTTP Client Settings")]
+    pub cookies: Vec<String>,
+
     // ========== Download Settings ==========
     /// Maximum file size to download in bytes (default: 50MB)
     #[arg(long, default_value = "52428800", env = "WEBFANG_MAX_FILE_SIZE")]

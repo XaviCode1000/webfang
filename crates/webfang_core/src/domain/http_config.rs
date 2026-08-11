@@ -51,6 +51,11 @@ pub struct HttpClientConfig {
     /// `ignore_waf` set, short-circuiting inspection to a clean verdict so
     /// challenge markers never block a response.
     pub ignore_waf: bool,
+    /// Custom HTTP headers as `(name, value)` pairs, injected into every request
+    /// after the defaults so they override same-named built-in headers.
+    ///
+    /// Populated from `--header`/`WEBFANG_HEADER`.
+    pub custom_headers: Vec<(String, String)>,
 }
 
 impl Default for HttpClientConfig {
@@ -70,6 +75,7 @@ impl Default for HttpClientConfig {
             tls_emulation: wreq_util::Profile::Chrome145,
             user_agent: None,
             ignore_waf: false,
+            custom_headers: Vec::new(),
         }
     }
 }
@@ -135,6 +141,15 @@ mod tests {
     }
 
     #[test]
+    fn test_http_client_config_default_has_empty_custom_headers() {
+        let config = HttpClientConfig::default();
+        assert!(
+            config.custom_headers.is_empty(),
+            "custom_headers must default to empty vec"
+        );
+    }
+
+    #[test]
     fn test_http_client_config_clone() {
         let config = HttpClientConfig::default();
         let cloned = config.clone();
@@ -160,6 +175,7 @@ mod tests {
             tls_emulation: wreq_util::Profile::Chrome131,
             user_agent: Some("custom".into()),
             ignore_waf: true,
+            custom_headers: vec![("X-Custom".into(), "value".into())],
         };
 
         assert_eq!(config.accept_language, "es-ES");
