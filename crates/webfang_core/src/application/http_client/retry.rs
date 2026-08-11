@@ -105,13 +105,19 @@ pub(super) async fn retry_with_backoff(
         );
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
 
-        let request = client
+        let mut request = client
             .get(url)
             .header("Accept-Language", &config.accept_language)
             .header("Accept", &config.accept)
             .header("Referer", &config.referer)
             .header("Cache-Control", &config.cache_control)
             .header("User-Agent", user_agent);
+
+        // Apply custom headers on retries too (Bug #675-4) — without this,
+        // Authorization/X-Api-Key etc. would be lost on 429/5xx retries.
+        for (name, value) in &config.custom_headers {
+            request = request.header(name, value);
+        }
 
         match request.send().await {
             Ok(resp) => {
