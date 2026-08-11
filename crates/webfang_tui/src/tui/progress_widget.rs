@@ -32,8 +32,8 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
-    layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style},
+    layout::{Alignment, Constraint, Layout, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Gauge, Paragraph},
     Frame,
@@ -45,7 +45,7 @@ use super::action::Action;
 use super::component::Component;
 use super::theme::Theme;
 use crate::tui::{ErrorType, ProgressState, ScrapeStatus};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Visual feedback icons for progress indication.
 ///
@@ -65,8 +65,6 @@ pub struct ProgressIcons {
     /// Frame interval (default: 100ms between frames)
     frame_interval: Duration,
 }
-
-type Duration = std::time::Duration;
 
 impl ProgressIcons {
     /// Create new ProgressIcons with default animations.
@@ -539,6 +537,16 @@ impl Component for ProgressWidget {
     }
 
     fn draw(&mut self, f: &mut Frame, rect: Rect) -> Result<()> {
+        if rect.height < 5 || rect.width < 20 {
+            let msg = "Terminal muy pequeña — mínimo 20x5";
+            f.render_widget(
+                Paragraph::new(msg)
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(Color::Yellow)),
+                rect,
+            );
+            return Ok(());
+        }
         self.render(f, rect);
         Ok(())
     }

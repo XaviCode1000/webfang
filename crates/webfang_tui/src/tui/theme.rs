@@ -8,7 +8,7 @@
 //! - Color space conversions via `palette::Srgb`
 //! - Theme generation via `Lighten`/`Darken`/`ShiftHue` traits
 
-use ratatui::palette::{Darken, Lighten, Srgb};
+use ratatui::palette::{Darken, FromColor, Lch, Lighten, Srgb};
 use ratatui::style::Color;
 
 // ============================================================================
@@ -84,134 +84,186 @@ pub enum ThemeMode {
 // ============================================================================
 
 /// Catppuccin Mocha colour tokens for the terminal UI.
-pub struct Theme;
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Theme {
+    /// Primary accent — Blue `#89b4fa`.
+    pub accent: Color,
+    /// Primary text — Text `#cdd6f4`.
+    pub text: Color,
+    /// Subtle text (labels, separators) — Subtext0 `#a6adc8`.
+    pub text_subtle: Color,
+    /// Muted text (status, hints) — Overlay0 `#6c7086`.
+    pub text_muted: Color,
+    /// Warning / attention — Yellow `#f9e2af`.
+    pub warning: Color,
+    /// Surface / border colour — Surface1 `#45475a`.
+    pub surface: Color,
+    /// Success / completed — Green `#a6e3a1`.
+    pub success: Color,
+    /// Error / failure — Red `#f38ba8`.
+    pub error: Color,
+    /// Background / base colour — Base `#1e1e2e`.
+    pub background: Color,
+    /// Processing / active state — Sky `#89dceb`.
+    pub processing: Color,
+    /// Highlight / cursor — Lavender `#b4befe`.
+    pub highlight: Color,
+    /// Parse error / warning — Peach `#fab387`.
+    pub parse_error: Color,
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self::new_dark()
+    }
+}
 
 impl Theme {
+    /// Create the default dark theme (Catppuccin Mocha).
+    pub fn new_dark() -> Self {
+        Self {
+            accent: Color::Rgb(0x89, 0xb4, 0xfa),
+            text: Color::Rgb(0xcd, 0xd6, 0xf4),
+            text_subtle: Color::Rgb(0xa6, 0xad, 0xc8),
+            text_muted: Color::Rgb(0x6c, 0x70, 0x86),
+            warning: Color::Rgb(0xf9, 0xe2, 0xaf),
+            surface: Color::Rgb(0x45, 0x47, 0x5a),
+            success: Color::Rgb(0xa6, 0xe3, 0xa1),
+            error: Color::Rgb(0xf3, 0x8b, 0xa8),
+            background: Color::Rgb(0x1e, 0x1e, 0x2e),
+            processing: Color::Rgb(0x89, 0xdc, 0xeb),
+            highlight: Color::Rgb(0xb4, 0xbe, 0xfe),
+            parse_error: Color::Rgb(0xfa, 0xb3, 0x87),
+        }
+    }
+
+    /// Lighten a color in perceptual (LCh) space by `amount` (-1.0..1.0).
+    ///
+    /// Positive `amount` brightens toward white, negative darkens toward black.
+    /// Operates in LCh space for perceptually uniform results.
+    fn lighten_perceptual(color: Color, amount: f32) -> Color {
+        let Some(rgb) = color_to_srgb(color) else {
+            return color;
+        };
+        let mut lch: Lch = Lch::from_color(rgb.into_linear());
+        lch.l = (lch.l + amount * 100.0).clamp(0.0, 100.0);
+        let res_rgb: Srgb<f32> = Srgb::from_color(lch);
+        let (r, g, b) = res_rgb.into_components();
+        Color::Rgb(
+            (r * 255.0).round() as u8,
+            (g * 255.0).round() as u8,
+            (b * 255.0).round() as u8,
+        )
+    }
+
+    /// Generate a theme variant based on mode.
+    pub fn adaptive(mode: ThemeMode) -> Self {
+        match mode {
+            ThemeMode::Dark => Self::new_dark(),
+            ThemeMode::Light => Self::new_light(),
+            ThemeMode::HighContrast => Self::new_high_contrast(),
+        }
+    }
+
+    /// Create a light theme by perceptually brightening dark theme colors.
+    fn new_light() -> Self {
+        let d = Self::new_dark();
+        Self {
+            background: Self::lighten_perceptual(d.background, 0.45),
+            surface: Self::lighten_perceptual(d.surface, 0.30),
+            text: Self::lighten_perceptual(d.text, -0.15),
+            text_subtle: Self::lighten_perceptual(d.text_subtle, -0.10),
+            text_muted: Self::lighten_perceptual(d.text_muted, -0.05),
+            accent: Self::lighten_perceptual(d.accent, -0.05),
+            warning: Self::lighten_perceptual(d.warning, 0.10),
+            success: Self::lighten_perceptual(d.success, 0.05),
+            error: Self::lighten_perceptual(d.error, 0.05),
+            processing: Self::lighten_perceptual(d.processing, 0.05),
+            highlight: Self::lighten_perceptual(d.highlight, 0.05),
+            parse_error: Self::lighten_perceptual(d.parse_error, 0.10),
+        }
+    }
+
+    /// Create a high-contrast theme (WCAG AAA).
+    fn new_high_contrast() -> Self {
+        Self {
+            background: Color::Rgb(0x00, 0x00, 0x00),
+            surface: Color::Rgb(0x1a, 0x1a, 0x1a),
+            text: Color::Rgb(0xff, 0xff, 0xff),
+            text_subtle: Color::Rgb(0xcc, 0xcc, 0xcc),
+            text_muted: Color::Rgb(0x99, 0x99, 0x99),
+            accent: Color::Rgb(0xff, 0xff, 0x00),
+            warning: Color::Rgb(0xff, 0xff, 0x00),
+            success: Color::Rgb(0x00, 0xff, 0x00),
+            error: Color::Rgb(0xff, 0x00, 0x00),
+            processing: Color::Rgb(0x00, 0xff, 0xff),
+            highlight: Color::Rgb(0xff, 0x00, 0xff),
+            parse_error: Color::Rgb(0xff, 0x88, 0x00),
+        }
+    }
+
     // ------------------------------------------------------------------
-    // Base colors (Catppuccin Mocha)
+    // Static compatibility methods (delegate to default dark theme)
     // ------------------------------------------------------------------
 
     /// Primary accent — Blue `#89b4fa`
     pub fn accent() -> Color {
-        Color::Rgb(0x89, 0xb4, 0xfa)
+        Self::default().accent
     }
 
     /// Primary text — Text `#cdd6f4`
     pub fn text() -> Color {
-        Color::Rgb(0xcd, 0xd6, 0xf4)
+        Self::default().text
     }
 
     /// Subtle text (labels, separators) — Subtext0 `#a6adc8`
     pub fn text_subtle() -> Color {
-        Color::Rgb(0xa6, 0xad, 0xc8)
+        Self::default().text_subtle
     }
 
     /// Muted text (status, hints) — Overlay0 `#6c7086`
     pub fn text_muted() -> Color {
-        Color::Rgb(0x6c, 0x70, 0x86)
+        Self::default().text_muted
     }
 
     /// Warning / attention — Yellow `#f9e2af`
     pub fn warning() -> Color {
-        Color::Rgb(0xf9, 0xe2, 0xaf)
+        Self::default().warning
     }
 
-    /// Surface / border colour — Surface1 `#45475a` (brightened for WCAG visibility)
+    /// Surface / border colour — Surface1 `#45475a`
     pub fn surface() -> Color {
-        Color::Rgb(0x45, 0x47, 0x5a)
+        Self::default().surface
     }
 
     /// Success / completed — Green `#a6e3a1`
     pub fn success() -> Color {
-        Color::Rgb(0xa6, 0xe3, 0xa1)
+        Self::default().success
     }
 
     /// Error / failure — Red `#f38ba8`
     pub fn error() -> Color {
-        Color::Rgb(0xf3, 0x8b, 0xa8)
+        Self::default().error
     }
 
     /// Background / base colour — Base `#1e1e2e`
     pub fn background() -> Color {
-        Color::Rgb(0x1e, 0x1e, 0x2e)
+        Self::default().background
     }
 
     /// Processing / active state — Sky `#89dceb`
     pub fn processing() -> Color {
-        Color::Rgb(0x89, 0xdc, 0xeb)
+        Self::default().processing
     }
 
     /// Highlight / cursor — Lavender `#b4befe`
     pub fn highlight() -> Color {
-        Color::Rgb(0xb4, 0xbe, 0xfe)
+        Self::default().highlight
     }
 
     /// Parse error / warning — Peach `#fab387`
     pub fn parse_error() -> Color {
-        Color::Rgb(0xfa, 0xb3, 0x87)
-    }
-
-    // ------------------------------------------------------------------
-    // Adaptive theme generation (using palette operations)
-    // ------------------------------------------------------------------
-
-    /// Generate a theme variant based on mode.
-    ///
-    /// Uses palette's `Lighten`/`Darken` traits for mathematically
-    /// correct color transformations in perceptual color space.
-    pub fn adaptive(mode: ThemeMode) -> Self {
-        match mode {
-            ThemeMode::Dark => Self,
-            ThemeMode::Light => Self::lighten_all(0.55),
-            ThemeMode::HighContrast => Self::increase_contrast(),
-        }
-    }
-
-    /// Lighten all theme colors by a factor.
-    ///
-    /// Uses palette's `Lighten` trait which operates in perceptual
-    /// color space (L*C*h°) for mathematically correct lightening.
-    fn lighten_all(factor: f32) -> Self {
-        // For light mode, we return the base theme but document
-        // the transformation path. Full implementation would
-        // apply Lighten to each color token.
-        let _ = factor;
-        Self
-    }
-
-    /// Increase contrast for high-contrast mode.
-    ///
-    /// Ensures all text colors meet WCAG AAA (7:1) against background.
-    fn increase_contrast() -> Self {
-        let bg = Self::background();
-        let theme = Self;
-
-        // Check each text color and darken if contrast is too low
-        let text_colors = [
-            ("text", Self::text()),
-            ("text_subtle", Self::text_subtle()),
-            ("text_muted", Self::text_muted()),
-        ];
-
-        for (name, color) in text_colors {
-            let ratio = contrast_ratio(color, bg);
-            if ratio < 7.0 {
-                // Darken the color to increase contrast
-                let Some(srgb) = color_to_srgb(color) else {
-                    continue;
-                };
-                let darker: Srgb = srgb.darken(0.1);
-                let new_color = srgb_to_color(darker);
-                let new_ratio = contrast_ratio(new_color, bg);
-                tracing::debug!(
-                    "High-contrast: {name} ratio {ratio:.2} -> {new_ratio:.2} (darkened)"
-                );
-                // In a full implementation, we'd store these in the theme struct
-                let _ = (name, new_color);
-            }
-        }
-
-        theme
+        Self::default().parse_error
     }
 
     // ------------------------------------------------------------------

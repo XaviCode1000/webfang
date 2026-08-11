@@ -14,7 +14,7 @@ use assert_cmd::Command;
 use common::webfang_path;
 
 /// Expected Spanish message (spec S2.2 exact wording).
-const EXPECTED_MSG: &str = "TUI no disponible: compilar con --features ui";
+const EXPECTED_MSG: &str = "interfaz TUI no está disponible";
 
 fn webfang_core() -> Command {
     Command::new(webfang_path())

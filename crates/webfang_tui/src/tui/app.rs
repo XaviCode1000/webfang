@@ -36,7 +36,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{EventStream, KeyEventKind};
+use crossterm::event::{EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
 use ratatui::prelude::*;
 use ratatui::widgets::Clear;
@@ -259,6 +259,11 @@ impl App {
         // Convert crossterm event to our Event enum, filtering key press kind
         let app_event: Option<Event> = match event {
             crossterm::event::Event::Key(key) if key.kind == KeyEventKind::Press => {
+                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    tracing::info!("Shutdown signal (Ctrl+C) received in TUI");
+                    let _ = self.action_tx.send(Action::Quit);
+                    return Ok(());
+                }
                 Some(Event::Key(key))
             },
             crossterm::event::Event::Mouse(mouse) => Some(Event::Mouse(mouse)),
