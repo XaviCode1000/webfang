@@ -169,6 +169,17 @@ pub struct NetworkOptions {
     pub js_strategy: JsStrategy,
     /// Path to the obscura binary (default: "obscura").
     pub obscura_binary: String,
+    /// Custom HTTP headers as `(name, value)` pairs, injected into every request.
+    ///
+    /// Populated from `--header`/`WEBFANG_HEADER`. Overrides same-named default
+    /// headers (ua_index < 4 hardened path and raw downloaders).
+    pub custom_headers: Vec<(String, String)>,
+    /// Initial cookies as `(name, value)` pairs, seeded into the cookie jar
+    /// before the first request.
+    ///
+    /// Populated from `--cookie`/`WEBFANG_COOKIE`. The domain is derived from
+    /// the seed URL at request time (the CLI provides bare `name=value` pairs).
+    pub initial_cookies: Vec<(String, String)>,
 }
 
 /// Output format, export format, and Obsidian integration settings.
@@ -263,6 +274,8 @@ impl Default for NetworkOptions {
             h2_profile: "Chrome145".to_owned(),
             js_strategy: JsStrategy::default(),
             obscura_binary: "obscura".to_owned(),
+            custom_headers: Vec::new(),
+            initial_cookies: Vec::new(),
         }
     }
 }

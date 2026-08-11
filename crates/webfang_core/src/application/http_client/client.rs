@@ -266,6 +266,10 @@ impl HttpClient {
                 .header("Cache-Control", &self.config.cache_control);
         }
 
+        for (name, value) in &self.config.custom_headers {
+            request = request.header(name, value);
+        }
+
         request
     }
 
