@@ -285,6 +285,12 @@ pub(crate) fn redact_nondeterministic(dir: &Path, text: &str) -> String {
     // so snapshots decouple from source location and survive function moves (#462).
     let module = Regex::new(r"((?:WARN|INFO|ERROR|DEBUG|TRACE)\s+)\w+(?:::\w+)+").unwrap();
     let text = module.replace_all(&text, "$1<MODULE>").into_owned();
+    // Normalize trace/correlation UUIDs emitted by log_scrape_error's trace_id
+    // field (#688) so trace snapshots stay deterministic run-to-run.
+    let trace_id =
+        Regex::new(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+            .unwrap();
+    let text = trace_id.replace_all(&text, "<TRACE_ID>").into_owned();
     // Normalize tracing source file paths (e.g. "at crates/.../orchestrator.rs:<LINE>")
     // so moving a function between files does not break snapshots (#462).
     let file_path = Regex::new(r"(at\s+)\S+\.rs").unwrap();
