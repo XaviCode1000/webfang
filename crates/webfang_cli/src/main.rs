@@ -194,6 +194,7 @@ async fn run_url_selection_phase(
 }
 
 /// Build CrawlerConfig from TUI JSON config (manual bridge — CrawlerConfig has no Deserialize).
+#[cfg(feature = "ui")]
 fn build_crawler_config_from_json(
     seed_url: url::Url,
     config_values: &serde_json::Value,
