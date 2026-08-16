@@ -273,6 +273,81 @@ async fn server_error_response_exit_code_nonzero() {
 }
 
 // ---------------------------------------------------------------------------
+// --output-vectors without --clean-ai → exit 65, no file written (#703)
+// ---------------------------------------------------------------------------
+
+/// `webfang --output-vectors <file>` WITHOUT `--clean-ai` must fail fast with
+/// exit 65 (EX_DATA) and a Spanish explanation — never run the scrape and drop
+/// a 0-byte vectors file into a RAG pipeline (issue #703, class S1).
+///
+/// The check runs BEFORE any network I/O or sink wiring, so a live mock server
+/// is mounted to prove the gate fires even when the page is perfectly
+/// scrape-able: if the guard regressed, the run would succeed and create the
+/// 0-byte file this test forbids. (No `.expect()` on the mock — with the
+/// fail-fast in place the request never lands, and wiremock would fail the
+/// test on drop over the unmet expectation.)
+///
+/// No `#[ignore]`: the gate fires before any ONNX model could load.
+#[cfg(feature = "ai")]
+mod output_vectors_without_clean_ai {
+    use crate::assert_snapshot_redacted;
+    use crate::BehavioralTest;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    const PAGE_HTML: &str = r#"
+<html><head><title>Vector Gate Test</title></head>
+<body><main><article>
+<h1>Gate Me</h1>
+<p>Small valid page so a regression letting the run proceed would scrape it.</p>
+</article></main></body></html>
+"#;
+
+    #[tokio::test]
+    async fn output_vectors_without_clean_ai_exits_65_and_writes_no_file() {
+        let t = BehavioralTest::new().await;
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(PAGE_HTML))
+            .mount(&t.server)
+            .await;
+
+        let vectors_path = t.out.path().join("vectors.jsonl");
+        let output = t
+            .scraper_cmd()
+            .arg("--single-page")
+            .arg("--output-vectors")
+            .arg(&vectors_path)
+            .arg("--quiet")
+            .output()
+            .expect("run webfang");
+
+        // Semantic invariants (the contract under test): exit 65 (EX_DATA), the
+        // Spanish message, and — the core invariant — NO vectors file created.
+        assert_eq!(
+            output.status.code(),
+            Some(65),
+            "--output-vectors without --clean-ai must exit 65 (EX_DATA)"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("No hay vectores para exportar"),
+            "stderr must carry the Spanish error, got: {stderr}"
+        );
+        assert_snapshot_redacted(
+            "output_vectors_without_clean_ai_stderr",
+            t.out.path(),
+            stderr,
+        );
+        assert!(
+            !vectors_path.exists(),
+            "the vectors file must NOT be created when the flag gate rejects the run: {vectors_path:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // --output-dir flag
 // ---------------------------------------------------------------------------
 

@@ -72,6 +72,20 @@ pub async fn run(
     if opts.export.dry_run {
         return run_dry_run(opts).await;
     }
+
+    // #703: `--output-vectors` without `--clean-ai` can never produce vectors —
+    // embeddings only exist when semantic cleaning runs. Fail fast with exit 65
+    // (EX_DATA) here, BEFORE `build_elastic_ingestion` below: its sink wiring
+    // creates/truncates the output file as a construction side effect, which
+    // would leak an empty 0-byte file into RAG pipelines.
+    #[cfg(feature = "ai")]
+    if opts.elastic.output_vectors.is_some() && !opts.ai {
+        warn!("--output-vectors refused without --clean-ai; no vectors to export");
+        return CliExit::DataFormatError(
+            "No hay vectores para exportar: '--output-vectors' requiere '--clean-ai' para generar embeddings".to_string(),
+        );
+    }
+
     // Process-level graceful shutdown (#653). The guard owns ONE signal
     // listener for the whole run; every phase observes its token cooperatively
     // so a SIGINT drains in-flight work and still exports it, instead of being
@@ -567,6 +581,19 @@ async fn run_batch(
     vault_ports: crate::application::container::VaultAiPorts,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> CliExit {
+    // #703: `--output-vectors` without `--clean-ai` produces no embeddings —
+    // exit 65 (EX_DATA) before any crawl, spool, or sink wiring runs. First
+    // statement here (above the legacy not-ai check), mirroring `run()`, whose
+    // own early placement prevents `build_elastic_ingestion` from truncating an
+    // empty vectors file as a construction side effect.
+    #[cfg(feature = "ai")]
+    if opts.elastic.output_vectors.is_some() && !opts.ai {
+        warn!("--output-vectors refused without --clean-ai; no vectors to export");
+        return CliExit::DataFormatError(
+            "No hay vectores para exportar: '--output-vectors' requiere '--clean-ai' para generar embeddings".to_string(),
+        );
+    }
+
     #[cfg(not(feature = "ai"))]
     if opts.elastic.output_vectors.is_some() {
         return CliExit::ConfigError(
@@ -1025,7 +1052,6 @@ mod tests {
     use crate::application::crawl_options::CrawlOptions;
     use crate::cli::error::CliExit;
 
-    #[cfg(not(feature = "ai"))]
     use super::{run, run_batch};
 
     // ===== build_batch_crawler_config tests (#653) =====
@@ -1528,6 +1554,61 @@ mod tests {
         assert!(
             matches!(exit, CliExit::ConfigError(_)),
             "expected CliExit::ConfigError, got {exit:?}"
+        );
+    }
+
+    // ===== output_vectors without clean-ai flag (ai feature on, #703) =====
+
+    #[cfg(feature = "ai")]
+    #[tokio::test]
+    async fn run_returns_data_error_when_output_vectors_without_clean_ai() {
+        let mut opts = CrawlOptions::default();
+        opts.elastic.output_vectors = Some("vectors.jsonl".to_string());
+        // opts.ai stays false → no semantic cleaning requested
+
+        // The cfg-gated `ai_cleaner` / `adaptive_engine` parameters make the
+        // arity depend on both features — dispatch the call exactly like
+        // `build_and_run` does in webfang_cli/src/main.rs.
+        #[cfg(feature = "adaptive-selectors")]
+        let exit = run(
+            opts,
+            None,
+            None,
+            crate::application::container::VaultAiPorts::default(),
+        )
+        .await;
+        #[cfg(not(feature = "adaptive-selectors"))]
+        let exit = run(
+            opts,
+            None,
+            crate::application::container::VaultAiPorts::default(),
+        )
+        .await;
+
+        assert!(
+            matches!(exit, CliExit::DataFormatError(_)),
+            "expected CliExit::DataFormatError, got {exit:?}"
+        );
+    }
+
+    #[cfg(feature = "ai")]
+    #[tokio::test]
+    async fn run_batch_returns_data_error_when_output_vectors_without_clean_ai() {
+        let mut opts = CrawlOptions::default();
+        opts.elastic.output_vectors = Some("vectors.jsonl".to_string());
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        let exit = run_batch(
+            opts,
+            None,
+            crate::application::container::VaultAiPorts::default(),
+            &cancel,
+        )
+        .await;
+
+        assert!(
+            matches!(exit, CliExit::DataFormatError(_)),
+            "expected CliExit::DataFormatError, got {exit:?}"
         );
     }
 }
