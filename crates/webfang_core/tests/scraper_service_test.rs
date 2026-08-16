@@ -440,6 +440,9 @@ async fn test_mock_404_returns_http_error() {
     );
 }
 
+/// An empty body must fail HONESTLY with the typed minimum-content error,
+/// not return Ok on near-empty content (#706, #694). Empty extraction is a
+/// data-format failure, not a success.
 #[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
 #[tokio::test]
 async fn test_mock_empty_body_graceful_handling() {
@@ -447,10 +450,16 @@ async fn test_mock_empty_body_graceful_handling() {
     let mock = MockHttpClient::new().with_ok_response(url.as_str(), "");
 
     let result = scrape_with_readability(&mock, &url).await;
-    // Empty body should not panic — Readability or fallback handles it
-    match &result {
-        Ok(contents) => assert!(!contents.is_empty()),
-        Err(e) => panic!("empty body should succeed, got: {e}"),
+    let err = result.expect_err("empty body must fail honestly, not return Ok near-empty");
+
+    match &err {
+        ScraperError::ExtractionFailed { reason, .. } => {
+            assert!(
+                reason.contains("contenido insuficiente"),
+                "Spanish reason must state insufficient content: {reason}"
+            );
+        },
+        other => panic!("expected ExtractionFailed, got: {other}"),
     }
 }
 
