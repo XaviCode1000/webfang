@@ -60,6 +60,40 @@ pub struct ScrapeEvent {
     pub correlation_id: Option<String>,
 }
 
+impl ScrapeEvent {
+    /// Build a scrape event without run identity (test / synthetic events).
+    #[must_use]
+    pub fn new(
+        tool: &'static str,
+        domain: String,
+        outcome: Outcome,
+        count: usize,
+        duration: Duration,
+    ) -> Self {
+        Self {
+            tool,
+            domain,
+            outcome,
+            count,
+            duration,
+            trace_id: None,
+            correlation_id: None,
+        }
+    }
+
+    /// Attach the tool call's run-root identity (#698): the run-trace UUID as
+    /// `trace_id` plus the W3C traceparent as `correlation_id`, so the metric
+    /// event is reconstructable with the run trace. An MCP tool call IS an
+    /// operation (#501) — handlers mint one identity at entry and share it
+    /// across the call's success/error events via this method.
+    #[must_use]
+    pub fn with_identity(mut self, correlation: &webfang_core::domain::CorrelationId) -> Self {
+        self.trace_id = Some(correlation.trace_id().to_string());
+        self.correlation_id = Some(correlation.to_traceparent());
+        self
+    }
+}
+
 /// Per-domain aggregate (REQ-02).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct DomainStats {
@@ -208,33 +242,27 @@ mod tests {
     /// and 1 error event on `b.com` (count 0), durations 100/200/300ms, all via
     /// the `scrape_url` tool. Mean duration = (100+200+300)/3 = 200ms.
     fn record_fixture(m: &mut ScrapeMetrics) {
-        m.record(ScrapeEvent {
-            tool: "scrape_url",
-            domain: "a.com".to_string(),
-            outcome: Outcome::Success,
-            count: 3,
-            duration: Duration::from_millis(100),
-            trace_id: None,
-            correlation_id: None,
-        });
-        m.record(ScrapeEvent {
-            tool: "scrape_url",
-            domain: "a.com".to_string(),
-            outcome: Outcome::Success,
-            count: 5,
-            duration: Duration::from_millis(200),
-            trace_id: None,
-            correlation_id: None,
-        });
-        m.record(ScrapeEvent {
-            tool: "scrape_url",
-            domain: "b.com".to_string(),
-            outcome: Outcome::Error,
-            count: 0,
-            duration: Duration::from_millis(300),
-            trace_id: None,
-            correlation_id: None,
-        });
+        m.record(ScrapeEvent::new(
+            "scrape_url",
+            "a.com".to_string(),
+            Outcome::Success,
+            3,
+            Duration::from_millis(100),
+        ));
+        m.record(ScrapeEvent::new(
+            "scrape_url",
+            "a.com".to_string(),
+            Outcome::Success,
+            5,
+            Duration::from_millis(200),
+        ));
+        m.record(ScrapeEvent::new(
+            "scrape_url",
+            "b.com".to_string(),
+            Outcome::Error,
+            0,
+            Duration::from_millis(300),
+        ));
     }
 
     /// REQ-02: aggregates accumulate exactly (counts, per-domain, timing mean).
@@ -280,15 +308,13 @@ mod tests {
         );
 
         let mut m = ScrapeMetrics::default();
-        m.record(ScrapeEvent {
-            tool: "scrape_url",
-            domain: domain_of("not a url"),
-            outcome: Outcome::Success,
-            count: 1,
-            duration: Duration::from_millis(50),
-            trace_id: None,
-            correlation_id: None,
-        });
+        m.record(ScrapeEvent::new(
+            "scrape_url",
+            domain_of("not a url"),
+            Outcome::Success,
+            1,
+            Duration::from_millis(50),
+        ));
 
         let snap = m.snapshot();
         assert_eq!(snap.total_events, 1, "unknown-domain event still counted");
@@ -352,15 +378,13 @@ mod tests {
         for _ in 0..100 {
             let m = Arc::clone(&metrics);
             handles.push(tokio::spawn(async move {
-                m.lock().expect("metrics mutex").record(ScrapeEvent {
-                    tool: "scrape_url",
-                    domain: "a.com".to_string(),
-                    outcome: Outcome::Success,
-                    count: 1,
-                    duration: Duration::from_millis(1),
-                    trace_id: None,
-                    correlation_id: None,
-                });
+                m.lock().expect("metrics mutex").record(ScrapeEvent::new(
+                    "scrape_url",
+                    "a.com".to_string(),
+                    Outcome::Success,
+                    1,
+                    Duration::from_millis(1),
+                ));
             }));
         }
         for h in handles {
@@ -447,17 +471,17 @@ mod tests {
         let subscriber = tracing_subscriber::registry().with(layer);
 
         tracing::subscriber::with_default(subscriber, || {
-            ScrapeMetrics::default().record(ScrapeEvent {
-                tool: "scrape_url",
-                domain: "example.com".to_string(),
-                outcome: Outcome::Success,
-                count: 3,
-                duration: Duration::from_millis(120),
-                trace_id: Some("01949e0e-8b8e-7000-8000-000000000001".to_string()),
-                correlation_id: Some(
-                    "00-01949e0e8b8e70008000000000000001-0000000000000042-01".to_string(),
-                ),
-            });
+            let mut event = ScrapeEvent::new(
+                "scrape_url",
+                "example.com".to_string(),
+                Outcome::Success,
+                3,
+                Duration::from_millis(120),
+            );
+            event.trace_id = Some("01949e0e-8b8e-7000-8000-000000000001".to_string());
+            event.correlation_id =
+                Some("00-01949e0e8b8e70008000000000000001-0000000000000042-01".to_string());
+            ScrapeMetrics::default().record(event);
         });
 
         let captured = events.lock().expect("capture mutex");
@@ -537,15 +561,13 @@ mod tests {
         let subscriber = tracing_subscriber::registry().with(layer);
 
         tracing::subscriber::with_default(subscriber, || {
-            ScrapeMetrics::default().record(ScrapeEvent {
-                tool: "scrape_url",
-                domain: "example.com".to_string(),
-                outcome: Outcome::Success,
-                count: 1,
-                duration: Duration::from_millis(10),
-                trace_id: None,
-                correlation_id: None,
-            });
+            ScrapeMetrics::default().record(ScrapeEvent::new(
+                "scrape_url",
+                "example.com".to_string(),
+                Outcome::Success,
+                1,
+                Duration::from_millis(10),
+            ));
         });
 
         let keys = keys.lock().expect("keys mutex");

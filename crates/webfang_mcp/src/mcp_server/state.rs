@@ -289,15 +289,13 @@ mod tests {
         );
 
         // A scrape recorded through one clone is visible from the other.
-        state.record_scrape(ScrapeEvent {
-            tool: "scrape_url",
-            domain: "a.com".to_string(),
-            outcome: Outcome::Success,
-            count: 2,
-            duration: Duration::from_millis(10),
-            trace_id: None,
-            correlation_id: None,
-        });
+        state.record_scrape(ScrapeEvent::new(
+            "scrape_url",
+            "a.com".to_string(),
+            Outcome::Success,
+            2,
+            Duration::from_millis(10),
+        ));
 
         let snap = state2.metrics_snapshot();
         assert_eq!(snap.total_events, 1, "record-through-clone is visible");
