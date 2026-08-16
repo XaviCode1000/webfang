@@ -584,13 +584,17 @@ fn format_failure(url: &str, error: &crate::error::ScraperError, verbosity: u8) 
 /// instead of the misleading "no pages scraped" network error. Any real
 /// failure or any scraped page keeps the historical routing below.
 ///
-/// Severity routing (#537): when every URL failed AND at least one failure
-/// classifies as [`crate::error::ErrorClass::InternalFatal`], the exit code is
-/// `CliExit::ScraperFailure` (3) rather than `NetworkError` (69) — an internal
-/// bug must not masquerade as a transient network outage. Purely
-/// transient/permanent all-fail runs keep exit 69. The partial-success case
-/// always reports `PartialSuccess` (69) regardless of failure severity: some
-/// content was scraped, which is the dominant signal.
+/// Severity routing (#537 + #706) applies when every URL failed:
+///
+/// 1. An internal-fatal failure wins → `CliExit::ScraperFailure` (3) — an
+///    internal bug must not masquerade as a transient network outage.
+/// 2. Any [`crate::error::ScraperError::ExtractionFailed`] is next →
+///    `CliExit::DataFormatError` (65) — the pages were fetched but carried
+///    no usable content (JS-only shells, poor fallback).
+/// 3. Anything else keeps `CliExit::NetworkError` (69).
+///
+/// The partial-success case always reports `PartialSuccess` (69) regardless of
+/// failure severity: some content was scraped, which is the dominant signal.
 fn report_phase(
     results: &[domain::ScrapedContent],
     failures: &[(String, crate::error::ScraperError)],
@@ -615,7 +619,13 @@ fn report_phase(
     }
 
     if results.is_empty() {
+        // Exit-code precedence in the all-fail arm: internal-fatal (3) outranks
+        // extraction-failed (65), which outranks the transient fallback (69)
+        // (#706). An internal bug must never masquerade as a data-format error.
         if let Some(exit) = scraper_failure_for_internal_fatal(failures) {
+            return Some(exit);
+        }
+        if let Some(exit) = data_format_error_for_extraction_failed(failures) {
             return Some(exit);
         }
         eprintln!("No pages were successfully scraped");
@@ -646,6 +656,32 @@ fn scraper_failure_for_internal_fatal(
         CliExit::ScraperFailure(format!(
             "Scraper failure: {internal_fatal} internal error(s) out of {} URLs",
             failures.len()
+        ))
+    })
+}
+
+/// Fold an all-failed error set into exit 65 when the failures are
+/// extraction failures (#706, Option A — typed variant match).
+///
+/// A run where every URL failed with
+/// [`crate::error::ScraperError::ExtractionFailed`] (JS-shell or near-empty
+/// content) is a DATA-FORMAT error (exit 65), not a network outage (69): the
+/// pages were fetched fine, they just carried no usable content. Typed
+/// `matches!` on the variant — never string-sniffing the reason, and
+/// `ErrorClass` stays untouched (PermanentFatal). Intentionally covers the
+/// poor-fallback 69→65 shift (CE-3): those failures are `ExtractionFailed`
+/// too, and empty output is exactly the data-format case. Returns `None`
+/// when no failure is an extraction failure.
+fn data_format_error_for_extraction_failed(
+    failures: &[(String, crate::error::ScraperError)],
+) -> Option<CliExit> {
+    let extraction_failed = failures
+        .iter()
+        .filter(|(_, e)| matches!(e, crate::error::ScraperError::ExtractionFailed { .. }))
+        .count();
+    (extraction_failed > 0).then(|| {
+        CliExit::DataFormatError(format!(
+            "extracción sin contenido útil: {extraction_failed} URL(s) devolvieron contenido insuficiente o requieren renderizado de JavaScript"
         ))
     })
 }
@@ -1048,19 +1084,28 @@ async fn load_batch_manager_from_stdin(
 
 /// Determine the CLI exit code from batch scrape results.
 ///
-/// Severity routing (#537): an all-failed batch containing at least one
-/// [`crate::error::ErrorClass::InternalFatal`] error yields
-/// `CliExit::ScraperFailure` (3); purely transient/permanent all-fail runs
-/// keep `CliExit::NetworkError` (69). Partial success remains
-/// `CliExit::PartialSuccess` (69) regardless of failure severity — some
-/// content was scraped, which is the dominant signal.
+/// Severity routing (#537 + #706) for all-fail runs
+/// (`failed > 0 && succeeded == 0`):
+///
+/// 1. An internal-fatal failure wins → `CliExit::ScraperFailure` (3).
+/// 2. Any [`crate::error::ScraperError::ExtractionFailed`] is next →
+///    `CliExit::DataFormatError` (65).
+/// 3. Anything else keeps `CliExit::NetworkError` (69).
+///
+/// Partial success remains `CliExit::PartialSuccess` (69) regardless of
+/// failure severity — some content was scraped, which is the dominant signal.
 fn batch_exit_code(
     succeeded: usize,
     failed: usize,
     errors: &[(String, crate::error::ScraperError)],
 ) -> CliExit {
     if failed > 0 && succeeded == 0 {
+        // Same precedence as `report_phase` (#706): internal-fatal (3) first,
+        // then extraction-failed (65), then the transient fallback (69).
         if let Some(exit) = scraper_failure_for_internal_fatal(errors) {
+            return exit;
+        }
+        if let Some(exit) = data_format_error_for_extraction_failed(errors) {
             return exit;
         }
         CliExit::NetworkError("All batch URLs failed".into())
@@ -1373,6 +1418,139 @@ mod tests {
 
     fn http_err(status: u16, url: &str) -> crate::error::ScraperError {
         crate::error::ScraperError::http(status, url)
+    }
+
+    fn extraction_failed(url: &str) -> crate::error::ScraperError {
+        crate::error::ScraperError::ExtractionFailed {
+            url: url.to_string(),
+            reason: "contenido insuficiente (0 caracteres) — la página devolvió muy poco contenido extraíble"
+                .to_string(),
+        }
+    }
+
+    // ===== extraction-failed exit-65 routing tests (#706) =====
+
+    #[test]
+    fn report_phase_all_extraction_failed_returns_data_format_error() {
+        // CE-1: a JS-only batch — every failure is the typed ExtractionFailed
+        // — must exit 65 (DataFormatError) with the Spanish message.
+        let failures = vec![
+            (
+                "https://js1.example.com".to_string(),
+                extraction_failed("https://js1.example.com"),
+            ),
+            (
+                "https://js2.example.com".to_string(),
+                extraction_failed("https://js2.example.com"),
+            ),
+        ];
+
+        let exit = report_phase(&[], &failures, 0, 0);
+
+        match exit {
+            Some(CliExit::DataFormatError(msg)) => {
+                assert!(
+                    msg.contains("extracción sin contenido útil"),
+                    "Spanish message expected, got: {msg}"
+                );
+                assert!(
+                    msg.contains("2 URL(s)"),
+                    "message must count the failures: {msg}"
+                );
+            },
+            other => panic!("expected DataFormatError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn report_phase_mixed_with_extraction_failed_keeps_partial_success() {
+        // CE-2: one success + one ExtractionFailed stays PartialSuccess (69) —
+        // extraction failures never outrank a successful scrape.
+        let results = vec![scraped("https://ok.example.com")];
+        let failures = vec![(
+            "https://js.example.com".to_string(),
+            extraction_failed("https://js.example.com"),
+        )];
+
+        let exit = report_phase(&results, &failures, 0, 0);
+
+        assert!(
+            matches!(
+                exit,
+                Some(CliExit::PartialSuccess {
+                    success: 1,
+                    failed: 1
+                })
+            ),
+            "expected PartialSuccess, got: {exit:?}"
+        );
+    }
+
+    #[test]
+    fn report_phase_internal_fatal_outranks_extraction_failed() {
+        // Precedence: internal-fatal (3) wins over extraction-failed (65) when
+        // both failure classes are present in an all-fail run.
+        let failures = vec![
+            ("https://bug.example.com".to_string(), internal_err("panic")),
+            (
+                "https://js.example.com".to_string(),
+                extraction_failed("https://js.example.com"),
+            ),
+        ];
+
+        let exit = report_phase(&[], &failures, 0, 0);
+
+        assert!(
+            matches!(exit, Some(CliExit::ScraperFailure(_))),
+            "internal-fatal must outrank extraction-failed, got: {exit:?}"
+        );
+    }
+
+    #[test]
+    fn batch_exit_code_all_extraction_failed_returns_data_format_error() {
+        // CE-3 (batch): poor-fallback all-fails are typed ExtractionFailed too,
+        // so an all-failed batch of them exits 65 instead of 69.
+        let errors = vec![
+            (
+                "https://js1.example.com".to_string(),
+                extraction_failed("https://js1.example.com"),
+            ),
+            (
+                "https://js2.example.com".to_string(),
+                extraction_failed("https://js2.example.com"),
+            ),
+        ];
+
+        let exit = batch_exit_code(0, 2, &errors);
+
+        match exit {
+            CliExit::DataFormatError(msg) => {
+                assert!(
+                    msg.contains("extracción sin contenido útil"),
+                    "Spanish message expected, got: {msg}"
+                );
+            },
+            other => panic!("expected DataFormatError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn batch_exit_code_internal_fatal_outranks_extraction_failed() {
+        // Same 3 > 65 precedence inside the batch code path.
+        let errors = vec![
+            ("https://bug.example.com".to_string(), internal_err("panic")),
+            (
+                "https://js.example.com".to_string(),
+                extraction_failed("https://js.example.com"),
+            ),
+        ];
+
+        let exit = batch_exit_code(0, 2, &errors);
+
+        assert!(
+            matches!(exit, CliExit::ScraperFailure(_)),
+            "internal-fatal must outrank extraction-failed, got: {exit:?}"
+        );
     }
 
     #[test]
