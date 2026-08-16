@@ -37,7 +37,7 @@ repos:
         name: clippy
         description: Lint Rust code
         entry: cargo
-        args: ["clippy", "--all-targets", "--", "-D", "warnings"]
+        args: ["clippy", "--all-targets", "--all-features", "--", "-D", "warnings", "-W", "clippy::cognitive_complexity", "-W", "clippy::too_many_lines"]
         language: system
         pass_filenames: false
         types: [rust]
