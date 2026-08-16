@@ -24,7 +24,7 @@ use std::sync::Mutex;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, warn, Instrument};
 
 use super::content_sink::{CapturedPage, CrawlContentSink};
 
@@ -91,7 +91,7 @@ impl BoundedFileSink {
         }
         let file = tokio::fs::File::create(&spool_path).await?;
         let (tx, rx) = mpsc::channel(buffer_size.max(1));
-        let writer = tokio::spawn(spool_writer(file, rx));
+        let writer = tokio::spawn(spool_writer(file, rx).in_current_span());
 
         info!(
             spool = %spool_path.display(),
@@ -206,11 +206,14 @@ impl CrawlContentSink for BoundedFileSink {
                 // worker or dropping the body.
                 debug!(url = %page.url, "capture buffer full — deferring spool write");
                 self.captured.fetch_add(1, Ordering::Relaxed);
-                tokio::spawn(async move {
-                    if sender.send(page).await.is_err() {
-                        warn!("capture channel closed before deferred write");
+                tokio::spawn(
+                    async move {
+                        if sender.send(page).await.is_err() {
+                            warn!("capture channel closed before deferred write");
+                        }
                     }
-                });
+                    .in_current_span(),
+                );
             },
             // LCOV_EXCL_START defensive: closed-channel — capture after finish() is a lifecycle bug
             Err(mpsc::error::TrySendError::Closed(page)) => {

@@ -4,7 +4,7 @@
 //! or dependency-free JSONL stream) that the orchestrator drives after a scrape.
 
 use tokio::task::JoinSet;
-use tracing::warn;
+use tracing::{warn, Instrument};
 
 use crate::application::crawl_options::CrawlOptions;
 use crate::cli::error::CliExit;
@@ -52,10 +52,13 @@ pub(super) async fn run_elastic_ingestion(
             }
         }
 
-        join_set.spawn(async move {
-            let url_str = url.to_string();
-            ing.run(&url_str).await
-        });
+        join_set.spawn(
+            async move {
+                let url_str = url.to_string();
+                ing.run(&url_str).await
+            }
+            .in_current_span(),
+        );
     }
 
     // Await remaining tasks (propagate the first error — D2 fail-fast).

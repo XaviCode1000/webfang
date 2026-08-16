@@ -271,28 +271,31 @@ impl Engine {
         let level = Arc::new(SharedConcurrencyLevel::new());
         let level_clone = Arc::clone(&level);
 
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(5));
-            interval.tick().await; // skip first immediate tick
-            loop {
-                interval.tick().await;
-                let usage = ResourceGovernor::ram_usage_percent();
-                let new_level = if usage >= 90 {
-                    ConcurrencyLevel::Critical
-                } else if usage >= 80 {
-                    ConcurrencyLevel::Reduced
-                } else {
-                    ConcurrencyLevel::Normal
-                };
-                if level_clone.get() != new_level {
-                    info!(
-                        "Autoscale: RAM {usage}% → concurrency level {:?}",
-                        new_level
-                    );
-                    level_clone.set(new_level);
+        tokio::spawn(
+            async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(5));
+                interval.tick().await; // skip first immediate tick
+                loop {
+                    interval.tick().await;
+                    let usage = ResourceGovernor::ram_usage_percent();
+                    let new_level = if usage >= 90 {
+                        ConcurrencyLevel::Critical
+                    } else if usage >= 80 {
+                        ConcurrencyLevel::Reduced
+                    } else {
+                        ConcurrencyLevel::Normal
+                    };
+                    if level_clone.get() != new_level {
+                        info!(
+                            "Autoscale: RAM {usage}% → concurrency level {:?}",
+                            new_level
+                        );
+                        level_clone.set(new_level);
+                    }
                 }
             }
-        });
+            .in_current_span(),
+        );
 
         self.scheduler.set_autoscale(level);
         self
@@ -393,44 +396,47 @@ impl Engine {
         shutdown: ShutdownSignal,
         cancel: CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            let ctrl_c = tokio::signal::ctrl_c();
-            #[cfg(unix)]
-            {
-                use tokio::signal::unix::{signal, SignalKind};
-                // SIGTERM registration failure is only possible when the OS
-                // rejects the handler (e.g. invalid stream or OS). Never panic —
-                // gracefully degrade to SIGINT-only (warn for observability).
-                match signal(SignalKind::terminate()) {
-                    Ok(mut sigterm) => {
-                        tokio::select! {
-                            _ = ctrl_c => {
-                                info!("Received SIGINT — initiating graceful shutdown");
-                            },
-                            _ = sigterm.recv() => {
-                                info!("Received SIGTERM — initiating graceful shutdown");
-                            },
-                        }
-                    },
-                    // LCOV_EXCL_START defensive: signal-registration — the OS rejects the SIGTERM handler only on an invariant break
-                    Err(e) => {
-                        warn!(
-                            error = %e,
-                            "SIGTERM handler registration failed — graceful shutdown will only respond to SIGINT"
-                        );
-                        ctrl_c.await.ok();
-                    },
-                    // LCOV_EXCL_STOP
+        tokio::spawn(
+            async move {
+                let ctrl_c = tokio::signal::ctrl_c();
+                #[cfg(unix)]
+                {
+                    use tokio::signal::unix::{signal, SignalKind};
+                    // SIGTERM registration failure is only possible when the OS
+                    // rejects the handler (e.g. invalid stream or OS). Never panic —
+                    // gracefully degrade to SIGINT-only (warn for observability).
+                    match signal(SignalKind::terminate()) {
+                        Ok(mut sigterm) => {
+                            tokio::select! {
+                                _ = ctrl_c => {
+                                    info!("Received SIGINT — initiating graceful shutdown");
+                                },
+                                _ = sigterm.recv() => {
+                                    info!("Received SIGTERM — initiating graceful shutdown");
+                                },
+                            }
+                        },
+                        // LCOV_EXCL_START defensive: signal-registration — the OS rejects the SIGTERM handler only on an invariant break
+                        Err(e) => {
+                            warn!(
+                                error = %e,
+                                "SIGTERM handler registration failed — graceful shutdown will only respond to SIGINT"
+                            );
+                            ctrl_c.await.ok();
+                        },
+                        // LCOV_EXCL_STOP
+                    }
                 }
+                #[cfg(not(unix))]
+                {
+                    ctrl_c.await.ok();
+                    info!("Received interrupt — initiating graceful shutdown");
+                }
+                shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+                cancel.cancel();
             }
-            #[cfg(not(unix))]
-            {
-                ctrl_c.await.ok();
-                info!("Received interrupt — initiating graceful shutdown");
-            }
-            shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
-            cancel.cancel();
-        })
+            .in_current_span(),
+        )
     }
 
     /// Clone of the engine's cancellation token (#509).
