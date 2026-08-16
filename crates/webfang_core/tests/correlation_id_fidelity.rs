@@ -5,6 +5,7 @@
 //! 2. Async boundaries (tokio::spawn)
 //! 3. Serialization round-trip (serde)
 //! 4. W3C traceparent format integrity
+//! 5. Derivation contract — run-root identity propagation (#687 evidence)
 
 use webfang_core::domain::value_objects::CorrelationId;
 use webfang_core::domain::DomainError;
@@ -235,4 +236,127 @@ async fn correlation_id_shared_across_tasks() {
     assert_eq!(r1.unwrap(), traceparent);
     assert_eq!(r2.unwrap(), traceparent);
     assert_eq!(r3.unwrap(), traceparent);
+}
+
+// ===========================================================================
+// Derivation Contract — run-root identity propagation (issue #687 / #704)
+// ===========================================================================
+//
+// The discovery engine and the scrape flow must NOT mint their own trace
+// UUIDs: every page derives `.child()` from the run-root identity, so a
+// whole run stays reconstructable under ONE trace_id (audit F14). Without
+// this contract each subsystem that called `CorrelationId::new()` per page
+// would fragment the run into N unrelated traces — the exact symptom of
+// #687 ("discovery acuña un trace UUID propio"). `scrape_single_url_for_tui`
+// (discovery.rs) and `scrape_urls` (scrape_flow.rs) take the identity as a
+// REQUIRED parameter (#501); these tests pin the derivation semantics that
+// make that parameter sufficient.
+
+/// The root identity is fixed for every test in this section so assertions
+/// are exact-equality against a known trace UUID.
+fn fixed_root() -> CorrelationId {
+    let trace_id =
+        uuid::Uuid::parse_str("01949e0e-8b8e-7000-8000-000000000001").expect("valid UUID");
+    CorrelationId::new_with_ids(trace_id, 0x0000_0000_0000_0042)
+}
+
+/// A derived page identity must keep the run-root `trace_id` and get its own
+/// `span_id` — the core invariant that lets the discovery engine reuse the
+/// root trace instead of minting a fresh UUID per page (#687).
+#[test]
+fn child_reuses_root_trace_id_and_mints_fresh_span_id() {
+    let root = fixed_root();
+    let page = root.child();
+
+    assert_eq!(
+        page.trace_id(),
+        root.trace_id(),
+        "a derived identity must stay under the run-root trace_id (#687: \
+         discovery may not mint its own trace UUID)"
+    );
+    assert_ne!(
+        page.span_id(),
+        root.span_id(),
+        "a derived identity must carry its own span_id so the page stays distinguishable"
+    );
+}
+
+/// The derived identity's W3C traceparent must embed the root's trace UUID,
+/// so forensic reconstruction (`jq 'select(.trace_id == ...)'`) sees one
+/// trace per run regardless of which subsystem emits the span.
+#[test]
+fn child_traceparent_embeds_root_trace_uuid() {
+    let root = fixed_root();
+    let page = root.child();
+
+    let root_hex = root.trace_id().as_simple().to_string();
+    let page_traceparent = page.to_traceparent();
+    let parts: Vec<&str> = page_traceparent.split('-').collect();
+    assert_eq!(parts.len(), 4, "derived traceparent must be W3C-compliant");
+    assert_eq!(
+        parts[1], root_hex,
+        "the trace part of a derived traceparent must equal the root trace UUID"
+    );
+    assert_ne!(
+        parts[2],
+        format!("{:016x}", root.span_id()),
+        "the span part must be the page's own span_id, not the root's"
+    );
+}
+
+/// Discovery derives one child per discovered/fetched page: ALL of them must
+/// share exactly ONE distinct `trace_id` and carry distinct `span_id`s —
+/// audit F14 done criterion ("1 trace_id esperado por corrida"; the #687
+/// symptom was 2+ trace_ids per run).
+#[test]
+fn discovery_derivation_tree_keeps_one_trace_id_across_all_pages() {
+    let root = fixed_root();
+
+    // Simulate the per-page derivation fan-out: crawl task and scrape flow
+    // both call `root.child()` once per page (crawl_task.rs:99,
+    // scrape_flow.rs:234).
+    let pages: Vec<CorrelationId> = (0..10).map(|_| root.child()).collect();
+
+    let trace_ids: std::collections::BTreeSet<uuid::Uuid> =
+        pages.iter().map(CorrelationId::trace_id).collect();
+    assert_eq!(
+        trace_ids.len(),
+        1,
+        "every derived page identity must share the run-root trace_id; \
+         got {} distinct trace_id(s)",
+        trace_ids.len()
+    );
+    assert_eq!(
+        trace_ids.first().copied(),
+        Some(root.trace_id()),
+        "the shared trace_id must be the run-root's"
+    );
+
+    let span_ids: std::collections::BTreeSet<u64> =
+        pages.iter().map(CorrelationId::span_id).collect();
+    assert_eq!(
+        span_ids.len(),
+        pages.len(),
+        "each derived page must own a distinct span_id (64-bit random space; \
+         a collision here would indicate a broken RNG, not flakiness)"
+    );
+}
+
+/// A derive-of-derive chain (e.g. a page discovered FROM a page) must still
+/// stay under the original run-root trace — depth never fragments the trace.
+#[test]
+fn chained_derivation_never_fragments_the_trace() {
+    let root = fixed_root();
+    let depth1 = root.child();
+    let depth2 = depth1.child();
+
+    assert_eq!(depth2.trace_id(), root.trace_id());
+    assert_eq!(depth2.trace_id(), depth1.trace_id());
+    let depth2_tp = depth2.to_traceparent();
+    let root_tp = root.to_traceparent();
+    assert_eq!(
+        depth2_tp.split('-').nth(1),
+        root_tp.split('-').nth(1),
+        "deep-derived identities must still embed the root trace UUID"
+    );
 }
