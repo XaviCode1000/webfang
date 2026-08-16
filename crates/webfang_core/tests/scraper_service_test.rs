@@ -127,6 +127,7 @@ async fn test_scrape_with_config_derives_child_from_run_root() {
 // =====================================================================
 mod robots {
     use super::*;
+    use webfang_core::application::scraper_service::ScrapeOutcome;
     use webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -168,6 +169,36 @@ mod robots {
             .await;
     }
 
+    /// Scrape `/{path}` against `server` (site already mounted there) with a
+    /// wiremock-backed fetcher and robots enforcement configured as requested.
+    /// Single call site for the client + fetcher + 9-argument
+    /// `scrape_with_config` scaffold, so the jscpd ratchet never sees the
+    /// repeated wiring.
+    async fn scrape_with_fetcher(
+        server: &MockServer,
+        path: &str,
+        ignore_robots: bool,
+    ) -> Result<ScrapeOutcome, ScraperError> {
+        let client = webfang_core::application::create_http_client().expect("wreq client builds");
+        let fetcher = fetcher_for(server);
+        let url = url::Url::parse(&format!("{}/{path}", server.uri())).expect("valid URL");
+        let config = ScraperConfig::default();
+        let root = CorrelationId::new();
+
+        scrape_with_config(
+            &client,
+            &url,
+            &config,
+            None,
+            None,
+            None,
+            Some(&fetcher),
+            ignore_robots,
+            &root,
+        )
+        .await
+    }
+
     /// A URL disallowed by robots.txt must be rejected BEFORE any page fetch:
     /// the call fails with the robots denial and the wiremock page endpoint
     /// records zero hits (the only request is the robots.txt probe itself).
@@ -177,25 +208,9 @@ mod robots {
         let server = MockServer::start().await;
         mount_site(&server, "private/page").await;
 
-        let client = webfang_core::application::create_http_client().expect("wreq client builds");
-        let fetcher = fetcher_for(&server);
-        let url = url::Url::parse(&format!("{}/private/page", server.uri())).expect("valid URL");
-        let config = ScraperConfig::default();
-        let root = CorrelationId::new();
-
-        let err = scrape_with_config(
-            &client,
-            &url,
-            &config,
-            None,
-            None,
-            None,
-            Some(&fetcher),
-            false,
-            &root,
-        )
-        .await
-        .expect_err("robots-disallowed URL must fail the scrape");
+        let err = scrape_with_fetcher(&server, "private/page", false)
+            .await
+            .expect_err("robots-disallowed URL must fail the scrape");
 
         match err {
             ScraperError::WafBlocked { provider, .. } => assert!(
@@ -227,25 +242,9 @@ mod robots {
         let server = MockServer::start().await;
         mount_site(&server, "public-page").await;
 
-        let client = webfang_core::application::create_http_client().expect("wreq client builds");
-        let fetcher = fetcher_for(&server);
-        let url = url::Url::parse(&format!("{}/public-page", server.uri())).expect("valid URL");
-        let config = ScraperConfig::default();
-        let root = CorrelationId::new();
-
-        let outcome = scrape_with_config(
-            &client,
-            &url,
-            &config,
-            None,
-            None,
-            None,
-            Some(&fetcher),
-            false,
-            &root,
-        )
-        .await
-        .expect("robots-allowed URL must scrape successfully");
+        let outcome = scrape_with_fetcher(&server, "public-page", false)
+            .await
+            .expect("robots-allowed URL must scrape successfully");
 
         assert!(!outcome.results.is_empty(), "allowed URL must scrape");
         assert!(!outcome.results[0].content.is_empty(), "content extracted");
@@ -259,25 +258,9 @@ mod robots {
         let server = MockServer::start().await;
         mount_site(&server, "private/page").await;
 
-        let client = webfang_core::application::create_http_client().expect("wreq client builds");
-        let fetcher = fetcher_for(&server);
-        let url = url::Url::parse(&format!("{}/private/page", server.uri())).expect("valid URL");
-        let config = ScraperConfig::default();
-        let root = CorrelationId::new();
-
-        let outcome = scrape_with_config(
-            &client,
-            &url,
-            &config,
-            None,
-            None,
-            None,
-            Some(&fetcher),
-            true,
-            &root,
-        )
-        .await
-        .expect("ignore_robots must bypass the robots gate");
+        let outcome = scrape_with_fetcher(&server, "private/page", true)
+            .await
+            .expect("ignore_robots must bypass the robots gate");
 
         assert!(!outcome.results.is_empty(), "bypassed URL must scrape");
         let received = server
