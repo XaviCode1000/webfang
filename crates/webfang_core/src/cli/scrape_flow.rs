@@ -401,9 +401,9 @@ mod tests {
     use url::Url;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, ResponseTemplate};
-    
+
     // ===== shutdown tests (#653) =====
-    
+
     #[cfg_attr(miri, ignore)] // btls/wreq FFI (BoringSSL TLS_method) not supported by Miri
     #[tokio::test]
     async fn a_cancelled_run_scrapes_nothing() {
@@ -438,55 +438,55 @@ mod tests {
         .await
         .expect("setup must succeed even when cancelled");
 
-            assert!(results.is_empty(), "no page may be scraped after shutdown");
-            assert!(
-                failures.is_empty(),
-                "skipped URLs are not failures, got: {failures:?}"
-            );
-            assert_eq!(blocked, 0, "shutdown skips are not robots-blocks");
-        }
-    
-        // ===== robots-blocked counting tests (#705) =====
-    
-        /// A URL disallowed by robots.txt is neither a result nor a failure: it
-        /// lands in the dedicated blocked counter so the orchestrator can route
-        /// all-blocked runs to exit 77 (#705).
-        #[cfg_attr(miri, ignore)] // btls/wreq FFI (BoringSSL TLS_method) not supported by Miri
-        #[tokio::test]
-        async fn robots_blocked_urls_are_counted_not_failed() {
-            let server = wiremock::MockServer::start().await;
-            Mock::given(method("GET"))
-                .and(path("/robots.txt"))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_string("User-agent: *\nDisallow: /\n"),
-                )
-                .mount(&server)
-                .await;
-    
-            let urls = vec![Url::parse(&format!("{}/page", server.uri())).expect("valid URL")];
-            let opts = CrawlOptions::default(); // ignore_robots: false
-            let cancel = CancellationToken::new();
-    
-            let (results, failures, blocked) = scrape_urls(
-                &urls,
-                &crate::ScraperConfig::default(),
-                &opts,
-                &crate::application::progress_observer::NoopObserver,
-                None,
-                None,
-                &crate::domain::CorrelationId::new(),
-                &cancel,
+        assert!(results.is_empty(), "no page may be scraped after shutdown");
+        assert!(
+            failures.is_empty(),
+            "skipped URLs are not failures, got: {failures:?}"
+        );
+        assert_eq!(blocked, 0, "shutdown skips are not robots-blocks");
+    }
+
+    // ===== robots-blocked counting tests (#705) =====
+
+    /// A URL disallowed by robots.txt is neither a result nor a failure: it
+    /// lands in the dedicated blocked counter so the orchestrator can route
+    /// all-blocked runs to exit 77 (#705).
+    #[cfg_attr(miri, ignore)] // btls/wreq FFI (BoringSSL TLS_method) not supported by Miri
+    #[tokio::test]
+    async fn robots_blocked_urls_are_counted_not_failed() {
+        let server = wiremock::MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/robots.txt"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("User-agent: *\nDisallow: /\n"),
             )
-            .await
-            .expect("setup must succeed");
-    
-            assert!(results.is_empty(), "blocked URL must not be scraped");
-            assert!(
-                failures.is_empty(),
-                "robots-blocked URLs are not failures, got: {failures:?}"
-            );
-            assert_eq!(blocked, 1, "blocked URL must be counted");
-        }
+            .mount(&server)
+            .await;
+
+        let urls = vec![Url::parse(&format!("{}/page", server.uri())).expect("valid URL")];
+        let opts = CrawlOptions::default(); // ignore_robots: false
+        let cancel = CancellationToken::new();
+
+        let (results, failures, blocked) = scrape_urls(
+            &urls,
+            &crate::ScraperConfig::default(),
+            &opts,
+            &crate::application::progress_observer::NoopObserver,
+            None,
+            None,
+            &crate::domain::CorrelationId::new(),
+            &cancel,
+        )
+        .await
+        .expect("setup must succeed");
+
+        assert!(results.is_empty(), "blocked URL must not be scraped");
+        assert!(
+            failures.is_empty(),
+            "robots-blocked URLs are not failures, got: {failures:?}"
+        );
+        assert_eq!(blocked, 1, "blocked URL must be counted");
+    }
 
     // ===== build_http_client_config tests =====
 

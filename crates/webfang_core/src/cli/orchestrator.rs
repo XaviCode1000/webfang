@@ -518,20 +518,20 @@ fn report_phase(
     for (url, error) in failures {
         eprintln!("{}", format_failure(url, error, verbosity));
     }
-    
+
     if !failures.is_empty() && !results.is_empty() {
         return Some(CliExit::PartialSuccess {
             success: results.len(),
             failed: failures.len(),
         });
     }
-    
+
     if results.is_empty() && failures.is_empty() && blocked > 0 {
         return Some(CliExit::Forbidden(format!(
             "{blocked} URL(s) bloqueadas por robots.txt. Usa --ignore-robots para omitir esta verificación."
         )));
     }
-    
+
     if results.is_empty() {
         if let Some(exit) = scraper_failure_for_internal_fatal(failures) {
             return Some(exit);
@@ -1096,16 +1096,16 @@ mod tests {
     #[test]
     fn format_failure_verbose_shows_source_chain() {
         let msg = format_failure("https://example.com", &network_error(), 1);
-    
+
         assert!(
             msg.contains('←'),
             "verbose output must show the cause chain: {msg}"
         );
         assert!(msg.contains("failed to lookup address information"));
     }
-    
+
     // ===== report_phase routing tests (#705) =====
-    
+
     fn scraped(url: &str) -> crate::domain::ScrapedContent {
         crate::domain::ScrapedContent {
             title: "t".into(),
@@ -1119,58 +1119,58 @@ mod tests {
             correlation_id: None,
         }
     }
-    
+
     #[test]
     fn report_phase_all_blocked_returns_forbidden() {
         // Nothing scraped, nothing failed, but URLs were blocked by robots.txt:
         // exit 77 with the Spanish hint, not a misleading network error (#705).
         let exit = report_phase(&[], &[], 2, 0);
-    
+
         match exit {
             Some(CliExit::Forbidden(msg)) => {
-assert!(
-msg.contains("2 URL(s) bloqueadas por robots.txt"),
-"missing blocked count: {msg}"
-);
-assert!(
-msg.contains("--ignore-robots"),
-"missing --ignore-robots hint: {msg}"
-);
+                assert!(
+                    msg.contains("2 URL(s) bloqueadas por robots.txt"),
+                    "missing blocked count: {msg}"
+                );
+                assert!(
+                    msg.contains("--ignore-robots"),
+                    "missing --ignore-robots hint: {msg}"
+                );
             },
             other => panic!("expected Forbidden, got: {other:?}"),
         }
     }
-    
+
     #[test]
     fn report_phase_mixed_success_and_blocked_proceeds() {
         // Some pages scraped, the rest blocked: content was produced, so the run
         // proceeds to export exactly as before blocked counting existed.
         let results = vec![scraped("https://example.com/ok")];
-    
+
         assert!(report_phase(&results, &[], 1, 0).is_none());
     }
-    
+
     #[test]
     fn report_phase_partial_success_with_blocked_unchanged() {
         // Failures + results dominate over blocked URLs: PartialSuccess (69)
         // semantics are unchanged by the blocked counter.
         let results = vec![scraped("https://example.com/ok")];
         let failures = vec![("https://example.com/bad".to_string(), network_error())];
-    
+
         let exit = report_phase(&results, &failures, 1, 0);
-    
+
         assert!(
             matches!(
-exit,
-Some(CliExit::PartialSuccess {
-success: 1,
-failed: 1
-})
+                exit,
+                Some(CliExit::PartialSuccess {
+                    success: 1,
+                    failed: 1
+                })
             ),
             "expected PartialSuccess, got: {exit:?}"
         );
     }
-    
+
     #[test]
     fn report_phase_all_fail_with_blocked_stays_network_error() {
         // Real failures present: the blocked counter must not mask them — the
@@ -1181,21 +1181,21 @@ failed: 1
             "https://example.com/bad".to_string(),
             crate::error::ScraperError::http(404, "https://example.com/bad"),
         )];
-    
+
         let exit = report_phase(&[], &failures, 1, 0);
-    
+
         assert!(
             matches!(exit, Some(CliExit::NetworkError(_))),
             "expected NetworkError, got: {exit:?}"
         );
     }
-    
+
     #[test]
     fn report_phase_empty_run_without_blocks_stays_network_error() {
         // No results, no failures, no blocks (e.g. zero-URL edge): the
         // historical "No pages were successfully scraped" arm is preserved.
         let exit = report_phase(&[], &[], 0, 0);
-    
+
         assert!(
             matches!(exit, Some(CliExit::NetworkError(_))),
             "expected NetworkError, got: {exit:?}"
