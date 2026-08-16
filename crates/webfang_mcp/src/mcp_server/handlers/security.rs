@@ -102,7 +102,7 @@ impl McpHandler {
 
     /// Get scrape metrics (request timing, status codes, pages scraped)
     #[tool(
-        description = "Get scraping metrics including request timing, status code distribution, and pages scraped per domain."
+        description = "Get scraping metrics including request timing, status code distribution, and pages scraped per domain. Per-domain stats are capped at 500 domains; domains beyond the cap aggregate under \"otros\""
     )]
     #[instrument(skip(self))]
     async fn get_scrape_metrics(&self) -> Result<CallToolResult, McpError> {
