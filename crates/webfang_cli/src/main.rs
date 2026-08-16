@@ -346,6 +346,12 @@ async fn __main() -> CliExit {
     let opts = CrawlOptions::from(args);
     let opts = preflight::apply_config_defaults(opts, &config_defaults);
 
+    // 6c. JS strategy dependency preflight (#685): --js-strategy full needs
+    // Chrome installed — fail fast with exit 78 before any crawl starts.
+    if let Err(exit) = preflight::check_js_dependencies(&opts) {
+        return exit;
+    }
+
     // 7. Initialize logging (stderr-only, respects quiet + NO_COLOR)
     let no_color = is_no_color();
     let log_level = resolve_log_level(opts.verbosity);

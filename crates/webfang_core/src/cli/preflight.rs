@@ -8,7 +8,8 @@ use tracing::warn;
 
 use crate::application::crawl_options::CrawlOptions;
 use crate::cli::config::ConfigDefaults;
-use crate::{Args, ConcurrencyConfig, ExportFormat, OutputFormat};
+use crate::domain::JsStrategy;
+use crate::{Args, CliExit, ConcurrencyConfig, ExportFormat, OutputFormat};
 
 // ============================================================================
 // Config Defaults Merge
@@ -117,6 +118,78 @@ pub fn apply_config_defaults(mut opts: CrawlOptions, config: &ConfigDefaults) ->
     }
 
     opts
+}
+
+// ============================================================================
+// JS strategy dependency preflight (#685)
+// ============================================================================
+
+/// Chrome binary candidates probed for `--js-strategy full` (#685).
+///
+/// The audit spec named `google-chrome` only, but Linux distributions ship
+/// the engine under several names, so one missing distro binary must not
+/// mask an installed Chrome. Order matters: the first binary that reports a
+/// version wins.
+const DEFAULT_CHROME_CANDIDATES: [&str; 4] = [
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium-browser",
+    "chromium",
+];
+
+/// Preflight: verify the local environment can satisfy the configured JS
+/// strategy before any crawl starts (#685).
+///
+/// `JsStrategy::Full` renders pages through Chromiumoxide, which spawns a
+/// real Chrome/Chromium binary. Probing the installed candidates here turns
+/// a missing browser into a clean config error (exit 78) instead of a
+/// confusing mid-crawl browser launch failure. Other strategies need no
+/// external binary and return immediately without spawning processes.
+///
+/// Runs once, in a synchronous context, before crawl start — a brief
+/// blocking `--version` probe is acceptable there.
+///
+/// # Errors
+///
+/// Returns [`crate::CliExit::ConfigError`] (exit 78) when the strategy is
+/// [`Full`](crate::domain::JsStrategy::Full) and no Chrome/Chromium
+/// candidate on `PATH` reports a version.
+pub fn check_js_dependencies(opts: &CrawlOptions) -> Result<(), CliExit> {
+    check_js_dependencies_with(&DEFAULT_CHROME_CANDIDATES, opts)
+}
+
+/// Candidate-injectable core of [`check_js_dependencies`] — tests probe
+/// binaries that exist deterministically in CI (e.g. `true`) instead of the
+/// real Chrome names.
+fn check_js_dependencies_with(candidates: &[&str], opts: &CrawlOptions) -> Result<(), CliExit> {
+    if opts.network.js_strategy != JsStrategy::Full {
+        return Ok(());
+    }
+
+    let chrome_present = candidates
+        .iter()
+        .any(|binary| matches!(binary_reports_version(binary), Ok(s) if s.success()));
+    if chrome_present {
+        tracing::info!(strategy = "full", "chrome_dependency_checked");
+        return Ok(());
+    }
+
+    Err(CliExit::ConfigError(
+        "--js-strategy full requiere Google Chrome instalado".into(),
+    ))
+}
+
+/// Spawn `<binary> --version` once and report its exit status.
+///
+/// A missing or non-executable binary surfaces as an `io::Error`, which the
+/// caller treats as "not installed". Output is discarded — only the exit
+/// status matters, and the probe must stay silent on the terminal.
+fn binary_reports_version(binary: &str) -> std::io::Result<std::process::ExitStatus> {
+    std::process::Command::new(binary)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
 }
 
 // ============================================================================
@@ -669,5 +742,53 @@ mod tests {
         assert!(args.export.batch);
         assert_eq!(args.crawler.verbose, 2);
         assert!(!args.crawler.quiet);
+    }
+
+    // ========================================================================
+    // #685 — --js-strategy full preflight Chrome dependency check
+    // ========================================================================
+
+    /// `Static` strategy never needs Chrome: the check must return `Ok`
+    /// without probing any binary, so the injected candidate list is
+    /// irrelevant.
+    #[test]
+    fn static_strategy_ok_without_spawn() {
+        let mut opts = CrawlOptions::default();
+        opts.network.js_strategy = JsStrategy::Static;
+        // A nonexistent candidate proves the check short-circuits before it
+        // could attempt to spawn anything for a non-Full strategy.
+        assert!(
+            check_js_dependencies_with(&["definitely-not-installed-9x4k"], &opts).is_ok(),
+            "Static strategy must not require Chrome or spawn processes"
+        );
+    }
+
+    /// `Full` strategy with a present, exit-0 binary (`true` exists in CI)
+    /// passes the preflight check.
+    #[test]
+    fn full_strategy_ok_when_binary_reports_version() {
+        let mut opts = CrawlOptions::default();
+        opts.network.js_strategy = JsStrategy::Full;
+        assert!(
+            check_js_dependencies_with(&["true"], &opts).is_ok(),
+            "a candidate that exits 0 must satisfy the Full-strategy check"
+        );
+    }
+
+    /// `Full` strategy with no working candidate yields a config error whose
+    /// message names Chrome (user-facing, Spanish).
+    #[test]
+    fn full_strategy_errors_when_no_binary_found() {
+        let mut opts = CrawlOptions::default();
+        opts.network.js_strategy = JsStrategy::Full;
+        let err = check_js_dependencies_with(&["definitely-not-installed-9x4k"], &opts)
+            .expect_err("no candidate binary present means the check must fail");
+        match err {
+            CliExit::ConfigError(msg) => assert!(
+                msg.contains("Chrome"),
+                "config error must name Chrome, got: {msg}"
+            ),
+            other => panic!("expected ConfigError, got: {other:?}"),
+        }
     }
 }
