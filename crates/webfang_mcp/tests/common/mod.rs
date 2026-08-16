@@ -9,10 +9,12 @@
 //! are intentionally `pub` but only a subset is used by any given binary, so the
 //! module carries `#![allow(dead_code)]`.
 //!
-//! **SSRf Note**: `start_test_server()` and related functions disable SSRF
+//! **SSRF Note**: `start_test_server()` and related functions disable SSRF
 //! protection by setting `WEBFANG_MCP_DISABLE_SSRF=1` before building the router.
 //! This is required because wiremock uses 127.0.0.1 for its mock HTTP server,
-//! which SSRF protection blocks by design.
+//! which SSRF protection blocks by design. The single exception is
+//! `start_test_server_ssrf_enabled()`, which intentionally leaves the guard ON
+//! to exercise it against forbidden addresses (issue #703 integration probe).
 
 #![allow(dead_code)]
 
@@ -35,6 +37,31 @@ fn init_ssrf_disabled() {
     });
 }
 
+/// Bind `app` to a random 127.0.0.1 port, serve it, and wait until it accepts
+/// connections. Returns the base URL and the server handle.
+///
+/// This is the shared tail of every server starter in this module — do not
+/// duplicate the bind/serve/wait sequence.
+pub async fn serve_on_random_port(app: axum::Router) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let base_url = format!("http://{addr}");
+
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    // Wait for the server to accept TCP connections instead of a fixed sleep.
+    for _ in 0..20 {
+        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    (base_url, handle)
+}
+
 /// Start a test MCP server on a random port and return the base URL.
 ///
 /// NOTE: `Container::new` creates real HTTP clients (wreq) and a real service
@@ -53,23 +80,7 @@ pub async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
 
     let app = build_mcp_router(state, &ServerOptions::default());
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    let base_url = format!("http://{addr}");
-
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-
-    // Wait for the server to accept TCP connections instead of a fixed sleep.
-    for _ in 0..20 {
-        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-
-    (base_url, handle)
+    serve_on_random_port(app).await
 }
 
 /// Start a test MCP server on a random port. Pass `Some(downloader)` to inject
@@ -92,22 +103,7 @@ pub async fn start_server(
 
     let app = build_mcp_router(state, &ServerOptions::default());
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    let base_url = format!("http://{addr}");
-
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-
-    for _ in 0..20 {
-        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-
-    (base_url, handle)
+    serve_on_random_port(app).await
 }
 
 /// Start a test MCP server whose crawl-result repository is pre-seeded with
@@ -172,22 +168,31 @@ pub async fn start_seeded_server(
 
     let app = build_mcp_router(state, &ServerOptions::default());
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    let base_url = format!("http://{addr}");
-
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-
-    for _ in 0..20 {
-        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    let (base_url, handle) = serve_on_random_port(app).await;
 
     (base_url, handle, container_tmp)
+}
+
+/// Start a test MCP server with SSRF protection ENABLED.
+///
+/// Every other starter sets `WEBFANG_MCP_DISABLE_SSRF=1` because wiremock binds
+/// 127.0.0.1; this one exists precisely to exercise the guard against those
+/// forbidden addresses (issue #703 integration probe). Tests using it must
+/// target IPs that fail validation BEFORE any fetch, so no mock server is
+/// needed. Also actively removes the disable flag in case a shared CI/parent
+/// environment exported it.
+pub async fn start_test_server_ssrf_enabled() -> (String, tokio::task::JoinHandle<()>) {
+    std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
+
+    let config = Config::default();
+    let container = Container::new(config.crawler, config.scraper)
+        .await
+        .expect("container creation failed");
+    let state = McpState::new(container);
+
+    let app = build_mcp_router(state, &ServerOptions::default());
+
+    serve_on_random_port(app).await
 }
 
 /// Build a JSON-RPC request body for MCP protocol.
