@@ -29,6 +29,11 @@ use webfang_mcp::mcp_server::state::McpState;
 async fn start_server(
     downloader: Option<Arc<Downloader>>,
 ) -> (String, tokio::task::JoinHandle<()>) {
+    // Disable SSRF protection for tests (wiremock binds 127.0.0.1) — matches
+    // the shared `common::start_server` convention; required since REQ-03
+    // validates `base_url` at entry (#707).
+    std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+
     let config = Config::default();
     let container = Container::new(config.crawler, config.scraper)
         .await

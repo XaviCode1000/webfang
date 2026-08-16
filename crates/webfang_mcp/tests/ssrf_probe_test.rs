@@ -131,3 +131,32 @@ async fn plain_loopback_probe_returns_32602() {
 
     assert_ssrf_rejection(resp, "http://127.0.0.1:9/");
 }
+
+/// REQ-02 (#707): `crawl_with_sitemap` validates the explicit `sitemap_url`
+/// at entry with the guard ON — a cloud-metadata sitemap is rejected with the
+/// protocol-level `-32602` BEFORE any fetch. The seed uses a public IP so its
+/// own validation resolves locally (no DNS/network beyond fail-before-fetch);
+/// port 9 (discard) is closed, and the assertion proves nothing was reached.
+#[tokio::test]
+async fn crawl_with_sitemap_metadata_sitemap_url_returns_32602() {
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let resp = call_tool(
+        &client,
+        &base_url,
+        &session_id,
+        "crawl_with_sitemap",
+        json!({
+            "url": "http://8.8.8.8/",
+            "sitemap_url": "http://169.254.169.254/sitemap.xml",
+        }),
+    )
+    .await;
+
+    assert_ssrf_rejection(
+        resp,
+        "crawl_with_sitemap(sitemap_url=http://169.254.169.254/sitemap.xml)",
+    );
+}

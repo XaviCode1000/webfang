@@ -311,7 +311,9 @@ impl McpHandler {
         let start = Instant::now();
         // One run identity per tool call, shared by its success and error events (#501/#698).
         let root_correlation = webfang_core::domain::CorrelationId::new();
-        let crawler_config = webfang_core::domain::CrawlerConfig::builder(seed_url)
+        // Clone: the builder consumes `seed_url` and the Ok arm re-uses it as
+        // the filter anchor (the config itself is moved into the crawl).
+        let crawler_config = webfang_core::domain::CrawlerConfig::builder(seed_url.clone())
             .max_depth(params.max_depth.unwrap_or(3))
             .max_pages(params.max_pages.unwrap_or(100) as usize)
             .build();
@@ -327,7 +329,10 @@ impl McpHandler {
                     start,
                     &root_correlation,
                 );
-                let urls: Vec<String> = result.urls.iter().map(|u| u.url.to_string()).collect();
+                // REQ-01: filter discovered URLs before responding — keep only
+                // seed-host-internal entries; exclusions warn with the URL.
+                let mut urls = Vec::with_capacity(result.urls.len());
+                filter_ssrf_safe(&result.urls, &seed_url, &mut urls);
                 let json = serde_json::json!({
                     "urls": urls,
                     "total_pages": result.total_pages,
@@ -378,10 +383,21 @@ impl McpHandler {
         })?;
         crate::mcp_server::ssrf::validate_url_no_ssrf(&seed_url).await?;
 
+        // REQ-02: validate the explicit sitemap URL at entry, BEFORE any
+        // sitemap fetch (guard ON unless disabled via env for tests).
+        if let Some(s) = &params.sitemap_url {
+            let sitemap = url::Url::parse(s).map_err(|e| {
+                McpError::invalid_params(format!("URL de sitemap inválida: {e}"), None)
+            })?;
+            crate::mcp_server::ssrf::validate_url_no_ssrf(&sitemap).await?;
+        }
+
         let start = Instant::now();
         // One run identity per tool call, shared by its success and error events (#501/#698).
         let root_correlation = webfang_core::domain::CorrelationId::new();
-        let config = webfang_core::domain::CrawlerConfig::new(seed_url);
+        // Clone: `CrawlerConfig::new` consumes `seed_url` and the Ok arm
+        // re-uses it as the filter anchor.
+        let config = webfang_core::domain::CrawlerConfig::new(seed_url.clone());
 
         match webfang_core::application::crawler::crawl_with_sitemap(
             &params.url,
@@ -401,7 +417,11 @@ impl McpHandler {
                     &root_correlation,
                 );
                 tracing::info!("sitemap crawl complete: {} urls found", urls.len());
-                let url_strings: Vec<String> = urls.iter().map(|u| u.url.to_string()).collect();
+                // REQ-01: filter discovered URLs before responding. Sitemap
+                // discovery is host-agnostic — the filter is the gate that
+                // drops external-domain and forbidden-literal-IP entries.
+                let mut url_strings = Vec::with_capacity(urls.len());
+                filter_ssrf_safe(&urls, &seed_url, &mut url_strings);
                 Ok(CallToolResult::success(vec![Content::text(
                     serde_json::to_string_pretty(&url_strings)
                         .expect("serializing JSON to a string cannot fail"),
@@ -650,6 +670,51 @@ impl McpHandler {
     }
 }
 
+/// Keep only seed-host-internal URLs in the discovery output (REQ-01, SSRF
+/// defense-in-depth).
+///
+/// The engine's internal-link gating already applies on the BFS crawl path,
+/// but sitemap discovery returns every `<loc>` host-agnostic. This post-hoc
+/// filter is the authoritative gate that ensures no external-domain or
+/// forbidden-literal-IP URL ever reaches an MCP response, complementing the
+/// entry-level SSRF validator. Each exclusion emits a structured `warn` with
+/// the `url` field (REQ-01/REQ-07).
+///
+/// Returns the number of excluded URLs. `total_pages` / crawl counts are NOT
+/// recomputed — they keep engine semantics (pages crawled, not links emitted).
+fn filter_ssrf_safe(
+    urls: &[webfang_core::domain::DiscoveredUrl],
+    seed: &url::Url,
+    out: &mut Vec<String>,
+) -> usize {
+    let seed_host = seed.host_str().unwrap_or(""); // mirrors crawl_task.rs internal-link anchor
+    let mut excluded = 0usize;
+    for d in urls {
+        let internal =
+            webfang_core::domain::url_validation::is_internal_link(d.url.as_str(), seed_host);
+        if internal {
+            // Hostnames compared here are non-literal hosts; literal IPs on a
+            // non-seed host fall through to the exclusion branch below.
+            out.push(d.url.to_string());
+            continue;
+        }
+        excluded += 1;
+        let reason = if webfang_core::infrastructure::ssrf::is_forbidden_literal_host(
+            d.url.host_str().unwrap_or(""),
+        ) {
+            "forbidden_literal_ip"
+        } else {
+            "external_domain"
+        };
+        tracing::warn!(
+            url = %d.url,
+            reason = %reason,
+            "discovered URL excluded from MCP response (SSRF defense-in-depth)"
+        );
+    }
+    excluded
+}
+
 /// Build the scraping core router (8 tools for URL scraping and crawling).
 ///
 /// Returns a partial router that is combined with the other category routers
@@ -886,6 +951,71 @@ mod tests {
             }))
             .await;
         assert!(res.is_err(), "invalid URL must be a protocol error");
+    }
+
+    /// REQ-01: the post-hoc filter keeps seed-host-internal URLs and drops
+    /// external-domain and forbidden-literal-IP URLs, reporting the exclusion
+    /// count. Empty input produces empty output with zero exclusions.
+    #[test]
+    fn filter_ssrf_safe_keeps_internal_drops_external_literal() {
+        let seed = url::Url::parse("https://example.com/").expect("valid seed");
+        let discovered = vec![
+            webfang_core::domain::DiscoveredUrl::html(
+                url::Url::parse("https://example.com/a").expect("valid url"),
+                1,
+                seed.clone(),
+            ),
+            webfang_core::domain::DiscoveredUrl::html(
+                url::Url::parse("https://other.com/x").expect("valid url"),
+                1,
+                seed.clone(),
+            ),
+            webfang_core::domain::DiscoveredUrl::html(
+                url::Url::parse("http://10.0.0.5/x").expect("valid url"),
+                1,
+                seed.clone(),
+            ),
+        ];
+
+        let mut out = Vec::new();
+        let excluded = filter_ssrf_safe(&discovered, &seed, &mut out);
+        assert_eq!(
+            out,
+            vec!["https://example.com/a".to_string()],
+            "only the seed-host URL survives"
+        );
+        assert_eq!(excluded, 2, "external + forbidden literal are excluded");
+
+        let mut empty_out = Vec::new();
+        assert_eq!(
+            filter_ssrf_safe(&[], &seed, &mut empty_out),
+            0,
+            "empty input excludes nothing"
+        );
+        assert!(
+            empty_out.is_empty(),
+            "empty input keeps the output empty (established as the filtered case above returns entries)"
+        );
+    }
+
+    /// REQ-02: an internal `sitemap_url` is rejected at entry (guard ON) with
+    /// the SSRF message, before any sitemap fetch. The seed uses a public
+    /// literal IP so its own validation resolves locally (no DNS dependency).
+    #[tokio::test]
+    async fn crawl_with_sitemap_rejects_internal_sitemap_url() {
+        // Defensive under shared-process harnesses: the escape hatch must be
+        // unset for this process so the guard is active. (nextest isolates
+        // each test in its own process, so this is a no-op there.)
+        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
+
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .crawl_with_sitemap(Parameters(CrawlWithSitemapParams {
+                url: "http://8.8.8.8/".to_string(),
+                sitemap_url: Some("http://127.0.0.1/".to_string()),
+            }))
+            .await;
+        assert_ssrf_rejected(res);
     }
 
     #[tokio::test]
