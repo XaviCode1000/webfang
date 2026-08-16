@@ -19,6 +19,7 @@ use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
 use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
 use crate::infrastructure::downloader::Downloader;
 use crate::infrastructure::export::state_store::StateStore;
+use crate::infrastructure::observability::log_scrape_error;
 use crate::HttpClientConfig;
 use crate::ScraperConfig;
 
@@ -40,6 +41,7 @@ pub async fn apply_resume_mode(
     urls_to_scrape: Vec<Url>,
     opts: &CrawlOptions,
     target_url: &str,
+    root_correlation: &CorrelationId,
 ) -> Result<(Vec<Url>, Option<StateStore>), CliExit> {
     let state_store: Option<StateStore> = if opts.crawl.resume {
         info!("Resume mode enabled - tracking processed URLs");
@@ -64,7 +66,7 @@ pub async fn apply_resume_mode(
 
     let filtered = if opts.crawl.resume {
         match state_store.as_ref() {
-            Some(store) => filter_processed_urls(urls_to_scrape, store),
+            Some(store) => filter_processed_urls(urls_to_scrape, store, root_correlation),
             None => urls_to_scrape,
         }
     } else {
@@ -89,7 +91,11 @@ fn resolve_state_dir(opts: &CrawlOptions) -> PathBuf {
 }
 
 /// Drop URLs already processed by a prior run, degrading gracefully on error.
-fn filter_processed_urls(urls_to_scrape: Vec<Url>, store: &StateStore) -> Vec<Url> {
+fn filter_processed_urls(
+    urls_to_scrape: Vec<Url>,
+    store: &StateStore,
+    root_correlation: &CorrelationId,
+) -> Vec<Url> {
     match store.load_or_default() {
         Ok(state) => {
             let original_count = urls_to_scrape.len();
@@ -114,7 +120,13 @@ fn filter_processed_urls(urls_to_scrape: Vec<Url>, store: &StateStore) -> Vec<Ur
             filtered
         },
         Err(e) => {
-            warn!("Failed to load state: {}", e);
+            log_scrape_error(
+                &e,
+                "",
+                "state-load",
+                Some(root_correlation),
+                "could not load checkpoint state",
+            );
             urls_to_scrape
         },
     }
@@ -365,7 +377,13 @@ async fn scrape_one_url(
         },
         Err(e) => {
             let url_str = url.as_str().to_string();
-            warn!("Failed to scrape {}: {}", url_str, e);
+            log_scrape_error(
+                &e,
+                &url_str,
+                "scrape",
+                Some(page_correlation),
+                "page scrape failed",
+            );
             // ScraperError doesn't impl Clone, so we format for the observer
             // and keep the original for the failures vec (needed for error chain display).
             let scrape_err = ScrapeError::Other(format!("{e}"));
@@ -569,6 +587,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_resume_mode_disabled_returns_all_urls() {
+        let root = crate::domain::CorrelationId::new();
         let urls = vec![
             Url::parse("https://example.com/a").unwrap(),
             Url::parse("https://example.com/b").unwrap(),
@@ -581,9 +600,10 @@ mod tests {
             ..Default::default()
         };
 
-        let (filtered, state_store) = apply_resume_mode(urls.clone(), &opts, "https://example.com")
-            .await
-            .expect("resume disabled should not fail");
+        let (filtered, state_store) =
+            apply_resume_mode(urls.clone(), &opts, "https://example.com", &root)
+                .await
+                .expect("resume disabled should not fail");
 
         assert_eq!(filtered.len(), 2);
         assert!(state_store.is_none());
@@ -591,6 +611,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_resume_mode_skips_previously_scraped_urls() {
+        let root = crate::domain::CorrelationId::new();
         let tmp = TempDir::new().unwrap();
         let state_dir = tmp.path().to_path_buf();
 
@@ -616,7 +637,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (filtered, state_store) = apply_resume_mode(urls, &opts, "https://example.com")
+        let (filtered, state_store) = apply_resume_mode(urls, &opts, "https://example.com", &root)
             .await
             .expect("valid state dir should not fail");
 
@@ -636,6 +657,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_resume_mode_with_corrupted_state_returns_all_urls() {
+        let root = crate::domain::CorrelationId::new();
         let tmp = TempDir::new().unwrap();
         let state_dir = tmp.path().to_path_buf();
 
@@ -657,9 +679,10 @@ mod tests {
             ..Default::default()
         };
 
-        let (filtered, state_store) = apply_resume_mode(urls.clone(), &opts, "https://example.com")
-            .await
-            .expect("corrupted state file should not prevent store creation");
+        let (filtered, state_store) =
+            apply_resume_mode(urls.clone(), &opts, "https://example.com", &root)
+                .await
+                .expect("corrupted state file should not prevent store creation");
 
         // Corrupted state → fallback to all URLs (graceful degradation)
         assert_eq!(
@@ -672,6 +695,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_resume_mode_with_custom_state_dir() {
+        let root = crate::domain::CorrelationId::new();
         let tmp = TempDir::new().unwrap();
         let state_dir = tmp.path().join("custom_state");
         std::fs::create_dir_all(&state_dir).unwrap();
@@ -686,7 +710,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (filtered, state_store) = apply_resume_mode(urls, &opts, "https://example.com")
+        let (filtered, state_store) = apply_resume_mode(urls, &opts, "https://example.com", &root)
             .await
             .expect("custom state dir should not fail");
 

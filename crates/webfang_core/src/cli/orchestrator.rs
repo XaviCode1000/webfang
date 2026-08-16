@@ -154,11 +154,17 @@ pub async fn run(
         Ok(p) => p,
     };
 
-    let (urls_to_scrape, state_store) =
-        match apply_resume_mode(prepare.urls_to_scrape, &opts, opts.url.as_str()).await {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
+    let (urls_to_scrape, state_store) = match apply_resume_mode(
+        prepare.urls_to_scrape,
+        &opts,
+        opts.url.as_str(),
+        &root_correlation,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
 
     let elastic_ingestion = match build_elastic_ingestion(&opts, vault_ports).await {
         Ok(v) => v,
