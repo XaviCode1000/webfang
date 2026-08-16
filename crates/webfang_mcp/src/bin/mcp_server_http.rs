@@ -10,7 +10,9 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::Parser;
 use webfang_core::adapters::downloader::{DownloadConfig, Downloader};
-use webfang_mcp::mcp_server::server::{start_mcp_server, ServerOptions, DEFAULT_MCP_ADDR};
+use webfang_mcp::mcp_server::server::{
+    require_auth_for_external_bind, start_mcp_server, ServerOptions, DEFAULT_MCP_ADDR,
+};
 use webfang_mcp::mcp_server::{build_container_with_ai, McpState};
 
 /// Webfang MCP Server — Streamable HTTP transport.
@@ -63,6 +65,13 @@ async fn main() -> Result<()> {
     #[cfg(not(feature = "ai"))]
     if args.enable_ai {
         tracing::warn!("--enable-ai requested but the `ai` feature is not compiled in; ignoring");
+    }
+
+    // REQ-06: fail fast on a tokenless non-loopback bind, before building any
+    // container/downloader. Loopback binds stay token-free (development mode).
+    require_auth_for_external_bind(args.bind, args.auth_token.is_some())?;
+    if args.bind.ip().is_loopback() && args.auth_token.is_none() {
+        tracing::warn!("MCP server starting on loopback without auth token (development mode)");
     }
 
     // Build container with optional AI wiring (shared with mcp_server_stdio.rs)
