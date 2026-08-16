@@ -40,9 +40,11 @@ pub struct ServerOptions {
     pub request_timeout_secs: u64,
     /// Maximum request body size in bytes (default: 10 MB).
     pub body_limit_bytes: usize,
-    /// Maximum requests per second (default: 60).
+    /// Maximum requests per second (default: 10, matching the `webfang-mcp`
+    /// HTTP binary's `--rate` default).
     pub rate_per_second: u32,
-    /// Maximum burst size for rate limiting (default: 10).
+    /// Maximum burst size for rate limiting (default: 20, matching the
+    /// `webfang-mcp` HTTP binary's `--burst` default).
     pub rate_burst: u32,
     /// Expected Bearer token. When `None`, auth is disabled.
     pub auth_token: Option<String>,
@@ -53,8 +55,8 @@ impl Default for ServerOptions {
         Self {
             request_timeout_secs: 30,
             body_limit_bytes: 10 * 1024 * 1024,
-            rate_per_second: 60,
-            rate_burst: 10,
+            rate_per_second: 10,
+            rate_burst: 20,
             auth_token: None,
         }
     }
@@ -382,8 +384,8 @@ mod tests {
         let opts = ServerOptions::default();
         assert_eq!(opts.request_timeout_secs, 30);
         assert_eq!(opts.body_limit_bytes, 10 * 1024 * 1024);
-        assert_eq!(opts.rate_per_second, 60);
-        assert_eq!(opts.rate_burst, 10);
+        assert_eq!(opts.rate_per_second, 10);
+        assert_eq!(opts.rate_burst, 20);
         assert!(opts.auth_token.is_none());
     }
 
