@@ -23,6 +23,10 @@ pub struct EnvGuard {
     original_vars: Vec<(String, Option<String>)>,
 }
 
+// SAFETY: `env::set_var` / `env::remove_var` are only unsound when racing.
+// ENV_LOCK serializes every process-environment mutation performed through
+// this guard, and the guard restores the original state on drop.
+#[allow(unsafe_code)]
 impl EnvGuard {
     /// Remove the given variables from the environment, saving originals for
     /// restoration on drop.
@@ -71,6 +75,9 @@ impl EnvGuard {
     }
 }
 
+// SAFETY: same ENV_LOCK serialization as the constructors; drop restores
+// each variable to its captured original value (or removes it if unset).
+#[allow(unsafe_code)]
 impl Drop for EnvGuard {
     fn drop(&mut self) {
         for (var, original) in &self.original_vars {
@@ -183,6 +190,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)] // test-only setup/cleanup; runs alone under nextest
     fn env_guard_with_restores_preexisting_value() {
         const VAR: &str = "WEBFANG_TEST_VAR_2";
         // SAFETY: test-only, serial access not needed for setup before guard
@@ -203,6 +211,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)] // test-only setup/cleanup; runs alone under nextest
     fn env_guard_clean_removes_and_restores() {
         const VAR: &str = "WEBFANG_TEST_VAR_3";
         // SAFETY: test-only setup

@@ -235,7 +235,7 @@ pub struct DocumentChunk<S = Draft> {
     /// Optional - when present, enables request correlation across services
     #[serde(skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
-    /// Typestate marker (crate-visibile for tests)
+    /// Typestate marker (crate-visible for tests)
     #[serde(skip)]
     pub(crate) _state: PhantomData<S>,
 }

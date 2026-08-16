@@ -331,7 +331,7 @@ mod tests {
     // ISSUE #599 / #628 — REQ-WAF-09 regression: Fingerprint (T2) NEVER blocks
     // without a correlated WAF status (403/429/503/520-529), even in degraded
     // mode and at status 200. The pattern "Checking your browser" was
-    // mis-classified as Challenge-tier in #599-era code; it is a generic phrase
+    // misclassified as Challenge-tier in #599-era code; it is a generic phrase
     // that appears in benign content (articles about Cloudflare) and was
     // reclasified to Fingerprint (#628). These tests (two regression guards)
     // pin the genuine REQ-WAF-09 contract for T2 evidence so a future change

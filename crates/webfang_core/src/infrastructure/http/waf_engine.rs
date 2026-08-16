@@ -590,7 +590,7 @@ const MAX_EVIDENCE_PER_BODY: usize = 64;
 ///
 /// Compiled once from [`WAF_BODY_SIGNATURES`] on first access (thread-safe via
 /// `Lazy`). Signatures are compile-time constants and validated in tests — but a
-/// mis-configured signature would silently panic on first use. We therefore
+/// misconfigured signature would silently panic on first use. We therefore
 /// make the builder fallible and surface clear diagnostics if it ever happens.
 // LCOV_EXCL_START defensive: waf-automaton-build — signature patterns are compile-time constants verified in tests
 static WAF_AC: Lazy<AhoCorasick> = Lazy::new(|| {

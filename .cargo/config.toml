@@ -1,18 +1,10 @@
 # Cargo configuration for local development
-#
-# Build optimizations: configured globally in ~/.cargo/config.toml
 
 [alias]
 # Quick test with console enabled
 # Usage: cargo console -- --url https://example.com
-console = "run --features console"
+console = "run -p webfang_cli --bin webfang --features console"
 
 # Build with tokio_unstable (for tokio-console)
 # Usage: RUSTFLAGS="--cfg tokio_unstable" cargo debug
-debug = "build --features console"
-
-# NVMe-optimized: 8 parallel jobs for fast local builds
-# Cloud CI can override with its own settings or use env var CARGO_BUILD_JOBS
-[build]
-# Optimized for NVMe - increased from 1 (HDD-era) to 8 for parallel builds
-jobs = 8
+debug = "build -p webfang_cli --bin webfang --features console"

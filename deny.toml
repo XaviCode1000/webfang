@@ -31,10 +31,6 @@ ignore = [
     # Unsound. Build-only via built crate. Not in production binary.
     "RUSTSEC-2026-0184",
 
-    # RUSTSEC-2026-0186 (memmap2 0.9.11, severity: medium)
-    # Unsound. Only under --features ai via tract-onnx. Not in default binary.
-    "RUSTSEC-2026-0186",
-
     # RUSTSEC-2026-0002 (lru 0.12.5, severity: low)
     # Unsound. Transitivo via ratatui 0.29 (TUI). Cannot pin transitively.
     # Impact: IterMut Stacked Borrows violation — theoretical, not exploitable in CLI.
@@ -47,13 +43,13 @@ ignore = [
     # output Markdown (infrastructure/converter/syntax_highlight.rs). NO procesa
     # sitemap.xml descargado de sitios remotos — ruta completamente separada.
     # Tracking: https://github.com/tafia/quick-xml/issues/969
-    # Revisar antes de: 2026-08-15
+    # Re-check when plist updates past quick-xml 0.39 (tracking issues above).
     "RUSTSEC-2026-0194",
 
     # RUSTSEC-2026-0195 (quick-xml 0.39.4, severity: 7.5 HIGH)
     # Unbounded namespace allocation. Mismo analysis que RUSTSEC-2026-0194.
     # Tracking: https://github.com/tafia/quick-xml/issues/970
-    # Revisar antes de: 2026-08-15
+    # Re-check when plist updates past quick-xml 0.39 (tracking issues above).
     "RUSTSEC-2026-0195",
 ]
 

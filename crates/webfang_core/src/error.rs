@@ -1256,7 +1256,7 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_internal_fatal_semaphone() {
+    fn test_classify_internal_fatal_semaphore() {
         let err = ScraperError::SemaphoreInanition;
         assert_eq!(err.classify(), ErrorClass::InternalFatal);
     }

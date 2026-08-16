@@ -111,9 +111,9 @@ mod tests {
 
     #[test]
     fn clone_produces_equal_value() {
-        for strat in [JsStrategy::Static, JsStrategy::Hybrid, JsStrategy::Full] {
-            let cloned = strat;
-            assert_eq!(strat, cloned);
+        for strategy in [JsStrategy::Static, JsStrategy::Hybrid, JsStrategy::Full] {
+            let cloned = strategy;
+            assert_eq!(strategy, cloned);
         }
     }
 
@@ -160,15 +160,15 @@ mod tests {
     #[test]
     fn serde_deserialize_from_json_string() {
         let json = r#""static""#;
-        let strat: JsStrategy = serde_json::from_str(json).unwrap();
-        assert_eq!(strat, JsStrategy::Static);
+        let strategy: JsStrategy = serde_json::from_str(json).unwrap();
+        assert_eq!(strategy, JsStrategy::Static);
     }
 
     #[test]
     fn serde_deserialize_hybrid_json() {
         let json = r#""hybrid""#;
-        let strat: JsStrategy = serde_json::from_str(json).unwrap();
-        assert_eq!(strat, JsStrategy::Hybrid);
+        let strategy: JsStrategy = serde_json::from_str(json).unwrap();
+        assert_eq!(strategy, JsStrategy::Hybrid);
     }
 
     #[test]

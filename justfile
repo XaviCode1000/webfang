@@ -83,7 +83,6 @@ setup:
     @which cargo-deny || (echo "Falta: cargo binstall cargo-deny"; exit 1)
     @which typos || (echo "Falta: cargo binstall typos-cli"; exit 1)
     @which sccache || (echo "Falta: sccache"; exit 1)
-    @which mold || (echo "Falta: mold"; exit 1)
     @echo "Setup completo — todas las herramientas verificadas"
 
 # =============================================
@@ -113,28 +112,101 @@ test-dev-with-impact:
 # FUZZING (seguridad — detecta vulns y panics)
 # =============================================
 
+# ----------------------------------------------------------------------------
+# Fuzz tier policy (#507 — enforced as CLI flags)
+#
+# cargo-fuzz reads NO config file: libFuzzer options only reach the fuzz
+# binary when passed after `--` on `cargo fuzz run`. The `fuzz_flags()`
+# helper below IS the tier policy — there is no fuzz.toml.
+#
+# Any target added to fuzz/Cargo.toml MUST be registered in `fuzz_flags()`
+# (each fuzz recipe below) and in the `fuzz-smoke`/`fuzz-full` target lists.
+# Touching a fuzzed function without updating them is a CI regression (#514).
+#
+# | Tier | Scope                                | max_len    | timeout |
+# |------|--------------------------------------|------------|---------|
+# | 1    | Core HTML pipeline (parse/clean/convert/readability/extract) | 16384 | 10 |
+# | 2    | Sitemap XML                          | 32768      | 15      |
+# | 3    | Link/URL processing                  | 8192       | 10      |
+# | 4    | Security-sensitive (WAF, compression, cookies) | 4096–32768 | 10–15 |
+# | 5    | Content processing (post-extraction) | 8192       | 10      |
+# | 6    | Asset extraction                     | 8192       | 10      |
+#
+# HTML targets run at max_len=16384 (HTML can be large).
+# Decompression/sitemap run at max_len=32768 + timeout=15 (slower work).
+# HTTP-header-like inputs stay small (max_len=4096).
+# ----------------------------------------------------------------------------
+
 # Smoke test: ejecuta cada target por 5 segundos
 fuzz-smoke:
-    @echo "🔍 Smoke testing all fuzz targets (5s each)..."
-    @for target in fuzz_html_cleaner fuzz_convert_to_markdown fuzz_readability_parse fuzz_extract_text fuzz_parse_sitemap fuzz_extract_links fuzz_url_validation fuzz_url_normalization fuzz_waf_detection fuzz_compression_detect fuzz_wikilinks fuzz_syntax_highlight fuzz_slug_from_url fuzz_extract_assets; do \
-        echo "  → $$target"; \
-        cargo +nightly fuzz run $$target -- -max_total_time=5 2>&1 | tail -1; \
+    #!/usr/bin/env bash
+    set -u
+    fuzz_flags() {
+        case "$1" in
+            fuzz_parse_html|fuzz_html_cleaner|fuzz_convert_to_markdown|fuzz_readability_parse|fuzz_extract_text|fuzz_extract_links|fuzz_compression_detect)
+                echo "-max_len=16384" ;;
+            fuzz_url_validation|fuzz_url_normalization|fuzz_waf_detection|fuzz_wikilinks|fuzz_syntax_highlight|fuzz_slug_from_url|fuzz_extract_assets)
+                echo "-max_len=8192" ;;
+            fuzz_parse_content_disposition)
+                echo "-max_len=4096" ;;
+            fuzz_parse_sitemap|fuzz_decompression)
+                echo "-max_len=32768 -timeout=15" ;;
+            *)
+                echo "" ;;
+        esac
+    }
+    echo "🔍 Smoke testing all fuzz targets (5s each)..."
+    for target in fuzz_parse_html fuzz_html_cleaner fuzz_convert_to_markdown fuzz_readability_parse fuzz_extract_text fuzz_parse_sitemap fuzz_extract_links fuzz_url_validation fuzz_url_normalization fuzz_waf_detection fuzz_compression_detect fuzz_parse_content_disposition fuzz_decompression fuzz_wikilinks fuzz_syntax_highlight fuzz_slug_from_url fuzz_extract_assets; do
+        echo "  → $target"
+        cargo +nightly fuzz run "$target" -- $(fuzz_flags "$target") -max_total_time=5 2>&1 | tail -1
     done
-    @echo "✅ All targets smoke-tested"
+    echo "✅ All targets smoke-tested"
 
 # Fuzz un target específico por N segundos (default: 60)
 fuzz-target target seconds="60":
-    @echo "🎯 Fuzzing {{target}} for {{seconds}}s..."
-    cargo +nightly fuzz run {{target}} -- -max_total_time={{seconds}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    fuzz_flags() {
+        case "$1" in
+            fuzz_parse_html|fuzz_html_cleaner|fuzz_convert_to_markdown|fuzz_readability_parse|fuzz_extract_text|fuzz_extract_links|fuzz_compression_detect)
+                echo "-max_len=16384" ;;
+            fuzz_url_validation|fuzz_url_normalization|fuzz_waf_detection|fuzz_wikilinks|fuzz_syntax_highlight|fuzz_slug_from_url|fuzz_extract_assets)
+                echo "-max_len=8192" ;;
+            fuzz_parse_content_disposition)
+                echo "-max_len=4096" ;;
+            fuzz_parse_sitemap|fuzz_decompression)
+                echo "-max_len=32768 -timeout=15" ;;
+            *)
+                echo "" ;;
+        esac
+    }
+    echo "🎯 Fuzzing {{target}} for {{seconds}}s..."
+    cargo +nightly fuzz run "{{target}}" -- $(fuzz_flags "{{target}}") -max_total_time={{seconds}}
 
 # Fuzz todos los targets por 10 minutos (para CI nocturno)
 fuzz-full:
-    @echo "🔬 Running full fuzz suite (10 min per target)..."
-    @for target in fuzz_html_cleaner fuzz_convert_to_markdown fuzz_readability_parse fuzz_extract_text fuzz_parse_sitemap fuzz_extract_links fuzz_url_validation fuzz_url_normalization fuzz_waf_detection fuzz_compression_detect fuzz_wikilinks fuzz_syntax_highlight fuzz_slug_from_url fuzz_extract_assets; do \
-        echo "=== $$target ==="; \
-        cargo +nightly fuzz run $$target -- -max_total_time=600 || echo "FAILED: $$target"; \
+    #!/usr/bin/env bash
+    set -u
+    fuzz_flags() {
+        case "$1" in
+            fuzz_parse_html|fuzz_html_cleaner|fuzz_convert_to_markdown|fuzz_readability_parse|fuzz_extract_text|fuzz_extract_links|fuzz_compression_detect)
+                echo "-max_len=16384" ;;
+            fuzz_url_validation|fuzz_url_normalization|fuzz_waf_detection|fuzz_wikilinks|fuzz_syntax_highlight|fuzz_slug_from_url|fuzz_extract_assets)
+                echo "-max_len=8192" ;;
+            fuzz_parse_content_disposition)
+                echo "-max_len=4096" ;;
+            fuzz_parse_sitemap|fuzz_decompression)
+                echo "-max_len=32768 -timeout=15" ;;
+            *)
+                echo "" ;;
+        esac
+    }
+    echo "🔬 Running full fuzz suite (10 min per target)..."
+    for target in fuzz_parse_html fuzz_html_cleaner fuzz_convert_to_markdown fuzz_readability_parse fuzz_extract_text fuzz_parse_sitemap fuzz_extract_links fuzz_url_validation fuzz_url_normalization fuzz_waf_detection fuzz_compression_detect fuzz_parse_content_disposition fuzz_decompression fuzz_wikilinks fuzz_syntax_highlight fuzz_slug_from_url fuzz_extract_assets; do
+        echo "=== $target ==="
+        cargo +nightly fuzz run "$target" -- $(fuzz_flags "$target") -max_total_time=600 || echo "FAILED: $target"
     done
-    @echo "✅ Full fuzz suite complete"
+    echo "✅ Full fuzz suite complete"
 
 # Coverage report: qué tan bien cubre el fuzzing el código
 fuzz-coverage target:
