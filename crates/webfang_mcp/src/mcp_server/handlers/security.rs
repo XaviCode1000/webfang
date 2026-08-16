@@ -446,6 +446,8 @@ mod tests {
             outcome: Outcome::Success,
             count: 4,
             duration: Duration::from_millis(100),
+            trace_id: None,
+            correlation_id: None,
         });
         let snapshot = metrics.snapshot();
         let result = render_metrics(&snapshot);
@@ -631,6 +633,8 @@ mod tests {
             outcome: Outcome::Success,
             count: 1,
             duration: Duration::from_millis(5),
+            trace_id: None,
+            correlation_id: None,
         });
         let res = handler
             .get_scrape_metrics()

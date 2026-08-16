@@ -43,6 +43,9 @@ impl McpHandler {
 
         let start = Instant::now();
         let client = self.state.container.http_client().as_ref();
+        // An MCP tool call IS an operation (#501/#698): mint the run-root
+        // identity at handler entry so both success and error events share it.
+        let root_correlation = webfang_core::domain::CorrelationId::new();
         match webfang_core::application::scraper_service::scrape_with_readability(client, &url)
             .await
         {
@@ -54,6 +57,8 @@ impl McpHandler {
                     outcome: Outcome::Success,
                     count,
                     duration: start.elapsed(),
+                    trace_id: Some(root_correlation.trace_id().to_string()),
+                    correlation_id: Some(root_correlation.to_traceparent()),
                 });
                 let content = serde_json::to_string_pretty(&results)
                     .unwrap_or_else(|_| "failed to serialize".into());
@@ -66,6 +71,8 @@ impl McpHandler {
                     outcome: Outcome::Error,
                     count: 0,
                     duration: start.elapsed(),
+                    trace_id: Some(root_correlation.trace_id().to_string()),
+                    correlation_id: Some(root_correlation.to_traceparent()),
                 });
                 Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
             },
@@ -139,6 +146,8 @@ impl McpHandler {
                     outcome: Outcome::Success,
                     count,
                     duration: start.elapsed(),
+                    trace_id: Some(root_correlation.trace_id().to_string()),
+                    correlation_id: Some(root_correlation.to_traceparent()),
                 });
                 let response = selector_service::build_scrape_response(
                     outcome.results,
@@ -156,6 +165,8 @@ impl McpHandler {
                     outcome: Outcome::Error,
                     count: 0,
                     duration: start.elapsed(),
+                    trace_id: Some(root_correlation.trace_id().to_string()),
+                    correlation_id: Some(root_correlation.to_traceparent()),
                 });
                 Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
             },
@@ -195,6 +206,9 @@ impl McpHandler {
         }
 
         let start = Instant::now();
+        // An MCP tool call IS an operation (#501/#698): mint the run-root
+        // identity once so both success and error events share it.
+        let root_correlation = webfang_core::domain::CorrelationId::new();
         let domain = urls
             .first()
             .and_then(|u| u.host_str())
@@ -233,6 +247,8 @@ impl McpHandler {
                     outcome: outcome_type,
                     count,
                     duration: start.elapsed(),
+                    trace_id: Some(root_correlation.trace_id().to_string()),
+                    correlation_id: Some(root_correlation.to_traceparent()),
                 });
                 tracing::info!(
                     "batch scrape complete: {} pages, {} failed",
@@ -252,6 +268,8 @@ impl McpHandler {
                     outcome: Outcome::Error,
                     count,
                     duration: start.elapsed(),
+                    trace_id: Some(root_correlation.trace_id().to_string()),
+                    correlation_id: Some(root_correlation.to_traceparent()),
                 });
                 tracing::error!("batch scrape failed: {}", e);
                 Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
@@ -284,6 +302,9 @@ impl McpHandler {
         crate::mcp_server::ssrf::validate_url_no_ssrf(&seed_url).await?;
 
         let start = Instant::now();
+        // An MCP tool call IS an operation (#501/#698): mint the run-root
+        // identity at handler entry so both success and error events share it.
+        let root_correlation = webfang_core::domain::CorrelationId::new();
         let crawler_config = webfang_core::domain::CrawlerConfig::builder(seed_url)
             .max_depth(params.max_depth.unwrap_or(3))
             .max_pages(params.max_pages.unwrap_or(100) as usize)
@@ -298,6 +319,8 @@ impl McpHandler {
                     outcome: Outcome::Success,
                     count,
                     duration: start.elapsed(),
+                    trace_id: Some(root_correlation.trace_id().to_string()),
+                    correlation_id: Some(root_correlation.to_traceparent()),
                 });
                 let urls: Vec<String> = result.urls.iter().map(|u| u.url.to_string()).collect();
                 let json = serde_json::json!({
@@ -318,6 +341,8 @@ impl McpHandler {
                     outcome: Outcome::Error,
                     count: 0,
                     duration: start.elapsed(),
+                    trace_id: Some(root_correlation.trace_id().to_string()),
+                    correlation_id: Some(root_correlation.to_traceparent()),
                 });
                 Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
             },
@@ -350,6 +375,9 @@ impl McpHandler {
         crate::mcp_server::ssrf::validate_url_no_ssrf(&seed_url).await?;
 
         let start = Instant::now();
+        // An MCP tool call IS an operation (#501/#698): mint the run-root
+        // identity at handler entry so both success and error events share it.
+        let root_correlation = webfang_core::domain::CorrelationId::new();
         let config = webfang_core::domain::CrawlerConfig::new(seed_url);
 
         match webfang_core::application::crawler::crawl_with_sitemap(
@@ -367,6 +395,8 @@ impl McpHandler {
                     outcome: Outcome::Success,
                     count,
                     duration: start.elapsed(),
+                    trace_id: Some(root_correlation.trace_id().to_string()),
+                    correlation_id: Some(root_correlation.to_traceparent()),
                 });
                 tracing::info!("sitemap crawl complete: {} urls found", urls.len());
                 let url_strings: Vec<String> = urls.iter().map(|u| u.url.to_string()).collect();
@@ -382,6 +412,8 @@ impl McpHandler {
                     outcome: Outcome::Error,
                     count: 0,
                     duration: start.elapsed(),
+                    trace_id: Some(root_correlation.trace_id().to_string()),
+                    correlation_id: Some(root_correlation.to_traceparent()),
                 });
                 tracing::error!("sitemap crawl failed: {}", e);
                 Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
@@ -411,6 +443,9 @@ impl McpHandler {
         crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
 
         let start = Instant::now();
+        // An MCP tool call IS an operation (#501/#698): mint the run-root
+        // identity once; all outcome events of this discovery share it.
+        let root_correlation = webfang_core::domain::CorrelationId::new();
         let port = self.state.container.http_client();
         match port.get(url.as_str()).await {
             Ok(resp) => {
@@ -424,6 +459,8 @@ impl McpHandler {
                         outcome: Outcome::Error,
                         count: 0,
                         duration: start.elapsed(),
+                        trace_id: Some(root_correlation.trace_id().to_string()),
+                        correlation_id: Some(root_correlation.to_traceparent()),
                     });
                     return Ok(CallToolResult::error(vec![Content::text(format!(
                         "HTTP error: status {}",
@@ -440,6 +477,8 @@ impl McpHandler {
                             outcome: Outcome::Success,
                             count,
                             duration: start.elapsed(),
+                            trace_id: Some(root_correlation.trace_id().to_string()),
+                            correlation_id: Some(root_correlation.to_traceparent()),
                         });
                         let content = serde_json::to_string_pretty(&links)
                             .unwrap_or_else(|_| "failed to serialize".into());
@@ -452,6 +491,8 @@ impl McpHandler {
                             outcome: Outcome::Error,
                             count: 0,
                             duration: start.elapsed(),
+                            trace_id: Some(root_correlation.trace_id().to_string()),
+                            correlation_id: Some(root_correlation.to_traceparent()),
                         });
                         Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
                     },
@@ -464,6 +505,8 @@ impl McpHandler {
                     outcome: Outcome::Error,
                     count: 0,
                     duration: start.elapsed(),
+                    trace_id: Some(root_correlation.trace_id().to_string()),
+                    correlation_id: Some(root_correlation.to_traceparent()),
                 });
                 Ok(CallToolResult::error(vec![Content::text(format!(
                     "HTTP error: {e}"
@@ -494,6 +537,9 @@ impl McpHandler {
         crate::mcp_server::ssrf::validate_url_no_ssrf(&seed).await?;
 
         let start = Instant::now();
+        // An MCP tool call IS an operation (#501/#698): mint the run-root
+        // identity at handler entry so both success and error events share it.
+        let root_correlation = webfang_core::domain::CorrelationId::new();
         let crawler_config = webfang_core::domain::CrawlerConfig::new(seed);
 
         match webfang_core::application::crawler::crawl_with_sitemap(
@@ -511,6 +557,8 @@ impl McpHandler {
                     outcome: Outcome::Success,
                     count,
                     duration: start.elapsed(),
+                    trace_id: Some(root_correlation.trace_id().to_string()),
+                    correlation_id: Some(root_correlation.to_traceparent()),
                 });
                 let urls: Vec<String> = discovered.into_iter().map(|d| d.url.to_string()).collect();
                 let content = serde_json::to_string_pretty(&urls)
@@ -524,6 +572,8 @@ impl McpHandler {
                     outcome: Outcome::Error,
                     count: 0,
                     duration: start.elapsed(),
+                    trace_id: Some(root_correlation.trace_id().to_string()),
+                    correlation_id: Some(root_correlation.to_traceparent()),
                 });
                 Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
             },
@@ -554,6 +604,9 @@ impl McpHandler {
         crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
 
         let start = Instant::now();
+        // An MCP tool call IS an operation (#501/#698): mint the run-root
+        // identity at handler entry so both success and error events share it.
+        let root_correlation = webfang_core::domain::CorrelationId::new();
         let port = self.state.container.http_client();
         match port.get(url.as_str()).await {
             Ok(resp) => {
@@ -563,6 +616,8 @@ impl McpHandler {
                     outcome: Outcome::Success,
                     count: 1,
                     duration: start.elapsed(),
+                    trace_id: Some(root_correlation.trace_id().to_string()),
+                    correlation_id: Some(root_correlation.to_traceparent()),
                 });
                 let html = resp.body;
                 let text = webfang_core::infrastructure::scraper::fallback::extract_text(&html);
@@ -594,6 +649,8 @@ impl McpHandler {
                     outcome: Outcome::Error,
                     count: 0,
                     duration: start.elapsed(),
+                    trace_id: Some(root_correlation.trace_id().to_string()),
+                    correlation_id: Some(root_correlation.to_traceparent()),
                 });
                 Ok(CallToolResult::error(vec![Content::text(format!(
                     "HTTP error: {e}"

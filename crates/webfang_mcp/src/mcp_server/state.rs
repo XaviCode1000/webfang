@@ -295,6 +295,8 @@ mod tests {
             outcome: Outcome::Success,
             count: 2,
             duration: Duration::from_millis(10),
+            trace_id: None,
+            correlation_id: None,
         });
 
         let snap = state2.metrics_snapshot();

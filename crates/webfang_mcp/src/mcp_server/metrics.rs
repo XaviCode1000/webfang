@@ -51,6 +51,13 @@ pub struct ScrapeEvent {
     pub count: usize,
     /// Wall-clock duration of the operation.
     pub duration: Duration,
+    /// Run-trace UUID (hex, dashed) of the tool call that produced this event;
+    /// `Some` for handlers that mint a run-root identity (#698), `None` when
+    /// the operation has no identity (e.g. synthetic test events).
+    pub trace_id: Option<String>,
+    /// W3C traceparent of the tool call's run-root identity (#698); pairs with
+    /// `trace_id` so the metric event is reconstructable with the run trace.
+    pub correlation_id: Option<String>,
 }
 
 /// Per-domain aggregate (REQ-02).
@@ -94,6 +101,8 @@ impl ScrapeMetrics {
             success = event.outcome.is_success(),
             duration_ms = event.duration.as_millis() as u64,
             pages = event.count,
+            trace_id = event.trace_id.clone(),
+            correlation_id = event.correlation_id.clone(),
             "scrape recorded"
         );
 
@@ -205,6 +214,8 @@ mod tests {
             outcome: Outcome::Success,
             count: 3,
             duration: Duration::from_millis(100),
+            trace_id: None,
+            correlation_id: None,
         });
         m.record(ScrapeEvent {
             tool: "scrape_url",
@@ -212,6 +223,8 @@ mod tests {
             outcome: Outcome::Success,
             count: 5,
             duration: Duration::from_millis(200),
+            trace_id: None,
+            correlation_id: None,
         });
         m.record(ScrapeEvent {
             tool: "scrape_url",
@@ -219,6 +232,8 @@ mod tests {
             outcome: Outcome::Error,
             count: 0,
             duration: Duration::from_millis(300),
+            trace_id: None,
+            correlation_id: None,
         });
     }
 
@@ -271,6 +286,8 @@ mod tests {
             outcome: Outcome::Success,
             count: 1,
             duration: Duration::from_millis(50),
+            trace_id: None,
+            correlation_id: None,
         });
 
         let snap = m.snapshot();
@@ -341,6 +358,8 @@ mod tests {
                     outcome: Outcome::Success,
                     count: 1,
                     duration: Duration::from_millis(1),
+                    trace_id: None,
+                    correlation_id: None,
                 });
             }));
         }
@@ -434,6 +453,10 @@ mod tests {
                 outcome: Outcome::Success,
                 count: 3,
                 duration: Duration::from_millis(120),
+                trace_id: Some("01949e0e-8b8e-7000-8000-000000000001".to_string()),
+                correlation_id: Some(
+                    "00-01949e0e8b8e70008000000000000001-0000000000000042-01".to_string(),
+                ),
             });
         });
 
@@ -457,5 +480,79 @@ mod tests {
             "duration_ms field"
         );
         assert_eq!(field("pages").as_deref(), Some("3"), "pages field");
+        assert_eq!(
+            field("trace_id").as_deref(),
+            Some("01949e0e-8b8e-7000-8000-000000000001"),
+            "trace_id field"
+        );
+        assert_eq!(
+            field("correlation_id").as_deref(),
+            Some("00-01949e0e8b8e70008000000000000001-0000000000000042-01"),
+            "correlation_id field"
+        );
+    }
+
+    /// #698: events with no identity (`None` trace_id/correlation_id — e.g.
+    /// synthetic test events) must emit NO trace_id/correlation_id fields at
+    /// all, so the presence of a key always implies a real identity.
+    #[test]
+    #[serial]
+    fn record_omits_identity_when_none() {
+        ensure_global_subscriber();
+        use tracing::field::{Field, Visit};
+        use tracing_subscriber::layer::Layer;
+        use tracing_subscriber::prelude::*;
+
+        /// Collects field names only (values are irrelevant here).
+        struct Keys(Arc<Mutex<Vec<String>>>);
+
+        impl Visit for Keys {
+            fn record_debug(&mut self, field: &Field, _value: &dyn std::fmt::Debug) {
+                self.0
+                    .lock()
+                    .expect("keys mutex")
+                    .push(field.name().to_string());
+            }
+        }
+
+        struct KeysLayer {
+            keys: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl<S: tracing::Subscriber> Layer<S> for KeysLayer {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                let mut visitor = Keys(Arc::clone(&self.keys));
+                event.record(&mut visitor);
+            }
+        }
+
+        let keys = Arc::new(Mutex::new(Vec::new()));
+        let layer = KeysLayer {
+            keys: Arc::clone(&keys),
+        };
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            ScrapeMetrics::default().record(ScrapeEvent {
+                tool: "scrape_url",
+                domain: "example.com".to_string(),
+                outcome: Outcome::Success,
+                count: 1,
+                duration: Duration::from_millis(10),
+                trace_id: None,
+                correlation_id: None,
+            });
+        });
+
+        let keys = keys.lock().expect("keys mutex");
+        assert!(!keys.contains(&"trace_id".to_string()), "no trace_id key");
+        assert!(
+            !keys.contains(&"correlation_id".to_string()),
+            "no correlation_id key"
+        );
     }
 }
