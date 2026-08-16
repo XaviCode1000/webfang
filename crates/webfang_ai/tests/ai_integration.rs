@@ -325,8 +325,8 @@ fn test_matryoshka_identity_for_384d() {
 
 /// Builds an offline-mode semantic cleaner from the default config.
 ///
-/// The default config resolves the model from the local cache at
-/// `~/.cache/webfang/ai_models`. The cleaner is `.expect()`ed to initialize so
+/// The default config resolves the model from the native hf_hub cache at
+/// `~/.cache/huggingface/hub`. The cleaner is `.expect()`ed to initialize so
 /// that an absent model makes the test FAIL LOUDLY rather than silently
 /// passing. These pipeline tests are `#[ignore]`'d (require the cached ONNX
 /// model and must run serially to avoid OOM in CI).
