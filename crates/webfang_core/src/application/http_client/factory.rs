@@ -95,7 +95,10 @@ pub(super) fn build_wreq_client(
         .gzip(true)
         .brotli(true)
         .cookie_store(true)
-        .redirect(wreq::redirect::Policy::limited(10));
+        // SSRF guard (#703): default 10-hop limit + stops redirects that
+        // target a literal forbidden IP. Hostname targets are validated at
+        // entry by the async SSRF guard.
+        .redirect(crate::infrastructure::ssrf::redirect_policy());
 
     if let Some(ua) = user_agent {
         builder = builder.user_agent(ua);
