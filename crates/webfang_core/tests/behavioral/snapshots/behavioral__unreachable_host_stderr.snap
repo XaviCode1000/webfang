@@ -8,7 +8,7 @@ expression: redacted
   <TIMESTAMP>  WARN <MODULE>: Transport failure fetching http://127.0.0.1:<PORT>/ — retrying, attempt: 0, max_retries: 0, error: I/O error: Connection refused (os error 111)
     at <FILE>.rs:<LINE>
 
-  <TIMESTAMP>  WARN <MODULE>: Failed to scrape http://127.0.0.1:<PORT>/: error de red: I/O error: Connection refused (os error 111)
+  <TIMESTAMP> ERROR <MODULE>: page scrape failed, error: error de red: I/O error: Connection refused (os error 111), url: http://127.0.0.1:<PORT>/, stage: scrape, trace_id: "<TRACE_ID>"
     at <FILE>.rs:<LINE>
 
 Failed to scrape http://127.0.0.1:<PORT>/: error de red: I/O error: Connection refused (os error 111)

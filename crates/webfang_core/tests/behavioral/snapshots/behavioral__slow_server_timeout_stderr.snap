@@ -1,9 +1,8 @@
 ---
 source: crates/webfang_core/tests/behavioral/main.rs
-assertion_line: 43
 expression: redacted
 ---
-  <TIMESTAMP>  WARN <MODULE>: Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: request timed out after 1s
+  <TIMESTAMP> ERROR <MODULE>: page scrape failed, error: error de red: request timed out after 1s, url: http://127.0.0.1:<PORT>/slow, stage: scrape, trace_id: "<TRACE_ID>"
     at <FILE>.rs:<LINE>
 
 Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: request timed out after 1s
