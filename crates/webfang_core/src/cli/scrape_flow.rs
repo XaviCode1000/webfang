@@ -122,6 +122,10 @@ fn filter_processed_urls(urls_to_scrape: Vec<Url>, store: &StateStore) -> Vec<Ur
 
 /// Scrape all URLs, reporting progress via the provided observer.
 ///
+/// Returns `(results, failures, blocked)` where `blocked` counts URLs skipped
+/// because robots.txt disallowed them (#705) — distinct from both successful
+/// results and failures, and from shutdown-skipped URLs.
+///
 /// Correlation contract (#501): `root_correlation` is the run-root identity
 /// owned by the orchestrator; each page derives `.child()` from it — one
 /// shared `trace_id` for the whole run, a fresh `span_id` per page.
@@ -152,6 +156,7 @@ pub async fn scrape_urls(
     (
         Vec<ScrapedContent>,
         Vec<(String, crate::error::ScraperError)>,
+        usize,
     ),
     crate::error::ScraperError,
 > {
@@ -244,6 +249,7 @@ pub async fn scrape_urls(
     ordered.sort_by_key(|(index, _)| *index);
 
     let mut skipped = 0usize;
+    let mut blocked = 0usize;
     for (_, slot) in ordered {
         let Some((url, outcome)) = slot else {
             skipped += 1;
@@ -251,8 +257,10 @@ pub async fn scrape_urls(
         };
         match outcome {
             Ok(Some(content)) => results.push(content),
-            // Robots.txt blocked — skipped, not a failure.
-            Ok(None) => {},
+            // Robots.txt blocked — skipped, not a failure. Counted separately
+            // (#705) so an all-blocked run can exit 77 instead of a misleading
+            // "no pages scraped" network error.
+            Ok(None) => blocked += 1,
             Err(e) => failures.push((url.as_str().to_string(), e)),
         }
     }
@@ -267,7 +275,7 @@ pub async fn scrape_urls(
         .on_finished(processing_count, total_successful, total_failed)
         .await;
 
-    Ok((results, failures))
+    Ok((results, failures, blocked))
 }
 
 /// Result of one page scrape: the URL plus its outcome (content, robots-skip,
@@ -391,6 +399,8 @@ mod tests {
     use tempfile::TempDir;
     use tokio_util::sync::CancellationToken;
     use url::Url;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
 
     // ===== shutdown tests (#653) =====
 
@@ -415,7 +425,7 @@ mod tests {
         let cancel = CancellationToken::new();
         cancel.cancel();
 
-        let (results, failures) = scrape_urls(
+        let (results, failures, blocked) = scrape_urls(
             &urls,
             &crate::ScraperConfig::default(),
             &opts,
@@ -433,6 +443,49 @@ mod tests {
             failures.is_empty(),
             "skipped URLs are not failures, got: {failures:?}"
         );
+        assert_eq!(blocked, 0, "shutdown skips are not robots-blocks");
+    }
+
+    // ===== robots-blocked counting tests (#705) =====
+
+    /// A URL disallowed by robots.txt is neither a result nor a failure: it
+    /// lands in the dedicated blocked counter so the orchestrator can route
+    /// all-blocked runs to exit 77 (#705).
+    #[cfg_attr(miri, ignore)] // btls/wreq FFI (BoringSSL TLS_method) not supported by Miri
+    #[tokio::test]
+    async fn robots_blocked_urls_are_counted_not_failed() {
+        let server = wiremock::MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/robots.txt"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("User-agent: *\nDisallow: /\n"),
+            )
+            .mount(&server)
+            .await;
+
+        let urls = vec![Url::parse(&format!("{}/page", server.uri())).expect("valid URL")];
+        let opts = CrawlOptions::default(); // ignore_robots: false
+        let cancel = CancellationToken::new();
+
+        let (results, failures, blocked) = scrape_urls(
+            &urls,
+            &crate::ScraperConfig::default(),
+            &opts,
+            &crate::application::progress_observer::NoopObserver,
+            None,
+            None,
+            &crate::domain::CorrelationId::new(),
+            &cancel,
+        )
+        .await
+        .expect("setup must succeed");
+
+        assert!(results.is_empty(), "blocked URL must not be scraped");
+        assert!(
+            failures.is_empty(),
+            "robots-blocked URLs are not failures, got: {failures:?}"
+        );
+        assert_eq!(blocked, 1, "blocked URL must be counted");
     }
 
     // ===== build_http_client_config tests =====
