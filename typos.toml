@@ -1,0 +1,69 @@
+# typos-cli configuration — https://github.com/crate-ci/typos
+# webfang ships user-facing error messages in Spanish (AGENTS.md policy), so
+# Spanish words that collide with English must be allowlisted here.
+#
+# Entries are case-sensitive; each case variant of a word needs its own entry.
+
+[default.extend-words]
+# --- Spanish words (user-facing errors, comments, docs, report prose) ---
+cliente = "cliente"
+corrupto = "corrupto"
+requiere = "requiere"
+Requiere = "Requiere"
+vectores = "vectores"
+caracteres = "caracteres"
+posible = "posible"
+inicial = "inicial"
+problemas = "problemas"
+dependencias = "dependencias"
+regresion = "regresion"
+funcional = "funcional"
+sesion = "sesion"
+documentacion = "documentacion"
+combinacion = "combinacion"
+configuracion = "configuracion"
+correlacion = "correlacion"
+Correlacion = "Correlacion"
+hace = "hace"
+vas = "vas"
+ser = "ser"
+Ser = "Ser"
+manuales = "manuales"
+ignora = "ignora"
+registre = "registre"
+excede = "excede"
+interactivo = "interactivo"
+Interactivo = "Interactivo"
+programa = "programa"
+variante = "variante"
+variantes = "variantes"
+varios = "varios"
+doble = "doble"
+fase = "fase"
+Fase = "Fase"
+FASE = "FASE"
+fases = "fases"
+Fases = "Fases"
+imposible = "imposible"
+IMPOSIBLE = "IMPOSIBLE"
+FALSO = "FALSO"
+Comando = "Comando"
+Comandos = "Comandos"
+Funcion = "Funcion"
+
+# --- Legitimate proper nouns / API names (not typos) ---
+# ratatui is the TUI crate name (not the dish "ratatouille").
+ratatui = "ratatui"
+Ratatui = "Ratatui"
+# numpy's range constructor "np.arange" appears in a bench fixture.
+arange = "arange"
+# Akamai bot-management cookie name "_abck".
+abck = "abck"
+# Subscripted observation variable "o_t" rendered as "ot" in a quoted paper.
+ot = "ot"
+
+# --- Widely-used English variants that typos' prescriptive dict flags ---
+# "unparseable" is the dominant spelling in software and is used in stable
+# test identifiers; typos prefers the rarer "unparsable". Allowlist instead
+# of churning comments and test names.
+unparseable = "unparseable"
