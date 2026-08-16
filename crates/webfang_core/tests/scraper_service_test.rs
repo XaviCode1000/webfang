@@ -28,7 +28,8 @@ async fn test_scrape_with_config_invalid_url() {
     );
 
     let root = CorrelationId::new();
-    let result = scrape_with_config(&mock, &url, &config, None, None, None, &root).await;
+    let result =
+        scrape_with_config(&mock, &url, &config, None, None, None, None, false, &root).await;
     assert!(result.is_err(), "connection error should propagate as Err");
 }
 
@@ -51,7 +52,7 @@ async fn test_scrape_with_config_returns_outcome() {
     let config = ScraperConfig::default();
 
     let root = CorrelationId::new();
-    let outcome = scrape_with_config(&mock, &url, &config, None, None, None, &root)
+    let outcome = scrape_with_config(&mock, &url, &config, None, None, None, None, false, &root)
         .await
         .expect("mock HTML should succeed");
     assert!(
@@ -96,7 +97,7 @@ async fn test_scrape_with_config_derives_child_from_run_root() {
         .expect("valid fixed UUID for the test root");
     let root = CorrelationId::new_with_ids(root_trace, 0x0000_0000_0000_0001);
 
-    let outcome = scrape_with_config(&mock, &url, &config, None, None, None, &root)
+    let outcome = scrape_with_config(&mock, &url, &config, None, None, None, None, false, &root)
         .await
         .expect("mock HTML should scrape");
 
@@ -119,6 +120,175 @@ async fn test_scrape_with_config_derives_child_from_run_root() {
         root.span_id(),
         "page identity must derive a fresh span_id via .child(), not reuse the root's"
     );
+}
+
+// =====================================================================
+// robots.txt enforcement at the scrape_with_config boundary (#697)
+// =====================================================================
+mod robots {
+    use super::*;
+    use webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Minimal article HTML that Readability extracts deterministically.
+    const ARTICLE_HTML: &str = r#"<!DOCTYPE html>
+<html>
+<head><title>Private Page</title></head>
+<body>
+<article>
+<h1>Main Heading</h1>
+<p>This is the content of the article. It has enough text to be extracted by Readability.</p>
+</article>
+</body>
+</html>"#;
+
+    /// A fetcher whose internal wreq client talks to the wiremock origin
+    /// (`RobotsFetcher` keys its fetches off the page URL's origin, which
+    /// points at 127.0.0.1:PORT). Construction is offline — only the check
+    /// itself performs network I/O, entirely against the mock server.
+    fn fetcher_for(_server: &MockServer) -> RobotsFetcher {
+        RobotsFetcher::with_default_profile(5).expect("robot fetcher construction is offline")
+    }
+
+    /// Mount a robots.txt that disallows `/private/*` and an article page at
+    /// `/{name}`.
+    async fn mount_site(server: &MockServer, name: &str) {
+        Mock::given(method("GET"))
+            .and(path("/robots.txt"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("User-agent: *\nDisallow: /private\n"),
+            )
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/{name}")))
+            .respond_with(ResponseTemplate::new(200).set_body_string(ARTICLE_HTML))
+            .mount(server)
+            .await;
+    }
+
+    /// A URL disallowed by robots.txt must be rejected BEFORE any page fetch:
+    /// the call fails with the robots denial and the wiremock page endpoint
+    /// records zero hits (the only request is the robots.txt probe itself).
+    #[cfg_attr(miri, ignore)] // real network stack via wreq — unsupported by Miri
+    #[tokio::test]
+    async fn scrape_disallowed_url_errors_before_page_fetch() {
+        let server = MockServer::start().await;
+        mount_site(&server, "private/page").await;
+
+        let client = webfang_core::application::create_http_client().expect("wreq client builds");
+        let fetcher = fetcher_for(&server);
+        let url = url::Url::parse(&format!("{}/private/page", server.uri())).expect("valid URL");
+        let config = ScraperConfig::default();
+        let root = CorrelationId::new();
+
+        let err = scrape_with_config(
+            &client,
+            &url,
+            &config,
+            None,
+            None,
+            None,
+            Some(&fetcher),
+            false,
+            &root,
+        )
+        .await
+        .expect_err("robots-disallowed URL must fail the scrape");
+
+        match err {
+            ScraperError::WafBlocked { provider, .. } => assert!(
+                provider.contains("robots"),
+                "robots denial must surface the robots.txt provider, got: {provider}"
+            ),
+            other => panic!("expected WafBlocked(robots.txt), got: {other}"),
+        }
+
+        let received = server
+            .received_requests()
+            .await
+            .expect("request recording is enabled");
+        let page_hits = received
+            .iter()
+            .filter(|r| r.url.path() != "/robots.txt")
+            .count();
+        assert_eq!(
+            page_hits, 0,
+            "the robots gate must short-circuit BEFORE any page fetch"
+        );
+    }
+
+    /// The same gate must NOT block a robots-allowed URL: the scrape
+    /// succeeds and its content is non-empty.
+    #[cfg_attr(miri, ignore)] // real network stack via wreq — unsupported by Miri
+    #[tokio::test]
+    async fn scrape_allowed_url_succeeds_with_fetcher() {
+        let server = MockServer::start().await;
+        mount_site(&server, "public-page").await;
+
+        let client = webfang_core::application::create_http_client().expect("wreq client builds");
+        let fetcher = fetcher_for(&server);
+        let url = url::Url::parse(&format!("{}/public-page", server.uri())).expect("valid URL");
+        let config = ScraperConfig::default();
+        let root = CorrelationId::new();
+
+        let outcome = scrape_with_config(
+            &client,
+            &url,
+            &config,
+            None,
+            None,
+            None,
+            Some(&fetcher),
+            false,
+            &root,
+        )
+        .await
+        .expect("robots-allowed URL must scrape successfully");
+
+        assert!(!outcome.results.is_empty(), "allowed URL must scrape");
+        assert!(!outcome.results[0].content.is_empty(), "content extracted");
+    }
+
+    /// `ignore_robots = true` bypasses the gate: a disallowed URL is scraped
+    /// and the fetcher never probes robots.txt at all.
+    #[cfg_attr(miri, ignore)] // real network stack via wreq — unsupported by Miri
+    #[tokio::test]
+    async fn ignore_robots_bypasses_the_gate() {
+        let server = MockServer::start().await;
+        mount_site(&server, "private/page").await;
+
+        let client = webfang_core::application::create_http_client().expect("wreq client builds");
+        let fetcher = fetcher_for(&server);
+        let url = url::Url::parse(&format!("{}/private/page", server.uri())).expect("valid URL");
+        let config = ScraperConfig::default();
+        let root = CorrelationId::new();
+
+        let outcome = scrape_with_config(
+            &client,
+            &url,
+            &config,
+            None,
+            None,
+            None,
+            Some(&fetcher),
+            true,
+            &root,
+        )
+        .await
+        .expect("ignore_robots must bypass the robots gate");
+
+        assert!(!outcome.results.is_empty(), "bypassed URL must scrape");
+        let received = server
+            .received_requests()
+            .await
+            .expect("request recording is enabled");
+        assert!(
+            received.iter().all(|r| r.url.path() != "/robots.txt"),
+            "ignore_robots must skip the robots.txt probe entirely"
+        );
+    }
 }
 
 // =====================================================================
@@ -446,7 +616,7 @@ async fn test_scrape_multiple_with_limit_returns_results() {
         .with_ok_response(url2.as_str(), html);
 
     let config = ScraperConfig::default();
-    let outcome = scrape_multiple_with_limit(&mock, &[url1, url2], &config, None)
+    let outcome = scrape_multiple_with_limit(&mock, &[url1, url2], &config, None, None, false)
         .await
         .expect("scrape_multiple_with_limit should succeed");
 
@@ -462,7 +632,7 @@ async fn test_scrape_multiple_with_limit_returns_results() {
 async fn test_scrape_multiple_with_limit_empty_urls() {
     let mock = MockHttpClient::new();
     let config = ScraperConfig::default();
-    let outcome = scrape_multiple_with_limit(&mock, &[], &config, None)
+    let outcome = scrape_multiple_with_limit(&mock, &[], &config, None, None, false)
         .await
         .expect("empty URL list should return Ok");
     assert!(outcome.results.is_empty());
@@ -813,9 +983,10 @@ async fn test_scrape_multiple_partial_failure() {
         .with_response(url_fail.as_str(), Err(HttpError::ClientError(404)));
 
     let config = ScraperConfig::default();
-    let outcome = scrape_multiple_with_limit(&mock, &[url_ok, url_fail], &config, None)
-        .await
-        .expect("should not fail overall even with partial URL failures");
+    let outcome =
+        scrape_multiple_with_limit(&mock, &[url_ok, url_fail], &config, None, None, false)
+            .await
+            .expect("should not fail overall even with partial URL failures");
 
     assert_eq!(
         outcome.results.len(),
@@ -847,7 +1018,7 @@ async fn test_scrape_multiple_all_failed_reports_all() {
         .with_response(url2.as_str(), Err(HttpError::ClientError(503)));
 
     let config = ScraperConfig::default();
-    let outcome = scrape_multiple_with_limit(&mock, &[url1, url2], &config, None)
+    let outcome = scrape_multiple_with_limit(&mock, &[url1, url2], &config, None, None, false)
         .await
         .expect("batch with all failures should still succeed at batch level");
 

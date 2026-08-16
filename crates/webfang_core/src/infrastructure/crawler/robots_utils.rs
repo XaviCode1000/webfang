@@ -164,6 +164,20 @@ impl RobotsFetcher {
         })
     }
 
+    /// Create a fetcher with the default production TLS fingerprint
+    /// (`Profile::Chrome145`), matching `HttpClientConfig::default()`.
+    ///
+    /// Lets callers build a robots.txt fetcher without depending on
+    /// `wreq-util` themselves (e.g. the MCP crate, which must not add that
+    /// dependency — issue #705).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InfraError::Network`] if the wreq client cannot be built.
+    pub fn with_default_profile(timeout_secs: u64) -> Result<Self, InfraError> {
+        Self::new(Profile::Chrome145, timeout_secs)
+    }
+
     /// Fetch and cache robots.txt rules for a domain.
     ///
     /// On cache miss, fetches `robots.txt` from the domain root using the shared

@@ -278,6 +278,7 @@ fn scrape_batch_params_rejects_empty_list() {
     let p = ScrapeBatchParams {
         urls: vec![],
         concurrency: None,
+        ignore_robots: None,
     };
     let err = p.validate().unwrap_err();
     assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
@@ -288,6 +289,7 @@ fn scrape_batch_params_rejects_one_bad_url() {
     let p = ScrapeBatchParams {
         urls: vec!["https://ok.example".into(), "file:///etc/passwd".into()],
         concurrency: None,
+        ignore_robots: None,
     };
     let err = p.validate().unwrap_err();
     assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
@@ -298,6 +300,7 @@ fn scrape_batch_params_rejects_oversize_concurrency() {
     let p = ScrapeBatchParams {
         urls: vec!["https://example.com".into()],
         concurrency: Some(65),
+        ignore_robots: None,
     };
     let err = p.validate().unwrap_err();
     assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
@@ -311,6 +314,7 @@ fn scrape_batch_params_accepts_valid() {
             "https://other.example/path".into(),
         ],
         concurrency: Some(8),
+        ignore_robots: None,
     };
     p.validate().expect("valid batch");
 }
