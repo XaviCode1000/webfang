@@ -463,6 +463,39 @@ async fn test_mock_empty_body_graceful_handling() {
     }
 }
 
+/// MCP funnel over the deterministic `js_shell.html` fixture (#706): a JS-only
+/// shell (`<div id="root">` + `__NEXT_DATA__`, <50 text chars) must yield the
+/// typed `ExtractionFailed` error, and its Spanish reason must call out the
+/// JavaScript-rendering cause (marker variant) — never an Ok near-empty scrape.
+#[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
+#[tokio::test]
+async fn test_js_shell_body_fails_with_typed_error() {
+    let html = std::fs::read_to_string(format!(
+        "{}/tests/fixtures_root/js_shell.html",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("load js_shell.html fixture");
+    let url = url::Url::parse("https://spa.example.com/app").unwrap();
+    let mock = MockHttpClient::new().with_ok_response(url.as_str(), &html);
+
+    let result = scrape_with_readability(&mock, &url).await;
+    let err = result.expect_err("a JS-shell body must fail honestly");
+
+    match &err {
+        ScraperError::ExtractionFailed {
+            reason,
+            url: failed_url,
+        } => {
+            assert_eq!(failed_url, url.as_str(), "url must be preserved");
+            assert!(
+                reason.contains("renderizado de JavaScript"),
+                "marker-bearing shell must report the JS-rendering cause: {reason}"
+            );
+        },
+        other => panic!("expected ExtractionFailed, got: {other}"),
+    }
+}
+
 #[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
 #[tokio::test]
 async fn test_mock_timeout_error_propagation() {
