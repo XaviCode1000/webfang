@@ -16,6 +16,7 @@ use crate::application::http_client::HttpClientPort;
 use crate::domain::http_port::HttpResponse;
 use crate::domain::{CorrelationId, DomInspectorPort, ExtractResult, ScrapedContent, ValidUrl};
 use crate::error::{Result, ScraperError};
+use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
 use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
 use crate::infrastructure::observability::log_scrape_error;
 use crate::ScraperConfig;
@@ -136,6 +137,9 @@ pub struct ScrapeBatchOutcome {
 /// * `config` - Scraper configuration with download options
 /// * `downloader` - Optional asset downloader
 /// * `inspector` - Optional DOM inspector for selector diagnostics (None for non-MCP paths)
+/// * `robots` - Optional robots.txt fetcher; when present (and `ignore_robots`
+///   is false), disallowed URLs are rejected BEFORE any page fetch (#697)
+/// * `ignore_robots` - Opt-out of robots.txt enforcement for this call (#697)
 /// * `root_correlation` - Run-root correlation identity of the enclosing operation
 ///
 /// # Returns
@@ -143,7 +147,13 @@ pub struct ScrapeBatchOutcome {
 ///
 /// # Errors
 /// Returns `ScraperError::Http` for HTTP errors, `ScraperError::Network` for
-/// connection errors.
+/// connection errors, and `ScraperError::WafBlocked` (provider `"robots.txt"`)
+/// when the URL is disallowed by robots.txt (#697 audit decision — the variant
+/// is reused because a dedicated robots variant does not exist).
+// The parameter list is this use case's full dependency set: the same
+// justification `scrape_urls` carries (#705) — bundling them into a struct
+// would only move the identical wiring one level up.
+#[allow(clippy::too_many_arguments)]
 pub async fn scrape_with_config(
     client: &dyn HttpClientPort,
     url: &url::Url,
@@ -151,8 +161,15 @@ pub async fn scrape_with_config(
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     inspector: Option<&dyn DomInspectorPort>,
     engine: Option<&AdaptiveSelectorEngine>,
+    robots: Option<&RobotsFetcher>,
+    ignore_robots: bool,
     root_correlation: &CorrelationId,
 ) -> Result<ScrapeOutcome> {
+    // Robots.txt gate runs in the OUTER wrapper, before the span and before
+    // any fetch, so a disallowed URL never touches the network (#697) and the
+    // inner instrumented signature stays untouched.
+    enforce_robots_policy(url, robots, ignore_robots).await?;
+
     // Per-page identity derived from the run root BEFORE the span so the span
     // can declare it (`#[instrument]` only sees function parameters — #501).
     let page_correlation = root_correlation.child();
@@ -166,6 +183,37 @@ pub async fn scrape_with_config(
         page_correlation,
     )
     .await
+}
+
+/// Enforce the robots.txt policy for one URL before any page fetch (#697).
+///
+/// Keeps the crawl path's semantics: `ignore_robots` bypasses the check, a
+/// missing fetcher means "no enforcement available" (legacy behavior), and a
+/// denial returns [`ScraperError::waf_blocked`] with provider `"robots.txt"`
+/// — the WafBlocked variant is deliberately reused for robots.txt denials per
+/// the #705 audit decision (`ScraperError` has no dedicated robots variant).
+///
+/// [`RobotsFetcher::is_allowed`] is FAIL-OPEN: if the robots.txt fetch itself
+/// fails (network error, non-2xx, timeout), the URL is treated as allowed —
+/// matching the production crawl behavior.
+async fn enforce_robots_policy(
+    url: &url::Url,
+    robots: Option<&RobotsFetcher>,
+    ignore_robots: bool,
+) -> Result<()> {
+    if ignore_robots {
+        return Ok(());
+    }
+    let Some(fetcher) = robots else {
+        return Ok(());
+    };
+
+    let domain = url.host_str().unwrap_or("unknown");
+    if !fetcher.is_allowed(url.as_str(), domain).await {
+        tracing::warn!(url = %url, domain = %domain, "robots_txt_denied");
+        return Err(ScraperError::waf_blocked(url.to_string(), "robots.txt"));
+    }
+    Ok(())
 }
 
 #[instrument(
@@ -494,6 +542,10 @@ fn log_spa_warning(url: &str, content: &str, html: &str) {
 /// * `client` - HTTP client
 /// * `urls` - URLs to scrape
 /// * `config` - Scraper configuration
+/// * `downloader` - Optional asset downloader
+/// * `robots` - Optional robots.txt fetcher; when present (and `ignore_robots`
+///   is false), disallowed URLs fail their per-URL check (#697)
+/// * `ignore_robots` - Opt-out of robots.txt enforcement for this batch (#697)
 ///
 /// # Returns
 /// * `Vec<ScrapedContent>` - All successfully scraped content
@@ -502,7 +554,7 @@ fn log_spa_warning(url: &str, content: &str, html: &str) {
 /// Failed URLs are logged but don't stop the entire batch.
 #[instrument(
     name = "scrape_multiple_with_limit",
-    skip(client, urls, config, downloader),
+    skip(client, urls, config, downloader, robots),
     fields(
         urls = urls.len(),
         concurrency = config.scraper_concurrency
@@ -513,6 +565,8 @@ pub async fn scrape_multiple_with_limit(
     urls: &[url::Url],
     config: &ScraperConfig,
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
+    robots: Option<&RobotsFetcher>,
+    ignore_robots: bool,
 ) -> Result<ScrapeBatchOutcome> {
     if urls.is_empty() {
         return Ok(ScrapeBatchOutcome {
@@ -544,8 +598,18 @@ pub async fn scrape_multiple_with_limit(
             let config = config.clone();
             let root = root_correlation.clone();
             async move {
-                let result =
-                    scrape_with_config(client, &url, &config, downloader, None, None, &root).await;
+                let result = scrape_with_config(
+                    client,
+                    &url,
+                    &config,
+                    downloader,
+                    None,
+                    None,
+                    robots,
+                    ignore_robots,
+                    &root,
+                )
+                .await;
                 (url, result)
             }
         })

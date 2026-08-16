@@ -13,6 +13,7 @@ use crate::mcp_server::metrics::{MetricsSnapshot, ScrapeEvent, ScrapeMetrics};
 use webfang_core::adapters::downloader::Downloader;
 use webfang_core::di::Container;
 use webfang_core::domain::DomInspectorPort;
+use webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher;
 
 /// Per-category semaphore limits for backpressure.
 /// Tuned for Intel i5-4590 (4C), 8GB DDR3, HDD.
@@ -67,6 +68,10 @@ pub struct McpState {
     pub downloader: Option<Arc<Downloader>>,
     /// DOM inspector for CSS selector diagnostics (None = no diagnostics)
     pub inspector: Option<Arc<dyn DomInspectorPort>>,
+    /// Shared robots.txt fetcher for the scrape tools (#697). Construction
+    /// failure is non-fatal: `None` leaves enforcement disabled, mirroring
+    /// the rate-limiter pattern in the core container.
+    pub robots_fetcher: Option<Arc<RobotsFetcher>>,
     /// Process-lifetime scrape metrics, shared across all per-session clones
     /// (REQ-06). Locked only in short synchronous sections (REQ-07).
     pub metrics: Arc<Mutex<ScrapeMetrics>>,
@@ -98,29 +103,29 @@ pub struct CategorySemaphores {
 impl McpState {
     /// Create a new McpState with the given container and default limits.
     pub fn new(container: Container) -> Self {
-        let limits = Arc::new(CategoryLimits::default());
-        let semaphores = Arc::new(CategorySemaphores::from_limits(&limits));
-        Self {
-            container: Arc::new(container),
-            limits,
-            semaphores,
-            downloader: None,
-            inspector: None,
-            metrics: Arc::new(Mutex::new(ScrapeMetrics::default())),
-            cancel_token: CancellationToken::new(),
-        }
+        Self::from_parts(container, CategoryLimits::default())
     }
 
     /// Create with custom category limits.
     pub fn with_limits(container: Container, limits: CategoryLimits) -> Self {
+        Self::from_parts(container, limits)
+    }
+
+    /// Shared construction for [`new`](Self::new) / [`with_limits`](Self::with_limits):
+    /// builds the semaphores, metrics accumulator, cancellation token, and the
+    /// non-fatal robots.txt fetcher ([`build_robots_fetcher`]) from the given
+    /// container and limits.
+    fn from_parts(container: Container, limits: CategoryLimits) -> Self {
         let limits = Arc::new(limits);
         let semaphores = Arc::new(CategorySemaphores::from_limits(&limits));
+        let robots_fetcher = build_robots_fetcher(&container);
         Self {
             container: Arc::new(container),
             limits,
             semaphores,
             downloader: None,
             inspector: None,
+            robots_fetcher,
             metrics: Arc::new(Mutex::new(ScrapeMetrics::default())),
             cancel_token: CancellationToken::new(),
         }
@@ -138,6 +143,17 @@ impl McpState {
     #[must_use]
     pub fn with_downloader(mut self, downloader: Arc<Downloader>) -> Self {
         self.downloader = Some(downloader);
+        self
+    }
+
+    /// Set a shared robots.txt fetcher for the scrape tools (#697).
+    ///
+    /// Parity with [`with_downloader`](Self::with_downloader) and
+    /// [`with_inspector`](Self::with_inspector): lets tests and composition
+    /// roots wire a deterministic or pre-built fetcher.
+    #[must_use]
+    pub fn with_robots_fetcher(mut self, fetcher: Arc<RobotsFetcher>) -> Self {
+        self.robots_fetcher = Some(fetcher);
         self
     }
 
@@ -198,6 +214,22 @@ impl McpState {
             // LCOV_EXCL_LINE defensive: lock-poisoning — poison is recovered via into_inner, never a panic
             .unwrap_or_else(|e| e.into_inner())
             .snapshot()
+    }
+}
+
+/// Build the shared robots.txt fetcher for the scrape tools (#697).
+///
+/// Uses the container's configured download timeout. Construction failure is
+/// NON-FATAL — the fetcher stays `None` and robots enforcement degrades to
+/// "no fetcher available", mirroring the rate-limiter pattern in the core
+/// container.
+fn build_robots_fetcher(container: &Container) -> Option<Arc<RobotsFetcher>> {
+    match RobotsFetcher::with_default_profile(container.config().download_timeout_secs) {
+        Ok(fetcher) => Some(Arc::new(fetcher)),
+        Err(e) => {
+            tracing::warn!(error = %e, "robots_fetcher_init_failed_non_fatal");
+            None
+        },
     }
 }
 

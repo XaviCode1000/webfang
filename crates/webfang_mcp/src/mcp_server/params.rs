@@ -62,6 +62,12 @@ pub struct ScrapeWithOptionsParams {
     /// full page HTML is returned with a diagnostic explaining the failure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selector: Option<String>,
+    /// Bypass the robots.txt check for this request (default: false).
+    ///
+    /// When false or omitted, the scrape is rejected with an error when the
+    /// target site's robots.txt disallows the URL (#697).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignore_robots: Option<bool>,
 }
 
 impl ScrapeWithOptionsParams {
@@ -85,6 +91,12 @@ pub struct ScrapeBatchParams {
     pub urls: Vec<String>,
     /// Concurrency limit (default: 4)
     pub concurrency: Option<usize>,
+    /// Bypass the robots.txt check for every URL in the batch (default: false).
+    ///
+    /// When false or omitted, URLs disallowed by robots.txt fail their
+    /// individual scrape with an error (#697).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignore_robots: Option<bool>,
 }
 
 impl ScrapeBatchParams {
