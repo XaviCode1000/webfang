@@ -154,6 +154,7 @@ pub async fn run(
         Ok(p) => p,
     };
 
+    let discovered_count = prepare.urls_to_scrape.len();
     let (urls_to_scrape, state_store) = match apply_resume_mode(
         prepare.urls_to_scrape,
         &opts,
@@ -165,6 +166,14 @@ pub async fn run(
         Ok(v) => v,
         Err(e) => return e,
     };
+
+    // #705 Paso 2: a --resume run where every discovered URL was already
+    // processed by a prior run is a technical success ("nothing pending").
+    if let Some(exit) =
+        resume_nothing_pending(&opts, &urls_to_scrape, discovered_count, &root_correlation)
+    {
+        return exit;
+    }
 
     let elastic_ingestion = match build_elastic_ingestion(&opts, vault_ports).await {
         Ok(v) => v,
@@ -231,6 +240,34 @@ pub async fn run(
     {
         export_phase(&results, &opts, state_store.as_ref()).await
     }
+}
+
+/// #705 Paso 2: a `--resume` run where every discovered URL was already
+/// processed by a prior run is a technical success ("nothing pending"), not a
+/// network failure. Return `Some(CliExit::Success)` before the scrape phase so
+/// an empty filtered list never reaches `report_phase`'s false exit-69 path.
+/// The `discovered_count > 0` guard keeps a genuinely empty discovery on its
+/// existing route instead of masking it as resume success.
+fn resume_nothing_pending(
+    opts: &CrawlOptions,
+    urls_to_scrape: &[url::Url],
+    discovered_count: usize,
+    root_correlation: &domain::CorrelationId,
+) -> Option<CliExit> {
+    if opts.crawl.resume && urls_to_scrape.is_empty() && discovered_count > 0 {
+        info!(
+        skipped = discovered_count,
+        trace_id = %root_correlation.trace_id(),
+        "resume: all discovered URLs already processed, nothing pending"
+        );
+        if !opts.export.quiet {
+            println!(
+"Resume: nada pendiente — {discovered_count} URL(s) ya procesadas en ejecuciones anteriores."
+);
+        }
+        return Some(CliExit::Success);
+    }
+    None
 }
 
 /// Resolve the root directory that must contain the scraped Markdown AND the

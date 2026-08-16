@@ -305,3 +305,46 @@ async fn corrupt_state_falls_back_to_full_scrape() {
         "corrupt state must still produce .md files"
     );
 }
+
+/// A `--resume` run where every discovered URL was already processed by a prior
+/// run is a technical success, not a failure: it must exit 0 with a "nothing
+/// pending" message instead of the false network-error exit 69 (#705 Paso 2).
+#[tokio::test]
+async fn resume_all_processed_exits_zero() {
+    let t = BehavioralTest::new().await;
+    let sitemap_url = mount_resume_fixture(&t).await;
+    let state_dir = TempDir::new().unwrap();
+
+    // First run processes every URL and persists state.
+    let run1 = t
+        .state_dir_cmd(state_dir.path())
+        .arg("--use-sitemap")
+        .arg("--sitemap-url")
+        .arg(&sitemap_url)
+        .arg("--quiet")
+        .output()
+        .expect("run binary");
+    assert!(
+        run1.status.success(),
+        "first run should succeed: {}",
+        String::from_utf8_lossy(&run1.stderr)
+    );
+
+    // Second run with the same state dir: every URL is already processed, so
+    // there is nothing pending. This is a success, not a network error.
+    let run2 = t
+        .state_dir_cmd(state_dir.path())
+        .arg("--use-sitemap")
+        .arg("--sitemap-url")
+        .arg(&sitemap_url)
+        .arg("--quiet")
+        .output()
+        .expect("run binary");
+
+    assert!(
+        run2.status.success(),
+        "resume with nothing pending must exit 0, got {:?}: {}",
+        run2.status.code(),
+        String::from_utf8_lossy(&run2.stderr)
+    );
+}
