@@ -440,13 +440,13 @@ mod tests {
         use std::time::Duration;
 
         let mut metrics = ScrapeMetrics::default();
-        metrics.record(ScrapeEvent {
-            tool: "scrape_url",
-            domain: "example.com".to_string(),
-            outcome: Outcome::Success,
-            count: 4,
-            duration: Duration::from_millis(100),
-        });
+        metrics.record(ScrapeEvent::new(
+            "scrape_url",
+            "example.com".to_string(),
+            Outcome::Success,
+            4,
+            Duration::from_millis(100),
+        ));
         let snapshot = metrics.snapshot();
         let result = render_metrics(&snapshot);
 
@@ -625,13 +625,13 @@ mod tests {
         let handler = McpHandler::new(state.clone());
         use crate::mcp_server::metrics::{Outcome, ScrapeEvent};
         use std::time::Duration;
-        state.record_scrape(ScrapeEvent {
-            tool: "scrape_url",
-            domain: "example.com".to_string(),
-            outcome: Outcome::Success,
-            count: 1,
-            duration: Duration::from_millis(5),
-        });
+        state.record_scrape(ScrapeEvent::new(
+            "scrape_url",
+            "example.com".to_string(),
+            Outcome::Success,
+            1,
+            Duration::from_millis(5),
+        ));
         let res = handler
             .get_scrape_metrics()
             .await
