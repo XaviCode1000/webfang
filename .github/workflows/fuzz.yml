@@ -5,7 +5,8 @@
 # no fuzzing runs). It is report-only — NOT a required check — so the ~10 min
 # BoringSSL + libfuzzer build never blocks the fast tiered CI pipeline.
 #
-# Fuzz tier policy (max_len/timeout per tier) lives in fuzz/fuzz.toml (#507).
+# Fuzz tier policy (#507): cargo-fuzz reads no config file; the per-target
+# max_len/timeout flags live in the justfile and fuzz.sh CLI flags.
 
 name: Fuzz Build
 
