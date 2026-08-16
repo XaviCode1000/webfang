@@ -33,7 +33,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, instrument, warn};
+use tracing::{error, info, instrument, warn, Instrument};
 
 use super::BatchJob;
 use crate::application::crawler::content_sink::CrawlContentSink;
@@ -187,11 +187,14 @@ impl BatchProcessor {
 
             progress.start_one();
 
-            join_set.spawn(async move {
-                let _permit = permit; // Hold permit for duration of task
-                let result = process_single_url(&url, config, sink).await;
-                (url, result)
-            });
+            join_set.spawn(
+                async move {
+                    let _permit = permit; // Hold permit for duration of task
+                    let result = process_single_url(&url, config, sink).await;
+                    (url, result)
+                }
+                .in_current_span(),
+            );
         }
 
         // Collect results as tasks complete
