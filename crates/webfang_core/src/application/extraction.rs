@@ -141,7 +141,9 @@ pub async fn scrape_with_readability(
     url: &url::Url,
 ) -> Result<Vec<ScrapedContent>> {
     // Standalone convenience entry: this call IS the operation, so it mints
-    // its own run-root identity (#501).
+    // its own run-root identity (#501). No robots fetcher is available at
+    // this standalone entry point (#697): enforcement is the caller's
+    // concern (the MCP/CLI paths wire their own robots handling).
     let root_correlation = CorrelationId::new();
     let outcome = scrape_with_config(
         client,
@@ -150,6 +152,8 @@ pub async fn scrape_with_readability(
         None,
         None,
         None,
+        None,
+        false,
         &root_correlation,
     )
     .await?;

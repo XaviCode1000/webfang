@@ -121,6 +121,10 @@ impl McpHandler {
             .as_deref()
             .map(|d| d as &dyn webfang_core::domain::ports::AssetDownloaderPort);
         let inspector = self.state.inspector.as_deref();
+        // robots.txt enforcement (#697): shared fetcher from the state; the
+        // tool-level opt-out is `params.ignore_robots`.
+        let robots = self.state.robots_fetcher.as_deref();
+        let ignore_robots = params.ignore_robots.unwrap_or(false);
         // An MCP tool call IS an operation (#501): mint the run-root identity
         // at the handler entry; the use case derives the page child from it.
         let root_correlation = webfang_core::domain::CorrelationId::new();
@@ -131,6 +135,8 @@ impl McpHandler {
             dl,
             inspector,
             None,
+            robots,
+            ignore_robots,
             &root_correlation,
         )
         .await
@@ -221,8 +227,17 @@ impl McpHandler {
             .downloader
             .as_deref()
             .map(|d| d as &dyn webfang_core::domain::ports::AssetDownloaderPort);
+        // robots.txt enforcement (#697): shared fetcher from the state; the
+        // tool-level opt-out is `params.ignore_robots`.
+        let robots = self.state.robots_fetcher.as_deref();
+        let ignore_robots = params.ignore_robots.unwrap_or(false);
         match webfang_core::application::scraper_service::scrape_multiple_with_limit(
-            client, &urls, &config, dl,
+            client,
+            &urls,
+            &config,
+            dl,
+            robots,
+            ignore_robots,
         )
         .await
         {
@@ -666,7 +681,11 @@ mod tests {
         let container = Container::new(crawler_config, scraper_config)
             .await
             .expect("create container");
-        let state = McpState::new(container);
+        let mut state = McpState::new(container);
+        // Determinism (#705): handler tests must stay offline — the robots
+        // check performs a real robots.txt fetch, so unit tests drop the
+        // fetcher instead of risking network access through loopback URLs.
+        state.robots_fetcher = None;
         (McpHandler::new(state), tmp)
     }
 
@@ -715,6 +734,7 @@ mod tests {
                 download_images: Some(false),
                 download_documents: Some(false),
                 selector: None,
+                ignore_robots: None,
             }))
             .await;
         assert_ssrf_rejected(res);
@@ -730,6 +750,7 @@ mod tests {
                 download_images: None,
                 download_documents: None,
                 selector: None,
+                ignore_robots: None,
             }))
             .await;
         assert!(res.is_err(), "invalid URL must be a protocol error");
@@ -743,6 +764,7 @@ mod tests {
             .scrape_batch(Parameters(ScrapeBatchParams {
                 urls: vec!["http://127.0.0.1/".to_string()],
                 concurrency: Some(2),
+                ignore_robots: None,
             }))
             .await;
         assert_ssrf_rejected(res);
@@ -756,6 +778,7 @@ mod tests {
             .scrape_batch(Parameters(ScrapeBatchParams {
                 urls: vec!["not a url".to_string()],
                 concurrency: None,
+                ignore_robots: None,
             }))
             .await;
         assert!(
@@ -772,6 +795,7 @@ mod tests {
         let batch = ScrapeBatchParams {
             urls: vec!["https://example.com".to_string()],
             concurrency: Some(0),
+            ignore_robots: None,
         }
         .validate();
         assert!(batch.is_err(), "concurrency 0 must be rejected: {batch:?}");
