@@ -166,6 +166,27 @@ impl McpState {
             .record(event);
     }
 
+    /// Record a scrape event stamped with the tool call's run-root identity.
+    ///
+    /// The sole call-side helper for identified scrape metrics (#698): it owns
+    /// the [`ScrapeEvent::identified`] construction so each MCP tool handler is
+    /// a one-line record call. `start` is the operation's start instant and is
+    /// converted to an elapsed [`Duration`] here, keeping timing bookkeeping in
+    /// one place.
+    pub fn record_scrape_identity(
+        &self,
+        tool: &'static str,
+        domain: String,
+        outcome: crate::mcp_server::metrics::Outcome,
+        count: usize,
+        start: std::time::Instant,
+        correlation: &webfang_core::domain::CorrelationId,
+    ) {
+        let event =
+            ScrapeEvent::identified(tool, domain, outcome, count, start.elapsed(), correlation);
+        self.record_scrape(event);
+    }
+
     /// Produce a point-in-time metrics snapshot from the shared accumulator.
     ///
     /// REQ-07: lock → clone snapshot → release. REQ-10: poison recovery, never

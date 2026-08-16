@@ -81,16 +81,26 @@ impl ScrapeEvent {
         }
     }
 
-    /// Attach the tool call's run-root identity (#698): the run-trace UUID as
-    /// `trace_id` plus the W3C traceparent as `correlation_id`, so the metric
-    /// event is reconstructable with the run trace. An MCP tool call IS an
-    /// operation (#501) — handlers mint one identity at entry and share it
-    /// across the call's success/error events via this method.
+    /// Build a scrape event stamped with the tool call's run-root identity
+    /// (#698): the run-trace UUID as `trace_id` plus the W3C traceparent as
+    /// `correlation_id`, so the metric event is reconstructable with the run
+    /// trace. An MCP tool call IS an operation (#501) — handlers mint one
+    /// identity at entry and share it across the call's success/error events
+    /// through this single constructor, which is the only place that wires
+    /// [`CorrelationId`] into a [`ScrapeEvent`].
     #[must_use]
-    pub fn with_identity(mut self, correlation: &webfang_core::domain::CorrelationId) -> Self {
-        self.trace_id = Some(correlation.trace_id().to_string());
-        self.correlation_id = Some(correlation.to_traceparent());
-        self
+    pub fn identified(
+        tool: &'static str,
+        domain: String,
+        outcome: Outcome,
+        count: usize,
+        duration: Duration,
+        correlation: &webfang_core::domain::CorrelationId,
+    ) -> Self {
+        let mut event = Self::new(tool, domain, outcome, count, duration);
+        event.trace_id = Some(correlation.trace_id().to_string());
+        event.correlation_id = Some(correlation.to_traceparent());
+        event
     }
 }
 
