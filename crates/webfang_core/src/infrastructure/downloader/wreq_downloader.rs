@@ -101,7 +101,10 @@ impl WreqDownloader {
             .gzip(true)
             .brotli(true)
             .cookie_store(true)
-            .redirect(wreq::redirect::Policy::limited(10))
+            // SSRF guard (#703): default 10-hop limit + stops redirects that
+            // target a literal forbidden IP. Hostname targets are validated
+            // at entry by the async SSRF guard.
+            .redirect(crate::infrastructure::ssrf::redirect_policy())
             .build()
             // LCOV_EXCL_LINE defensive: wreq-client-build — client construction fails only on invalid TLS profile, an invariant
             .map_err(|e| DownloadError::Internal(format!("failed to build wreq client: {e}")))?;
@@ -653,6 +656,10 @@ mod wiremock_tests {
 
     #[tokio::test]
     async fn test_fetch_returns_final_url() {
+        // The SSRF redirect guard (#703) stops redirects targeting a literal
+        // forbidden IP, and wiremock binds 127.0.0.1 — lift the guard for this
+        // redirect-flow test before the client is built.
+        std::env::set_var(crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV, "1");
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -676,6 +683,47 @@ mod wiremock_tests {
 
         let page = result.unwrap();
         assert!(page.url.as_str().contains("/target"));
+    }
+
+    /// SSRF redirect guard (#703): a redirect whose `Location` is a literal
+    /// forbidden IP must be stopped even when the entry URL itself passed
+    /// validation. The redirect response surfaces as a terminal HTTP error and
+    /// the target is never requested (`expect(0)` proves wiremock saw no hit).
+    #[tokio::test]
+    async fn test_redirect_to_forbidden_literal_ip_is_stopped() {
+        // Defensive under shared-process harnesses: the escape hatch must be
+        // unset for this process so the guard is active. (nextest isolates
+        // each test in its own process, so this is a no-op there.)
+        std::env::remove_var(crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV);
+        let mock_server = MockServer::start().await;
+
+        // Location points at a different loopback literal — forbidden by the
+        // guard, unreachable in practice, and never requested.
+        Mock::given(method("GET"))
+            .and(path("/redirect"))
+            .respond_with(
+                ResponseTemplate::new(301).insert_header("location", "http://127.0.0.2:9/target"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/target"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html></html>"))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        // Fresh client built in this process: the guard env hatch stays unset.
+        let downloader =
+            WreqDownloader::new(10, 5, Profile::Chrome145, None, 3, 1000, 10000).unwrap();
+        let url: Url = format!("{}/redirect", mock_server.uri()).parse().unwrap();
+
+        let result = downloader.fetch(&url).await;
+        match result {
+            Err(DownloadError::Http { status, .. }) => assert_eq!(status, 301),
+            other => panic!("expected redirect to be stopped, got: {other:?}"),
+        }
     }
 
     // ------------------------------------------------------------------

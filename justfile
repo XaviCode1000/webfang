@@ -14,13 +14,13 @@ check-fast:
 
 # -- Tests --
 
-# Refresca el knowledge graph de GitNexus (el agente lo necesita para saber qué cambió)
+# Refresca el índice de CodeDB (el agente lo necesita para saber qué cambió)
 analyze:
-    gitnexus analyze || echo "GitNexus ya estaba actualizado"
+    codedb index . || echo "CodeDB ya estaba actualizado"
 
 # Tests durante desarrollo → SOLO lo afectado (8-25 segundos típico)
 test-dev:
-    @echo "🚀 Ejecutando tests solo de cambios (GitNexus impact analysis)..."
+    @echo "🚀 Ejecutando tests solo de cambios..."
     cargo nextest run \
         --no-fail-fast \
         --profile dev
@@ -32,7 +32,7 @@ test:
         --no-fail-fast \
         --profile agent
 
-# Tests con filtro preciso (GitNexus lo usa cuando sabe exactamente qué módulos cambiaron)
+# Tests con filtro preciso (cuando sabés exactamente qué módulos cambiaron)
 test-filter filter:
     @echo "🎯 Ejecutando tests filtrados: {{filter}}"
     cargo nextest run \
@@ -92,7 +92,7 @@ setup:
 
 # Modo desarrollo automático: vigila cambios y ejecuta solo tests afectados
 watch-dev:
-    @echo "👀 Modo watch activado - GitNexus + tests inteligentes"
+    @echo "👀 Modo watch activado - tests inteligentes"
     @echo "   (Detén con Ctrl+C)"
     cargo watch --clear \
         --watch . \
@@ -100,9 +100,9 @@ watch-dev:
         --ignore "logs/" \
         --shell "just test-dev-with-impact"
 
-# Versión inteligente que usa GitNexus para filtrar exactamente qué cambió
+# Versión optimizada: excluye AI integration del ciclo de desarrollo
 test-dev-with-impact:
-    @echo "🚀 Ejecutando tests de desarrollo (con GitNexus awareness)..."
+    @echo "🚀 Ejecutando tests de desarrollo..."
     @echo "🎯 Ejecutando tests optimizados (excluyendo AI integration)..."
     cargo nextest run \
         --profile dev \
@@ -159,8 +159,8 @@ test-ci:
     cargo fmt --all -- --check
     @echo "2/4 → Ejecutando Clippy (strict)..."
     cargo clippy --all-targets --all-features -- -D warnings
-    @echo "3/4 → Refrescando GitNexus..."
-    gitnexus analyze || echo "GitNexus ya estaba actualizado"
+    @echo "3/4 → Refrescando CodeDB..."
+    codedb index . || echo "CodeDB ya estaba actualizado"
     @echo "4/4 → Ejecutando suite completa de tests..."
     cargo nextest run \
         --profile ci \
@@ -171,7 +171,7 @@ test-ci:
 test-ci-quick:
     @echo "🔥 CI rápido (clippy + tests)..."
     cargo clippy --all-targets --all-features -- -D warnings
-    gitnexus analyze || echo "GitNexus ya estaba actualizado"
+    codedb index . || echo "CodeDB ya estaba actualizado"
     cargo nextest run --profile ci --no-fail-fast
     @echo "✅ CI rápido pasado"
 

@@ -46,5 +46,5 @@ description = "Run the fast local compile check"
 run = "cargo check"
 
 [tasks.analyze]
-description = "Refresh the GitNexus index"
-run = "gitnexus analyze"
+description = "Refresh the CodeDB index"
+run = "codedb index ."

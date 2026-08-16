@@ -23,9 +23,9 @@ You are the **Orchestrator-Engineer**. You decide WHAT to do, WHERE to delegate,
 Every delegation prompt MUST include:
 
 1. **Skills to load** — from the Skill Routing Matrix (§9). The sub-agent has NO memory; it only knows what you tell it.
-2. **Intelligence mandate** — "Before editing any symbol, run `impact`. Before returning, run `detect_changes`." In worktrees: absolute path as `repo` (§2.3).
+2. **Intelligence mandate** — "Before editing any symbol, run CodeGraph `explore` for callers + impact. Before returning, verify with `cargo check`." In worktrees: absolute path (§2.3).
 3. **Verification commands** — the exact `cargo check` / `cargo nextest` / `cargo clippy` commands to run.
-4. **Worktree path** — if working in a worktree, the absolute path and the reminder that ALL three intelligence tools need it (§2.3).
+4. **Worktree path** — if working in a worktree, the absolute path and the reminder that BOTH intelligence tools need it (§2.3).
 
 ### When to delegate vs. inline
 
@@ -42,7 +42,7 @@ Every delegation prompt MUST include:
 
 ## 🔬 Intelligence Stack
 
-Three complementary tools. Pick by mission, not by habit. **Load the matching skill (§9), not the manual.**
+Two complementary tools. Pick by mission, not by habit. **Load the matching skill (§9), not the manual.**
 
 ### 2.1 Strategic routing
 
@@ -50,55 +50,31 @@ Three complementary tools. Pick by mission, not by habit. **Load the matching sk
 |:---|:---|:---|
 | "What is this task about?" — first-touch orientation | **CodeDB** `context` | 1 call: keywords + symbol defs + ranked files + snippets. Replaces 3–5 sequential calls. |
 | "Show me the code for X" — explore and understand | **CodeGraph** `explore` | Returns verbatim source + call paths + blast radius in ONE call. Eliminates the grep→Read loop. |
-| "Can I safely edit X?" — pre-edit blast radius | **GitNexus** `impact` | Depth-grouped (d=1/2/3) + risk level (LOW→CRITICAL) + affected processes. Only tool with precomputed execution flows. |
-| "Is there a security issue?" — taint / dependence | **GitNexus** `explain` + `pdg_query` | Only tool with source→sink taint and CDG/REACHING_DEF. Needs `analyze --pdg`. |
-| "Rename X across the codebase" | **GitNexus** `rename` | Call-graph aware, confidence-scored. NEVER find-and-replace. MCP-only (no CLI). |
-| "What did my changes affect?" — pre-commit | **GitNexus** `detect_changes` | Git diff → affected symbols + execution flows. |
 | "Where is X defined?" — instant lookup | **CodeDB** `word` / `symbol` | O(1) inverted index. Fastest possible. |
-| "Who calls X?" — quick tactical check | **CodeDB** `callers` | 1 round-trip, fuses word-index + outline scope. |
-| "Who calls X?" — deep 360° view | **GitNexus** `context` | Callers + callees + process participation + categorized refs. |
-| "How does execution flow through X?" | **GitNexus** `query` + `process/{name}` | 300 precomputed flows. CodeDB and CodeGraph have no equivalent. |
+| "Who calls X?" — tactical check | **CodeDB** `callers` | 1 round-trip, fuses word-index + outline scope. |
+| "How does X flow through the code?" — deeper view | **CodeGraph** `explore` / `impact` | Call paths + blast-radius summary from the source-graph index. |
 | Post-edit linter diagnostics | **CodeDB** `diagnostics` | Surfaces real errors after a change. |
-| Query a public GitHub repo (no clone) | **CodeDB** `remote` | GitNexus and CodeGraph cannot do this. |
+| Query a public GitHub repo (no clone) | **CodeDB** `remote` | CodeGraph cannot do this. |
 
-**Rule of thumb:** CodeDB for *finding and reading* (fast, tactical, O(1)). CodeGraph for *exploring and understanding* (returns source directly). GitNexus for *analyzing and deciding* (deep, structural, precomputed flows + taint + PDG).
+**Rule of thumb:** CodeDB for *finding and reading* (fast, tactical, O(1)). CodeGraph for *exploring and understanding* (returns source directly, call paths, blast radius).
 
 ### 2.2 Non-negotiable gates
 
-- Before editing any symbol → GitNexus `impact({direction:"upstream"})`. NEVER edit blind.
-- Before renaming → GitNexus `rename` with `dry_run:true` first.
-- Before commit → GitNexus `detect_changes()`. For regression review → `detect_changes({scope:"compare", base_ref:"main"})`.
-- Index stale (`gitnexus://repo/webfang/context`) → STOP. Run `gitnexus analyze --index-only --skip-agents-md`.
+- Before editing any symbol → CodeGraph `explore` it (callers + impact). NEVER edit blind.
+- Before renaming → check ALL usages first via `codedb_callers` / CodeGraph `explore`.
+- Before commit → run `cargo check` + `cargo clippy` + `cargo fmt` and re-read the diff.
 - **Legitimate `grep`/`rg` exceptions:** logs, CI output, `.env`/config text, files outside the index — never for source code.
 
 ### 2.3 Worktree intelligence — CRITICAL
 
-In worktrees, ALL three tools need the **absolute worktree path** or they silently resolve to the main checkout:
+In worktrees, BOTH tools need the **absolute worktree path** or they silently resolve to the main checkout:
 
 | Tool | Parameter | Example |
 |:---|:---|:---|
-| GitNexus MCP | `repo:` | `repo:"/var/home/xavi/Projects/webfang-worktrees/<dir>"` |
 | CodeDB MCP | `project=` | `project="/var/home/xavi/Projects/webfang-worktrees/<dir>"` |
 | CodeGraph MCP | `projectPath=` | `projectPath="/var/home/xavi/Projects/webfang-worktrees/<dir>"` |
 
-**NEVER use** `repo:"webfang"` (bare name) in worktrees — ambiguous between main + all worktrees (#360). The absolute path is the official upstream disambiguation.
-
-### 2.4 GitNexus operations
-
-**Index refresh (post-commit/merge):**
-
-```bash
-gitnexus analyze --index-only --skip-agents-md              # structural graph, preserves embeddings, 0 tokens
-gitnexus analyze --index-only --skip-agents-md --embeddings  # + re-embeds ONLY new/changed nodes (incremental hash compare)
-```
-
-- Plain `analyze` preserves existing embeddings without generating new ones.
-- `--embeddings` is incremental: content-hash comparison skips unchanged nodes. Cost ∝ diff, not repo size.
-- **NEVER** `--drop-embeddings` unless switching embedding model/dimension — it wipes the entire cache.
-- ALWAYS `--skip-agents-md` so this file isn't overwritten by the auto-block regeneration.
-- Add `--pdg` only for taint/control-data dependence layers. Add `--skills` only when regenerating skill files.
-
-**Embeddings (remote, 2048d):** `.gitnexusrc` (gitignored) pins `embeddingBaseUrl` (OpenRouter) + `embeddingModel` (nemotron-vl-1b) + `pdg`/`skipAgentsMd`/`embeddings` defaults. Dims and API key are **env-only** (rc no los soporta): `GITNEXUS_EMBEDDING_DIMS=2048` + `GITNEXUS_EMBEDDING_API_KEY`. Sin esas env vars, cae al ONNX local (384d) y dispara dimension mismatch.
+**NEVER use** bare project names in worktrees — ambiguous between main + all worktrees (#360). The absolute path is the official upstream disambiguation.
 
 ---
 
@@ -136,7 +112,7 @@ Full allow-matrix (effective build graph):
 | `webfang_mcp` | `webfang_core`, `webfang_ai` |
 | `webfang_cli` | `webfang_core`, `webfang_tui`, `webfang_ai`, `webfang_mcp` |
 
-This is an architectural POLICY, not just what the code happens to do. New code must respect this direction. Verify cross-crate usage with `codedb_deps` or GitNexus `impact` before adding any inter-crate import.
+This is an architectural POLICY, not just what the code happens to do. New code must respect this direction. Verify cross-crate usage with `codedb_deps` or CodeGraph `explore` before adding any inter-crate import.
 
 **CI gate (#513):** `scripts/check_dependency_direction.sh` runs in the `toolchain` job of `ci.yml` and fails on any prohibited inter-crate dependency (including feature-gated optional deps). It parses each crate's `Cargo.toml` `[dependencies]`/`[dev-dependencies]` against the matrix above and prints the effective graph on success. Keep the matrix in the script and this section in sync.
 
@@ -316,12 +292,11 @@ cd ~/Projects/webfang-worktrees/feat-auth
 # Per-worktree bootstrap (NONE of these are shared):
 cargo build                                        # target/ (~3-5 min first build: BoringSSL)
 cp ~/Projects/webfang/.env .                       # .env is gitignored
-gitnexus analyze --index-only --skip-agents-md     # GitNexus: graph + flows
 codegraph init                                     # CodeGraph: source exploration index
 codedb index .                                     # CodeDB: inverted index + outlines
 ```
 
-> ⚠️ **Without all three indexes, the agent is BLIND in the worktree.** Intelligence tools silently resolve to the main checkout or return empty results. Verify with `gitnexus status`, and check that `.codegraph/` and `codedb.snapshot` exist.
+> ⚠️ **Without both indexes, the agent is BLIND in the worktree.** Intelligence tools silently resolve to the main checkout or return empty results. Check that `.codegraph/` and `codedb.snapshot` exist.
 
 > ⚠️ **Restart the editor's MCP connection after indexing.** The MCP server caches the registry at startup. Without a restart, tools keep resolving to the main checkout (#360).
 
@@ -355,16 +330,13 @@ A merge is NOT done until the repo is clean and ready for the next mission. Clea
 | `Cargo.lock` | ✅ Shared | Via Git |
 | `target/` | ❌ Per-worktree | `cargo build` (~3-5 min first) |
 | `.env` | ❌ Per-worktree | Manual `cp` from main |
-| `.gitnexus/` index | ❌ Per-worktree | `gitnexus analyze --index-only --skip-agents-md` |
 | `.codegraph/` index | ❌ Per-worktree | `codegraph init` |
 | `codedb.snapshot` | ❌ Per-worktree | `codedb index .` |
 | Git stash (`refs/stash`) | ⚠️ Shared (DANGER) | **NEVER use `git stash`** |
 
-### GitNexus in worktrees (`detect_changes` pitfall)
+### CodeDB/CodeGraph in worktrees
 
-GitNexus registers the main checkout and ALL worktrees under the **same name** `webfang` (upstream #1259). Bare-name resolution picks the main entry — so `detect_changes()` or `detect_changes({repo:"webfang"})` reads the **main checkout's clean tree**, not your worktree. The pre-commit gate fails open: "No changes detected" while your worktree has uncommitted changes.
-
-**In worktrees, ALWAYS use the absolute path** (§2.3). This applies to ALL GitNexus MCP tools that take a `repo` parameter.
+Both tools resolve projects by name; bare-name resolution picks the main checkout — so queries run from a worktree without the absolute path read the **main checkout**, not your worktree (#360). **In worktrees, ALWAYS use the absolute path** (§2.3).
 
 ### Bounded Review (4R) in worktrees
 
@@ -373,7 +345,7 @@ The gentle-ai bounded review hook resolves the target repo from the OpenCode ses
 - **Option A (proper):** set `GENTLE_AI_REVIEW_CWD=<absolute worktree path>` in the OpenCode server environment BEFORE starting the session.
 - **Option B (no restart):** launch lenses as `general` agents — the hook only intercepts `review-*` agent types with a `GENTLE_AI_REVIEW_BINDING` prefix.
 
-The project's PR workflow does NOT require a gentle-ai review receipt — only cargo gates, `detect_changes`, linked issue, one `type:*` label, conventional branch.
+The project's PR workflow does NOT require a gentle-ai review receipt — only cargo gates, linked issue, one `type:*` label, conventional branch.
 
 ### Rebase caveats
 
@@ -409,7 +381,7 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 
 - Read any file in the repo.
 - `cargo check`, `cargo clippy`, `cargo fmt`, `cargo nextest run`.
-- All three intelligence tools: GitNexus MCP/CLI, CodeDB MCP, CodeGraph MCP.
+- Both intelligence tools: CodeDB MCP, CodeGraph MCP.
 - Edit files within `crates/`, `tests/`, `benches/`, `examples/`.
 - Worktree management: `git worktree add`, `remove`, `list`, `prune`.
 - Read-only cross-branch inspection: `git show <branch>:<file>`, `git log <branch>`.
@@ -422,7 +394,6 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 - `cargo build --release` or `cargo llvm-cov`.
 - Modifying CI/CD (`.github/`).
 - New files outside `crates/`, `tests/`, `benches/`, `examples/`.
-- Re-indexing with `--pdg` or `--drop-embeddings` (data-loss / cost implications).
 
 ### Never
 
@@ -430,9 +401,6 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 - `.unwrap()` in production — use `?` or `match`.
 - Force push to main.
 - Modify `target/`, `dist/`, `build/`.
-- Run `gitnexus analyze` in a dirty worktree (breaks `detect_changes()`).
-- Run `gitnexus analyze` without `--skip-agents-md` (re-injects the auto-block into this file).
-- Use a package runner for GitNexus (`npx`/`bunx`) — install globally; verify with `which gitnexus`.
 - `git checkout` / `git switch` to change branches (use `git worktree add`).
 - `git stash` in any form (shared storage causes cross-worktree contamination).
 - Access sibling worktrees via relative paths (`../feat-auth/...`).
@@ -510,8 +478,7 @@ gh run list --workflow=ci.yml --branch "$(git branch --show-current)" --limit 1 
 
 - [ ] `cargo check` + `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines` + `cargo fmt`
 - [ ] `cargo nextest run` (at least affected module)
-- [ ] `detect_changes()` shows only expected symbols (worktrees: absolute path)
-- [ ] `detect_changes({scope:"compare", base_ref:"main"})` for regression review
+- [ ] Review `git diff --stat main...HEAD` to confirm only expected symbols/files changed
 - [ ] Error messages in Spanish if user-facing; new public items have doc comments
 - [ ] PR has exactly one `type:*` label + linked issue + conventional branch
 - [ ] Verified worktree: `git branch --show-current` matches directory name
@@ -558,14 +525,13 @@ needs auto-merge (e.g. transferring the repo to an organization with rulesets), 
 
 | Task | Skills to load | Key behavior |
 |:---|:---|:---|
-| Any code work (read/write/edit) | `gitnexus` + `codedb` | Intelligence Gate: impact before edit, detect_changes before commit |
+| Any code work (read/write/edit) | `codedb` + `codegraph` | Intelligence Gate: explore impact before edit, `cargo check` before commit |
 | Writing Rust code | `rust-skills` (category per task type) | 265 rules across 26 categories. Category prefixes: `own-`, `err-`, `async-`, `api-`, `test-`, etc. |
 | **Writing or modifying tests** | **`contract-based-test-audit`** + `rust-skills(test-)` | 6-node diagnostic: observable behavior, ephemeral adapters, semantic assertions, determinism |
 | Planning commits | `work-unit-commits` | Commit by deliverable behavior, not by file type. Keep tests/docs with code |
 | Creating PRs | `branch-pr` | Issue-first checks, CI-enforced rules |
 | Writing docs / guides | `cognitive-doc-design` | Reduce cognitive load, review-facing docs |
-| Refactoring / renaming | `gitnexus` | Safe rename via call graph (`dry_run:true` first), impact analysis |
-| Security review | `gitnexus` (--pdg) | `explain` taint + `pdg_query` control/data dependence |
+| Refactoring / renaming | `codegraph` + `codedb` | Safe rename via call graph — check ALL callers first (`codedb_callers`), never blind find-and-replace |
 | SDD planning phases | `sdd-*` | Spec-driven development: explore → propose → spec → design → tasks → apply → verify → archive |
 
 ### Critical commands reference

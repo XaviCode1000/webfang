@@ -292,8 +292,8 @@ cargo build --release -p webfang_cli
 # Build with all features
 cargo build --release -p webfang_cli --features full
 
-# Re-index GitNexus (code intelligence)
-gitnexus analyze --index-only --skip-agents-md
+# Re-index CodeDB (code intelligence)
+codedb index .
 ```
 
 ### Architecture rules
@@ -311,7 +311,7 @@ gitnexus analyze --index-only --skip-agents-md
 
 | Resource | Covers |
 |----------|--------|
-| [AGENTS.md](AGENTS.md) | AI agent instructions, GitNexus integration |
+| [AGENTS.md](AGENTS.md) | AI agent instructions, code intelligence integration |
 | [docs/debugging.md](docs/debugging.md) | Tracing, correlation IDs, `jq` query cookbook (`scripts/analyze-trace.sh`) |
 | [Wiki](https://github.com/XaviCode1000/webfang/wiki) | Architecture, API reference, guides |
 | `webfang --help` | Full CLI reference |
@@ -323,7 +323,7 @@ gitnexus analyze --index-only --skip-agents-md
 1. Fork → branch `feature/name` → commit → PR
 2. Tests must pass: `cargo nextest run --workspace`
 3. Conventional Commits: `feat:`, `fix:`, `refactor:`, `ci:`, `docs:`
-4. Read [AGENTS.md](AGENTS.md) for architecture rules and GitNexus usage
+4. Read [AGENTS.md](AGENTS.md) for architecture rules and tooling
 
 ---
 
