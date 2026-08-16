@@ -428,11 +428,7 @@ async fn mixed_batch_with_js_shell_stays_69() {
     let output = t
         .scraper_cmd()
         .arg("--batch")
-        .write_stdin(format!(
-            "{}/ok\n{}/shell\n",
-            t.server.uri(),
-            t.server.uri()
-        ))
+        .write_stdin(format!("{}/ok\n{}/shell\n", t.server.uri(), t.server.uri()))
         .output()
         .expect("run webfang");
 

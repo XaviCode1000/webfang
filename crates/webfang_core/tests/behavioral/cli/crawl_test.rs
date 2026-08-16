@@ -637,13 +637,11 @@ async fn mount_dom_depth_scenario(server: &wiremock::MockServer) {
 
     Mock::given(method("GET"))
         .and(path("/page1"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string(
-                "<html><body><a href=\"/deep\">Deep</a><h1>Page 1</h1>\
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "<html><body><a href=\"/deep\">Deep</a><h1>Page 1</h1>\
                  <p>Page 1 carries enough substantive server-rendered text to clear the \
                  fifty character minimum content guard comfortably.</p></body></html>",
-            ),
-        )
+        ))
         .mount(server)
         .await;
 
