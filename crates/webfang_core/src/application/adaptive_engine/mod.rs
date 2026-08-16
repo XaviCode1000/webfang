@@ -133,6 +133,16 @@ impl AdaptiveSelectorEngine {
         }
     }
 
+    /// Whether a semantic (Tier 2) provider is wired into this engine.
+    ///
+    /// `false` means the engine degrades to Tier 1 (lexical) repair only —
+    /// the expected state when the `ai` feature is off or no ONNX assets are
+    /// available (`shared=None`).
+    #[must_use]
+    pub fn has_semantic_provider(&self) -> bool {
+        self.semantic.is_some()
+    }
+
     /// Sync-aware repair entry point — accepts raw HTML string (Send + Sync)
     /// instead of `&scraper::Html` (!Sync).
     ///
@@ -832,5 +842,127 @@ mod tests {
             SelectorErrorKind::RepairInconclusive(_) => {},
             other => panic!("expected RepairInconclusive, got {other:?}"),
         }
+    }
+
+    /// Mock semantic inspector that returns a configurable match — exercises
+    /// the Tier 2 success (method="tier2_semantic") and degraded paths.
+    struct MockSemanticMatch(Option<SemanticMatch>);
+
+    impl SemanticInspectorPort for MockSemanticMatch {
+        fn find_semantic_match<'a>(
+            &'a self,
+            _ctx: SemanticContext,
+        ) -> crate::domain::semantic_inspector::BoxFuture<
+            'a,
+            Result<Option<SemanticMatch>, SelectorErrorKind>,
+        > {
+            let response = self.0.clone();
+            Box::pin(async { Ok(response) })
+        }
+    }
+
+    /// Tier 2 returns a confident match → repaired via
+    /// method="tier2_semantic", trace carries the Tier 2 score.
+    #[tokio::test]
+    async fn test_repair_resolves_via_tier2_when_confidence_above_threshold() {
+        // Tier 1 stays ambiguous (0.65 ≤ 0.85) so the cascade escalates to Tier 2.
+        let inspector = Arc::new(MockInspector {
+            suggestions: vec![SelectorSuggestion {
+                selector: ".lexical-low".to_owned(),
+                score: 0.65,
+            }],
+        });
+        let semantic = Arc::new(MockSemanticMatch(Some(SemanticMatch {
+            selector: ".semantic-hit".to_owned(),
+            confidence: 0.9, // above semantic_threshold (0.75)
+            source: crate::domain::semantic_inspector::TierSource::Semantic,
+        })));
+
+        let engine = AdaptiveSelectorEngine::new(
+            inspector,
+            Some(semantic),
+            AdaptiveSelectorOptions::default(),
+        );
+        let html = "<div class='semantic-hit'>Hello</div>";
+        let document = scraper::Html::parse_document(html);
+
+        let result = engine.repair(&document, html, ".content", None).await;
+        assert!(result.is_ok(), "tier2 repair should succeed");
+        let outcome = result.unwrap();
+        assert_eq!(outcome.status, RepairStatus::Repaired);
+        assert_eq!(outcome.suggestion.selector, ".semantic-hit");
+        let trace = outcome
+            .trace
+            .as_ref()
+            .expect("tier2 repair carries a trace");
+        assert_eq!(
+            trace.tier2_score,
+            Some(0.9),
+            "trace must record the tier2_semantic score"
+        );
+        assert!(!trace.cache_hit);
+    }
+
+    /// Tier 2 returns a low-confidence match → Degraded, but the Tier 2 score
+    /// must still be visible in the trace (tier2_semantic ran).
+    #[tokio::test]
+    async fn test_repair_degraded_when_tier2_confidence_below_threshold() {
+        let inspector = Arc::new(MockInspector {
+            suggestions: vec![SelectorSuggestion {
+                selector: ".lexical-low".to_owned(),
+                score: 0.65,
+            }],
+        });
+        let semantic = Arc::new(MockSemanticMatch(Some(SemanticMatch {
+            selector: ".semantic-weak".to_owned(),
+            confidence: 0.6, // below semantic_threshold (0.75)
+            source: crate::domain::semantic_inspector::TierSource::Semantic,
+        })));
+
+        let engine = AdaptiveSelectorEngine::new(
+            inspector,
+            Some(semantic),
+            AdaptiveSelectorOptions::default(),
+        );
+        let html = "<div class='semantic-weak'>Hello</div>";
+        let document = scraper::Html::parse_document(html);
+
+        let result = engine.repair(&document, html, ".content", None).await;
+        assert!(result.is_ok(), "low-confidence tier2 still returns Ok");
+        let outcome = result.unwrap();
+        assert_eq!(
+            outcome.status,
+            RepairStatus::Degraded,
+            "confidence below 0.75 must mark the repair degraded"
+        );
+        assert_eq!(outcome.suggestion.selector, ".semantic-weak");
+        assert_eq!(outcome.trace.as_ref().unwrap().tier2_score, Some(0.6));
+    }
+
+    #[test]
+    fn has_semantic_provider_reflects_wiring() {
+        let inspector = Arc::new(MockInspector {
+            suggestions: vec![],
+        });
+
+        let tier1_only = AdaptiveSelectorEngine::new(
+            Arc::clone(&inspector) as Arc<dyn DomInspectorPort>,
+            None,
+            AdaptiveSelectorOptions::default(),
+        );
+        assert!(
+            !tier1_only.has_semantic_provider(),
+            "shared=None must leave a Tier-1-only engine"
+        );
+
+        let wired = AdaptiveSelectorEngine::new(
+            inspector,
+            Some(Arc::new(MockSemanticNoMatch)),
+            AdaptiveSelectorOptions::default(),
+        );
+        assert!(
+            wired.has_semantic_provider(),
+            "a semantic provider must be visible on the engine"
+        );
     }
 }

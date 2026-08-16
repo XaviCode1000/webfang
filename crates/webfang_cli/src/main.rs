@@ -581,24 +581,174 @@ fn build_file_trace_layer(
     })
 }
 
-/// Build the adaptive selector engine when the feature and flag are both active.
-///
-/// Tier 1 (lexical) only — Tier 2 semantic repair would require the `ai` feature
-/// plus a GraniteDomInspector, so `semantic` is wired as None.
-#[cfg(feature = "adaptive-selectors")]
-fn build_adaptive_engine(opts: &CrawlOptions) -> Option<Arc<AdaptiveSelectorEngine>> {
-    if opts.adaptive_selectors {
-        Some(Arc::new(AdaptiveSelectorEngine::new(
-            Arc::new(DefaultDomInspector::new()),
+/// Tier 2 wiring regression tests (#702): the adaptive engine must expose the
+/// wired semantic provider, degrade to Tier 1 (lexical) when no provider is
+/// available, and resolve repairs through the semantic cascade.
+#[cfg(all(test, feature = "adaptive-selectors"))]
+mod wiring_tests {
+    use super::*;
+    use webfang_core::application::adaptive_engine::RepairStatus;
+    use webfang_core::domain::dom_inspector::SelectorErrorKind;
+    use webfang_core::domain::semantic_inspector::{
+        BoxFuture, SemanticContext, SemanticInspectorPort, SemanticMatch, TierSource,
+    };
+
+    /// Mock semantic inspector returning a configurable match.
+    struct MockSemanticInspector(Option<SemanticMatch>);
+
+    impl SemanticInspectorPort for MockSemanticInspector {
+        fn find_semantic_match<'a>(
+            &'a self,
+            _ctx: SemanticContext,
+        ) -> BoxFuture<'a, Result<Option<SemanticMatch>, SelectorErrorKind>> {
+            let response = self.0.clone();
+            Box::pin(async { Ok(response) })
+        }
+    }
+
+    fn opts_with_adaptive(enabled: bool) -> CrawlOptions {
+        CrawlOptions {
+            adaptive_selectors: enabled,
+            ..CrawlOptions::default()
+        }
+    }
+
+    #[test]
+    fn build_adaptive_engine_wires_semantic_provider_when_present() {
+        let engine = build_adaptive_engine(
+            &opts_with_adaptive(true),
+            Some(Arc::new(MockSemanticInspector(None))),
+            AdaptiveSelectorOptions::default(),
+        )
+        .expect("engine must exist when adaptive_selectors is enabled");
+
+        assert!(
+            engine.has_semantic_provider(),
+            "wired semantic provider must be visible on the engine"
+        );
+    }
+
+    #[test]
+    fn build_adaptive_engine_degrades_to_tier1_without_semantic() {
+        let engine = build_adaptive_engine(
+            &opts_with_adaptive(true),
             None,
             AdaptiveSelectorOptions::default(),
+        )
+        .expect("engine must exist when adaptive_selectors is enabled");
+
+        assert!(
+            !engine.has_semantic_provider(),
+            "no shared pool must leave a Tier-1-only engine"
+        );
+    }
+
+    #[test]
+    fn build_adaptive_engine_absent_when_flag_off() {
+        assert!(
+            build_adaptive_engine(
+                &opts_with_adaptive(false),
+                Some(Arc::new(MockSemanticInspector(None))),
+                AdaptiveSelectorOptions::default()
+            )
+            .is_none(),
+            "flag off must not build an engine even with a semantic provider available"
+        );
+    }
+
+    /// End-to-end wiring evidence (AS-2): the engine built by the production
+    /// wiring function resolves a repair through Tier 2. `trace.tier2_score`
+    /// is `Some` only on the semantic path — Tier 1 outcomes always carry
+    /// `None`, so this marker is equivalent to the trace field
+    /// `method = "tier2_semantic"` emitted by the cascade.
+    #[tokio::test]
+    async fn wired_engine_resolves_repair_through_tier2() {
+        let semantic_hit = Some(SemanticMatch {
+            selector: ".semantic-hit".to_owned(),
+            confidence: 0.9, // above semantic_threshold (0.75)
+            source: TierSource::Semantic,
+        });
+        let engine = build_adaptive_engine(
+            &opts_with_adaptive(true),
+            Some(Arc::new(MockSemanticInspector(semantic_hit))),
+            AdaptiveSelectorOptions::default(),
+        )
+        .expect("engine must exist when adaptive_selectors is enabled");
+
+        let html = "<div class='semantic-hit'>Contenido real</div>".to_owned();
+        let outcome = engine
+            .select_sync_aware(html, ".missing".to_owned(), None)
+            .await
+            .expect("tier2 repair must succeed with a confident semantic match");
+
+        assert_eq!(outcome.status, RepairStatus::Repaired);
+        assert_eq!(
+            outcome.suggestion.selector, ".semantic-hit",
+            "the repaired selector must come from the semantic provider"
+        );
+        let trace = outcome.trace.expect("tier2 repair carries a trace");
+        assert_eq!(
+            trace.tier2_score,
+            Some(0.9),
+            "the trace must record the tier2_semantic score"
+        );
+    }
+}
+
+/// Build the adaptive selector engine when the feature and flag are both active.
+///
+/// The `semantic` parameter carries the Tier 2 provider when the `ai` feature
+/// supplied one (shared ONNX pool + tokenizer); `None` degrades the engine to
+/// Tier 1 (lexical) repair. `options` is the shared engine configuration —
+/// the SAME instance that configured the Tier 2 threshold.
+#[cfg(feature = "adaptive-selectors")]
+fn build_adaptive_engine(
+    opts: &CrawlOptions,
+    semantic: Option<Arc<dyn webfang_core::domain::SemanticInspectorPort>>,
+    options: AdaptiveSelectorOptions,
+) -> Option<Arc<AdaptiveSelectorEngine>> {
+    if opts.adaptive_selectors {
+        tracing::info!(
+            semantic_wired = semantic.is_some(),
+            "building adaptive selector engine"
+        );
+        Some(Arc::new(AdaptiveSelectorEngine::new(
+            Arc::new(DefaultDomInspector::new()),
+            semantic,
+            options,
         )))
     } else {
         None
     }
 }
 
-/// Build the AI semantic cleaner and its vault-search ports.
+/// Build the Tier 2 semantic inspector from the cleaner's shared ONNX assets
+/// (#702).
+///
+/// Returns `None` when no shared pool is available (`--ai` off or dry-run),
+/// degrading the adaptive engine to Tier 1 lexical repair. The threshold comes
+/// from the single shared [`AdaptiveSelectorOptions`] — no duplicate constant.
+#[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
+fn semantic_inspector(
+    shared: &Option<(
+        Arc<webfang_ai::InferencePool>,
+        Arc<webfang_ai::MiniLmTokenizer>,
+    )>,
+    options: &AdaptiveSelectorOptions,
+) -> Option<Arc<dyn webfang_core::domain::SemanticInspectorPort>> {
+    shared.as_ref().map(|(pool, tokenizer)| {
+        let inspector = webfang_ai::GraniteDomInspector::new(
+            Arc::clone(pool),
+            Arc::clone(tokenizer),
+            options.semantic_threshold,
+        );
+        Arc::new(inspector) as Arc<dyn webfang_core::domain::SemanticInspectorPort>
+    })
+}
+
+/// Build the AI semantic cleaner and its vault-search ports, surfacing the
+/// cleaner's shared ONNX assets (pool + tokenizer) so the adaptive engine can
+/// reuse them for Tier 2 semantic repair (#702) without a second model load.
 #[cfg(feature = "ai")]
 async fn build_ai_cleaner(
     opts: &CrawlOptions,
@@ -606,6 +756,10 @@ async fn build_ai_cleaner(
     (
         Option<Arc<dyn SemanticCleaner>>,
         webfang_core::application::container::VaultAiPorts,
+        Option<(
+            Arc<webfang_ai::InferencePool>,
+            Arc<webfang_ai::MiniLmTokenizer>,
+        )>,
     ),
     CliExit,
 > {
@@ -613,6 +767,7 @@ async fn build_ai_cleaner(
         return Ok((
             None,
             webfang_core::application::container::VaultAiPorts::default(),
+            None,
         ));
     }
 
@@ -646,10 +801,13 @@ async fn build_ai_cleaner(
                 // `resolve_model_assets` call, one `InferencePool` on `--ai`.
                 // Extracted before type-erasing the cleaner behind the trait.
                 let (pool, tokenizer) = cleaner.shared_inference();
+                // Surface a second Arc pair for Tier 2 wiring (#702); the vault
+                // ports consume the originals below.
+                let shared = Some((Arc::clone(&pool), Arc::clone(&tokenizer)));
                 let cleaner: Option<Arc<dyn SemanticCleaner>> = Some(Arc::new(cleaner));
                 let mut ports = build_vault_ports(pool, tokenizer).await;
                 ports.cleaner = cleaner.clone();
-                Ok((cleaner, ports))
+                Ok((cleaner, ports, shared))
             },
             Err(e) => {
                 let msg = format!("No se pudo inicializar el limpiador semántico AI: {e}");
@@ -667,19 +825,32 @@ async fn build_ai_cleaner(
 
 /// Build optional engines and dispatch to the orchestrator.
 ///
-/// The argument list depends on which optional features are compiled in, so each
-/// combination is spelled out explicitly.
+/// The AI cleaner is built FIRST (#702): the adaptive engine needs the
+/// cleaner's shared ONNX assets to wire Tier 2 semantic repair. The argument
+/// list passed to the orchestrator depends on which optional features are
+/// compiled in, so each combination is spelled out explicitly.
 async fn build_and_run(opts: CrawlOptions) -> CliExit {
-    #[cfg(feature = "adaptive-selectors")]
-    let adaptive_engine = build_adaptive_engine(&opts);
-
     #[cfg(feature = "ai")]
-    let (ai_cleaner, vault_ports) = match build_ai_cleaner(&opts).await {
+    let (ai_cleaner, vault_ports, shared) = match build_ai_cleaner(&opts).await {
         Ok(v) => v,
         Err(e) => return e,
     };
     #[cfg(not(feature = "ai"))]
     let vault_ports = webfang_core::application::container::VaultAiPorts::default();
+
+    #[cfg(feature = "adaptive-selectors")]
+    let engine_options = AdaptiveSelectorOptions::default();
+    #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
+    let semantic = semantic_inspector(&shared, &engine_options);
+    // Without the `ai` feature there is no ONNX pool — explicit Tier 1 degrade.
+    #[cfg(all(not(feature = "ai"), feature = "adaptive-selectors"))]
+    let semantic: Option<Arc<dyn webfang_core::domain::SemanticInspectorPort>> = None;
+    // No adaptive engine to feed — keep the shared assets from becoming an
+    // unused binding on the ai-only combo.
+    #[cfg(all(feature = "ai", not(feature = "adaptive-selectors")))]
+    let _ = shared;
+    #[cfg(feature = "adaptive-selectors")]
+    let adaptive_engine = build_adaptive_engine(&opts, semantic, engine_options);
 
     #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
     {
