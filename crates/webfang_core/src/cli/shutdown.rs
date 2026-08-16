@@ -16,6 +16,7 @@
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
+use tracing::Instrument;
 
 #[cfg(unix)]
 use tracing::warn;
@@ -35,7 +36,7 @@ impl ShutdownGuard {
     #[must_use]
     pub fn install() -> Self {
         let token = CancellationToken::new();
-        let handle = tokio::spawn(wait_for_signal(token.clone()));
+        let handle = tokio::spawn(wait_for_signal(token.clone()).in_current_span());
         Self { token, handle }
     }
 

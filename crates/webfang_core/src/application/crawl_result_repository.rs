@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 use crate::domain::repositories::CrawlResultRepository;
 use crate::domain::{CrawlError, ScrapedContent};
@@ -69,7 +70,7 @@ impl CrawlResultRepositoryImpl {
             Arc::clone(&index),
             Arc::clone(&write_error),
         );
-        tokio::spawn(writer.run());
+        tokio::spawn(writer.run().in_current_span());
 
         Ok(Self {
             tx,

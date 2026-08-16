@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, warn, Instrument};
 
 use crate::domain::DiscoveredUrl;
 
@@ -106,26 +106,29 @@ impl ResultsCollector {
 
         // Worker dedicado que posee el receiver y el Vec final
         let _counter_clone = Arc::clone(&counter);
-        let handle = tokio::spawn(async move {
-            let mut results = Vec::with_capacity(vec_capacity);
+        let handle = tokio::spawn(
+            async move {
+                let mut results = Vec::with_capacity(vec_capacity);
 
-            // El bucle termina cuando rx se cierra (todos los tx muertos)
-            while let Some(msg) = rx.recv().await {
-                match msg {
-                    CrawlMessage::Success(url) => {
-                        debug!("Collected: {}", url.url);
-                        results.push(url);
-                        // Counter already updated in send()
-                    },
-                    CrawlMessage::Error { url, error } => {
-                        warn!("Error collecting {}: {}", url, error);
-                    },
+                // El bucle termina cuando rx se cierra (todos los tx muertos)
+                while let Some(msg) = rx.recv().await {
+                    match msg {
+                        CrawlMessage::Success(url) => {
+                            debug!("Collected: {}", url.url);
+                            results.push(url);
+                            // Counter already updated in send()
+                        },
+                        CrawlMessage::Error { url, error } => {
+                            warn!("Error collecting {}: {}", url, error);
+                        },
+                    }
                 }
-            }
 
-            info!("Collector finished: {} URLs", results.len());
-            results
-        });
+                info!("Collector finished: {} URLs", results.len());
+                results
+            }
+            .in_current_span(),
+        );
 
         Self {
             tx,
