@@ -139,7 +139,7 @@ pub async fn run(
     #[cfg(not(feature = "adaptive-selectors"))]
     let engine_ref: Option<&AdaptiveSelectorEngine> = None;
 
-    let (results, failures) = match scrape_phase(
+    let (results, failures, _blocked) = match scrape_phase(
         &urls_to_scrape,
         &prepare.scraper_config,
         &opts,
@@ -455,6 +455,7 @@ async fn scrape_phase(
     (
         Vec<domain::ScrapedContent>,
         Vec<(String, crate::error::ScraperError)>,
+        usize,
     ),
     crate::error::ScraperError,
 > {
