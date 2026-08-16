@@ -85,7 +85,8 @@ async fn robots_txt_disallow_prevents_fetching() {
     // Seed page links to /private/page.
     mock_seed_page(
         &t,
-        r#"<html><body><a href="/private/page">Private</a></body></html>"#,
+        r#"<html><body><a href="/private/page">Private</a>
+             <p>The seed page carries plenty of substantive server-rendered text so it comfortably clears the fifty character minimum content guard.</p></body></html>"#,
     )
     .await;
 
@@ -128,7 +129,8 @@ async fn ignore_robots_flag_allows_disallowed_fetch() {
 
     mock_seed_page(
         &t,
-        r#"<html><body><a href="/private/page">Private</a></body></html>"#,
+        r#"<html><body><a href="/private/page">Private</a>
+             <p>The seed page carries plenty of substantive server-rendered text so it comfortably clears the fifty character minimum content guard.</p></body></html>"#,
     )
     .await;
 

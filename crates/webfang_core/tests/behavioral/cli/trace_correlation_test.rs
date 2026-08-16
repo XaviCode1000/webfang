@@ -40,7 +40,10 @@ async fn mount_two_page_site(server: &wiremock::MockServer) -> String {
         Mock::given(method("GET"))
             .and(path(page_path))
             .respond_with(ResponseTemplate::new(200).set_body_string(format!(
-                "<html><body><article><h1>{title}</h1></article></body></html>"
+                "<html><body><article><h1>{title}</h1>\
+                 <p>Substantive body for {title}, long enough to clear the fifty character \
+                 minimum content guard so the scrape succeeds deterministically.</p>\
+                 </article></body></html>"
             )))
             .mount(server)
             .await;

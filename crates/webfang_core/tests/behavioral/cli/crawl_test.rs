@@ -17,7 +17,9 @@ async fn max_depth_zero_only_scrapes_seed() {
     Mock::given(method("GET"))
         .and(path("/"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
-            "<html><body><a href=\"/page-a\">Page A</a><a href=\"/page-b\">Page B</a></body></html>",
+            "<html><body><a href=\"/page-a\">Page A</a><a href=\"/page-b\">Page B</a>\
+             <p>This seed page carries plenty of substantive server-rendered text so it \
+             comfortably clears the fifty character minimum content guard.</p></body></html>",
         ))
         .mount(&t.server)
         .await;
@@ -28,7 +30,7 @@ async fn max_depth_zero_only_scrapes_seed() {
         .and(path("/page-a"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_string("<html><body><article><h1>Page A</h1></article></body></html>"),
+                .set_body_string("<html><body><article><h1>Page A</h1><p>Page A carries enough substantive server-rendered text to clear the fifty character minimum content guard comfortably.</p></article></body></html>"),
         )
         .mount(&t.server)
         .await;
@@ -37,7 +39,7 @@ async fn max_depth_zero_only_scrapes_seed() {
         .and(path("/page-b"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_string("<html><body><article><h1>Page B</h1></article></body></html>"),
+                .set_body_string("<html><body><article><h1>Page B</h1><p>Page B carries enough substantive server-rendered text to clear the fifty character minimum content guard comfortably.</p></article></body></html>"),
         )
         .mount(&t.server)
         .await;
@@ -136,7 +138,7 @@ async fn mount_subpath_scenario(server: &wiremock::MockServer) -> String {
         .and(path("/blog/post-1"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_string("<html><body><article><h1>Post 1</h1></article></body></html>"),
+                .set_body_string("<html><body><article><h1>Post 1</h1><p>Post 1 carries enough substantive server-rendered text to clear the fifty character minimum content guard comfortably.</p></article></body></html>"),
         )
         .mount(server)
         .await;
@@ -145,7 +147,7 @@ async fn mount_subpath_scenario(server: &wiremock::MockServer) -> String {
         .and(path("/blog/post-2"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_string("<html><body><article><h1>Post 2</h1></article></body></html>"),
+                .set_body_string("<html><body><article><h1>Post 2</h1><p>Post 2 carries enough substantive server-rendered text to clear the fifty character minimum content guard comfortably.</p></article></body></html>"),
         )
         .mount(server)
         .await;
@@ -256,7 +258,9 @@ async fn max_pages_limits_crawl_output() {
     Mock::given(method("GET"))
         .and(path("/"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
-            "<html><body><a href=\"/page-a\">A</a><a href=\"/page-b\">B</a><a href=\"/page-c\">C</a><a href=\"/page-d\">D</a><a href=\"/page-e\">E</a></body></html>",
+            "<html><body><a href=\"/page-a\">A</a><a href=\"/page-b\">B</a><a href=\"/page-c\">C</a><a href=\"/page-d\">D</a><a href=\"/page-e\">E</a>\
+             <p>This hub page carries plenty of substantive server-rendered text so it \
+             comfortably clears the fifty character minimum content guard.</p></body></html>",
         ))
         .mount(&t.server)
         .await;
@@ -269,7 +273,7 @@ async fn max_pages_limits_crawl_output() {
         .and(path("/page-a"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_string("<html><body><article><h1>Page A</h1></article></body></html>"),
+                .set_body_string("<html><body><article><h1>Page A</h1><p>Page A carries enough substantive server-rendered text to clear the fifty character minimum content guard comfortably.</p></article></body></html>"),
         )
         .mount(&t.server)
         .await;
@@ -278,7 +282,7 @@ async fn max_pages_limits_crawl_output() {
         .and(path("/page-b"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_string("<html><body><article><h1>Page B</h1></article></body></html>"),
+                .set_body_string("<html><body><article><h1>Page B</h1><p>Page B carries enough substantive server-rendered text to clear the fifty character minimum content guard comfortably.</p></article></body></html>"),
         )
         .mount(&t.server)
         .await;
@@ -287,7 +291,7 @@ async fn max_pages_limits_crawl_output() {
         .and(path("/page-c"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_string("<html><body><article><h1>Page C</h1></article></body></html>"),
+                .set_body_string("<html><body><article><h1>Page C</h1><p>Page C carries enough substantive server-rendered text to clear the fifty character minimum content guard comfortably.</p></article></body></html>"),
         )
         .mount(&t.server)
         .await;
@@ -296,7 +300,7 @@ async fn max_pages_limits_crawl_output() {
         .and(path("/page-d"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_string("<html><body><article><h1>Page D</h1></article></body></html>"),
+                .set_body_string("<html><body><article><h1>Page D</h1><p>Page D carries enough substantive server-rendered text to clear the fifty character minimum content guard comfortably.</p></article></body></html>"),
         )
         .mount(&t.server)
         .await;
@@ -305,7 +309,7 @@ async fn max_pages_limits_crawl_output() {
         .and(path("/page-e"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_string("<html><body><article><h1>Page E</h1></article></body></html>"),
+                .set_body_string("<html><body><article><h1>Page E</h1><p>Page E carries enough substantive server-rendered text to clear the fifty character minimum content guard comfortably.</p></article></body></html>"),
         )
         .mount(&t.server)
         .await;
@@ -361,7 +365,9 @@ async fn exclude_pattern_skips_matching_urls() {
     Mock::given(method("GET"))
         .and(path("/"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
-            "<html><body><a href=\"/page-a\">A</a><a href=\"/page-b\">B</a></body></html>",
+            "<html><body><a href=\"/page-a\">A</a><a href=\"/page-b\">B</a>\
+             <p>This hub page carries plenty of substantive server-rendered text so it \
+             comfortably clears the fifty character minimum content guard.</p></body></html>",
         ))
         .mount(&t.server)
         .await;
@@ -370,7 +376,7 @@ async fn exclude_pattern_skips_matching_urls() {
         .and(path("/page-a"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_string("<html><body><article><h1>Page A</h1></article></body></html>"),
+                .set_body_string("<html><body><article><h1>Page A</h1><p>Page A carries enough substantive server-rendered text to clear the fifty character minimum content guard comfortably.</p></article></body></html>"),
         )
         .mount(&t.server)
         .await;
@@ -379,7 +385,7 @@ async fn exclude_pattern_skips_matching_urls() {
         .and(path("/page-b"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_string("<html><body><article><h1>Page B</h1></article></body></html>"),
+                .set_body_string("<html><body><article><h1>Page B</h1><p>Page B carries enough substantive server-rendered text to clear the fifty character minimum content guard comfortably.</p></article></body></html>"),
         )
         .mount(&t.server)
         .await;
@@ -453,7 +459,9 @@ async fn include_pattern_only_scrapes_matching_urls() {
     Mock::given(method("GET"))
         .and(path("/"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
-            "<html><body><a href=\"/page-a\">A</a><a href=\"/page-b\">B</a></body></html>",
+            "<html><body><a href=\"/page-a\">A</a><a href=\"/page-b\">B</a>\
+             <p>This hub page carries plenty of substantive server-rendered text so it \
+             comfortably clears the fifty character minimum content guard.</p></body></html>",
         ))
         .mount(&t.server)
         .await;
@@ -462,7 +470,7 @@ async fn include_pattern_only_scrapes_matching_urls() {
         .and(path("/page-a"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_string("<html><body><article><h1>Page A</h1></article></body></html>"),
+                .set_body_string("<html><body><article><h1>Page A</h1><p>Page A carries enough substantive server-rendered text to clear the fifty character minimum content guard comfortably.</p></article></body></html>"),
         )
         .mount(&t.server)
         .await;
@@ -471,7 +479,7 @@ async fn include_pattern_only_scrapes_matching_urls() {
         .and(path("/page-b"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_string("<html><body><article><h1>Page B</h1></article></body></html>"),
+                .set_body_string("<html><body><article><h1>Page B</h1><p>Page B carries enough substantive server-rendered text to clear the fifty character minimum content guard comfortably.</p></article></body></html>"),
         )
         .mount(&t.server)
         .await;
@@ -620,7 +628,9 @@ async fn mount_dom_depth_scenario(server: &wiremock::MockServer) {
     Mock::given(method("GET"))
         .and(path("/"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
-            "<html><body><a href=\"/page1\">Page 1</a><a href=\"/page2\">Page 2</a></body></html>",
+            "<html><body><a href=\"/page1\">Page 1</a><a href=\"/page2\">Page 2</a>\
+             <p>This seed page carries plenty of substantive server-rendered text so it \
+             comfortably clears the fifty character minimum content guard.</p></body></html>",
         ))
         .mount(server)
         .await;
@@ -629,7 +639,9 @@ async fn mount_dom_depth_scenario(server: &wiremock::MockServer) {
         .and(path("/page1"))
         .respond_with(
             ResponseTemplate::new(200).set_body_string(
-                "<html><body><a href=\"/deep\">Deep</a><h1>Page 1</h1></body></html>",
+                "<html><body><a href=\"/deep\">Deep</a><h1>Page 1</h1>\
+                 <p>Page 1 carries enough substantive server-rendered text to clear the \
+                 fifty character minimum content guard comfortably.</p></body></html>",
             ),
         )
         .mount(server)
@@ -639,7 +651,7 @@ async fn mount_dom_depth_scenario(server: &wiremock::MockServer) {
         .and(path("/page2"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_string("<html><body><article><h1>Page 2</h1></article></body></html>"),
+                .set_body_string("<html><body><article><h1>Page 2</h1><p>Page 2 carries enough substantive server-rendered text to clear the fifty character minimum content guard comfortably.</p></article></body></html>"),
         )
         .mount(server)
         .await;
@@ -648,7 +660,7 @@ async fn mount_dom_depth_scenario(server: &wiremock::MockServer) {
         .and(path("/deep"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_string("<html><body><article><h1>Deep</h1></article></body></html>"),
+                .set_body_string("<html><body><article><h1>Deep</h1><p>The deep page carries enough substantive server-rendered text to clear the fifty character minimum content guard comfortably.</p></article></body></html>"),
         )
         .mount(server)
         .await;

@@ -1,5 +1,5 @@
 ---
-source: crates/webfang_core/../../tests/behavioral/main.rs
+source: crates/webfang_core/tests/behavioral/main.rs
 expression: redacted
 ---
 ---
@@ -8,6 +8,6 @@ url: http://127.0.0.1:<PORT>/
 date: [DATE]
 ---
 
-Row1Col1
+Row One Column One Substantive Cell Text
 
-Row1Col2
+Row One Column Two Substantive Text

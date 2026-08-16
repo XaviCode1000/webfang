@@ -1,5 +1,5 @@
 ---
-source: crates/webfang_core/../../tests/behavioral/main.rs
+source: crates/webfang_core/tests/behavioral/main.rs
 expression: redacted
 ---
 ---
@@ -8,6 +8,6 @@ url: http://127.0.0.1:<PORT>/
 date: [DATE]
 ---
 
-### Section One
+### Section One Heading With Plenty of Lengthy Text
 
-### Section Two
+### Section Two Heading With Plenty of Lengthy Text

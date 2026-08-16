@@ -52,7 +52,8 @@ async fn sitemap_url_scrapes_listed_urls() {
         .respond_with(ResponseTemplate::new(200).set_body_string(
             "<html><body><article>\
                  <h1>Page A</h1>\
-                 <p>Content from sitemap page A.</p>\
+                 <p>Substantive content from sitemap page A, long enough to clear the \
+                 fifty character minimum content guard comfortably.</p>\
                  </article></body></html>",
         ))
         .mount(&server)
@@ -63,7 +64,8 @@ async fn sitemap_url_scrapes_listed_urls() {
         .respond_with(ResponseTemplate::new(200).set_body_string(
             "<html><body><article>\
                  <h1>Page B</h1>\
-                 <p>Content from sitemap page B.</p>\
+                 <p>Substantive content from sitemap page B, long enough to clear the \
+                 fifty character minimum content guard comfortably.</p>\
                  </article></body></html>",
         ))
         .mount(&server)
