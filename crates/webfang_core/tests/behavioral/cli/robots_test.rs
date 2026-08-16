@@ -6,6 +6,73 @@ use crate::BehavioralTest;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
+/// Mock the seed page at `/` with the given HTML body.
+async fn mock_seed_page(t: &BehavioralTest, body: &str) {
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&t.server)
+        .await;
+}
+
+/// Build a sitemap XML listing the given paths, mock it, and return the
+/// sitemap URL.
+async fn setup_sitemap(t: &BehavioralTest, paths: &[&str]) -> String {
+    let base = t.server.uri();
+    let sitemap_url = format!("{base}/sitemap.xml");
+    let urls: Vec<String> = paths
+        .iter()
+        .map(|p| format!("        <url><loc>{base}{p}</loc></url>"))
+        .collect();
+    let sitemap_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+{}
+    </urlset>"#,
+        urls.join("\n")
+    );
+    crate::common::mock_sitemap(&t.server, &sitemap_url, &sitemap_xml).await;
+    sitemap_url
+}
+
+/// Run the scraper binary against the mock server with sitemap discovery.
+/// Returns the process output.
+fn run_scraper(t: &BehavioralTest, sitemap_url: &str, extra_args: &[&str]) -> std::process::Output {
+    let base = t.server.uri();
+    let mut command = cmd();
+    command
+        .arg("--url")
+        .arg(&base)
+        .arg("--sitemap-url")
+        .arg(sitemap_url)
+        .arg("--use-sitemap");
+    for arg in extra_args {
+        command.arg(arg);
+    }
+    command
+        .arg("--output")
+        .arg(t.out.path())
+        .arg("--quiet")
+        .output()
+        .expect("run binary")
+}
+
+/// Count requests whose path starts with the given prefix in the wiremock
+/// request log.
+async fn count_requests_with_prefix(t: &BehavioralTest, path_prefix: &str) -> usize {
+    let requests = t.server.received_requests().await.unwrap();
+    requests
+        .iter()
+        .filter(|r| r.url.path().starts_with(path_prefix))
+        .count()
+}
+
+/// Count requests to exactly the given path in the wiremock request log.
+async fn count_requests_to_path(t: &BehavioralTest, path: &str) -> usize {
+    let requests = t.server.received_requests().await.unwrap();
+    requests.iter().filter(|r| r.url.path() == path).count()
+}
+
 /// A Disallow: /private/ in robots.txt prevents the crawler from
 /// fetching /private/page; the seed page is still fetched.
 #[tokio::test]
@@ -16,14 +83,11 @@ async fn robots_txt_disallow_prevents_fetching() {
     crate::common::mock_robots(&t.server, "User-agent: *\nDisallow: /private/\n").await;
 
     // Seed page links to /private/page.
-    Mock::given(method("GET"))
-        .and(path("/"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("<html><body><a href=\"/private/page\">Private</a></body></html>"),
-        )
-        .mount(&t.server)
-        .await;
+    mock_seed_page(
+        &t,
+        r#"<html><body><a href="/private/page">Private</a></body></html>"#,
+    )
+    .await;
 
     // The /private/page endpoint is not mocked; if the crawler respects
     // robots.txt it will never reach it and wiremock returns 404 by default.
@@ -31,28 +95,8 @@ async fn robots_txt_disallow_prevents_fetching() {
     // Sitemap lists the seed and the disallowed URL so discovery succeeds
     // (default discovery is sitemap-based); robots.txt enforcement must still
     // block /private/page at scrape time.
-    let base = t.server.uri();
-    let sitemap_url = format!("{base}/sitemap.xml");
-    let sitemap_xml = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-    <url><loc>{base}/</loc></url>
-    <url><loc>{base}/private/page</loc></url>
-</urlset>"#
-    );
-    crate::common::mock_sitemap(&t.server, &sitemap_url, &sitemap_xml).await;
-
-    let output = cmd()
-        .arg("--url")
-        .arg(&base)
-        .arg("--sitemap-url")
-        .arg(&sitemap_url)
-        .arg("--use-sitemap")
-        .arg("--output")
-        .arg(t.out.path())
-        .arg("--quiet")
-        .output()
-        .expect("run binary");
+    let sitemap_url = setup_sitemap(&t, &["/", "/private/page"]).await;
+    let output = run_scraper(&t, &sitemap_url, &[]);
 
     assert!(
         output.status.success(),
@@ -60,12 +104,8 @@ async fn robots_txt_disallow_prevents_fetching() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let requests = t.server.received_requests().await.unwrap();
-    let private_requests = requests
-        .iter()
-        .filter(|r| r.url.path().starts_with("/private"))
-        .count();
-    let seed_requests = requests.iter().filter(|r| r.url.path() == "/").count();
+    let private_requests = count_requests_with_prefix(&t, "/private").await;
+    let seed_requests = count_requests_to_path(&t, "/").await;
 
     assert_eq!(
         private_requests, 0,
@@ -86,14 +126,11 @@ async fn ignore_robots_flag_allows_disallowed_fetch() {
 
     crate::common::mock_robots(&t.server, "User-agent: *\nDisallow: /private/\n").await;
 
-    Mock::given(method("GET"))
-        .and(path("/"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("<html><body><a href=\"/private/page\">Private</a></body></html>"),
-        )
-        .mount(&t.server)
-        .await;
+    mock_seed_page(
+        &t,
+        r#"<html><body><a href="/private/page">Private</a></body></html>"#,
+    )
+    .await;
 
     Mock::given(method("GET"))
         .and(path("/private/page"))
@@ -103,29 +140,8 @@ async fn ignore_robots_flag_allows_disallowed_fetch() {
         .mount(&t.server)
         .await;
 
-    let base = t.server.uri();
-    let sitemap_url = format!("{base}/sitemap.xml");
-    let sitemap_xml = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
- <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-     <url><loc>{base}/</loc></url>
-     <url><loc>{base}/private/page</loc></url>
- </urlset>"#
-    );
-    crate::common::mock_sitemap(&t.server, &sitemap_url, &sitemap_xml).await;
-
-    let output = cmd()
-        .arg("--url")
-        .arg(&base)
-        .arg("--sitemap-url")
-        .arg(&sitemap_url)
-        .arg("--use-sitemap")
-        .arg("--ignore-robots")
-        .arg("--output")
-        .arg(t.out.path())
-        .arg("--quiet")
-        .output()
-        .expect("run binary");
+    let sitemap_url = setup_sitemap(&t, &["/", "/private/page"]).await;
+    let output = run_scraper(&t, &sitemap_url, &["--ignore-robots"]);
 
     assert!(
         output.status.success(),
@@ -133,12 +149,8 @@ async fn ignore_robots_flag_allows_disallowed_fetch() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let requests = t.server.received_requests().await.unwrap();
-    let private_requests = requests
-        .iter()
-        .filter(|r| r.url.path().starts_with("/private"))
-        .count();
-    let seed_requests = requests.iter().filter(|r| r.url.path() == "/").count();
+    let private_requests = count_requests_with_prefix(&t, "/private").await;
+    let seed_requests = count_requests_to_path(&t, "/").await;
 
     assert_eq!(
         private_requests, 1,
@@ -166,38 +178,16 @@ async fn all_urls_blocked_by_robots_exits_77() {
 
     // Seed page — mocked so a robots regression (fetching despite Disallow)
     // would succeed and change the exit code instead of hitting a 404.
-    Mock::given(method("GET"))
-        .and(path("/"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("<html><body><h1>Seed</h1><p>blocked content</p></body></html>"),
-        )
-        .mount(&t.server)
-        .await;
+    mock_seed_page(
+        &t,
+        r#"<html><body><h1>Seed</h1><p>blocked content</p></body></html>"#,
+    )
+    .await;
 
     // Sitemap lists the seed so discovery succeeds (default discovery is
     // sitemap-based); robots.txt enforcement then blocks it at scrape time.
-    let base = t.server.uri();
-    let sitemap_url = format!("{base}/sitemap.xml");
-    let sitemap_xml = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-    <url><loc>{base}/</loc></url>
-</urlset>"#
-    );
-    crate::common::mock_sitemap(&t.server, &sitemap_url, &sitemap_xml).await;
-
-    let output = cmd()
-        .arg("--url")
-        .arg(&base)
-        .arg("--sitemap-url")
-        .arg(&sitemap_url)
-        .arg("--use-sitemap")
-        .arg("--output")
-        .arg(t.out.path())
-        .arg("--quiet")
-        .output()
-        .expect("run binary");
+    let sitemap_url = setup_sitemap(&t, &["/"]).await;
+    let output = run_scraper(&t, &sitemap_url, &[]);
 
     // Semantic invariants (the contract under test), asserted explicitly so
     // they hold even if the snapshot below drifts.
