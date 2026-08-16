@@ -145,7 +145,10 @@ impl RobotsFetcher {
             .connect_timeout(Duration::from_secs(connect_timeout_secs))
             .gzip(true)
             .brotli(true)
-            .redirect(wreq::redirect::Policy::limited(10))
+            // SSRF guard (#703): default 10-hop limit + stops redirects that
+            // target a literal forbidden IP. Hostname targets are validated
+            // at entry by the async SSRF guard.
+            .redirect(crate::infrastructure::ssrf::redirect_policy())
             .build()
             .map_err(|e| InfraError::Network(Box::new(e)))?;
 

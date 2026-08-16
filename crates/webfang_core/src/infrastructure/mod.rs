@@ -22,6 +22,9 @@ pub mod observability;
 pub mod obsidian;
 pub mod output;
 pub mod scraper;
+// Pure SSRF IP validation + redirect policy guard (#703). Shared by the MCP
+// entry-point validator and the `wreq` redirect callbacks.
+pub mod ssrf;
 pub mod user_agent;
 
 // Elastic ingestion (Issue #51) — hardware autotuning + SQLite persistence.
