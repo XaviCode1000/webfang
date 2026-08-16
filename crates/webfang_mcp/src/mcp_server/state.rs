@@ -171,8 +171,8 @@ impl McpState {
     /// The sole call-side helper for identified scrape metrics (#698): it owns
     /// the [`ScrapeEvent::identified`] construction so each MCP tool handler is
     /// a one-line record call. `start` is the operation's start instant and is
-    /// converted to an elapsed [`Duration`] here, keeping timing bookkeeping in
-    /// one place.
+    /// converted to an elapsed [`Duration`](std::time::Duration) here, keeping
+    /// timing bookkeeping in one place.
     pub fn record_scrape_identity(
         &self,
         tool: &'static str,

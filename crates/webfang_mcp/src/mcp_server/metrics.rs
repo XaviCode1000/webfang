@@ -86,8 +86,9 @@ impl ScrapeEvent {
     /// `correlation_id`, so the metric event is reconstructable with the run
     /// trace. An MCP tool call IS an operation (#501) — handlers mint one
     /// identity at entry and share it across the call's success/error events
-    /// through this single constructor, which is the only place that wires
-    /// [`CorrelationId`] into a [`ScrapeEvent`].
+    /// through this single constructor, which is the only place that wires a
+    /// [`CorrelationId`](webfang_core::domain::CorrelationId) into a
+    /// [`ScrapeEvent`].
     #[must_use]
     pub fn identified(
         tool: &'static str,
