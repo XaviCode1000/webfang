@@ -1,0 +1,8 @@
+---
+source: crates/webfang_core/tests/behavioral/main.rs
+expression: redacted
+---
+  <TIMESTAMP>  WARN <MODULE>: --output-vectors refused without --clean-ai; no vectors to export
+    at <FILE>.rs:<LINE>
+
+Error: No hay vectores para exportar: '--output-vectors' requiere '--clean-ai' para generar embeddings

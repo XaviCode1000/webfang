@@ -53,6 +53,44 @@ pub fn prepare_progress_channel(
     (observer, rx)
 }
 
+/// Pre-flight gate for `--output-vectors` (#703, #652).
+///
+/// `--output-vectors` can only write embeddings when semantic cleaning is
+/// requested (`--clean-ai` / `opts.ai`). Every entry point (`run`,
+/// `run_batch`) must run this gate BEFORE `build_elastic_ingestion` wires the
+/// stream sink: `StreamRepository::new(path)` creates/truncates the target
+/// file as a construction side effect, so failing downstream of it leaks a
+/// 0-byte vectors file alongside a success exit (silent data loss for RAG
+/// pipelines, class S1).
+///
+/// - With the `ai` feature: `output_vectors && !opts.ai` → `DataFormatError`
+///   (exit 65, `EX_DATA`) with a Spanish user-facing message.
+/// - Without it: the flag is unusable → `ConfigError` (exit 78) telling the
+///   user to rebuild with `--features ai`.
+///
+/// Returns `Some(exit)` when the run must be aborted, `None` to proceed.
+fn output_vectors_gate(opts: &CrawlOptions) -> Option<CliExit> {
+    opts.elastic.output_vectors.as_ref()?;
+
+    #[cfg(feature = "ai")]
+    {
+        if opts.ai {
+            return None;
+        }
+        warn!("--output-vectors refused without --clean-ai; no vectors to export");
+        Some(CliExit::DataFormatError(
+            "No hay vectores para exportar: '--output-vectors' requiere '--clean-ai' para generar embeddings".to_string(),
+        ))
+    }
+
+    #[cfg(not(feature = "ai"))]
+    {
+        Some(CliExit::ConfigError(
+            "Se requiere compilar con '--features ai' para usar --output-vectors".to_string(),
+        ))
+    }
+}
+
 /// Main orchestration entry point.
 ///
 /// Coordinates the full scraping pipeline:
@@ -72,6 +110,14 @@ pub async fn run(
     if opts.export.dry_run {
         return run_dry_run(opts).await;
     }
+
+    // #703/#652: pre-flight gate for `--output-vectors` — single source of
+    // truth shared with `run_batch()` (see `output_vectors_gate`), and it must
+    // run BEFORE `build_elastic_ingestion` wires the stream sink below.
+    if let Some(exit) = output_vectors_gate(&opts) {
+        return exit;
+    }
+
     // Process-level graceful shutdown (#653). The guard owns ONE signal
     // listener for the whole run; every phase observes its token cooperatively
     // so a SIGINT drains in-flight work and still exports it, instead of being
@@ -124,13 +170,6 @@ pub async fn run(
         Ok(v) => v,
         Err(e) => return e,
     };
-
-    #[cfg(not(feature = "ai"))]
-    if opts.elastic.output_vectors.is_some() {
-        return CliExit::ConfigError(
-            "Se requiere compilar con '--features ai' para usar --output-vectors".to_string(),
-        );
-    }
 
     // Create observer with stderr fallback (no channel) for non-TUI mode.
     // For TUI mode, call `prepare_progress_channel()` from main.rs and pass
@@ -587,11 +626,11 @@ async fn run_batch(
     vault_ports: crate::application::container::VaultAiPorts,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> CliExit {
-    #[cfg(not(feature = "ai"))]
-    if opts.elastic.output_vectors.is_some() {
-        return CliExit::ConfigError(
-            "Se requiere compilar con '--features ai' para usar --output-vectors".to_string(),
-        );
+    // #703/#652: pre-flight gate for `--output-vectors` — same single source of
+    // truth as `run()` (see `output_vectors_gate`). First statement here so the
+    // exit fires before any crawl, spool, or sink wiring runs.
+    if let Some(exit) = output_vectors_gate(&opts) {
+        return exit;
     }
 
     // Resolve the TLS/H2 fingerprint once so the batch crawl engine honors
@@ -1046,7 +1085,6 @@ mod tests {
     use crate::application::crawl_options::CrawlOptions;
     use crate::cli::error::CliExit;
 
-    #[cfg(not(feature = "ai"))]
     use super::{run, run_batch};
 
     // ===== build_batch_crawler_config tests (#653) =====
@@ -1647,6 +1685,61 @@ mod tests {
         assert!(
             matches!(exit, CliExit::ConfigError(_)),
             "expected CliExit::ConfigError, got {exit:?}"
+        );
+    }
+
+    // ===== output_vectors without clean-ai flag (ai feature on, #703) =====
+
+    #[cfg(feature = "ai")]
+    #[tokio::test]
+    async fn run_returns_data_error_when_output_vectors_without_clean_ai() {
+        let mut opts = CrawlOptions::default();
+        opts.elastic.output_vectors = Some("vectors.jsonl".to_string());
+        // opts.ai stays false → no semantic cleaning requested
+
+        // The cfg-gated `ai_cleaner` / `adaptive_engine` parameters make the
+        // arity depend on both features — dispatch the call exactly like
+        // `build_and_run` does in webfang_cli/src/main.rs.
+        #[cfg(feature = "adaptive-selectors")]
+        let exit = run(
+            opts,
+            None,
+            None,
+            crate::application::container::VaultAiPorts::default(),
+        )
+        .await;
+        #[cfg(not(feature = "adaptive-selectors"))]
+        let exit = run(
+            opts,
+            None,
+            crate::application::container::VaultAiPorts::default(),
+        )
+        .await;
+
+        assert!(
+            matches!(exit, CliExit::DataFormatError(_)),
+            "expected CliExit::DataFormatError, got {exit:?}"
+        );
+    }
+
+    #[cfg(feature = "ai")]
+    #[tokio::test]
+    async fn run_batch_returns_data_error_when_output_vectors_without_clean_ai() {
+        let mut opts = CrawlOptions::default();
+        opts.elastic.output_vectors = Some("vectors.jsonl".to_string());
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        let exit = run_batch(
+            opts,
+            None,
+            crate::application::container::VaultAiPorts::default(),
+            &cancel,
+        )
+        .await;
+
+        assert!(
+            matches!(exit, CliExit::DataFormatError(_)),
+            "expected CliExit::DataFormatError, got {exit:?}"
         );
     }
 }
