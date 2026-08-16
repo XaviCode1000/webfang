@@ -83,7 +83,6 @@ setup:
     @which cargo-deny || (echo "Falta: cargo binstall cargo-deny"; exit 1)
     @which typos || (echo "Falta: cargo binstall typos-cli"; exit 1)
     @which sccache || (echo "Falta: sccache"; exit 1)
-    @which mold || (echo "Falta: mold"; exit 1)
     @echo "Setup completo — todas las herramientas verificadas"
 
 # =============================================
