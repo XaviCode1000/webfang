@@ -53,6 +53,44 @@ pub fn prepare_progress_channel(
     (observer, rx)
 }
 
+/// Pre-flight gate for `--output-vectors` (#703, #652).
+///
+/// `--output-vectors` can only write embeddings when semantic cleaning is
+/// requested (`--clean-ai` / `opts.ai`). Every entry point (`run`,
+/// `run_batch`) must run this gate BEFORE `build_elastic_ingestion` wires the
+/// stream sink: `StreamRepository::new(path)` creates/truncates the target
+/// file as a construction side effect, so failing downstream of it leaks a
+/// 0-byte vectors file alongside a success exit (silent data loss for RAG
+/// pipelines, class S1).
+///
+/// - With the `ai` feature: `output_vectors && !opts.ai` → `DataFormatError`
+///   (exit 65, `EX_DATA`) with a Spanish user-facing message.
+/// - Without it: the flag is unusable → `ConfigError` (exit 78) telling the
+///   user to rebuild with `--features ai`.
+///
+/// Returns `Some(exit)` when the run must be aborted, `None` to proceed.
+fn output_vectors_gate(opts: &CrawlOptions) -> Option<CliExit> {
+    opts.elastic.output_vectors.as_ref()?;
+
+    #[cfg(feature = "ai")]
+    {
+        if opts.ai {
+            return None;
+        }
+        warn!("--output-vectors refused without --clean-ai; no vectors to export");
+        Some(CliExit::DataFormatError(
+            "No hay vectores para exportar: '--output-vectors' requiere '--clean-ai' para generar embeddings".to_string(),
+        ))
+    }
+
+    #[cfg(not(feature = "ai"))]
+    {
+        Some(CliExit::ConfigError(
+            "Se requiere compilar con '--features ai' para usar --output-vectors".to_string(),
+        ))
+    }
+}
+
 /// Main orchestration entry point.
 ///
 /// Coordinates the full scraping pipeline:
@@ -73,17 +111,11 @@ pub async fn run(
         return run_dry_run(opts).await;
     }
 
-    // #703: `--output-vectors` without `--clean-ai` can never produce vectors —
-    // embeddings only exist when semantic cleaning runs. Fail fast with exit 65
-    // (EX_DATA) here, BEFORE `build_elastic_ingestion` below: its sink wiring
-    // creates/truncates the output file as a construction side effect, which
-    // would leak an empty 0-byte file into RAG pipelines.
-    #[cfg(feature = "ai")]
-    if opts.elastic.output_vectors.is_some() && !opts.ai {
-        warn!("--output-vectors refused without --clean-ai; no vectors to export");
-        return CliExit::DataFormatError(
-            "No hay vectores para exportar: '--output-vectors' requiere '--clean-ai' para generar embeddings".to_string(),
-        );
+    // #703/#652: pre-flight gate for `--output-vectors` — single source of
+    // truth shared with `run_batch()` (see `output_vectors_gate`), and it must
+    // run BEFORE `build_elastic_ingestion` wires the stream sink below.
+    if let Some(exit) = output_vectors_gate(&opts) {
+        return exit;
     }
 
     // Process-level graceful shutdown (#653). The guard owns ONE signal
@@ -132,13 +164,6 @@ pub async fn run(
         Ok(v) => v,
         Err(e) => return e,
     };
-
-    #[cfg(not(feature = "ai"))]
-    if opts.elastic.output_vectors.is_some() {
-        return CliExit::ConfigError(
-            "Se requiere compilar con '--features ai' para usar --output-vectors".to_string(),
-        );
-    }
 
     // Create observer with stderr fallback (no channel) for non-TUI mode.
     // For TUI mode, call `prepare_progress_channel()` from main.rs and pass
@@ -595,24 +620,11 @@ async fn run_batch(
     vault_ports: crate::application::container::VaultAiPorts,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> CliExit {
-    // #703: `--output-vectors` without `--clean-ai` produces no embeddings —
-    // exit 65 (EX_DATA) before any crawl, spool, or sink wiring runs. First
-    // statement here (above the legacy not-ai check), mirroring `run()`, whose
-    // own early placement prevents `build_elastic_ingestion` from truncating an
-    // empty vectors file as a construction side effect.
-    #[cfg(feature = "ai")]
-    if opts.elastic.output_vectors.is_some() && !opts.ai {
-        warn!("--output-vectors refused without --clean-ai; no vectors to export");
-        return CliExit::DataFormatError(
-            "No hay vectores para exportar: '--output-vectors' requiere '--clean-ai' para generar embeddings".to_string(),
-        );
-    }
-
-    #[cfg(not(feature = "ai"))]
-    if opts.elastic.output_vectors.is_some() {
-        return CliExit::ConfigError(
-            "Se requiere compilar con '--features ai' para usar --output-vectors".to_string(),
-        );
+    // #703/#652: pre-flight gate for `--output-vectors` — same single source of
+    // truth as `run()` (see `output_vectors_gate`). First statement here so the
+    // exit fires before any crawl, spool, or sink wiring runs.
+    if let Some(exit) = output_vectors_gate(&opts) {
+        return exit;
     }
 
     // Resolve the TLS/H2 fingerprint once so the batch crawl engine honors
