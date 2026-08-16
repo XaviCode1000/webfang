@@ -30,7 +30,7 @@ Every delegation prompt MUST include:
 ### When to delegate vs. inline
 
 | Action | Route |
-|:---|:---|
+| :--- | :--- |
 | Read 1–3 files to decide or verify | Inline |
 | Read 4+ files to understand | Delegate one narrow mapper |
 | Write one mechanical, already-understood file | Inline |
@@ -47,7 +47,7 @@ Two complementary tools. Pick by mission, not by habit. **Load the matching skil
 ### 2.1 Strategic routing
 
 | Moment | Tool | Why this one |
-|:---|:---|:---|
+| :--- | :--- | :--- |
 | "What is this task about?" — first-touch orientation | **CodeDB** `context` | 1 call: keywords + symbol defs + ranked files + snippets. Replaces 3–5 sequential calls. |
 | "Show me the code for X" — explore and understand | **CodeGraph** `explore` | Returns verbatim source + call paths + blast radius in ONE call. Eliminates the grep→Read loop. |
 | "Where is X defined?" — instant lookup | **CodeDB** `word` / `symbol` | O(1) inverted index. Fastest possible. |
@@ -70,7 +70,7 @@ Two complementary tools. Pick by mission, not by habit. **Load the matching skil
 In worktrees, BOTH tools need the **absolute worktree path** or they silently resolve to the main checkout:
 
 | Tool | Parameter | Example |
-|:---|:---|:---|
+| :--- | :--- | :--- |
 | CodeDB MCP | `project=` | `project="/var/home/xavi/Projects/webfang-worktrees/<dir>"` |
 | CodeGraph MCP | `projectPath=` | `projectPath="/var/home/xavi/Projects/webfang-worktrees/<dir>"` |
 
@@ -105,7 +105,7 @@ mcp ──→ ai   (feature-gated, #433)
 Full allow-matrix (effective build graph):
 
 | Crate | May depend on |
-|:---|:---|
+| :--- | :--- |
 | `webfang_core` | — |
 | `webfang_ai` | `webfang_core` |
 | `webfang_tui` | `webfang_core` |
@@ -123,7 +123,7 @@ This is an architectural POLICY, not just what the code happens to do. New code 
 Domain defines ports (traits) → Infrastructure implements them → Application orchestrates. When writing new code, follow the existing patterns:
 
 | Writing a... | Copy from | Location |
-|:---|:---|:---|
+| :--- | :--- | :--- |
 | New service/trait | `crawler_service.rs` | `application/` — trait → impl with DI, `async_trait`, `#[instrument]`, typed errors |
 | New domain entity | `entities.rs` | `domain/` — struct + constructor + `TryFrom` validation, `Display`+`Debug`+`PartialEq` |
 | New adapter | `crawler/` | `infrastructure/` — domain trait → impl, module with `mod.rs` |
@@ -234,7 +234,7 @@ If the Arrange phase is complex, fix the production design, not the test.
 ### Required for new/changed code
 
 | Situation | Requirement |
-|:---|:---|
+| :--- | :--- |
 | New hot path / operation | `#[instrument(skip(...), fields(url = %url, ...))]` with the fields that identify the operation |
 | Error path | `log_scrape_error(&err, url, stage, correlation_id, "context")` — never a bare `warn!`/`eprintln!` |
 | New crawl/batch flow | Generate a `CorrelationId` at entry and propagate it; each unit of work gets `.child()` |
@@ -324,7 +324,7 @@ A merge is NOT done until the repo is clean and ready for the next mission. Clea
 ### Shared vs. per-worktree resources
 
 | Resource | Shared? | Action required |
-|:---|:---|:---|
+| :--- | :--- | :--- |
 | `.git/` object store | ✅ Shared | Automatic |
 | Git config, hooks | ✅ Shared | Automatic |
 | `Cargo.lock` | ✅ Shared | Via Git |
@@ -357,7 +357,7 @@ The project's PR workflow does NOT require a gentle-ai review receipt — only c
 Commit after every completed step. Uncommitted work in a worktree can be lost silently if the agent loses context or a checkout occurs. Load the `work-unit-commits` skill for the full pattern.
 
 | Step | Commit? |
-|:---|:---|
+| :--- | :--- |
 | git mv of files/directories | ✅ Immediately |
 | Bulk sed/replace across files | ✅ Immediately |
 | cargo check passes | ✅ Marker: "wip: cargo check passes" |
@@ -427,7 +427,7 @@ Every PR is validated on open / edit / synchronize / label changes. **All three 
 **Label mapping** (the label vocabulary is NOT the commit-type vocabulary):
 
 | Commit type | GitHub label |
-|:---|:---|
+| :--- | :--- |
 | `feat` | `type:feature` |
 | `fix` | `type:bug` |
 | `refactor` | `type:refactor` |
@@ -504,6 +504,7 @@ The automation path that works:
    ```
 
 The script:
+
 - Polls `gh pr checks <N> --watch --required --fail-fast` until all required checks are
   SUCCESS or one FAILS/CANCELS (exit 2 on failure).
 - Verifies `mergeStateStatus == CLEAN`. If `BEHIND`, exits 3 and asks you to rebase
@@ -524,7 +525,7 @@ needs auto-merge (e.g. transferring the repo to an organization with rulesets), 
 **Load the matching skill BEFORE executing.** The sub-agent has no memory — if you don't tell it which skill to load, it won't.
 
 | Task | Skills to load | Key behavior |
-|:---|:---|:---|
+| :--- | :--- | :--- |
 | Any code work (read/write/edit) | `codedb` + `codegraph` | Intelligence Gate: explore impact before edit, `cargo check` before commit |
 | Writing Rust code | `rust-skills` (category per task type) | 265 rules across 26 categories. Category prefixes: `own-`, `err-`, `async-`, `api-`, `test-`, etc. |
 | **Writing or modifying tests** | **`contract-based-test-audit`** + `rust-skills(test-)` | 6-node diagnostic: observable behavior, ephemeral adapters, semantic assertions, determinism |
@@ -565,5 +566,3 @@ scripts/merge-when-green.sh <PR-N> --dry-run # Poll and report; do not merge
 cargo +nightly miri test infrastructure::bridge::
 cargo +nightly miri test infrastructure::network::
 ```
-
-

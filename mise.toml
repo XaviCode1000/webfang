@@ -20,6 +20,8 @@ typos = "1.42.3"                       # spell checker (aqua shorthand, pinned f
 "cargo:cargo-machete" = "latest"       # unused dependency detection
 "cargo:cargo-edit" = "0.13.5"           # cargo add/rm/upgrade (pinned — newer requires rustc ≥1.89)
 "cargo:cargo-udeps" = "latest"
+"aqua:mitsuhiko/insta" = "1.48.0"       # cargo-insta CLI (prebuilt) — pinned to match insta lib in Cargo.lock
+"cargo:bacon" = "latest"                # watch-mode background checker (uses repo bacon.toml)
 "aqua:rust-lang/mdBook" = "0.4.51"
 "aqua:jgm/pandoc" = "3.10.1"
 
