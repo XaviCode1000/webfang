@@ -153,7 +153,7 @@ pub async fn run(
     #[cfg(not(feature = "adaptive-selectors"))]
     let engine_ref: Option<&AdaptiveSelectorEngine> = None;
 
-    let (results, failures) = match scrape_phase(
+    let (results, failures, blocked) = match scrape_phase(
         &urls_to_scrape,
         &prepare.scraper_config,
         &opts,
@@ -188,7 +188,7 @@ pub async fn run(
     drop(elastic_ingestion);
     tokio::task::yield_now().await;
 
-    if let Some(exit) = report_phase(&results, &failures, opts.verbosity) {
+    if let Some(exit) = report_phase(&results, &failures, blocked, opts.verbosity) {
         return exit;
     }
 
@@ -469,6 +469,7 @@ async fn scrape_phase(
     (
         Vec<domain::ScrapedContent>,
         Vec<(String, crate::error::ScraperError)>,
+        usize,
     ),
     crate::error::ScraperError,
 > {
@@ -509,6 +510,12 @@ fn format_failure(url: &str, error: &crate::error::ScraperError, verbosity: u8) 
 /// At `verbosity` 0 only the top-level error message is shown; at 1+ the full
 /// root-cause chain is appended (see [`format_failure`]).
 ///
+/// Robots-blocked routing (#705): when NOTHING was scraped and NOTHING failed
+/// but `blocked > 0`, every URL was refused by robots.txt — the run exits
+/// `CliExit::Forbidden` (77) with a Spanish hint about `--ignore-robots`
+/// instead of the misleading "no pages scraped" network error. Any real
+/// failure or any scraped page keeps the historical routing below.
+///
 /// Severity routing (#537): when every URL failed AND at least one failure
 /// classifies as [`crate::error::ErrorClass::InternalFatal`], the exit code is
 /// `CliExit::ScraperFailure` (3) rather than `NetworkError` (69) — an internal
@@ -519,6 +526,7 @@ fn format_failure(url: &str, error: &crate::error::ScraperError, verbosity: u8) 
 fn report_phase(
     results: &[domain::ScrapedContent],
     failures: &[(String, crate::error::ScraperError)],
+    blocked: usize,
     verbosity: u8,
 ) -> Option<CliExit> {
     for (url, error) in failures {
@@ -530,6 +538,12 @@ fn report_phase(
             success: results.len(),
             failed: failures.len(),
         });
+    }
+
+    if results.is_empty() && failures.is_empty() && blocked > 0 {
+        return Some(CliExit::Forbidden(format!(
+            "{blocked} URL(s) bloqueadas por robots.txt. Usa --ignore-robots para omitir esta verificación."
+        )));
     }
 
     if results.is_empty() {
@@ -640,8 +654,9 @@ async fn run_batch(
     // Print extraction failures to stderr (crawl failures are already logged
     // via `log_batch_summary`). Do NOT short-circuit here: always export the
     // pages we did capture so `--batch` writes `.md` + `.jsonl` even on partial
-    // failure (#631).
-    let _ = report_phase(&results, &failures, opts.verbosity);
+    // failure (#631). The batch path has no robots-blocked counter — its crawl
+    // engine reports blocks through `summary` — so pass 0.
+    let _ = report_phase(&results, &failures, 0, opts.verbosity);
 
     #[cfg(feature = "ai")]
     {
@@ -1047,7 +1062,7 @@ fn parse_asset_h2_profile(s: &str) -> wreq_util::Profile {
 mod tests {
     use super::{
         batch_exit_code, build_batch_crawler_config, build_elastic_ingestion, format_failure,
-        parse_asset_h2_profile, plan_urls,
+        parse_asset_h2_profile, plan_urls, report_phase,
     };
     use crate::application::crawl_options::CrawlOptions;
     use crate::cli::error::CliExit;
@@ -1113,6 +1128,104 @@ mod tests {
             "verbose output must show the cause chain: {msg}"
         );
         assert!(msg.contains("failed to lookup address information"));
+    }
+
+    // ===== report_phase routing tests (#705) =====
+
+    fn scraped(url: &str) -> crate::domain::ScrapedContent {
+        crate::domain::ScrapedContent {
+            title: "t".into(),
+            content: "c".into(),
+            url: crate::domain::ValidUrl::parse(url).expect("valid test url"),
+            excerpt: None,
+            author: None,
+            date: None,
+            html: None,
+            assets: Vec::new(),
+            correlation_id: None,
+        }
+    }
+
+    #[test]
+    fn report_phase_all_blocked_returns_forbidden() {
+        // Nothing scraped, nothing failed, but URLs were blocked by robots.txt:
+        // exit 77 with the Spanish hint, not a misleading network error (#705).
+        let exit = report_phase(&[], &[], 2, 0);
+
+        match exit {
+            Some(CliExit::Forbidden(msg)) => {
+                assert!(
+                    msg.contains("2 URL(s) bloqueadas por robots.txt"),
+                    "missing blocked count: {msg}"
+                );
+                assert!(
+                    msg.contains("--ignore-robots"),
+                    "missing --ignore-robots hint: {msg}"
+                );
+            },
+            other => panic!("expected Forbidden, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn report_phase_mixed_success_and_blocked_proceeds() {
+        // Some pages scraped, the rest blocked: content was produced, so the run
+        // proceeds to export exactly as before blocked counting existed.
+        let results = vec![scraped("https://example.com/ok")];
+
+        assert!(report_phase(&results, &[], 1, 0).is_none());
+    }
+
+    #[test]
+    fn report_phase_partial_success_with_blocked_unchanged() {
+        // Failures + results dominate over blocked URLs: PartialSuccess (69)
+        // semantics are unchanged by the blocked counter.
+        let results = vec![scraped("https://example.com/ok")];
+        let failures = vec![("https://example.com/bad".to_string(), network_error())];
+
+        let exit = report_phase(&results, &failures, 1, 0);
+
+        assert!(
+            matches!(
+                exit,
+                Some(CliExit::PartialSuccess {
+                    success: 1,
+                    failed: 1
+                })
+            ),
+            "expected PartialSuccess, got: {exit:?}"
+        );
+    }
+
+    #[test]
+    fn report_phase_all_fail_with_blocked_stays_network_error() {
+        // Real failures present: the blocked counter must not mask them — the
+        // historical all-fail NetworkError (69) routing wins. A 404 classifies
+        // as PermanentFatal (not InternalFatal), so the #537 ScraperFailure
+        // arm does not engage.
+        let failures = vec![(
+            "https://example.com/bad".to_string(),
+            crate::error::ScraperError::http(404, "https://example.com/bad"),
+        )];
+
+        let exit = report_phase(&[], &failures, 1, 0);
+
+        assert!(
+            matches!(exit, Some(CliExit::NetworkError(_))),
+            "expected NetworkError, got: {exit:?}"
+        );
+    }
+
+    #[test]
+    fn report_phase_empty_run_without_blocks_stays_network_error() {
+        // No results, no failures, no blocks (e.g. zero-URL edge): the
+        // historical "No pages were successfully scraped" arm is preserved.
+        let exit = report_phase(&[], &[], 0, 0);
+
+        assert!(
+            matches!(exit, Some(CliExit::NetworkError(_))),
+            "expected NetworkError, got: {exit:?}"
+        );
     }
 
     // ===== plan_urls tests =====

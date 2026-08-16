@@ -1,0 +1,5 @@
+---
+source: crates/webfang_core/tests/behavioral/main.rs
+expression: redacted
+---
+Error: 1 URL(s) bloqueadas por robots.txt. Usa --ignore-robots para omitir esta verificación.

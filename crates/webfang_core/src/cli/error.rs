@@ -26,6 +26,8 @@ pub const EXIT_UNAVAILABLE: u8 = 69;
 pub const EXIT_IO_ERROR: u8 = 74;
 /// Exit 76 — Protocol error (sysexits EX_PROTOCOL).
 pub const EXIT_PROTOCOL: u8 = 76;
+/// Exit 77 — All URLs blocked by robots.txt (sysexits EX_NOPERM).
+pub const EXIT_FORBIDDEN: u8 = 77;
 /// Exit 78 — Configuration error (sysexits EX_CONFIG).
 pub const EXIT_CONFIG: u8 = 78;
 
@@ -120,7 +122,7 @@ pub fn format_cli_error(err: &CliError, no_color: bool) -> String {
 
 /// Exit codes following sysexits convention:
 /// 0 = success, 64 = usage error, 65 = data format error, 69 = service unavailable (network/partial),
-/// 74 = I/O error, 76 = protocol error, 78 = config error
+/// 74 = I/O error, 76 = protocol error, 77 = forbidden (robots.txt), 78 = config error
 #[derive(Debug)]
 pub enum CliExit {
     /// Exit 0 — everything OK
@@ -135,6 +137,8 @@ pub enum CliExit {
     IoError(String),
     /// Exit 76 — protocol error
     ProtocolError(String),
+    /// Exit 77 — all URLs blocked by robots.txt
+    Forbidden(String),
     /// Exit 78 — configuration error
     ConfigError(String),
     /// Exit 2 — no URLs discovered from sitemaps (technical success, null result)
@@ -173,6 +177,10 @@ impl std::process::Termination for CliExit {
             CliExit::ProtocolError(msg) => {
                 eprintln!("Error: {msg}");
                 ExitCode::from(EXIT_PROTOCOL)
+            },
+            CliExit::Forbidden(msg) => {
+                eprintln!("Error: {msg}");
+                ExitCode::from(EXIT_FORBIDDEN)
             },
             CliExit::ConfigError(msg) => {
                 eprintln!("Error: {msg}");
@@ -281,6 +289,7 @@ mod tests {
         assert_eq!(EXIT_UNAVAILABLE, 69);
         assert_eq!(EXIT_IO_ERROR, 74);
         assert_eq!(EXIT_PROTOCOL, 76);
+        assert_eq!(EXIT_FORBIDDEN, 77);
         assert_eq!(EXIT_CONFIG, 78);
     }
 
@@ -300,6 +309,14 @@ mod tests {
         assert_eq!(code, ExitCode::from(EXIT_EMPTY_DISCOVERY));
     }
 
+    // T-1.3: Forbidden variant maps to exit 77
+    #[test]
+    fn test_cli_exit_forbidden_exit_code() {
+        let exit = CliExit::Forbidden("all URLs blocked by robots.txt".into());
+        let code = exit.report();
+        assert_eq!(code, ExitCode::from(EXIT_FORBIDDEN));
+    }
+
     // T-1.4: All variants map to their named constants (exhaustive)
     #[test]
     fn test_all_variants_map_to_named_constants() {
@@ -313,6 +330,7 @@ mod tests {
             (CliExit::ConfigError("test".into()), EXIT_CONFIG),
             (CliExit::EmptyDiscovery("test".into()), EXIT_EMPTY_DISCOVERY),
             (CliExit::ScraperFailure("test".into()), EXIT_SCRAPER_FAILURE),
+            (CliExit::Forbidden("test".into()), EXIT_FORBIDDEN),
             (
                 CliExit::PartialSuccess {
                     success: 1,
