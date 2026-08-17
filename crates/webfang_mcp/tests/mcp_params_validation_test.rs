@@ -128,7 +128,8 @@ fn require_safe_path_rejects_oversize() {
 // `vault_path` params (issue #600) is covered by the internal `params::tests`
 // module in `src/mcp_server/params.rs`, and `export_file` (the only `pub`
 // struct of this shape) is covered end-to-end by
-// `params_rejection_test.rs::export_file_accepts_absolute_output_dir`. The
+// `params_rejection_test.rs::export_file_rejects_absolute_output_dir_without_roots`
+// (the #756 fail-closed root-of-trust gate complements #600). The
 // `require_safe_path_allow_absolute_*` tests above cover the shared helper.
 
 // ===========================================================================

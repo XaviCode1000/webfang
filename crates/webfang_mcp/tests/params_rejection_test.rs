@@ -388,13 +388,17 @@ async fn export_file_rejects_output_dir_traversal() {
     );
 }
 
-/// `export_file` accepts an absolute `output_dir` (issue #600 fix).
+/// `export_file` rejects an absolute `output_dir` when no export roots are
+/// configured (#756, completing #696).
 ///
-/// Before the fix `require_safe_path` forced relative-only paths and a
-/// user-supplied absolute directory yielded a hard `-32602`. Absolute paths
-/// are now accepted (traversal is still rejected elsewhere).
+/// Issue #600 relaxed the syntactic validator so absolute paths reach the
+/// handler, but the root-of-trust gate (#696) was only wired into
+/// `download_assets` — this tool happily wrote to any absolute directory
+/// (RIESGO-MCP-EXPORT-001). The handler now enforces the fail-closed gate:
+/// with no `--export-roots` configured, an absolute `output_dir` is a
+/// protocol-level `-32602`.
 #[tokio::test]
-async fn export_file_accepts_absolute_output_dir() {
+async fn export_file_rejects_absolute_output_dir_without_roots() {
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
@@ -415,13 +419,63 @@ async fn export_file_accepts_absolute_output_dir() {
 
     assert_eq!(
         error_code(&resp),
-        None,
-        "absolute output_dir must NOT be rejected with -32602, got: {resp}"
+        Some(JSONRPC_INVALID_PARAMS),
+        "absolute output_dir without configured export roots must be rejected with -32602, got: {resp}"
     );
-    let result = resp.get("result").unwrap_or(&Value::Null);
-    assert!(
-        !is_tool_error(result),
-        "absolute output_dir export must succeed, got: {resp}"
+}
+
+/// #756: the runtime probe the issue called for on `export_jsonl` — the
+/// root-of-trust gate runs BEFORE `load_results`, so an absolute `output_dir`
+/// on a server without seeds/export roots yields the gate's `-32602`, not the
+/// operational "no hay resultados disponibles" error.
+#[tokio::test]
+async fn export_jsonl_rejects_absolute_output_dir_without_roots() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let resp = call_tool(
+        &client,
+        &base_url,
+        &session_id,
+        "export_jsonl",
+        json!({
+            "output_dir": "/tmp/webfang-export",
+            "filename": "out"
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        error_code(&resp),
+        Some(JSONRPC_INVALID_PARAMS),
+        "absolute output_dir without configured export roots must be rejected with -32602, got: {resp}"
+    );
+}
+
+/// #756: same runtime proof for `export_vector` (see `export_jsonl` above).
+#[tokio::test]
+async fn export_vector_rejects_absolute_output_dir_without_roots() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let resp = call_tool(
+        &client,
+        &base_url,
+        &session_id,
+        "export_vector",
+        json!({
+            "output_dir": "/tmp/webfang-export",
+            "filename": "out"
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        error_code(&resp),
+        Some(JSONRPC_INVALID_PARAMS),
+        "absolute output_dir without configured export roots must be rejected with -32602, got: {resp}"
     );
 }
 

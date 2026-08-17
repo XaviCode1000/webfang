@@ -130,6 +130,24 @@ impl McpHandler {
     async fn load_results(&self) -> Result<Vec<ScrapedContent>, CallToolResult> {
         load_results_from(self.state.container.crawl_result_repository())
     }
+
+    /// Resolve and validate a caller-supplied export directory (#756).
+    ///
+    /// Applies `default` when the caller omitted the directory, then routes
+    /// the result through the server root-of-trust gate: relative paths stay
+    /// allowed, absolute paths must be under a configured export root, and
+    /// with no roots configured absolute paths are rejected (fail-closed,
+    /// same contract as `download_assets`, #696).
+    ///
+    /// # Errors
+    /// Returns `McpError::invalid_params` when the directory is absolute and
+    /// outside every configured export root (or when no roots are configured
+    /// at all).
+    fn validated_output_dir(&self, dir: Option<&str>, default: &str) -> Result<PathBuf, McpError> {
+        let dir_str = dir.unwrap_or(default);
+        self.state.validate_export_dir(Path::new(dir_str))?;
+        Ok(PathBuf::from(dir_str))
+    }
 }
 
 #[tool_router(router = tool_router_export, vis = "pub")]
@@ -146,6 +164,12 @@ impl McpHandler {
         Parameters(params): Parameters<ExportFileParams>,
     ) -> Result<CallToolResult, McpError> {
         params.validate()?;
+
+        // Root-of-trust (#756): reject a forbidden absolute `output_dir`
+        // before spending an export permit — same fail-closed gate as
+        // `download_assets` (#696). The `""` default is unreachable:
+        // `params.validate()` already rejects an empty `output_dir`.
+        let output_dir = self.validated_output_dir(Some(&params.output_dir), "")?;
 
         let _permit = acquire_semaphore!(self, export);
 
@@ -165,7 +189,6 @@ impl McpHandler {
             )
         })?;
 
-        let output_dir = PathBuf::from(&params.output_dir);
         // `filename` reaches the filesystem via `create_exporter` /
         // `resolve_export_path`; it MUST be a validated [`SanitizedFilename`]
         // so a `..` can never reach `std::fs` (issue #601). The raw string is
@@ -242,9 +265,12 @@ impl McpHandler {
     ) -> Result<CallToolResult, McpError> {
         params.validate()?;
 
+        // Root-of-trust (#756): validate the (defaulted) output directory
+        // before spending an export permit (#696 fail-closed gate).
+        let output_dir = self.validated_output_dir(params.output_dir.as_deref(), "./output")?;
+
         let _permit = acquire_semaphore!(self, export);
 
-        let output_dir = PathBuf::from(params.output_dir.as_deref().unwrap_or("./output"));
         // Validated flat filename (issue #601): the raw `Option<String>` can
         // only become a `SanitizedFilename` through exhaustive boundary
         // validation, so the join in `export_results` can never escape
@@ -279,9 +305,12 @@ impl McpHandler {
     ) -> Result<CallToolResult, McpError> {
         params.validate()?;
 
+        // Root-of-trust (#756): validate the (defaulted) output directory
+        // before spending an export permit (#696 fail-closed gate).
+        let output_dir = self.validated_output_dir(params.output_dir.as_deref(), "./output")?;
+
         let _permit = acquire_semaphore!(self, export);
 
-        let output_dir = PathBuf::from(params.output_dir.as_deref().unwrap_or("./output"));
         // Validated flat filename (issue #601): see `export_jsonl` above.
         let filename = SanitizedFilename::try_from(params.filename.as_deref().unwrap_or("export"))
             .map_err(|_| {
@@ -564,10 +593,12 @@ mod handler_tests {
 
     #[tokio::test]
     async fn export_file_invalid_format_is_invalid_params() {
-        let (handler, tmp) = test_handler().await;
+        let (handler, _tmp) = test_handler().await;
+        // #756: relative output_dir so the new root-of-trust gate passes and
+        // the test still exercises the format parse error, not the gate.
         let res = handler
             .export_file(Parameters(ExportFileParams {
-                output_dir: tmp.path().to_string_lossy().to_string(),
+                output_dir: "test-output/export-bad-format".to_string(),
                 filename: "doc".to_string(),
                 format: "bogus".to_string(),
                 content: "hello".to_string(),
@@ -620,12 +651,14 @@ mod handler_tests {
 
     #[tokio::test]
     async fn export_file_rejects_unknown_format_with_clear_message() {
-        let (handler, tmp) = test_handler().await;
+        let (handler, _tmp) = test_handler().await;
         // Bug #4 regression: format="md" (unsupported) must return
         // invalid_params with a message listing supported formats (issue #590).
+        // #756: relative output_dir so the new root-of-trust gate passes and
+        // the test still exercises the format rejection, not the gate.
         let res = handler
             .export_file(Parameters(ExportFileParams {
-                output_dir: tmp.path().to_string_lossy().to_string(),
+                output_dir: "test-output/export-unknown-format".to_string(),
                 filename: "doc".to_string(),
                 format: "md".to_string(),
                 content: "hello".to_string(),
@@ -661,6 +694,94 @@ mod handler_tests {
             "export file must be written"
         );
         let _ = std::fs::remove_dir_all(out_dir);
+    }
+
+    /// #756: `export_file` writes caller content to any `output_dir`, so an
+    /// absolute `output_dir` with no export roots configured must be rejected
+    /// at the protocol level (fail-closed root-of-trust gate, #696).
+    #[tokio::test]
+    async fn export_file_rejects_absolute_output_dir_without_roots() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .export_file(Parameters(ExportFileParams {
+                output_dir: "/tmp/webfang-mcp-exploit".to_string(),
+                filename: "doc".to_string(),
+                format: "jsonl".to_string(),
+                content: "hello".to_string(),
+            }))
+            .await;
+        let err = res.expect_err("absolute output_dir without roots must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("requires server-configured export roots"),
+            "error must name the missing export roots, got: {msg}"
+        );
+    }
+
+    /// #756: same root-of-trust gate for `export_jsonl`. The gate runs before
+    /// `load_results`, so the rejection holds even with an empty repository.
+    #[tokio::test]
+    async fn export_jsonl_rejects_absolute_output_dir_without_roots() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .export_jsonl(Parameters(ExportJsonlParams {
+                output_dir: Some("/tmp/webfang-mcp-exploit".to_string()),
+                filename: Some("out".to_string()),
+            }))
+            .await;
+        let err = res.expect_err("absolute output_dir without roots must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("requires server-configured export roots"),
+            "error must name the missing export roots, got: {msg}"
+        );
+    }
+
+    /// #756: same root-of-trust gate for `export_vector`.
+    #[tokio::test]
+    async fn export_vector_rejects_absolute_output_dir_without_roots() {
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .export_vector(Parameters(ExportVectorParams {
+                output_dir: Some("/tmp/webfang-mcp-exploit".to_string()),
+                filename: Some("vec".to_string()),
+            }))
+            .await;
+        let err = res.expect_err("absolute output_dir without roots must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("requires server-configured export roots"),
+            "error must name the missing export roots, got: {msg}"
+        );
+    }
+
+    /// #756: an absolute `output_dir` under a configured export root is
+    /// accepted — the gate is fail-closed for paths OUTSIDE every root, not
+    /// a blanket absolute-path ban (issue #600 compatibility).
+    #[tokio::test]
+    async fn export_jsonl_accepts_absolute_output_dir_inside_root() {
+        let (state, tmp) = test_state().await;
+        let root = tmp.path().to_path_buf();
+        let state = state.with_export_roots(vec![root.clone()]);
+        let handler = McpHandler::new(state);
+        seed_one(&handler).await;
+
+        let res = handler
+            .export_jsonl(Parameters(ExportJsonlParams {
+                output_dir: Some(root.to_string_lossy().to_string()),
+                filename: Some("allowed".to_string()),
+            }))
+            .await
+            .expect("export_jsonl returns Ok for absolute output_dir inside root");
+        let text = result_text(&res);
+        assert!(
+            text.contains("Exportación completada"),
+            "seeded export under a configured root must report completion: {text}"
+        );
+        assert!(
+            root.join("allowed.jsonl").exists(),
+            "export must be written under the configured root"
+        );
     }
 
     #[tokio::test]
