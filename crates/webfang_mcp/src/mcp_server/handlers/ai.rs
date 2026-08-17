@@ -258,6 +258,7 @@ mod tests {
     use crate::mcp_server::state::McpState;
     use rmcp::handler::server::wrapper::Parameters;
     use rmcp::model::CallToolResult;
+    use serial_test::serial;
     use tempfile::TempDir;
     use webfang_core::di::Container;
     use webfang_core::domain::CrawlerConfig;
@@ -371,6 +372,7 @@ mod tests {
     /// REQ-02: a valid URL with no cleaner injected (ai feature off) maps to an
     /// honest Spanish `isError:true` envelope — never a false success.
     #[tokio::test]
+    #[serial] // WEBFANG_MCP_DISABLE_SSRF is process-global — see scraping.rs
     async fn semantic_cleaner_no_cleaner_is_honest_feature_error() {
         // #749 made SSRF/robots gates run before the cleaner check; keep this
         // feature-gated test hermetic (offline) by disabling the SSRF probe —
@@ -402,6 +404,7 @@ mod tests {
     /// of local feature state).
     #[cfg_attr(miri, ignore)] // real network stack via wreq — unsupported by Miri
     #[tokio::test]
+    #[serial]
     async fn semantic_cleaner_robots_disallowed_errors_before_fetch_and_cleaner_check() {
         std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1"); // wiremock binds 127.0.0.1
         let (handler, _tmp) = test_handler_with_robots().await;

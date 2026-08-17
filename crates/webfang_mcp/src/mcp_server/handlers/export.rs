@@ -445,6 +445,7 @@ mod handler_tests {
     use crate::mcp_server::state::McpState;
     use rmcp::handler::server::wrapper::Parameters;
     use rmcp::model::CallToolResult;
+    use serial_test::serial;
     use std::path::Path;
     use tempfile::TempDir;
     use webfang_core::di::Container;
@@ -779,6 +780,7 @@ mod handler_tests {
     /// fetch is issued (only the robots.txt probe reaches the mock).
     #[cfg_attr(miri, ignore)] // real network stack via wreq — unsupported by Miri
     #[tokio::test]
+    #[serial] // WEBFANG_MCP_DISABLE_SSRF is process-global — see scraping.rs
     async fn process_export_pipeline_url_robots_disallowed_errors_before_scrape() {
         // Wiremock binds 127.0.0.1 — lift the SSRF guard for this test
         // process (nextest isolates each test in its own process). The SSRF
@@ -828,7 +830,12 @@ mod handler_tests {
     /// fetch. Mirrors the loopback tests of the other URL-fetching tools
     /// (Bug #673).
     #[tokio::test]
+    #[serial]
     async fn process_export_pipeline_url_ssrf_guard_blocks_loopback() {
+        // Defensive under shared-process harnesses: the escape hatch must be
+        // unset for this process so the guard is active. (nextest isolates
+        // each test in its own process, so this is a no-op there.)
+        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .process_export_pipeline(Parameters(ProcessExportPipelineParams {

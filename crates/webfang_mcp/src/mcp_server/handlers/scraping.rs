@@ -845,6 +845,7 @@ mod tests {
     use crate::mcp_server::state::McpState;
     use rmcp::handler::server::wrapper::Parameters;
     use rmcp::model::CallToolResult;
+    use serial_test::serial;
     use tempfile::TempDir;
     use webfang_core::di::Container;
     use webfang_core::domain::CrawlerConfig;
@@ -978,8 +979,18 @@ mod tests {
         );
     }
 
+    /// WEBFANG_MCP_DISABLE_SSRF is a process-global variable. The Coverage job
+    /// runs raw `cargo test` (single process, parallel threads — nextest
+    /// isolates per process, which hides the race), so every test that reads
+    /// or mutates the escape hatch is `#[serial]` to keep the guard's state
+    /// consistent (pattern: metrics.rs).
     #[tokio::test]
+    #[serial]
     async fn scrape_url_rejects_loopback() {
+        // Defensive under shared-process harnesses: the escape hatch must be
+        // unset for this process so the guard is active. (nextest isolates
+        // each test in its own process, so this is a no-op there.)
+        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
         // SSRF protection must block requests to internal/loopback addresses
         // before any fetch happens (Bug #673).
         let (handler, _tmp) = test_handler().await;
@@ -1003,7 +1014,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn scrape_with_options_rejects_loopback() {
+        // Defensive under shared-process harnesses: the escape hatch must be
+        // unset for this process so the guard is active. (nextest isolates
+        // each test in its own process, so this is a no-op there.)
+        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
         // SSRF protection must block internal/loopback addresses (Bug #673).
         let (handler, _tmp) = test_handler().await;
         let res = handler
@@ -1036,7 +1052,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn scrape_batch_rejects_loopback() {
+        // Defensive under shared-process harnesses: the escape hatch must be
+        // unset for this process so the guard is active. (nextest isolates
+        // each test in its own process, so this is a no-op there.)
+        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
         // SSRF protection must block internal/loopback addresses in a batch (Bug #673).
         let (handler, _tmp) = test_handler().await;
         let res = handler
@@ -1089,7 +1110,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn discover_urls_rejects_loopback() {
+        // Defensive under shared-process harnesses: the escape hatch must be
+        // unset for this process so the guard is active. (nextest isolates
+        // each test in its own process, so this is a no-op there.)
+        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
         // SSRF protection must block internal/loopback addresses (Bug #673).
         let (handler, _tmp) = test_handler().await;
         let res = handler
@@ -1116,7 +1142,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn detect_spa_rejects_loopback() {
+        // Defensive under shared-process harnesses: the escape hatch must be
+        // unset for this process so the guard is active. (nextest isolates
+        // each test in its own process, so this is a no-op there.)
+        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
         // SSRF protection must block internal/loopback addresses (Bug #673).
         let (handler, _tmp) = test_handler().await;
         let res = handler
@@ -1148,6 +1179,7 @@ mod tests {
     /// result reporting `robots.txt` and never issues the page fetch.
     #[cfg_attr(miri, ignore)] // real network stack via wreq — unsupported by Miri
     #[tokio::test]
+    #[serial]
     async fn scrape_url_robots_disallowed_returns_error_and_zero_page_hits() {
         std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1"); // wiremock binds 127.0.0.1
         let (handler, _tmp) = test_handler_with_robots().await;
@@ -1174,6 +1206,7 @@ mod tests {
     /// extracted content reaches the caller.
     #[cfg_attr(miri, ignore)] // real network stack via wreq — unsupported by Miri
     #[tokio::test]
+    #[serial]
     async fn scrape_url_robots_allowed_still_scrapes_page() {
         std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1"); // wiremock binds 127.0.0.1
         let (handler, _tmp) = test_handler_with_robots().await;
@@ -1206,6 +1239,7 @@ mod tests {
     /// error and never issues the page fetch.
     #[cfg_attr(miri, ignore)] // real network stack via wreq — unsupported by Miri
     #[tokio::test]
+    #[serial]
     async fn discover_urls_robots_disallowed_returns_error_and_zero_page_hits() {
         std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1"); // wiremock binds 127.0.0.1
         let (handler, _tmp) = test_handler_with_robots().await;
@@ -1231,6 +1265,7 @@ mod tests {
     /// and never issues the page fetch.
     #[cfg_attr(miri, ignore)] // real network stack via wreq — unsupported by Miri
     #[tokio::test]
+    #[serial]
     async fn detect_spa_robots_disallowed_returns_error_and_zero_page_hits() {
         std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1"); // wiremock binds 127.0.0.1
         let (handler, _tmp) = test_handler_with_robots().await;
@@ -1326,6 +1361,7 @@ mod tests {
     /// the SSRF message, before any sitemap fetch. The seed uses a public
     /// literal IP so its own validation resolves locally (no DNS dependency).
     #[tokio::test]
+    #[serial]
     async fn crawl_with_sitemap_rejects_internal_sitemap_url() {
         // Defensive under shared-process harnesses: the escape hatch must be
         // unset for this process so the guard is active. (nextest isolates
