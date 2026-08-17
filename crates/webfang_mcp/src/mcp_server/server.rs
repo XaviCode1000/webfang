@@ -62,6 +62,27 @@ impl Default for ServerOptions {
     }
 }
 
+/// Fail-fast guard for tokenless binds on non-loopback interfaces (REQ-06).
+///
+/// Binding the MCP server to a routable address without an auth token would
+/// expose the scraper surface to the network; the binary must refuse to start
+/// before building the container. Loopback binds stay token-free (dev mode)
+/// and `IpAddr::is_loopback()` covers both `127.0.0.1` and `::1`.
+///
+/// # Errors
+///
+/// Returns a user-facing Spanish error naming the bind address when `bind`
+/// is non-loopback and no auth token is present, pointing the operator at
+/// `--auth-token` / `WEBFANG_MCP_AUTH_TOKEN`.
+pub fn require_auth_for_external_bind(bind: SocketAddr, token_present: bool) -> anyhow::Result<()> {
+    if !bind.ip().is_loopback() && !token_present {
+        return Err(anyhow::anyhow!(
+            "No se puede iniciar el servidor MCP en {bind} sin token de autenticación. Defina --auth-token o WEBFANG_MCP_AUTH_TOKEN."
+        ));
+    }
+    Ok(())
+}
+
 /// Build the Axum router with MCP endpoint and full middleware stack.
 pub fn build_mcp_router(state: McpState, options: &ServerOptions) -> Router {
     let service = StreamableHttpService::new(
@@ -427,5 +448,46 @@ mod tests {
         // Cancel through one clone, observe via the other.
         state.shutdown_signal();
         assert!(state2.cancel_token.is_cancelled());
+    }
+
+    /// REQ-06: loopback binds stay token-free by default (dev mode).
+    #[test]
+    fn require_auth_loopback_no_token_is_ok() {
+        let bind: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        assert!(require_auth_for_external_bind(bind, false).is_ok());
+    }
+
+    /// REQ-06: IPv6 loopback (`::1`) counts as loopback.
+    #[test]
+    fn require_auth_loopback_v6_no_token_is_ok() {
+        let bind: SocketAddr = "[::1]:8080".parse().unwrap();
+        assert!(require_auth_for_external_bind(bind, false).is_ok());
+    }
+
+    /// REQ-06: tokenless non-loopback binds fail fast with a Spanish message
+    /// that names the bind address and the token options.
+    #[test]
+    fn require_auth_non_loopback_no_token_is_err() {
+        for addr in ["0.0.0.0:8080", "192.168.1.10:8080"] {
+            let bind: SocketAddr = addr.parse().unwrap();
+            match require_auth_for_external_bind(bind, false) {
+                Err(e) => {
+                    let msg = e.to_string();
+                    assert!(msg.contains(addr), "message must name the bind: {msg}");
+                    assert!(
+                        msg.contains("token"),
+                        "message must mention the token: {msg}"
+                    );
+                },
+                Ok(()) => panic!("{addr} must be rejected without a token"),
+            }
+        }
+    }
+
+    /// REQ-06: a token present lifts the non-loopback restriction.
+    #[test]
+    fn require_auth_non_loopback_with_token_is_ok() {
+        let bind: SocketAddr = "0.0.0.0:8080".parse().unwrap();
+        assert!(require_auth_for_external_bind(bind, true).is_ok());
     }
 }

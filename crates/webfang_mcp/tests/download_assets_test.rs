@@ -8,55 +8,16 @@
 
 #![cfg(feature = "mcp")]
 
+mod common;
+
+use common::*;
 use serde_json::{json, Value};
-use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::net::TcpListener;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use wreq::Client;
 
 use webfang_core::adapters::downloader::{DownloadConfig, Downloader};
-use webfang_core::config::Config;
-use webfang_core::di::Container;
-use webfang_mcp::mcp_server::server::build_mcp_router;
-use webfang_mcp::mcp_server::server::ServerOptions;
-use webfang_mcp::mcp_server::state::McpState;
-
-/// Start a test MCP server on a random port. Pass `Some(downloader)` to inject
-/// a shared `AssetDownloaderPort` (the production wiring in `mcp_server.rs`);
-/// pass `None` to exercise the per-call fallback downloader built from config.
-async fn start_server(
-    downloader: Option<Arc<Downloader>>,
-) -> (String, tokio::task::JoinHandle<()>) {
-    let config = Config::default();
-    let container = Container::new(config.crawler, config.scraper)
-        .await
-        .expect("container creation failed");
-    let state = match downloader {
-        Some(d) => McpState::new(container).with_downloader(d),
-        None => McpState::new(container),
-    };
-    let app = build_mcp_router(state, &ServerOptions::default());
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    let base_url = format!("http://{addr}");
-
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-
-    // Wait for the server to accept TCP connections instead of a fixed sleep.
-    for _ in 0..20 {
-        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-
-    (base_url, handle)
-}
 
 /// Build a JSON-RPC request body for MCP protocol.
 fn mcp_request(method: &str, params: Value) -> Value {

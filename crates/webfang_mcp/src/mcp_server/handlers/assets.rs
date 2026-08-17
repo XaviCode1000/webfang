@@ -40,6 +40,10 @@ impl McpHandler {
             )
         })?;
 
+        // REQ-03: reject forbidden base URLs at entry, BEFORE any asset fetch
+        // (guard ON unless disabled via env for tests).
+        crate::mcp_server::ssrf::validate_url_no_ssrf(&base_url).await?;
+
         let mut config = webfang_core::infrastructure::config::ScraperConfig {
             download_images: params.images.unwrap_or(true),
             download_documents: params.documents.unwrap_or(false),
@@ -147,6 +151,34 @@ mod tests {
         assert!(res.is_err(), "invalid base URL must be a protocol error");
     }
 
+    /// REQ-03: a loopback `base_url` is rejected at entry by the SSRF guard
+    /// (guard ON by default) with a "SSRF" error, BEFORE any asset fetch.
+    /// The loopback literal resolves locally (no DNS/network dependency).
+    #[tokio::test]
+    async fn download_assets_rejects_loopback_base_url() {
+        // Defensive under shared-process harnesses: the escape hatch must be
+        // unset for this process so the guard is active. (nextest isolates
+        // each test in its own process, so this is a no-op there.)
+        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
+
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .download_assets(Parameters(DownloadAssetsParams {
+                html: "<html><body><img src=\"/x.png\"></body></html>".to_string(),
+                base_url: "http://127.0.0.1/".to_string(),
+                images: Some(true),
+                documents: None,
+                output_dir: None,
+            }))
+            .await;
+        let err = res.expect_err("loopback base_url must be blocked by SSRF");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("SSRF"),
+            "error must report SSRF protection, got: {msg}"
+        );
+    }
+
     #[tokio::test]
     async fn download_assets_no_assets_is_empty_success() {
         let (handler, _tmp) = test_handler().await;
@@ -173,6 +205,13 @@ mod tests {
 
     #[tokio::test]
     async fn download_assets_downloads_image_from_html() {
+        // REQ-03 (#707) validates `base_url` at entry. This test serves an
+        // asset from wiremock on 127.0.0.1, so lift the guard for this
+        // process (nextest isolates each test in its own process). The SSRF-
+        // rejection path is covered separately by
+        // `download_assets_rejects_loopback_base_url` above.
+        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+
         let (handler, _tmp) = test_handler().await;
         // `output_dir` must be a safe relative path (params validation, #512).
         let out_dir = "test-output/download-assets-image";

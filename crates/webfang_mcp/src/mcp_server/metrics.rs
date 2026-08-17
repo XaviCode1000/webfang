@@ -105,6 +105,15 @@ impl ScrapeEvent {
     }
 }
 
+/// Maximum number of distinct domains tracked in the per-domain breakdown
+/// (REQ-05). Beyond this cap, new domains aggregate into [`OVERFLOW_DOMAIN_KEY`].
+pub const MAX_TRACKED_DOMAINS: usize = 500;
+
+/// Overflow bucket key for domains recorded past [`MAX_TRACKED_DOMAINS`]
+/// (REQ-05). A domain literally named `"otros"` merges into this same bucket —
+/// documented, accepted.
+pub const OVERFLOW_DOMAIN_KEY: &str = "otros";
+
 /// Per-domain aggregate (REQ-02).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct DomainStats {
@@ -158,7 +167,17 @@ impl ScrapeMetrics {
             Outcome::Partial => self.partial_count += 1,
         }
 
-        let domain = self.domains.entry(event.domain.clone()).or_default();
+        // REQ-05: cap the per-domain map. Totals above are updated
+        // unconditionally; already-tracked domains keep their own key even
+        // at the cap so re-aggregation stays exact.
+        let key: &str = if self.domains.contains_key(&event.domain)
+            || self.domains.len() < MAX_TRACKED_DOMAINS
+        {
+            event.domain.as_str()
+        } else {
+            OVERFLOW_DOMAIN_KEY
+        };
+        let domain = self.domains.entry(key.to_string()).or_default();
         domain.events += 1;
         domain.pages += event.count;
         if matches!(event.outcome, Outcome::Error | Outcome::Partial) {
@@ -306,6 +325,152 @@ mod tests {
         );
         assert_eq!(snap.average_duration_ms, 200.0, "average_duration_ms");
         assert!(!m.is_empty(), "non-empty after recording");
+    }
+
+    /// REQ-05: the 501st distinct domain aggregates into the `"otros"`
+    /// overflow bucket while global totals (events, outcomes, duration mean)
+    /// stay exact — totals are updated unconditionally before the cap.
+    ///
+    /// 600 distinct domains, one event each, outcome cycling
+    /// Success/Error/Partial by `i % 3`, page count `(i % 5) + 1`, duration
+    /// cycling 10/20/30/40 ms. The first 500 keep their own keys; domains
+    /// 500..600 (100 events) merge: pages = 20 cycles × (1+2+3+4+5) = 300,
+    /// errors = the 67 events whose `i % 3 != 0`. Mean duration over all 600
+    /// events = exactly 25 ms.
+    #[test]
+    fn domains_capped_at_500_with_otros_overflow() {
+        let mut m = ScrapeMetrics::default();
+        for i in 0..600usize {
+            let outcome = match i % 3 {
+                0 => Outcome::Success,
+                1 => Outcome::Error,
+                _ => Outcome::Partial,
+            };
+            m.record(ScrapeEvent::new(
+                "scrape_url",
+                format!("d{i:04}.com"),
+                outcome,
+                (i % 5) + 1,
+                Duration::from_millis(((i % 4) + 1) as u64 * 10),
+            ));
+        }
+
+        let snap = m.snapshot();
+        assert_eq!(snap.total_events, 600, "global total unaffected by cap");
+        assert_eq!(snap.success_count, 200, "success_count exact");
+        assert_eq!(snap.error_count, 200, "error_count exact");
+        assert_eq!(snap.partial_count, 200, "partial_count exact");
+        assert_eq!(snap.average_duration_ms, 25.0, "duration mean exact");
+
+        assert_eq!(
+            snap.domains.len(),
+            501,
+            "500 tracked domains + one overflow bucket"
+        );
+        assert_eq!(
+            snap.domains.get("otros"),
+            Some(&DomainStats {
+                events: 100,
+                pages: 300,
+                errors: 67
+            }),
+            "overflow aggregates with identical semantics"
+        );
+        assert!(
+            !snap.domains.contains_key("d0500.com"),
+            "overflow domains must not get their own key"
+        );
+        assert_eq!(
+            snap.domains.get("d0000.com"),
+            Some(&DomainStats {
+                events: 1,
+                pages: 1,
+                errors: 0
+            }),
+            "first tracked domain keeps exact stats"
+        );
+    }
+
+    /// REQ-05: an already-tracked domain keeps aggregating under its own key
+    /// after the cap is reached (`contains_key` takes precedence); only NEW
+    /// domains past the cap land in `"otros"`.
+    #[test]
+    fn existing_domain_aggregates_after_cap_reached() {
+        let mut m = ScrapeMetrics::default();
+        for i in 0..500usize {
+            m.record(ScrapeEvent::new(
+                "scrape_url",
+                format!("d{i:04}.com"),
+                Outcome::Success,
+                1,
+                Duration::from_millis(1),
+            ));
+        }
+        let snap = m.snapshot();
+        assert_eq!(snap.domains.len(), 500, "cap not yet exceeded");
+        assert!(!snap.domains.contains_key("otros"), "no overflow yet");
+
+        // Domain #1 (already tracked) still aggregates under its own key.
+        m.record(ScrapeEvent::new(
+            "scrape_url",
+            "d0000.com".to_string(),
+            Outcome::Error,
+            3,
+            Duration::from_millis(1),
+        ));
+        let snap = m.snapshot();
+        assert_eq!(snap.domains.len(), 500, "re-record adds no key");
+        assert_eq!(
+            snap.domains.get("d0000.com"),
+            Some(&DomainStats {
+                events: 2,
+                pages: 4,
+                errors: 1
+            }),
+            "existing domain keeps aggregating under its own key"
+        );
+
+        // A brand-new domain #502 lands in the overflow bucket.
+        m.record(ScrapeEvent::new(
+            "scrape_url",
+            "newdomain.com".to_string(),
+            Outcome::Error,
+            7,
+            Duration::from_millis(1),
+        ));
+        let snap = m.snapshot();
+        assert_eq!(snap.domains.len(), 501, "cap + overflow bucket");
+        assert!(
+            !snap.domains.contains_key("newdomain.com"),
+            "new domain past the cap must not get its own key"
+        );
+        assert_eq!(
+            snap.domains.get("otros"),
+            Some(&DomainStats {
+                events: 1,
+                pages: 7,
+                errors: 1
+            }),
+            "first overflow event lands in otros"
+        );
+
+        // A second new domain keeps merging into the same bucket.
+        m.record(ScrapeEvent::new(
+            "scrape_url",
+            "anothernew.com".to_string(),
+            Outcome::Success,
+            2,
+            Duration::from_millis(1),
+        ));
+        assert_eq!(
+            m.snapshot().domains.get("otros"),
+            Some(&DomainStats {
+                events: 2,
+                pages: 9,
+                errors: 1
+            }),
+            "overflow keeps aggregating"
+        );
     }
 
     /// REQ-01: an unparseable domain is recorded as `"unknown"` and still counted.
