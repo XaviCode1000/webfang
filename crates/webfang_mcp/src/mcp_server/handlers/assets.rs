@@ -50,6 +50,10 @@ impl McpHandler {
             ..Default::default()
         };
         if let Some(ref output_dir) = params.output_dir {
+            // Root-of-trust: absolute output_dir must be under a configured
+            // export root (#696).
+            self.state
+                .validate_export_dir(std::path::Path::new(output_dir))?;
             config.output_dir = std::path::PathBuf::from(output_dir);
         }
 
@@ -118,7 +122,7 @@ mod tests {
         let container = Container::new(crawler_config, scraper_config)
             .await
             .expect("create container");
-        let state = McpState::new(container);
+        let state = McpState::new(container).with_export_roots(vec![tmp.path().to_path_buf()]);
         (McpHandler::new(state), tmp)
     }
 
