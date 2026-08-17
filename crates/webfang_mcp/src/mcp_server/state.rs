@@ -84,6 +84,11 @@ pub struct McpState {
     /// (fail-closed). When non-empty, an absolute `output_dir` must be
     /// lexically under one of these roots after normalization.
     pub allowed_export_roots: Arc<Vec<PathBuf>>,
+    /// Hermetic Obsidian detection overrides for tests (#726): `(scan_root,
+    /// registry_path)`. When `Some`, vault detection is injected with these
+    /// paths and never reads the host's real Obsidian registry. Production
+    /// leaves this `None` (real detection chain).
+    pub obsidian_hermetic: Option<(PathBuf, PathBuf)>,
     /// Cancellation token for graceful shutdown propagation.
     pub cancel_token: CancellationToken,
 }
@@ -137,6 +142,7 @@ impl McpState {
             robots_fetcher,
             metrics: Arc::new(Mutex::new(ScrapeMetrics::default())),
             allowed_export_roots: Arc::new(Vec::new()),
+            obsidian_hermetic: None,
             cancel_token: CancellationToken::new(),
         }
     }
@@ -186,6 +192,23 @@ impl McpState {
     #[must_use]
     pub fn with_export_roots(mut self, roots: Vec<PathBuf>) -> Self {
         self.allowed_export_roots = Arc::new(roots);
+        self
+    }
+
+    /// Inject hermetic Obsidian detection paths for tests (#726).
+    ///
+    /// When set, Obsidian vault detection runs through
+    /// [`detect_vault_hermetic`](webfang_core::infrastructure::obsidian::vault_detector::detect_vault_hermetic)
+    /// rooted at `root` with the registry read from `registry_path`, so tests
+    /// never touch the host's real Obsidian registry. Production leaves this
+    /// `None` and keeps the default detection chain.
+    #[must_use]
+    pub fn with_obsidian_hermetic(
+        mut self,
+        root: impl Into<PathBuf>,
+        registry_path: impl Into<PathBuf>,
+    ) -> Self {
+        self.obsidian_hermetic = Some((root.into(), registry_path.into()));
         self
     }
 

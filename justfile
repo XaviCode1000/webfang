@@ -250,7 +250,7 @@ test-ci-quick:
 # -- Documentación --
 
 # Ruta del wiki combinado (Obsidian vault)
-wiki_output := "/home/xavi/Documentos/obsidian/webfang/wiki.md"
+wiki_output := home_dir() / "Documentos" / "obsidian" / "webfang" / "wiki.md"
 
 # Descarga la documentación combinada (narrativa + API rustdoc) generada en CI.
 # Todo el cómputo pesado (mdBook build/test/linkcheck + cargo doc + pandoc)
@@ -265,7 +265,8 @@ docs:
     @rm -rf target/docs-llm
     @gh run download -R XaviCode1000/webfang -n webfang-docs-llm -D target/docs-llm
     @# El artifact puede tener el layout de directorio (post-#734) — acepto ambos.
-    @FULL=target/docs-llm/webfang-docs-llm/webfang-docs-full.md; \
+    @FULL=target/docs-llm/webfang-docs-full.md; \
+    test -f "$FULL" || FULL=target/docs-llm/webfang-docs-llm/webfang-docs-full.md; \
     test -f "$FULL" || FULL=target/docs-llm/webfang-docs-llm.md; \
     test -f "$FULL" || { echo "⚠️  No encontré webfang-docs-full.md en el artifacto"; exit 1; }; \
     cp "$FULL" "{{wiki_output}}"

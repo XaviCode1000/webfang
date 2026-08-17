@@ -387,6 +387,11 @@ jobs:
       - uses: taiki-e/install-action@cargo-hack
       - name: Feature matrix check
         run: cargo hack check --each-feature --workspace --no-dev-deps
+      # `cargo hack check` never compiles test targets (and `--no-dev-deps` drops
+      # dev-dependencies), so feature-gated test arity breaks slip past the
+      # matrix. Compile the test targets for the combo that exposed the gap (#737).
+      - name: Feature-gated test targets compile (adaptive-selectors)
+        run: cargo check -p webfang_core --no-default-features --features adaptive-selectors --tests
 
   # ============================================================================
   # MCP SMOKE: After full tests pass

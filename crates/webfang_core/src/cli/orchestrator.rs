@@ -1875,6 +1875,17 @@ mod tests {
         let mut opts = CrawlOptions::default();
         opts.elastic.output_vectors = Some("vectors.jsonl".to_string());
 
+        // The cfg-gated `adaptive_engine` parameter makes the arity depend on
+        // the feature combo — dispatch the call exactly like `build_and_run`
+        // does in webfang_cli/src/main.rs.
+        #[cfg(feature = "adaptive-selectors")]
+        let exit = run(
+            opts,
+            None,
+            crate::application::container::VaultAiPorts::default(),
+        )
+        .await;
+        #[cfg(not(feature = "adaptive-selectors"))]
         let exit = run(opts, crate::application::container::VaultAiPorts::default()).await;
 
         assert!(
