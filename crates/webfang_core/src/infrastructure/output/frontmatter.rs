@@ -9,8 +9,25 @@
 //! - Tags (if available, for Obsidian compatibility)
 //! - Rich metadata (word count, reading time, language, content type, status)
 
+use std::borrow::Cow;
+
 use chrono::Utc;
 use serde::Serialize;
+
+/// Collapse whitespace runs in `text` to single spaces, zero-cost when clean.
+///
+/// Readability excerpts can carry extraction artifacts such as doubled
+/// spaces ("...by  (about)", RIESGO-OBS-001). Borrowing the input when it
+/// is already clean keeps the common path allocation-free; only dirty
+/// excerpts pay for a cleaned clone.
+fn normalize_whitespace(text: &str) -> Cow<'_, str> {
+    let needs_cleanup = text.chars().any(|c| c.is_whitespace() && c != ' ') || text.contains("  ");
+    if needs_cleanup {
+        Cow::Owned(text.split_whitespace().collect::<Vec<_>>().join(" "))
+    } else {
+        Cow::Borrowed(text)
+    }
+}
 
 /// Frontmatter data structure
 #[derive(Debug, Serialize)]
@@ -98,7 +115,7 @@ pub fn generate_with_metadata(
             .map(|s| s.to_string())
             .unwrap_or_else(|| Utc::now().format("%Y-%m-%d").to_string()),
         author: author.map(|s| s.to_string()),
-        excerpt: excerpt.map(|s| s.to_string()),
+        excerpt: excerpt.map(|s| normalize_whitespace(s).into_owned()),
         tags: tags.to_vec(),
         word_count: rich_meta.map(|m| m.word_count),
         reading_time: rich_meta.map(|m| m.reading_time),
@@ -222,5 +239,48 @@ mod tests {
         assert!(!fm.contains("language"));
         assert!(!fm.contains("contentType"));
         assert!(!fm.contains("status"));
+    }
+
+    // ====================================================================
+    // #695 — excerpt whitespace normalization (RIESGO-OBS-001)
+    // ====================================================================
+
+    /// Clean excerpts are borrowed untouched (zero-cost path).
+    #[test]
+    fn normalize_whitespace_borrows_clean_text() {
+        let out = normalize_whitespace("a clean excerpt");
+        assert!(matches!(out, Cow::Borrowed(_)));
+        assert_eq!(out, "a clean excerpt");
+    }
+
+    /// Doubled spaces (the Readability "...by  (about)" artifact) collapse
+    /// to single spaces via the owned path.
+    #[test]
+    fn normalize_whitespace_collapses_double_spaces() {
+        let out = normalize_whitespace("...by  (about)");
+        assert!(matches!(out, Cow::Owned(_)));
+        assert_eq!(out, "...by (about)");
+    }
+
+    /// Tabs and newlines collapse to single spaces too.
+    #[test]
+    fn normalize_whitespace_collapses_tabs_and_newlines() {
+        let out = normalize_whitespace("word\t\nword");
+        assert_eq!(out, "word word");
+    }
+
+    /// The frontmatter serializes the normalized excerpt.
+    #[test]
+    fn test_generate_normalizes_excerpt_whitespace() {
+        let fm = generate(
+            "Title",
+            "https://example.com",
+            Some("2024-01-15"),
+            None,
+            Some("...by  (about)"),
+            &[],
+        );
+        assert!(fm.contains("excerpt: '...by (about)'"));
+        assert!(!fm.contains("by  (about)"));
     }
 }
