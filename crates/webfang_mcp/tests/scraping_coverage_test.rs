@@ -3,7 +3,8 @@
 //! End-to-end tests for scraping tools not covered by the existing suite:
 //! - `scrape_url`: invalid-URL invalid-params (-32602) + HTTP error path
 //! - `discover_urls`: real link extraction (internal + external)
-//! - `detect_spa`: SPA-marker detection vs. sufficient-content pass
+//! - `detect_spa`: SPA-marker detection vs. sufficient-content pass vs.
+//!   scrape-verdict parity on a JS shell (#760)
 //! - `scrape_batch`: partial results when some URLs fail
 //! - `crawl_site`: BFS with max_depth=0 (seed only) and max_depth=1 (follows
 //!   internal links)
@@ -499,6 +500,82 @@ async fn test_detect_spa_sufficient_content_not_spa() {
         tool_text(&result)
     );
     assert_eq!(tool_text(&result), "not an SPA - sufficient content found");
+}
+
+/// #760 parity: one JS-shell fixture (app mount point + a long `<noscript>`
+/// block that defeated the pre-fix detector — raw htmd counted the noscript
+/// text, clean-based extraction does not) must produce IDENTICAL verdicts on
+/// both surfaces: `detect_spa` reports an SPA (JSON, markers true) and
+/// `scrape_url` fails honestly with the JavaScript-rendering error. The tool
+/// signal now PREDICTS the scrape's behavior instead of contradicting it.
+#[tokio::test]
+async fn test_detect_spa_predicts_scrape_verdict_on_js_shell() {
+    let mock = MockServer::start().await;
+    // Shell whose only text lives inside <noscript>: enough (200+ chars) to
+    // clear MIN_CONTENT_CHARS on the old raw-htmd detector, near-zero once the
+    // real pipeline's cleaning runs.
+    let html = format!(
+        "<!DOCTYPE html><html><head><title>JS App</title></head><body>\
+         <div id=\"app\"></div>\
+         <noscript>{}</noscript>\
+         </body></html>",
+        "JavaScript must be enabled to view this quoting application. ".repeat(4)
+    );
+    mount_page_200(&mock, "/", &html).await;
+
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    // 1. detect_spa must predict the SPA verdict (JSON with markers), not the
+    //    pre-fix "not an SPA - sufficient content found" literal.
+    let result =
+        call_single_url_tool_result(&client, &base_url, &session_id, "detect_spa", &mock.uri())
+            .await;
+    assert!(
+        !is_tool_error(&result),
+        "detect_spa should succeed: {}",
+        tool_text(&result)
+    );
+    let text = tool_text(&result);
+    assert_ne!(
+        text, "not an SPA - sufficient content found",
+        "the tool must no longer contradict the scrape on a JS shell"
+    );
+    let parsed: Value = serde_json::from_str(&text).expect("SPA result must be valid JSON");
+    assert_eq!(
+        parsed.get("has_spa_markers").and_then(|v| v.as_bool()),
+        Some(true),
+        "the app mount point must be reported: {parsed}"
+    );
+    let char_count = parsed
+        .get("char_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(u64::MAX);
+    assert!(
+        char_count < 50,
+        "extracted content after cleaning must be below the threshold: {parsed}"
+    );
+
+    // 2. scrape_url on the SAME fixture must fail with the JS-rendering
+    //    verdict the tool just predicted.
+    let scrape_result =
+        call_single_url_tool_result(&client, &base_url, &session_id, "scrape_url", &mock.uri())
+            .await;
+    assert!(
+        is_tool_error(&scrape_result),
+        "the scrape must fail the minimum-content guard the tool predicted: {}",
+        tool_text(&scrape_result)
+    );
+    assert!(
+        tool_text(&scrape_result).contains("renderizado de JavaScript"),
+        "the scrape error must name the JS cause: {}",
+        tool_text(&scrape_result)
+    );
+
+    // Snapshot (XC-2): redact the wiremock port for determinism.
+    let redacted = text.replace(&mock.uri(), "http://127.0.0.1:<PORT>");
+    insta::assert_snapshot!("detect_spa_js_shell_predicts_scrape", redacted);
 }
 
 // ============================================================================

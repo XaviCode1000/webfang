@@ -70,6 +70,50 @@ pub fn detect_spa_content(
     })
 }
 
+/// Predict whether a scrape of `raw_html` will satisfy the minimum-content
+/// guard, by running the same cleaning and extraction chain the real scrape
+/// uses (#760).
+///
+/// This is the prediction oracle for the MCP `detect_spa` tool: its verdict
+/// must anticipate the scrape's own verdict so the tool never claims
+/// "sufficient content" for a page the scrape is about to reject. It
+/// replicates the exact chain of the default MCP funnel
+/// (`build_scraped_content`):
+///
+/// 1. [`crate::infrastructure::converter::html_cleaner::clean_html`] on the raw
+///    HTML — removes `<noscript>`/`<header>`/`<footer>`/hidden nodes, the very
+///    text that made the old raw-HTML-only detector answer "sufficient content"
+///    while the scrape extracted almost nothing.
+/// 2. Readability on the cleaned HTML; on failure the two-step fallback:
+///    [`crate::infrastructure::scraper::fallback::extract_text`] (htmd) and a
+///    second [`crate::infrastructure::converter::html_cleaner::clean_html`]
+///    pass over the extracted text — byte-for-byte the funnel's own fallback.
+/// 3. [`detect_spa_content`] on the resulting text, with the ORIGINAL raw HTML
+///    for marker inspection (same inputs the guard receives).
+///
+/// # Parity limits
+///
+/// Prediction is only valid for the DEFAULT pipeline: a non-`body` CSS
+/// selector or adaptive selector repair configured on the real scrape are not
+/// modelled here.
+///
+/// # Performance
+///
+/// Runs a full clean + extraction (Readability or htmd + double clean), so it
+/// costs roughly one extraction pass. Acceptable for a diagnostic tool that
+/// runs before the scrape, in place of a wrong cheap signal.
+pub fn predict_spa_status(url: &str, raw_html: &str) -> Option<SpaDetectionResult> {
+    use crate::infrastructure::converter::html_cleaner::clean_html;
+    use crate::infrastructure::scraper::{fallback, readability};
+
+    let cleaned_html = clean_html(raw_html);
+    let extracted_text = match readability::parse(&cleaned_html, Some(url)) {
+        Ok(article) => article.text_content,
+        Err(_) => clean_html(&fallback::extract_text(&cleaned_html)),
+    };
+    detect_spa_content(url, &extracted_text, raw_html)
+}
+
 /// Shared minimum-content guard for BOTH extraction funnels (#706).
 ///
 /// Applies [`detect_spa_content`] to the freshly extracted content and fails
@@ -285,6 +329,79 @@ mod tests {
         assert!(
             !reason.contains("renderizado de JavaScript"),
             "no-marker variant must not claim JS requirement: {reason}"
+        );
+    }
+
+    // --- predict_spa_status: the MCP detect_spa prediction oracle (#760) ---
+
+    /// #760 regression: a JS-only shell whose `<noscript>` carries 200+ chars
+    /// must be flagged. The pre-fix `detect_spa` tool counted raw htmd text
+    /// (noscript included) and answered "sufficient content", contradicting
+    /// the scrape, which cleans first and extracts almost nothing.
+    #[cfg_attr(miri, ignore)] // clean_html → lol_html/servo_arc Tree Borrows UB (#487, #764)
+    #[test]
+    fn test_predict_js_shell_with_fat_noscript_is_flagged() {
+        let html = format!(
+            "<html><head><title>JS App</title></head><body>\
+             <div id=\"app\"></div>\
+             <noscript>{}</noscript>\
+             </body></html>",
+            "JavaScript must be enabled to view this quoting application. ".repeat(4)
+        );
+        // The pre-fix detector's input (raw htmd text) clears the 50-char
+        // threshold: the exact false negative this test pins.
+        let raw_text = crate::infrastructure::scraper::fallback::extract_text(&html);
+        assert!(
+            raw_text.chars().count() >= MIN_CONTENT_CHARS,
+            "fixture must defeat the old raw-HTML detector, got {} chars",
+            raw_text.chars().count()
+        );
+
+        let result = predict_spa_status(URL, &html)
+            .expect("the prediction oracle must flag the JS shell the scrape will reject");
+        assert!(
+            result.has_spa_markers,
+            "the app mount point in the raw HTML must be reported"
+        );
+        assert!(
+            result.char_count < MIN_CONTENT_CHARS,
+            "cleaned extraction must stay under the threshold, got {}",
+            result.char_count
+        );
+    }
+
+    /// #760: SSR pages with hydration markers but substantial text stay
+    /// unflagged — the char gate runs before marker inspection.
+    #[cfg_attr(miri, ignore)] // clean_html → lol_html/servo_arc Tree Borrows UB (#487, #764)
+    #[test]
+    fn test_predict_ssr_with_markers_keeps_substantial_content() {
+        let html = "<html><head><title>Docs</title></head><body>\
+             <script id=\"__NEXT_DATA__\" type=\"application/json\">{}</script>\
+             <article><h1>Guide</h1>\
+             <p>This is a substantially long paragraph of server-rendered \
+             article content, easily over the fifty character extraction \
+             threshold, so the prediction must stay quiet.</p>\
+             </article></body></html>";
+        assert!(
+            predict_spa_status(URL, html).is_none(),
+            "substantial SSR content must not be flagged even with hydration markers"
+        );
+    }
+
+    /// #760: when Readability cannot find an article, the oracle must follow
+    /// the funnel's own fallback (htmd + second clean) — the same verdict the
+    /// scrape's guard would reach on that branch.
+    #[cfg_attr(miri, ignore)] // clean_html → lol_html/servo_arc Tree Borrows UB (#487, #764)
+    #[test]
+    fn test_predict_readability_failure_uses_funnel_fallback() {
+        // The known Readability-failure fixture from extraction.rs (CE-3):
+        // a document without article content.
+        let html = "<html><body><a href=\"/x\"></a></body></html>";
+        let result = predict_spa_status(URL, html)
+            .expect("a document without extractable text must be flagged");
+        assert!(
+            result.char_count < MIN_CONTENT_CHARS,
+            "the fallback branch must count the cleaned htmd text"
         );
     }
 }
