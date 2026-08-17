@@ -201,6 +201,24 @@ mod tests {
             }
         }
 
+        /// #758: a FAT JS shell — thousands of raw HTML bytes (heavy script
+        /// payload) with near-zero visible text and no known mount-point
+        /// marker. The old raw-byte heuristic classified this as static
+        /// content; the visible-text gate must escalate it (the
+        /// quotes.toscrape.com/js/ case).
+        fn fat_shell_page() -> Self {
+            let fat_script = "var x = 1;".repeat(600);
+            Self {
+                html: format!(
+                    "<!DOCTYPE html><html><head><title>JS App</title>\
+                     <script>{fat_script}</script></head><body></body></html>"
+                ),
+                cost: 1_000_000,
+                interactions: false,
+                fail_with: None,
+            }
+        }
+
         fn empty_page() -> Self {
             Self {
                 html: String::new(),
@@ -316,6 +334,20 @@ mod tests {
         assert_escalates_to_layer3(&router, "https://spa.example.com").await;
     }
 
+    /// #758 regression: a fat JS shell (large raw HTML, near-zero visible
+    /// text, no mount-point marker) must escalate to Layer 2 instead of
+    /// being accepted as static content.
+    #[tokio::test]
+    async fn test_fat_shell_escalates_to_layer2() {
+        let router = HybridRouter::new(
+            StubDownloader::fat_shell_page(),
+            StubDownloader::static_page().with_cost(30_000_000),
+            StubDownloader::static_page().with_interactions(true),
+            false,
+        );
+        assert_escalates_to_layer3(&router, "https://js.example.com").await;
+    }
+
     #[tokio::test]
     async fn test_waf_at_layer1_aborts() {
         let router = HybridRouter::new(
@@ -390,7 +422,10 @@ mod tests {
     async fn test_ignore_waf_true_t1_challenge_does_not_abort() {
         // REQ-WAF-07 (W1): with ignore_waf=true the spa path must NOT abort on
         // a genuine T1 challenge — the WAF classification yields a clean verdict
-        // and the page is treated per normal spa/static logic (here: static).
+        // and the page is treated per normal spa/static logic. The challenge
+        // stub carries near-zero visible text, so the #758 text gate escalates
+        // it to Layer 2 instead of accepting it as static; the invariant under
+        // test is that the fetch never aborts with a WafChallenge error.
         let router = HybridRouter::new(
             StubDownloader::waf_page(),
             StubDownloader::static_page(),
@@ -402,7 +437,10 @@ mod tests {
             .fetch(&url)
             .await
             .expect("ignore_waf=true must not abort on a T1 challenge");
-        assert!(page.html.contains("challenge-running"));
+        assert!(
+            page.html.contains("Enough content"),
+            "the text-poor challenge page must escalate to Layer 2"
+        );
     }
 
     #[tokio::test]
