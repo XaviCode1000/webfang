@@ -517,17 +517,17 @@ async fn resolve_url(args: &mut Args) -> Result<(), CliExit> {
 
     // CI environment always requires --url
     if is_ci() {
-        eprintln!("Error: --url is required for scraping (CI mode)");
-        return Err(CliExit::UsageError("--url is required".into()));
+        return Err(CliExit::UsageError(
+"--url is required for scraping (CI mode)".into(),
+        ));
     }
-
+    
     // Try interactive prompt only if stdin is a TTY
     if stdin_is_tty() {
         prompt_for_url_interactive(args)
     } else {
         // Not a TTY and no URL provided
-        eprintln!("Error: --url is required for scraping");
-        Err(CliExit::UsageError("--url is required".into()))
+        Err(CliExit::UsageError("--url is required for scraping".into()))
     }
 }
 
@@ -541,8 +541,7 @@ fn prompt_for_url_interactive(args: &mut Args) -> Result<(), CliExit> {
         },
         Err(_e) => {
             // Prompt failed (e.g., non-interactive), fall through to error
-            eprintln!("Error: --url is required for scraping");
-            Err(CliExit::UsageError("--url is required".into()))
+            Err(CliExit::UsageError("--url is required for scraping".into()))
         },
     }
 }
@@ -550,8 +549,9 @@ fn prompt_for_url_interactive(args: &mut Args) -> Result<(), CliExit> {
 /// Headless builds have no inquire prompt — require --url explicitly.
 #[cfg(not(feature = "ui"))]
 fn prompt_for_url_interactive(_args: &mut Args) -> Result<(), CliExit> {
-    eprintln!("Error: --url is required for scraping (interactive prompt requires --features ui)");
-    Err(CliExit::UsageError("--url is required".into()))
+    Err(CliExit::UsageError(
+"--url is required for scraping (interactive prompt requires --features ui)".into(),
+    ))
 }
 
 /// Resolve the webfang config file path (graceful: missing file = defaults).
