@@ -264,7 +264,11 @@ docs:
     # con "file exists" si target/docs-llm ya existe.
     @rm -rf target/docs-llm
     @gh run download -R XaviCode1000/webfang -n webfang-docs-llm -D target/docs-llm
-    @cp target/docs-llm/webfang-docs-llm.md "{{wiki_output}}"
+    @# El artifact puede tener el layout de directorio (post-#734) — acepto ambos.
+    @FULL=target/docs-llm/webfang-docs-llm/webfang-docs-full.md; \
+    test -f "$FULL" || FULL=target/docs-llm/webfang-docs-llm.md; \
+    test -f "$FULL" || { echo "⚠️  No encontré webfang-docs-full.md en el artifacto"; exit 1; }; \
+    cp "$FULL" "{{wiki_output}}"
     @echo "✅ Documentación actualizada (desde CI, último run de main):"
     @ls -lh "{{wiki_output}}" | awk '{print "  " $NF " (" $5 ")"}'
 
