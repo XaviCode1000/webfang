@@ -188,6 +188,28 @@ fn is_tool_error(result: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// Call a single-URL tool against `target_uri` and return the extracted
+/// `result` object from the JSON-RPC envelope.
+async fn call_single_url_tool_result(
+    client: &Client,
+    base_url: &str,
+    session_id: &str,
+    tool: &str,
+    target_uri: &str,
+) -> Value {
+    let resp = call_tool(
+        client,
+        base_url,
+        session_id,
+        tool,
+        json!({ "url": target_uri }),
+    )
+    .await;
+    resp.get("result")
+        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
+        .clone()
+}
+
 // ============================================================================
 // scrape_url
 // ============================================================================
@@ -234,24 +256,60 @@ async fn test_scrape_url_http_error_is_honest_error() {
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "scrape_url",
-        json!({ "url": mock.uri() }),
-    )
-    .await;
-
-    let result = resp
-        .get("result")
-        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
-        .clone();
+    let result =
+        call_single_url_tool_result(&client, &base_url, &session_id, "scrape_url", &mock.uri())
+            .await;
     assert!(
         is_tool_error(&result),
         "HTTP 500 must return isError:true, got: {}",
         tool_text(&result)
     );
+}
+
+/// A JS-shell page (`<div id="app">` mount point, <50 chars of extractable
+/// text, spec MCP-1 scenario) must surface as an honest tool error
+/// (isError:true) — never a fake `isError:false` success with near-empty
+/// content. The underlying `ScrapeError::ExtractionFailed` flows through the
+/// existing Err→`CallToolResult::error` mapping (#694, #706).
+#[tokio::test]
+async fn test_scrape_url_js_shell_is_error_result() {
+    let mock = MockServer::start().await;
+    // Deterministic JS shell: app mount point + Next.js payload, well under
+    // the 50-char content threshold once readability/fallback strips markup.
+    let html = r#"<!DOCTYPE html>
+<html><head><title>App</title>
+<script id="__NEXT_DATA__" type="application/json">{"page":"/"}</script>
+</head><body><div id="app"></div></body></html>"#;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(html))
+        .mount(&mock)
+        .await;
+
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let result =
+        call_single_url_tool_result(&client, &base_url, &session_id, "scrape_url", &mock.uri())
+            .await;
+    assert!(
+        is_tool_error(&result),
+        "a JS-shell scrape must return isError:true, got: {}",
+        tool_text(&result)
+    );
+
+    // Semantic invariant: the Spanish error text names the JS-rendering cause.
+    let text = tool_text(&result);
+    assert!(
+        text.contains("renderizado de JavaScript"),
+        "error text must explain the JS-rendering cause, got: {text}"
+    );
+
+    // Redacted snapshot (XC-2): the wiremock port is the only
+    // non-deterministic element — collapse it before snapshotting.
+    let redacted = text.replace(&mock.uri(), "http://127.0.0.1:<PORT>");
+    insta::assert_snapshot!("scrape_url_js_shell_is_error", redacted);
 }
 
 // ============================================================================

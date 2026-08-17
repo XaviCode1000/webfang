@@ -1,0 +1,5 @@
+---
+source: crates/webfang_mcp/tests/scraping_coverage_test.rs
+expression: redacted
+---
+extracción falló para http://127.0.0.1:<PORT>/: contenido insuficiente (3 caracteres) con marcadores SPA detectados — la página requiere renderizado de JavaScript

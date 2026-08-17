@@ -22,14 +22,14 @@ async fn mount_resume_fixture(t: &BehavioralTest) -> String {
     Mock::given(method("GET"))
         .and(path("/page1"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
-            "<html><body><article><h1>Page One</h1><p>Body one.</p></article></body></html>",
+            "<html><body><article><h1>Page One</h1><p>Body one carries enough substantive text to pass the minimum-content guard.</p></article></body></html>",
         ))
         .mount(&t.server)
         .await;
     Mock::given(method("GET"))
         .and(path("/page2"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
-            "<html><body><article><h1>Page Two</h1><p>Body two.</p></article></body></html>",
+            "<html><body><article><h1>Page Two</h1><p>Body two carries enough substantive text to pass the minimum-content guard.</p></article></body></html>",
         ))
         .mount(&t.server)
         .await;

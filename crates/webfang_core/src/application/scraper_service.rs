@@ -440,7 +440,14 @@ async fn build_scraped_content(
             )
             .await?;
 
-            log_spa_warning(url.as_str(), &article.text_content, html);
+            // Shared minimum-content guard (#706): fail honestly on JS-shell
+            // or near-empty extraction instead of returning Ok near-empty.
+            crate::application::spa_detection::validate_min_content(
+                url.as_str(),
+                &article.text_content,
+                html,
+                correlation,
+            )?;
 
             let author = crate::infrastructure::scraper::author_extractor::extract_author(
                 html,
@@ -484,7 +491,16 @@ async fn build_scraped_content(
             )
             .await?;
 
-            log_spa_warning(url.as_str(), &fallback_content, html);
+            // Shared minimum-content guard (#706): the fallback branch has NO
+            // content-size check today (unlike extract_content's
+            // MIN_FALLBACK_CONTENT), so the guard is this branch's sole
+            // authority — fail honestly on sub-threshold content.
+            crate::application::spa_detection::validate_min_content(
+                url.as_str(),
+                &fallback_content,
+                html,
+                correlation,
+            )?;
 
             let fallback_title = url.host_str().unwrap_or("unknown_host").to_string();
             Ok(ScrapedContent {
@@ -507,24 +523,6 @@ async fn build_scraped_content(
                 correlation_id: Some(correlation.clone()),
             })
         },
-    }
-}
-
-/// Log a warning when extracted content is minimal (possible SPA requiring JS).
-fn log_spa_warning(url: &str, content: &str, html: &str) {
-    // SPA detection: check if extracted content is minimal
-    if let Some(spa_info) = detect_spa_content(url, content, html) {
-        if spa_info.has_spa_markers {
-            warn!(
-                "{} returned minimal content ({} chars) with SPA markers detected. This site may require JavaScript rendering. This feature is not yet implemented. Track: https://github.com/XaviCode1000/webfang/issues/16",
-                spa_info.url, spa_info.char_count
-            );
-        } else {
-            warn!(
-                "{} returned minimal content ({} chars). This site may require JavaScript rendering. This feature is not yet implemented. Track: https://github.com/XaviCode1000/webfang/issues/16",
-                spa_info.url, spa_info.char_count
-            );
-        }
     }
 }
 

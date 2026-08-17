@@ -440,6 +440,9 @@ async fn test_mock_404_returns_http_error() {
     );
 }
 
+/// An empty body must fail HONESTLY with the typed minimum-content error,
+/// not return Ok on near-empty content (#706, #694). Empty extraction is a
+/// data-format failure, not a success.
 #[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
 #[tokio::test]
 async fn test_mock_empty_body_graceful_handling() {
@@ -447,10 +450,49 @@ async fn test_mock_empty_body_graceful_handling() {
     let mock = MockHttpClient::new().with_ok_response(url.as_str(), "");
 
     let result = scrape_with_readability(&mock, &url).await;
-    // Empty body should not panic — Readability or fallback handles it
-    match &result {
-        Ok(contents) => assert!(!contents.is_empty()),
-        Err(e) => panic!("empty body should succeed, got: {e}"),
+    let err = result.expect_err("empty body must fail honestly, not return Ok near-empty");
+
+    match &err {
+        ScraperError::ExtractionFailed { reason, .. } => {
+            assert!(
+                reason.contains("contenido insuficiente"),
+                "Spanish reason must state insufficient content: {reason}"
+            );
+        },
+        other => panic!("expected ExtractionFailed, got: {other}"),
+    }
+}
+
+/// MCP funnel over the deterministic `js_shell.html` fixture (#706): a JS-only
+/// shell (`<div id="root">` + `__NEXT_DATA__`, <50 text chars) must yield the
+/// typed `ExtractionFailed` error, and its Spanish reason must call out the
+/// JavaScript-rendering cause (marker variant) — never an Ok near-empty scrape.
+#[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
+#[tokio::test]
+async fn test_js_shell_body_fails_with_typed_error() {
+    let html = std::fs::read_to_string(format!(
+        "{}/tests/fixtures_root/js_shell.html",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("load js_shell.html fixture");
+    let url = url::Url::parse("https://spa.example.com/app").unwrap();
+    let mock = MockHttpClient::new().with_ok_response(url.as_str(), &html);
+
+    let result = scrape_with_readability(&mock, &url).await;
+    let err = result.expect_err("a JS-shell body must fail honestly");
+
+    match &err {
+        ScraperError::ExtractionFailed {
+            reason,
+            url: failed_url,
+        } => {
+            assert_eq!(failed_url, url.as_str(), "url must be preserved");
+            assert!(
+                reason.contains("renderizado de JavaScript"),
+                "marker-bearing shell must report the JS-rendering cause: {reason}"
+            );
+        },
+        other => panic!("expected ExtractionFailed, got: {other}"),
     }
 }
 
