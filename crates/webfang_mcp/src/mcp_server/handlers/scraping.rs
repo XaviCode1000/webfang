@@ -20,6 +20,9 @@ use tracing::instrument;
 #[allow(missing_docs)]
 impl McpHandler {
     /// Scrape a single URL and extract clean content using Readability algorithm
+    ///
+    /// Respects the site's robots.txt: a disallowed URL is rejected with a
+    /// `robots.txt` error before any fetch (#749, uniform with #697).
     #[tool(
         description = "Scrape a single URL and extract clean content using Readability algorithm (Firefox Reader mode). Returns title, content, excerpt, author, and date."
     )]
@@ -42,9 +45,22 @@ impl McpHandler {
         crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
 
         let start = Instant::now();
-        let client = self.state.container.http_client().as_ref();
         // One run identity per tool call, shared by its success and error events (#501/#698).
         let root_correlation = webfang_core::domain::CorrelationId::new();
+        // robots.txt gate BEFORE any fetch (#749): a disallowed URL is rejected
+        // without touching the network, mirroring `scrape_with_options` (#697).
+        if let Some(err) = self.state.robots_denied_for(&url).await {
+            self.state.record_scrape_identity(
+                "scrape_url",
+                domain_of(&params.url),
+                Outcome::Error,
+                0,
+                start,
+                &root_correlation,
+            );
+            return Ok(CallToolResult::error(vec![Content::text(err.to_string())]));
+        }
+        let client = self.state.container.http_client().as_ref();
         match webfang_core::application::scraper_service::scrape_with_readability(client, &url)
             .await
         {
@@ -433,6 +449,9 @@ impl McpHandler {
     }
 
     /// Discover URLs from a single page's HTML links
+    ///
+    /// Respects the site's robots.txt: a disallowed URL is rejected with a
+    /// `robots.txt` error before any fetch (#749, uniform with #697).
     #[tool(
         description = "Fetch a single page and extract all internal links. Lightweight URL discovery without full crawl."
     )]
@@ -456,6 +475,19 @@ impl McpHandler {
         let start = Instant::now();
         // One run identity per tool call, shared by its success and error events (#501/#698).
         let root_correlation = webfang_core::domain::CorrelationId::new();
+        // robots.txt gate BEFORE any fetch (#749).
+        if let Some(robots_error) = robots_denied_response(
+            self,
+            "discover_urls",
+            &url,
+            &params.url,
+            start,
+            &root_correlation,
+        )
+        .await
+        {
+            return Ok(robots_error);
+        }
         let port = self.state.container.http_client();
         match port.get(url.as_str()).await {
             Ok(resp) => {
@@ -584,6 +616,9 @@ impl McpHandler {
     }
 
     /// Detect if a URL requires JavaScript rendering (SPA)
+    ///
+    /// Respects the site's robots.txt: a disallowed URL is rejected with a
+    /// `robots.txt` error before any fetch (#749, uniform with #697).
     #[tool(
         description = "Detect if a page requires JavaScript rendering (Single Page Application). Checks for minimal content and SPA markers like <div id=\"root\"> or <div id=\"app\">."
     )]
@@ -609,6 +644,19 @@ impl McpHandler {
         let start = Instant::now();
         // One run identity per tool call, shared by its success and error events (#501/#698).
         let root_correlation = webfang_core::domain::CorrelationId::new();
+        // robots.txt gate BEFORE any fetch (#749).
+        if let Some(robots_error) = robots_denied_response(
+            self,
+            "detect_spa",
+            &url,
+            &params.url,
+            start,
+            &root_correlation,
+        )
+        .await
+        {
+            return Ok(robots_error);
+        }
         let port = self.state.container.http_client();
         match port.get(url.as_str()).await {
             Ok(resp) => {
@@ -658,6 +706,34 @@ impl McpHandler {
             },
         }
     }
+}
+
+/// robots.txt gate for single-URL direct-fetch tools (#749).
+///
+/// Delegates to the single policy source
+/// (`McpState::robots_denied_for` → `scraper_service::enforce_robots_policy`,
+/// fail-open when no fetcher is wired). On denial, records an
+/// `Outcome::Error` scrape identity for `tool` — the same shape as each
+/// handler's HTTP-error branch — and returns the tool error envelope carrying
+/// the denial text (`WafBlocked(url, "robots.txt")`).
+async fn robots_denied_response(
+    handler: &McpHandler,
+    tool: &'static str,
+    url: &url::Url,
+    raw_url: &str,
+    start: Instant,
+    correlation: &webfang_core::domain::CorrelationId,
+) -> Option<CallToolResult> {
+    let err = handler.state.robots_denied_for(url).await?;
+    handler.state.record_scrape_identity(
+        tool,
+        domain_of(raw_url),
+        Outcome::Error,
+        0,
+        start,
+        correlation,
+    );
+    Some(CallToolResult::error(vec![Content::text(err.to_string())]))
 }
 
 /// Keep only seed-host-internal URLs in the discovery output (REQ-01, SSRF
@@ -773,8 +849,33 @@ mod tests {
     use webfang_core::di::Container;
     use webfang_core::domain::CrawlerConfig;
     use webfang_core::infrastructure::config::ScraperConfig;
+    use webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     async fn test_handler() -> (McpHandler, TempDir) {
+        let (mut state, tmp) = test_state().await;
+        // Determinism (#705): handler tests must stay offline — the robots
+        // check performs a real robots.txt fetch, so unit tests drop the
+        // fetcher instead of risking network access through loopback URLs.
+        state.robots_fetcher = None;
+        (McpHandler::new(state), tmp)
+    }
+
+    /// Build a state with a real robots fetcher for #749 enforcement tests.
+    /// Offline-friendly: construction never touches the network.
+    async fn test_handler_with_robots() -> (McpHandler, TempDir) {
+        let (state, tmp) = test_state().await;
+        let state = state.with_robots_fetcher(std::sync::Arc::new(
+            RobotsFetcher::with_default_profile(5).expect("fetcher construction is offline"),
+        ));
+        (McpHandler::new(state), tmp)
+    }
+
+    /// Shared state construction for `test_handler` / `test_handler_with_robots`.
+    /// The `TempDir` is returned so the caller keeps the configured
+    /// `output_dir` alive.
+    async fn test_state() -> (McpState, TempDir) {
         let tmp = TempDir::new().expect("create temp dir");
         let crawler_config =
             CrawlerConfig::new(url::Url::parse("https://example.com").expect("valid url"));
@@ -785,12 +886,86 @@ mod tests {
         let container = Container::new(crawler_config, scraper_config)
             .await
             .expect("create container");
-        let mut state = McpState::new(container);
-        // Determinism (#705): handler tests must stay offline — the robots
-        // check performs a real robots.txt fetch, so unit tests drop the
-        // fetcher instead of risking network access through loopback URLs.
-        state.robots_fetcher = None;
-        (McpHandler::new(state), tmp)
+        (McpState::new(container), tmp)
+    }
+
+    // ── #749 robots.txt gate fixtures (modeled on
+    // `crates/webfang_core/tests/scraper_service_test.rs::robots`) ──
+
+    /// Minimal article HTML that Readability extracts deterministically
+    /// (scraping_coverage_test.rs style).
+    const ARTICLE_HTML: &str = r#"<!DOCTYPE html>
+<html>
+<head><title>Public Page</title></head>
+<body>
+<article>
+<h1>Main Heading</h1>
+<p>This is the content of the article. It has enough text to be extracted by Readability.</p>
+</article>
+</body>
+</html>"#;
+
+    /// Mount a robots.txt disallowing `/private/*` and a 200 page at
+    /// `/{path}` on the same origin — the fetcher keys its rule cache on the
+    /// page URL's origin, so both routes must sit on one `MockServer`.
+    async fn mount_robots_site(server: &MockServer, page_path: &str) {
+        Mock::given(method("GET"))
+            .and(path("/robots.txt"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("User-agent: *\nDisallow: /private\n"),
+            )
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/{page_path}")))
+            .respond_with(ResponseTemplate::new(200).set_body_string(ARTICLE_HTML))
+            .mount(server)
+            .await;
+    }
+
+    /// Count requests that are NOT the robots.txt probe — zero proves the
+    /// gate short-circuited BEFORE any page fetch.
+    async fn page_hits(server: &MockServer) -> usize {
+        server
+            .received_requests()
+            .await
+            .expect("request recording is enabled")
+            .iter()
+            .filter(|r| r.url.path() != "/robots.txt")
+            .count()
+    }
+
+    /// The first text content of a tool result, serialized as the transport
+    /// would.
+    fn result_text(result: &CallToolResult) -> String {
+        serde_json::to_value(result)
+            .ok()
+            .and_then(|v| v.get("content").and_then(|c| c.as_array()).cloned())
+            .and_then(|arr| arr.first().cloned())
+            .and_then(|first| {
+                first
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default()
+    }
+
+    /// Assert that a tool result is an honest error (`isError:true`) whose
+    /// text reports the robots.txt denial.
+    fn assert_robots_error(result: &CallToolResult) -> String {
+        let json = serde_json::to_value(result).expect("CallToolResult serializes");
+        assert_eq!(
+            json.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "robots denial must set isError:true, got: {json}"
+        );
+        let text = result_text(result);
+        assert!(
+            text.contains("robots.txt"),
+            "error text must report the robots.txt denial, got: {text}"
+        );
+        text
     }
 
     /// Assert that a handler rejected a loopback/private URL via the SSRF gate.
@@ -964,6 +1139,116 @@ mod tests {
         assert!(
             res.is_err(),
             "invalid URL must be a protocol error, got: {res:?}"
+        );
+    }
+
+    // ── #749: robots.txt must be respected before any page fetch ──
+
+    /// `scrape_url` with a robots-disallowed URL returns an `isError:true`
+    /// result reporting `robots.txt` and never issues the page fetch.
+    #[cfg_attr(miri, ignore)] // real network stack via wreq — unsupported by Miri
+    #[tokio::test]
+    async fn scrape_url_robots_disallowed_returns_error_and_zero_page_hits() {
+        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1"); // wiremock binds 127.0.0.1
+        let (handler, _tmp) = test_handler_with_robots().await;
+        let server = MockServer::start().await;
+        mount_robots_site(&server, "private/page").await;
+
+        let res = handler
+            .scrape_url(Parameters(ScrapeUrlParams {
+                url: format!("{}/private/page", server.uri()),
+            }))
+            .await
+            .expect("handler returns Ok with an honest error");
+
+        assert_robots_error(&res);
+        assert_eq!(
+            page_hits(&server).await,
+            0,
+            "the robots gate must short-circuit before the page fetch"
+        );
+    }
+
+    /// Positive path: a robots-allowed URL passes the gate through to a real
+    /// scrape (fail-open positive: allowed = no interference), and the
+    /// extracted content reaches the caller.
+    #[cfg_attr(miri, ignore)] // real network stack via wreq — unsupported by Miri
+    #[tokio::test]
+    async fn scrape_url_robots_allowed_still_scrapes_page() {
+        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1"); // wiremock binds 127.0.0.1
+        let (handler, _tmp) = test_handler_with_robots().await;
+        let server = MockServer::start().await;
+        mount_robots_site(&server, "public/page").await;
+
+        let res = handler
+            .scrape_url(Parameters(ScrapeUrlParams {
+                url: format!("{}/public/page", server.uri()),
+            }))
+            .await
+            .expect("handler returns Ok");
+
+        let json = serde_json::to_value(&res).expect("CallToolResult serializes");
+        assert_ne!(
+            json.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "robots-allowed URL must not be rejected: {}",
+            result_text(&res)
+        );
+        assert_eq!(page_hits(&server).await, 1, "the page must be fetched");
+        assert!(
+            result_text(&res).contains("Public Page"),
+            "allowed scrape must return the extracted article title, got: {}",
+            result_text(&res)
+        );
+    }
+
+    /// `discover_urls` with a robots-disallowed URL returns a `robots.txt`
+    /// error and never issues the page fetch.
+    #[cfg_attr(miri, ignore)] // real network stack via wreq — unsupported by Miri
+    #[tokio::test]
+    async fn discover_urls_robots_disallowed_returns_error_and_zero_page_hits() {
+        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1"); // wiremock binds 127.0.0.1
+        let (handler, _tmp) = test_handler_with_robots().await;
+        let server = MockServer::start().await;
+        mount_robots_site(&server, "private/list").await;
+
+        let res = handler
+            .discover_urls(Parameters(DiscoverUrlsParams {
+                url: format!("{}/private/list", server.uri()),
+            }))
+            .await
+            .expect("handler returns Ok with an honest error");
+
+        assert_robots_error(&res);
+        assert_eq!(
+            page_hits(&server).await,
+            0,
+            "the robots gate must short-circuit before the page fetch"
+        );
+    }
+
+    /// `detect_spa` with a robots-disallowed URL returns a `robots.txt` error
+    /// and never issues the page fetch.
+    #[cfg_attr(miri, ignore)] // real network stack via wreq — unsupported by Miri
+    #[tokio::test]
+    async fn detect_spa_robots_disallowed_returns_error_and_zero_page_hits() {
+        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1"); // wiremock binds 127.0.0.1
+        let (handler, _tmp) = test_handler_with_robots().await;
+        let server = MockServer::start().await;
+        mount_robots_site(&server, "private/app").await;
+
+        let res = handler
+            .detect_spa(Parameters(DetectSpaParams {
+                url: format!("{}/private/app", server.uri()),
+            }))
+            .await
+            .expect("handler returns Ok with an honest error");
+
+        assert_robots_error(&res);
+        assert_eq!(
+            page_hits(&server).await,
+            0,
+            "the robots gate must short-circuit before the page fetch"
         );
     }
 

@@ -76,6 +76,10 @@ impl McpHandler {
     ///
     /// Fetches a URL, cleans its HTML content, and returns semantically
     /// chunked content with embeddings. Requires the `ai` feature.
+    ///
+    /// Respects SSRF protection and the site's robots.txt: a disallowed URL
+    /// is rejected with a `robots.txt` error before any fetch — even with the
+    /// `ai` feature off (#749, uniform with #697).
     #[tool(
         description = "Fetch a URL, semantically clean its HTML content using AI embeddings, and return chunked content with vectors. Requires --features ai."
     )]
@@ -90,12 +94,22 @@ impl McpHandler {
 
         // REQ-03: reject malformed URLs first (invalid-params), regardless of
         // cleaner presence — no fetch, no cleaning.
-        let _url = url::Url::parse(&params.url).map_err(|e| {
+        let url = url::Url::parse(&params.url).map_err(|e| {
             McpError::invalid_params(
                 format!("URL inválida: {e}"),
                 Some(serde_json::Value::String("url".to_string())),
             )
         })?;
+
+        // #749 fold-in: this tool fetched the caller URL without the SSRF
+        // guard every other URL-fetching tool has.
+        crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
+        // #749: robots.txt gate BEFORE the cleaner-presence check — site
+        // policy is independent of local feature state, so a denial is
+        // reported even with the `ai` feature off.
+        if let Some(err) = self.state.robots_denied_for(&url).await {
+            return Ok(honest_error(err.to_string()));
+        }
 
         // REQ-02: absent cleaner (ai feature off) -> honest Spanish error.
         let Some(cleaner) = self.state.container.cleaner() else {
@@ -248,6 +262,9 @@ mod tests {
     use webfang_core::di::Container;
     use webfang_core::domain::CrawlerConfig;
     use webfang_core::infrastructure::config::ScraperConfig;
+    use webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// REQ-02/04 contract: `honest_error` produces a `CallToolResult` that
     /// serializes with `isError:true` and carries the exact Spanish text —
@@ -282,7 +299,32 @@ mod tests {
     /// a real DI container. The `ai` feature is off in unit tests, so the
     /// cleaner and embedding ports are `None` — exactly the branch these tests
     /// exercise (honest feature-gated errors, no ONNX model needed).
+    ///
+    /// The robots fetcher is dropped for determinism (#705/#749): with
+    /// `None`, the robots gate is no-op and never touches the network against
+    /// the real hosts these validation tests use; tests that exercise
+    /// enforcement wire a fetcher explicitly (see the #749 robots tests).
     async fn test_handler() -> (McpHandler, TempDir) {
+        let (mut state, tmp) = test_state().await;
+        state.robots_fetcher = None;
+        (McpHandler::new(state), tmp)
+    }
+
+    /// Build a state with a real robots fetcher for #749 enforcement tests.
+    /// Offline-friendly: construction never touches the network.
+    async fn test_handler_with_robots() -> (McpHandler, TempDir) {
+        let (state, tmp) = test_state().await;
+        let state = state.with_robots_fetcher(std::sync::Arc::new(
+            RobotsFetcher::with_default_profile(5).expect("fetcher construction is offline"),
+        ));
+        (McpHandler::new(state), tmp)
+    }
+
+    /// Shared state construction for `test_handler` /
+    /// `test_handler_with_robots` (kept in one place so both states build on
+    /// the identical baseline). The `TempDir` is returned so the caller keeps
+    /// the configured `output_dir` alive.
+    async fn test_state() -> (McpState, TempDir) {
         let tmp = TempDir::new().expect("create temp dir");
         let crawler_config =
             CrawlerConfig::new(url::Url::parse("https://example.com").expect("valid url"));
@@ -293,7 +335,7 @@ mod tests {
         let container = Container::new(crawler_config, scraper_config)
             .await
             .expect("create container");
-        (McpHandler::new(McpState::new(container)), tmp)
+        (McpState::new(container), tmp)
     }
 
     fn result_text(result: &CallToolResult) -> String {
@@ -330,6 +372,10 @@ mod tests {
     /// honest Spanish `isError:true` envelope — never a false success.
     #[tokio::test]
     async fn semantic_cleaner_no_cleaner_is_honest_feature_error() {
+        // #749 made SSRF/robots gates run before the cleaner check; keep this
+        // feature-gated test hermetic (offline) by disabling the SSRF probe —
+        // the robots gate is already a no-op in `test_handler`.
+        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .semantic_cleaner(Parameters(ScrapeUrlParams {
@@ -348,6 +394,52 @@ mod tests {
             text.contains("--features ai") && text.contains("limpieza semántica"),
             "Spanish feature-gated message expected, got: {text}"
         );
+    }
+
+    /// #749: a robots-disallowed URL is rejected with an honest `robots.txt`
+    /// error BEFORE the page fetch — even without a cleaner, since the robots
+    /// gate precedes the cleaner-presence check (site policy is independent
+    /// of local feature state).
+    #[cfg_attr(miri, ignore)] // real network stack via wreq — unsupported by Miri
+    #[tokio::test]
+    async fn semantic_cleaner_robots_disallowed_errors_before_fetch_and_cleaner_check() {
+        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1"); // wiremock binds 127.0.0.1
+        let (handler, _tmp) = test_handler_with_robots().await;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/robots.txt"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("User-agent: *\nDisallow: /private\n"),
+            )
+            .mount(&server)
+            .await;
+
+        let res = handler
+            .semantic_cleaner(Parameters(ScrapeUrlParams {
+                url: format!("{}/private/page", server.uri()),
+            }))
+            .await
+            .expect("semantic_cleaner returns Ok with honest error");
+
+        let json = serde_json::to_value(&res).expect("CallToolResult serializes");
+        assert_eq!(
+            json.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "robots denial must set isError:true, got: {json}"
+        );
+        let text = result_text(&res);
+        assert!(
+            text.contains("robots.txt"),
+            "error text must report the robots.txt denial, got: {text}"
+        );
+        let page_hits = server
+            .received_requests()
+            .await
+            .expect("request recording is enabled")
+            .iter()
+            .filter(|r| r.url.path() != "/robots.txt")
+            .count();
+        assert_eq!(page_hits, 0, "the robots gate must block the page fetch");
     }
 
     /// `search_obsidian` with no embedding port injected maps to an honest
