@@ -2,6 +2,14 @@
 //!
 //! Multi-format compression detection and decompression for sitemap processing.
 //! Supports gzip, deflate, brotli, and zstd formats with automatic detection.
+//!
+//! Detection policy (#757): **magic bytes are the sovereign truth** for
+//! snifable formats (gzip, zstd). The URL extension is only a fallback hint
+//! for formats that cannot be sniffed (brotli). A `.gz`/`.gzip`/`.zst` URL
+//! whose payload has no magic bytes passes through untouched: either the HTTP
+//! transport (`wreq`, built with `.gzip(true)`) already decoded the
+//! `Content-Encoding` — and strips that header afterwards — or the extension
+//! was lying. Decompressing anyway would double-decode valid XML.
 
 use crate::domain::CompressionType;
 use async_compression::tokio::bufread::{BrotliDecoder, DeflateDecoder, GzipDecoder, ZstdDecoder};
@@ -44,30 +52,28 @@ impl CompressionHandler {
     }
 
     /// Detect compression format from content and URL
+    ///
+    /// Magic bytes are the sovereign truth for snifable formats (gzip, zstd):
+    /// if the payload carries them, the matching decoder is returned. The URL
+    /// extension is only a fallback hint for formats that cannot be sniffed
+    /// (brotli).
+    ///
+    /// A `.gz`/`.gzip`/`.zst` URL whose payload has no magic bytes produces an
+    /// **empty** result (pass-through): either the HTTP transport (`wreq`)
+    /// already decoded the `Content-Encoding` — it strips that header after
+    /// decoding — or the extension was lying. Decompressing anyway would
+    /// double-decode valid XML (#757).
     pub fn detect_compression(content: &[u8], url: &str) -> Vec<CompressionType> {
         let mut formats = Vec::new();
 
-        // Check URL extensions
-        if url.ends_with(".gz") || url.ends_with(".gzip") {
-            formats.push(CompressionType::Gzip);
-        }
-        if url.ends_with(".br") {
-            formats.push(CompressionType::Brotli);
-        }
-        if url.ends_with(".zst") {
-            formats.push(CompressionType::Zstd);
-        }
-
-        // Check content signatures
+        // 1. Magic bytes: sovereign truth for snifable formats.
         if content.len() >= 2 {
             // Gzip magic: 0x1f 0x8b
-            if content[0] == 0x1f && content[1] == 0x8b && !formats.contains(&CompressionType::Gzip)
-            {
+            if content[0] == 0x1f && content[1] == 0x8b {
                 formats.push(CompressionType::Gzip);
             }
             // Zstd magic: 0x28 0xb5 0x2f 0xfd or 0x37 0xa4 0x30 0xec
             if content.len() >= 4
-                && !formats.contains(&CompressionType::Zstd)
                 && ((content[0] == 0x28
                     && content[1] == 0xb5
                     && content[2] == 0x2f
@@ -79,6 +85,28 @@ impl CompressionHandler {
             {
                 formats.push(CompressionType::Zstd);
             }
+        }
+
+        // 2. Extension as hint ONLY when magic bytes did not decide.
+        let url_lower = url.to_lowercase();
+        if formats.is_empty() && url_lower.ends_with(".br") {
+            formats.push(CompressionType::Brotli);
+        } else if !formats.is_empty() {
+            tracing::debug!(
+                url = %url,
+                detected = ?formats,
+                "compression detected by magic bytes"
+            );
+        } else if url_lower.ends_with(".gz")
+            || url_lower.ends_with(".gzip")
+            || url_lower.ends_with(".zst")
+        {
+            // #757 guard: transport already decoded or lying extension —
+            // pass through untouched.
+            tracing::debug!(
+                url = %url,
+                "compression hint ignored: no magic bytes (body already decompressed by transport)"
+            );
         }
 
         formats
@@ -208,11 +236,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_detect_gzip_by_extension() {
+    fn test_detect_gzip_by_extension_is_now_hint() {
+        // #757: a `.gz` URL whose payload lacks gzip magic bytes must NOT be
+        // decompressed — transport already decoded it (or the URL lies).
         let url = "https://example.com/sitemap.xml.gz";
-        let content = b"fake gzip content";
-        let formats = CompressionHandler::detect_compression(content, url);
-        assert!(formats.contains(&CompressionType::Gzip));
+
+        // CASE C: plain content behind a .gz URL -> pass-through (empty).
+        let plain = b"<?xml version=\"1.0\"?><urlset/>";
+        let formats = CompressionHandler::detect_compression(plain, url);
+        assert!(
+            formats.is_empty(),
+            "plain content with .gz URL must pass through, got: {formats:?}"
+        );
+
+        // CASE B: real gzip magic behind a .gz URL -> still detected via magic
+        // bytes, regardless of the extension hint.
+        let gzip_content = [0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let formats = CompressionHandler::detect_compression(&gzip_content, url);
+        assert_eq!(formats, vec![CompressionType::Gzip]);
     }
 
     #[test]
@@ -221,6 +262,43 @@ mod tests {
         let content = &[0x1f, 0x8b, b'f', b'a', b'k', b'e'];
         let formats = CompressionHandler::detect_compression(content, url);
         assert!(formats.contains(&CompressionType::Gzip));
+    }
+
+    #[test]
+    fn test_detect_zstd_by_magic() {
+        // Zstd magic wins even for a misleading non-compressed URL.
+        let url = "https://example.com/data.bin";
+        let content = [0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x00];
+        let formats = CompressionHandler::detect_compression(&content, url);
+        assert_eq!(formats, vec![CompressionType::Zstd]);
+    }
+
+    #[test]
+    fn test_detect_zstd_extension_without_magic_passes_through() {
+        // #757 guard applies to .zst too: no magic bytes -> no decompression.
+        let url = "https://example.com/sitemap.xml.zst";
+        let plain = b"<urlset/>";
+        let formats = CompressionHandler::detect_compression(plain, url);
+        assert!(formats.is_empty());
+    }
+
+    #[test]
+    fn test_detect_brotli_extension_hint_when_not_snifable() {
+        // Brotli has no magic bytes; the .br extension remains the hint and
+        // stays fail-closed (decoding errors propagate).
+        let url = "https://example.com/sitemap.xml.br";
+        let content = b"brotli has no magic prefix";
+        let formats = CompressionHandler::detect_compression(content, url);
+        assert_eq!(formats, vec![CompressionType::Brotli]);
+    }
+
+    #[test]
+    fn test_detect_compression_uppercase_extension() {
+        // Extension matching is case-insensitive.
+        let url = "https://example.com/sitemap.xml.BR";
+        let content = b"payload";
+        let formats = CompressionHandler::detect_compression(content, url);
+        assert_eq!(formats, vec![CompressionType::Brotli]);
     }
 
     #[tokio::test]
