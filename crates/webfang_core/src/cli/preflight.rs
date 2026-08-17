@@ -974,24 +974,28 @@ mod tests {
     /// feature, before any network request (#761).
     #[test]
     fn clean_ai_without_feature_errors() {
-        let mut opts = CrawlOptions::default();
-        opts.ai = true;
+        let opts = CrawlOptions {
+            ai: true,
+            ..CrawlOptions::default()
+        };
         let err = check_clean_ai_feature_with(false, &opts)
-.expect_err("non-AI build must reject --clean-ai in preflight");
+            .expect_err("non-AI build must reject --clean-ai in preflight");
         match err {
-CliExit::ConfigError(msg) => assert!(
-msg.contains("--clean-ai") && msg.contains("ai"),
-"config error must name the flag and the feature, got: {msg}"
-),
-other => panic!("expected ConfigError, got: {other:?}"),
+            CliExit::ConfigError(msg) => assert!(
+                msg.contains("--clean-ai") && msg.contains("ai"),
+                "config error must name the flag and the feature, got: {msg}"
+            ),
+            other => panic!("expected ConfigError, got: {other:?}"),
         }
     }
 
     /// `--clean-ai` with the `ai` feature compiled in: passes.
     #[test]
     fn clean_ai_with_feature_ok() {
-        let mut opts = CrawlOptions::default();
-        opts.ai = true;
+        let opts = CrawlOptions {
+            ai: true,
+            ..CrawlOptions::default()
+        };
         assert!(check_clean_ai_feature_with(true, &opts).is_ok());
     }
 

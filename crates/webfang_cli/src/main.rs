@@ -357,7 +357,7 @@ async fn __main() -> CliExit {
     if let Err(exit) = preflight::check_elastic_sink(&opts) {
         return exit;
     }
-    
+
     // 6e. AI feature preflight (#761): --clean-ai on a non-AI build must
     // fail before any network request, not after a full scrape.
     if let Err(exit) = preflight::check_clean_ai_feature(&opts) {
@@ -524,10 +524,10 @@ async fn resolve_url(args: &mut Args) -> Result<(), CliExit> {
     // CI environment always requires --url
     if is_ci() {
         return Err(CliExit::UsageError(
-"--url is required for scraping (CI mode)".into(),
+            "--url is required for scraping (CI mode)".into(),
         ));
     }
-    
+
     // Try interactive prompt only if stdin is a TTY
     if stdin_is_tty() {
         prompt_for_url_interactive(args)
@@ -556,7 +556,7 @@ fn prompt_for_url_interactive(args: &mut Args) -> Result<(), CliExit> {
 #[cfg(not(feature = "ui"))]
 fn prompt_for_url_interactive(_args: &mut Args) -> Result<(), CliExit> {
     Err(CliExit::UsageError(
-"--url is required for scraping (interactive prompt requires --features ui)".into(),
+        "--url is required for scraping (interactive prompt requires --features ui)".into(),
     ))
 }
 

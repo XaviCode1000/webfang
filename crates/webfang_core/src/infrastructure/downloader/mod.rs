@@ -253,7 +253,9 @@ impl From<wreq::Error> for DownloadError {
 /// message never ends in a dangling colon.
 fn strip_display_marker(payload: &str, marker: &str) -> String {
     let stripped = if payload.to_lowercase().starts_with(marker) {
-        payload[marker.len()..].trim_start_matches([':', ' ']).to_string()
+        payload[marker.len()..]
+            .trim_start_matches([':', ' '])
+            .to_string()
     } else {
         payload.to_string()
     };
@@ -375,7 +377,7 @@ mod tests {
         let err = DownloadError::Timeout(30);
         assert!(err.to_string().contains("30"));
     }
-    
+
     /// #761: the erased wreq source text is often the bare marker
     /// (`"dns error"`), which used to render as `"DNS error: dns error"`.
     /// `strip_display_marker` removes the redundant prefix; a bare marker
@@ -384,26 +386,26 @@ mod tests {
     fn test_strip_display_marker_dedupes_redundant_prefix() {
         // Bare marker → substituted description, no dangling colon.
         assert_eq!(
-super::strip_display_marker("dns error", "dns error"),
-"name resolution failed"
+            super::strip_display_marker("dns error", "dns error"),
+            "name resolution failed"
         );
         // Marker + detail → detail survives.
         assert_eq!(
-super::strip_display_marker("dns error: NXDOMAIN", "dns error"),
-"NXDOMAIN"
+            super::strip_display_marker("dns error: NXDOMAIN", "dns error"),
+            "NXDOMAIN"
         );
         // No marker prefix → payload untouched.
         assert_eq!(
-super::strip_display_marker("failed to lookup address", "dns error"),
-"failed to lookup address"
+            super::strip_display_marker("failed to lookup address", "dns error"),
+            "failed to lookup address"
         );
         // TLS variant shares the same behavior.
         assert_eq!(
-super::strip_display_marker("tls error", "tls error"),
-"handshake failed"
+            super::strip_display_marker("tls error", "tls error"),
+            "handshake failed"
         );
     }
-    
+
     #[test]
     fn test_download_error_classify_variants() {
         use crate::error::ErrorClass;

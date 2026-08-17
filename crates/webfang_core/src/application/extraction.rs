@@ -440,14 +440,17 @@ mod tests {
     #[test]
     fn test_invalid_selector_message_is_clean() {
         let msg = super::invalid_selector_message("[[[invalid");
-        assert!(msg.contains("'[[[invalid'"), "must name the offending selector");
         assert!(
-        !msg.contains("Please report this to the developer"),
-        "must not leak crate jargon: {msg}"
+            msg.contains("'[[[invalid'"),
+            "must name the offending selector"
         );
         assert!(
-        !msg.contains("NoQualifiedNameInAttributeSelector"),
-        "must not leak variant debug names: {msg}"
+            !msg.contains("Please report this to the developer"),
+            "must not leak crate jargon: {msg}"
+        );
+        assert!(
+            !msg.contains("NoQualifiedNameInAttributeSelector"),
+            "must not leak variant debug names: {msg}"
         );
     }
 

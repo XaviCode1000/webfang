@@ -290,9 +290,11 @@ async fn test_clean_ai_without_feature_fails_before_fetch() {
     // If the CLI fetches anything, this mock would record it — the assertion
     // below proves the preflight fired before any request left the process.
     Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            "<html><body><p>content that must never be fetched</p></body></html>",
-        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(
+                "<html><body><p>content that must never be fetched</p></body></html>",
+            ),
+        )
         .mount(&mock_server)
         .await;
 
