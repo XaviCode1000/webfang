@@ -36,8 +36,9 @@ pub fn detect_vault(
 /// Detect an Obsidian vault with an injectable scan root for hermetic testing.
 ///
 /// Behaves identically to [`detect_vault`] except that priority-5 auto-scan
-/// uses `root` instead of the process cwd / home directory. Pass `None` for
-/// `root` to get the default production behavior.
+/// is rooted at `root` instead of the process cwd / home directory. The
+/// priority-4 Obsidian registry is still resolved from the real per-platform
+/// location; use [`detect_vault_hermetic`] to inject a test registry as well.
 ///
 /// # Arguments
 /// - `root` — Optional root directory for the auto-scan (replaces cwd/home)
@@ -46,6 +47,33 @@ pub fn detect_vault(
 /// - `config_path` — Optional vault path from config file
 pub fn detect_vault_with_root(
     root: Option<&Path>,
+    cli_path: Option<&Path>,
+    env_var: Option<&str>,
+    config_path: Option<&str>,
+) -> Option<PathBuf> {
+    detect_vault_hermetic(root, None, cli_path, env_var, config_path)
+}
+
+/// Detect an Obsidian vault with every filesystem dependency injectable.
+///
+/// Hermetic variant of [`detect_vault`] for tests: both the priority-4
+/// Obsidian registry file and the priority-5 auto-scan root are injectable,
+/// so detection never reads the host machine's real registry
+/// (`obsidian.json`).
+///
+/// # Arguments
+/// - `root` — Optional root directory for the priority-5 auto-scan
+///   (replaces cwd/home)
+/// - `registry_path` — Optional path to the priority-4 registry file
+///   (replaces the per-platform location; a missing file behaves exactly
+///   like a host without Obsidian installed)
+/// - `cli_path` — Optional explicit vault path from CLI
+/// - `env_var` — Optional environment variable name to check (default: "OBSIDIAN_VAULT")
+/// - `config_path` — Optional vault path from config file
+#[must_use]
+pub fn detect_vault_hermetic(
+    root: Option<&Path>,
+    registry_path: Option<&Path>,
     cli_path: Option<&Path>,
     env_var: Option<&str>,
     config_path: Option<&str>,
@@ -66,8 +94,8 @@ pub fn detect_vault_with_root(
         return Some(path);
     }
 
-    // Priority 4: Official Obsidian registry
-    if let Some(path) = detect_from_registry() {
+    // Priority 4: Official Obsidian registry (injected or platform path)
+    if let Some(path) = detect_from_registry(registry_path) {
         return Some(path);
     }
 
@@ -117,8 +145,11 @@ fn detect_from_config(config_path: Option<&str>) -> Option<PathBuf> {
 }
 
 /// Priority 4: detect from the official Obsidian registry.
-fn detect_from_registry() -> Option<PathBuf> {
-    let path = get_vault_from_registry()?;
+///
+/// Reads the registry at `registry_path` when injected (`Some`), otherwise
+/// falls back to the per-platform location resolved by [`get_registry_path`].
+fn detect_from_registry(registry_path: Option<&Path>) -> Option<PathBuf> {
+    let path = get_vault_from_registry(registry_path)?;
     tracing::debug!("Vault detected from Obsidian registry: {}", path.display());
     Some(path)
 }
@@ -218,8 +249,15 @@ fn get_registry_path() -> Option<PathBuf> {
 ///
 /// The registry contains a map of vault IDs to vault metadata. Returns the vault
 /// with the most recent `ts` timestamp (last opened).
-fn get_vault_from_registry() -> Option<PathBuf> {
-    let registry_path = get_registry_path()?;
+///
+/// Reads `registry_path` verbatim when injected (`Some`) — used for hermetic
+/// tests — or falls back to the per-platform location from
+/// [`get_registry_path`] when `None`.
+fn get_vault_from_registry(registry_path: Option<&Path>) -> Option<PathBuf> {
+    let registry_path = match registry_path {
+        Some(path) => path.to_path_buf(),
+        None => get_registry_path()?,
+    };
 
     if !registry_path.is_file() {
         return missing_registry(&registry_path);
@@ -308,6 +346,34 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// Create a valid Obsidian vault (dir with a `.obsidian/` marker) under `root`.
+    fn make_vault(root: &Path, name: &str) -> PathBuf {
+        let vault = root.join(name);
+        fs::create_dir_all(vault.join(".obsidian")).unwrap();
+        vault
+    }
+
+    /// Deterministic "missing registry" fixture: a path inside `tmp` that does not exist.
+    fn missing_registry_path(tmp: &Path) -> PathBuf {
+        tmp.join("nonexistent_obsidian.json")
+    }
+
+    /// Write a registry JSON file `{"vaults": {id: {"ts": .., "path": ".."}}}`.
+    fn write_registry(registry_path: &Path, entries: &[(&str, i64, &Path)]) {
+        let mut vaults = serde_json::Map::new();
+        for (id, ts, path) in entries {
+            let mut data = serde_json::Map::new();
+            data.insert("ts".to_string(), serde_json::json!(*ts));
+            data.insert(
+                "path".to_string(),
+                serde_json::json!(path.to_str().unwrap()),
+            );
+            vaults.insert((*id).to_string(), serde_json::Value::Object(data));
+        }
+        let root_obj = serde_json::json!({ "vaults": serde_json::Value::Object(vaults) });
+        fs::write(registry_path, root_obj.to_string()).unwrap();
+    }
+
     #[test]
     fn test_is_valid_vault_true() {
         let tmp = tempfile::tempdir().unwrap();
@@ -354,27 +420,36 @@ mod tests {
     #[test]
     fn test_detect_vault_not_found() {
         let tmp = tempfile::tempdir().unwrap();
+        let registry = missing_registry_path(tmp.path());
         let _guard = webfang_test_utils::EnvGuard::clean(&["OBSIDIAN_VAULT"]);
-        let result = detect_vault_with_root(Some(tmp.path()), None, None, None);
+        let result = detect_vault_hermetic(Some(tmp.path()), Some(&registry), None, None, None);
         assert!(result.is_none());
     }
 
     #[test]
     fn test_detect_vault_invalid_path() {
         let tmp = tempfile::tempdir().unwrap();
+        let registry = missing_registry_path(tmp.path());
         let non_existent = PathBuf::from("/nonexistent/path/to/vault");
         let _guard = webfang_test_utils::EnvGuard::clean(&["OBSIDIAN_VAULT"]);
-        let result = detect_vault_with_root(Some(tmp.path()), Some(&non_existent), None, None);
+        let result = detect_vault_hermetic(
+            Some(tmp.path()),
+            Some(&registry),
+            Some(&non_existent),
+            None,
+            None,
+        );
         assert!(result.is_none());
     }
 
     #[test]
     fn test_detect_vault_with_fixture() {
         let tmp = tempfile::tempdir().unwrap();
+        let registry = missing_registry_path(tmp.path());
         fs::create_dir_all(tmp.path().join(".obsidian")).unwrap();
 
         let _guard = webfang_test_utils::EnvGuard::clean(&["OBSIDIAN_VAULT"]);
-        let result = detect_vault_with_root(Some(tmp.path()), None, None, None);
+        let result = detect_vault_hermetic(Some(tmp.path()), Some(&registry), None, None, None);
         assert!(result.is_some());
         assert_eq!(result.unwrap(), tmp.path());
     }
@@ -386,6 +461,71 @@ mod tests {
 
         let result = detect_vault(None, None, Some(tmp.path().to_str().unwrap()));
         assert!(result.is_some());
+    }
+
+    // ── Priority-4 (Obsidian registry) — hermetic injection, #726 ────────
+
+    #[test]
+    fn test_registry_resolves_vault() {
+        // Root without a `.obsidian` marker: the only way the vault can be
+        // found is through the injected registry (priority 4).
+        let tmp = tempfile::tempdir().unwrap();
+        let vault_root = tempfile::tempdir().unwrap();
+        let vault = make_vault(vault_root.path(), "vault");
+
+        let registry = tmp.path().join("obsidian.json");
+        write_registry(&registry, &[("a1b2c3d4e5f6a7b8", 100, &vault)]);
+
+        let _guard = webfang_test_utils::EnvGuard::clean(&["OBSIDIAN_VAULT"]);
+        let result = detect_vault_hermetic(Some(tmp.path()), Some(&registry), None, None, None);
+        assert_eq!(result.as_deref(), Some(vault.as_path()));
+    }
+
+    #[test]
+    fn test_registry_most_recent_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault_root = tempfile::tempdir().unwrap();
+        let vault_old = make_vault(vault_root.path(), "old");
+        let vault_new = make_vault(vault_root.path(), "new");
+
+        let registry = tmp.path().join("obsidian.json");
+        write_registry(
+            &registry,
+            &[
+                ("aaaaaaaaaaaaaaaa", 100, &vault_old),
+                ("bbbbbbbbbbbbbbbb", 200, &vault_new),
+            ],
+        );
+
+        let _guard = webfang_test_utils::EnvGuard::clean(&["OBSIDIAN_VAULT"]);
+        let result = detect_vault_hermetic(Some(tmp.path()), Some(&registry), None, None, None);
+        assert_eq!(result.as_deref(), Some(vault_new.as_path()));
+    }
+
+    #[test]
+    fn test_registry_missing_falls_through() {
+        // Missing registry file: priority 4 returns None (trace log) and the
+        // chain falls through to the injected priority-5 auto-scan, which
+        // finds nothing in an empty root.
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = missing_registry_path(tmp.path());
+
+        let _guard = webfang_test_utils::EnvGuard::clean(&["OBSIDIAN_VAULT"]);
+        let result = detect_vault_hermetic(Some(tmp.path()), Some(&registry), None, None, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_registry_malformed_json_none() {
+        // Malformed registry JSON: parse fails, priority 4 returns None
+        // without panicking; auto-scan finds nothing in an empty root.
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = tmp.path().join("obsidian.json");
+        fs::write(&registry, "{ not valid json !!").unwrap();
+
+        let _guard = webfang_test_utils::EnvGuard::clean(&["OBSIDIAN_VAULT"]);
+        let result = detect_vault_hermetic(Some(tmp.path()), Some(&registry), None, None, None);
+        assert!(result.is_none());
     }
 
     #[test]
