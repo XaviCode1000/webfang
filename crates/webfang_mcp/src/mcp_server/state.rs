@@ -117,24 +117,36 @@ pub struct CategorySemaphores {
 impl McpState {
     /// Create a new McpState with the given container and default limits.
     pub fn new(container: Container) -> Self {
-        Self::from_parts(container, CategoryLimits::default())
+        Self::from_parts(Arc::new(container), CategoryLimits::default())
     }
 
     /// Create with custom category limits.
     pub fn with_limits(container: Container, limits: CategoryLimits) -> Self {
-        Self::from_parts(container, limits)
+        Self::from_parts(Arc::new(container), limits)
     }
 
-    /// Shared construction for [`new`](Self::new) / [`with_limits`](Self::with_limits):
-    /// builds the semaphores, metrics accumulator, cancellation token, and the
-    /// non-fatal robots.txt fetcher ([`build_robots_fetcher`]) from the given
-    /// container and limits.
-    fn from_parts(container: Container, limits: CategoryLimits) -> Self {
+    /// Share a pre-`Arc`'d container (#759).
+    ///
+    /// Unlike [`new`](Self::new)/[`with_limits`](Self::with_limits), which move
+    /// an owned `Container` into a private `Arc`, this constructor adopts the
+    /// given `Arc<Container>` as-is. The MCP binaries use it so a background
+    /// task (lazy AI port wiring) and the server observe the SAME container —
+    /// ports injected after construction become visible through the shared
+    /// [`Container`] (lazy AI port wiring, #759).
+    pub fn from_container(container: Arc<Container>) -> Self {
+        Self::from_parts(container, CategoryLimits::default())
+    }
+
+    /// Shared construction for [`new`](Self::new) / [`with_limits`](Self::with_limits)
+    /// / [`from_container`](Self::from_container): builds the semaphores,
+    /// metrics accumulator, cancellation token, and the non-fatal robots.txt
+    /// fetcher ([`build_robots_fetcher`]) from the given container and limits.
+    fn from_parts(container: Arc<Container>, limits: CategoryLimits) -> Self {
         let limits = Arc::new(limits);
         let semaphores = Arc::new(CategorySemaphores::from_limits(&limits));
         let robots_fetcher = build_robots_fetcher(&container);
         Self {
-            container: Arc::new(container),
+            container,
             limits,
             semaphores,
             downloader: None,

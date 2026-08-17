@@ -4,9 +4,11 @@
 //! the server as a subprocess (OpenCode, Claude Desktop, Cline, etc.). This
 //! replaces the old `examples/mcp_server_stdio.rs` example.
 
+use std::sync::Arc;
+
 use clap::Parser;
 use rmcp::service::ServiceExt;
-use webfang_mcp::mcp_server::{build_container_with_ai, McpHandler, McpState};
+use webfang_mcp::mcp_server::{build_container, spawn_ai_wiring, McpHandler, McpState};
 
 /// Webfang MCP Server — Stdio transport.
 #[derive(Parser, Debug)]
@@ -43,10 +45,17 @@ async fn main() {
         tracing::warn!("--enable-ai requested but the `ai` feature is not compiled in; ignoring");
     }
 
-    // Build container with optional AI wiring (shared with mcp_server_http.rs)
-    let container = build_container_with_ai(args.enable_ai).await;
+    // Build the container FAST — no model resolution happens here (#759).
+    // The AI ports are wired lazily in a background task after the server
+    // starts serving, so the MCP `initialize` handshake is never blocked
+    // behind the hf_hub model resolution (~390 MB on a cold cache).
+    let container = Arc::new(build_container().await);
 
-    let state = McpState::new(container).with_export_roots(args.export_roots);
+    if args.enable_ai {
+        spawn_ai_wiring(Arc::clone(&container));
+    }
+
+    let state = McpState::from_container(container).with_export_roots(args.export_roots);
 
     let handler = McpHandler::new(state);
 

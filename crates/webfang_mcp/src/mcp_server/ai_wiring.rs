@@ -22,70 +22,82 @@
 
 use std::sync::Arc;
 
-use webfang_core::application::container::Container;
+use webfang_core::application::container::{Container, VaultAiPorts};
 use webfang_core::domain::embedding_port::EmbeddingPort;
 
 /// Wire the vault-search AI ports into `container`.
 ///
-/// Injects, in order: the ONNX [`EmbeddingAdapter`](webfang_ai::EmbeddingAdapter)
-/// — assembled from the semantic cleaner's shared inference pool + tokenizer, so
-/// the ONNX model is loaded exactly once — a
-/// [`MarkdownChunker`](webfang_ai::MarkdownChunker), and a SQLite-backed
+/// Injects, in order, through [`inject_vault_ports`](Container::inject_vault_ports)
+/// (interior mutability through `&self`, #759): the ONNX
+/// [`EmbeddingAdapter`](webfang_ai::EmbeddingAdapter) — assembled from the
+/// semantic cleaner's shared inference pool + tokenizer, so the ONNX model is
+/// loaded exactly once — a [`MarkdownChunker`](webfang_ai::MarkdownChunker),
+/// and a SQLite-backed
 /// [`NoteRepository`](webfang_core::domain::note_repository::NoteRepository).
-/// Embedding + chunker assembly is infallible (the components
-/// are already valid); only the note repository can fail, in which case the
-/// embedding port and chunker remain wired and vault search degrades to an honest
-/// "not available" error at call time.
 ///
-/// # Errors
-///
-/// Never fails — the note-repository construction error is logged and degraded
-/// around, so the caller always receives a usable [`Container`].
-#[must_use]
+/// The `&self` injection is what makes the lazy MCP AI wiring possible (#759):
+/// the container is shared as `Arc<Container>` between the already-serving MCP
+/// server and a background warmup task, so the injection happens through the
+/// reference without moving or rebuilding the container. Embedding + chunker
+/// assembly is infallible (the components are already valid); only the note
+/// repository can fail, in which case the embedding port and chunker remain
+/// wired and vault search degrades to an honest "not available" error at call
+/// time.
 pub async fn wire_ai_ports(
-    mut container: Container,
+    container: &Container,
     pool: Arc<webfang_ai::InferencePool>,
     tokenizer: Arc<webfang_ai::MiniLmTokenizer>,
-) -> Container {
+) {
     // 1. Embedding port (ONNX adapter) — shares the cleaner's pool + tokenizer,
     //    so this is infallible (no model resolution happens here).
     let adapter = webfang_ai::EmbeddingAdapter::new(pool, tokenizer);
     let dim = adapter.embedding_dim();
-    container = container.with_embedding_port(Arc::new(adapter));
 
-    // 2. Text chunker (Markdown segmentation).
-    container = container.with_text_chunker(Arc::new(webfang_ai::MarkdownChunker::new()));
-
-    // 3. Note repository (SQLite persistence) — only when the consumer
+    // 2. Note repository (SQLite persistence) — only when the consumer
     //    explicitly enables the `persistence` feature. Without it, vault
     //    search degrades to an honest "not available" error at call time.
-    #[cfg(feature = "persistence")]
-    {
-        match build_note_repository().await {
-            Ok(repo) => {
-                container = container.with_note_repository(repo);
-                tracing::info!(
-                    dim,
-                    "vault-search AI ports wired (embedding + chunker + notes)"
-                );
-            },
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "note repository unavailable, vault search persistence disabled"
-                );
-            },
+    let note_repository: Option<Arc<dyn webfang_core::domain::note_repository::NoteRepository>> = {
+        #[cfg(feature = "persistence")]
+        {
+            match build_note_repository().await {
+                Ok(repo) => Some(repo),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "note repository unavailable, vault search persistence disabled"
+                    );
+                    None
+                },
+            }
         }
-    }
-    #[cfg(not(feature = "persistence"))]
-    {
+        #[cfg(not(feature = "persistence"))]
+        {
+            None
+        }
+    };
+
+    // 3. Text chunker (Markdown segmentation) + everything above, injected in
+    //    one shot through the shared container.
+    let ports = VaultAiPorts {
+        embedding_port: Some(Arc::new(adapter)),
+        note_repository,
+        text_chunker: Some(Arc::new(webfang_ai::MarkdownChunker::new())),
+        ..Default::default()
+    };
+    container.inject_vault_ports(ports);
+
+    // 4. Summary log — reflect what actually landed in the container.
+    if container.note_repository().is_some() {
+        tracing::info!(
+            dim,
+            "vault-search AI ports wired (embedding + chunker + notes)"
+        );
+    } else {
         tracing::info!(
             dim,
             "vault-search AI ports wired (embedding + chunker); enable `persistence` for note storage"
         );
     }
-
-    container
 }
 
 /// Build the SQLite-backed note repository on the elastic pipeline's database.
