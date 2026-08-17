@@ -231,9 +231,9 @@ async fn selector_h3_extracts_only_h3() {
             "<html><body>\
                  <h1>Main Title</h1>\
                  <p>Paragraph to exclude.</p>\
-                 <h3>Section One</h3>\
+                 <h3>Section One Heading With Plenty of Lengthy Text</h3>\
                  <p>Details for section one.</p>\
-                 <h3>Section Two</h3>\
+                 <h3>Section Two Heading With Plenty of Lengthy Text</h3>\
                  <p>Details for section two.</p>\
                  </body></html>",
         ))
@@ -280,7 +280,7 @@ async fn selector_table_extracts_table() {
             "<html><body>\
                  <h1>Data Page</h1>\
                  <p>Intro text.</p>\
-                 <table><tr><td>Row1Col1</td><td>Row1Col2</td></tr></table>\
+                 <table><tr><td>Row One Column One Substantive Cell Text</td><td>Row One Column Two Substantive Text</td></tr></table>\
                  <p>More text.</p>\
                  </body></html>",
         ))

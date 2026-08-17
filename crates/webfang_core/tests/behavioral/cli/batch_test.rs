@@ -135,7 +135,7 @@ async fn batch_stdin_resume_creates_state_file() {
     Mock::given(method("GET"))
         .and(path("/"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
-            "<html><body><article><h1>Resume State</h1><p>x</p></article></body></html>",
+            "<html><body><article><h1>Resume State</h1><p>This body carries enough substantive text to pass the minimum-content guard.</p></article></body></html>",
         ))
         .mount(&server)
         .await;

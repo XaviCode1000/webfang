@@ -28,7 +28,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 // "captcha", etc. that would trip WafInspector on the 200 body).
 // ---------------------------------------------------------------------------
 
-const GAUNTLET_HTML: &str = r#"<html><body><article><h1>Gauntlet Passed</h1><p>The scraper survived the WAF.</p></article></body></html>"#;
+const GAUNTLET_HTML: &str = r#"<html><body><article><h1>Gauntlet Passed</h1><p>The scraper survived the WAF and this page carries enough substantive text to clear the minimum content guard.</p></article></body></html>"#;
 
 /// Mount the 403 → 429 → 200 sequence on `mock_path`.
 ///

@@ -1,9 +1,7 @@
 //! Error paths: unreachable host, 404, 500 responses.
 
-use crate::assert_snapshot_redacted;
-use crate::cmd;
-use std::path::Path;
-use std::time::Duration;
+use crate::{assert_snapshot_redacted, cmd, BehavioralTest};
+use std::{path::Path, time::Duration};
 use tempfile::TempDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -345,6 +343,108 @@ mod output_vectors_without_clean_ai {
             "the vectors file must NOT be created when the flag gate rejects the run: {vectors_path:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// JS-shell content → exit 65 (EX_DATA) — honest data-format failure (#706)
+// ---------------------------------------------------------------------------
+
+/// Deterministic JS-shell body: `<div id="app">` mount point + `__NEXT_DATA__`
+/// payload, well under the 50-char extraction threshold (XC-2 fixture).
+const JS_SHELL_BODY: &str = "<!DOCTYPE html><html><head><title>App</title>\
+             <script id=\"__NEXT_DATA__\" type=\"application/json\">{\"page\":\"/\"}</script>\
+             </head><body><div id=\"app\"></div></body></html>";
+
+/// A JS-shell page (CE-1): fetch succeeds, extraction returns <50 chars with
+/// SPA markers → the run must exit 65 (DataFormatError) with the Spanish
+/// per-URL failure plus the Spanish summary, never exit 69 or a fake success.
+/// Drives the real binary through `BehavioralTest` (wiremock + TempDir) so it
+/// exercises the full CLI funnel: extract_content guard → report_phase 65
+/// routing.
+///
+/// #706 contract: all-fail extraction runs shift from the misleading network
+/// error (69) to an honest data-format error (65).
+#[tokio::test]
+async fn js_shell_single_page_exits_65_with_spanish_error() {
+    let t = BehavioralTest::new().await;
+
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(JS_SHELL_BODY))
+        .mount(&t.server)
+        .await;
+
+    let output = t
+        .scraper_cmd()
+        .arg("--single-page")
+        .arg("--max-retries")
+        .arg("0")
+        .arg("--quiet")
+        .output()
+        .expect("run webfang");
+
+    assert_eq!(
+        output.status.code(),
+        Some(65),
+        "a JS-only all-fail run must exit 65 (EX_DATA)"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("extracción falló"),
+        "stderr must carry the Spanish per-URL failure, got: {stderr}"
+    );
+    assert_snapshot_redacted("js_shell_exit_65_stderr", t.out.path(), stderr);
+}
+
+/// A mixed batch (CE-2): one legit page (≥50 chars) + one JS-shell → exit 69
+/// (PartialSuccess) regardless of the extraction failure. Some content was
+/// scraped, which is the dominant signal.
+#[tokio::test]
+async fn mixed_batch_with_js_shell_stays_69() {
+    let t = BehavioralTest::new().await;
+
+    Mock::given(method("GET"))
+        .and(path("/ok"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "<html><head><title>Good Page</title></head><body><article>\
+             <h1>Good Page</h1>\
+             <p>This is a substantially long paragraph of server-rendered \
+             content, comfortably over the fifty character threshold.</p>\
+             </article></body></html>",
+        ))
+        .mount(&t.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/shell"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(JS_SHELL_BODY))
+        .mount(&t.server)
+        .await;
+
+    let output = t
+        .scraper_cmd()
+        .arg("--batch")
+        .write_stdin(format!("{}/ok\n{}/shell\n", t.server.uri(), t.server.uri()))
+        .output()
+        .expect("run webfang");
+
+    assert_eq!(
+        output.status.code(),
+        Some(69),
+        "a mixed batch must keep PartialSuccess exit 69"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // "Batch complete" counts CRAWL successes (both pages fetched fine); the
+    // JS-shell page fails later, at extraction time, via report_phase.
+    assert!(
+        stdout.contains("Batch complete: 2/2 succeeded"),
+        "both pages were crawled, got: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("extracción falló"),
+        "the extraction failure must be reported on stderr, got: {stderr}"
+    );
+    assert_snapshot_redacted("mixed_batch_stays_69_stderr", t.out.path(), stderr);
 }
 
 // ---------------------------------------------------------------------------

@@ -117,6 +117,8 @@ async fn test_dom_external_only_links_scrapes_seed() {
         .and(path("/"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
             "<html><body><h1>Seed content</h1>\
+             <p>The seed page carries plenty of substantive server-rendered text so it \
+             comfortably clears the fifty character minimum content guard.</p>\
              <a href=\"https://iana.org\">external link</a></body></html>",
         ))
         .mount(&mock_server)
@@ -232,11 +234,10 @@ async fn test_valid_sitemap_returns_exit_0() {
     // Serve the page content
     Mock::given(method("GET"))
         .and(path("/page1"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string(
-                "<html><body><h1>Hello World</h1><p>Test content</p></body></html>",
-            ),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "<html><body><h1>Hello World</h1><p>Test content long enough to clear the \
+                 fifty character minimum content guard comfortably.</p></body></html>",
+        ))
         .mount(&mock_server)
         .await;
 

@@ -269,6 +269,17 @@ pub async fn extract_content(
             )
             .await?;
 
+            // Shared minimum-content guard (#706): on the SUCCESS branch there
+            // was no content-size check before, so JS-shell pages returned Ok
+            // near-empty. The fallback branch keeps MIN_FALLBACK_CONTENT=100 as
+            // its SOLE authority — no second guard there (no double-error).
+            crate::application::spa_detection::validate_min_content(
+                url.as_str(),
+                &article.text_content,
+                html,
+                correlation_id,
+            )?;
+
             let author = crate::infrastructure::scraper::author_extractor::extract_author(
                 html,
                 article.byline.as_deref(),
@@ -439,5 +450,93 @@ mod tests {
             !results[0].title.is_empty(),
             "title must resolve to non-empty"
         );
+    }
+
+    // --- extract_content: the shared minimum-content guard (#706) ---
+
+    /// CLI funnel success branch (#684): readability succeeds but yields
+    /// sub-threshold text on a JS-shell page → typed `ExtractionFailed` with
+    /// the marker Spanish reason, never Ok near-empty.
+    #[tokio::test]
+    async fn test_extract_content_success_branch_below_threshold_errors() {
+        let html = "<html><head><title>App</title></head><body>\
+             <article><h1>Status</h1><p>Initializing…</p></article>\
+             <div id=\"root\"></div>\
+             </body></html>";
+        let url = url::Url::parse("https://spa.example.com/app").unwrap();
+        let corr = CorrelationId::new();
+
+        let result = extract_content(html, &url, &ScraperConfig::default(), None, None, &corr)
+            .await
+            .expect_err("sub-threshold success-branch content must fail honestly");
+
+        match &result {
+            ScraperError::ExtractionFailed {
+                url: failed_url,
+                reason,
+            } => {
+                assert_eq!(failed_url, url.as_str(), "url must be preserved");
+                assert!(
+                    reason.contains("contenido insuficiente"),
+                    "Spanish reason must state insufficient content: {reason}"
+                );
+                assert!(
+                    reason.contains("renderizado de JavaScript"),
+                    "marker-bearing shell must report the JS cause: {reason}"
+                );
+            },
+            other => panic!("expected ExtractionFailed, got: {other}"),
+        }
+    }
+
+    /// XC-2 legit fixture: a server-rendered page with ≥50 chars of extractable
+    /// text MUST still succeed — the guard never fires above the threshold.
+    #[tokio::test]
+    async fn test_extract_content_legit_page_above_threshold_succeeds() {
+        let html = "<html><head><title>Docs</title></head><body><article>\
+             <h1>Guide</h1>\
+             <p>This is a substantially long paragraph of server-rendered \
+             article content, easily over the fifty character extraction \
+             threshold, so the guard must let it through untouched.</p>\
+             </article></body></html>";
+        let url = url::Url::parse("https://example.com/guide").unwrap();
+        let corr = CorrelationId::new();
+
+        let result = extract_content(html, &url, &ScraperConfig::default(), None, None, &corr)
+            .await
+            .expect("a legit page must keep scraping successfully");
+
+        assert!(
+            result.content.chars().count() >= crate::application::spa_detection::MIN_CONTENT_CHARS,
+            "legit pages must yield substantial content"
+        );
+    }
+
+    /// CE-3 no double-gate: when readability FAILS, `MIN_FALLBACK_CONTENT=100`
+    /// stays the SOLE authority on the fallback branch — the 50-char guard must
+    /// NOT fire there (its Spanish text would be a duplicate signal).
+    #[tokio::test]
+    async fn test_extract_content_poor_fallback_keeps_min_fallback_authority() {
+        let html = "<html><body><a href=\"/x\"></a></body></html>";
+        let url = url::Url::parse("https://example.com/empty").unwrap();
+        let corr = CorrelationId::new();
+
+        let result = extract_content(html, &url, &ScraperConfig::default(), None, None, &corr)
+            .await
+            .expect_err("a content-less page must fail");
+
+        match &result {
+            ScraperError::ExtractionFailed { reason, .. } => {
+                assert!(
+                    reason.contains("contenido pobre del fallback"),
+                    "fallback branch error must come from MIN_FALLBACK_CONTENT, got: {reason}"
+                );
+                assert!(
+                    !reason.contains("contenido insuficiente"),
+                    "the 50-char guard must NOT double-fire on the fallback branch: {reason}"
+                );
+            },
+            other => panic!("expected ExtractionFailed, got: {other}"),
+        }
     }
 }
