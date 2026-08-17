@@ -122,8 +122,7 @@ mod tests {
         let container = Container::new(crawler_config, scraper_config)
             .await
             .expect("create container");
-        let state = McpState::new(container)
-            .with_export_roots(vec![tmp.path().to_path_buf()]);
+        let state = McpState::new(container).with_export_roots(vec![tmp.path().to_path_buf()]);
         (McpHandler::new(state), tmp)
     }
 
