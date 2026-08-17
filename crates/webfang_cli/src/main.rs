@@ -352,6 +352,12 @@ async fn __main() -> CliExit {
         return exit;
     }
 
+    // 6d. Elastic sink preflight (#695): --elastic without persistence nor
+    // --output-vectors would wire no sink and silently no-op — exit 78.
+    if let Err(exit) = preflight::check_elastic_sink(&opts) {
+        return exit;
+    }
+
     // 7. Initialize logging (stderr-only, respects quiet + NO_COLOR)
     let no_color = is_no_color();
     let log_level = resolve_log_level(opts.verbosity);
