@@ -529,7 +529,11 @@ async fn probe_subpath_sitemaps(base: &Url, client: &wreq::Client) -> Option<Str
     probe_sitemap_paths(base, client, &refs).await
 }
 
-#[cfg(test)]
+// All tests in this module build a wreq::Client (test_client()), which
+// depends on boring-sys2 (BoringSSL → TLS_method FFI). Miri cannot execute
+// C FFI — gate the whole module instead of patching test by test, keeping
+// Miri focused on UB in pure Rust logic (same pattern as readability).
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use wiremock::matchers::{method, path};

@@ -100,6 +100,26 @@ async fn test_empty_sitemap_returns_exit_2() {
         .stderr(predicate::str::contains("No URLs discovered"));
 }
 
+/// Site without any sitemap (auto-discovery finds nothing) returns exit 2,
+/// not exit 69: "no sitemap" is a terminal discovery state, not an
+/// infrastructure failure (#695, OBS-SITEMAP-001).
+#[tokio::test]
+async fn test_missing_sitemap_returns_exit_2() {
+    let mock_server = MockServer::start().await;
+
+    // No mocks mounted: robots.txt and every sitemap candidate 404.
+    let base_url = format!("{}/", mock_server.uri());
+
+    cmd()
+        .arg("--url")
+        .arg(&base_url)
+        .arg("--use-sitemap")
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("No URLs discovered"));
+}
+
 // ============================================================================
 // Tests: DOM discovery with only external links → exit 0 (seed injected)
 // ============================================================================

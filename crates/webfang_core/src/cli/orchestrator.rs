@@ -434,6 +434,14 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
         // `discover_urls_for_tui` path did one fetch and silently ignored depth.
         let discovered_urls = if opts.crawl.use_sitemap {
             match discover_urls(&crawler_config, opts).await {
+                // "Site has no sitemap" is a terminal discovery state, not
+                // an infrastructure failure (#695): exit 2 lets automation
+                // distinguish it from a real network outage (exit 69).
+                Err(crate::error::ScraperError::SitemapNotFound(_)) => {
+                    return Err(CliExit::EmptyDiscovery(
+                        "No URLs discovered: sitemap not found".into(),
+                    ));
+                },
                 Err(e) => {
                     return Err(CliExit::NetworkError(format!("URL discovery failed: {e}")));
                 },
