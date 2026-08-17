@@ -354,6 +354,19 @@ pub async fn extract_content(
 mod tests {
     use super::*;
 
+    // Miri gating policy for this module (#764, #487): 6 tests below trip the
+    // known servo_arc 0.4.3 ArcUnion Tree Borrows UB via two entry points:
+    // - valid-selector tests drop a `scraper::Selector` built in
+    //   `extract_with_selector` (same defect family as dom_inspector, #763);
+    // - `scrape_with_readability`/`extract_content` tests reach `clean_html`
+    //   (html_cleaner.rs:112) → `lol_html::rewrite_str`, whose drop glue ends
+    //   in the same `servo_arc::ArcUnion` drop (recurrence of #498, same
+    //   class as the discovery.rs gates in #486).
+    // The 3 ungated tests avoid it: body passthrough (no Selector), and the
+    // invalid-selector / whitespace-only fallbacks (parse failure happens
+    // before `selectors::SelectorList` is constructed, so nothing drops).
+    // Regular (non-Miri) runs keep full coverage.
+
     // --- extract_with_selector: pure, no network (scraper::Html from a string) ---
 
     #[test]
@@ -368,6 +381,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)] // servo_arc 0.4.3 Tree Borrows UB: drops parsed Selector (#487, #764)
     #[test]
     fn test_matching_selector_wraps_elements() {
         let html = "<html><body><div class=\"main\">Hello</div><aside>noise</aside></body></html>";
@@ -385,6 +399,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)] // servo_arc 0.4.3 Tree Borrows UB: drops parsed Selector (#487, #764)
     #[test]
     fn test_zero_matches_falls_back_without_inspector() {
         let html = "<html><body><p>content</p></body></html>";
@@ -415,6 +430,7 @@ mod tests {
 
     // --- scrape_with_readability: ephemeral mock HTTP client, no real network ---
 
+    #[cfg_attr(miri, ignore)] // servo_arc 0.4.3 Tree Borrows UB in ArcUnion drop via lol_html (#487, #764)
     #[tokio::test]
     async fn test_scrape_with_readability_produces_single_result() {
         use crate::domain::http_port::HttpResponse;
@@ -457,6 +473,7 @@ mod tests {
     /// CLI funnel success branch (#684): readability succeeds but yields
     /// sub-threshold text on a JS-shell page → typed `ExtractionFailed` with
     /// the marker Spanish reason, never Ok near-empty.
+    #[cfg_attr(miri, ignore)] // servo_arc 0.4.3 Tree Borrows UB in ArcUnion drop via lol_html (#487, #764)
     #[tokio::test]
     async fn test_extract_content_success_branch_below_threshold_errors() {
         let html = "<html><head><title>App</title></head><body>\
@@ -491,6 +508,7 @@ mod tests {
 
     /// XC-2 legit fixture: a server-rendered page with ≥50 chars of extractable
     /// text MUST still succeed — the guard never fires above the threshold.
+    #[cfg_attr(miri, ignore)] // servo_arc 0.4.3 Tree Borrows UB in ArcUnion drop via lol_html (#487, #764)
     #[tokio::test]
     async fn test_extract_content_legit_page_above_threshold_succeeds() {
         let html = "<html><head><title>Docs</title></head><body><article>\
@@ -515,6 +533,7 @@ mod tests {
     /// CE-3 no double-gate: when readability FAILS, `MIN_FALLBACK_CONTENT=100`
     /// stays the SOLE authority on the fallback branch — the 50-char guard must
     /// NOT fire there (its Spanish text would be a duplicate signal).
+    #[cfg_attr(miri, ignore)] // servo_arc 0.4.3 Tree Borrows UB in ArcUnion drop via lol_html (#487, #764)
     #[tokio::test]
     async fn test_extract_content_poor_fallback_keeps_min_fallback_authority() {
         let html = "<html><body><a href=\"/x\"></a></body></html>";
