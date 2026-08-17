@@ -32,9 +32,23 @@ impl McpHandler {
             .vault_path
             .as_ref()
             .map(|p| std::path::Path::new(p.as_str()));
-        match webfang_core::infrastructure::obsidian::vault_detector::detect_vault(
-            cli_path, None, None,
-        ) {
+        // Hermetic injection (tests, #726): route detection through the
+        // injected root/registry so the host's Obsidian registry is never
+        // read. `None` (production) keeps the default detection chain.
+        let detected = if let Some((root, registry_path)) = &self.state.obsidian_hermetic {
+            webfang_core::infrastructure::obsidian::vault_detector::detect_vault_hermetic(
+                Some(root.as_path()),
+                Some(registry_path.as_path()),
+                cli_path,
+                None,
+                None,
+            )
+        } else {
+            webfang_core::infrastructure::obsidian::vault_detector::detect_vault(
+                cli_path, None, None,
+            )
+        };
+        match detected {
             Some(path) => Ok(CallToolResult::success(vec![Content::text(
                 path.display().to_string(),
             )])),
@@ -145,7 +159,13 @@ mod tests {
         let container = Container::new(crawler_config, scraper_config)
             .await
             .expect("create container");
-        let state = McpState::new(container);
+        // Hermetic vault detection (#726): detection runs against an isolated
+        // empty scan root and a non-existent registry file, so tests never
+        // touch the host's real Obsidian installation.
+        let detect_root = tmp.path().join("detect-root");
+        fs::create_dir_all(&detect_root).expect("create detect root");
+        let registry = detect_root.join("obsidian.json");
+        let state = McpState::new(container).with_obsidian_hermetic(detect_root, registry);
         (McpHandler::new(state), tmp)
     }
 
