@@ -1094,6 +1094,19 @@ mod tests {
         }
     }
 
+    /// Record a batch outcome against the handler's metrics (#696 tests).
+    fn record(
+        handler: &McpHandler,
+        outcome: webfang_core::application::scraper_service::ScrapeBatchOutcome,
+    ) {
+        record_batch_metrics_by_domain(
+            &handler.state,
+            &outcome,
+            Instant::now(),
+            &webfang_core::domain::CorrelationId::new(),
+        );
+    }
+
     #[tokio::test]
     async fn batch_metrics_multi_domain_attributed_per_host() {
         // OBS-MCP-BATCH-001: a batch spanning two hosts must record one
@@ -1106,12 +1119,7 @@ mod tests {
             ],
             failed: vec![],
         };
-        record_batch_metrics_by_domain(
-            &handler.state,
-            &outcome,
-            Instant::now(),
-            &webfang_core::domain::CorrelationId::new(),
-        );
+        record(&handler, outcome);
 
         let snap = handler.state.metrics_snapshot();
         assert_eq!(snap.total_events, 2, "one event per domain");
@@ -1133,12 +1141,7 @@ mod tests {
             ],
             failed: vec![],
         };
-        record_batch_metrics_by_domain(
-            &handler.state,
-            &outcome,
-            Instant::now(),
-            &webfang_core::domain::CorrelationId::new(),
-        );
+        record(&handler, outcome);
 
         let snap = handler.state.metrics_snapshot();
         assert_eq!(snap.total_events, 1, "single domain = single event");
@@ -1158,12 +1161,7 @@ mod tests {
                 failed("https://broken.test/x"),
             ],
         };
-        record_batch_metrics_by_domain(
-            &handler.state,
-            &outcome,
-            Instant::now(),
-            &webfang_core::domain::CorrelationId::new(),
-        );
+        record(&handler, outcome);
 
         let snap = handler.state.metrics_snapshot();
         assert_eq!(snap.domains.len(), 2);
