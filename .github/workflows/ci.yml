@@ -565,11 +565,17 @@ jobs:
   # ============================================================================
   # MIRI INFRA-SLOW: crawler/obsidian/export/http/network/converter + pure-Rust
   # downloader submodules. 60 min timeout for the same reason as infra-fast.
-  # wikilinks/syntax_highlight explicitly skipped — FFI-heavy, can't execute
-  # under Miri. downloader: only pure-Rust submodules (cookie_bridge/spa_detector)
+  # syntax_highlight is excluded at source via #[cfg(all(test, not(miri)))];
+  # wikilinks (pure pulldown_cmark, no FFI) runs and passes under Miri. The
+  # trailing `--skip wikilinks`/`--skip syntax_highlight` flags are inert
+  # (parsed after the `--` positional filters) — kept as documentation.
+  # downloader: only pure-Rust submodules (cookie_bridge/spa_detector)
   # — FFI (wreq, obscura, chromiumoxide) and sysinfo-dependent (hybrid_router,
   # resource_governor) excluded via --skip / #[cfg(not(miri))] (#515).
   # resource_governor is covered by TSan (sanitizers.yml), where sysconf works.
+  # Budget (#751): memory_manager's test_handle_disk_swapping_with_swap is
+  # #[cfg_attr(miri, ignore)] — it alone burned ~27 min wall, leaving the rest
+  # of this job at ~30–33 min of the 60 min timeout (knife-edge resolved).
   # ============================================================================
   miri-infra-slow:
     name: Miri (infra-slow)

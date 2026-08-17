@@ -248,6 +248,19 @@ mod tests {
         let suggestions = inspector.suggest(&document, ".nonexistent");
         assert!(suggestions.is_empty());
     }
+}
+
+// DefaultDomInspector tests construct and drop `scraper::Selector` values (via
+// `Selector::parse` in `collect_candidates`/`inspect`/`suggest`). Dropping a
+// selector trips a Tree Borrows UB inside servo_arc's `ArcUnion`
+// (`servo_arc` 0.4.3 lib.rs:535, `Arc::drop`) — the same defect that gated
+// readability/author_extractor (5a2adc2, #515) — and large DOMs
+// (`builder_methods`, 600 divs) spin indefinitely under the interpreter. In CI
+// this module hung the whole infra-fast job until the 60m timeout (#751, run
+// 31983525568: 31 tests never completed). Regular (non-Miri) runs keep coverage.
+#[cfg(all(test, not(miri)))]
+mod default_dom_inspector_tests {
+    use super::*;
 
     // --- DefaultDomInspector::inspect tests ---
 

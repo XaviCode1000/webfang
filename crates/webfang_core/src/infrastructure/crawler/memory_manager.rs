@@ -185,6 +185,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[cfg_attr(miri, ignore)] // 15,000-URL disk write takes ~27m wall under Miri (#751, run 31983525568: 01:07→01:35)
     #[test]
     fn test_handle_disk_swapping_with_swap() {
         let temp_dir = TempDir::new().unwrap();
