@@ -357,6 +357,12 @@ async fn __main() -> CliExit {
     if let Err(exit) = preflight::check_elastic_sink(&opts) {
         return exit;
     }
+    
+    // 6e. AI feature preflight (#761): --clean-ai on a non-AI build must
+    // fail before any network request, not after a full scrape.
+    if let Err(exit) = preflight::check_clean_ai_feature(&opts) {
+        return exit;
+    }
 
     // 7. Initialize logging (stderr-only, respects quiet + NO_COLOR)
     let no_color = is_no_color();

@@ -274,3 +274,43 @@ async fn test_valid_sitemap_returns_exit_0() {
         .assert()
         .code(0);
 }
+
+// ============================================================================
+// Tests: --clean-ai preflight on non-AI builds (#761)
+// ============================================================================
+
+/// `--clean-ai` on a binary built without the `ai` feature must fail in
+/// preflight with exit 78 BEFORE any network request — previously the CLI
+/// scraped the whole page and only failed at export time (#761).
+#[cfg(not(feature = "ai"))]
+#[tokio::test]
+async fn test_clean_ai_without_feature_fails_before_fetch() {
+    let mock_server = MockServer::start().await;
+
+    // If the CLI fetches anything, this mock would record it — the assertion
+    // below proves the preflight fired before any request left the process.
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "<html><body><p>content that must never be fetched</p></body></html>",
+        ))
+        .mount(&mock_server)
+        .await;
+
+    let base_url = format!("{}/", mock_server.uri());
+
+    cmd()
+        .arg("--url")
+        .arg(&base_url)
+        .arg("--clean-ai")
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .code(78)
+        .stderr(predicate::str::contains("--clean-ai"));
+
+    let requests = mock_server.received_requests().await.unwrap();
+    assert!(
+        requests.is_empty(),
+        "preflight must fail before any network request, got {} requests",
+        requests.len()
+    );
+}

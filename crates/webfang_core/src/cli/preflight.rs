@@ -239,6 +239,35 @@ pub fn check_elastic_sink(opts: &CrawlOptions) -> Result<(), CliExit> {
     ))
 }
 
+/// Preflight: `--clean-ai` on a binary built WITHOUT the `ai` feature must
+/// fail before any network request (#761).
+///
+/// Previously the check lived only in the export flow, so a non-AI build
+/// downloaded and extracted the whole page before erroring out. This mirrors
+/// the #685 pattern: a build-configuration problem is a config error (exit 78)
+/// detected before the crawl starts.
+///
+/// # Errors
+///
+/// Returns [`crate::CliExit::ConfigError`] when `clean_ai` is requested and
+/// the `ai` feature is not compiled in.
+pub fn check_clean_ai_feature(opts: &CrawlOptions) -> Result<(), CliExit> {
+    check_clean_ai_feature_with(cfg!(feature = "ai"), opts)
+}
+
+/// Feature-injectable core of [`check_clean_ai_feature`] — `cfg!` cannot be
+/// toggled per test.
+fn check_clean_ai_feature_with(ai_enabled: bool, opts: &CrawlOptions) -> Result<(), CliExit> {
+    if !opts.ai || ai_enabled {
+        return Ok(());
+    }
+    Err(CliExit::ConfigError(
+        "--clean-ai requiere un binario compilado con la feature `ai`; \
+             recompilá con --features ai"
+            .into(),
+    ))
+}
+
 /// Spawn `<binary> --version` once and report its exit status.
 ///
 /// A missing or non-executable binary surfaces as an `io::Error`, which the
@@ -935,5 +964,41 @@ mod tests {
         opts.elastic.enabled = true;
         opts.elastic.output_vectors = None;
         assert!(check_elastic_sink(&opts).is_ok());
+    }
+
+    // ========================================================================
+    // #761 — --clean-ai preflight feature check
+    // ========================================================================
+
+    /// `--clean-ai` without the `ai` feature: config error naming the
+    /// feature, before any network request (#761).
+    #[test]
+    fn clean_ai_without_feature_errors() {
+        let mut opts = CrawlOptions::default();
+        opts.ai = true;
+        let err = check_clean_ai_feature_with(false, &opts)
+.expect_err("non-AI build must reject --clean-ai in preflight");
+        match err {
+CliExit::ConfigError(msg) => assert!(
+msg.contains("--clean-ai") && msg.contains("ai"),
+"config error must name the flag and the feature, got: {msg}"
+),
+other => panic!("expected ConfigError, got: {other:?}"),
+        }
+    }
+
+    /// `--clean-ai` with the `ai` feature compiled in: passes.
+    #[test]
+    fn clean_ai_with_feature_ok() {
+        let mut opts = CrawlOptions::default();
+        opts.ai = true;
+        assert!(check_clean_ai_feature_with(true, &opts).is_ok());
+    }
+
+    /// No `--clean-ai`: passes regardless of the feature state.
+    #[test]
+    fn no_clean_ai_ok_without_feature() {
+        let opts = CrawlOptions::default();
+        assert!(check_clean_ai_feature_with(false, &opts).is_ok());
     }
 }
