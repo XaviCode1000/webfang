@@ -16,6 +16,7 @@
 //! and stores them as `Arc<dyn Port>`.
 
 use std::sync::Arc;
+use tokio::sync::OnceCell;
 
 use crate::application::crawl_options::CrawlOptions;
 use crate::application::crawl_result_repository::CrawlResultRepositoryImpl;
@@ -83,23 +84,30 @@ pub struct Container {
     pub elastic_ingestion: Option<Arc<ElasticIngestion<DynVectorRepository>>>,
 
     // --- Optional domain ports (injected post-construction) ---
-    /// AI semantic cleaner (optional). `None` when the `ai` feature is off or
-    /// no cleaner was injected; MCP tools map this absence to an honest error.
-    /// Stored as `Arc<dyn SemanticCleaner>` — the trait is a domain port like
-    /// `HttpClientPort`, always compiled (no `#[cfg(feature = "ai")]`).
-    cleaner: Option<Arc<dyn SemanticCleaner>>,
+    /// AI semantic cleaner (optional). Unset when the `ai` feature is off or
+    /// no cleaner has been injected yet; MCP tools map this absence to an
+    /// honest error. Stored as `Arc<dyn SemanticCleaner>` — the trait is a
+    /// domain port like `HttpClientPort`, always compiled
+    /// (no `#[cfg(feature = "ai")]`).
+    ///
+    /// Held in a [`OnceCell`] so the injection is OBSERVABLE through a shared
+    /// `&Container` (lazy post-construction wiring, #759): the MCP binaries
+    /// share one `Arc<Container>` with a background warmup task that injects
+    /// the ports after the server handshake has started. `OnceCell` guarantees
+    /// at-most-once injection; a second `set` is a no-op.
+    cleaner: OnceCell<Arc<dyn SemanticCleaner>>,
 
-    /// Embedding port for text vectorization (#386). `None` when the `ai`
+    /// Embedding port for text vectorization (#386). Unset when the `ai`
     /// feature is off. Always compiled — the trait is a domain port.
-    embedding_port: Option<Arc<dyn EmbeddingPort>>,
+    embedding_port: OnceCell<Arc<dyn EmbeddingPort>>,
 
-    /// Note repository for vault search persistence (#386). `None` when
-    /// vault search is not configured.
-    note_repository: Option<Arc<dyn NoteRepository>>,
+    /// Note repository for vault search persistence (#386). Unset when vault
+    /// search is not configured.
+    note_repository: OnceCell<Arc<dyn NoteRepository>>,
 
-    /// Text chunker for Markdown segmentation (#386). `None` when the `ai`
+    /// Text chunker for Markdown segmentation (#386). Unset when the `ai`
     /// feature is off. Always compiled — the trait is a domain port.
-    text_chunker: Option<Arc<dyn TextChunker>>,
+    text_chunker: OnceCell<Arc<dyn TextChunker>>,
 }
 
 /// Vault-search AI ports (#433), constructed in the binary layer (CLI/MCP) and
@@ -129,7 +137,8 @@ impl Container {
     ///
     /// Initializes all core services. Optional services (state_store,
     /// elastic_ingestion) are set to `None` and can be activated via builder
-    /// methods.
+    /// methods; the AI vault ports start as unset `OnceCell`s and can be
+    /// injected through the `with_*`/`inject_vault_ports` methods.
     ///
     /// # Arguments
     ///
@@ -186,10 +195,10 @@ impl Container {
             state_store: None,
             crawl_result_repo,
             elastic_ingestion: None,
-            cleaner: None,
-            embedding_port: None,
-            note_repository: None,
-            text_chunker: None,
+            cleaner: OnceCell::new(),
+            embedding_port: OnceCell::new(),
+            note_repository: OnceCell::new(),
+            text_chunker: OnceCell::new(),
         })
     }
 
@@ -237,7 +246,7 @@ impl Container {
     /// Clones the `Arc` (cheap) so callers can hold the cleaner across an
     /// `.await` without borrowing the container (`async-clone-before-await`).
     pub fn cleaner(&self) -> Option<Arc<dyn SemanticCleaner>> {
-        self.cleaner.clone()
+        self.cleaner.get().cloned()
     }
 
     /// Get the embedding port, if one was injected (#386).
@@ -245,17 +254,17 @@ impl Container {
     /// Clones the `Arc` (cheap) so callers can hold the port across an
     /// `.await` without borrowing the container.
     pub fn embedding_port(&self) -> Option<Arc<dyn EmbeddingPort>> {
-        self.embedding_port.clone()
+        self.embedding_port.get().cloned()
     }
 
     /// Get the note repository, if one was injected (#386).
     pub fn note_repository(&self) -> Option<Arc<dyn NoteRepository>> {
-        self.note_repository.clone()
+        self.note_repository.get().cloned()
     }
 
     /// Get the text chunker, if one was injected (#386).
     pub fn text_chunker(&self) -> Option<Arc<dyn TextChunker>> {
-        self.text_chunker.clone()
+        self.text_chunker.get().cloned()
     }
 
     /// Access the elastic ingestion pipeline, if activated.
@@ -290,9 +299,12 @@ impl Container {
     ///
     /// Takes `Arc<dyn SemanticCleaner>` directly — mirrors the CLI construction
     /// `Arc::new(cleaner) as Arc<dyn SemanticCleaner>` and the
-    /// `McpState::with_inspector` precedent. Absence (`None`) stays the default.
-    pub fn with_cleaner(mut self, cleaner: Arc<dyn SemanticCleaner>) -> Self {
-        self.cleaner = Some(cleaner);
+    /// `McpState::with_inspector` precedent. Absence stays the default.
+    ///
+    /// Injection is at-most-once ([`OnceCell`] semantics): a second call keeps
+    /// the first cleaner.
+    pub fn with_cleaner(self, cleaner: Arc<dyn SemanticCleaner>) -> Self {
+        let _ = self.cleaner.set(cleaner);
         self
     }
 
@@ -300,45 +312,67 @@ impl Container {
     ///
     /// Takes `Arc<dyn EmbeddingPort>` — the concrete `InferencePool` wrapper
     /// is constructed in the CLI/MCP layer and injected here.
-    pub fn with_embedding_port(mut self, port: Arc<dyn EmbeddingPort>) -> Self {
-        self.embedding_port = Some(port);
+    ///
+    /// Injection is at-most-once ([`OnceCell`] semantics): a second call keeps
+    /// the first port.
+    pub fn with_embedding_port(self, port: Arc<dyn EmbeddingPort>) -> Self {
+        let _ = self.embedding_port.set(port);
         self
     }
 
     /// Inject a note repository for vault search persistence (#386).
-    pub fn with_note_repository(mut self, repo: Arc<dyn NoteRepository>) -> Self {
-        self.note_repository = Some(repo);
+    ///
+    /// Injection is at-most-once ([`OnceCell`] semantics): a second call keeps
+    /// the first repository.
+    pub fn with_note_repository(self, repo: Arc<dyn NoteRepository>) -> Self {
+        let _ = self.note_repository.set(repo);
         self
     }
 
     /// Inject a text chunker for Markdown segmentation (#386).
-    pub fn with_text_chunker(mut self, chunker: Arc<dyn TextChunker>) -> Self {
-        self.text_chunker = Some(chunker);
+    ///
+    /// Injection is at-most-once ([`OnceCell`] semantics): a second call keeps
+    /// the first chunker.
+    pub fn with_text_chunker(self, chunker: Arc<dyn TextChunker>) -> Self {
+        let _ = self.text_chunker.set(chunker);
         self
     }
 
     /// Inject the vault-search AI ports that are present in `ports` (#433).
     ///
     /// Each field is wired independently; `None` fields leave the corresponding
-    /// port untouched. Convenience wrapper over [`with_embedding_port`](Self::with_embedding_port),
-    /// [`with_note_repository`](Self::with_note_repository) and
-    /// [`with_text_chunker`](Self::with_text_chunker) for the binary composition
-    /// roots (CLI/MCP) that assemble the whole bundle at once.
+    /// port untouched. Convenience wrapper over [`inject_vault_ports`](Self::inject_vault_ports)
+    /// for the binary composition roots (CLI/MCP) that assemble the whole
+    /// bundle at once.
     #[must_use]
-    pub fn with_vault_ports(mut self, ports: VaultAiPorts) -> Self {
-        if let Some(port) = ports.embedding_port {
-            self.embedding_port = Some(port);
+    pub fn with_vault_ports(self, ports: VaultAiPorts) -> Self {
+        self.inject_vault_ports(ports);
+        self
+    }
+
+    /// Post-construction injector for the vault-search AI ports (lazy MCP AI
+    /// wiring, #759).
+    ///
+    /// Wires each `Some` field through interior mutability (`&self`): the MCP
+    /// binaries share one `Arc<Container>` with a background warmup task that
+    /// injects the ports AFTER the server handshake has started, and the
+    /// injection must be OBSERVABLE through that shared container. `None`
+    /// fields leave the corresponding port untouched. Injection is
+    /// at-most-once ([`OnceCell`] semantics): for a port that is already set,
+    /// the existing value wins.
+    pub fn inject_vault_ports(&self, ports: VaultAiPorts) {
+        if let Some(embedding_port) = ports.embedding_port {
+            let _ = self.embedding_port.set(embedding_port);
         }
-        if let Some(repo) = ports.note_repository {
-            self.note_repository = Some(repo);
+        if let Some(note_repository) = ports.note_repository {
+            let _ = self.note_repository.set(note_repository);
         }
-        if let Some(chunker) = ports.text_chunker {
-            self.text_chunker = Some(chunker);
+        if let Some(text_chunker) = ports.text_chunker {
+            let _ = self.text_chunker.set(text_chunker);
         }
         if let Some(cleaner) = ports.cleaner {
-            self.cleaner = Some(cleaner);
+            let _ = self.cleaner.set(cleaner);
         }
-        self
     }
 
     /// Build the elastic ingestion pipeline around an arbitrary repository.
@@ -476,7 +510,7 @@ impl Container {
             _ => Arc::new(MultiVectorRepository::new(repos)),
         };
 
-        let ingestion = Self::build_ingestion(repository, &config, self.cleaner.clone())?;
+        let ingestion = Self::build_ingestion(repository, &config, self.cleaner.get().cloned())?;
         self.elastic_ingestion = Some(Arc::new(ingestion));
         Ok(self)
     }

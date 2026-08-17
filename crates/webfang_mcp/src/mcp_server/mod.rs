@@ -32,60 +32,74 @@ use rmcp::model::{CallToolResult, ListToolsResult, ServerCapabilities, ServerInf
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer};
 
+use std::sync::Arc;
 use webfang_core::di::ContainerExt;
 
 pub use state::McpState;
 
-/// Build a Container with optional AI semantic cleaner wiring.
+/// Build a Container — fast container construction, no model resolution
+/// happens here (#759).
 ///
 /// This is used by both `mcp_server_http.rs` and `mcp_server_stdio.rs`
-/// binaries to avoid code duplication. Construction is OPT-IN via the
-/// `enable_ai` flag — a plain smoke run does not download the ONNX model.
+/// binaries to avoid code duplication. The AI wiring that used to run inside
+/// this function (and block the MCP `initialize` handshake behind the hf_hub
+/// model resolution) is now performed lazily by [`spawn_ai_wiring`] after the
+/// server starts serving (#759).
 ///
 /// # Panics
 ///
 /// Panics if the container cannot be created from the default config.
 /// This should never happen as the default config always produces a valid container.
-#[cfg(feature = "ai")]
-pub async fn build_container_with_ai(enable_ai: bool) -> webfang_core::di::Container {
-    use webfang_ai::AiModel;
-    use webfang_ai::ModelConfig;
-    use webfang_ai::SemanticCleanerImpl;
-
-    let config = webfang_core::config::Config::default();
-    let container = webfang_core::di::Container::from_config(config)
-        .await
-        .ok()
-        .unwrap_or_else(|| panic!("failed to create container: default config should be valid"));
-
-    if !enable_ai {
-        return container;
-    }
-
-    let variant = AiModel::from_env_or_default();
-    let model_config = ModelConfig::default().with_model_variant(variant);
-
-    match SemanticCleanerImpl::new(model_config).await {
-        Ok(cleaner) => {
-            let (pool, tokenizer) = cleaner.shared_inference();
-            let container = container.with_cleaner(std::sync::Arc::new(cleaner));
-            ai_wiring::wire_ai_ports(container, pool, tokenizer).await
-        },
-        Err(e) => {
-            tracing::warn!("semantic cleaner unavailable, continuing without AI: {e}");
-            container
-        },
-    }
-}
-
-/// Build a basic Container without AI wiring (for non-AI builds).
-#[cfg(not(feature = "ai"))]
-pub async fn build_container_with_ai(_enable_ai: bool) -> webfang_core::di::Container {
+pub async fn build_container() -> webfang_core::di::Container {
     let config = webfang_core::config::Config::default();
     webfang_core::di::Container::from_config(config)
         .await
-        .expect("failed to create container")
+        .ok()
+        .unwrap_or_else(|| panic!("failed to create container: default config should be valid"))
 }
+
+/// Kick off the lazy AI port wiring in a background task (#759).
+///
+/// Shares the same `Arc<Container>` that the MCP server already holds and
+/// injects the AI ports (semantic cleaner, embedding, chunker, notes) after
+/// the server has started serving. This unblocks the MCP `initialize`
+/// handshake, which previously waited on the hf_hub model resolution
+/// (~390 MB download on a cold cache). During warmup the AI tools degrade to
+/// their pre-existing honest "not available" error.
+#[cfg(feature = "ai")]
+pub fn spawn_ai_wiring(container: Arc<webfang_core::application::container::Container>) {
+    use tracing::Instrument;
+
+    let variant = webfang_ai::AiModel::from_env_or_default();
+    let span = tracing::info_span!("ai_lazy_wiring", model = variant.display_name());
+
+    tokio::spawn(
+        async move {
+            let model_config = webfang_ai::ModelConfig::default().with_model_variant(variant);
+            match webfang_ai::SemanticCleanerImpl::new(model_config).await {
+                Ok(cleaner) => {
+                    let (pool, tokenizer) = cleaner.shared_inference();
+                    let cleaner: Arc<dyn webfang_core::domain::semantic_cleaner::SemanticCleaner> =
+                        Arc::new(cleaner);
+                    container.inject_vault_ports(
+                        webfang_core::application::container::VaultAiPorts {
+                            cleaner: Some(cleaner),
+                            ..Default::default()
+                        },
+                    );
+                    ai_wiring::wire_ai_ports(&container, pool, tokenizer).await;
+                    tracing::info!("AI ports wired (lazy, post-handshake)");
+                },
+                Err(e) => tracing::warn!(error = %e, "AI warmup failed; continuing without AI"),
+            }
+        }
+        .instrument(span),
+    );
+}
+
+/// No-op placeholder when the `ai` feature is not compiled in (#759).
+#[cfg(not(feature = "ai"))]
+pub fn spawn_ai_wiring(_container: Arc<webfang_core::application::container::Container>) {}
 
 /// Main MCP handler struct.
 ///

@@ -13,7 +13,7 @@ use webfang_core::adapters::downloader::{DownloadConfig, Downloader};
 use webfang_mcp::mcp_server::server::{
     require_auth_for_external_bind, start_mcp_server, ServerOptions, DEFAULT_MCP_ADDR,
 };
-use webfang_mcp::mcp_server::{build_container_with_ai, McpState};
+use webfang_mcp::mcp_server::{build_container, spawn_ai_wiring, McpState};
 
 /// Webfang MCP Server — Streamable HTTP transport.
 #[derive(Parser, Debug)]
@@ -80,13 +80,19 @@ async fn main() -> Result<()> {
         tracing::warn!("MCP server starting on loopback without auth token (development mode)");
     }
 
-    // Build container with optional AI wiring (shared with mcp_server_stdio.rs)
-    let container = build_container_with_ai(args.enable_ai).await;
+    // Build the container FAST — no model resolution happens here (#759).
+    // The AI ports are wired lazily in a background task after the container
+    // is shared with the server state.
+    let container = Arc::new(build_container().await);
+
+    if args.enable_ai {
+        spawn_ai_wiring(Arc::clone(&container));
+    }
 
     // Inject a shared Downloader so `download_assets` reuses one connection
     // pool across tool calls. The default config writes to `./downloads`
     // relative to the working directory.
-    let state = McpState::new(container)
+    let state = McpState::from_container(container)
         .with_downloader(Arc::new(Downloader::new(DownloadConfig::default())?))
         .with_export_roots(args.export_roots);
 
