@@ -138,13 +138,25 @@ const DEFAULT_CHROME_CANDIDATES: [&str; 4] = [
 ];
 
 /// Preflight: verify the local environment can satisfy the configured JS
-/// strategy before any crawl starts (#685).
+/// strategy before any crawl starts (#685, #758).
 ///
 /// `JsStrategy::Full` renders pages through Chromiumoxide, which spawns a
-/// real Chrome/Chromium binary. Probing the installed candidates here turns
-/// a missing browser into a clean config error (exit 78) instead of a
-/// confusing mid-crawl browser launch failure. Other strategies need no
-/// external binary and return immediately without spawning processes.
+/// real Chrome/Chromium binary. Two independent preconditions are checked,
+/// in order:
+///
+/// 1. **Compile-time capability** (#758): the binary must have been built
+///    with the `chromium` feature. Without it, `ChromiumoxideDownloader`
+///    is a stub that fails mid-crawl with an instruction the CLI binary
+///    cannot follow. This is a build-configuration error, checked first
+///    because probing the PATH is pointless when the binary cannot render
+///    JS at all.
+/// 2. **Runtime environment**: probing the installed candidates turns a
+///    missing browser into a clean config error (exit 78) instead of a
+///    confusing mid-crawl browser launch failure.
+///
+/// Other strategies need no external binary and no `chromium` feature
+/// (`Hybrid` escalates through Obscura, which works without it) and return
+/// immediately without spawning processes.
 ///
 /// Runs once, in a synchronous context, before crawl start — a brief
 /// blocking `--version` probe is acceptable there.
@@ -152,18 +164,32 @@ const DEFAULT_CHROME_CANDIDATES: [&str; 4] = [
 /// # Errors
 ///
 /// Returns [`crate::CliExit::ConfigError`] (exit 78) when the strategy is
-/// [`Full`](crate::domain::JsStrategy::Full) and no Chrome/Chromium
-/// candidate on `PATH` reports a version.
+/// [`Full`](crate::domain::JsStrategy::Full) and either the binary was
+/// built without the `chromium` feature, or no Chrome/Chromium candidate
+/// on `PATH` reports a version.
 pub fn check_js_dependencies(opts: &CrawlOptions) -> Result<(), CliExit> {
-    check_js_dependencies_with(&DEFAULT_CHROME_CANDIDATES, opts)
+    check_js_dependencies_with(&DEFAULT_CHROME_CANDIDATES, cfg!(feature = "chromium"), opts)
 }
 
-/// Candidate-injectable core of [`check_js_dependencies`] — tests probe
-/// binaries that exist deterministically in CI (e.g. `true`) instead of the
-/// real Chrome names.
-fn check_js_dependencies_with(candidates: &[&str], opts: &CrawlOptions) -> Result<(), CliExit> {
+/// Candidate- and feature-injectable core of [`check_js_dependencies`] —
+/// tests probe binaries that exist deterministically in CI (e.g. `true`)
+/// instead of the real Chrome names, and inject the feature flag because
+/// `cfg!` cannot be toggled per test.
+fn check_js_dependencies_with(
+    candidates: &[&str],
+    chromium_enabled: bool,
+    opts: &CrawlOptions,
+) -> Result<(), CliExit> {
     if opts.network.js_strategy != JsStrategy::Full {
         return Ok(());
+    }
+
+    if !chromium_enabled {
+        return Err(CliExit::ConfigError(
+            "--js-strategy full requiere un binario compilado con la feature `chromium`; \
+                     recompilá con --features chromium o usá --js-strategy hybrid"
+                .into(),
+        ));
     }
 
     let chrome_present = candidates
@@ -792,9 +818,42 @@ mod tests {
         // A nonexistent candidate proves the check short-circuits before it
         // could attempt to spawn anything for a non-Full strategy.
         assert!(
-            check_js_dependencies_with(&["definitely-not-installed-9x4k"], &opts).is_ok(),
+            check_js_dependencies_with(&["definitely-not-installed-9x4k"], true, &opts).is_ok(),
             "Static strategy must not require Chrome or spawn processes"
         );
+    }
+
+    /// `Hybrid` strategy escalates through Obscura (Layer 2), which works
+    /// without the `chromium` feature — the preflight must not gate it
+    /// (#758).
+    #[test]
+    fn hybrid_strategy_ok_without_chromium_feature() {
+        let mut opts = CrawlOptions::default();
+        opts.network.js_strategy = JsStrategy::Hybrid;
+        assert!(
+            check_js_dependencies_with(&["definitely-not-installed-9x4k"], false, &opts).is_ok(),
+            "Hybrid strategy must not require the chromium feature or a Chrome binary"
+        );
+    }
+
+    /// `Full` strategy on a binary built WITHOUT the `chromium` feature
+    /// fails fast with a config error naming the feature — before any PATH
+    /// probe (#758).
+    #[test]
+    fn full_strategy_errors_without_chromium_feature() {
+        let mut opts = CrawlOptions::default();
+        opts.network.js_strategy = JsStrategy::Full;
+        // `true` exists in CI, so a passing candidate list proves the
+        // feature gate fires BEFORE the binary probe.
+        let err = check_js_dependencies_with(&["true"], false, &opts)
+            .expect_err("feature gate must fail before probing binaries");
+        match err {
+            CliExit::ConfigError(msg) => assert!(
+                msg.contains("chromium"),
+                "config error must name the chromium feature, got: {msg}"
+            ),
+            other => panic!("expected ConfigError, got: {other:?}"),
+        }
     }
 
     /// `Full` strategy with a present, exit-0 binary (`true` exists in CI)
@@ -804,7 +863,7 @@ mod tests {
         let mut opts = CrawlOptions::default();
         opts.network.js_strategy = JsStrategy::Full;
         assert!(
-            check_js_dependencies_with(&["true"], &opts).is_ok(),
+            check_js_dependencies_with(&["true"], true, &opts).is_ok(),
             "a candidate that exits 0 must satisfy the Full-strategy check"
         );
     }
@@ -815,7 +874,7 @@ mod tests {
     fn full_strategy_errors_when_no_binary_found() {
         let mut opts = CrawlOptions::default();
         opts.network.js_strategy = JsStrategy::Full;
-        let err = check_js_dependencies_with(&["definitely-not-installed-9x4k"], &opts)
+        let err = check_js_dependencies_with(&["definitely-not-installed-9x4k"], true, &opts)
             .expect_err("no candidate binary present means the check must fail");
         match err {
             CliExit::ConfigError(msg) => assert!(
