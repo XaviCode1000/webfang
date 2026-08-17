@@ -27,6 +27,8 @@ alongside this book under `/api/<crate>/` (e.g. `/api/webfang_core/`).
   coverage exclusions.
 - **[Troubleshooting](troubleshooting.md)** — diagnosing slow crawls, silent
   failures, WAF blocks, and async deadlocks.
+- **[CLI Reference](cli-reference.md)** — the complete `webfang` flag
+  reference, auto-generated from the binary itself.
 - **[TUI Unified Design](tui-unified-design.md)** — the collapsible config +
   URL selector design.
 

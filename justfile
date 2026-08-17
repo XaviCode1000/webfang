@@ -276,3 +276,7 @@ docs-local:
     @mdbook build docs
     @echo "📖 Sirviendo en http://localhost:3000 — Ctrl+C para salir"
     @mdbook serve docs -p 3000
+
+# Regenera el capítulo de referencia CLI desde el binario (drift manual)
+cli-doc-regen:
+    @scripts/gen-cli-reference.sh
