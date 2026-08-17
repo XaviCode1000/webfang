@@ -210,6 +210,35 @@ async fn call_single_url_tool_result(
         .clone()
 }
 
+/// Mount a static page served with a `200` response (shared page fixture).
+async fn mount_page_200(mock: &MockServer, route: &str, body: &str) {
+    Mock::given(method("GET"))
+        .and(path(route))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(mock)
+        .await;
+}
+
+/// Run ONE tool call against a fresh MCP server, assert it succeeded, and
+/// return the parsed JSON payload of its text result. This file's crawl tests
+/// share this prologue as their single canonical copy.
+async fn crawl_tool_parsed(tool: &str, params: Value) -> Value {
+    let (base_url, _server) = start_test_server().await;
+    let client = Client::new();
+    let session = init_session(&client, &base_url).await;
+    let resp = call_tool(&client, &base_url, &session, tool, params).await;
+    let result = resp
+        .get("result")
+        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
+        .clone();
+    assert!(
+        !is_tool_error(&result),
+        "{tool} should succeed: {}",
+        tool_text(&result)
+    );
+    serde_json::from_str(&tool_text(&result)).expect("tool result must be valid JSON")
+}
+
 // ============================================================================
 // scrape_url
 // ============================================================================
@@ -631,51 +660,12 @@ async fn test_crawl_site_max_depth_one_follows_internal_links() {
 <a href="/page_a">A</a>
 <a href="/page_b">B</a>
 </body></html>"#;
-    Mock::given(method("GET"))
-        .and(path("/"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(index_html))
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/page_a"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string("<html><body>Page A</body></html>"),
-        )
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/page_b"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string("<html><body>Page B</body></html>"),
-        )
-        .mount(&mock)
-        .await;
+    mount_page_200(&mock, "/", index_html).await;
+    mount_page_200(&mock, "/page_a", "<html><body>Page A</body></html>").await;
+    mount_page_200(&mock, "/page_b", "<html><body>Page B</body></html>").await;
 
-    let (base_url, _handle) = start_test_server().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "crawl_site",
-        json!({ "url": mock.uri(), "max_depth": 1 }),
-    )
-    .await;
-
-    let result = resp
-        .get("result")
-        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
-        .clone();
-    assert!(
-        !is_tool_error(&result),
-        "crawl_site should succeed: {}",
-        tool_text(&result)
-    );
-
-    let parsed: Value =
-        serde_json::from_str(&tool_text(&result)).expect("crawl result must be valid JSON");
+    let parsed =
+        crawl_tool_parsed("crawl_site", json!({ "url": mock.uri(), "max_depth": 1 })).await;
     assert_eq!(
         parsed.get("total_pages").and_then(|v| v.as_u64()),
         Some(3),
@@ -704,5 +694,129 @@ async fn test_crawl_site_max_depth_one_follows_internal_links() {
         parsed.get("errors").and_then(|v| v.as_u64()),
         Some(0),
         "no crawl errors expected, got: {parsed}"
+    );
+}
+
+/// REQ-01 (SSRF defense-in-depth): `crawl_site` output contains only
+/// seed-host URLs — an external-domain link in the seed page never reaches
+/// the response `urls` array. Note: the crawl engine ALSO gates internal
+/// links (the external URL is neither crawled nor surfaced there); this test
+/// documents both layers at once, and the MCP post-hoc filter is the
+/// authoritative gate for non-crawl discovery paths (sitemap, see below).
+#[tokio::test]
+async fn test_crawl_site_output_excludes_external_links() {
+    let mock = MockServer::start().await;
+    let index_html = r#"<html><body>
+<a href="/page_a">A</a>
+<a href="https://external.example/x">External</a>
+</body></html>"#;
+    mount_page_200(&mock, "/", index_html).await;
+    mount_page_200(&mock, "/page_a", "<html><body>Page A</body></html>").await;
+
+    let parsed =
+        crawl_tool_parsed("crawl_site", json!({ "url": mock.uri(), "max_depth": 1 })).await;
+    let urls = parsed
+        .get("urls")
+        .and_then(|v| v.as_array())
+        .expect("urls array present");
+    assert!(
+        !urls.is_empty(),
+        "crawl must discover at least the seed, got: {parsed}"
+    );
+
+    // The engine internally gates non-internal links too (defense-in-depth),
+    // so this assert is the union of both layers: ONLY seed-host URLs surface.
+    let seed_host = url::Url::parse(&mock.uri())
+        .expect("mock URI parses")
+        .host_str()
+        .expect("mock URI has host")
+        .to_string();
+    let mut got: Vec<String> = urls
+        .iter()
+        .filter_map(|u| u.as_str().map(String::from))
+        .collect();
+    got.sort();
+    let mut expected = vec![format!("{}/", mock.uri()), format!("{}/page_a", mock.uri())];
+    expected.sort();
+    assert_eq!(
+        got, expected,
+        "urls array must contain only seed-host ({seed_host}) URLs, got: {got:?}"
+    );
+    let has_external = urls
+        .iter()
+        .filter_map(|u| u.as_str())
+        .any(|u| u.contains("external.example"));
+    assert!(
+        !has_external,
+        "external-domain URL must never reach the response, got: {parsed}"
+    );
+}
+
+/// REQ-01 (SSRF defense-in-depth): `crawl_with_sitemap` output contains only
+/// seed-host URLs. Sitemap discovery returns every `<loc>` host-agnostic (the
+/// engine does NOT apply internal-link gating there), so this test exercises
+/// the MCP post-hoc filter as the authoritative gate: an external-domain URL
+/// and a forbidden-literal-IP URL from the sitemap must both be excluded.
+/// Fully offline: only the sitemap XML is fetched (wiremock on the seed
+/// host); the listed pages are never fetched (discovery-only crawl).
+#[tokio::test]
+async fn test_crawl_with_sitemap_response_excludes_external_and_forbidden_urls() {
+    let mock = MockServer::start().await;
+
+    let sitemap = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>{base}/internal</loc></url>
+  <url><loc>https://external.example/x</loc></url>
+  <url><loc>http://10.0.0.5/forbidden</loc></url>
+</urlset>"#,
+        base = mock.uri(),
+    );
+    Mock::given(method("GET"))
+        .and(path("/sitemap.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/xml")
+                .set_body_string(sitemap),
+        )
+        .mount(&mock)
+        .await;
+
+    let parsed = crawl_tool_parsed(
+        "crawl_with_sitemap",
+        json!({
+            "url": mock.uri(),
+            "sitemap_url": format!("{}/sitemap.xml", mock.uri()),
+        }),
+    )
+    .await;
+
+    let urls: Vec<String> =
+        serde_json::from_value(parsed).expect("sitemap result must be a JSON array");
+
+    let seed_host = url::Url::parse(&mock.uri())
+        .expect("mock URI parses")
+        .host_str()
+        .expect("mock URI has host")
+        .to_string();
+
+    assert!(
+        !urls.is_empty(),
+        "the internal seed-host URL must survive the filter, got: {urls:?}"
+    );
+    let mut got = urls.clone();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![format!("{}/internal", mock.uri())],
+        "only the seed-host ({seed_host}) URL may surface, got: {got:?}"
+    );
+    assert!(
+        !urls.iter().any(|u| u.contains("external.example")),
+        "external-domain sitemap URLs must be excluded, got: {urls:?}"
+    );
+    assert!(
+        !urls.iter().any(|u| u.contains("10.0.0.5")),
+        "forbidden-literal-IP sitemap URLs must be excluded, got: {urls:?}"
     );
 }

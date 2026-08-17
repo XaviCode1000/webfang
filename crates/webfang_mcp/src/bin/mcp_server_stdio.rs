@@ -20,6 +20,12 @@ struct Args {
     /// Enable AI semantic cleaning (requires the `ai` feature at build time).
     #[arg(long, env = "WEBFANG_MCP_AI")]
     enable_ai: bool,
+
+    /// Allowed root directories for absolute `output_dir` paths (#696).
+    /// Repeatable or comma-separated. When omitted, absolute `output_dir`
+    /// values are rejected (fail-closed); relative paths always work.
+    #[arg(long, env = "WEBFANG_MCP_EXPORT_ROOTS", value_delimiter = ',')]
+    export_roots: Vec<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -40,7 +46,7 @@ async fn main() {
     // Build container with optional AI wiring (shared with mcp_server_http.rs)
     let container = build_container_with_ai(args.enable_ai).await;
 
-    let state = McpState::new(container);
+    let state = McpState::new(container).with_export_roots(args.export_roots);
 
     let handler = McpHandler::new(state);
 

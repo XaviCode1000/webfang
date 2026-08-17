@@ -243,21 +243,11 @@ impl McpHandler {
         {
             Ok(outcome) => {
                 let failed_count = outcome.failed.len();
-                let outcome_type = if failed_count == 0 {
-                    Outcome::Success
-                } else if outcome.results.is_empty() {
-                    Outcome::Error
-                } else {
-                    Outcome::Partial
-                };
-                self.state.record_scrape_identity(
-                    "scrape_batch",
-                    domain,
-                    outcome_type,
-                    count,
-                    start,
-                    &root_correlation,
-                );
+                // Per-domain attribution (#696): a batch may span multiple
+                // hosts, so metrics are grouped by the REAL host of each
+                // result/failure instead of assuming `urls.first()`. All
+                // events share the run-root correlation (#501/#698).
+                record_batch_metrics_by_domain(&self.state, &outcome, start, &root_correlation);
                 tracing::info!(
                     "batch scrape complete: {} pages, {} failed",
                     outcome.results.len(),
@@ -311,7 +301,9 @@ impl McpHandler {
         let start = Instant::now();
         // One run identity per tool call, shared by its success and error events (#501/#698).
         let root_correlation = webfang_core::domain::CorrelationId::new();
-        let crawler_config = webfang_core::domain::CrawlerConfig::builder(seed_url)
+        // Clone: the builder consumes `seed_url` and the Ok arm re-uses it as
+        // the filter anchor (the config itself is moved into the crawl).
+        let crawler_config = webfang_core::domain::CrawlerConfig::builder(seed_url.clone())
             .max_depth(params.max_depth.unwrap_or(3))
             .max_pages(params.max_pages.unwrap_or(100) as usize)
             .build();
@@ -327,7 +319,10 @@ impl McpHandler {
                     start,
                     &root_correlation,
                 );
-                let urls: Vec<String> = result.urls.iter().map(|u| u.url.to_string()).collect();
+                // REQ-01: filter discovered URLs before responding — keep only
+                // seed-host-internal entries; exclusions warn with the URL.
+                let mut urls = Vec::with_capacity(result.urls.len());
+                filter_ssrf_safe(&result.urls, &seed_url, &mut urls);
                 let json = serde_json::json!({
                     "urls": urls,
                     "total_pages": result.total_pages,
@@ -378,10 +373,21 @@ impl McpHandler {
         })?;
         crate::mcp_server::ssrf::validate_url_no_ssrf(&seed_url).await?;
 
+        // REQ-02: validate the explicit sitemap URL at entry, BEFORE any
+        // sitemap fetch (guard ON unless disabled via env for tests).
+        if let Some(s) = &params.sitemap_url {
+            let sitemap = url::Url::parse(s).map_err(|e| {
+                McpError::invalid_params(format!("URL de sitemap inválida: {e}"), None)
+            })?;
+            crate::mcp_server::ssrf::validate_url_no_ssrf(&sitemap).await?;
+        }
+
         let start = Instant::now();
         // One run identity per tool call, shared by its success and error events (#501/#698).
         let root_correlation = webfang_core::domain::CorrelationId::new();
-        let config = webfang_core::domain::CrawlerConfig::new(seed_url);
+        // Clone: `CrawlerConfig::new` consumes `seed_url` and the Ok arm
+        // re-uses it as the filter anchor.
+        let config = webfang_core::domain::CrawlerConfig::new(seed_url.clone());
 
         match webfang_core::application::crawler::crawl_with_sitemap(
             &params.url,
@@ -401,7 +407,11 @@ impl McpHandler {
                     &root_correlation,
                 );
                 tracing::info!("sitemap crawl complete: {} urls found", urls.len());
-                let url_strings: Vec<String> = urls.iter().map(|u| u.url.to_string()).collect();
+                // REQ-01: filter discovered URLs before responding. Sitemap
+                // discovery is host-agnostic — the filter is the gate that
+                // drops external-domain and forbidden-literal-IP entries.
+                let mut url_strings = Vec::with_capacity(urls.len());
+                filter_ssrf_safe(&urls, &seed_url, &mut url_strings);
                 Ok(CallToolResult::success(vec![Content::text(
                     serde_json::to_string_pretty(&url_strings)
                         .expect("serializing JSON to a string cannot fail"),
@@ -650,6 +660,51 @@ impl McpHandler {
     }
 }
 
+/// Keep only seed-host-internal URLs in the discovery output (REQ-01, SSRF
+/// defense-in-depth).
+///
+/// The engine's internal-link gating already applies on the BFS crawl path,
+/// but sitemap discovery returns every `<loc>` host-agnostic. This post-hoc
+/// filter is the authoritative gate that ensures no external-domain or
+/// forbidden-literal-IP URL ever reaches an MCP response, complementing the
+/// entry-level SSRF validator. Each exclusion emits a structured `warn` with
+/// the `url` field (REQ-01/REQ-07).
+///
+/// Returns the number of excluded URLs. `total_pages` / crawl counts are NOT
+/// recomputed — they keep engine semantics (pages crawled, not links emitted).
+fn filter_ssrf_safe(
+    urls: &[webfang_core::domain::DiscoveredUrl],
+    seed: &url::Url,
+    out: &mut Vec<String>,
+) -> usize {
+    let seed_host = seed.host_str().unwrap_or(""); // mirrors crawl_task.rs internal-link anchor
+    let mut excluded = 0usize;
+    for d in urls {
+        let internal =
+            webfang_core::domain::url_validation::is_internal_link(d.url.as_str(), seed_host);
+        if internal {
+            // Hostnames compared here are non-literal hosts; literal IPs on a
+            // non-seed host fall through to the exclusion branch below.
+            out.push(d.url.to_string());
+            continue;
+        }
+        excluded += 1;
+        let reason = if webfang_core::infrastructure::ssrf::is_forbidden_literal_host(
+            d.url.host_str().unwrap_or(""),
+        ) {
+            "forbidden_literal_ip"
+        } else {
+            "external_domain"
+        };
+        tracing::warn!(
+            url = %d.url,
+            reason = %reason,
+            "discovered URL excluded from MCP response (SSRF defense-in-depth)"
+        );
+    }
+    excluded
+}
+
 /// Build the scraping core router (8 tools for URL scraping and crawling).
 ///
 /// Returns a partial router that is combined with the other category routers
@@ -657,6 +712,55 @@ impl McpHandler {
 /// [`build_tool_router`](crate::mcp_server::handlers::build_tool_router).
 pub fn build_router() -> ToolRouter<McpHandler> {
     McpHandler::tool_router_scraping()
+}
+
+/// Record per-domain scrape metrics for a completed batch (#696).
+///
+/// Groups successes and failures by their REAL host so multi-domain batches
+/// attribute pages correctly in the metrics snapshot. Every event shares the
+/// run-root `correlation` (#501/#698): one operation identity, one event per
+/// domain group. `BTreeMap` keeps emission order deterministic (DD-6).
+fn record_batch_metrics_by_domain(
+    state: &crate::mcp_server::McpState,
+    outcome: &webfang_core::application::scraper_service::ScrapeBatchOutcome,
+    start: Instant,
+    correlation: &webfang_core::domain::CorrelationId,
+) {
+    // (successes, failures) per host.
+    let mut groups: std::collections::BTreeMap<String, (usize, usize)> =
+        std::collections::BTreeMap::new();
+    for result in &outcome.results {
+        let host = result
+            .url
+            .host_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| "unknown".to_string());
+        groups.entry(host).or_default().0 += 1;
+    }
+    for failed in &outcome.failed {
+        let host = url::Url::parse(&failed.url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string))
+            .unwrap_or_else(|| "unknown".to_string());
+        groups.entry(host).or_default().1 += 1;
+    }
+    for (host, (ok, failed)) in groups {
+        let outcome_type = if failed == 0 {
+            Outcome::Success
+        } else if ok == 0 {
+            Outcome::Error
+        } else {
+            Outcome::Partial
+        };
+        state.record_scrape_identity(
+            "scrape_batch",
+            host,
+            outcome_type,
+            ok + failed,
+            start,
+            correlation,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -888,6 +992,71 @@ mod tests {
         assert!(res.is_err(), "invalid URL must be a protocol error");
     }
 
+    /// REQ-01: the post-hoc filter keeps seed-host-internal URLs and drops
+    /// external-domain and forbidden-literal-IP URLs, reporting the exclusion
+    /// count. Empty input produces empty output with zero exclusions.
+    #[test]
+    fn filter_ssrf_safe_keeps_internal_drops_external_literal() {
+        let seed = url::Url::parse("https://example.com/").expect("valid seed");
+        let discovered = vec![
+            webfang_core::domain::DiscoveredUrl::html(
+                url::Url::parse("https://example.com/a").expect("valid url"),
+                1,
+                seed.clone(),
+            ),
+            webfang_core::domain::DiscoveredUrl::html(
+                url::Url::parse("https://other.com/x").expect("valid url"),
+                1,
+                seed.clone(),
+            ),
+            webfang_core::domain::DiscoveredUrl::html(
+                url::Url::parse("http://10.0.0.5/x").expect("valid url"),
+                1,
+                seed.clone(),
+            ),
+        ];
+
+        let mut out = Vec::new();
+        let excluded = filter_ssrf_safe(&discovered, &seed, &mut out);
+        assert_eq!(
+            out,
+            vec!["https://example.com/a".to_string()],
+            "only the seed-host URL survives"
+        );
+        assert_eq!(excluded, 2, "external + forbidden literal are excluded");
+
+        let mut empty_out = Vec::new();
+        assert_eq!(
+            filter_ssrf_safe(&[], &seed, &mut empty_out),
+            0,
+            "empty input excludes nothing"
+        );
+        assert!(
+            empty_out.is_empty(),
+            "empty input keeps the output empty (established as the filtered case above returns entries)"
+        );
+    }
+
+    /// REQ-02: an internal `sitemap_url` is rejected at entry (guard ON) with
+    /// the SSRF message, before any sitemap fetch. The seed uses a public
+    /// literal IP so its own validation resolves locally (no DNS dependency).
+    #[tokio::test]
+    async fn crawl_with_sitemap_rejects_internal_sitemap_url() {
+        // Defensive under shared-process harnesses: the escape hatch must be
+        // unset for this process so the guard is active. (nextest isolates
+        // each test in its own process, so this is a no-op there.)
+        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
+
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .crawl_with_sitemap(Parameters(CrawlWithSitemapParams {
+                url: "http://8.8.8.8/".to_string(),
+                sitemap_url: Some("http://127.0.0.1/".to_string()),
+            }))
+            .await;
+        assert_ssrf_rejected(res);
+    }
+
     #[tokio::test]
     async fn discover_sitemap_invalid_url_is_invalid_params() {
         let (handler, _tmp) = test_handler().await;
@@ -897,5 +1066,108 @@ mod tests {
             }))
             .await;
         assert!(res.is_err(), "invalid URL must be a protocol error");
+    }
+    // --- record_batch_metrics_by_domain (#696) ---
+
+    /// Build a minimal successful `ScrapedContent` for a given URL.
+    fn scraped(url: &str) -> webfang_core::domain::entities::content::ScrapedContent {
+        webfang_core::domain::entities::content::ScrapedContent {
+            title: "t".into(),
+            content: "c".into(),
+            url: webfang_core::domain::ValidUrl::new(url::Url::parse(url).expect("valid url")),
+            excerpt: None,
+            author: None,
+            date: None,
+            html: None,
+            assets: vec![],
+            correlation_id: None,
+        }
+    }
+
+    /// Build a minimal `ScrapeFailed` for a given URL.
+    fn failed(url: &str) -> webfang_core::application::scraper_service::ScrapeFailed {
+        webfang_core::application::scraper_service::ScrapeFailed {
+            url: url.to_string(),
+            error: "boom".into(),
+            category:
+                webfang_core::application::scraper_service::ScrapeErrorCategory::PermanentFatal,
+        }
+    }
+
+    /// Record a batch outcome against the handler's metrics (#696 tests).
+    fn record(
+        handler: &McpHandler,
+        outcome: webfang_core::application::scraper_service::ScrapeBatchOutcome,
+    ) {
+        record_batch_metrics_by_domain(
+            &handler.state,
+            &outcome,
+            Instant::now(),
+            &webfang_core::domain::CorrelationId::new(),
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_metrics_multi_domain_attributed_per_host() {
+        // OBS-MCP-BATCH-001: a batch spanning two hosts must record one
+        // event per REAL host, not everything under `urls.first()`.
+        let (handler, _tmp) = test_handler().await;
+        let outcome = webfang_core::application::scraper_service::ScrapeBatchOutcome {
+            results: vec![
+                scraped("https://example.com/a"),
+                scraped("https://books.toscrape.com/b"),
+            ],
+            failed: vec![],
+        };
+        record(&handler, outcome);
+
+        let snap = handler.state.metrics_snapshot();
+        assert_eq!(snap.total_events, 2, "one event per domain");
+        assert_eq!(snap.domains.len(), 2, "two distinct domains recorded");
+        assert_eq!(snap.domains["example.com"].pages, 1, "example.com pages");
+        assert_eq!(
+            snap.domains["books.toscrape.com"].pages, 1,
+            "books.toscrape.com pages"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_metrics_single_domain_regression_guard() {
+        let (handler, _tmp) = test_handler().await;
+        let outcome = webfang_core::application::scraper_service::ScrapeBatchOutcome {
+            results: vec![
+                scraped("https://example.com/a"),
+                scraped("https://example.com/b"),
+            ],
+            failed: vec![],
+        };
+        record(&handler, outcome);
+
+        let snap = handler.state.metrics_snapshot();
+        assert_eq!(snap.total_events, 1, "single domain = single event");
+        assert_eq!(snap.domains["example.com"].pages, 2, "both pages counted");
+        assert_eq!(snap.success_count, 1, "all-success batch is Success");
+    }
+
+    #[tokio::test]
+    async fn batch_metrics_mixed_outcomes_per_domain() {
+        // A domain with both a success and a failure is Partial; a domain
+        // with only failures is Error.
+        let (handler, _tmp) = test_handler().await;
+        let outcome = webfang_core::application::scraper_service::ScrapeBatchOutcome {
+            results: vec![scraped("https://example.com/ok")],
+            failed: vec![
+                failed("https://example.com/bad"),
+                failed("https://broken.test/x"),
+            ],
+        };
+        record(&handler, outcome);
+
+        let snap = handler.state.metrics_snapshot();
+        assert_eq!(snap.domains.len(), 2);
+        assert_eq!(snap.partial_count, 1, "mixed domain is Partial");
+        assert_eq!(snap.error_count, 1, "all-failed domain is Error");
+        assert_eq!(snap.domains["example.com"].pages, 2, "ok + bad counted");
+        assert_eq!(snap.domains["broken.test"].pages, 1);
     }
 }

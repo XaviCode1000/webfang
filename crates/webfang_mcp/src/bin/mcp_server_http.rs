@@ -10,7 +10,9 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::Parser;
 use webfang_core::adapters::downloader::{DownloadConfig, Downloader};
-use webfang_mcp::mcp_server::server::{start_mcp_server, ServerOptions, DEFAULT_MCP_ADDR};
+use webfang_mcp::mcp_server::server::{
+    require_auth_for_external_bind, start_mcp_server, ServerOptions, DEFAULT_MCP_ADDR,
+};
 use webfang_mcp::mcp_server::{build_container_with_ai, McpState};
 
 /// Webfang MCP Server — Streamable HTTP transport.
@@ -49,6 +51,12 @@ struct Args {
     /// Enable AI semantic cleaning (requires the `ai` feature at build time).
     #[arg(long, env = "WEBFANG_MCP_AI")]
     enable_ai: bool,
+
+    /// Allowed root directories for absolute `output_dir` paths (#696).
+    /// Repeatable or comma-separated. When omitted, absolute `output_dir`
+    /// values are rejected (fail-closed); relative paths always work.
+    #[arg(long, env = "WEBFANG_MCP_EXPORT_ROOTS", value_delimiter = ',')]
+    export_roots: Vec<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -65,6 +73,13 @@ async fn main() -> Result<()> {
         tracing::warn!("--enable-ai requested but the `ai` feature is not compiled in; ignoring");
     }
 
+    // REQ-06: fail fast on a tokenless non-loopback bind, before building any
+    // container/downloader. Loopback binds stay token-free (development mode).
+    require_auth_for_external_bind(args.bind, args.auth_token.is_some())?;
+    if args.bind.ip().is_loopback() && args.auth_token.is_none() {
+        tracing::warn!("MCP server starting on loopback without auth token (development mode)");
+    }
+
     // Build container with optional AI wiring (shared with mcp_server_stdio.rs)
     let container = build_container_with_ai(args.enable_ai).await;
 
@@ -72,7 +87,8 @@ async fn main() -> Result<()> {
     // pool across tool calls. The default config writes to `./downloads`
     // relative to the working directory.
     let state = McpState::new(container)
-        .with_downloader(Arc::new(Downloader::new(DownloadConfig::default())?));
+        .with_downloader(Arc::new(Downloader::new(DownloadConfig::default())?))
+        .with_export_roots(args.export_roots);
 
     let opts = ServerOptions {
         request_timeout_secs: args.timeout_secs,
