@@ -522,6 +522,68 @@ The script:
 Do NOT rely on `--auto`: it never accepts in this repo configuration. If a future PR
 needs auto-merge (e.g. transferring the repo to an organization with rulesets), revisit.
 
+### Batch merge of multiple green PRs (avoid N× CI re-runs)
+
+**Trigger:** the agent detects 2+ open PRs, all with green CI, all targeting `main`.
+
+**Why sequential merging is slow:** branch protection has `strict: true`, so after merging
+the first PR, every remaining PR becomes `BEHIND` and each `update branch` (rebase)
+re-runs the FULL CI (~27 min). N PRs sequential ≈ N × 27 min. One batch PR ≈ 1 × 27 min.
+
+**Precondition (verify first, no exceptions):**
+
+1. All PRs are `MERGEABLE` with `mergeStateStatus: CLEAN`.
+2. **Files touched are fully disjoint** — check with:
+   `for pr in <N1> <N2>; do gh pr view $pr --json files --jq '.files[].path'; done`
+   Any overlap → do NOT batch; merge sequentially instead.
+3. All PRs share a compatible `type:*` label (e.g. all `fix` → one `type:bug`).
+
+**Procedure:**
+
+```bash
+# 1. Branch from current main in a new worktree
+git fetch origin && git merge --ff-only origin/main
+git worktree add ~/Projects/webfang-worktrees/fix-batch -b fix/batch-<topic>
+
+# 2. Merge each PR's REMOTE head SHA (not the local branch — it may be stale)
+#    Get the exact SHA: gh pr view <N> --json headRefOid --jq '.headRefOid'
+git merge --no-ff <sha1> -m "Merge <branch> (PR #N1)"
+git merge --no-ff <sha2> -m "Merge <branch> (PR #N2)"
+
+# 3. Local gate, push, create the batch PR linking ALL issues
+cargo check && cargo clippy --all-targets --all-features -- -D warnings \
+  -W clippy::cognitive_complexity -W clippy::too_many_lines && cargo fmt
+git push -u origin fix/batch-<topic>
+gh pr create --base main --head fix/batch-<topic> --label type:bug \
+  --title "fix(batch): ..." --body "Closes #A
+Closes #B
+
+## Summary
+..."
+
+# 4. Close the original PRs as superseded
+for pr in <N1> <N2>; do gh pr close $pr --comment "Superseded by #<batch-PR>"; done
+
+# 5. Delete the now-orphan remote branches (gh pr close does NOT delete them)
+git push origin --delete <branch1> <branch2>
+```
+
+**Merge method:** use `gh pr merge <batch-PR> --merge` (merge commit), NOT `--squash`.
+Squash would crush N independent fixes into one commit, losing per-fix revert
+granularity. The merge commit preserves each original commit in main's history.
+Note: `merge-when-green.sh` hardcodes `--squash`, so do NOT use it for batch PRs.
+
+**Issue cleanup is automatic:** the `Closes #N` keywords in the batch PR body close
+all linked issues at merge time. Never close them manually before the merge — that
+is premature (the fix is not in main yet) and breaks the auto-close trace.
+
+**Post-merge:** run the standard post-merge runbook (ff-only sync, remove batch
+worktree, delete local branch, prune). Final state: only `main` locally and remotely,
+empty `git status`, all linked issues CLOSED.
+
+**Real example:** PRs #741 + #744 + #745 (disjoint files, all green) → batch PR #746,
+merged as `84dc0c1`. Saved ~54 min of CI (3 × 27 min → 1 × 27 min).
+
 ---
 
 ## 🗺️ Skill Routing Matrix
