@@ -179,6 +179,40 @@ fn check_js_dependencies_with(candidates: &[&str], opts: &CrawlOptions) -> Resul
     ))
 }
 
+/// Preflight: `--elastic` must have at least one wirable vector sink (#695).
+///
+/// `--elastic` and `--output-vectors` are orthogonal vector destinations
+/// (#636): the SQLite sink only exists under the `persistence` feature,
+/// while the JSONL stream sink is available in every build. Without
+/// `persistence` AND without `--output-vectors`, `--elastic` would wire no
+/// sink at all and the run would silently report success with no artifact.
+///
+/// Fail fast instead: an explicit request the binary cannot honor is a
+/// configuration error (exit 78), never a silent no-op.
+///
+/// # Errors
+///
+/// Returns [`crate::CliExit::ConfigError`] (exit 78) when `--elastic` is
+/// enabled, no `--output-vectors` path was given, and the binary was built
+/// without the `persistence` feature.
+pub fn check_elastic_sink(opts: &CrawlOptions) -> Result<(), CliExit> {
+    if !opts.elastic.enabled {
+        return Ok(());
+    }
+    if opts.elastic.output_vectors.is_some() {
+        return Ok(());
+    }
+    if cfg!(feature = "persistence") {
+        return Ok(());
+    }
+    Err(CliExit::ConfigError(
+        "--elastic requiere un destino de vectores: este binario fue compilado sin la \
+             feature `persistence` (sink SQLite); use --output-vectors <ruta> o un binario \
+             compilado con persistencia"
+            .into(),
+    ))
+}
+
 /// Spawn `<binary> --version` once and report its exit status.
 ///
 /// A missing or non-executable binary surfaces as an `io::Error`, which the
@@ -790,5 +824,57 @@ mod tests {
             ),
             other => panic!("expected ConfigError, got: {other:?}"),
         }
+    }
+
+    // ========================================================================
+    // #695 — --elastic sink availability preflight
+    // ========================================================================
+
+    /// `--elastic` disabled: no sink is required, check passes.
+    #[test]
+    fn elastic_disabled_ok() {
+        let mut opts = CrawlOptions::default();
+        opts.elastic.enabled = false;
+        assert!(check_elastic_sink(&opts).is_ok());
+    }
+
+    /// `--elastic` + `--output-vectors`: the JSONL stream sink exists in
+    /// every build, so the check passes regardless of `persistence`.
+    #[test]
+    fn elastic_with_output_vectors_ok() {
+        let mut opts = CrawlOptions::default();
+        opts.elastic.enabled = true;
+        opts.elastic.output_vectors = Some("vectors.jsonl".into());
+        assert!(check_elastic_sink(&opts).is_ok());
+    }
+
+    /// `--elastic` alone without the `persistence` feature: no wirable
+    /// sink — must fail fast with a config error naming the flag.
+    #[cfg(not(feature = "persistence"))]
+    #[test]
+    fn elastic_without_persistence_errors() {
+        let mut opts = CrawlOptions::default();
+        opts.elastic.enabled = true;
+        opts.elastic.output_vectors = None;
+        let err =
+            check_elastic_sink(&opts).expect_err("no sink available without persistence must fail");
+        match err {
+            CliExit::ConfigError(msg) => assert!(
+                msg.contains("--elastic"),
+                "config error must name the flag, got: {msg}"
+            ),
+            other => panic!("expected ConfigError, got: {other:?}"),
+        }
+    }
+
+    /// `--elastic` alone with the `persistence` feature: the SQLite sink
+    /// is wirable, check passes.
+    #[cfg(feature = "persistence")]
+    #[test]
+    fn elastic_with_persistence_ok() {
+        let mut opts = CrawlOptions::default();
+        opts.elastic.enabled = true;
+        opts.elastic.output_vectors = None;
+        assert!(check_elastic_sink(&opts).is_ok());
     }
 }

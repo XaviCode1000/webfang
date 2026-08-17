@@ -455,6 +455,7 @@ impl Container {
         if opts.elastic.enabled {
             let pool = sqlite_persistence::create_pool(&config.db_path, config.db_pool_size)?;
             sqlite_persistence::setup_schema(&pool).await?;
+            tracing::info!(db_path = %config.db_path.display(), "elastic_sqlite_sink_wired");
             repos.push(Arc::new(SqliteVectorRepository::new(pool)));
         }
 
