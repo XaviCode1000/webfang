@@ -3,17 +3,25 @@
 //! Analyzes HTML content to determine if a page is a static server-rendered
 //! page or a JavaScript SPA that requires a headless browser for full content.
 //!
-//! Detection heuristics:
-//! - Known SPA mount points (`#root`, `#app`, `__NEXT_DATA__`, `__NUXT__`)
-//! - Insufficient static content (body too short)
-//! - WAF challenge pages that impersonate SPAs
+//! Detection heuristics (in order):
+//! - WAF challenge pages that impersonate SPAs (checked first, REQ-WAF-10)
+//! - Insufficient VISIBLE TEXT: the extracted text (scripts/styles stripped)
+//!   is counted in characters, aligned with
+//!   [`crate::application::spa_detection::MIN_CONTENT_CHARS`]. A fat JS
+//!   shell (thousands of raw HTML bytes, near-zero readable text, e.g.
+//!   `quotes.toscrape.com/js/`) must escalate even though its raw byte count
+//!   is large (#758).
+//! - Known SPA mount points (`#root`, `#app`, `__NEXT_DATA__`, `__NUXT__`) —
+//!   only consulted when text is insufficient, as an enriched reason. Pages
+//!   with substantial text are static even if they embed hydration markers
+//!   (SSR), mirroring the char-gate-first semantics of the application layer.
 
 use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
 
 /// Signal indicating whether a page is static, an SPA, or WAF-blocked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpaSignal {
-    /// Page has sufficient static HTML content — no JS rendering needed.
+    /// Page has sufficient visible text content — no JS rendering needed.
     StaticContent,
     /// Page is detected as an SPA with the given reason.
     SpaDetected(SpaReason),
@@ -26,15 +34,17 @@ pub enum SpaSignal {
 pub enum SpaReason {
     /// Known SPA mount point found (e.g., `#root`, `#app`, `__NEXT_DATA__`, `__NUXT__`).
     MountPoint(String),
-    /// Page body is too short to contain meaningful static content.
-    /// The `usize` is the content length in bytes.
-    InsufficientContent(usize),
+    /// Page visible text is too short to contain meaningful static content.
+    /// The `usize` is the non-whitespace character count of the extracted
+    /// visible text (NOT raw HTML bytes — #758).
+    InsufficientText(usize),
 }
 
-/// Minimum HTML content length (in bytes) to consider a page as having
-/// meaningful static content. Below this threshold, the page is likely
-/// an SPA shell with minimal markup.
-const MIN_CONTENT_LENGTH: usize = 50;
+/// Minimum visible-text length (in non-whitespace characters) to consider a
+/// page as having meaningful static content. Aligned with
+/// [`crate::application::spa_detection::MIN_CONTENT_CHARS`] so both layers
+/// share one semantic for "enough content" (#758).
+const MIN_VISIBLE_CHARS: usize = 50;
 
 /// Known SPA mount point markers.
 ///
@@ -55,9 +65,41 @@ const SPA_MARKERS: &[(&str, &str)] = &[
     ("__REMIX_DATA__", "Remix"),
 ];
 
+/// Tags whose text descendants are NOT visible content. Scripts and styles
+/// carry the bulk of JS shells; `noscript`/`template` content is inert markup
+/// a browser never renders as page text.
+const INVISIBLE_TEXT_TAGS: [&str; 4] = ["script", "style", "noscript", "template"];
+
 // WAF challenge classification is delegated to the shared inspection verdict
 // (REQ-WAF-10) — the former local `WAF_MARKERS` list was folded into the
 // unified signature registry in `waf_engine` and removed here.
+
+/// Count the non-whitespace characters of visible text in an HTML document.
+///
+/// Parses the document and walks text nodes, excluding descendants of
+/// [`INVISIBLE_TEXT_TAGS`]. This is the infra-tier semantic aligned with the
+/// application layer's extracted-text char count (#758): raw HTML byte length
+/// is a broken proxy because JS shells serve kilobytes of markup with
+/// near-zero readable text.
+fn visible_text_chars(html: &str) -> usize {
+    let document = scraper::Html::parse_document(html);
+    document
+        .root_element()
+        .descendants()
+        .filter(|node| {
+            node.value().is_text()
+                && !node.ancestors().any(|ancestor| {
+                    ancestor
+                        .value()
+                        .as_element()
+                        .is_some_and(|element| INVISIBLE_TEXT_TAGS.contains(&element.name()))
+                })
+        })
+        .filter_map(|node| node.value().as_text())
+        .flat_map(|text| text.chars())
+        .filter(|c| !c.is_whitespace())
+        .count()
+}
 
 /// Detect whether an HTML page is static content, an SPA, or a WAF challenge.
 ///
@@ -77,9 +119,11 @@ const SPA_MARKERS: &[(&str, &str)] = &[
 /// ```
 /// use webfang_core::infrastructure::downloader::spa_detector::{detect_spa, SpaSignal};
 ///
-/// let html = "<html><body><article><h1>Hello</h1></article></body></html>";
+/// // Substantial visible text → static, even with hydration markers (SSR).
+/// let html = "<html><body><article><h1>Hello</h1><p>This page carries enough visible text to be considered static content by the detector.</p></article></body></html>";
 /// assert_eq!(detect_spa(html, false), SpaSignal::StaticContent);
 ///
+/// // A JS shell: fat markup, near-zero visible text → SPA.
 /// let spa = "<html><body><div id=\"root\"></div></body></html>";
 /// assert!(matches!(detect_spa(spa, false), SpaSignal::SpaDetected(_)));
 /// ```
@@ -99,19 +143,24 @@ pub fn detect_spa(html: &str, ignore_waf: bool) -> SpaSignal {
         return SpaSignal::WafBlocked;
     }
 
-    // Check content length
-    if html.len() < MIN_CONTENT_LENGTH {
-        return SpaSignal::SpaDetected(SpaReason::InsufficientContent(html.len()));
+    // Visible-text gate (#758): count extracted text characters, not raw HTML
+    // bytes. A fat JS shell (quotes.toscrape.com/js/: ~5.8 KB raw, ~0 text)
+    // must escalate; an SSR page with hydration markers but substantial text
+    // must NOT.
+    let text_chars = visible_text_chars(html);
+    if text_chars >= MIN_VISIBLE_CHARS {
+        return SpaSignal::StaticContent;
     }
 
-    // Check for SPA mount points
+    // Insufficient text — enrich the reason with a mount-point marker when
+    // one is present (preserves MountPoint diagnostics for known shells).
     for (marker, description) in SPA_MARKERS {
         if html.contains(marker) {
             return SpaSignal::SpaDetected(SpaReason::MountPoint(description.to_string()));
         }
     }
 
-    SpaSignal::StaticContent
+    SpaSignal::SpaDetected(SpaReason::InsufficientText(text_chars))
 }
 
 #[cfg(test)]
@@ -218,23 +267,81 @@ mod tests {
     }
 
     #[test]
-    fn test_insufficient_content_empty() {
+    fn test_insufficient_text_empty() {
         let html = "";
         let signal = detect_spa(html, false);
         assert!(matches!(
             signal,
-            SpaSignal::SpaDetected(SpaReason::InsufficientContent(0))
+            SpaSignal::SpaDetected(SpaReason::InsufficientText(0))
         ));
     }
 
     #[test]
-    fn test_insufficient_content_short() {
-        let html = "<html></html>"; // 14 bytes < 50
+    fn test_insufficient_text_short() {
+        let html = "<html></html>"; // 0 visible chars < 50
         let signal = detect_spa(html, false);
         assert!(matches!(
             signal,
-            SpaSignal::SpaDetected(SpaReason::InsufficientContent(_))
+            SpaSignal::SpaDetected(SpaReason::InsufficientText(_))
         ));
+    }
+
+    /// #758 regression: a FAT JS shell (thousands of raw bytes, near-zero
+    /// visible text, no known mount-point marker) must escalate. The old
+    /// raw-byte heuristic classified this as `StaticContent` and the hybrid
+    /// router never reached Obscura (quotes.toscrape.com/js/ case).
+    #[test]
+    fn test_fat_shell_without_markers_escalates() {
+        let fat_script = "var x = 1;".repeat(600); // ~6 KB of raw markup
+        let html = format!(
+            "<!DOCTYPE html><html><head><title>JS App</title>\
+             <script>{fat_script}</script></head><body></body></html>"
+        );
+        assert!(html.len() > 5_000, "fixture must be a fat raw-HTML shell");
+        let signal = detect_spa(&html, false);
+        assert!(
+            matches!(
+                signal,
+                SpaSignal::SpaDetected(SpaReason::InsufficientText(n)) if n < 50
+            ),
+            "fat shell with near-zero visible text must escalate, got: {signal:?}"
+        );
+    }
+
+    /// #758: script/style/noscript/template text must NOT count as visible
+    /// content — only rendered page text does.
+    #[test]
+    fn test_invisible_tags_do_not_count_as_text() {
+        let html = format!(
+            "<html><body><style>{}</style><noscript>{}</noscript>\
+             <template>{}</template><p>short</p></body></html>",
+            "a".repeat(100),
+            "b".repeat(100),
+            "c".repeat(100),
+        );
+        let signal = detect_spa(&html, false);
+        assert!(
+            matches!(
+                signal,
+                SpaSignal::SpaDetected(SpaReason::InsufficientText(n)) if n < 50
+            ),
+            "text inside invisible tags must not satisfy the threshold, got: {signal:?}"
+        );
+    }
+
+    /// #758: an SSR page that embeds hydration markers (`__NEXT_DATA__`) but
+    /// ships substantial visible text must NOT escalate — the char gate runs
+    /// before marker inspection, aligned with `application::spa_detection`.
+    #[test]
+    fn test_ssr_with_content_is_static() {
+        let html = r#"<!DOCTYPE html>
+<html>
+<body>
+  <script id="__NEXT_DATA__" type="application/json">{"props":{"page":"home"}}</script>
+  <div id="root"><article><h1>Server rendered</h1><p>This content was hydrated server-side and is fully readable without executing any JavaScript at all.</p></article></div>
+</body>
+</html>"#;
+        assert_eq!(detect_spa(html, false), SpaSignal::StaticContent);
     }
 
     #[test]
@@ -294,8 +401,10 @@ mod tests {
     fn test_waf_t2_fingerprint_alone_not_challenge() {
         // REQ-WAF-10 / #346: a bare Fingerprint-tier marker (a vendor name in
         // prose) is NOT a challenge in degraded mode — it falls through to normal
-        // static classification instead of a false-positive WafBlocked.
-        let html = r#"<html><body><article><p>This site is protected by cloudflare.</p></article></body></html>"#;
+        // static classification instead of a false-positive WafBlocked. The
+        // prose carries enough visible text to stay static under the #758
+        // text gate.
+        let html = r#"<html><body><article><p>This site is protected by cloudflare and this sentence is long enough to pass the visible text threshold.</p></article></body></html>"#;
         assert_eq!(detect_spa(html, false), SpaSignal::StaticContent);
     }
 
@@ -348,19 +457,19 @@ mod tests {
 
     #[test]
     fn test_static_content_exact_threshold() {
-        // Exactly 50 bytes should be considered static (not insufficient)
-        let html = "a".repeat(50);
+        // Exactly 50 visible chars should be considered static (not insufficient)
+        let html = format!("<html><body>{}</body></html>", "a".repeat(50));
         assert_eq!(detect_spa(&html, false), SpaSignal::StaticContent);
     }
 
     #[test]
     fn test_static_content_below_threshold() {
-        // 49 bytes should be insufficient
-        let html = "a".repeat(49);
+        // 49 visible chars should be insufficient
+        let html = format!("<html><body>{}</body></html>", "a".repeat(49));
         let signal = detect_spa(&html, false);
         assert!(matches!(
             signal,
-            SpaSignal::SpaDetected(SpaReason::InsufficientContent(49))
+            SpaSignal::SpaDetected(SpaReason::InsufficientText(49))
         ));
     }
 }
