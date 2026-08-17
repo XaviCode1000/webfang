@@ -1,10 +1,7 @@
 //! Error paths: unreachable host, 404, 500 responses.
 
-use crate::assert_snapshot_redacted;
-use crate::cmd;
-use crate::BehavioralTest;
-use std::path::Path;
-use std::time::Duration;
+use crate::{assert_snapshot_redacted, cmd, BehavioralTest};
+use std::{path::Path, time::Duration};
 use tempfile::TempDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -352,6 +349,12 @@ mod output_vectors_without_clean_ai {
 // JS-shell content → exit 65 (EX_DATA) — honest data-format failure (#706)
 // ---------------------------------------------------------------------------
 
+/// Deterministic JS-shell body: `<div id="app">` mount point + `__NEXT_DATA__`
+/// payload, well under the 50-char extraction threshold (XC-2 fixture).
+const JS_SHELL_BODY: &str = "<!DOCTYPE html><html><head><title>App</title>\
+             <script id=\"__NEXT_DATA__\" type=\"application/json\">{\"page\":\"/\"}</script>\
+             </head><body><div id=\"app\"></div></body></html>";
+
 /// A JS-shell page (CE-1): fetch succeeds, extraction returns <50 chars with
 /// SPA markers → the run must exit 65 (DataFormatError) with the Spanish
 /// per-URL failure plus the Spanish summary, never exit 69 or a fake success.
@@ -367,11 +370,7 @@ async fn js_shell_single_page_exits_65_with_spanish_error() {
 
     Mock::given(method("GET"))
         .and(path("/"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            "<!DOCTYPE html><html><head><title>App</title>\
-             <script id=\"__NEXT_DATA__\" type=\"application/json\">{\"page\":\"/\"}</script>\
-             </head><body><div id=\"app\"></div></body></html>",
-        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(JS_SHELL_BODY))
         .mount(&t.server)
         .await;
 
@@ -417,11 +416,7 @@ async fn mixed_batch_with_js_shell_stays_69() {
         .await;
     Mock::given(method("GET"))
         .and(path("/shell"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            "<!DOCTYPE html><html><head><title>App</title>\
-             <script id=\"__NEXT_DATA__\" type=\"application/json\">{\"page\":\"/\"}</script>\
-             </head><body><div id=\"app\"></div></body></html>",
-        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(JS_SHELL_BODY))
         .mount(&t.server)
         .await;
 

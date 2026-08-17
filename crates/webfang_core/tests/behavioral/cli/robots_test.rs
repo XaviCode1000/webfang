@@ -6,6 +6,11 @@ use crate::BehavioralTest;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
+/// Seed page HTML linking to `/private/page`, padded so its extractable text
+/// clears the 50-char minimum-content guard (XC-2).
+const PRIVATE_SEED_PAGE: &str = r#"<html><body><a href="/private/page">Private</a>
+             <p>The seed page carries plenty of substantive server-rendered text so it comfortably clears the fifty character minimum content guard.</p></body></html>"#;
+
 /// Mock the seed page at `/` with the given HTML body.
 async fn mock_seed_page(t: &BehavioralTest, body: &str) {
     Mock::given(method("GET"))
@@ -83,12 +88,7 @@ async fn robots_txt_disallow_prevents_fetching() {
     crate::common::mock_robots(&t.server, "User-agent: *\nDisallow: /private/\n").await;
 
     // Seed page links to /private/page.
-    mock_seed_page(
-        &t,
-        r#"<html><body><a href="/private/page">Private</a>
-             <p>The seed page carries plenty of substantive server-rendered text so it comfortably clears the fifty character minimum content guard.</p></body></html>"#,
-    )
-    .await;
+    mock_seed_page(&t, PRIVATE_SEED_PAGE).await;
 
     // The /private/page endpoint is not mocked; if the crawler respects
     // robots.txt it will never reach it and wiremock returns 404 by default.
@@ -127,12 +127,7 @@ async fn ignore_robots_flag_allows_disallowed_fetch() {
 
     crate::common::mock_robots(&t.server, "User-agent: *\nDisallow: /private/\n").await;
 
-    mock_seed_page(
-        &t,
-        r#"<html><body><a href="/private/page">Private</a>
-             <p>The seed page carries plenty of substantive server-rendered text so it comfortably clears the fifty character minimum content guard.</p></body></html>"#,
-    )
-    .await;
+    mock_seed_page(&t, PRIVATE_SEED_PAGE).await;
 
     Mock::given(method("GET"))
         .and(path("/private/page"))

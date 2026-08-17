@@ -188,6 +188,28 @@ fn is_tool_error(result: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// Call a single-URL tool against `target_uri` and return the extracted
+/// `result` object from the JSON-RPC envelope.
+async fn call_single_url_tool_result(
+    client: &Client,
+    base_url: &str,
+    session_id: &str,
+    tool: &str,
+    target_uri: &str,
+) -> Value {
+    let resp = call_tool(
+        client,
+        base_url,
+        session_id,
+        tool,
+        json!({ "url": target_uri }),
+    )
+    .await;
+    resp.get("result")
+        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
+        .clone()
+}
+
 // ============================================================================
 // scrape_url
 // ============================================================================
@@ -234,19 +256,9 @@ async fn test_scrape_url_http_error_is_honest_error() {
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "scrape_url",
-        json!({ "url": mock.uri() }),
-    )
-    .await;
-
-    let result = resp
-        .get("result")
-        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
-        .clone();
+    let result =
+        call_single_url_tool_result(&client, &base_url, &session_id, "scrape_url", &mock.uri())
+            .await;
     assert!(
         is_tool_error(&result),
         "HTTP 500 must return isError:true, got: {}",
@@ -278,19 +290,9 @@ async fn test_scrape_url_js_shell_is_error_result() {
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "scrape_url",
-        json!({ "url": mock.uri() }),
-    )
-    .await;
-
-    let result = resp
-        .get("result")
-        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
-        .clone();
+    let result =
+        call_single_url_tool_result(&client, &base_url, &session_id, "scrape_url", &mock.uri())
+            .await;
     assert!(
         is_tool_error(&result),
         "a JS-shell scrape must return isError:true, got: {}",

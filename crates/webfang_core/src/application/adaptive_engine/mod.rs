@@ -861,22 +861,33 @@ mod tests {
         }
     }
 
+    /// Ambiguous Tier 1 engine (score 0.65 ≤ 0.85) — the cascade must escalate
+    /// to Tier 2 instead of settling for the lexical suggestion.
+    fn ambiguous_tier1() -> Arc<MockInspector> {
+        Arc::new(MockInspector {
+            suggestions: vec![SelectorSuggestion {
+                selector: ".lexical-low".to_owned(),
+                score: 0.65,
+            }],
+        })
+    }
+
+    /// Semantic mock returning a single match for `selector` at `confidence`.
+    fn semantic_match(selector: &str, confidence: f32) -> Arc<MockSemanticMatch> {
+        Arc::new(MockSemanticMatch(Some(SemanticMatch {
+            selector: selector.to_owned(),
+            confidence,
+            source: crate::domain::semantic_inspector::TierSource::Semantic,
+        })))
+    }
+
     /// Tier 2 returns a confident match → repaired via
     /// method="tier2_semantic", trace carries the Tier 2 score.
     #[tokio::test]
     async fn test_repair_resolves_via_tier2_when_confidence_above_threshold() {
         // Tier 1 stays ambiguous (0.65 ≤ 0.85) so the cascade escalates to Tier 2.
-        let inspector = Arc::new(MockInspector {
-            suggestions: vec![SelectorSuggestion {
-                selector: ".lexical-low".to_owned(),
-                score: 0.65,
-            }],
-        });
-        let semantic = Arc::new(MockSemanticMatch(Some(SemanticMatch {
-            selector: ".semantic-hit".to_owned(),
-            confidence: 0.9, // above semantic_threshold (0.75)
-            source: crate::domain::semantic_inspector::TierSource::Semantic,
-        })));
+        let inspector = ambiguous_tier1();
+        let semantic = semantic_match(".semantic-hit", 0.9); // above semantic_threshold (0.75)
 
         let engine = AdaptiveSelectorEngine::new(
             inspector,
@@ -907,17 +918,8 @@ mod tests {
     /// must still be visible in the trace (tier2_semantic ran).
     #[tokio::test]
     async fn test_repair_degraded_when_tier2_confidence_below_threshold() {
-        let inspector = Arc::new(MockInspector {
-            suggestions: vec![SelectorSuggestion {
-                selector: ".lexical-low".to_owned(),
-                score: 0.65,
-            }],
-        });
-        let semantic = Arc::new(MockSemanticMatch(Some(SemanticMatch {
-            selector: ".semantic-weak".to_owned(),
-            confidence: 0.6, // below semantic_threshold (0.75)
-            source: crate::domain::semantic_inspector::TierSource::Semantic,
-        })));
+        let inspector = ambiguous_tier1();
+        let semantic = semantic_match(".semantic-weak", 0.6); // below semantic_threshold (0.75)
 
         let engine = AdaptiveSelectorEngine::new(
             inspector,

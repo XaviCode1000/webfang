@@ -244,25 +244,32 @@ mod tests {
         );
     }
 
+    /// Assert that `err` is the typed `ExtractionFailed` for [`URL`] and
+    /// return its Spanish reason for further assertions.
+    fn expect_extraction_failed(err: &crate::error::ScraperError) -> &str {
+        match err {
+            crate::error::ScraperError::ExtractionFailed { url, reason } => {
+                assert_eq!(url, URL, "url must be preserved on the error");
+                reason
+            },
+            other => panic!("expected ExtractionFailed, got: {other:?}"),
+        }
+    }
+
     #[test]
     fn test_validate_min_content_err_with_markers_mentions_js() {
         let correlation = CorrelationId::new();
         let err = validate_min_content(URL, "loading", "<div id=\"root\"></div>", &correlation)
             .expect_err("sub-threshold marker content must fail the guard");
-        match &err {
-            crate::error::ScraperError::ExtractionFailed { url, reason } => {
-                assert_eq!(url, URL, "url must be preserved on the error");
-                assert!(
-                    reason.contains("contenido insuficiente"),
-                    "Spanish reason must state insufficient content: {reason}"
-                );
-                assert!(
-                    reason.contains("renderizado de JavaScript"),
-                    "marker variant must mention JavaScript rendering: {reason}"
-                );
-            },
-            other => panic!("expected ExtractionFailed, got: {other:?}"),
-        }
+        let reason = expect_extraction_failed(&err);
+        assert!(
+            reason.contains("contenido insuficiente"),
+            "Spanish reason must state insufficient content: {reason}"
+        );
+        assert!(
+            reason.contains("renderizado de JavaScript"),
+            "marker variant must mention JavaScript rendering: {reason}"
+        );
     }
 
     #[test]
@@ -270,19 +277,14 @@ mod tests {
         let correlation = CorrelationId::new();
         let err = validate_min_content(URL, "", "<html><body></body></html>", &correlation)
             .expect_err("empty content must fail the guard");
-        match &err {
-            crate::error::ScraperError::ExtractionFailed { url, reason } => {
-                assert_eq!(url, URL, "url must be preserved on the error");
-                assert!(
-                    reason.contains("contenido insuficiente"),
-                    "Spanish reason must state insufficient content: {reason}"
-                );
-                assert!(
-                    !reason.contains("renderizado de JavaScript"),
-                    "no-marker variant must not claim JS requirement: {reason}"
-                );
-            },
-            other => panic!("expected ExtractionFailed, got: {other:?}"),
-        }
+        let reason = expect_extraction_failed(&err);
+        assert!(
+            reason.contains("contenido insuficiente"),
+            "Spanish reason must state insufficient content: {reason}"
+        );
+        assert!(
+            !reason.contains("renderizado de JavaScript"),
+            "no-marker variant must not claim JS requirement: {reason}"
+        );
     }
 }
