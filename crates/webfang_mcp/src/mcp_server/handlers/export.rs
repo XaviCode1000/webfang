@@ -303,6 +303,10 @@ impl McpHandler {
     }
 
     /// Full export pipeline: scrape (when `url` is given) → export synchronously
+    ///
+    /// The live-scrape branch respects SSRF protection and the site's
+    /// robots.txt: a disallowed URL is rejected with a `robots.txt` error
+    /// before any fetch (#749, uniform with #697).
     #[tool(
         description = "Run the export pipeline synchronously: when `url` is provided, scrape it first; otherwise use persisted crawl results. Export to the specified format (jsonl, vector, or auto; default jsonl). Reports the real written path; never queues."
     )]
@@ -334,6 +338,17 @@ impl McpHandler {
                         Some(serde_json::Value::String("url".to_string())),
                     )
                 })?;
+                // #749 fold-in: this branch fetched a caller URL without the
+                // SSRF guard every other URL-fetching tool has.
+                crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
+                // #749: robots.txt gate before the live scrape, same site-policy
+                // contract as the other scrape tools; denials reuse this
+                // branch's error wrapper below.
+                if let Some(err) = self.state.robots_denied_for(&url).await {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "error al rastrear {url}: {err}"
+                    ))]));
+                }
                 let client = self.state.container.http_client().as_ref();
                 match webfang_core::application::scraper_service::scrape_with_readability(
                     client, &url,
@@ -430,13 +445,39 @@ mod handler_tests {
     use crate::mcp_server::state::McpState;
     use rmcp::handler::server::wrapper::Parameters;
     use rmcp::model::CallToolResult;
+    use serial_test::serial;
     use std::path::Path;
     use tempfile::TempDir;
     use webfang_core::di::Container;
     use webfang_core::domain::{CrawlerConfig, ScrapedContent, ValidUrl};
     use webfang_core::infrastructure::config::ScraperConfig;
+    use webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    /// Determinism (#705/#749): the robots check performs a real robots.txt
+    /// fetch, so plain unit tests drop the fetcher (no-op gate); #749 robots
+    /// tests wire a fetcher explicitly (see `test_handler_with_robots`).
     async fn test_handler() -> (McpHandler, TempDir) {
+        let (mut state, tmp) = test_state().await;
+        state.robots_fetcher = None;
+        (McpHandler::new(state), tmp)
+    }
+
+    /// Build a state with a real robots fetcher for #749 enforcement tests.
+    /// Offline-friendly: construction never touches the network.
+    async fn test_handler_with_robots() -> (McpHandler, TempDir) {
+        let (state, tmp) = test_state().await;
+        let state = state.with_robots_fetcher(std::sync::Arc::new(
+            RobotsFetcher::with_default_profile(5).expect("fetcher construction is offline"),
+        ));
+        (McpHandler::new(state), tmp)
+    }
+
+    /// Shared state construction for `test_handler` /
+    /// `test_handler_with_robots`. The `TempDir` is returned so the caller
+    /// keeps the configured `output_dir` alive.
+    async fn test_state() -> (McpState, TempDir) {
         let tmp = TempDir::new().expect("create temp dir");
         let crawler_config =
             CrawlerConfig::new(url::Url::parse("https://example.com").expect("valid url"));
@@ -447,8 +488,7 @@ mod handler_tests {
         let container = Container::new(crawler_config, scraper_config)
             .await
             .expect("create container");
-        let state = McpState::new(container);
-        (McpHandler::new(state), tmp)
+        (McpState::new(container), tmp)
     }
 
     /// Seed the container's crawl-result repository with one item, polling
@@ -732,6 +772,84 @@ mod handler_tests {
         assert!(
             text.contains("error al rastrear") || text.contains("Exportación completada"),
             "url branch must attempt a live scrape: {text}"
+        );
+    }
+
+    /// #749: the url branch must respect robots.txt — a disallowed URL fails
+    /// with the branch's error wrapper mentioning `robots.txt`, and no page
+    /// fetch is issued (only the robots.txt probe reaches the mock).
+    #[cfg_attr(miri, ignore)] // real network stack via wreq — unsupported by Miri
+    #[tokio::test]
+    #[serial] // WEBFANG_MCP_DISABLE_SSRF is process-global — see scraping.rs
+    async fn process_export_pipeline_url_robots_disallowed_errors_before_scrape() {
+        // Wiremock binds 127.0.0.1 — lift the SSRF guard for this test
+        // process (nextest isolates each test in its own process). The SSRF
+        // guard itself is asserted by the dedicated regression test below.
+        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+        let (handler, _tmp) = test_handler_with_robots().await;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/robots.txt"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("User-agent: *\nDisallow: /private\n"),
+            )
+            .mount(&server)
+            .await;
+
+        let res = handler
+            .process_export_pipeline(Parameters(ProcessExportPipelineParams {
+                url: Some(format!("{}/private/page", server.uri())),
+                format: Some("jsonl".to_string()),
+            }))
+            .await
+            .expect("process_export_pipeline returns Ok on robots denial");
+
+        let json = serde_json::to_value(&res).expect("CallToolResult serializes");
+        assert_eq!(
+            json.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "robots denial must set isError:true, got: {json}"
+        );
+        let text = result_text(&res);
+        assert!(
+            text.contains("error al rastrear") && text.contains("robots.txt"),
+            "url branch must wrap the robots denial: {text}"
+        );
+        let page_hits = server
+            .received_requests()
+            .await
+            .expect("request recording is enabled")
+            .iter()
+            .filter(|r| r.url.path() != "/robots.txt")
+            .count();
+        assert_eq!(page_hits, 0, "the robots gate must block the page fetch");
+    }
+
+    /// #749 fold-in regression: the url branch now validates against SSRF —
+    /// a loopback target is rejected with an SSRF protocol error before any
+    /// fetch. Mirrors the loopback tests of the other URL-fetching tools
+    /// (Bug #673).
+    #[tokio::test]
+    #[serial]
+    async fn process_export_pipeline_url_ssrf_guard_blocks_loopback() {
+        // Defensive under shared-process harnesses: the escape hatch must be
+        // unset for this process so the guard is active. (nextest isolates
+        // each test in its own process, so this is a no-op there.)
+        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
+        let (handler, _tmp) = test_handler().await;
+        let res = handler
+            .process_export_pipeline(Parameters(ProcessExportPipelineParams {
+                url: Some("http://127.0.0.1/".to_string()),
+                format: Some("jsonl".to_string()),
+            }))
+            .await;
+        assert!(res.is_err(), "loopback URL must be a protocol error");
+        let msg = res
+            .expect_err("loopback URL must be blocked by SSRF")
+            .to_string();
+        assert!(
+            msg.contains("SSRF"),
+            "error must report SSRF protection, got: {msg}"
         );
     }
 }

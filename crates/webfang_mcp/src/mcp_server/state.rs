@@ -270,6 +270,23 @@ impl McpState {
             .record(event);
     }
 
+    /// Shared robots.txt gate for tools that fetch content directly (#749).
+    ///
+    /// Delegates to the single policy source
+    /// ([`enforce_robots_policy`](webfang_core::application::scraper_service::enforce_robots_policy)):
+    /// fail-open when the fetcher is absent, `WafBlocked(url, "robots.txt")`
+    /// on denial. Callers receive the denial as an error payload and report it
+    /// through their tool error envelope.
+    pub async fn robots_denied_for(
+        &self,
+        url: &url::Url,
+    ) -> Option<webfang_core::error::ScraperError> {
+        let robots = self.robots_fetcher.as_deref();
+        webfang_core::application::scraper_service::enforce_robots_policy(url, robots, false)
+            .await
+            .err()
+    }
+
     /// Record a scrape event stamped with the tool call's run-root identity.
     ///
     /// The sole call-side helper for identified scrape metrics (#698): it owns

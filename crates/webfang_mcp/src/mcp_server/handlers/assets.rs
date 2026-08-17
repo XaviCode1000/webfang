@@ -104,6 +104,7 @@ mod tests {
     use crate::mcp_server::state::McpState;
     use rmcp::handler::server::wrapper::Parameters;
     use rmcp::model::CallToolResult;
+    use serial_test::serial;
     use tempfile::TempDir;
     use webfang_core::di::Container;
     use webfang_core::domain::CrawlerConfig;
@@ -159,6 +160,7 @@ mod tests {
     /// (guard ON by default) with a "SSRF" error, BEFORE any asset fetch.
     /// The loopback literal resolves locally (no DNS/network dependency).
     #[tokio::test]
+    #[serial] // WEBFANG_MCP_DISABLE_SSRF is process-global — see scraping.rs
     async fn download_assets_rejects_loopback_base_url() {
         // Defensive under shared-process harnesses: the escape hatch must be
         // unset for this process so the guard is active. (nextest isolates
@@ -208,6 +210,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn download_assets_downloads_image_from_html() {
         // REQ-03 (#707) validates `base_url` at entry. This test serves an
         // asset from wiremock on 127.0.0.1, so lift the guard for this

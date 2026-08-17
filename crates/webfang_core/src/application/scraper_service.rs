@@ -187,16 +187,19 @@ pub async fn scrape_with_config(
 
 /// Enforce the robots.txt policy for one URL before any page fetch (#697).
 ///
-/// Keeps the crawl path's semantics: `ignore_robots` bypasses the check, a
-/// missing fetcher means "no enforcement available" (legacy behavior), and a
-/// denial returns [`ScraperError::waf_blocked`] with provider `"robots.txt"`
-/// — the WafBlocked variant is deliberately reused for robots.txt denials per
-/// the #705 audit decision (`ScraperError` has no dedicated robots variant).
+/// Single source of truth for the robots decision — shared by the crawl path
+/// ([`scrape_with_config`]) and the MCP direct-fetch tools via
+/// `McpState::robots_denied_for` (#749): `ignore_robots` opts out, a `None`
+/// fetcher means "no enforcement available" (fail-open), and a denial emits
+/// `tracing::warn!("robots_txt_denied")` and returns
+/// [`ScraperError::waf_blocked`] with provider `"robots.txt"` — the WafBlocked
+/// variant is deliberately reused for robots.txt denials per the #705 audit
+/// decision (`ScraperError` has no dedicated robots variant).
 ///
 /// [`RobotsFetcher::is_allowed`] is FAIL-OPEN: if the robots.txt fetch itself
 /// fails (network error, non-2xx, timeout), the URL is treated as allowed —
 /// matching the production crawl behavior.
-async fn enforce_robots_policy(
+pub async fn enforce_robots_policy(
     url: &url::Url,
     robots: Option<&RobotsFetcher>,
     ignore_robots: bool,
