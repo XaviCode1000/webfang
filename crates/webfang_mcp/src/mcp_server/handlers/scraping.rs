@@ -615,12 +615,16 @@ impl McpHandler {
         }
     }
 
-    /// Detect if a URL requires JavaScript rendering (SPA)
+    /// Predict if a URL requires JavaScript rendering (SPA)
+    ///
+    /// Runs the same cleaning + extraction chain the default scrape uses
+    /// (`predict_spa_status`, #760), so the verdict anticipates whether the
+    /// scrape itself will fail the minimum-content guard.
     ///
     /// Respects the site's robots.txt: a disallowed URL is rejected with a
     /// `robots.txt` error before any fetch (#749, uniform with #697).
     #[tool(
-        description = "Detect if a page requires JavaScript rendering (Single Page Application). Checks for minimal content and SPA markers like <div id=\"root\"> or <div id=\"app\">."
+        description = "Predicts if a page requires JavaScript rendering (Single Page Application) by running the same cleaning and extraction pipeline as a scrape, so its verdict matches what the scrape would do. Reports insufficient-content diagnostics and SPA markers (e.g. <div id=\"root\">, <div id=\"app\">) when the default pipeline cannot extract enough text."
     )]
     #[instrument(skip(self), fields(url = %params.url))]
     // serde_json::to_string cannot fail for a serde_json::Value.
@@ -669,10 +673,12 @@ impl McpHandler {
                     &root_correlation,
                 );
                 let html = resp.body;
-                let text = webfang_core::infrastructure::scraper::fallback::extract_text(&html);
-                match webfang_core::application::scraper_service::detect_spa_content(
+                // #760: run the same cleaning + extraction chain the scrape's
+                // minimum-content guard consumes, so the tool's verdict
+                // anticipates the scrape's (the old raw-htmd path counted
+                // <noscript>/header/footer text the real pipeline discards).
+                match webfang_core::application::spa_detection::predict_spa_status(
                     url.as_str(),
-                    &text,
                     &html,
                 ) {
                     Some(info) => {
