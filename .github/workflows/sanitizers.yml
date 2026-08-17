@@ -7,6 +7,11 @@ on:
 jobs:
   miri:
     runs-on: ubuntu-latest
+    env:
+      # rust-toolchain.toml pins 1.88.0 and would override nightly for
+      # `cargo miri` (miri is nightly-only). RUSTUP_TOOLCHAIN (env var) has
+      # higher precedence than rust-toolchain.toml (mirrors ci.yml, #750).
+      RUSTUP_TOOLCHAIN: nightly
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
