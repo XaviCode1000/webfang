@@ -68,9 +68,11 @@ pub fn extract_with_selector(
                 html,
                 inspector,
                 &document,
+                // The diagnostic keeps the raw crate error for debugging;
+                // the user-facing WARN must not leak library jargon (#761).
                 SelectorErrorKind::InvalidSelector(e.to_string()),
                 selector,
-                &format!("Invalid CSS selector '{selector}': {e}, falling back to full HTML"),
+                &invalid_selector_message(selector),
             );
         },
     };
@@ -103,6 +105,17 @@ pub fn extract_with_selector(
 /// Emit the fallback warning and build a [`ExtractResult::Fallback`] carrying
 /// the full HTML and a diagnostic for the given [`SelectorErrorKind`], when an
 /// inspector is available.
+/// Clean user-facing message for an invalid CSS selector (#761).
+///
+/// The `selectors` crate's error text leaks library jargon
+/// (`NoQualifiedNameInAttributeSelector(...)`, "Please report this to the
+/// developer") into production stderr. The raw error is preserved in the
+/// [`SelectorErrorKind::InvalidSelector`] diagnostic for debugging; only this
+/// sanitized message reaches the user.
+fn invalid_selector_message(selector: &str) -> String {
+    format!("selector CSS inválido: '{selector}' — se usó el HTML completo como fallback")
+}
+
 fn fallback(
     html: &str,
     inspector: Option<&dyn DomInspectorPort>,
@@ -420,6 +433,22 @@ mod tests {
         let result = extract_with_selector(html, ">>>not-a-selector", None);
         assert!(!result.is_matched());
         assert_eq!(result.as_html(), html);
+    }
+
+    /// #761: the user-facing WARN must not leak `selectors` crate jargon
+    /// ("Please report this to the developer", variant debug names).
+    #[test]
+    fn test_invalid_selector_message_is_clean() {
+        let msg = super::invalid_selector_message("[[[invalid");
+        assert!(msg.contains("'[[[invalid'"), "must name the offending selector");
+        assert!(
+        !msg.contains("Please report this to the developer"),
+        "must not leak crate jargon: {msg}"
+        );
+        assert!(
+        !msg.contains("NoQualifiedNameInAttributeSelector"),
+        "must not leak variant debug names: {msg}"
+        );
     }
 
     #[test]
