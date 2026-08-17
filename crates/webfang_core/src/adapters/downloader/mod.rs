@@ -976,49 +976,66 @@ mod tests {
         assert!(results.is_empty());
     }
 
-    /// SSRF redirect guard (#703): a redirect whose `Location` is a literal
-    /// forbidden IP must be stopped even when the entry URL itself passed
-    /// validation. The terminal redirect response surfaces as an HTTP error
-    /// and the target is never requested (`expect(0)` proves wiremock saw
-    /// no hit). Clones the `wreq_downloader.rs` sibling test.
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
-    #[tokio::test]
-    async fn test_redirect_to_forbidden_literal_ip_is_stopped() {
-        // Defensive under shared-process harnesses: the escape hatch must be
-        // unset for this process so the guard is active. (nextest isolates
-        // each test in its own process, so this is a no-op there.)
-        std::env::remove_var(crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV);
+    /// Mount the entry route of a redirect-flow fixture plus its destination.
+    /// The `location` header targets a forbidden literal IP, so the guard must
+    /// stop the flow before `/target` is ever requested — `expect(0)` is the
+    /// wire-level proof of that.
+    async fn mount_redirect_with_untouched_target(
+        server: &MockServer,
+        from_path: &str,
+        to_location: &str,
+    ) {
+        let redirect = ResponseTemplate::new(301).insert_header("location", to_location);
+        let entry = ResponseTemplate::new(200).set_body_string("body-never-fetched");
 
-        let mock_server = MockServer::start().await;
-
-        // Location points at a different loopback literal — forbidden by the
-        // guard, unreachable in practice, and never requested.
         Mock::given(method("GET"))
-            .and(path("/download"))
-            .respond_with(
-                ResponseTemplate::new(301).insert_header("location", "http://127.0.0.2:9/target"),
-            )
-            .mount(&mock_server)
+            .and(path(from_path))
+            .respond_with(redirect)
+            .mount(server)
             .await;
 
         Mock::given(method("GET"))
             .and(path("/target"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("binary-body"))
+            .respond_with(entry)
             .expect(0)
-            .mount(&mock_server)
+            .mount(server)
             .await;
+    }
+
+    /// SSRF redirect guard (#703): even an entry URL that passed validation
+    /// cannot hop onto a literal forbidden IP through a redirect — the 301
+    /// itself becomes a terminal HTTP error and `/target` is never fetched
+    /// (wire-level proof via `expect(0)`).
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[tokio::test]
+    async fn test_redirect_to_forbidden_literal_ip_is_stopped() {
+        // Keep the guard active: the escape hatch must be unset in this
+        // process (a no-op under nextest, which gives every test its own
+        // process; defensive against shared-process harnesses).
+        std::env::remove_var(crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV);
+        let mock_server = MockServer::start().await;
+
+        // Location points at a different loopback literal — forbidden by the
+        // guard, unreachable in practice, and never requested.
+        mount_redirect_with_untouched_target(
+            &mock_server,
+            "/download",
+            "http://127.0.0.2:9/target",
+        )
+        .await;
 
         let temp_dir = TempDir::new().unwrap();
-        let config = DownloadConfig {
+        let downloader = Downloader::new(DownloadConfig {
             output_dir: temp_dir.path().to_path_buf(),
             max_retries: 0,
             ..Default::default()
-        };
-        let downloader = Downloader::new(config).unwrap();
-        let url = format!("{}/download", mock_server.uri());
+        })
+        .unwrap();
 
-        let result = downloader.download(&url).await;
-        match result {
+        match downloader
+            .download(&format!("{}/download", mock_server.uri()))
+            .await
+        {
             Err(ScraperError::Http { status, .. }) => assert_eq!(status, 301),
             other => panic!("expected redirect to be stopped, got: {other:?}"),
         }

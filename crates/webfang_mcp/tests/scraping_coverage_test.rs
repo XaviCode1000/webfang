@@ -210,6 +210,35 @@ async fn call_single_url_tool_result(
         .clone()
 }
 
+/// Mount a static page served with a `200` response (shared page fixture).
+async fn mount_page_200(mock: &MockServer, route: &str, body: &str) {
+    Mock::given(method("GET"))
+        .and(path(route))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(mock)
+        .await;
+}
+
+/// Run ONE tool call against a fresh MCP server, assert it succeeded, and
+/// return the parsed JSON payload of its text result. This file's crawl tests
+/// share this prologue as their single canonical copy.
+async fn crawl_tool_parsed(tool: &str, params: Value) -> Value {
+    let (base_url, _server) = start_test_server().await;
+    let client = Client::new();
+    let session = init_session(&client, &base_url).await;
+    let resp = call_tool(&client, &base_url, &session, tool, params).await;
+    let result = resp
+        .get("result")
+        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
+        .clone();
+    assert!(
+        !is_tool_error(&result),
+        "{tool} should succeed: {}",
+        tool_text(&result)
+    );
+    serde_json::from_str(&tool_text(&result)).expect("tool result must be valid JSON")
+}
+
 // ============================================================================
 // scrape_url
 // ============================================================================
@@ -631,51 +660,12 @@ async fn test_crawl_site_max_depth_one_follows_internal_links() {
 <a href="/page_a">A</a>
 <a href="/page_b">B</a>
 </body></html>"#;
-    Mock::given(method("GET"))
-        .and(path("/"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(index_html))
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/page_a"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string("<html><body>Page A</body></html>"),
-        )
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/page_b"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string("<html><body>Page B</body></html>"),
-        )
-        .mount(&mock)
-        .await;
+    mount_page_200(&mock, "/", index_html).await;
+    mount_page_200(&mock, "/page_a", "<html><body>Page A</body></html>").await;
+    mount_page_200(&mock, "/page_b", "<html><body>Page B</body></html>").await;
 
-    let (base_url, _handle) = start_test_server().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "crawl_site",
-        json!({ "url": mock.uri(), "max_depth": 1 }),
-    )
-    .await;
-
-    let result = resp
-        .get("result")
-        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
-        .clone();
-    assert!(
-        !is_tool_error(&result),
-        "crawl_site should succeed: {}",
-        tool_text(&result)
-    );
-
-    let parsed: Value =
-        serde_json::from_str(&tool_text(&result)).expect("crawl result must be valid JSON");
+    let parsed =
+        crawl_tool_parsed("crawl_site", json!({ "url": mock.uri(), "max_depth": 1 })).await;
     assert_eq!(
         parsed.get("total_pages").and_then(|v| v.as_u64()),
         Some(3),
@@ -720,44 +710,11 @@ async fn test_crawl_site_output_excludes_external_links() {
 <a href="/page_a">A</a>
 <a href="https://external.example/x">External</a>
 </body></html>"#;
-    Mock::given(method("GET"))
-        .and(path("/"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(index_html))
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/page_a"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string("<html><body>Page A</body></html>"),
-        )
-        .mount(&mock)
-        .await;
+    mount_page_200(&mock, "/", index_html).await;
+    mount_page_200(&mock, "/page_a", "<html><body>Page A</body></html>").await;
 
-    let (base_url, _handle) = start_test_server().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "crawl_site",
-        json!({ "url": mock.uri(), "max_depth": 1 }),
-    )
-    .await;
-
-    let result = resp
-        .get("result")
-        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
-        .clone();
-    assert!(
-        !is_tool_error(&result),
-        "crawl_site should succeed: {}",
-        tool_text(&result)
-    );
-
-    let parsed: Value =
-        serde_json::from_str(&tool_text(&result)).expect("crawl result must be valid JSON");
+    let parsed =
+        crawl_tool_parsed("crawl_site", json!({ "url": mock.uri(), "max_depth": 1 })).await;
     let urls = parsed
         .get("urls")
         .and_then(|v| v.as_array())
@@ -825,14 +782,7 @@ async fn test_crawl_with_sitemap_response_excludes_external_and_forbidden_urls()
         .mount(&mock)
         .await;
 
-    let (base_url, _handle) = start_test_server().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
+    let parsed = crawl_tool_parsed(
         "crawl_with_sitemap",
         json!({
             "url": mock.uri(),
@@ -841,18 +791,8 @@ async fn test_crawl_with_sitemap_response_excludes_external_and_forbidden_urls()
     )
     .await;
 
-    let result = resp
-        .get("result")
-        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
-        .clone();
-    assert!(
-        !is_tool_error(&result),
-        "crawl_with_sitemap should succeed: {}",
-        tool_text(&result)
-    );
-
     let urls: Vec<String> =
-        serde_json::from_str(&tool_text(&result)).expect("sitemap result must be a JSON array");
+        serde_json::from_value(parsed).expect("sitemap result must be a JSON array");
 
     let seed_host = url::Url::parse(&mock.uri())
         .expect("mock URI parses")

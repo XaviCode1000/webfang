@@ -20,7 +20,7 @@
 mod common;
 use common::*;
 
-use serde_json::json;
+use serde_json::{json, Value};
 use wreq::Client;
 
 /// JSON-RPC standard error code for "Invalid params" (JSON-RPC 2.0 spec) —
@@ -50,64 +50,41 @@ fn assert_ssrf_rejection(resp: serde_json::Value, url: &str) {
     );
 }
 
+/// Start an SSRF-enabled server and issue one JSON-RPC `tools/call`, returning
+/// the raw response envelope. Shared prologue of every probe in this suite —
+/// each test differs only in tool name and params.
+async fn probe_with_params(tool: &str, params: Value) -> Value {
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+    call_tool(&client, &base_url, &session_id, tool, params).await
+}
+
 /// IPv4-mapped IPv6 loopback (`::ffff:127.0.0.1`) must be caught by the guard
 /// before any fetch — a plain protocol error, never a tool error.
 #[tokio::test]
 async fn mapped_loopback_probe_returns_32602() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "scrape_url",
-        json!({ "url": "http://[::ffff:127.0.0.1]:9/" }),
-    )
-    .await;
-
-    assert_ssrf_rejection(resp, "http://[::ffff:127.0.0.1]:9/");
+    let url = "http://[::ffff:127.0.0.1]:9/";
+    let resp = probe_with_params("scrape_url", json!({ "url": url })).await;
+    assert_ssrf_rejection(resp, url);
 }
 
 /// IPv4-mapped IPv6 cloud-metadata endpoint (`::ffff:169.254.169.254`) — the
 /// canonical SSRF target — must be caught before any fetch.
 #[tokio::test]
 async fn mapped_metadata_probe_returns_32602() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "scrape_url",
-        json!({ "url": "http://[::ffff:169.254.169.254]:9/" }),
-    )
-    .await;
-
-    assert_ssrf_rejection(resp, "http://[::ffff:169.254.169.254]:9/");
+    let url = "http://[::ffff:169.254.169.254]:9/";
+    let resp = probe_with_params("scrape_url", json!({ "url": url })).await;
+    assert_ssrf_rejection(resp, url);
 }
 
 /// IPv4-mapped IPv6 CGNAT address (`::ffff:100.64.0.1`) must be caught before
 /// any fetch.
 #[tokio::test]
 async fn mapped_cgnat_probe_returns_32602() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "scrape_url",
-        json!({ "url": "http://[::ffff:100.64.0.1]:9/" }),
-    )
-    .await;
-
-    assert_ssrf_rejection(resp, "http://[::ffff:100.64.0.1]:9/");
+    let url = "http://[::ffff:100.64.0.1]:9/";
+    let resp = probe_with_params("scrape_url", json!({ "url": url })).await;
+    assert_ssrf_rejection(resp, url);
 }
 
 /// Negative control: plain IPv4 loopback (`127.0.0.1`) is also rejected, which
@@ -116,20 +93,9 @@ async fn mapped_cgnat_probe_returns_32602() {
 /// a protocol-level `-32602`.
 #[tokio::test]
 async fn plain_loopback_probe_returns_32602() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "scrape_url",
-        json!({ "url": "http://127.0.0.1:9/" }),
-    )
-    .await;
-
-    assert_ssrf_rejection(resp, "http://127.0.0.1:9/");
+    let url = "http://127.0.0.1:9/";
+    let resp = probe_with_params("scrape_url", json!({ "url": url })).await;
+    assert_ssrf_rejection(resp, url);
 }
 
 /// REQ-02 (#707): `crawl_with_sitemap` validates the explicit `sitemap_url`
@@ -139,24 +105,18 @@ async fn plain_loopback_probe_returns_32602() {
 /// port 9 (discard) is closed, and the assertion proves nothing was reached.
 #[tokio::test]
 async fn crawl_with_sitemap_metadata_sitemap_url_returns_32602() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
+    let sitemap_url = "http://169.254.169.254/sitemap.xml";
+    let resp = probe_with_params(
         "crawl_with_sitemap",
         json!({
             "url": "http://8.8.8.8/",
-            "sitemap_url": "http://169.254.169.254/sitemap.xml",
+            "sitemap_url": sitemap_url,
         }),
     )
     .await;
 
     assert_ssrf_rejection(
         resp,
-        "crawl_with_sitemap(sitemap_url=http://169.254.169.254/sitemap.xml)",
+        &format!("crawl_with_sitemap(sitemap_url={sitemap_url})"),
     );
 }
