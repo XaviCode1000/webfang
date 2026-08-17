@@ -201,8 +201,22 @@ impl McpState {
     /// When empty (default), absolute `output_dir` values are rejected.
     /// When non-empty, an absolute `output_dir` must be under one of these
     /// roots. Relative paths are always allowed (they resolve against CWD).
+    ///
+    /// #769: when roots are configured, also checks the container's own
+    /// `output_dir` — the write target of `process_export_pipeline`, which is
+    /// the ONE export path that never goes through
+    /// [`validate_export_dir`](Self::validate_export_dir). If it is absolute
+    /// and outside every root, a tracing warning reports the inconsistency
+    /// (the operator declared a boundary the server's own pipeline would
+    /// violate). Deliberately warn-only: no new failure mode was added.
     #[must_use]
     pub fn with_export_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        if !roots.is_empty() {
+            warn_if_configured_output_dir_outside_roots(
+                &self.container.config().output_dir,
+                &roots,
+            );
+        }
         self.allowed_export_roots = Arc::new(roots);
         self
     }
@@ -250,11 +264,9 @@ impl McpState {
         }
         // Normalize the candidate lexically: resolve `.` and `..` components
         // without touching the filesystem (the dir may not exist yet).
-        let normalized = normalize_lexical(dir);
-        let allowed = roots
-            .iter()
-            .any(|root| normalized.starts_with(normalize_lexical(root)));
-        if allowed {
+        // #769: shared pure helper [`absolute_path_within_roots`] owns the
+        // lexical prefix check for every write path against the export roots.
+        if absolute_path_within_roots(dir, roots) {
             Ok(())
         } else {
             tracing::warn!(dir = %dir.display(), "absolute output_dir outside allowed export roots");
@@ -335,8 +347,8 @@ impl McpState {
 }
 
 /// Normalize a path lexically: resolve `.` and `..` components without
-/// filesystem access. Used by [`McpState::validate_export_dir`] so the
-/// prefix check cannot be defeated by redundant components (#696).
+/// filesystem access. Used by [`absolute_path_within_roots`] so the prefix
+/// check cannot be defeated by redundant components (#696).
 fn normalize_lexical(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
@@ -350,6 +362,50 @@ fn normalize_lexical(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// True when `path` is lexically under one of `roots` (#696).
+///
+/// Both sides are normalized via [`normalize_lexical`] before the check, so
+/// redundant `.`/`..` components cannot defeat it. The match is
+/// component-based ([`Path::starts_with`]), never a string prefix, so
+/// sibling directories (`/srv/exports_evil` vs `/srv/exports`) do not match.
+///
+/// Empty `roots` always yields `false` — the CALLER owns the empty-roots
+/// policy: [`McpState::validate_export_dir`] rejects absolute paths
+/// (fail-closed) and [`McpState::with_export_roots`] skips its #769 startup
+/// consistency check.
+fn absolute_path_within_roots(path: &Path, roots: &[PathBuf]) -> bool {
+    let normalized = normalize_lexical(path);
+    roots
+        .iter()
+        .any(|root| normalized.starts_with(normalize_lexical(root)))
+}
+
+/// Warn at startup when the container's configured `output_dir` lies outside
+/// the declared export roots (#769).
+///
+/// `process_export_pipeline` exports to `container.scraper_config.output_dir`
+/// and never goes through [`McpState::validate_export_dir`] (the #696 gate),
+/// so this is the sole check for the operator's own `--output`-style config.
+/// A relative `output_dir` (the `ScraperConfig::default()` `"output"`) is
+/// skipped: like [`validate_export_dir`], it resolves against the server's
+/// CWD and the server's own boundary does not apply. Warn-only by design —
+/// no new rejection mode for a non-exploitable consistency gap.
+fn warn_if_configured_output_dir_outside_roots(output_dir: &Path, roots: &[PathBuf]) {
+    if !output_dir.is_absolute() {
+        return;
+    }
+    if absolute_path_within_roots(output_dir, roots) {
+        return;
+    }
+    tracing::warn!(
+        output_dir = %output_dir.display(),
+        roots = ?roots,
+        "configured output_dir is outside the configured export roots: the server's own \
+         export pipeline (process_export_pipeline) writes there without going through the \
+         #696 export-root gate, violating the boundary the operator declared"
+    );
 }
 
 /// Build the shared robots.txt fetcher for the scrape tools (#697).
@@ -392,7 +448,12 @@ impl CategorySemaphores {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tempfile::TempDir;
+    use tracing::field::{Field, Visit};
+    use tracing::Level;
+    use tracing_subscriber::layer::{Context, Layer};
+    use tracing_subscriber::prelude::*;
     use webfang_core::domain::CrawlerConfig;
     use webfang_core::infrastructure::config::ScraperConfig;
     use webfang_core::infrastructure::scraper::dom_inspector::NoOpInspector;
@@ -572,5 +633,285 @@ mod tests {
             state.validate_export_dir(&escape).is_err(),
             "`..` traversal out of the root must be rejected"
         );
+    }
+
+    // --- absolute_path_within_roots (#769 pure helper) ---
+
+    /// Empty `roots` is handled BY THE CALLER (fail-closed rejection in
+    /// `validate_export_dir`; the #769 startup check skips it) — the helper
+    /// itself must never match.
+    #[test]
+    fn within_roots_empty_roots_never_matches() {
+        assert!(
+            !absolute_path_within_roots(Path::new("/srv/exports/file.txt"), &[]),
+            "empty roots must yield false — the caller owns the empty-roots policy"
+        );
+    }
+
+    #[test]
+    fn within_roots_absolute_outside_returns_false() {
+        let roots = vec![PathBuf::from("/srv/exports")];
+        assert!(
+            !absolute_path_within_roots(Path::new("/etc/passwd"), &roots),
+            "a path outside every root must yield false"
+        );
+    }
+
+    #[test]
+    fn within_roots_absolute_inside_root_returns_true() {
+        let roots = vec![PathBuf::from("/srv/exports")];
+        assert!(
+            absolute_path_within_roots(Path::new("/srv/exports/sub/file.txt"), &roots),
+            "a path under a root must yield true"
+        );
+        // The root itself is a valid destination.
+        assert!(
+            absolute_path_within_roots(Path::new("/srv/exports"), &roots),
+            "the root path itself must yield true"
+        );
+    }
+
+    #[test]
+    fn within_roots_dotdot_cannot_defeat_the_prefix_check() {
+        let roots = vec![PathBuf::from("/srv/exports")];
+        // The raw string starts with the root, but lexical normalization
+        // resolves `..` first, landing at `/srv/other`.
+        assert!(
+            !absolute_path_within_roots(Path::new("/srv/exports/../other"), &roots),
+            "`..` traversal out of the root must yield false"
+        );
+        // A candidate that traverses `..` and lands back INSIDE the root
+        // stays allowed.
+        assert!(
+            absolute_path_within_roots(Path::new("/srv/exports/sub/../../exports/file"), &roots),
+            "`..` segments that resolve back inside the root must yield true"
+        );
+    }
+
+    #[test]
+    fn within_roots_dot_components_are_ignored() {
+        let roots = vec![PathBuf::from("/srv/exports")];
+        assert!(
+            absolute_path_within_roots(Path::new("/srv/./exports/./file.txt"), &roots),
+            "redundant `.` components must not defeat a valid match"
+        );
+    }
+
+    #[test]
+    fn within_roots_sibling_prefix_is_not_a_root_match() {
+        // `/srv/exports_evil` must NOT satisfy root `/srv/exports` — the
+        // prefix check is component-based (`starts_with`), not string-based.
+        let roots = vec![PathBuf::from("/srv/exports")];
+        assert!(
+            !absolute_path_within_roots(Path::new("/srv/exports_evil/file"), &roots),
+            "a string-prefix sibling dir must yield false"
+        );
+    }
+
+    // --- with_export_roots startup consistency check (#769) ---
+
+    static GLOBAL_SUBSCRIBER_INIT: std::sync::Once = std::sync::Once::new();
+
+    /// Set a global fmt subscriber (sink writer) so every `tracing` callsite
+    /// registers with `Interest::always()` instead of the `Interest::never()`
+    /// that gets cached process-wide when a thread hits a callsite with no
+    /// subscriber active — same guard as
+    /// `metrics.rs::ensure_global_subscriber`.
+    fn ensure_global_subscriber() {
+        GLOBAL_SUBSCRIBER_INIT.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(
+                tracing_subscriber::fmt()
+                    .with_writer(std::io::sink)
+                    .finish(),
+            );
+        });
+    }
+
+    /// One captured tracing event: level, message, `(field, value)` pairs.
+    struct CapturedEvent {
+        level: Level,
+        message: String,
+        fields: Vec<(String, String)>,
+    }
+
+    /// Collects `(field_name, value)` pairs as strings; the message field is
+    /// recorded as a plain field by `tracing`.
+    struct FieldCapture {
+        sink: Arc<Mutex<Vec<(String, String)>>>,
+        message: Arc<Mutex<Option<String>>>,
+    }
+
+    impl Visit for FieldCapture {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                // `format!("{:?}")` on the message args yields the quoted
+                // string; strip the outer quotes so `.contains()` matches the
+                // raw English message verbatim.
+                let raw = format!("{value:?}");
+                *self.message.lock().expect("message mutex") =
+                    Some(raw.trim_matches('"').to_string());
+            } else {
+                self.sink
+                    .lock()
+                    .expect("capture mutex")
+                    .push((field.name().to_string(), format!("{value:?}")));
+            }
+        }
+        fn record_str(&mut self, field: &Field, value: &str) {
+            if field.name() == "message" {
+                *self.message.lock().expect("message mutex") = Some(value.to_string());
+            } else {
+                self.sink
+                    .lock()
+                    .expect("capture mutex")
+                    .push((field.name().to_string(), value.to_string()));
+            }
+        }
+    }
+
+    struct EventCaptureLayer {
+        events: Arc<Mutex<Vec<CapturedEvent>>>,
+    }
+
+    impl<S: tracing::Subscriber> Layer<S> for EventCaptureLayer {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let fields = Arc::new(Mutex::new(Vec::new()));
+            let message = Arc::new(Mutex::new(None));
+            let mut visitor = FieldCapture {
+                sink: Arc::clone(&fields),
+                message: Arc::clone(&message),
+            };
+            event.record(&mut visitor);
+            let message = message
+                .lock()
+                .expect("message mutex")
+                .take()
+                .unwrap_or_default();
+            let fields = fields.lock().expect("capture mutex").split_off(0);
+            let mut events = self.events.lock().expect("capture mutex");
+            events.push(CapturedEvent {
+                level: *event.metadata().level(),
+                message,
+                fields,
+            });
+        }
+    }
+
+    /// Run `body` under a capturing subscriber and return `(result, events)`.
+    fn capture_events_during<T>(body: impl FnOnce() -> T) -> (T, Vec<CapturedEvent>) {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(EventCaptureLayer {
+            events: Arc::clone(&events),
+        });
+        let result = tracing::subscriber::with_default(subscriber, body);
+        let captured = events.lock().expect("capture mutex").split_off(0);
+        (result, captured)
+    }
+
+    /// Build a container whose `ScraperConfig::output_dir` is `output_dir`.
+    async fn container_with_output_dir(output_dir: PathBuf) -> Container {
+        let crawler_config =
+            CrawlerConfig::new(url::Url::parse("https://example.com").expect("valid url"));
+        let scraper_config = ScraperConfig {
+            output_dir,
+            ..Default::default()
+        };
+        Container::new(crawler_config, scraper_config)
+            .await
+            .expect("create test container")
+    }
+
+    /// The `#769` warning is identified by its message; unrelated warns from
+    /// container construction (e.g. robots_fetcher init) never match it.
+    const OUTSIDE_ROOTS_WARN: &str = "outside the configured export roots";
+
+    #[tokio::test]
+    #[serial]
+    async fn with_export_roots_warns_when_output_dir_outside_roots() {
+        ensure_global_subscriber();
+        let root = TempDir::new().expect("create root temp dir");
+        let outside = TempDir::new().expect("create outside temp dir");
+        let outside_path = outside.path().display().to_string();
+        let container = container_with_output_dir(outside.path().to_path_buf()).await;
+        let state = McpState::new(container);
+
+        let (_state, events) =
+            capture_events_during(|| state.with_export_roots(vec![root.path().to_path_buf()]));
+
+        let warns: Vec<&CapturedEvent> = events
+            .iter()
+            .filter(|e| e.level == Level::WARN && e.message.contains(OUTSIDE_ROOTS_WARN))
+            .collect();
+        assert_eq!(warns.len(), 1, "exactly one #769 warning must fire");
+        let warn = warns[0];
+        // Structured English fields, not string soup.
+        let field = |name: &str| {
+            warn.fields
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(
+            field("output_dir").as_deref(),
+            Some(outside_path.as_str()),
+            "output_dir field must carry the configured directory"
+        );
+        assert!(
+            field("roots")
+                .expect("roots field must be present")
+                .contains(
+                    &*root
+                        .path()
+                        .file_name()
+                        .expect("root has a name")
+                        .to_string_lossy()
+                ),
+            "roots field must name the configured root"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn with_export_roots_no_warn_when_output_dir_inside_roots() {
+        ensure_global_subscriber();
+        let root = TempDir::new().expect("create temp dir");
+        let container = container_with_output_dir(root.path().to_path_buf()).await;
+        let state = McpState::new(container);
+
+        let (_state, events) =
+            capture_events_during(|| state.with_export_roots(vec![root.path().to_path_buf()]));
+
+        let stray = events
+            .iter()
+            .filter(|e| e.level == Level::WARN && e.message.contains(OUTSIDE_ROOTS_WARN))
+            .count();
+        assert_eq!(stray, 0, "an output_dir under a root must not warn");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn with_export_roots_no_warn_when_output_dir_relative() {
+        ensure_global_subscriber();
+        // Relative `output_dir` resolves against the server CWD — the same
+        // policy as `validate_export_dir`: no warning, regardless of roots.
+        // The container opens its crawl log lazily, so a relative path
+        // performs no file I/O here (container.rs #606).
+        let root = TempDir::new().expect("create root temp dir");
+        let container = container_with_output_dir(PathBuf::from("output")).await;
+        assert!(
+            container.config().output_dir.is_relative(),
+            "fixture must keep a relative output_dir"
+        );
+        let state = McpState::new(container);
+
+        let (state, events) =
+            capture_events_during(|| state.with_export_roots(vec![root.path().to_path_buf()]));
+        drop(state);
+
+        let stray = events
+            .iter()
+            .filter(|e| e.level == Level::WARN && e.message.contains(OUTSIDE_ROOTS_WARN))
+            .count();
+        assert_eq!(stray, 0, "a relative output_dir must not warn");
     }
 }
