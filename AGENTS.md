@@ -71,8 +71,8 @@ In worktrees, BOTH tools need the **absolute worktree path** or they silently re
 
 | Tool | Parameter | Example |
 | :--- | :--- | :--- |
-| CodeDB MCP | `project=` | `project="/var/home/xavi/Projects/webfang-worktrees/<dir>"` |
-| CodeGraph MCP | `projectPath=` | `projectPath="/var/home/xavi/Projects/webfang-worktrees/<dir>"` |
+| CodeDB MCP | `project=` | `project="/home/xavi/Projects/webfang-worktrees/<dir>"` |
+| CodeGraph MCP | `projectPath=` | `projectPath="/home/xavi/Projects/webfang-worktrees/<dir>"` |
 
 **NEVER use** bare project names in worktrees — ambiguous between main + all worktrees (#360). The absolute path is the official upstream disambiguation.
 
@@ -290,11 +290,14 @@ git worktree add ~/Projects/webfang-worktrees/feat-auth -b feat/auth
 cd ~/Projects/webfang-worktrees/feat-auth
 
 # Per-worktree bootstrap (NONE of these are shared):
-cargo build                                        # target/ (~3-5 min first build: BoringSSL)
+cp ~/Projects/webfang/.envrc . && direnv allow     # shared CARGO_TARGET_DIR (gitignored)
 cp ~/Projects/webfang/.env .                       # .env is gitignored
 codegraph init                                     # CodeGraph: source exploration index
 codedb index .                                     # CodeDB: inverted index + outlines
+cargo build                                        # fast: reuses shared target via direnv
 ```
+
+> ⚠️ **`.envrc` + `direnv allow` is mandatory per worktree.** It points `CARGO_TARGET_DIR` at the shared build cache (`~/.cache/cargo-target/webfang`), so BoringSSL and all dependencies compile once, not per worktree. Without it the worktree silently builds into its own `target/` (~3-5 min cold). direnv is installed via mise; the Fish hook lives in `~/.config/fish/conf.d/03-direnv.fish`.
 
 > ⚠️ **Without both indexes, the agent is BLIND in the worktree.** Intelligence tools silently resolve to the main checkout or return empty results. Check that `.codegraph/` and `codedb.snapshot` exist.
 
@@ -328,7 +331,8 @@ A merge is NOT done until the repo is clean and ready for the next mission. Clea
 | `.git/` object store | ✅ Shared | Automatic |
 | Git config, hooks | ✅ Shared | Automatic |
 | `Cargo.lock` | ✅ Shared | Via Git |
-| `target/` | ❌ Per-worktree | `cargo build` (~3-5 min first) |
+| `target/` | ✅ Shared (via direnv) | `.envrc` + `direnv allow` per worktree |
+| `.envrc` | ❌ Per-worktree | `cp` from main + `direnv allow` |
 | `.env` | ❌ Per-worktree | Manual `cp` from main |
 | `.codegraph/` index | ❌ Per-worktree | `codegraph init` |
 | `codedb.snapshot` | ❌ Per-worktree | `codedb index .` |

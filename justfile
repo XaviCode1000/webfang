@@ -249,8 +249,8 @@ test-ci-quick:
 
 # -- Documentación --
 
-# Ruta del wiki combinado (NotebookLM / exportación PDF)
-wiki_output := "/var/home/xavi/Descargas/mdxportpdf/wiki-cargo-doc.md"
+# Ruta del wiki combinado (Obsidian vault)
+wiki_output := "/home/xavi/Documentos/obsidian/webfang/wiki.md"
 
 # Descarga la documentación combinada (narrativa + API rustdoc) generada en CI.
 # Todo el cómputo pesado (mdBook build/test/linkcheck + cargo doc + pandoc)
