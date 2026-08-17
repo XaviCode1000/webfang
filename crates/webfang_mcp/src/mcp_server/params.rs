@@ -428,9 +428,10 @@ pub struct ExportFileParams {
 impl ExportFileParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `output_dir` is not a safe path
-    /// (absolute paths allowed — issue #600), `filename` is empty or too long,
-    /// `format` is not one of the allowed formats, or `content` exceeds the
-    /// maximum blob size.
+    /// (absolute paths allowed here — issue #600 — but the handler enforces
+    /// the server export-root gate before any write, #756), `filename` is
+    /// empty or too long, `format` is not one of the allowed formats, or
+    /// `content` exceeds the maximum blob size.
     pub fn validate(&self) -> Result<(), McpError> {
         require_safe_path_allow_absolute("output_dir", &self.output_dir)?;
         require_safe_filename("filename", &self.filename)?;
@@ -619,9 +620,10 @@ pub(crate) struct ExportJsonlParams {
 impl ExportJsonlParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `output_dir` (when present) is
-    /// not a safe path (absolute paths allowed — issue #600) or `filename`
-    /// (when present) is not a single flat component (no `..`, `/`, or
-    /// subdirectory — issue #601).
+    /// not a safe path (absolute paths allowed here — issue #600 — but the
+    /// handler enforces the server export-root gate before any write, #756)
+    /// or `filename` (when present) is not a single flat component (no `..`,
+    /// `/`, or subdirectory — issue #601).
     pub fn validate(&self) -> Result<(), McpError> {
         if let Some(d) = &self.output_dir {
             require_safe_path_allow_absolute("output_dir", d)?;
@@ -645,9 +647,10 @@ pub(crate) struct ExportVectorParams {
 impl ExportVectorParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `output_dir` (when present) is
-    /// not a safe path (absolute paths allowed — issue #600) or `filename`
-    /// (when present) is not a single flat component (no `..`, `/`, or
-    /// subdirectory — issue #601).
+    /// not a safe path (absolute paths allowed here — issue #600 — but the
+    /// handler enforces the server export-root gate before any write, #756)
+    /// or `filename` (when present) is not a single flat component (no `..`,
+    /// `/`, or subdirectory — issue #601).
     pub fn validate(&self) -> Result<(), McpError> {
         if let Some(d) = &self.output_dir {
             require_safe_path_allow_absolute("output_dir", d)?;
