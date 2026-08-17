@@ -51,6 +51,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Extensible Design:** Easy to add new validation rules and error variants
 - **Memory Safety:** Pure move semantics prevent accidental clones in hot paths
 
+### 🔧 Fixed
+
+#### Sitemap double decompression (#757)
+- **Root cause:** `wreq` (built with `.gzip(true)`) auto-decompresses the transport `Content-Encoding` and strips that header, while `CompressionHandler::detect_compression` trusted the `.gz` URL extension and decompressed again — `decompression failed: Invalid gzip header` on every `.xml.gz` sitemap served with `content-encoding: gzip` (e.g. MDN: 10/10 child sitemaps failed).
+- **Fix:** magic bytes are now the sovereign truth for snifable formats (gzip `0x1f8b`, zstd frame/skippable magics). The URL extension is only a fallback hint for non-snifable formats (brotli `.br`, still fail-closed). A `.gz`/`.gzip`/`.zst` URL whose payload lacks magic bytes passes through untouched (transport already decoded, or lying extension) with a `tracing::debug!` audit trail.
+- **Coverage:** body-gzip + `content-encoding: gzip` (was broken), gzip body without header (still works), plain body behind `.gz` URL (now passes through), end-to-end wiremock regressions added to `sitemap_parser.rs` plus extended unit tests.
+
 ## [1.1.1] - 2026-07-11
 
 ### 🔧 Fixed / Observability Hardening (Blindaje de Fidelidad D1–D5)
