@@ -9,7 +9,15 @@
 #
 # Prerequisites (validated up front — this script does NOT build them):
 #   mdbook build docs                                → docs/src chapters exist
-#   cargo doc --workspace --all-features --no-deps   → target/doc/<crate>/ HTML
+#   rustdoc-markdown (Dooyo-Labs, v0.91.0) on PATH   → per-crate API renderer
+#
+# API rendering: per-source API files are rendered by
+#   rustdoc-markdown <crate> --manifest crates/<crate>/Cargo.toml [--features "..."] --include-other
+# a rustdoc-JSON backend tool that brings and auto-installs its own pinned
+# nightly toolchain on first run. It does NOT consume target/doc HTML; the old
+# HTML→pandoc pipeline (pandoc/sed/awk + noise gate) was removed. Each file
+# keeps exactly ONE H1 — the "# <crate> API Reference" wrapper — by demoting
+# the tool output's headings one level (#N → #N+1).
 #
 # BUILD_DATE: injected by CI (docs.yml). Local runs leave it empty; only
 # llms.txt then carries a "Generated: local run" note.
@@ -20,9 +28,9 @@ OUT_DIR=docs/book/webfang-docs-llm
 BUILD_DATE="${BUILD_DATE:-}"
 PAGES_PREFIX="https://xavicode1000.github.io/webfang/webfang-docs-llm"
 CHAPTERS="overview debugging testing troubleshooting tui-unified-design"
-# webfang_cli is bin-only: cargo doc produces no target/doc/webfang_cli/, so
-# it is skipped by the same -d check the old inline step used.
-ALL_CRATES="webfang_core webfang_ai webfang_tui webfang_mcp webfang_cli webfang_test_utils"
+# webfang_cli is bin-only and stays excluded from the API render: it is covered
+# by the 06-cli-reference chapter (#733). Only the 5 lib crates are rendered.
+ALL_CRATES="webfang_core webfang_ai webfang_tui webfang_mcp webfang_test_utils"
 
 for f in $CHAPTERS cli-reference; do
   if [ ! -f "docs/src/$f.md" ]; then
@@ -30,9 +38,9 @@ for f in $CHAPTERS cli-reference; do
     exit 1
   fi
 done
-if [ ! -d target/doc/webfang_core ]; then
-  echo "ERROR: target/doc/<crate>/ HTML is missing. Prerequisite:" >&2
-  echo "       cargo doc --workspace --all-features --no-deps" >&2
+if ! command -v rustdoc-markdown >/dev/null 2>&1; then
+  echo "ERROR: rustdoc-markdown is not on PATH. Prerequisite:" >&2
+  echo "       cargo install rustdoc-markdown --version 0.91.0 --locked" >&2
   exit 1
 fi
 
@@ -47,41 +55,46 @@ generated_line() {
   fi
 }
 
-# Demote every heading by exactly ONE level (deepest first, no double demotion).
+# Demote every heading by exactly ONE level, deepest first (#### before ###,
+# etc.), so no heading is demoted twice. Handles H1..H6 input → H2..H7 output
+# (H7 is a markdown edge case but is never parsed back to HTML here).
 demote_headings() {
-  sed -e 's/^### /#### /' -e 's/^## /### /' -e 's/^# /## /' "$1"
+  sed -e 's/^######/#######/' -e 's/^#####/######/' -e 's/^####/#####/' \
+      -e 's/^###/####/' -e 's/^##/###/' -e 's/^#/##/' "$1"
 }
 
-# Strip rustdoc noise — the EXACT pipeline previously inlined in docs.yml.
-# Writes target/doc/$1.md, then applies the fence-aware noise gate.
+# Render one crate's API to "$2" via rustdoc-markdown (rustdoc JSON backend,
+# pinned nightly auto-installed by the tool on first run — needs rustup +
+# network, both present on ubuntu-latest). The tool's own progress is streamed.
+# Output convention: exactly one H1 per file — the "# <crate> API Reference"
+# wrapper — with the tool output (which starts "# <crate> API (<version>)")
+# demoted one level. Feature flags replicate `cargo doc --all-features` per
+# crate; webfang_tui/webfang_test_utils get no --features flag at all.
 render_api() {
-  local crate="$1"
+  local crate="$1" out="$2" features
+  case "$crate" in
+    webfang_core) features="default images documents persistence console dev-tracing ai adaptive-selectors ui mcp chromium" ;;
+    webfang_ai)   features="ai" ;;
+    webfang_mcp)  features="mcp ai persistence" ;;
+    *)            features="" ;;
+  esac
+  local -a cmd=(rustdoc-markdown print "$crate" --manifest "crates/$crate/Cargo.toml" --include-other --output "$out.raw")
+  [ -n "$features" ] && cmd+=(--features "$features")
+  "${cmd[@]}"
   {
-    pandoc -f html -t gfm --wrap=none "target/doc/$crate/index.html" 2>/dev/null
-    find "target/doc/$crate" -name '*.html' ! -name 'index.html' ! -path '*/src/*' -print0 \
-      | sort -z \
-      | while IFS= read -r -d '' fl; do
-          pandoc -f html -t gfm --wrap=none "$fl" 2>/dev/null
-        done
-  } \
-  | sed -e 's/Copy item path//g' \
-        -e 's/Expand description//g' \
-        -e 's/§//g' \
-        -e 's/<span[^>]*>//g' -e 's/<\/span>//g' \
-        -e 's/<div[^>]*>//g' -e 's/<\/div>//g' \
-        -e 's/<a [^>]*>//g' -e 's/<\/a>//g' \
-        -e 's/<[^>]*>//g' \
-        -e 's/Show [0-9][0-9]* fields[[:space:]]*//g' \
-        -e 's/Show [0-9][0-9]* variants[[:space:]]*//g' \
-        -e 's/^# \(Struct\|Function\|Enum\|Trait\|Constant\|Type\|Crate\|Macro\|List\) /### \1 /' \
-  | awk 'BEGIN{skip=0} /^## Blanket Implementations|^## Auto Trait Implementations/{skip=1; next} skip && (/^## / || /^### (Struct|Function|Enum|Trait|Constant|Type|Crate|Macro|List) /){skip=0} !skip{print}' \
-  | sed -e '/^[[:space:]]*$/N;/^\n[[:space:]]*$/D' \
-  > "target/doc/$crate.md"
-  # Gate is fence-aware: doctests may legitimately contain HTML inside ``` fences.
-  if awk 'BEGIN{f=0} /^```/{f=!f; next} !f && /Expand description|Copy item path|href="|<a |<span|<div|<abbr|<code|§/{bad=1} END{exit !bad}' "target/doc/$crate.md"; then
-    echo "::error::rustdoc noise not fully stripped for $crate"
-    exit 1
-  fi
+    echo "# $crate API Reference"
+    generated_line
+    echo "---"
+    echo
+    demote_headings "$out.raw"
+    echo
+  } > "$out"
+  rm -f "$out.raw"
+  # H1 guard: exactly one H1 per per-source file.
+  [ "$(grep -c '^# ' "$out")" -eq 1 ] || {
+    echo "::error::$out does not have exactly one H1 heading"
+    return 1
+  }
 }
 
 # mdBook chapters with their leading H1 downgraded to $1 (body untouched).
@@ -117,13 +130,17 @@ crate_description() {
   esac
 }
 
-# Phase 1: render + noise-gate every crate API (as the old inline step did).
+# Phase 1: render every crate API directly into its per-source file.
+# render_api applies the H1 wrapper, one-level demote, and the H1 guard, and
+# replaces the old pandoc/sed/awk noise-stripping pipeline entirely — the
+# rustdoc JSON backend output carries no HTML-layout noise to strip.
 for crate in $ALL_CRATES; do
-  [ -d "target/doc/$crate" ] || continue
-  render_api "$crate"
+  out_file=$(per_source_file "$crate")
+  [ -n "$out_file" ] || continue
+  render_api "$crate" "$OUT_DIR/$out_file"
 done
 
-# Phase 2: per-source files (single H1 each).
+# Phase 2: narrative + CLI reference files (single H1 each).
 {
   echo "# WebFang Narrative Documentation"
   generated_line
@@ -131,19 +148,6 @@ done
   echo
   emit_chapters "##"
 } > "$OUT_DIR/00-narrative.md"
-
-for crate in $ALL_CRATES; do
-  out_file=$(per_source_file "$crate")
-  [ -n "$out_file" ] && [ -d "target/doc/$crate" ] || continue
-  {
-    echo "# $crate API Reference"
-    generated_line
-    echo "---"
-    echo
-    demote_headings "target/doc/$crate.md"
-    echo
-  } > "$OUT_DIR/$out_file"
-done
 
 {
   echo "# WebFang CLI Reference"
@@ -153,7 +157,9 @@ done
   sed '1s/^# /## /' docs/src/cli-reference.md
 } > "$OUT_DIR/06-cli-reference.md"
 
-# Phase 3: back-compat monolith (byte-equivalent to the pre-#734 output).
+# Phase 3: back-compat monolith (pre-#734 composition preserved; API sections
+# are assembled from the same per-source files, so their nested wrapper H1s
+# are intentional — only the 6 top-level files enforce the single-H1 rule).
 {
   echo "# WebFang Documentation"
   echo
@@ -172,10 +178,11 @@ done
   echo "## API Reference (rustdoc)"
   echo
   for crate in $ALL_CRATES; do
-    if [ -d "target/doc/$crate" ]; then
+    out_file=$(per_source_file "$crate")
+    if [ -n "$out_file" ] && [ -f "$OUT_DIR/$out_file" ]; then
       echo "### API: $crate"
       echo
-      cat "target/doc/$crate.md"
+      cat "$OUT_DIR/$out_file"
       echo
       echo "---"
       echo

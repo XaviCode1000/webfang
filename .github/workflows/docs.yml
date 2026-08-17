@@ -1,8 +1,9 @@
 # ============================================================================
 # DOCS: Build mdBook + rustdoc in CI, deploy combined site, upload LLM artifact
 # ============================================================================
-# All heavy compute runs in CI (mdBook build/test/linkcheck + rustdoc + pandoc).
-# Locally the user only pulls the generated result via `just docs`.
+# All heavy compute runs in CI (mdBook build/test/linkcheck + rustdoc +
+# rustdoc-markdown). Locally the user only pulls the generated result via
+# `just docs`.
 #
 # Triggers:
 #   - Push to main            → validate + deploy + upload artifact (auto)
@@ -56,11 +57,17 @@ jobs:
           chmod +x "$HOME/.cargo/bin/mdbook-linkcheck"
           mdbook-linkcheck --version
 
-      - name: Install mise toolchain (mdbook + pandoc)
+      - name: Install mise toolchain (mdbook)
         uses: jdx/mise-action@v2
         with:
           install: false
-      - run: mise install aqua:rust-lang/mdBook aqua:jgm/pandoc
+      - run: mise install aqua:rust-lang/mdBook
+
+      # Version pinned for reproducibility. The tool auto-installs its own
+      # pinned nightly (nightly-2025-11-27) on first run — requires rustup +
+      # network, both present on ubuntu-latest.
+      - name: Install rustdoc-markdown (LLM artifact renderer)
+        run: cargo install rustdoc-markdown --version 0.91.0 --locked
 
       - name: mdBook build (narrative docs must be valid)
         run: mdbook build docs
@@ -128,11 +135,17 @@ jobs:
           chmod +x "$HOME/.cargo/bin/mdbook-linkcheck"
           mdbook-linkcheck --version
 
-      - name: Install mise toolchain (mdbook + pandoc)
+      - name: Install mise toolchain (mdbook)
         uses: jdx/mise-action@v2
         with:
           install: false
-      - run: mise install aqua:rust-lang/mdBook aqua:jgm/pandoc
+      - run: mise install aqua:rust-lang/mdBook
+
+      # Version pinned for reproducibility. The tool auto-installs its own
+      # pinned nightly (nightly-2025-11-27) on first run — requires rustup +
+      # network, both present on ubuntu-latest.
+      - name: Install rustdoc-markdown (LLM artifact renderer)
+        run: cargo install rustdoc-markdown --version 0.91.0 --locked
 
       - name: mdBook build
         run: mdbook build docs
@@ -156,19 +169,19 @@ jobs:
       #   llms.txt             small index (H1 + blockquote + word-counted file
       #                        lists) pointing at the Pages-hosted sources.
       #   00-narrative.md      mdBook chapters (single H1, chapters as H2).
-      #   01..05-<crate>.md    per-crate rustdoc API (single H1 each, headings
-      #                        demoted one level uniformly). Crates missing from
-      #                        target/doc/ are skipped silently (as before).
+      #   01..05-<crate>.md    per-crate API rendered by rustdoc-markdown
+      #                        v0.91.0 (rustdoc JSON backend; single H1 each,
+      #                        headings demoted one level uniformly). The tool
+      #                        auto-installs its pinned nightly on first run.
       #   06-cli-reference.md  CLI flag reference chapter (#733; its help block
       #                        is CI drift-checked by the validate job).
-      #   webfang-docs-full.md back-compat monolith, byte-equivalent to the
-      #                        pre-#734 single file (narrative / CLI / rustdoc
-      #                        API with the original heading conventions).
-      # Raw source files (crates/**/*.rs) and the "Blanket/Auto Trait
-      # Implementations" boilerplate sections stay excluded — they carry no
-      # semantics for a language model and dominated the old 658k-word draft.
+      #   webfang-docs-full.md back-compat monolith with the pre-#734
+      #                        composition (narrative / CLI / rustdoc API).
+      # The HTML pandoc pipeline (pandoc/sed/awk + noise gate) was removed:
+      # the rustdoc JSON backend output carries no HTML-layout noise — the
+      # `<span>`/`<div>` fragments that remain are legitimate doctest content.
       # BUILD_DATE is injected only in CI (local runs omit Generated lines).
-      # The heavy generation (pandoc over every rustdoc page) happens only
+      # The heavy generation (rustdoc-markdown over each crate) happens only
       # here, exactly as the old inline step did.
       - name: Build LLM markdown artifact (llms.txt directory)
         run: |
