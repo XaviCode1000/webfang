@@ -480,7 +480,13 @@ jobs:
   miri:
     name: Miri (${{ matrix.group }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 60 min, same as infra-fast/infra-slow (#766). The old 30-min budget was
+    # set when Miri (core) aborted in ~20 min on servo_arc UB; once that UB
+    # was gated (#765), core started interpreting its full 691-test universe
+    # and ran out the wall exactly at 30:00 with 422 tests completed and no
+    # UB/FAIL anywhere (run 32049909561, 2026-08-17). 60 min leaves ~25 min
+    # of headroom past the observed full-suite pace.
+    timeout-minutes: 60
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     env:
       # rust-toolchain.toml pins 1.88.0 and would override the nightly toolchain
