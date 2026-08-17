@@ -4,12 +4,15 @@
 //! tokio::sync::Semaphore instances to limit concurrent operations
 //! per tool category, protecting the 8GB RAM / HDD hardware.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::mcp_server::metrics::{MetricsSnapshot, ScrapeEvent, ScrapeMetrics};
+use rmcp::ErrorData as McpError;
+use serde_json::Value;
 use webfang_core::adapters::downloader::Downloader;
 use webfang_core::di::Container;
 use webfang_core::domain::DomInspectorPort;
@@ -75,6 +78,12 @@ pub struct McpState {
     /// Process-lifetime scrape metrics, shared across all per-session clones
     /// (REQ-06). Locked only in short synchronous sections (REQ-07).
     pub metrics: Arc<Mutex<ScrapeMetrics>>,
+    /// Allowed root directories for absolute `output_dir` paths (#696).
+    ///
+    /// Empty (default) = absolute `output_dir` values are REJECTED
+    /// (fail-closed). When non-empty, an absolute `output_dir` must be
+    /// lexically under one of these roots after normalization.
+    pub allowed_export_roots: Arc<Vec<PathBuf>>,
     /// Cancellation token for graceful shutdown propagation.
     pub cancel_token: CancellationToken,
 }
@@ -127,6 +136,7 @@ impl McpState {
             inspector: None,
             robots_fetcher,
             metrics: Arc::new(Mutex::new(ScrapeMetrics::default())),
+            allowed_export_roots: Arc::new(Vec::new()),
             cancel_token: CancellationToken::new(),
         }
     }
@@ -166,6 +176,58 @@ impl McpState {
     pub fn with_inspector(mut self, inspector: Arc<dyn DomInspectorPort>) -> Self {
         self.inspector = Some(inspector);
         self
+    }
+
+    /// Set the allowed root directories for absolute `output_dir` paths (#696).
+    ///
+    /// When empty (default), absolute `output_dir` values are rejected.
+    /// When non-empty, an absolute `output_dir` must be under one of these
+    /// roots. Relative paths are always allowed (they resolve against CWD).
+    #[must_use]
+    pub fn with_export_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.allowed_export_roots = Arc::new(roots);
+        self
+    }
+
+    /// Validate that `dir` is an allowed export destination (#696).
+    ///
+    /// Relative paths are always allowed (existing behavior — they resolve
+    /// against the server's CWD). Absolute paths must be under one of
+    /// [`allowed_export_roots`](Self::allowed_export_roots); when no roots
+    /// are configured, absolute paths are rejected (fail-closed).
+    ///
+    /// # Errors
+    /// Returns `McpError::invalid_params` when an absolute path is outside
+    /// every configured root, or when no roots are configured at all.
+    pub fn validate_export_dir(&self, dir: &Path) -> Result<(), McpError> {
+        if !dir.is_absolute() {
+            return Ok(());
+        }
+        let roots = self.allowed_export_roots.as_ref();
+        if roots.is_empty() {
+            tracing::warn!(dir = %dir.display(), "absolute output_dir rejected: no export roots configured");
+            return Err(McpError::invalid_params(
+                "absolute output_dir requires server-configured export roots (none configured); \
+                 set --export-roots or use a relative path"
+                    .to_string(),
+                Some(Value::String("output_dir".to_string())),
+            ));
+        }
+        // Normalize the candidate lexically: resolve `.` and `..` components
+        // without touching the filesystem (the dir may not exist yet).
+        let normalized = normalize_lexical(dir);
+        let allowed = roots
+            .iter()
+            .any(|root| normalized.starts_with(normalize_lexical(root)));
+        if allowed {
+            Ok(())
+        } else {
+            tracing::warn!(dir = %dir.display(), "absolute output_dir outside allowed export roots");
+            Err(McpError::invalid_params(
+                format!("output_dir '{}' is outside allowed export roots", dir.display()),
+                Some(Value::String("output_dir".to_string())),
+            ))
+        }
     }
 
     /// Record a scrape event into the shared accumulator.
@@ -215,6 +277,24 @@ impl McpState {
             .unwrap_or_else(|e| e.into_inner())
             .snapshot()
     }
+}
+
+/// Normalize a path lexically: resolve `.` and `..` components without
+/// filesystem access. Used by [`McpState::validate_export_dir`] so the
+/// prefix check cannot be defeated by redundant components (#696).
+fn normalize_lexical(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {},
+            Component::ParentDir => {
+                out.pop();
+            },
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Build the shared robots.txt fetcher for the scrape tools (#697).
@@ -354,4 +434,92 @@ mod tests {
         assert_eq!(snap.total_events, 1, "record-through-clone is visible");
         assert_eq!(snap.success_count, 1, "success bucket recorded");
     }
-}
+        // --- validate_export_dir (#696) ---
+
+        #[tokio::test]
+        async fn export_dir_relative_always_allowed() {
+            let (_tmp, container) = test_container().await;
+            let state = McpState::new(container); // no roots configured
+            assert!(
+                state.validate_export_dir(Path::new("./output")).is_ok(),
+                "relative paths must pass through with no roots configured"
+            );
+        }
+
+        #[tokio::test]
+        async fn export_dir_absolute_rejected_without_roots() {
+            let (_tmp, container) = test_container().await;
+            let state = McpState::new(container); // fail-closed default
+            let err = state
+                .validate_export_dir(Path::new("/etc"))
+                .expect_err("absolute path must be rejected with no roots");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("export roots"),
+                "error must name the missing export roots, got: {msg}"
+            );
+        }
+
+        #[tokio::test]
+        async fn export_dir_absolute_allowed_under_root() {
+            let (tmp, container) = test_container().await;
+            let state =
+                McpState::new(container).with_export_roots(vec![tmp.path().to_path_buf()]);
+            let target = tmp.path().join("exports");
+            assert!(
+                state.validate_export_dir(&target).is_ok(),
+                "path under a configured root must be allowed"
+            );
+        }
+
+        #[tokio::test]
+        async fn export_dir_absolute_rejected_outside_root() {
+            let (tmp, container) = test_container().await;
+            let state =
+                McpState::new(container).with_export_roots(vec![tmp.path().to_path_buf()]);
+            let err = state
+                .validate_export_dir(Path::new("/etc"))
+                .expect_err("path outside roots must be rejected");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("outside allowed export roots"),
+                "error must name the root violation, got: {msg}"
+            );
+        }
+
+        #[tokio::test]
+        async fn export_dir_sibling_prefix_is_not_a_root_match() {
+            // `/tmp/rootX` must NOT satisfy root `/tmp/root` — the prefix check
+            // is component-based (`starts_with`), not string-based.
+            let (tmp, container) = test_container().await;
+            let state =
+                McpState::new(container).with_export_roots(vec![tmp.path().to_path_buf()]);
+            let mut sibling = tmp.path().to_path_buf();
+            let mut name = sibling
+                .file_name()
+                .expect("temp dir has a name")
+                .to_os_string();
+            name.push("_evil");
+            sibling.set_file_name(name);
+            assert!(
+                state.validate_export_dir(&sibling).is_err(),
+                "string-prefix sibling dir must not match the root"
+            );
+        }
+
+        #[tokio::test]
+        async fn export_dir_dotdot_cannot_escape_root() {
+            // Lexical normalization resolves `..` before the prefix check, so
+            // `<root>/../etc` is rejected even though it starts with the root.
+            let (tmp, container) = test_container().await;
+            let state =
+                McpState::new(container).with_export_roots(vec![tmp.path().to_path_buf()]);
+            let mut escape = tmp.path().to_path_buf();
+            escape.push("..");
+            escape.push("etc");
+            assert!(
+                state.validate_export_dir(&escape).is_err(),
+                "`..` traversal out of the root must be rejected"
+            );
+        }
+    }
