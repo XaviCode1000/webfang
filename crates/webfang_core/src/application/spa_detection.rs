@@ -73,11 +73,11 @@ pub fn detect_spa_content(
 /// Shared minimum-content guard for BOTH extraction funnels (#706).
 ///
 /// Applies [`detect_spa_content`] to the freshly extracted content and fails
-/// the scrape with a typed [`ScraperError::ExtractionFailed`] instead of
-/// returning `Ok` on near-empty output. Both extraction funnels — the MCP
-/// funnel (`build_scraped_content`) and the CLI funnel (`extract_content`) —
-/// call this after extraction, so JS-shell pages fail honestly instead of
-/// producing near-empty Markdown.
+/// the scrape with a typed [`crate::error::ScraperError::ExtractionFailed`]
+/// instead of returning `Ok` on near-empty output. Both extraction funnels —
+/// the MCP funnel (`build_scraped_content`) and the CLI funnel
+/// (`extract_content`) — call this after extraction, so JS-shell pages fail
+/// honestly instead of producing near-empty Markdown.
 ///
 /// The Spanish `reason` distinguishes pages that carry SPA markers (likely
 /// requiring JavaScript rendering) from pages that simply returned very
@@ -85,8 +85,8 @@ pub fn detect_spa_content(
 ///
 /// # Errors
 ///
-/// Returns [`ScraperError::ExtractionFailed`] when the extracted text is below
-/// [`MIN_CONTENT_CHARS`] characters.
+/// Returns [`crate::error::ScraperError::ExtractionFailed`] when the extracted
+/// text is below [`MIN_CONTENT_CHARS`] characters.
 pub fn validate_min_content(
     url: &str,
     text_content: &str,
