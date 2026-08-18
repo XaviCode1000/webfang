@@ -225,7 +225,7 @@ impl CrawlerConfigBuilder {
         CrawlerConfig {
             seed_url: self.seed_url,
             max_depth: self.max_depth,
-            max_pages: self.max_pages,
+            max_pages: self.max_pages.max(1),
             include_patterns: self.include_patterns,
             exclude_patterns: self.exclude_patterns,
             concurrency: self.concurrency,
@@ -496,5 +496,15 @@ mod tests {
         let seed = Url::parse("https://example.com").unwrap();
         let config = CrawlerConfig::builder(seed).timeout_secs(0).build();
         assert_eq!(config.timeout_secs, 1);
+    }
+
+    #[test]
+    fn builder_clamps_max_pages_to_minimum_one() {
+        // Bug #780: max_pages 0 reached ResultsCollector::new(0) →
+        // mpsc::channel(0) panic (SIGABRT). The builder is the last line of
+        // defense for programmatic/config-file paths that bypass CLI parsing.
+        let seed = Url::parse("https://example.com").unwrap();
+        let config = CrawlerConfig::builder(seed).max_pages(0).build();
+        assert_eq!(config.max_pages, 1);
     }
 }
