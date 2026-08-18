@@ -624,6 +624,11 @@ impl WafInspector {
     /// `ctx.ignore_waf` yields a clean verdict immediately (REQ-WAF-02 step 1),
     /// and the content-type denylist (REQ-WAF-02) gates body scanning.
     ///
+    /// The HTTP-200 entropy escalation (REQ-WAF-06 rule (a)) requires a GENUINE
+    /// challenge-context Fingerprint: a config-string occurrence (#781, e.g.
+    /// `"wgConfirmEdit...":"hcaptcha"` in a MediaWiki config dump) is recorded
+    /// as evidence but never escalates a dense legitimate page into a block.
+    ///
     /// Thread-safe: the AC automaton is immutable once compiled via `Lazy`.
     #[must_use]
     pub fn inspect(body: &str, ctx: &InspectionContext) -> WafVerdict {
@@ -635,19 +640,28 @@ impl WafInspector {
         let mut evidences = Vec::new();
         let scan_body = should_scan_body(ctx);
 
-        // Body signatures (boundary-filtered), gated by content-type.
+        // Body signatures (boundary-filtered), gated by content-type. The
+        // collector also reports whether at least one GENUINE challenge-context
+        // Fingerprint survived (config-string occurrences, #781, count as
+        // evidence but not as genuine challenge context).
+        let mut has_genuine_fingerprint = false;
         if scan_body {
-            evidences.extend(collect_body_evidence(body));
+            let (body_evidences, genuine) = collect_body_evidence(body);
+            evidences.extend(body_evidences);
+            has_genuine_fingerprint = genuine;
         }
 
         // Control headers are always inspected (independent of the body gate).
-        evidences.extend(collect_header_evidence(&ctx.headers));
+        // Every control header is Fingerprint-tier evidence of ACTIVE mitigation,
+        // which is genuine challenge context for the entropy rule.
+        let header_evidences = collect_header_evidence(&ctx.headers);
+        has_genuine_fingerprint |= !header_evidences.is_empty();
+        evidences.extend(header_evidences);
 
         // Entropy signals need full T2 awareness (rule (a) coexistence), so they
         // run after body + header evidence is collected.
         if scan_body {
-            let has_fingerprint = evidences.iter().any(|e| e.tier == WafTier::Fingerprint);
-            evidences.extend(entropy_evidence(body, ctx, has_fingerprint));
+            evidences.extend(entropy_evidence(body, ctx, has_genuine_fingerprint));
         }
 
         let is_blocked = decide(&evidences, ctx);
@@ -698,6 +712,14 @@ impl WafInspector {
 /// Collect body-signature evidence in a single Aho-Corasick pass, applying the
 /// boundary post-filter (REQ-WAF-04) to Fingerprint `[B]` matches.
 ///
+/// Returns the evidence vector plus a `has_genuine_fingerprint` flag used by the
+/// entropy rule (REQ-WAF-06a, #781): a Fingerprint-tier match that is merely a
+/// quoted JS/JSON **config value** (e.g. MediaWiki's
+/// `"wgConfirmEditHCaptchaSiteKey": "hcaptcha"`) is still recorded — it may
+/// serve the evidence chain of a status-correlated block (403/429/503) — but it
+/// is NOT genuine challenge context, so it can no longer escalate a large
+/// high-entropy legitimate page into an obfuscated-WAF block at HTTP 200.
+///
 /// The whole body is scanned: [`MAX_EVIDENCE_PER_BODY`] caps only the
 /// *Fingerprint* (T2) accumulation (RISK-01 DoS hardening), never detection. A
 /// [`WafTier::Challenge`] (T1) marker is a definitive verdict — the moment one
@@ -707,8 +729,9 @@ impl WafInspector {
 /// scan continues past the cap so a later T1 marker is still examined. A verdict
 /// needs at most one T1 marker or one correlated T2 marker, and the T2 cap is far
 /// beyond any real challenge page's signal count.
-fn collect_body_evidence(body: &str) -> Vec<WafEvidence> {
+fn collect_body_evidence(body: &str) -> (Vec<WafEvidence>, bool) {
     let mut evidences = Vec::new();
+    let mut has_genuine_fingerprint = false;
     for mat in WAF_AC.find_iter(body) {
         let sig = &WAF_BODY_SIGNATURES[mat.pattern()];
         if !passes_boundary_filter(body, &mat, sig.2, sig.3) {
@@ -725,11 +748,15 @@ fn collect_body_evidence(body: &str) -> Vec<WafEvidence> {
                     matched_pattern: sig.0,
                     source: EvidenceSource::Body,
                 });
-                break;
+                return (evidences, true);
             },
             // T2 accumulation is capped (RISK-01); keep scanning past the cap so a
             // later T1 marker is still examined.
             WafTier::Fingerprint => {
+                // #781: a quoted config-string occurrence is evidence (feeds the
+                // block chain under a WAF status) but not genuine challenge
+                // context for the entropy rule.
+                has_genuine_fingerprint |= !is_config_string_match(body, &mat);
                 if evidences.len() < MAX_EVIDENCE_PER_BODY {
                     evidences.push(WafEvidence {
                         provider: sig.1,
@@ -741,7 +768,92 @@ fn collect_body_evidence(body: &str) -> Vec<WafEvidence> {
             },
         }
     }
-    evidences
+    (evidences, has_genuine_fingerprint)
+}
+
+/// Whether a body match is a quoted JS/JSON **config-value** occurrence rather
+/// than a served challenge (#781).
+///
+/// A match is a config string when it fills an ENTIRE double-quoted string that
+/// sits in value position — either preceded by `"key":` / `"key" :` (JSON
+/// object) or by a bare identifier and `=` or `:` (JS assignment). Real
+/// challenge occurrences never take this shape: widget markup
+/// (`class="h-captcha"`, `data-sitekey="..."`) embeds the marker inside a
+/// quoted attribute, script sources (`hcaptcha.com/1/api.js`, `hcaptcha.js`)
+/// carry a path suffix, and challenge prose is unquoted. The filter is
+/// conservative: anything ambiguous stays a genuine match.
+///
+/// Complexity is bounded by a small constant walk around the match start/end —
+/// the Aho-Corasick scan stays the only O(N) pass.
+/// Whether a body match is a quoted JS/JSON **config-value** occurrence rather
+/// than a served challenge (#781).
+///
+/// A match is a config string when it fills an ENTIRE double-quoted string in
+/// the value position of a quoted-key object entry: `"key": "<match>"`. This is
+/// exactly the shape of MediaWiki's captcha config dump
+/// (`"wgConfirmEditCaptchaNeededForGenericEdit": "hcaptcha"`). Real challenge
+/// occurrences never take this shape: widget markup (`class="h-captcha"`,
+/// `data-sitekey="..."`) embeds the marker in an HTML attribute value (preceded
+/// by `=`), script sources (`hcaptcha.com/1/api.js`) carry a URL prefix before
+/// the opening quote, and challenge prose is unquoted. The filter is
+/// conservative: anything ambiguous stays a genuine match.
+///
+/// The scan walks a bounded constant number of bytes backwards from the match,
+/// so the Aho-Corasick pass remains the only O(N) walk over the body.
+#[inline]
+fn is_config_string_match(body: &str, mat: &aho_corasick::Match) -> bool {
+    let bytes = body.as_bytes();
+    // The match must fill an ENTIRE double-quoted string: `"<match>"`.
+    if mat.start() == 0 || bytes[mat.start() - 1] != b'"' || bytes.get(mat.end()) != Some(&b'"') {
+        return false;
+    }
+    // Before the opening quote (whitespace-tolerant) must stand a colon.
+    let Some(colon) = skip_back(bytes, mat.start() - 1, is_ws) else {
+        return false;
+    };
+    if bytes[colon] != b':' {
+        return false;
+    }
+    // Before the colon (whitespace-tolerant) must stand the key's closing quote.
+    let Some(key_close) = skip_back(bytes, colon, is_ws) else {
+        return false;
+    };
+    if bytes[key_close] != b'"' {
+        return false;
+    }
+    // Walk back over the key's identifier chars to its opening quote; a
+    // non-empty identifier key is required (`"": "value"` is not a config
+    // entry of any known captcha plugin).
+    let Some(key_open) = skip_back(bytes, key_close, is_ident_char) else {
+        return false;
+    };
+    bytes[key_open] == b'"' && key_open + 1 < key_close
+}
+
+/// Scan backward from (but excluding) `from` for the first byte NOT satisfying
+/// `skip`; `None` when the entire prefix satisfies `skip`.
+#[inline]
+fn skip_back(bytes: &[u8], from: usize, skip: impl Fn(u8) -> bool) -> Option<usize> {
+    let mut i = from;
+    while i > 0 {
+        i -= 1;
+        if !skip(bytes[i]) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Identifier characters accepted in JS/JSON config keys and variable names.
+#[inline]
+fn is_ident_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
+}
+
+/// ASCII whitespace predicate (value form for `skip_back`).
+#[inline]
+fn is_ws(b: u8) -> bool {
+    b.is_ascii_whitespace()
 }
 
 /// O(1) adjacent-byte boundary post-filter for Fingerprint-tier `[B]` matches
@@ -901,20 +1013,25 @@ fn is_5xx(status: Option<u16>) -> bool {
 /// Returns evidence ONLY when a rule decides to block (so its presence in a
 /// verdict always means "blocked"):
 /// - Rule (a): body > 100KB AND entropy > 5.5 b/B → block if status != 200
-///   (unknown/degraded counts as != 200) OR a Fingerprint marker coexists.
+///   (unknown/degraded counts as != 200) OR `has_genuine_fingerprint` — a
+///   Fingerprint in genuine challenge context: a non-config-string body match
+///   (#781 — a quoted JS/JSON config value like `"wgConfirmEdit...":"hcaptcha"`
+///   is NOT genuine) or a control header (active mitigation). This keeps dense
+///   legitimate pages (Wikipedia) from escalating to an obfuscated-WAF block on
+///   HTTP 200.
 /// - Rule (b): body < 1500B AND > 5 `<script>` tags → block if non-2xx OR
 ///   (200 + HTML content-type). The 200+HTML case is the "H3 fix" silent
 ///   challenge and MUST be kept (`discovery.rs` depends on it).
 fn entropy_evidence(
     body: &str,
     ctx: &InspectionContext,
-    has_fingerprint: bool,
+    has_genuine_fingerprint: bool,
 ) -> Option<WafEvidence> {
     // Rule (a): large + high entropy → obfuscated WAF.
     if body.len() > SUSPICIOUS_SIZE_THRESHOLD {
         let entropy = calculate_entropy(body);
         if entropy > ENTROPY_THRESHOLD {
-            if ctx.status != Some(200) || has_fingerprint {
+            if ctx.status != Some(200) || has_genuine_fingerprint {
                 return Some(WafEvidence {
                     provider: "Obfuscated WAF",
                     tier: WafTier::Challenge,
@@ -923,10 +1040,11 @@ fn entropy_evidence(
                 });
             }
             // Informational detection (REQ-WAF-08): high entropy at status 200
-            // without a coexisting T2 marker is logged, not blocked.
+            // without a genuine challenge-context fingerprint is logged, not
+            // blocked.
             tracing::debug!(
                 entropy,
-                "high-entropy body at status 200 without a T2 marker; not blocking"
+                "high-entropy body at status 200 without genuine challenge context; not blocking"
             );
         }
     }
@@ -1225,7 +1343,7 @@ mod tests {
     #[test]
     fn test_boundary_rejects_trailing_underscore() {
         // Fixture 1 core: bare "akamai" [B] rejected when followed by '_'.
-        let evidences = collect_body_evidence(r#"{"key": "akamai_hash"}"#);
+        let (evidences, _) = collect_body_evidence(r#"{"key": "akamai_hash"}"#);
         assert!(
             !evidences.iter().any(|e| e.matched_pattern == "akamai"),
             "bare 'akamai' must be rejected when followed by '_' (got {evidences:?})"
@@ -1235,7 +1353,7 @@ mod tests {
     #[test]
     fn test_boundary_rejects_alphanumeric_prefix() {
         // bare "akamai" [B] rejected when preceded by an alphanumeric byte.
-        let evidences = collect_body_evidence("xakamai");
+        let (evidences, _) = collect_body_evidence("xakamai");
         assert!(
             !evidences.iter().any(|e| e.matched_pattern == "akamai"),
             "bare 'akamai' must be rejected when preceded by 'x' (got {evidences:?})"
@@ -1245,7 +1363,7 @@ mod tests {
     #[test]
     fn test_boundary_stands_in_prose() {
         // Fixture 4 core: "cloudflare" surrounded by spaces stands (T2 evidence).
-        let evidences = collect_body_evidence("an article mentioning cloudflare in prose");
+        let (evidences, _) = collect_body_evidence("an article mentioning cloudflare in prose");
         assert!(
             evidences
                 .iter()
@@ -1257,7 +1375,7 @@ mod tests {
     #[test]
     fn test_boundary_exempt_pattern_matches_inside_token() {
         // Fixture 5 core: "incap_ses" [E] matches inside the larger token.
-        let evidences = collect_body_evidence("cookie incap_ses_123 = abc");
+        let (evidences, _) = collect_body_evidence("cookie incap_ses_123 = abc");
         assert!(
             evidences.iter().any(|e| e.matched_pattern == "incap_ses"),
             "[E] 'incap_ses' must match inside 'incap_ses_123' (got {evidences:?})"
@@ -1267,7 +1385,7 @@ mod tests {
     #[test]
     fn test_boundary_t1_exempt() {
         // Challenge-tier patterns are exempt from the boundary filter.
-        let evidences = collect_body_evidence("xxcf-turnstileyy");
+        let (evidences, _) = collect_body_evidence("xxcf-turnstileyy");
         assert!(
             evidences
                 .iter()
@@ -1279,7 +1397,7 @@ mod tests {
     #[test]
     fn test_boundary_utf8_non_ascii_is_boundary() {
         // Any non-ASCII byte counts as a boundary (UTF-8 safe).
-        let evidences = collect_body_evidence("ñakamaiñ");
+        let (evidences, _) = collect_body_evidence("ñakamaiñ");
         assert!(
             evidences.iter().any(|e| e.matched_pattern == "akamai"),
             "non-ASCII adjacent bytes are boundaries, 'akamai' stands (got {evidences:?})"
@@ -1296,7 +1414,7 @@ mod tests {
         // Twice-the-cap boundary-clean bare "cloudflare" matches collapse to the
         // cap (the old code returned every match — an uncapped Vec).
         let body = " cloudflare ".repeat(MAX_EVIDENCE_PER_BODY * 2);
-        let evidences = collect_body_evidence(&body);
+        let (evidences, _) = collect_body_evidence(&body);
         assert_eq!(
             evidences.len(),
             MAX_EVIDENCE_PER_BODY,
@@ -1309,7 +1427,7 @@ mod tests {
         // Triangulation: the cap is an upper bound, not a target — a body with
         // fewer matches than the cap still collects every one of them.
         let body = " cloudflare  datadome  sucuri ";
-        let evidences = collect_body_evidence(body);
+        let (evidences, _) = collect_body_evidence(body);
         assert_eq!(
             evidences.len(),
             3,
@@ -1538,7 +1656,8 @@ mod tests {
     fn test_collect_body_evidence_source_is_body() {
         // FIX B: body-signature evidence is tagged EvidenceSource::Body so the
         // verdict can carve out 5xx body noise from header-sourced mitigation.
-        let evidences = collect_body_evidence("an article mentioning cloudflare in prose");
+        let (evidences, genuine) =
+            collect_body_evidence("an article mentioning cloudflare in prose");
         assert!(
             !evidences.is_empty(),
             "expected body evidence (got {evidences:?})"
@@ -1547,6 +1666,7 @@ mod tests {
             evidences.iter().all(|e| e.source == EvidenceSource::Body),
             "body evidence must be tagged Body (got {evidences:?})"
         );
+        assert!(genuine, "prose vendor mention is genuine challenge context");
     }
 
     #[test]
@@ -1752,6 +1872,162 @@ mod tests {
         assert!(
             verdict.is_blocked,
             "200 high-entropy with T2 coexistence must block"
+        );
+    }
+
+    // ========================================================================
+    // #781 — Config-string false positives (Wikipedia / MediaWiki)
+    //
+    // A quoted JS/JSON config value — MediaWiki's edit-captcha config dump,
+    // e.g. `"wgConfirmEditCaptchaNeededForGenericEdit": "hcaptcha"` — is NOT a
+    // served challenge. It stays evidence (it feeds the chain under a WAF
+    // status), but it is not genuine challenge context: it must not escalate a
+    // dense legitimate page into an obfuscated-WAF block at HTTP 200.
+    // ========================================================================
+
+    /// Deterministic >100KB high-entropy body (byte cycle ≈ 8.0 b/B), with an
+    /// optional fragment appended. Same construction as the existing
+    /// entropy-policy tests so no randomness leaks into the suite.
+    fn high_entropy_body(fragment: &str) -> String {
+        let mut body: String = (0u8..=255)
+            .map(|b| b as char)
+            .cycle()
+            .take(104_000)
+            .collect();
+        body.push_str(fragment);
+        body
+    }
+
+    /// MediaWiki-style captcha config excerpt (issue #781 shape, no spaces).
+    const MEDIAWIKI_HCAPTCHA_CONFIG: &str = r#"{"wgConfirmEditCaptchaNeededForGenericEdit":"hcaptcha","wgConfirmEditHCaptchaSiteKey":"5d0c670e-4dc5-4e69-a45e-9f5b7c2d11ab"}"#;
+
+    /// Same config with spaces around the colon (pretty-printed variant).
+    const MEDIAWIKI_HCAPTCHA_CONFIG_SPACED: &str = r#"{ "wgConfirmEditCaptchaNeededForGenericEdit": "hcaptcha", "wgConfirmEditHCaptchaSiteKey": "5d0c670e-4dc5-4e69-a45e-9f5b7c2d11ab" }"#;
+
+    #[test]
+    fn test_config_string_match_json_value_is_config() {
+        // #781 core: a full-quoted-string hcaptcha value preceded by a quoted
+        // key is a config occurrence — evidence yes, genuine context no.
+        for config in [MEDIAWIKI_HCAPTCHA_CONFIG, MEDIAWIKI_HCAPTCHA_CONFIG_SPACED] {
+            let (evidences, genuine) = collect_body_evidence(config);
+            assert!(
+                evidences.iter().any(|e| e.matched_pattern == "hcaptcha"),
+                "config occurrences still produce evidence (got {evidences:?})"
+            );
+            assert!(
+                !genuine,
+                "quoted-key JSON values are not genuine challenge context ({config})"
+            );
+        }
+    }
+
+    #[test]
+    fn test_config_string_match_html_attribute_is_genuine() {
+        // `class="hcaptcha"` embeds the marker in an HTML attribute value
+        // (preceded by '='), never in JSON value position → genuine.
+        let (_, genuine) = collect_body_evidence(r#"<div class="hcaptcha"></div>"#);
+        assert!(genuine, "attribute-embedded marker stays genuine");
+    }
+
+    #[test]
+    fn test_config_string_match_script_src_is_genuine() {
+        // `src="https://hcaptcha.com/..."` has a URL prefix before the marker
+        // inside the quoted string → genuine challenge signal.
+        let (_, genuine) =
+            collect_body_evidence(r#"<script src="https://hcaptcha.com/1/api.js"></script>"#);
+        assert!(genuine, "script-source marker stays genuine");
+    }
+
+    #[test]
+    fn test_config_string_match_prose_is_genuine() {
+        let (_, genuine) = collect_body_evidence("the site uses hcaptcha for protection");
+        assert!(genuine, "unquoted prose mentions stay genuine");
+    }
+
+    #[test]
+    fn test_config_string_match_embedded_in_string_is_genuine() {
+        // The marker must fill the ENTIRE quoted string; embedded mentions are
+        // genuine (conservative default of the #781 filter).
+        let (_, genuine) = collect_body_evidence(r#"{"msg":"say hcaptcha today"}"#);
+        assert!(genuine, "marker embedded inside a string stays genuine");
+    }
+
+    #[test]
+    fn test_mediawiki_hcaptcha_config_dense_200_not_blocked() {
+        // Issue #781 fixture (a): MediaWiki config with `hcaptcha` config
+        // strings + >100KB dense body + HTTP 200 → NOT blocked. The config
+        // occurrence is still reported as (non-genuine) fingerprint evidence.
+        let body = high_entropy_body(MEDIAWIKI_HCAPTCHA_CONFIG);
+        let ctx = ctx_with(Some(200), Some("text/html"));
+        let verdict = WafInspector::inspect(&body, &ctx);
+        assert!(
+            !verdict.is_blocked,
+            "config-string fingerprint must not escalate a 200 page (got {verdict:?})"
+        );
+        assert!(
+            verdict
+                .evidences
+                .iter()
+                .any(|e| e.matched_pattern == "hcaptcha" && e.tier == WafTier::Fingerprint),
+            "the config occurrence is still collected as evidence (got {:?})",
+            verdict.evidences
+        );
+    }
+
+    #[test]
+    fn test_real_hcaptcha_widget_dense_200_blocks() {
+        // Issue #781 fixture (b): a REAL served hCaptcha widget on a large
+        // body at HTTP 200 still blocks (T1 challenge marker, any status).
+        let body = high_entropy_body(
+            r#"<div class="h-captcha" data-sitekey="5d0c670e"></div>
+              <script src="https://hcaptcha.com/1/api.js"></script>"#,
+        );
+        let ctx = ctx_with(Some(200), Some("text/html"));
+        let verdict = WafInspector::inspect(&body, &ctx);
+        assert!(
+            verdict.is_blocked,
+            "real hCaptcha widget markup must still block at 200"
+        );
+        assert_eq!(
+            verdict.evidences.first().map(|e| e.provider),
+            Some("hCaptcha"),
+            "the challenge marker drives the block (got {:?})",
+            verdict.evidences
+        );
+    }
+
+    #[test]
+    fn test_config_string_hcaptcha_403_blocks() {
+        // Issue #781 fixture (c): the SAME config-only body at a WAF status
+        // (403) still blocks — config evidence correlates with the challenge
+        // status, so nothing about detection weakens.
+        let ctx = ctx_with(Some(403), Some("text/html"));
+        let verdict = WafInspector::inspect(MEDIAWIKI_HCAPTCHA_CONFIG, &ctx);
+        assert!(
+            verdict.is_blocked,
+            "config fingerprint at 403 must still block"
+        );
+        assert!(
+            verdict
+                .evidences
+                .iter()
+                .any(|e| e.matched_pattern == "hcaptcha"),
+            "the evidence chain carries the hcaptcha fingerprint (got {:?})",
+            verdict.evidences
+        );
+    }
+
+    #[test]
+    fn test_genuine_fingerprint_still_escalates_entropy_200() {
+        // Triangulation for the #781 gate: the entropy rule keeps escalating at
+        // 200 when the coexisting fingerprint is GENUINE (prose marker here),
+        // distinguishing it from the config-string case above.
+        let body = high_entropy_body(" protected by cloudflare edge ");
+        let ctx = ctx_with(Some(200), Some("text/html"));
+        let verdict = WafInspector::inspect(&body, &ctx);
+        assert!(
+            verdict.is_blocked,
+            "genuine T2 coexistence with high entropy must still block at 200"
         );
     }
 
