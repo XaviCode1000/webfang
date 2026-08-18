@@ -16,10 +16,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::error::{ErrorClass, Result, ScraperError};
+use dashmap::DashMap;
 use futures::stream::StreamExt;
 use sha2::{Digest, Sha256};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::OnceCell;
 use uuid::Uuid;
 use wreq::{Client, Response};
 use wreq_util::Profile;
@@ -43,7 +45,7 @@ pub enum AssetNamingStrategy {
 }
 
 /// Result of a successful download
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DownloadedAsset {
     /// Original URL
     pub url: String,
@@ -115,6 +117,18 @@ impl Default for DownloadConfig {
 pub struct Downloader {
     client: Client,
     config: DownloadConfig,
+    /// Crawl-scoped successful-download registry (#782). One `Downloader`
+    /// lives for the whole crawl (shared via `Arc` across all concurrent
+    /// pages), so this map guarantees each canonical asset URL is fetched at
+    /// most once: the first occurrence runs the download and records the
+    /// asset here; concurrent arrivals wait on that result through the
+    /// [`OnceCell`](tokio::sync::OnceCell); later occurrences (e.g. another
+    /// page that references the same asset) reuse the already-written file.
+    ///
+    /// Only **successful** outcomes are cached. Failures are returned
+    /// (typed, unmodified) and leave the cell uninitialized, so `run_download`'s
+    /// retry policy is not bypassed and later pages are free to retry.
+    downloaded_urls: DashMap<String, std::sync::Arc<OnceCell<DownloadedAsset>>>,
 }
 
 impl std::fmt::Debug for Downloader {
@@ -150,7 +164,11 @@ impl Downloader {
             .build()
             .map_err(|e| ScraperError::Config(format!("failed to build http client: {e}")))?;
 
-        Ok(Self { client, config })
+        Ok(Self {
+            client,
+            config,
+            downloaded_urls: DashMap::new(),
+        })
     }
 
     /// Lazily create a download subdir only when a real asset is about to be
@@ -189,6 +207,18 @@ impl Downloader {
 
     /// Download a single asset with true streaming to disk.
     ///
+    /// # Dedup (#782)
+    ///
+    /// Each canonical URL is fetched at most once per `Downloader` (one
+    /// instance is shared via `Arc` across all pages of a crawl). The first
+    /// occurrence wins and records the downloaded asset in the crawl-scoped
+    /// registry; concurrent callers for the same URL wait on that result
+    /// (never a second network request); later occurrences — e.g. another
+    /// page that references the same asset — reuse the already-written file
+    /// and therefore resolve to the same local path. Failures are NOT
+    /// cached: the registry only stores successes, so failed URLs never
+    /// poison later pages and every caller keeps the typed error verbatim.
+    ///
     /// # Architecture
     ///
     /// - Creates temp file with UUID
@@ -204,6 +234,74 @@ impl Downloader {
     /// Returns `ScraperError::Io` if file operations fail.
     /// Returns `ScraperError::Download` if file exceeds size limit.
     pub async fn download(&self, url: &str) -> Result<DownloadedAsset> {
+        // Fast path: a previous page already downloaded this asset (#782).
+        // The duplicate is SKIPPED here — no network request is sent.
+        let registered = self
+            .downloaded_urls
+            .get(url)
+            .map(|entry| std::sync::Arc::clone(entry.value()));
+        if let Some(cell) = registered {
+            if let Some(asset) = cell.get() {
+                tracing::debug!(
+                    url = %url,
+                    local_path = %asset.local_path.display(),
+                    reason = "already_downloaded_this_crawl",
+                    "duplicate asset download skipped — reusing cached file"
+                );
+                return Ok(asset.clone());
+            }
+            // Cell exists but is uninitialized: download still in flight or a
+            // previous failure — fall through and wait/retry via the slow path.
+        }
+
+        let cell = self
+            .downloaded_urls
+            .entry(url.to_string())
+            .or_insert_with(|| std::sync::Arc::new(OnceCell::new()))
+            .clone();
+
+        // Slow path: exactly one caller for this URL runs the download (with
+        // retries); concurrent arrivals wait on the same cell and never open
+        // a second connection. Failures leave the cell uninitialized (tokio
+        // hands a fresh attempt to the waiters), so typed errors reach every
+        // caller and no URL is poisoned for later pages.
+        cell.get_or_try_init(|| self.run_download(url))
+            .await
+            .cloned()
+    }
+
+    /// Run the retry/backoff download and record the outcome in the crawl
+    /// dedup registry (#782). Successes are observable via the emitted
+    /// structured event; failures pass through without caching.
+    async fn run_download(&self, url: &str) -> Result<DownloadedAsset> {
+        match self.download_with_retry(url).await {
+            Ok(asset) => {
+                tracing::debug!(
+                    url = %url,
+                    local_path = %asset.local_path.display(),
+                    bytes = asset.size,
+                    "asset download recorded in crawl dedup registry"
+                );
+                Ok(asset)
+            },
+            Err(e) => {
+                tracing::debug!(
+                    url = %url,
+                    err = %e,
+                    "asset download failed — URL left uncached so later pages may retry"
+                );
+                Err(e)
+            },
+        }
+    }
+
+    /// Retry loop with exponential backoff for a single asset download.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first non-transient error, or the last transient error
+    /// after exhausting `max_retries`.
+    async fn download_with_retry(&self, url: &str) -> Result<DownloadedAsset> {
         let mut last_err = None;
 
         for attempt in 0..=self.config.max_retries {
@@ -974,6 +1072,155 @@ mod tests {
         let downloader = Downloader::new(config).unwrap();
         let results = downloader.download_batch(&[]).await;
         assert!(results.is_empty());
+    }
+
+    /// Mount an asset route returning `body` and `expect(1)` — the wire-level
+    /// proof of the #782 dedup contract: at most ONE network request for the
+    /// URL no matter how many times it is handed to a `Downloader`.
+    async fn mount_asset_expect_once(server: &MockServer, asset_path: &str, body: Vec<u8>) {
+        Mock::given(method("GET"))
+            .and(path(asset_path))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(body)
+                    .insert_header("content-type", "image/png"),
+            )
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    /// #782: sequential occurrences of the same asset URL (later crawl pages)
+    /// must NOT re-download — the second call reuses the cached file and both
+    /// resolve to the same local path. wiremock's `expect(1)` verifies the
+    /// single request at server drop.
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[tokio::test]
+    async fn test_download_dedup_sequential_reuses_cached_file() {
+        let server = MockServer::start().await;
+        mount_asset_expect_once(&server, "/img.png", b"png-bytes".to_vec()).await;
+
+        let temp_dir = TempDir::new().unwrap();
+        let downloader = Downloader::new(DownloadConfig {
+            output_dir: temp_dir.path().to_path_buf(),
+            max_retries: 0,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let url = format!("{}/img.png", server.uri());
+        let first = downloader.download(&url).await.unwrap();
+        let second = downloader.download(&url).await.unwrap();
+
+        assert_eq!(
+            first.local_path, second.local_path,
+            "the duplicate occurrence must resolve to the same already-downloaded file"
+        );
+        assert!(
+            first.local_path.exists(),
+            "cached asset file must exist on disk"
+        );
+    }
+
+    /// #782: concurrent arrivals for the same asset URL (parallel pages) must
+    /// produce exactly ONE origin request — the losers wait on the winner's
+    /// result instead of opening second connections. The response delay
+    /// forces the two downloads to overlap.
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[tokio::test]
+    async fn test_download_dedup_concurrent_single_request() {
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/busy.png"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(b"busy-png".to_vec())
+                    .insert_header("content-type", "image/png")
+                    .set_delay(Duration::from_millis(200)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let temp_dir = TempDir::new().unwrap();
+        let downloader = Arc::new(
+            Downloader::new(DownloadConfig {
+                output_dir: temp_dir.path().to_path_buf(),
+                max_retries: 0,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let url = format!("{}/busy.png", server.uri());
+
+        let winner = {
+            let d = Arc::clone(&downloader);
+            let u = url.clone();
+            tokio::spawn(async move { d.download(&u).await })
+        };
+        let loser = {
+            let d = Arc::clone(&downloader);
+            tokio::spawn(async move { d.download(&url).await })
+        };
+
+        let first = winner.await.unwrap().unwrap();
+        let second = loser.await.unwrap().unwrap();
+
+        assert_eq!(
+            first.local_path, second.local_path,
+            "both concurrent callers must resolve to the same file"
+        );
+    }
+
+    /// #782 guardrail: failures are NOT cached — a failed download leaves the
+    /// registry cell uninitialized, so a later page may retry the URL and
+    /// every caller keeps its typed error verbatim (no error poisoning).
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[tokio::test]
+    async fn test_download_failure_not_cached_in_dedup_registry() {
+        let server = MockServer::start().await;
+        // First occurrence fails (404 is non-retriable), then the route heals.
+        Mock::given(method("GET"))
+            .and(path("/flaky.png"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("gone"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/flaky.png"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(b"healed".to_vec())
+                    .insert_header("content-type", "image/png"),
+            )
+            .up_to_n_times(2)
+            .mount(&server)
+            .await;
+
+        let temp_dir = TempDir::new().unwrap();
+        let downloader = Downloader::new(DownloadConfig {
+            output_dir: temp_dir.path().to_path_buf(),
+            max_retries: 0,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let url = format!("{}/flaky.png", server.uri());
+        let failure = downloader.download(&url).await;
+        assert!(
+            matches!(failure, Err(ScraperError::Http { status: 404, .. })),
+            "first failure must surface the typed HTTP error: {failure:?}"
+        );
+
+        // Later page retries the SAME downloader — must not be poisoned by the
+        // earlier failure.
+        let retry = downloader.download(&url).await;
+        assert!(
+            retry.is_ok(),
+            "failed outcome must not be cached; retry should succeed: {retry:?}"
+        );
     }
 
     /// Mount the entry route of a redirect-flow fixture plus its destination.
