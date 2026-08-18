@@ -231,14 +231,43 @@ impl From<wreq::Error> for DownloadError {
             }
             let msg = s.to_string().to_lowercase();
             if msg.contains("dns") || msg.contains("resolve") {
-                return DownloadError::Dns(s.to_string());
+                return DownloadError::Dns(strip_display_marker(&s.to_string(), "dns error"));
             }
             if msg.contains("tls") || msg.contains("certificate") || msg.contains("ssl") {
-                return DownloadError::Tls(s.to_string());
+                return DownloadError::Tls(strip_display_marker(&s.to_string(), "tls error"));
             }
             source = s.source();
         }
         DownloadError::Network(Box::new(e))
+    }
+}
+
+/// Strip a leading marker that the variant's `Display` already prints.
+///
+/// `wreq`'s erased source text often IS the bare marker (e.g. `"dns error"`),
+/// which would render as `"DNS error: dns error"` (#761). Removing the
+/// redundant prefix keeps the message informative. The variant's `Display`
+/// prefix still carries the marker, so downstream text-based classification
+/// (`error.rs` heuristics match the lowercased full chain) is unaffected.
+/// If stripping leaves nothing, substitute a short description so the
+/// message never ends in a dangling colon.
+fn strip_display_marker(payload: &str, marker: &str) -> String {
+    let stripped = if payload.to_lowercase().starts_with(marker) {
+        payload[marker.len()..]
+            .trim_start_matches([':', ' '])
+            .to_string()
+    } else {
+        payload.to_string()
+    };
+    if stripped.is_empty() {
+        // Bare marker only — no extra detail survived the erasure.
+        if marker.starts_with("dns") {
+            "name resolution failed".to_string()
+        } else {
+            "handshake failed".to_string()
+        }
+    } else {
+        stripped
     }
 }
 
@@ -347,6 +376,34 @@ mod tests {
 
         let err = DownloadError::Timeout(30);
         assert!(err.to_string().contains("30"));
+    }
+
+    /// #761: the erased wreq source text is often the bare marker
+    /// (`"dns error"`), which used to render as `"DNS error: dns error"`.
+    /// `strip_display_marker` removes the redundant prefix; a bare marker
+    /// becomes a short description instead of a dangling colon.
+    #[test]
+    fn test_strip_display_marker_dedupes_redundant_prefix() {
+        // Bare marker → substituted description, no dangling colon.
+        assert_eq!(
+            super::strip_display_marker("dns error", "dns error"),
+            "name resolution failed"
+        );
+        // Marker + detail → detail survives.
+        assert_eq!(
+            super::strip_display_marker("dns error: NXDOMAIN", "dns error"),
+            "NXDOMAIN"
+        );
+        // No marker prefix → payload untouched.
+        assert_eq!(
+            super::strip_display_marker("failed to lookup address", "dns error"),
+            "failed to lookup address"
+        );
+        // TLS variant shares the same behavior.
+        assert_eq!(
+            super::strip_display_marker("tls error", "tls error"),
+            "handshake failed"
+        );
     }
 
     #[test]
