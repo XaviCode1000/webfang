@@ -138,52 +138,84 @@ const DEFAULT_CHROME_CANDIDATES: [&str; 4] = [
 ];
 
 /// Preflight: verify the local environment can satisfy the configured JS
-/// strategy before any crawl starts (#685, #758).
+/// strategy before any crawl starts (#685, #758, #787).
 ///
-/// `JsStrategy::Full` renders pages through Chromiumoxide, which spawns a
-/// real Chrome/Chromium binary. Two independent preconditions are checked,
-/// in order:
+/// Strategy-specific checks:
 ///
-/// 1. **Compile-time capability** (#758): the binary must have been built
-///    with the `chromium` feature. Without it, `ChromiumoxideDownloader`
-///    is a stub that fails mid-crawl with an instruction the CLI binary
-///    cannot follow. This is a build-configuration error, checked first
-///    because probing the PATH is pointless when the binary cannot render
-///    JS at all.
-/// 2. **Runtime environment**: probing the installed candidates turns a
-///    missing browser into a clean config error (exit 78) instead of a
-///    confusing mid-crawl browser launch failure.
+/// - [`Static`](crate::domain::JsStrategy::Static): no external binary is
+///   needed — returns immediately without touching disk or spawning
+///   processes.
+/// - [`Hybrid`](crate::domain::JsStrategy::Hybrid) (#787): Layer 2 shells
+///   out to Obscura (`ObscuraDownloader`), so the configured
+///   `--obscura-binary` (default `obscura`) must exist. A value with a path
+///   separator must exist as a file; a bare name must resolve via `PATH`.
+///   This turns a missing binary into a clean config error (exit 78)
+///   instead of a silent Layer-2 fallback mid-crawl.
+/// - [`Full`](crate::domain::JsStrategy::Full) renders pages through
+///   Chromiumoxide, which spawns a real Chrome/Chromium binary. Two
+///   independent preconditions are checked, in order:
 ///
-/// Other strategies need no external binary and no `chromium` feature
-/// (`Hybrid` escalates through Obscura, which works without it) and return
-/// immediately without spawning processes.
+///   1. **Compile-time capability** (#758): the binary must have been built
+///      with the `chromium` feature. Without it, `ChromiumoxideDownloader`
+///      is a stub that fails mid-crawl with an instruction the CLI binary
+///      cannot follow. This is a build-configuration error, checked first
+///      because probing the PATH is pointless when the binary cannot render
+///      JS at all.
+///   2. **Runtime environment**: probing the installed candidates turns a
+///      missing browser into a clean config error (exit 78) instead of a
+///      confusing mid-crawl browser launch failure.
 ///
 /// Runs once, in a synchronous context, before crawl start — a brief
-/// blocking `--version` probe is acceptable there.
+/// blocking `--version` probe (Full) is acceptable there. The Hybrid check
+/// is a pure filesystem lookup (no spawn).
 ///
 /// # Errors
 ///
 /// Returns [`crate::CliExit::ConfigError`] (exit 78) when the strategy is
+/// [`Hybrid`](crate::domain::JsStrategy::Hybrid) and the configured Obscura
+/// binary does not exist (neither as a path nor on `PATH`), or when it is
 /// [`Full`](crate::domain::JsStrategy::Full) and either the binary was
 /// built without the `chromium` feature, or no Chrome/Chromium candidate
 /// on `PATH` reports a version.
 pub fn check_js_dependencies(opts: &CrawlOptions) -> Result<(), CliExit> {
-    check_js_dependencies_with(&DEFAULT_CHROME_CANDIDATES, cfg!(feature = "chromium"), opts)
+    // The PATH value is injected so the core check stays pure and testable —
+    // tests pass a controlled PATH instead of mutating process-global env.
+    let path_value =
+        std::env::var_os("PATH").map_or_else(String::new, |v| v.to_string_lossy().into_owned());
+    check_js_dependencies_with(
+        &DEFAULT_CHROME_CANDIDATES,
+        cfg!(feature = "chromium"),
+        &path_value,
+        opts,
+    )
 }
 
-/// Candidate- and feature-injectable core of [`check_js_dependencies`] —
-/// tests probe binaries that exist deterministically in CI (e.g. `true`)
-/// instead of the real Chrome names, and inject the feature flag because
-/// `cfg!` cannot be toggled per test.
+/// Candidate-, feature-, and PATH-injectable core of
+/// [`check_js_dependencies`] — tests probe binaries that exist
+/// deterministically in CI (e.g. `true`) instead of the real Chrome names,
+/// inject the feature flag because `cfg!` cannot be toggled per test, and
+/// inject the `PATH` value so the Hybrid Obscura lookup never races with
+/// concurrent tests over the process-global environment (#787).
 fn check_js_dependencies_with(
     candidates: &[&str],
     chromium_enabled: bool,
+    path_value: &str,
     opts: &CrawlOptions,
 ) -> Result<(), CliExit> {
-    if opts.network.js_strategy != JsStrategy::Full {
-        return Ok(());
+    match opts.network.js_strategy {
+        // Static crawls with wreq only — no external binary to check.
+        JsStrategy::Static => Ok(()),
+        // Hybrid escalates through Obscura: fail fast when the binary is
+        // missing instead of letting Layer 2 fail in the middle of the crawl
+        // (#787).
+        JsStrategy::Hybrid => check_obscura_binary(&opts.network.obscura_binary, path_value),
+        JsStrategy::Full => check_chrome_binary(candidates, chromium_enabled),
     }
+}
 
+/// Full-strategy check (#685, #758): `chromium` feature + a Chrome/Chromium
+/// candidate that reports a version.
+fn check_chrome_binary(candidates: &[&str], chromium_enabled: bool) -> Result<(), CliExit> {
     if !chromium_enabled {
         return Err(CliExit::ConfigError(
             "--js-strategy full requiere un binario compilado con la feature `chromium`; \
@@ -203,6 +235,64 @@ fn check_js_dependencies_with(
     Err(CliExit::ConfigError(
         "--js-strategy full requiere Google Chrome instalado".into(),
     ))
+}
+
+/// Whether `binary` names an explicit path (absolute or relative) rather
+/// than a bare executable name resolved from `PATH`.
+fn has_path_separator(binary: &str) -> bool {
+    binary.contains('/') || binary.contains('\\')
+}
+
+/// Scan `PATH` entries (in order) for a file named `name` — the same lookup
+/// the OS performs for a bare executable name (#787).
+///
+/// Pure: takes the `PATH` value as input so tests control the search space
+/// without touching the process-global environment.
+fn resolve_executable_in_path(name: &str, path_value: &str) -> Option<PathBuf> {
+    if name.is_empty() || has_path_separator(name) {
+        return None;
+    }
+    std::env::split_paths(path_value)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Resolve the configured Obscura binary to an existing file.
+///
+/// A value with a path separator must exist as a file exactly as given; a
+/// bare name must resolve through `PATH` (#787).
+fn resolve_obscura_binary(binary: &str, path_value: &str) -> Option<PathBuf> {
+    if has_path_separator(binary) {
+        PathBuf::from(binary)
+            .is_file()
+            .then(|| PathBuf::from(binary))
+    } else {
+        resolve_executable_in_path(binary, path_value)
+    }
+}
+
+/// Hybrid-strategy check (#787): the configured Obscura binary exists.
+fn check_obscura_binary(binary: &str, path_value: &str) -> Result<(), CliExit> {
+    match resolve_obscura_binary(binary, path_value) {
+        Some(resolved) => {
+            // English tracing fields, never the user-facing message.
+            tracing::info!(
+                strategy = "hybrid",
+                binary = %binary,
+                resolved = %resolved.display(),
+                "obscura_dependency_checked"
+            );
+            Ok(())
+        },
+        None if has_path_separator(binary) => Err(CliExit::ConfigError(format!(
+            "--js-strategy hybrid requiere el binario obscura: la ruta \"{binary}\" no existe \
+             o no es un archivo; verificá --obscura-binary o WEBFANG_OBSCURA_BINARY"
+        ))),
+        None => Err(CliExit::ConfigError(format!(
+            "--js-strategy hybrid requiere el binario \"{binary}\": no se encontró en PATH; \
+             instalalo o configurá una ruta con --obscura-binary o WEBFANG_OBSCURA_BINARY"
+        ))),
+    }
 }
 
 /// Preflight: `--elastic` must have at least one wirable vector sink (#695).
@@ -847,21 +937,202 @@ mod tests {
         // A nonexistent candidate proves the check short-circuits before it
         // could attempt to spawn anything for a non-Full strategy.
         assert!(
-            check_js_dependencies_with(&["definitely-not-installed-9x4k"], true, &opts).is_ok(),
+            check_js_dependencies_with(&["definitely-not-installed-9x4k"], true, "", &opts).is_ok(),
             "Static strategy must not require Chrome or spawn processes"
+        );
+    }
+
+    /// `Static` strategy must not validate the Obscura binary at all (#787):
+    /// an unresolvable `--obscura-binary` is a no-op for static crawls.
+    #[test]
+    fn static_strategy_ignores_missing_obscura_binary() {
+        let mut opts = CrawlOptions::default();
+        opts.network.js_strategy = JsStrategy::Static;
+        opts.network.obscura_binary = "/definitely/not/here/obscura".to_string();
+        assert!(
+            check_js_dependencies_with(&["definitely-not-installed-9x4k"], true, "", &opts).is_ok(),
+            "Static strategy must not check --obscura-binary"
         );
     }
 
     /// `Hybrid` strategy escalates through Obscura (Layer 2), which works
     /// without the `chromium` feature — the preflight must not gate it
-    /// (#758).
+    /// (#758). The Obscura binary itself is supplied through a controlled
+    /// PATH pointing at a tempdir with a fake `obscura` file, so this test
+    /// stays free of process-global env mutation.
     #[test]
     fn hybrid_strategy_ok_without_chromium_feature() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let bin_path = tmp.path().join("obscura");
+        std::fs::write(&bin_path, "#!/bin/sh\n").expect("write fake obscura binary");
+
         let mut opts = CrawlOptions::default();
         opts.network.js_strategy = JsStrategy::Hybrid;
+        let path_value = tmp.path().to_string_lossy();
         assert!(
-            check_js_dependencies_with(&["definitely-not-installed-9x4k"], false, &opts).is_ok(),
+            check_js_dependencies_with(
+                &["definitely-not-installed-9x4k"],
+                false,
+                &path_value,
+                &opts
+            )
+            .is_ok(),
             "Hybrid strategy must not require the chromium feature or a Chrome binary"
+        );
+    }
+
+    // ========================================================================
+    // #787 — --js-strategy hybrid obscura binary preflight
+    // ========================================================================
+
+    /// `has_path_separator` distinguishes explicit paths from bare names.
+    #[test]
+    fn has_path_separator_detects_explicit_paths() {
+        assert!(has_path_separator("/usr/local/bin/obscura"));
+        assert!(has_path_separator("./obscura"));
+        assert!(has_path_separator("bin/obscura"));
+        assert!(has_path_separator("C:\\tools\\obscura.exe"));
+        assert!(!has_path_separator("obscura"));
+        assert!(!has_path_separator(""));
+    }
+
+    /// `resolve_executable_in_path` scans PATH entries in order and returns
+    /// the first existing file with the given name — a pure function over an
+    /// injected PATH value, no process-global state.
+    #[test]
+    fn resolve_executable_in_path_finds_file_in_path_entries() {
+        let empty = tempfile::TempDir::new().expect("tempdir");
+        let with_bin = tempfile::TempDir::new().expect("tempdir");
+        let bin_path = with_bin.path().join("obscura");
+        std::fs::write(&bin_path, "#!/bin/sh\n").expect("write fake obscura binary");
+
+        // Found in the second entry.
+        let joined = std::env::join_paths([empty.path(), with_bin.path()]).expect("join_paths");
+        let path_value = joined.to_string_lossy();
+        let resolved = resolve_executable_in_path("obscura", &path_value)
+            .expect("obscura must resolve through the injected PATH");
+        assert_eq!(resolved, bin_path);
+
+        // Empty PATH resolves nothing.
+        assert!(resolve_executable_in_path("obscura", "").is_none());
+        // Explicit names with separators are rejected.
+        assert!(resolve_executable_in_path("./obscura", &path_value).is_none());
+        // A directory named `obscura` is not an executable file.
+        let dir_only = tempfile::TempDir::new().expect("tempdir");
+        std::fs::create_dir(dir_only.path().join("obscura")).expect("mkdir");
+        let dir_path = dir_only.path().to_string_lossy();
+        assert!(resolve_executable_in_path("obscura", &dir_path).is_none());
+    }
+
+    /// Hybrid + nonexistent absolute path: config error naming the flag and
+    /// the env var (#787). No spawn — pure filesystem lookup.
+    #[test]
+    fn hybrid_nonexistent_absolute_path_errors() {
+        let mut opts = CrawlOptions::default();
+        opts.network.js_strategy = JsStrategy::Hybrid;
+        opts.network.obscura_binary = "/definitely/not/here/obscura".to_string();
+        let err = check_js_dependencies_with(&["true"], true, "", &opts)
+            .expect_err("a missing obscura path must fail hybrid preflight");
+        match err {
+            CliExit::ConfigError(msg) => {
+                assert!(
+                    msg.contains("--obscura-binary") && msg.contains("WEBFANG_OBSCURA_BINARY"),
+                    "config error must name the flag and the env var, got: {msg}"
+                );
+                assert!(
+                    msg.contains("/definitely/not/here/obscura"),
+                    "config error must name the offending path, got: {msg}"
+                );
+            },
+            other => panic!("expected ConfigError, got: {other:?}"),
+        }
+    }
+
+    /// Hybrid + nonexistent relative path: same config-error shape as the
+    /// absolute case.
+    #[test]
+    fn hybrid_nonexistent_relative_path_errors() {
+        let mut opts = CrawlOptions::default();
+        opts.network.js_strategy = JsStrategy::Hybrid;
+        opts.network.obscura_binary = "definitely/not/here/obscura".to_string();
+        let err = check_js_dependencies_with(&["true"], true, "", &opts)
+            .expect_err("a missing relative obscura path must fail hybrid preflight");
+        match err {
+            CliExit::ConfigError(msg) => assert!(
+                msg.contains("--obscura-binary"),
+                "config error must name the flag, got: {msg}"
+            ),
+            other => panic!("expected ConfigError, got: {other:?}"),
+        }
+    }
+
+    /// Hybrid + bare `obscura` with PATH pointing at an empty directory:
+    /// the binary cannot be on PATH, so the check must fail fast.
+    #[test]
+    fn hybrid_bare_name_missing_from_path_errors() {
+        let empty = tempfile::TempDir::new().expect("tempdir");
+        let mut opts = CrawlOptions::default();
+        opts.network.js_strategy = JsStrategy::Hybrid;
+        opts.network.obscura_binary = "obscura".to_string();
+        let path_value = empty.path().to_string_lossy();
+        let err = check_js_dependencies_with(&["true"], true, &path_value, &opts)
+            .expect_err("obscura missing from PATH must fail hybrid preflight");
+        match err {
+            CliExit::ConfigError(msg) => {
+                assert!(
+                    msg.contains("PATH")
+                        && msg.contains("--obscura-binary")
+                        && msg.contains("WEBFANG_OBSCURA_BINARY"),
+                    "config error must name PATH, the flag and the env var, got: {msg}"
+                );
+                assert!(
+                    msg.contains("\"obscura\""),
+                    "config error must name the missing binary, got: {msg}"
+                );
+            },
+            other => panic!("expected ConfigError, got: {other:?}"),
+        }
+    }
+
+    /// Hybrid + a fake `obscura` file on the injected PATH: the check
+    /// passes with no `chromium` feature required.
+    #[test]
+    fn hybrid_binary_found_on_path_ok() {
+        let bin_dir = tempfile::TempDir::new().expect("tempdir");
+        std::fs::write(bin_dir.path().join("obscura"), "#!/bin/sh\n").expect("write fake binary");
+
+        let mut opts = CrawlOptions::default();
+        opts.network.js_strategy = JsStrategy::Hybrid;
+        opts.network.obscura_binary = "obscura".to_string();
+        let path_value = bin_dir.path().to_string_lossy();
+        assert!(
+            check_js_dependencies_with(
+                &["definitely-not-installed-9x4k"],
+                false,
+                &path_value,
+                &opts
+            )
+            .is_ok(),
+            "an obscura binary on PATH must satisfy hybrid preflight"
+        );
+    }
+
+    /// Hybrid + explicit path to an existing file: the check passes even
+    /// with an empty PATH (paths never fall back to PATH lookup).
+    #[test]
+    fn hybrid_explicit_existing_path_ok_with_empty_path() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let bin_path = tmp.path().join("obscura");
+        std::fs::write(&bin_path, "#!/bin/sh\n").expect("write fake obscura binary");
+
+        let mut opts = CrawlOptions::default();
+        opts.network.js_strategy = JsStrategy::Hybrid;
+        // Absolute path to the fake binary created above.
+        opts.network.obscura_binary = bin_path.to_string_lossy().into_owned();
+        assert!(
+            check_js_dependencies_with(&["definitely-not-installed-9x4k"], false, "", &opts)
+                .is_ok(),
+            "an existing explicit obscura path must satisfy hybrid preflight"
         );
     }
 
@@ -874,7 +1145,7 @@ mod tests {
         opts.network.js_strategy = JsStrategy::Full;
         // `true` exists in CI, so a passing candidate list proves the
         // feature gate fires BEFORE the binary probe.
-        let err = check_js_dependencies_with(&["true"], false, &opts)
+        let err = check_js_dependencies_with(&["true"], false, "", &opts)
             .expect_err("feature gate must fail before probing binaries");
         match err {
             CliExit::ConfigError(msg) => assert!(
@@ -896,7 +1167,7 @@ mod tests {
         let mut opts = CrawlOptions::default();
         opts.network.js_strategy = JsStrategy::Full;
         assert!(
-            check_js_dependencies_with(&["true"], true, &opts).is_ok(),
+            check_js_dependencies_with(&["true"], true, "", &opts).is_ok(),
             "a candidate that exits 0 must satisfy the Full-strategy check"
         );
     }
@@ -908,7 +1179,7 @@ mod tests {
     fn full_strategy_errors_when_no_binary_found() {
         let mut opts = CrawlOptions::default();
         opts.network.js_strategy = JsStrategy::Full;
-        let err = check_js_dependencies_with(&["definitely-not-installed-9x4k"], true, &opts)
+        let err = check_js_dependencies_with(&["definitely-not-installed-9x4k"], true, "", &opts)
             .expect_err("no candidate binary present means the check must fail");
         match err {
             CliExit::ConfigError(msg) => assert!(
