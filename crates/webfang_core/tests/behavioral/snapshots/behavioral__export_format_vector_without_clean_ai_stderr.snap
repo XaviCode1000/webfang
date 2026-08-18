@@ -1,0 +1,9 @@
+---
+source: crates/webfang_core/tests/behavioral/main.rs
+assertion_line: 43
+expression: redacted
+---
+  <TIMESTAMP>  WARN <MODULE>: --export-format vector rejected without --clean-ai; no embeddings to export
+    at <FILE>.rs:<LINE>
+
+Error: No hay vectores para exportar: '--export-format vector' requiere '--clean-ai' para generar embeddings

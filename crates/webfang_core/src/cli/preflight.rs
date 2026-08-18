@@ -268,6 +268,54 @@ fn check_clean_ai_feature_with(ai_enabled: bool, opts: &CrawlOptions) -> Result<
     ))
 }
 
+/// Preflight: `--export-format vector` without `--clean-ai` must fail before
+/// any network request (#796).
+///
+/// Mirrors the #703/#652 `output_vectors_gate` in the orchestrator: without
+/// `--clean-ai` there are no embeddings, so the vector exporter would write an
+/// invalid `export.json` (`dimensions: null`, `model_name: null`, documents
+/// without `embeddings`) while still reporting success (exit 0). An explicit
+/// request the binary cannot honor is never a silent no-op: with the `ai`
+/// feature it is a data-format error (exit 65); on a non-AI build it is a
+/// build-configuration error (exit 78), matching the #761 fail-fast pattern
+/// of [`check_clean_ai_feature`]. `ExportFormat::Jsonl` (the default) and
+/// `ExportFormat::Auto` are never gated.
+///
+/// # Errors
+///
+/// Returns [`crate::CliExit::DataFormatError`] (exit 65) when the export
+/// format is `Vector`, `--clean-ai` was not given, and the `ai` feature is
+/// compiled in. Returns [`crate::CliExit::ConfigError`] (exit 78) when the
+/// binary was built without the `ai` feature.
+pub fn check_export_format_vector(opts: &CrawlOptions) -> Result<(), CliExit> {
+    check_export_format_vector_with(cfg!(feature = "ai"), opts)
+}
+
+/// Feature-injectable core of [`check_export_format_vector`] — `cfg!` cannot
+/// be toggled per test.
+fn check_export_format_vector_with(ai_enabled: bool, opts: &CrawlOptions) -> Result<(), CliExit> {
+    if opts.export.export_format != ExportFormat::Vector {
+        return Ok(());
+    }
+    if opts.ai && ai_enabled {
+        return Ok(());
+    }
+
+    if ai_enabled {
+        warn!("--export-format vector rejected without --clean-ai; no embeddings to export");
+        return Err(CliExit::DataFormatError(
+            "No hay vectores para exportar: '--export-format vector' requiere \
+             '--clean-ai' para generar embeddings"
+                .to_string(),
+        ));
+    }
+
+    warn!("--export-format vector rejected on a non-AI build; no embeddings to export");
+    Err(CliExit::ConfigError(
+        "Se requiere compilar con '--features ai' para usar --export-format vector".to_string(),
+    ))
+}
+
 /// Spawn `<binary> --version` once and report its exit status.
 ///
 /// A missing or non-executable binary surfaces as an `io::Error`, which the
@@ -1009,5 +1057,80 @@ mod tests {
     fn no_clean_ai_ok_without_feature() {
         let opts = CrawlOptions::default();
         assert!(check_clean_ai_feature_with(false, &opts).is_ok());
+    }
+
+    // ========================================================================
+    // #796 — --export-format vector preflight gate (mirrors #703/#652, #761)
+    // ========================================================================
+
+    /// Build opts with `--export-format vector`.
+    fn export_format_vector_opts(ai: bool) -> CrawlOptions {
+        let mut opts = CrawlOptions {
+            ai,
+            ..CrawlOptions::default()
+        };
+        opts.export.export_format = ExportFormat::Vector;
+        opts
+    }
+
+    /// `--export-format vector` on a non-AI build: config error naming the
+    /// feature, before any network request (#796).
+    #[test]
+    fn export_format_vector_without_ai_feature_errors() {
+        let opts = export_format_vector_opts(false);
+        let err = check_export_format_vector_with(false, &opts)
+            .expect_err("non-AI build must reject --export-format vector");
+        match err {
+            CliExit::ConfigError(msg) => assert!(
+                msg.contains("--export-format vector") && msg.contains("ai"),
+                "config error must name the flag and the feature, got: {msg}"
+            ),
+            other => panic!("expected ConfigError, got: {other:?}"),
+        }
+    }
+
+    /// `--export-format vector` with `--clean-ai` and the `ai` feature: the
+    /// embeddings will exist, so the gate passes.
+    #[test]
+    fn export_format_vector_with_clean_ai_ok() {
+        let opts = export_format_vector_opts(true);
+        assert!(check_export_format_vector_with(true, &opts).is_ok());
+    }
+
+    /// `--export-format vector` WITHOUT `--clean-ai` on an AI build: data
+    /// format error (exit 65) with the Spanish message — mirrors the
+    /// output-vectors gate (#796).
+    #[test]
+    fn export_format_vector_without_clean_ai_errors() {
+        let opts = export_format_vector_opts(false);
+        let err = check_export_format_vector_with(true, &opts)
+            .expect_err("AI build must reject --export-format vector without --clean-ai");
+        match err {
+            CliExit::DataFormatError(msg) => assert!(
+                msg.contains("No hay vectores para exportar")
+                    && msg.contains("--export-format vector"),
+                "data format error must carry the Spanish message, got: {msg}"
+            ),
+            other => panic!("expected DataFormatError, got: {other:?}"),
+        }
+    }
+
+    /// `--export-format jsonl` (the default): never gated.
+    #[test]
+    fn export_format_jsonl_not_gated() {
+        let opts = CrawlOptions::default();
+        assert_eq!(opts.export.export_format, ExportFormat::Jsonl);
+        assert!(check_export_format_vector_with(false, &opts).is_ok());
+        assert!(check_export_format_vector_with(true, &opts).is_ok());
+    }
+
+    /// `--export-format auto`: never gated — it is not an explicit vector
+    /// request.
+    #[test]
+    fn export_format_auto_not_gated() {
+        let mut opts = CrawlOptions::default();
+        opts.export.export_format = ExportFormat::Auto;
+        assert!(check_export_format_vector_with(false, &opts).is_ok());
+        assert!(check_export_format_vector_with(true, &opts).is_ok());
     }
 }
