@@ -4,6 +4,8 @@
 //! - `[text](https://same-domain.com/page)` → `[[page-slug|text]]`
 //! - Extracts URL-safe slugs from paths
 
+use std::sync::LazyLock;
+
 use heck::ToKebabCase;
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
@@ -287,13 +289,13 @@ fn reconstruct_image_link(state: &LinkState, result: &mut String) {
 
 /// Convert a same-domain link to `[[slug|text]]` wiki-link syntax.
 fn convert_to_wikilink(slug: String, state: &LinkState, result: &mut String) {
-    let link_text = extract_text_from_events(&state.text_parts);
-    let normalized_text = link_text.to_lowercase().trim().replace(' ', "-");
+    let raw_text = extract_text_from_events(&state.text_parts);
+    let link_text = resolve_alias_text(raw_text, &state.url, &slug);
 
     // Add space before wiki-link if result is not empty and doesn't already end with space
     let needs_space = !result.is_empty() && !result.ends_with(' ') && !result.ends_with('\n');
 
-    if slug == normalized_text {
+    if slug == normalized_link_text(&link_text) {
         if needs_space {
             result.push(' ');
         }
@@ -310,6 +312,87 @@ fn convert_to_wikilink(slug: String, state: &LinkState, result: &mut String) {
         result.push_str(&link_text);
         result.push_str("]]");
     }
+}
+
+/// Lowercase, trim, and join the link text with hyphens — the shape the
+/// slug comparison uses.
+fn normalized_link_text(text: &str) -> String {
+    text.to_lowercase().trim().replace(' ', "-")
+}
+
+/// Resolve the wiki-link alias (the `text` in `[[slug|text]]`) for a link
+/// that will be converted (#762).
+///
+/// A parenthetical-only label like `(about)` is a byline scar: Readability
+/// strips the author NAME node while capturing the byline, leaving the
+/// sibling `(about)` anchor behind with no identity of its own. Emitting
+/// `[[author-albert-einstein|(about)]]` loses the name that the HTML carried.
+/// Fall back to the link TARGET's last path segment, humanized
+/// (`/author/Albert-Einstein/` → `Albert Einstein`); as a last resort use
+/// the slug itself, so the alias is never a bare parenthetical. Links whose
+/// own label still carries real text are returned untouched.
+fn resolve_alias_text(raw_text: String, url: &str, slug: &str) -> String {
+    if !is_parenthetical_only(&raw_text) {
+        return raw_text;
+    }
+    let fallback = humanize_last_segment(url);
+    if fallback.is_empty() {
+        slug.to_string()
+    } else {
+        fallback
+    }
+}
+
+/// Parenthesized groups with no nested parens, e.g. `(about)` (#762).
+///
+/// Compile-time-constant pattern, so `expect` documents a true invariant
+/// (same convention as `author_extractor`'s static selectors).
+#[allow(clippy::expect_used)]
+static PARENTHETICAL_GROUP: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"\([^)]*\)")
+        // LCOV_EXCL_LINE defensive: fixed pattern, compile cannot fail
+        .expect("BUG: invalid parenthetical regex")
+});
+
+/// True when the label carries no usable identity on its own: empty, or
+/// composed solely of parenthetical groups like `(about)` — a Readability
+/// byline scar where the author name was stripped, leaving only the sibling
+/// anchor's decoration (#762).
+fn is_parenthetical_only(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.is_empty() || PARENTHETICAL_GROUP.replace_all(trimmed, " ").trim().is_empty()
+}
+
+/// Humanize the last non-empty URL path segment into a readable title:
+/// percent-decode, then turn `-`/`_` runs into spaces
+/// (`/author/Albert-Einstein/` → `Albert Einstein`).
+///
+/// This is a best-effort label for degenerate byline anchors only — a
+/// literal hyphen in a real alias is an acceptable cost for recovering
+/// the author name (#762). Returns an empty string for a bare root so the
+/// caller falls back to the slug instead of reusing the host name.
+fn humanize_last_segment(url_str: &str) -> String {
+    // Strip query + fragment first (they never carry path segments).
+    let no_query = url_str.split('?').next().unwrap_or(url_str);
+    let no_fragment = no_query.split('#').next().unwrap_or(no_query);
+    // Drop the scheme+authority when present, keeping only the path. A URL
+    // with no slash after the authority ("https://host") has no segments.
+    let path = match no_fragment.find("://") {
+        Some(idx) => {
+            let after_authority = idx + 3;
+            match no_fragment[after_authority..].find('/') {
+                Some(slash) => &no_fragment[after_authority + slash..],
+                None => "",
+            }
+        },
+        None => no_fragment,
+    };
+    let last = path.rsplit('/').find(|s| !s.is_empty()).unwrap_or("");
+    decode_and_normalize(last)
+        .replace('-', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Preserve a link that should not be converted as original markdown.
@@ -657,5 +740,56 @@ mod tests {
             result.contains("https://example.com/img.png"),
             "Image URL must survive emphasis, got: {result}"
         );
+    }
+
+    // ========================================================================
+    // #762 — empty-byline wiki-link alias fallback
+    // ========================================================================
+
+    /// A parenthetical-only label like `(about)` (Readability byline scar)
+    /// must fall back to the humanized last path segment, not ship as a
+    /// naked `(about)` alias.
+    #[test]
+    fn test_parenthetical_alias_falls_back_to_path_segment() {
+        let md = "by [(about)](https://quotes.toscrape.com/author/Albert-Einstein/)";
+        let result = convert_wiki_links(md, "quotes.toscrape.com");
+        assert!(
+            result.contains("[[author-albert-einstein|Albert Einstein]]"),
+            "alias must recover the author from the path, got: {result}"
+        );
+        assert!(
+            !result.contains("|(about)]"),
+            "naked (about) alias must not survive: {result}"
+        );
+    }
+
+    /// A label that still carries real text is NOT touched by the fallback.
+    #[test]
+    fn test_real_label_not_replaced_by_fallback() {
+        let md = "by [Albert Einstein](https://example.com/author/Albert-Einstein/)";
+        let result = convert_wiki_links(md, "example.com");
+        assert_eq!(result, "by [[author-albert-einstein|Albert Einstein]]");
+    }
+
+    /// is_parenthetical_only unit coverage.
+    #[test]
+    fn test_is_parenthetical_only_variants() {
+        assert!(is_parenthetical_only("(about)"));
+        assert!(is_parenthetical_only(""));
+        assert!(is_parenthetical_only("  (more)  "));
+        assert!(!is_parenthetical_only("Albert Einstein"));
+        assert!(!is_parenthetical_only("Read more (about)"));
+    }
+
+    /// humanize_last_segment unit coverage.
+    #[test]
+    fn test_humanize_last_segment() {
+        assert_eq!(
+            humanize_last_segment("https://example.com/author/Albert-Einstein/"),
+            "Albert Einstein"
+        );
+        assert_eq!(humanize_last_segment("/page/JK-Rowling"), "JK Rowling");
+        // A bare root carries no segment — the caller falls back to the slug.
+        assert_eq!(humanize_last_segment("https://example.com/"), "");
     }
 }
