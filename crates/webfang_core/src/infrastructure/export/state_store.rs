@@ -12,13 +12,72 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::domain::ExportState;
 use crate::error::ScraperError;
 use dirs::cache_dir;
 use fs2::FileExt;
 use tracing::{debug, info};
+
+/// RAII wrapper around a state-file lock. While alive it holds the lock;
+/// on drop it releases the lock **and deletes the lock file** so no `.lock`
+/// orphan is left behind (#761 — same pattern as `jsonl_exporter::FileLock`,
+/// #582).
+///
+/// `#[must_use]` warns if a caller acquires the lock but lets it drop
+/// immediately (a likely bug — the lock would be released before any I/O).
+#[must_use]
+struct StateLock {
+    handle: fs::File,
+    lock_path: PathBuf,
+}
+
+impl StateLock {
+    /// Acquire a lock at `<path>.json.lock`. `exclusive` selects write mode
+    /// (exclusive) vs read mode (shared).
+    fn acquire(path: &Path, exclusive: bool) -> crate::error::Result<Self> {
+        let lock_path = path.with_extension("json.lock");
+        // M1 FIX: Write PID metadata to lock file for debugging
+        let mut lock_file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&lock_path)
+            .map_err(ScraperError::Io)?;
+        let op = if exclusive {
+            "exclusive_write"
+        } else {
+            "shared_read"
+        };
+        let _ = writeln!(lock_file, "pid={} op={op}", std::process::id());
+        let locked = if exclusive {
+            lock_file.lock_exclusive()
+        } else {
+            FileExt::lock_shared(&lock_file)
+        };
+        locked.map_err(|e| {
+            ScraperError::Io(std::io::Error::other(format!(
+                "failed to acquire state lock: {e}"
+            )))
+        })?;
+        Ok(Self {
+            handle: lock_file,
+            lock_path,
+        })
+    }
+}
+
+impl Drop for StateLock {
+    fn drop(&mut self) {
+        // Release the OS-level lock, then delete the lock file. Both
+        // best-effort: a failure here must not mask the real result (#761).
+        // Fully qualified syntax: avoids unstable_name_collisions with future
+        // std::fs::File::unlock (rust-lang/rust#48919).
+        let _ = FileExt::unlock(&self.handle);
+        let _ = fs::remove_file(&self.lock_path);
+    }
+}
 
 /// StateStore manages persistence of export state for a specific domain
 ///
@@ -126,23 +185,9 @@ impl StateStore {
             return Err(ScraperError::Io(err));
         }
 
-        // Acquire shared lock to prevent reading during concurrent write
-        let lock_path = path.with_extension("json.lock");
-        // M1 FIX: Write PID metadata to lock file for debugging
-        let mut lock_file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&lock_path)
-            .map_err(ScraperError::Io)?;
-        let _ = writeln!(lock_file, "pid={} op=shared_read", std::process::id());
-        #[allow(clippy::io_other_error)]
-        fs2::FileExt::lock_shared(&lock_file).map_err(|e| {
-            ScraperError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("failed to acquire state read lock: {e}"),
-            ))
-        })?;
+        // Acquire shared lock to prevent reading during concurrent write.
+        // The guard releases the lock AND removes the lock file on drop (#761).
+        let _lock = StateLock::acquire(&path, false)?;
 
         // Read and parse JSON file
         let content = fs::read_to_string(&path).map_err(ScraperError::Io)?; // IO error when reading file
@@ -156,7 +201,6 @@ impl StateStore {
             state.processed_urls.len()
         );
 
-        // Lock released automatically on drop
         Ok(state)
     }
 
@@ -193,23 +237,9 @@ impl StateStore {
             fs::create_dir_all(parent).map_err(ScraperError::Io)?; // IO error when creating directories
         }
 
-        // Acquire exclusive file lock to prevent concurrent writes
-        let lock_path = path.with_extension("json.lock");
-        // M1 FIX: Write PID metadata to lock file for debugging
-        let mut lock_file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&lock_path)
-            .map_err(ScraperError::Io)?;
-        let _ = writeln!(lock_file, "pid={} op=exclusive_write", std::process::id());
-        #[allow(clippy::io_other_error)]
-        lock_file.lock_exclusive().map_err(|e| {
-            ScraperError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("failed to acquire state lock: {e}"),
-            ))
-        })?;
+        // Acquire exclusive file lock to prevent concurrent writes.
+        // The guard releases the lock AND removes the lock file on drop (#761).
+        let _lock = StateLock::acquire(&path, true)?;
 
         // Serialize to JSON
         let json = serde_json::to_string_pretty(state).map_err(ScraperError::Serialization)?; // Serialization error
@@ -232,7 +262,6 @@ impl StateStore {
             state.processed_urls.len()
         );
 
-        // Lock released automatically on drop
         Ok(())
     }
 
@@ -386,6 +415,36 @@ mod tests {
         assert_eq!(loaded_state.processed_urls.len(), 2);
         assert!(loaded_state.is_processed("https://test.com/page1"));
         assert!(loaded_state.is_processed("https://test.com/page2"));
+    }
+
+    /// #761: after save and load complete, no `.json.lock` orphan may
+    /// remain on disk — the RAII guard removes it on drop.
+    #[test]
+    fn test_lockfile_removed_after_save_and_load() {
+        let dir = tempdir().unwrap();
+        let mut cache_dir = dir.path().to_path_buf();
+        cache_dir.push("webfang/state");
+
+        let mut store = StateStore::new("lockfile.test");
+        store.cache_dir = cache_dir;
+
+        let mut state = ExportState::new("lockfile.test");
+        state.mark_processed("https://lockfile.test/page1");
+        store.save(&state).expect("save must succeed");
+
+        let lock_path = store.get_state_path().with_extension("json.lock");
+        assert!(
+            !lock_path.exists(),
+            "lockfile must be removed after save, found: {}",
+            lock_path.display()
+        );
+
+        let _ = store.load().expect("load must succeed");
+        assert!(
+            !lock_path.exists(),
+            "lockfile must be removed after load, found: {}",
+            lock_path.display()
+        );
     }
 
     #[test]

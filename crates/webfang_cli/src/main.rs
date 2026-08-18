@@ -358,6 +358,12 @@ async fn __main() -> CliExit {
         return exit;
     }
 
+    // 6e. AI feature preflight (#761): --clean-ai on a non-AI build must
+    // fail before any network request, not after a full scrape.
+    if let Err(exit) = preflight::check_clean_ai_feature(&opts) {
+        return exit;
+    }
+
     // 7. Initialize logging (stderr-only, respects quiet + NO_COLOR)
     let no_color = is_no_color();
     let log_level = resolve_log_level(opts.verbosity);
@@ -517,8 +523,9 @@ async fn resolve_url(args: &mut Args) -> Result<(), CliExit> {
 
     // CI environment always requires --url
     if is_ci() {
-        eprintln!("Error: --url is required for scraping (CI mode)");
-        return Err(CliExit::UsageError("--url is required".into()));
+        return Err(CliExit::UsageError(
+            "--url is required for scraping (CI mode)".into(),
+        ));
     }
 
     // Try interactive prompt only if stdin is a TTY
@@ -526,8 +533,7 @@ async fn resolve_url(args: &mut Args) -> Result<(), CliExit> {
         prompt_for_url_interactive(args)
     } else {
         // Not a TTY and no URL provided
-        eprintln!("Error: --url is required for scraping");
-        Err(CliExit::UsageError("--url is required".into()))
+        Err(CliExit::UsageError("--url is required for scraping".into()))
     }
 }
 
@@ -541,8 +547,7 @@ fn prompt_for_url_interactive(args: &mut Args) -> Result<(), CliExit> {
         },
         Err(_e) => {
             // Prompt failed (e.g., non-interactive), fall through to error
-            eprintln!("Error: --url is required for scraping");
-            Err(CliExit::UsageError("--url is required".into()))
+            Err(CliExit::UsageError("--url is required for scraping".into()))
         },
     }
 }
@@ -550,8 +555,9 @@ fn prompt_for_url_interactive(args: &mut Args) -> Result<(), CliExit> {
 /// Headless builds have no inquire prompt — require --url explicitly.
 #[cfg(not(feature = "ui"))]
 fn prompt_for_url_interactive(_args: &mut Args) -> Result<(), CliExit> {
-    eprintln!("Error: --url is required for scraping (interactive prompt requires --features ui)");
-    Err(CliExit::UsageError("--url is required".into()))
+    Err(CliExit::UsageError(
+        "--url is required for scraping (interactive prompt requires --features ui)".into(),
+    ))
 }
 
 /// Resolve the webfang config file path (graceful: missing file = defaults).
