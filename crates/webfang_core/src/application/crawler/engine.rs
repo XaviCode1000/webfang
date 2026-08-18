@@ -226,11 +226,17 @@ impl Engine {
     ///
     /// `tls_emulation` is the TLS/HTTP2 fingerprint profile applied to the wreq
     /// layer of the fetch router. `ignore_waf` bypasses WAF classification on
-    /// the hybrid spa-detection path (REQ-WAF-07).
+    /// the hybrid spa-detection path (REQ-WAF-07). `obscura_binary` is the
+    /// Hybrid Layer 2 binary — a path is invoked as given, a bare name is
+    /// resolved from `PATH` (#787).
     ///
     /// # Errors
     ///
     /// Returns [`DownloadError::Internal`] if the wreq client cannot be built.
+    // 8 params: the strategy's full dependency set (profile, WAF, retry
+    // backoff, obscura binary). Bundling them would only move the same
+    // wiring one level up (same pattern as build_fetch_router).
+    #[allow(clippy::too_many_arguments)]
     pub fn with_js_strategy(
         mut self,
         strategy: JsStrategy,
@@ -239,6 +245,7 @@ impl Engine {
         max_retries: u32,
         backoff_base_ms: u64,
         backoff_max_ms: u64,
+        obscura_binary: String,
     ) -> Result<Self, DownloadError> {
         let timeout = self.config.timeout_secs;
         let router = build_fetch_router(
@@ -256,6 +263,7 @@ impl Engine {
             max_retries,
             backoff_base_ms,
             backoff_max_ms,
+            &obscura_binary,
         )?;
         self.js_strategy = strategy;
         self.fetch_router = Some(router);
@@ -868,6 +876,11 @@ pub struct EngineOptions {
     pub ignore_robots: bool,
     /// JavaScript rendering strategy.
     pub js_strategy: JsStrategy,
+    /// Obscura binary name or path for the Hybrid strategy's Layer 2 (#787).
+    ///
+    /// A path is invoked as given; a bare name is resolved from `PATH`.
+    /// Defaults to `obscura`.
+    pub obscura_binary: String,
     /// Enable autoscaled concurrency based on system RAM.
     pub autoscale_enabled: bool,
     /// TLS/HTTP2 fingerprint profile applied to the wreq fetch layer.
@@ -894,6 +907,11 @@ impl Default for EngineOptions {
             session_pool_enabled: false,
             ignore_robots: false,
             js_strategy: JsStrategy::default(),
+            // #787: keep today's `obscura`-on-PATH behavior for callers that
+            // do not configure the binary.
+            obscura_binary:
+                crate::infrastructure::downloader::obscura_downloader::DEFAULT_OBSCURA_BINARY
+                    .to_string(),
             autoscale_enabled: false,
             tls_emulation: Profile::Chrome145,
             ignore_waf: false,
@@ -1112,6 +1130,8 @@ async fn crawl_site_with_options_inner(
         options.max_retries,
         options.backoff_base_ms,
         options.backoff_max_ms,
+        // #787: propagate --obscura-binary into the Hybrid Layer 2 downloader.
+        options.obscura_binary.clone(),
     )?;
 
     // Apply autoscale if enabled

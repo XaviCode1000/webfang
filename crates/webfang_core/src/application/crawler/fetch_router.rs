@@ -44,6 +44,14 @@ pub enum FetchRouter {
     Full(Arc<ChromiumoxideDownloader>, Arc<ResourceGovernor>),
 }
 
+/// Build the Hybrid Layer 2 (Obscura) from the configured binary (#787).
+///
+/// Extracted as a named seam so tests can verify `--obscura-binary`
+/// propagation without inspecting the opaque [`HybridRouter`] internals.
+fn build_obscura_layer(timeout_secs: u64, obscura_binary: &str) -> ObscuraDownloader {
+    ObscuraDownloader::new(timeout_secs, obscura_binary)
+}
+
 /// Build the [`FetchRouter`] for a given JavaScript rendering strategy.
 ///
 /// Single source of truth for the strategy → router mapping, shared by the
@@ -57,7 +65,9 @@ pub enum FetchRouter {
 /// `None` keeps the emulation-default + 403-rotation behavior (#503);
 /// `cancel_token` is injected into the Full strategy's
 /// [`ResourceGovernor`] so permit waits abort on shutdown (#509) — pass an
-/// inert token where no cancellation policy exists.
+/// inert token where no cancellation policy exists; `obscura_binary` is the
+/// Hybrid Layer 2 binary — a path is invoked as given, a bare name is
+/// resolved from `PATH` (defaults to `obscura`, wired to Layer 2 #787).
 ///
 /// # Errors
 ///
@@ -74,6 +84,7 @@ pub fn build_fetch_router(
     max_retries: u32,
     backoff_base_ms: u64,
     backoff_max_ms: u64,
+    obscura_binary: &str,
 ) -> Result<FetchRouter, DownloadError> {
     let connect_timeout = timeout_secs.min(10);
     Ok(match strategy {
@@ -96,7 +107,7 @@ pub fn build_fetch_router(
                 backoff_base_ms,
                 backoff_max_ms,
             )?;
-            let l2 = ObscuraDownloader::new(timeout_secs);
+            let l2 = build_obscura_layer(timeout_secs, obscura_binary);
             let l3 = ChromiumoxideDownloader::new(cookie_bridge);
             FetchRouter::Hybrid(Arc::new(HybridRouter::new(l1, l2, l3, ignore_waf)))
         },
@@ -148,6 +159,7 @@ impl Downloader for FetchRouter {
 mod router_tests {
     use super::*;
     use crate::domain::JsStrategy;
+    use std::path::PathBuf;
     use std::sync::RwLock;
 
     fn test_cookie_bridge() -> Arc<RwLock<CookieBridge>> {
@@ -167,6 +179,7 @@ mod router_tests {
             3,
             1000,
             10000,
+            "obscura",
         )
         .expect("static router must build");
         assert!(
@@ -188,6 +201,7 @@ mod router_tests {
             3,
             1000,
             10000,
+            "obscura",
         )
         .expect("hybrid router must build");
         assert!(
@@ -209,11 +223,37 @@ mod router_tests {
             3,
             1000,
             10000,
+            "obscura",
         )
         .expect("full router must build");
         assert!(
             matches!(router, FetchRouter::Full(..)),
             "Full strategy must produce FetchRouter::Full (chrome-direct), not Hybrid"
+        );
+    }
+
+    /// #787: the `--obscura-binary` value must reach the Hybrid Layer 2
+    /// downloader verbatim — the seam test proves the configured path is
+    /// passed through instead of being replaced by the bare `obscura` name.
+    #[test]
+    fn build_obscura_layer_passes_configured_binary() {
+        let layer = build_obscura_layer(30, "/opt/tools/obscura");
+        assert_eq!(
+            layer.binary(),
+            PathBuf::from("/opt/tools/obscura").as_path(),
+            "the Hybrid Layer 2 must use the configured --obscura-binary"
+        );
+    }
+
+    /// #787: the default bare `obscura` name still resolves to the same
+    /// default binary (backwards compatibility).
+    #[test]
+    fn build_obscura_layer_default_preserved() {
+        let layer = build_obscura_layer(30, "obscura");
+        assert_eq!(
+            layer.binary(),
+            PathBuf::from("obscura").as_path(),
+            "the default bare name must be preserved on Layer 2"
         );
     }
 }
