@@ -159,6 +159,12 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
 
         let overrides = args.elastic_overrides();
         let ai_config = build_ai_config(&args);
+        // #762: capture --vault EXPLICITNESS at parse time. The vault path may
+        // later be filled by config.toml (`apply_config_defaults`) or
+        // autodetection, and after that merge `obsidian_vault.is_some()` can
+        // no longer distinguish an explicit CLI flag from a config-filled
+        // value — only the explicit flag redirects output to the vault.
+        let vault_is_explicit = args.obsidian.vault.is_some();
 
         Self {
             url,
@@ -227,6 +233,7 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
                 dry_run: args.crawler.dry_run,
                 quiet: args.crawler.quiet,
                 obsidian_vault: args.obsidian.vault,
+                vault_is_explicit,
                 obsidian_rich_metadata: args.obsidian.obsidian_rich_metadata,
                 obsidian_tags: args.obsidian.obsidian_tags.unwrap_or_default(),
                 obsidian_wiki_links: args.obsidian.obsidian_wiki_links,

@@ -72,6 +72,36 @@ fn validate_explicit_vault(opts: &CrawlOptions) -> Result<(), CliExit> {
     Ok(())
 }
 
+/// Reject an explicit `--vault` combined with an explicit non-default output
+/// directory (#762).
+///
+/// Since #762 an explicit `--vault` flag IS the output base: Markdown,
+/// assets and the RAG export all land inside the vault. Passing a custom
+/// `-o`/`WEBFANG_OUTPUT` alongside it is a contradiction — the binary would
+/// not know which base wins. Fail fast with a usage error that names the two
+/// valid invocations.
+///
+/// `--quick-save` is exempt on purpose: it keeps its historical contract
+/// (#638) where the vault receives `_inbox` content while `-o` stays the RAG
+/// export destination — an intentional, documented split, not a conflict.
+///
+/// `output_dir` only ever comes from the CLI or `WEBFANG_OUTPUT` (the config
+/// file never sets it), so comparing against clap's `"output"` default is a
+/// reliable explicitness probe.
+pub fn validate_vault_output_conflict(opts: &CrawlOptions) -> Result<(), CliExit> {
+    if opts.export.vault_is_explicit
+        && !opts.export.quick_save
+        && opts.export.output_dir != std::path::Path::new("output")
+    {
+        return Err(CliExit::UsageError(format!(
+            "--vault y un directorio de output personalizado ({}) no pueden combinarse: \
+             usá --vault <path> solo (redirige todo el output al vault) o -o <dir> sin --vault",
+            opts.export.output_dir.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Detect the vault path via explicit flag, config default, or cascade.
 fn detect_vault_path(opts: &CrawlOptions, config_defaults: &ConfigDefaults) -> Option<PathBuf> {
     detect_vault(

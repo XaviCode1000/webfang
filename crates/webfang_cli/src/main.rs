@@ -364,6 +364,12 @@ async fn __main() -> CliExit {
         return exit;
     }
 
+    // 6f. Obsidian vault/output conflict preflight (#762): an explicit
+    // --vault redirect cannot coexist with a custom non-default -o/WEBFANG_OUTPUT.
+    if let Err(exit) = webfang_core::cli::commands::validate_vault_output_conflict(&opts) {
+        return exit;
+    }
+
     // 7. Initialize logging (stderr-only, respects quiet + NO_COLOR)
     let no_color = is_no_color();
     let log_level = resolve_log_level(opts.verbosity);
