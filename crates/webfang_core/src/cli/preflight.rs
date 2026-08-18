@@ -887,6 +887,10 @@ mod tests {
 
     /// `Full` strategy with a present, exit-0 binary (`true` exists in CI)
     /// passes the preflight check.
+    // Miri cannot emulate posix_spawn (Command::status), so both tests that
+    // actually probe a candidate binary are skipped there (#775). The
+    // short-circuit tests (static/hybrid/feature-gate) above stay active.
+    #[cfg_attr(miri, ignore)] // Command::spawn → posix_spawnattr_init unsupported by Miri (#775)
     #[test]
     fn full_strategy_ok_when_binary_reports_version() {
         let mut opts = CrawlOptions::default();
@@ -899,6 +903,7 @@ mod tests {
 
     /// `Full` strategy with no working candidate yields a config error whose
     /// message names Chrome (user-facing, Spanish).
+    #[cfg_attr(miri, ignore)] // Command::spawn → posix_spawnattr_init unsupported by Miri (#775)
     #[test]
     fn full_strategy_errors_when_no_binary_found() {
         let mut opts = CrawlOptions::default();
