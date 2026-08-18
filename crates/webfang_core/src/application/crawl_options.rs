@@ -197,6 +197,14 @@ pub struct ExportOptions {
     pub quiet: bool,
     /// Path to Obsidian vault (auto-detects if not provided).
     pub obsidian_vault: Option<PathBuf>,
+    /// Whether `--vault` was passed explicitly on the CLI (#762).
+    ///
+    /// Captured at parse time (`From<Args>`, from `args.obsidian.vault.is_some()`)
+    /// because `apply_config_defaults` and autodetection can fill
+    /// `obsidian_vault` afterwards — once merged, `Some(_)` alone can no
+    /// longer distinguish an explicit flag from a config-filled value.
+    /// Only an explicit flag redirects output to the vault.
+    pub vault_is_explicit: bool,
     /// Add rich metadata to frontmatter.
     pub obsidian_rich_metadata: bool,
     /// Tags to include in YAML frontmatter.
@@ -289,6 +297,7 @@ impl Default for ExportOptions {
             dry_run: false,
             quiet: false,
             obsidian_vault: None,
+            vault_is_explicit: false,
             obsidian_rich_metadata: false,
             obsidian_tags: Vec::new(),
             obsidian_wiki_links: false,
@@ -405,6 +414,7 @@ mod tests {
         assert!(!export.dry_run);
         assert!(!export.quiet);
         assert!(export.obsidian_vault.is_none());
+        assert!(!export.vault_is_explicit);
         assert!(!export.obsidian_rich_metadata);
         assert!(export.obsidian_tags.is_empty());
         assert!(!export.obsidian_wiki_links);

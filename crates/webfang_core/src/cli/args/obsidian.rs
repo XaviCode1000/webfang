@@ -22,7 +22,12 @@ pub struct ObsidianArgs {
     #[clap(next_help_heading = "Obsidian")]
     pub obsidian_relative_assets: bool,
 
-    /// Path to Obsidian vault (auto-detects if not provided)
+    /// Path to Obsidian vault (auto-detects if not provided).
+    ///
+    /// When provided explicitly, the vault becomes the output base: Markdown,
+    /// downloaded assets and the RAG export are written inside it — no need
+    /// to duplicate the path in `-o` (which then must stay at its default).
+    /// Auto-detected or config-file vaults do NOT redirect output (#762).
     #[arg(long, env = "WEBFANG_OBSIDIAN_VAULT")]
     #[clap(next_help_heading = "Obsidian")]
     pub vault: Option<std::path::PathBuf>,

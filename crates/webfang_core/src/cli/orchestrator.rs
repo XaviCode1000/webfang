@@ -279,14 +279,46 @@ fn resume_nothing_pending(
 /// asset paths escape the vault and images stop rendering. The Downloader is a
 /// slave of the config — the orchestrator is responsible for converging the
 /// two persistence roots before handing them to the crawl/export engines.
+///
+/// An EXPLICIT `--vault` flag (captured as `vault_is_explicit` at parse time,
+/// #762) extends the same invariant: the vault becomes the output base so
+/// Markdown, assets and the RAG export all land inside it without the user
+/// duplicating the path in `-o`. Vaults filled from `config.toml` or
+/// autodetection do NOT redirect — that is why explicitness is tracked
+/// separately from `obsidian_vault.is_some()`.
+///
+/// If `obsidian_vault` is somehow `None` at use time (should be unreachable
+/// after preflight validation), fall back to `output_dir` — never panic.
 fn resolve_persistence_root(opts: &CrawlOptions) -> std::path::PathBuf {
-    if opts.export.quick_save {
+    if opts.export.quick_save || opts.export.vault_is_explicit {
         opts.export
             .obsidian_vault
             .clone()
             .unwrap_or_else(|| opts.export.output_dir.clone())
     } else {
         opts.export.output_dir.clone()
+    }
+}
+
+/// Resolve the directory for the RAG pipeline export (`export.jsonl` /
+/// `export.json`).
+///
+/// The persistence root ([`resolve_persistence_root`]) owns where Markdown
+/// and assets are written; this helper exists so every sink of
+/// `opts.export.output_dir` converges on ONE resolution path instead of each
+/// call site re-deriving its own base (#762). The two diverge by design:
+///
+/// - `--quick-save` routes Markdown into `<persistence root>/_inbox` while
+///   the RAG export keeps its historical `-o` destination (unchanged by
+///   #762).
+/// - Explicit `--vault` without `--quick-save` also redirects the RAG export
+///   into the vault root, so a single `--vault` flag makes the vault
+///   self-contained.
+fn resolve_export_dir(opts: &CrawlOptions) -> std::path::PathBuf {
+    if opts.export.quick_save {
+        opts.export.output_dir.clone()
+    } else {
+        resolve_persistence_root(opts)
     }
 }
 
@@ -306,7 +338,7 @@ async fn export_phase(
         );
     }
 
-    let output_dir = opts.export.output_dir.clone();
+    let output_dir = resolve_export_dir(opts);
 
     let obsidian_options = ObsidianOptions {
         wiki_links: opts.export.obsidian_wiki_links,
@@ -848,10 +880,12 @@ async fn flush_batch_sink(sink: &BoundedFileSink) -> Result<(), CliExit> {
 
 /// Create the disk-backed capture sink for a batch run.
 ///
-/// The spool lives under the output directory so it shares the run's storage
-/// budget and is cleaned up by [`discard_batch_spool`] once extraction is done.
+/// The spool lives under the run's persistence root so it shares the run's
+/// storage budget (and lands inside the vault when `--quick-save` or an
+/// explicit `--vault` redirects the base, #638/#762) and is cleaned up by
+/// [`discard_batch_spool`] once extraction is done.
 async fn build_batch_sink(opts: &CrawlOptions) -> Result<BoundedFileSink, CliExit> {
-    let spool_path = opts.export.output_dir.join(".webfang-batch-capture.jsonl");
+    let spool_path = resolve_persistence_root(opts).join(".webfang-batch-capture.jsonl");
     // One buffered page per concurrent crawl, plus headroom, keeps the writer
     // from becoming the bottleneck without unbounding memory.
     let buffer = opts
@@ -956,7 +990,7 @@ async fn extract_batch_content(
     CliExit,
 > {
     let scraper_config = ScraperConfig::default()
-        .with_output_dir(opts.export.output_dir.clone())
+        .with_output_dir(resolve_persistence_root(opts))
         .with_selector(opts.crawl.selector.clone())
         .with_ignore_waf(opts.crawl.ignore_waf);
 
@@ -1170,7 +1204,8 @@ fn parse_asset_h2_profile(s: &str) -> wreq_util::Profile {
 mod tests {
     use super::{
         batch_exit_code, build_batch_crawler_config, build_elastic_ingestion, format_failure,
-        parse_asset_h2_profile, plan_urls, report_phase,
+        parse_asset_h2_profile, plan_urls, report_phase, resolve_export_dir,
+        resolve_persistence_root,
     };
     use crate::application::crawl_options::CrawlOptions;
     use crate::cli::error::CliExit;
@@ -1830,6 +1865,97 @@ mod tests {
         assert!(
             matches!(exit, CliExit::UsageError(_)),
             "Expected UsageError when output_dir is '-', got: {exit:?}"
+        );
+    }
+
+    // ===== #762 — persistence root / export dir convergence =====
+
+    /// No vault: both roots default to `-o`.
+    #[test]
+    fn persistence_root_defaults_to_output_dir() {
+        let mut opts = CrawlOptions::default();
+        opts.export.output_dir = std::path::PathBuf::from("/tmp/out");
+
+        assert_eq!(
+            resolve_persistence_root(&opts),
+            std::path::PathBuf::from("/tmp/out")
+        );
+        assert_eq!(
+            resolve_export_dir(&opts),
+            std::path::PathBuf::from("/tmp/out")
+        );
+    }
+
+    /// quick_save: Markdown+assets root is the vault, RAG export keeps `-o`.
+    #[test]
+    fn quick_save_roots_to_vault_keeps_export_in_output_dir() {
+        let mut opts = CrawlOptions::default();
+        opts.export.output_dir = std::path::PathBuf::from("/tmp/out");
+        opts.export.obsidian_vault = Some(std::path::PathBuf::from("/tmp/vault"));
+        opts.export.quick_save = true;
+
+        assert_eq!(
+            resolve_persistence_root(&opts),
+            std::path::PathBuf::from("/tmp/vault")
+        );
+        assert_eq!(
+            resolve_export_dir(&opts),
+            std::path::PathBuf::from("/tmp/out")
+        );
+    }
+
+    /// Explicit --vault (no quick_save): both roots redirect to the vault (#762).
+    #[test]
+    fn explicit_vault_redirects_both_roots_to_vault() {
+        let mut opts = CrawlOptions::default();
+        opts.export.output_dir = std::path::PathBuf::from("/tmp/out");
+        opts.export.obsidian_vault = Some(std::path::PathBuf::from("/tmp/vault"));
+        opts.export.vault_is_explicit = true;
+
+        assert_eq!(
+            resolve_persistence_root(&opts),
+            std::path::PathBuf::from("/tmp/vault")
+        );
+        assert_eq!(
+            resolve_export_dir(&opts),
+            std::path::PathBuf::from("/tmp/vault")
+        );
+    }
+
+    /// Config-filled vault without explicit flag: NO redirect (#762 — only
+    /// the explicit CLI flag changes the output base).
+    #[test]
+    fn config_filled_vault_does_not_redirect() {
+        let mut opts = CrawlOptions::default();
+        opts.export.output_dir = std::path::PathBuf::from("/tmp/out");
+        opts.export.obsidian_vault = Some(std::path::PathBuf::from("/tmp/vault"));
+        opts.export.vault_is_explicit = false;
+
+        assert_eq!(
+            resolve_persistence_root(&opts),
+            std::path::PathBuf::from("/tmp/out")
+        );
+        assert_eq!(
+            resolve_export_dir(&opts),
+            std::path::PathBuf::from("/tmp/out")
+        );
+    }
+
+    /// Explicit flag with a missing vault falls back to `-o` — never panics.
+    #[test]
+    fn explicit_vault_without_path_falls_back_to_output_dir() {
+        let mut opts = CrawlOptions::default();
+        opts.export.output_dir = std::path::PathBuf::from("/tmp/out");
+        opts.export.obsidian_vault = None;
+        opts.export.vault_is_explicit = true;
+
+        assert_eq!(
+            resolve_persistence_root(&opts),
+            std::path::PathBuf::from("/tmp/out")
+        );
+        assert_eq!(
+            resolve_export_dir(&opts),
+            std::path::PathBuf::from("/tmp/out")
         );
     }
 

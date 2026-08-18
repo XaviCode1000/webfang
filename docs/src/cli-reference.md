@@ -416,7 +416,9 @@ Options:
           [env: WEBFANG_OBSIDIAN_RELATIVE_ASSETS=]
 
       --vault <VAULT>
-          Path to Obsidian vault (auto-detects if not provided)
+          Path to Obsidian vault (auto-detects if not provided).
+          
+          When provided explicitly, the vault becomes the output base: Markdown, downloaded assets and the RAG export are written inside it — no need to duplicate the path in `-o` (which then must stay at its default). Auto-detected or config-file vaults do NOT redirect output (#762).
           
           [env: WEBFANG_OBSIDIAN_VAULT=]
 
