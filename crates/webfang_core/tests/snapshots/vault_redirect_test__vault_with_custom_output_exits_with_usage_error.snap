@@ -1,0 +1,5 @@
+---
+source: crates/webfang_core/tests/vault_redirect_test.rs
+expression: "redact_nondeterministic(out.path(), &stderr)"
+---
+Error: --vault y un directorio de output personalizado (<OUT_DIR>) no pueden combinarse: usá --vault <path> solo (redirige todo el output al vault) o -o <dir> sin --vault
