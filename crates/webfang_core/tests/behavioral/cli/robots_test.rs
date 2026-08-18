@@ -11,6 +11,12 @@ use wiremock::{Mock, ResponseTemplate};
 const PRIVATE_SEED_PAGE: &str = r#"<html><body><a href="/private/page">Private</a>
              <p>The seed page carries plenty of substantive server-rendered text so it comfortably clears the fifty character minimum content guard.</p></body></html>"#;
 
+/// Article page body with enough substantive text to clear the 50-char
+/// minimum-content guard (XC-2).
+const ARTICLE_PAGE: &str = r#"<html><body><main><article><h1>Page</h1>
+<p>This article body carries plenty of substantive server-rendered text so it comfortably clears the fifty character minimum content guard.</p>
+</article></main></body></html>"#;
+
 /// Mock the seed page at `/` with the given HTML body.
 async fn mock_seed_page(t: &BehavioralTest, body: &str) {
     Mock::given(method("GET"))
@@ -208,4 +214,55 @@ async fn all_urls_blocked_by_robots_exits_77() {
     // crate-root helper so it lands in `tests/behavioral/snapshots/`; it
     // redacts the temp dir, timestamps, ports, and ANSI codes.
     assert_snapshot_redacted("all_urls_blocked_by_robots_stderr", t.out.path(), stderr);
+}
+
+/// A site without robots.txt (404) must trigger exactly ONE robots.txt fetch
+/// for the whole multi-page crawl instead of one per page-check (#794).
+///
+/// Wire-level proof: wiremock's `received_requests` counts `/robots.txt` hits.
+/// Before the fix, a 5-page crawl with 94 links on the seed produced 459
+/// robots fetches; the fail-open decision was never cached. The pages must
+/// still be scraped (fail-open preserved).
+#[tokio::test]
+async fn missing_robots_txt_is_fetched_once_per_crawl() {
+    let t = BehavioralTest::new().await;
+
+    // No /robots.txt mock mounted — wiremock answers 404 by default, exactly
+    // the "site without robots.txt" shape of the issue (books.toscrape.com).
+
+    // Five pages served and listed in the sitemap so the scrape batch checks
+    // robots.txt for each of them.
+    for page in 1..=5 {
+        Mock::given(method("GET"))
+            .and(path(format!("/p{page}")))
+            .respond_with(ResponseTemplate::new(200).set_body_string(ARTICLE_PAGE))
+            .mount(&t.server)
+            .await;
+    }
+
+    let paths: Vec<&str> = vec!["/p1", "/p2", "/p3", "/p4", "/p5"];
+    let sitemap_url = setup_sitemap(&t, &paths).await;
+
+    // `--delay-ms 0` keeps the multi-page crawl fast; sitemap is the source
+    // of truth (plan_urls returns discovered URLs verbatim).
+    let output = run_scraper(&t, &sitemap_url, &["--delay-ms", "0", "--max-pages", "5"]);
+
+    assert!(
+        output.status.success(),
+        "a site without robots.txt must crawl successfully (fail-open), stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let robots_requests = count_requests_to_path(&t, "/robots.txt").await;
+    assert_eq!(
+        robots_requests, 1,
+        "robots.txt must be fetched exactly once and the 404 fail-open decision cached \
+         for the whole crawl (#794), got {robots_requests}"
+    );
+
+    // Every sitemap page was actually scraped (fail-open behavior preserved).
+    for page in 1..=5 {
+        let hits = count_requests_to_path(&t, &format!("/p{page}")).await;
+        assert_eq!(hits, 1, "page /p{page} must be fetched exactly once");
+    }
 }
