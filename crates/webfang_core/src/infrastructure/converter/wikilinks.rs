@@ -360,7 +360,11 @@ static PARENTHETICAL_GROUP: LazyLock<regex::Regex> = LazyLock::new(|| {
 /// anchor's decoration (#762).
 fn is_parenthetical_only(text: &str) -> bool {
     let trimmed = text.trim();
-    trimmed.is_empty() || PARENTHETICAL_GROUP.replace_all(trimmed, " ").trim().is_empty()
+    trimmed.is_empty()
+        || PARENTHETICAL_GROUP
+            .replace_all(trimmed, " ")
+            .trim()
+            .is_empty()
 }
 
 /// Humanize the last non-empty URL path segment into a readable title:

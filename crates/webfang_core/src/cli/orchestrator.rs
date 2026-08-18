@@ -885,8 +885,7 @@ async fn flush_batch_sink(sink: &BoundedFileSink) -> Result<(), CliExit> {
 /// explicit `--vault` redirects the base, #638/#762) and is cleaned up by
 /// [`discard_batch_spool`] once extraction is done.
 async fn build_batch_sink(opts: &CrawlOptions) -> Result<BoundedFileSink, CliExit> {
-    let spool_path =
-        resolve_persistence_root(opts).join(".webfang-batch-capture.jsonl");
+    let spool_path = resolve_persistence_root(opts).join(".webfang-batch-capture.jsonl");
     // One buffered page per concurrent crawl, plus headroom, keeps the writer
     // from becoming the bottleneck without unbounding memory.
     let buffer = opts
@@ -1881,7 +1880,10 @@ mod tests {
             resolve_persistence_root(&opts),
             std::path::PathBuf::from("/tmp/out")
         );
-        assert_eq!(resolve_export_dir(&opts), std::path::PathBuf::from("/tmp/out"));
+        assert_eq!(
+            resolve_export_dir(&opts),
+            std::path::PathBuf::from("/tmp/out")
+        );
     }
 
     /// quick_save: Markdown+assets root is the vault, RAG export keeps `-o`.
@@ -1896,7 +1898,10 @@ mod tests {
             resolve_persistence_root(&opts),
             std::path::PathBuf::from("/tmp/vault")
         );
-        assert_eq!(resolve_export_dir(&opts), std::path::PathBuf::from("/tmp/out"));
+        assert_eq!(
+            resolve_export_dir(&opts),
+            std::path::PathBuf::from("/tmp/out")
+        );
     }
 
     /// Explicit --vault (no quick_save): both roots redirect to the vault (#762).
@@ -1930,7 +1935,10 @@ mod tests {
             resolve_persistence_root(&opts),
             std::path::PathBuf::from("/tmp/out")
         );
-        assert_eq!(resolve_export_dir(&opts), std::path::PathBuf::from("/tmp/out"));
+        assert_eq!(
+            resolve_export_dir(&opts),
+            std::path::PathBuf::from("/tmp/out")
+        );
     }
 
     /// Explicit flag with a missing vault falls back to `-o` — never panics.
@@ -1945,7 +1953,10 @@ mod tests {
             resolve_persistence_root(&opts),
             std::path::PathBuf::from("/tmp/out")
         );
-        assert_eq!(resolve_export_dir(&opts), std::path::PathBuf::from("/tmp/out"));
+        assert_eq!(
+            resolve_export_dir(&opts),
+            std::path::PathBuf::from("/tmp/out")
+        );
     }
 
     // ===== Asset pattern decoupling tests (#639) =====

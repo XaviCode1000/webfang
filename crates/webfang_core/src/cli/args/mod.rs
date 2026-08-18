@@ -151,20 +151,10 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
             CrawlLimits, ExportOptions, IngestionTuning, NetworkOptions,
         };
 
-        // `From::from` returns `Self`, so the parse error cannot be propagated;
-        // CLI validation guarantees the URL is valid before this point.
-        #[allow(clippy::expect_used)]
-        let url = url::Url::parse(args.crawler.url.as_deref().unwrap_or("https://example.com"))
-            .expect("URL must be valid — CLI validation ensures this");
+        let url = url_from_args(&args);
 
         let overrides = args.elastic_overrides();
         let ai_config = build_ai_config(&args);
-        // #762: capture --vault EXPLICITNESS at parse time. The vault path may
-        // later be filled by config.toml (`apply_config_defaults`) or
-        // autodetection, and after that merge `obsidian_vault.is_some()` can
-        // no longer distinguish an explicit CLI flag from a config-filled
-        // value — only the explicit flag redirects output to the vault.
-        let vault_is_explicit = args.obsidian.vault.is_some();
 
         Self {
             url,
@@ -232,8 +222,10 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
                 output_dir: args.export.output,
                 dry_run: args.crawler.dry_run,
                 quiet: args.crawler.quiet,
+                // #762: capture --vault EXPLICITNESS at parse time (config
+                // merge + autodetection can fill `obsidian_vault` later).
+                vault_is_explicit: args.obsidian.vault.is_some(),
                 obsidian_vault: args.obsidian.vault,
-                vault_is_explicit,
                 obsidian_rich_metadata: args.obsidian.obsidian_rich_metadata,
                 obsidian_tags: args.obsidian.obsidian_tags.unwrap_or_default(),
                 obsidian_wiki_links: args.obsidian.obsidian_wiki_links,
@@ -260,6 +252,18 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
             ai_config,
         }
     }
+}
+
+/// Parse the CLI URL into a [`url::Url`] for the `From<Args> -> CrawlOptions`
+/// conversion.
+///
+/// `From::from` returns `Self`, so a parse failure cannot be propagated;
+/// CLI validation guarantees the URL is valid before this point, so the
+/// `expect` documents a true invariant.
+#[allow(clippy::expect_used)]
+fn url_from_args(args: &Args) -> url::Url {
+    url::Url::parse(args.crawler.url.as_deref().unwrap_or("https://example.com"))
+        .expect("URL must be valid — CLI validation ensures this")
 }
 
 #[cfg(feature = "ai")]
