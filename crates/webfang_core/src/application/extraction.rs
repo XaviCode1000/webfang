@@ -241,6 +241,27 @@ pub(crate) async fn adaptive_selector_repair(
 ///
 /// Returns [`ScraperError::ExtractionFailed`] when fallback content is below
 /// `MIN_FALLBACK_CONTENT` bytes.
+/// DOM pre-pruning (#791): remove invisible/empty elements BEFORE
+/// clean_html. ORDER MATTERS: html_cleaner strips non-preserved attributes
+/// — including `style` — so the pruner must see raw HTML while the
+/// display:none / visibility:hidden signals are still intact.
+pub(crate) fn prune_dom_if_enabled(html: &str, config: &ScraperConfig) -> String {
+    if config.dom_preprune {
+        let (pruned, reduction_ratio) = crate::infrastructure::scraper::dom_pruner::prune_dom(html);
+        debug!(
+            original = html.len(),
+            pruned = pruned.len(),
+            reduction_pct = (reduction_ratio * 100.0).round(),
+            "DOM pre-pruned invisible/empty elements"
+        );
+        pruned
+    } else {
+        html.to_string()
+    }
+}
+
+/// Extract scraped content from raw HTML: DOM pre-pruning (#791) →
+/// boilerplate clean → CSS selector → Readability, with plain-text fallback.
 pub async fn extract_content(
     html: &str,
     url: &url::Url,
@@ -249,10 +270,14 @@ pub async fn extract_content(
     #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
     correlation_id: &CorrelationId,
 ) -> Result<ScrapedContent> {
+    // DOM pre-pruning (#791): invisible/empty elements removed before
+    // clean_html strips the `style` attributes that identify them.
+    let pruned_html = prune_dom_if_enabled(html, config);
+
     // Clean HTML boilerplate (scripts, styles, nav, sidebar, footer) BEFORE
     // Readability. This helps legible find the main content without being
     // confused by navigation elements, JavaScript bundles, and CSS.
-    let cleaned_html = crate::infrastructure::converter::html_cleaner::clean_html(html);
+    let cleaned_html = crate::infrastructure::converter::html_cleaner::clean_html(&pruned_html);
 
     // Apply CSS selector extraction if a non-default selector is configured.
     let extract_result = extract_with_selector(&cleaned_html, &config.selector, None);

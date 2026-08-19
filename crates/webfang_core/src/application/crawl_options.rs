@@ -134,6 +134,8 @@ pub struct CrawlLimits {
     pub no_session_health: bool,
     /// Enable autoscaled concurrency based on system RAM.
     pub autoscale_enabled: bool,
+    /// Enable DOM pre-pruning before Readability (removes invisible/empty elements).
+    pub dom_preprune: bool,
 }
 
 /// HTTP client and network behavior settings.
@@ -260,6 +262,7 @@ impl Default for CrawlLimits {
             ignore_waf: false,
             no_session_health: false,
             autoscale_enabled: false,
+            dom_preprune: true,
         }
     }
 }
@@ -385,6 +388,7 @@ mod tests {
         assert!(!limits.ignore_robots);
         assert!(!limits.no_session_health);
         assert!(!limits.ignore_waf);
+        assert!(limits.dom_preprune, "dom_preprune defaults to true");
     }
 
     #[test]

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Test Page with Hidden Elements</title>
+    <style>
+        .hidden { display: none; }
+        .invisible { visibility: hidden; }
+        .container { display: block; }
+    </style>
+</head>
+<body>
+    <header class="site-header">
+        <nav>Site Navigation</nav>
+    </header>
+    
+    <main class="content">
+        <article class="article-content">
+            <h1>Main Article Title</h1>
+            <p>This is the main content that should be preserved.</p>
+            
+            <div class="hidden" id="advertisement">
+                <p>Advertisement content here</p>
+                <div class="cta-button">Click here!</div>
+            </div>
+            
+            <div class="sidebar">
+                <div class="hidden" id="tooltip">Tooltip text</div>
+                <div class="menu-item">Menu Item 1</div>
+                <div class="menu-item">Menu Item 2</div>
+            </div>
+            
+            <p style="visibility: hidden">This is invisible text that should be removed.</p>
+            
+            <p>Another paragraph with visible content.</p>
+        </article>
+    </main>
+    
+    <footer class="site-footer">
+        <div class="hidden">Footer hidden content</div>
+        <p>Contact information</p>
+    </footer>
+    
+    <aside class="extra-content">
+        <div></div>
+        <span></span>
+        <p style="display: none">Hidden aside content</p>
+    </aside>
+</body>
+</html>

@@ -180,6 +180,7 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
                 ignore_waf: args.crawler.ignore_waf,
                 no_session_health: args.crawler.no_session_health,
                 autoscale_enabled: args.crawler.autoscale,
+                dom_preprune: args.crawler.dom_preprune,
             },
             network: NetworkOptions {
                 user_agent: args.crawler.user_agent,

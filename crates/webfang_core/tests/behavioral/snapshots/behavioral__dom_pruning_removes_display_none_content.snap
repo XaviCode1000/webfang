@@ -1,0 +1,17 @@
+---
+source: crates/webfang_core/tests/behavioral/main.rs
+assertion_line: 43
+expression: redacted
+---
+---
+title: Hidden Elements Test
+url: http://127.0.0.1:<PORT>/
+date: [DATE]
+excerpt: This visible paragraph must survive the pre-pruning pass unchanged.
+---
+
+## Visible Article Title
+
+This visible paragraph must survive the pre-pruning pass unchanged.
+
+Another visible paragraph to keep the extractor happy.

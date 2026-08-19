@@ -370,6 +370,17 @@ pub struct CrawlerArgs {
     #[arg(long, default_value = "obscura", env = "WEBFANG_OBSCURA_BINARY")]
     #[clap(next_help_heading = "JS Rendering")]
     pub obscura_binary: String,
+
+    /// Enable DOM pre-pruning before Readability (removes invisible/empty wrappers).
+    /// Default: enabled (true). Set to false via --dom-preprune=false or WEBFANG_DOM_PREPRUNE=false.
+    #[arg(
+        long,
+        env = "WEBFANG_DOM_PREPRUNE",
+        default_value = "true",
+        num_args(0..=1)
+    )]
+    #[clap(next_help_heading = "Cleanup")]
+    pub dom_preprune: bool,
 }
 
 #[cfg(test)]
