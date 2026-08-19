@@ -320,7 +320,11 @@ fn parse_version_token(token: &str) -> Option<(u64, u64, u64)> {
     let major = parts.next()?;
     let minor = parts.next()?;
     let patch = parts.next()?.split(['-', '+']).next()?;
-    Some((major.parse().ok()?, minor.parse().ok()?, patch.parse().ok()?))
+    Some((
+        major.parse().ok()?,
+        minor.parse().ok()?,
+        patch.parse().ok()?,
+    ))
 }
 
 /// Extract the first semver-like version from raw `--version` output (#793).
@@ -1254,7 +1258,10 @@ mod tests {
     #[test]
     fn parse_obscura_version_rejects_garbage() {
         assert_eq!(parse_obscura_version("obscura 0.2.0-rc.1"), Some((0, 2, 0)));
-        assert_eq!(parse_obscura_version("obscura 0.2.0+build"), Some((0, 2, 0)));
+        assert_eq!(
+            parse_obscura_version("obscura 0.2.0+build"),
+            Some((0, 2, 0))
+        );
         assert_eq!(parse_obscura_version("no version here"), None);
         assert_eq!(parse_obscura_version(""), None);
         assert_eq!(parse_obscura_version("version x.y.z"), None);
@@ -1265,10 +1272,22 @@ mod tests {
     /// exact boundary, above it, below it, and the missing case.
     #[test]
     fn assess_obscura_version_classifies_meets_too_old_unknown() {
-        assert_eq!(assess_obscura_version(Some((0, 2, 0))), VersionVerdict::Meets);
-        assert_eq!(assess_obscura_version(Some((0, 3, 0))), VersionVerdict::Meets);
-        assert_eq!(assess_obscura_version(Some((1, 0, 0))), VersionVerdict::Meets);
-        assert_eq!(assess_obscura_version(Some((0, 1, 9))), VersionVerdict::TooOld);
+        assert_eq!(
+            assess_obscura_version(Some((0, 2, 0))),
+            VersionVerdict::Meets
+        );
+        assert_eq!(
+            assess_obscura_version(Some((0, 3, 0))),
+            VersionVerdict::Meets
+        );
+        assert_eq!(
+            assess_obscura_version(Some((1, 0, 0))),
+            VersionVerdict::Meets
+        );
+        assert_eq!(
+            assess_obscura_version(Some((0, 1, 9))),
+            VersionVerdict::TooOld
+        );
         assert_eq!(assess_obscura_version(None), VersionVerdict::Unknown);
     }
 
@@ -1346,7 +1365,8 @@ mod tests {
 
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let bin_path = tmp.path().join("obscura");
-        std::fs::write(&bin_path, "#!/bin/sh\necho \"custom build\"\n").expect("write fake obscura");
+        std::fs::write(&bin_path, "#!/bin/sh\necho \"custom build\"\n")
+            .expect("write fake obscura");
         std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))
             .expect("chmod +x fake obscura");
 
@@ -1382,7 +1402,6 @@ mod tests {
             "a failing --version probe must degrade to a warning, not block"
         );
     }
-
 
     /// `Full` strategy on a binary built WITHOUT the `chromium` feature
     /// fails fast with a config error naming the feature — before any PATH
