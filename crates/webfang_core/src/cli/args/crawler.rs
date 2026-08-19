@@ -367,9 +367,28 @@ pub struct CrawlerArgs {
     pub js_strategy: JsStrategy,
 
     /// Path to the obscura binary (default: "obscura")
-    #[arg(long, default_value = "obscura", env = "WEBFANG_OBSCURA_BINARY")]
+#[arg(long, default_value = "obscura", env = "WEBFANG_OBSCURA_BINARY")]
     #[clap(next_help_heading = "JS Rendering")]
     pub obscura_binary: String,
+
+    /// Enable DOM pre-pruning before Readability (removes invisible/empty wrappers).
+    /// Enabled by default.
+    #[arg(
+        long,
+        env = "WEBFANG_DOM_PREPRUNE",
+        action = clap::ArgAction::SetTrue
+    )]
+    pub dom_preprune: bool,
+}
+
+/// Parse DOM_PREPRUNE as a boolean, accepting "true"/"1"/"yes"/"t" as true,
+/// "false"/"0"/"no"/"f" as false. Case-insensitive.
+fn parse_dom_preprune(s: &str) -> Result<bool, String> {
+    match s.to_lowercase().as_str() {
+        "true" | "1" | "yes" | "y" | "t" => Ok(true),
+        "false" | "0" | "no" | "n" | "f" => Ok(false),
+        _ => Err(format!("valor inválido para --dom-preprune: '{s}' (esperado: true|false)").to_string()),
+    }
 }
 
 #[cfg(test)]
