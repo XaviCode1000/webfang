@@ -282,7 +282,7 @@ Options:
 
       --dom-preprune [<DOM_PREPRUNE>]
           Enable DOM pre-pruning before Readability (removes invisible/empty wrappers). Default: enabled (true). Set to false via --dom-preprune=false or WEBFANG_DOM_PREPRUNE=false
-
+          
           [env: WEBFANG_DOM_PREPRUNE=]
           [default: true]
           [possible values: true, false]
