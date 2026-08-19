@@ -7,7 +7,7 @@
 //! the returned [`FetchedPage`] carries a `content-type: text/html` header
 //! marker so downstream sniffing stays honest.
 //!
-//! The binary is configurable through [`ObscuraDownloader::new`]
+//! The binary is configurable through `ObscuraDownloader::new`
 //! (#787): a value carrying a path separator is invoked exactly as given
 //! (absolute or relative path); a bare name is resolved from `PATH` by the
 //! OS. The default is the bare name `obscura`. Hybrid preflight enforces a

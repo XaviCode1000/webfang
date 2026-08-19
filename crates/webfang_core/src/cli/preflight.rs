@@ -152,7 +152,7 @@ const DEFAULT_CHROME_CANDIDATES: [&str; 4] = [
 ///   separator must exist as a file; a bare name must resolve via `PATH`.
 ///   This turns a missing binary into a clean config error (exit 78)
 ///   instead of a silent Layer-2 fallback mid-crawl. Once resolved, the
-///   binary must report a version of at least [`MINIMUM_OBSCURA_VERSION`]
+///   binary must report a version of at least `MINIMUM_OBSCURA_VERSION`
 ///   (#793): an older dump format would silently feed the wrong content
 ///   shape to Layer 2. A failing or unreadable `--version` probe degrades
 ///   to a warning (best-effort for unknown builds).
@@ -178,7 +178,7 @@ const DEFAULT_CHROME_CANDIDATES: [&str; 4] = [
 /// Returns [`crate::CliExit::ConfigError`] (exit 78) when the strategy is
 /// [`Hybrid`](crate::domain::JsStrategy::Hybrid) and the configured Obscura
 /// binary does not exist (neither as a path nor on `PATH`) or reports a
-/// version older than [`MINIMUM_OBSCURA_VERSION`] (#793), or when it is
+/// version older than `MINIMUM_OBSCURA_VERSION` (#793), or when it is
 /// [`Full`](crate::domain::JsStrategy::Full) and either the binary was
 /// built without the `chromium` feature, or no Chrome/Chromium candidate
 /// on `PATH` reports a version.
