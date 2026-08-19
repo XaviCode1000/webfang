@@ -2,11 +2,11 @@
 //!
 //! chromiumoxide 0.7.0 ships the `AxNode` type but no typed
 //! `Accessibility.getFullAXTree` command, so this module defines a local
-//! [`GetFullAXTree`] command and runs it over the existing chromiumoxide
+//! `GetFullAXTree` command and runs it over the existing chromiumoxide
 //! `Page` connection, reusing the launch → navigate → close lifecycle of
 //! `ChromiumoxideDownloader::fetch`.
 //!
-//! The pure compact serializer lives in [`compact`] (chromium-gated because it
+//! The pure compact serializer lives in `compact` (chromium-gated because it
 //! borrows the crate `AxNode` type); the snapshot/format types here are
 //! feature-agnostic so the non-chromium stub keeps an identical signature.
 
