@@ -112,6 +112,7 @@ pub fn mock_scraped_content(url: &str, title: &str, content: &str) -> webfang_co
         html: None,
         assets: Vec::new(),
         correlation_id: None,
+        quality_hint: None,
     }
 }
 
@@ -132,6 +133,7 @@ pub fn mock_scraped_content_with_html(
         html: Some(html.to_string()),
         assets: Vec::new(),
         correlation_id: None,
+        quality_hint: None,
     }
 }
 

@@ -158,6 +158,7 @@ async fn start_seeded_server(n: usize) -> (String, tokio::task::JoinHandle<()>, 
             html: None,
             assets: vec![],
             correlation_id: None,
+            quality_hint: None,
         };
         repo.save(&content).expect("save seeded content");
     }

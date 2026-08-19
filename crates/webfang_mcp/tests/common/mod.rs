@@ -147,6 +147,7 @@ pub async fn start_seeded_server(
             html: None,
             assets: vec![],
             correlation_id: None,
+            quality_hint: None,
         };
         repo.save(&content).expect("save seeded content");
     }
