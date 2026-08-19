@@ -141,6 +141,28 @@ webfang --url https://example.com --dry-run
 webfang --url https://example.com --quiet
 ```
 
+### DOM Pre-pruning
+
+Before passing HTML to Readability, invisible elements are automatically removed:
+
+```bash
+# Pre-pruning is ENABLED by default
+webfang --url https://example.com
+
+# Explicitly enable (same as default)
+webfang --url https://example.com --dom-preprune
+
+# Disable pre-pruning
+webfang --url https://example.com --dom-preprune=false
+
+# Via environment variable
+WEBFANG_DOM_PREPRUNE=false webfang --url https://example.com
+```
+
+Pre-pruning removes:
+- Elements with `display: none` or `visibility: hidden`
+- Empty wrapper elements (div, span, p, section, article) without attributes
+
 ### Retry & backoff
 
 ```bash

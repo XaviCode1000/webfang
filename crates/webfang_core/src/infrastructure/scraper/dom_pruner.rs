@@ -4,7 +4,9 @@
 //! - Elements with inline CSS (display:none, visibility:hidden)
 //! - Empty wrapper elements (no attributes, no text content)
 //!
-//! Runs AFTER html_cleaner::clean_html since it catches CSS-invisibility missed by attribute-based removal.
+//! MUST run BEFORE html_cleaner::clean_html: the cleaner strips all
+//! non-preserved attributes (including `style`), which would destroy the
+//! invisibility signals this pass relies on.
 //!
 //! Note: This uses regex-based removal as scraper crate's NodeHandle API
 //! doesn't support direct DOM mutation for this use case.

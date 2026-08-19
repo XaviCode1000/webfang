@@ -1,0 +1,17 @@
+---
+source: crates/webfang_core/tests/behavioral/main.rs
+assertion_line: 43
+expression: redacted
+---
+---
+title: Visibility Hidden Test
+url: http://127.0.0.1:<PORT>/
+date: [DATE]
+excerpt: This visible paragraph must be preserved in the extraction output.
+---
+
+## Visibility Test Article
+
+This visible paragraph must be preserved in the extraction output.
+
+Final paragraph for extraction closure.
