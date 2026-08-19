@@ -29,6 +29,8 @@ pub mod user_agent;
 
 // Elastic ingestion (Issue #51) — hardware autotuning + SQLite persistence.
 pub mod autotuning;
+// AXTree snapshot engine over raw CDP (#788) — chromium-gated command + compact serializer.
+pub mod axtree;
 pub mod bridge;
 pub mod content_processing;
 pub mod cpu_pool;

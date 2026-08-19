@@ -1,0 +1,11 @@
+[
+  {"nodeId": "1", "ignored": false, "role": {"type": "internalRole", "value": "genericcontainer"}, "name": {"type": "computedString", "value": "GitHub navigation"}},
+  {"nodeId": "2", "ignored": false, "role": {"type": "internalRole", "value": "navigation"}, "name": {"type": "computedString", "value": "Primary"}},
+  {"nodeId": "3", "ignored": false, "role": {"type": "internalRole", "value": "button"}, "name": {"type": "computedString", "value": "Sign in"}},
+  {"nodeId": "4", "ignored": false, "role": {"type": "internalRole", "value": "button"}, "name": {"type": "computedString", "value": "Sign up"}},
+  {"nodeId": "5", "ignored": false, "role": {"type": "internalRole", "value": "link"}, "name": {"type": "computedString", "value": "Pricing"}},
+  {"nodeId": "6", "ignored": false, "role": {"type": "internalRole", "value": "link"}, "name": {"type": "computedString", "value": "Docs"}},
+  {"nodeId": "7", "ignored": true, "role": {"type": "internalRole", "value": "generic"}, "name": {"type": "computedString", "value": "Visually hidden helper"}},
+  {"nodeId": "8", "ignored": false, "role": {"type": "internalRole", "value": "heading"}, "name": {"type": "computedString", "value": "WebFang is a scraper"}},
+  {"nodeId": "9", "ignored": false, "role": {"type": "internalRole", "value": "textbox"}, "name": {"type": "computedString", "value": "Search repositories"}}
+]
