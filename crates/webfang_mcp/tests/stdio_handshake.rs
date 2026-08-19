@@ -138,7 +138,8 @@ async fn stdio_initialize_is_answered_before_ai_warmup_completes() {
     );
 }
 
-/// `tools/list` reports the full 35-tool registry, including `extract_domain`.
+/// `tools/list` reports the full 36-tool registry, including
+/// `extract_domain` and `get_accessibility_snapshot` (#788).
 #[tokio::test]
 async fn stdio_tools_list_reports_the_35_tool_registry() {
     let mut child = spawn_stdio_server();
@@ -154,10 +155,16 @@ async fn stdio_tools_list_reports_the_35_tool_registry() {
     let tools = response["result"]["tools"]
         .as_array()
         .expect("tools/list result must carry a tools array");
-    assert_eq!(tools.len(), 35, "the registry exposes all 35 tools");
+    assert_eq!(tools.len(), 36, "the registry exposes all 36 tools");
     assert!(
         tools.iter().any(|t| t["name"] == "extract_domain"),
         "the tool registry must include extract_domain"
+    );
+    assert!(
+        tools
+            .iter()
+            .any(|t| t["name"] == "get_accessibility_snapshot"),
+        "the tool registry must include get_accessibility_snapshot"
     );
 }
 

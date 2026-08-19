@@ -1,6 +1,6 @@
 //! MCP Server — Model Context Protocol bridge for AI agents
 //!
-//! Exposes 35 scraper tools across 8 categories via Streamable HTTP.
+//! Exposes 36 scraper tools across 9 categories via Streamable HTTP.
 //! Architecture:
 //! - `state.rs` — McpState with embedded Container + per-category semaphores
 //! - `server.rs` — Axum router + StreamableHttpService setup
