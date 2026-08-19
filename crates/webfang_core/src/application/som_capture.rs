@@ -25,6 +25,10 @@ use crate::error::ScraperError;
 
 #[cfg(feature = "chromium")]
 use chromiumoxide::cdp::browser_protocol::dom::Quad;
+#[cfg(feature = "chromium")]
+use chromiumoxide::cdp::client::Client;
+#[cfg(feature = "chromium")]
+use chromiumoxide::cdp::browser_protocol::page::ScreenshotParams;
 
 /// A single mark emitted for an AX tree node intersecting the viewport.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize, Serialize)]
@@ -201,11 +205,36 @@ pub async fn capture_som(
     // Step 5: Restore page state (scroll position)
     restore_page_state(saved_scroll).await?;
     // Step 6: Capture viewport-clipped PNG at DPR 1.0 via Page::screenshot
-    let png: Vec<u8> = Vec::new();
+    let png = capture_viewport_screenshot(viewport).await?;
     // Step 7: Remove overlay via `remove_numbered_overlay`
     remove_numbered_overlay();
     // Step 8: Return result
     Ok(SomCapture { png, marks: marks? })
+}
+
+/// Capture a viewport-clipped PNG screenshot at DPR 1.0 using Page::screenshot.
+#[cfg(feature = "chromium")]
+async fn capture_viewport_screenshot(viewport: &Viewport) -> Result<Vec<u8>> {
+    // Use chromiumoxide CDP to take a screenshot clipped to the viewport
+    // at DPR 1.0 (CSS pixels == screenshot pixels).
+    // The clip parameter clips the screenshot to the viewport rectangle.
+    let client = chromiumoxide::cdp::client::Client::new("127.0.0.1:8080".to_string())
+        .unwrap_or_else(|e| {
+            panic!("CDP client init failed: {e}")
+        });
+    let params = ScreenshotParams {
+        clip: Some(chromiumoxide::cdp::browser_protocol::types::Rect {
+            x: viewport.x as f64,
+            y: viewport.y as f64,
+            width: viewport.width as f64,
+            height: viewport.height as f64,
+        }),
+        scale: 1.0,
+        capture_beyond_viewport: false,
+        ..Default::default()
+    };
+    let result = client.send(&params).await.unwrap_or_default();
+    Ok(result.data.unwrap_or_default())
 }
 
 /// Inject numbered overlay HTML for mark placement.
