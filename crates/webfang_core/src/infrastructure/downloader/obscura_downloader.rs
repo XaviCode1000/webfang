@@ -358,8 +358,11 @@ mod tests {
             other => panic!("`article` must match in the dumped HTML, got: {other:?}"),
         }
 
-        let article = crate::infrastructure::scraper::readability::parse(&page.html, Some("https://example.com"))
-            .expect("Readability must parse the dumped HTML");
+        let article = crate::infrastructure::scraper::readability::parse(
+            &page.html,
+            Some("https://example.com"),
+        )
+        .expect("Readability must parse the dumped HTML");
         assert!(
             article.content.contains("Obscura Article"),
             "Readability content must retain the article body"
