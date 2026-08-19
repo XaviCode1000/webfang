@@ -11,6 +11,11 @@
 //!   shell (thousands of raw HTML bytes, near-zero readable text, e.g.
 //!   `quotes.toscrape.com/js/`) must escalate even though its raw byte count
 //!   is large (#758).
+//! - Boilerplate-only shells (#785): when the total visible text passes the
+//!   threshold but the text OUTSIDE navigation boilerplate (`nav`/`header`/
+//!   `footer`/`aside` regions and anchor text) does not, the page is a JS
+//!   shell dressed with chrome — e.g. `quotes.toscrape.com/js/`, whose only
+//!   readable text is the nav links and the footer credit.
 //! - Known SPA mount points (`#root`, `#app`, `__NEXT_DATA__`, `__NUXT__`) —
 //!   only consulted when text is insufficient, as an enriched reason. Pages
 //!   with substantial text are static even if they embed hydration markers
@@ -36,14 +41,28 @@ pub enum SpaReason {
     MountPoint(String),
     /// Page visible text is too short to contain meaningful static content.
     /// The `usize` is the non-whitespace character count of the extracted
-    /// visible text (NOT raw HTML bytes — #758).
+    /// CONTENT text — boilerplate-free visible text, NOT raw HTML bytes
+    /// (#758, #785).
     InsufficientText(usize),
+    /// Visible text passes the threshold ONLY because of navigation
+    /// boilerplate — text inside `nav`/`header`/`footer`/`aside` regions or
+    /// anchor text (#785). The boilerplate-free content text is below the
+    /// threshold, so the page is a JS shell dressed with chrome (e.g.
+    /// `quotes.toscrape.com/js/`: nav links + footer credit, zero body text).
+    BoilerplateOnlyText {
+        /// Total visible non-whitespace chars (boilerplate included).
+        total_chars: usize,
+        /// Visible non-whitespace chars OUTSIDE boilerplate regions/links.
+        content_chars: usize,
+    },
 }
 
 /// Minimum visible-text length (in non-whitespace characters) to consider a
 /// page as having meaningful static content. Aligned with
 /// [`crate::application::spa_detection::MIN_CONTENT_CHARS`] so both layers
-/// share one semantic for "enough content" (#758).
+/// share one semantic for "enough content" (#758). Since #785 this threshold
+/// applies to CONTENT text (boilerplate-free), not to raw visible text:
+/// nav/footer chrome must not satisfy it.
 const MIN_VISIBLE_CHARS: usize = 50;
 
 /// Known SPA mount point markers.
@@ -70,35 +89,77 @@ const SPA_MARKERS: &[(&str, &str)] = &[
 /// a browser never renders as page text.
 const INVISIBLE_TEXT_TAGS: [&str; 4] = ["script", "style", "noscript", "template"];
 
+/// Container tags that hold site-wide navigation/boilerplate, not page
+/// content (#785). Text inside these regions (e.g. the nav links and footer
+/// credit of `quotes.toscrape.com/js/`) must NOT be counted as content;
+/// otherwise a fat JS shell dressed with chrome passes the visible-text gate.
+const BOILERPLATE_TAGS: [&str; 4] = ["nav", "header", "footer", "aside"];
+
+/// Text rendered inside an anchor is treated as boilerplate even outside
+/// [`BOILERPLATE_TAGS`] (#785): link text is navigation, not content. A plain
+/// listing page ("Item A Item B Item C …" all in `<a>` tags) thus escalates —
+/// conservative and acceptable (escalation only costs an extra render pass
+/// and still yields the content); see sdd/785-hybrid-shell-escalation for the
+/// tradeoff.
+const ANCHOR_TAG: &str = "a";
+
 // WAF challenge classification is delegated to the shared inspection verdict
 // (REQ-WAF-10) — the former local `WAF_MARKERS` list was folded into the
 // unified signature registry in `waf_engine` and removed here.
 
-/// Count the non-whitespace characters of visible text in an HTML document.
+/// One classification pass over the visible text of an HTML document:
+/// how many non-whitespace characters are TOTAL visible text, and how many
+/// of those fall OUTSIDE boilerplate regions (content text).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VisibleTextCount {
+    chars_total: usize,
+    chars_content: usize,
+}
+
+/// Count the visible text of an HTML document in ONE parse (total and
+/// boilerplate-free content chars).
 ///
-/// Parses the document and walks text nodes, excluding descendants of
-/// [`INVISIBLE_TEXT_TAGS`]. This is the infra-tier semantic aligned with the
-/// application layer's extracted-text char count (#758): raw HTML byte length
-/// is a broken proxy because JS shells serve kilobytes of markup with
-/// near-zero readable text.
-fn visible_text_chars(html: &str) -> usize {
+/// Walks text nodes, excluding descendants of [`INVISIBLE_TEXT_TAGS`].
+/// Boilerplate regions ([`BOILERPLATE_TAGS`]) and anchors
+/// contribute to `chars_total` but NOT to `chars_content` (#785): nav links
+/// and footer credits are chrome, not content. This is the infra-tier
+/// semantic aligned with the application layer's extracted-text char count
+/// (#758): raw HTML byte length is a broken proxy because JS shells serve
+/// kilobytes of markup with near-zero readable text.
+fn count_visible_text(html: &str) -> VisibleTextCount {
     let document = scraper::Html::parse_document(html);
-    document
-        .root_element()
-        .descendants()
-        .filter(|node| {
-            node.value().is_text()
-                && !node.ancestors().any(|ancestor| {
-                    ancestor
-                        .value()
-                        .as_element()
-                        .is_some_and(|element| INVISIBLE_TEXT_TAGS.contains(&element.name()))
-                })
-        })
-        .filter_map(|node| node.value().as_text())
-        .flat_map(|text| text.chars())
-        .filter(|c| !c.is_whitespace())
-        .count()
+    let mut count = VisibleTextCount {
+        chars_total: 0,
+        chars_content: 0,
+    };
+    for node in document.root_element().descendants() {
+        let Some(text) = node.value().as_text() else {
+            continue;
+        };
+        let mut invisible = false;
+        let mut boilerplate = false;
+        for ancestor in node.ancestors() {
+            let Some(element) = ancestor.value().as_element() else {
+                continue;
+            };
+            match element.name() {
+                name if INVISIBLE_TEXT_TAGS.contains(&name) => invisible = true,
+                name if BOILERPLATE_TAGS.contains(&name) || name == ANCHOR_TAG => {
+                    boilerplate = true;
+                },
+                _ => {},
+            }
+        }
+        if invisible {
+            continue;
+        }
+        let n = text.chars().filter(|c| !c.is_whitespace()).count();
+        count.chars_total += n;
+        if !boilerplate {
+            count.chars_content += n;
+        }
+    }
+    count
 }
 
 /// Detect whether an HTML page is static content, an SPA, or a WAF challenge.
@@ -143,24 +204,37 @@ pub fn detect_spa(html: &str, ignore_waf: bool) -> SpaSignal {
         return SpaSignal::WafBlocked;
     }
 
-    // Visible-text gate (#758): count extracted text characters, not raw HTML
-    // bytes. A fat JS shell (quotes.toscrape.com/js/: ~5.8 KB raw, ~0 text)
-    // must escalate; an SSR page with hydration markers but substantial text
-    // must NOT.
-    let text_chars = visible_text_chars(html);
-    if text_chars >= MIN_VISIBLE_CHARS {
+    // Visible-text gate (#758, #785): count extracted text characters, not
+    // raw HTML bytes, and discount navigation boilerplate (nav/header/footer/
+    // aside regions and anchor text) from the CONTENT count. A fat JS shell
+    // (quotes.toscrape.com/js/: ~5.8 KB raw, ~80 chars of nav/footer chrome,
+    // near-zero content text) must escalate; an SSR page with hydration
+    // markers but substantial CONTENT text must NOT.
+    let text = count_visible_text(html);
+    if text.chars_content >= MIN_VISIBLE_CHARS {
         return SpaSignal::StaticContent;
     }
 
-    // Insufficient text — enrich the reason with a mount-point marker when
-    // one is present (preserves MountPoint diagnostics for known shells).
+    // Insufficient content text — enrich the reason with a mount-point marker
+    // when one is present (preserves MountPoint diagnostics for known shells).
     for (marker, description) in SPA_MARKERS {
         if html.contains(marker) {
             return SpaSignal::SpaDetected(SpaReason::MountPoint(description.to_string()));
         }
     }
 
-    SpaSignal::SpaDetected(SpaReason::InsufficientText(text_chars))
+    // #785: the raw visible-text gate would pass, but every passing character
+    // is navigation boilerplate — a JS shell dressed with chrome (nav links +
+    // footer credit, empty body regions). Escalate instead of failing
+    // extraction downstream with "insufficient content".
+    if text.chars_total >= MIN_VISIBLE_CHARS {
+        return SpaSignal::SpaDetected(SpaReason::BoilerplateOnlyText {
+            total_chars: text.chars_total,
+            content_chars: text.chars_content,
+        });
+    }
+
+    SpaSignal::SpaDetected(SpaReason::InsufficientText(text.chars_content))
 }
 
 #[cfg(test)]
@@ -471,5 +545,141 @@ mod tests {
             signal,
             SpaSignal::SpaDetected(SpaReason::InsufficientText(49))
         ));
+    }
+
+    /// #785 regression: a real-world JS shell (quotes.toscrape.com/js/
+    /// shape) — nav links + footer credit totaling ~80 visible chars but ZERO
+    /// body content text — must escalate. The raw visible-text gate (≥ 50)
+    /// used to classify this as StaticContent and extraction found 5 chars.
+    #[test]
+    fn test_shell_with_boilerplate_escalates() {
+        let html = r#"<!DOCTYPE html>
+<html>
+<body>
+  <div class="header-box">
+    <h1><a href="/">Quotes to Scrape</a></h1>
+    <p><a href="/login">Login</a></p>
+  </div>
+  <div class="content"></div>
+  <nav><ul class="pager"><li class="next"><a href="/js/page/2/">Next</a></li></ul></nav>
+  <footer>
+    <p>Quotes by: <a href="https://www.goodreads.com/quotes">GoodReads.com</a></p>
+    <p>Made with love by <a href="https://www.zyte.com">Zyte</a></p>
+  </footer>
+</body>
+</html>"#;
+        let signal = detect_spa(html, false);
+        assert!(
+            matches!(
+                &signal,
+                SpaSignal::SpaDetected(SpaReason::BoilerplateOnlyText {
+                    total_chars,
+                    content_chars,
+                }) if *total_chars >= 50 && *content_chars < 50
+            ),
+            "boilerplate-only shell must escalate as BoilerplateOnlyText, got: {signal:?}"
+        );
+    }
+
+    /// #785: text inside `nav`/`header`/`footer`/`aside` regions is
+    /// boilerplate even when NOT inside an anchor.
+    #[test]
+    fn test_boilerplate_region_text_excluded_without_links() {
+        let html = format!(
+            "<html><body><header>{}</header><footer>{}</footer>\
+             <main><div></div></main></body></html>",
+            "a".repeat(40),
+            "b".repeat(40),
+        );
+        // 80 visible chars total, all inside boilerplate regions.
+        let signal = detect_spa(&html, false);
+        assert!(
+            matches!(
+                &signal,
+                SpaSignal::SpaDetected(SpaReason::BoilerplateOnlyText {
+                    total_chars: 80,
+                    content_chars: 0,
+                })
+            ),
+            "region text outside anchors must still be boilerplate, got: {signal:?}"
+        );
+    }
+
+    /// #785: anchor text counts as boilerplate even outside boilerplate
+    /// regions (link text is navigation, not content).
+    #[test]
+    fn test_anchor_text_excluded_outside_regions() {
+        let html = format!(
+            "<html><body><ul><li><a href=\"/1\">{}</a></li>\
+             <li><a href=\"/2\">{}</a></li></ul></body></html>",
+            "a".repeat(30),
+            "b".repeat(30),
+        );
+        // 60 visible chars, all anchor text.
+        let signal = detect_spa(&html, false);
+        assert!(
+            matches!(
+                &signal,
+                SpaSignal::SpaDetected(SpaReason::BoilerplateOnlyText {
+                    total_chars: 60,
+                    content_chars: 0,
+                })
+            ),
+            "listing pages whose only text is link titles escalate, got: {signal:?}"
+        );
+    }
+
+    /// #785 regression guard: an article page WITH nav/footer chrome AND
+    /// multiple real paragraphs must stay StaticContent.
+    #[test]
+    fn test_article_page_with_chrome_stays_static() {
+        let html = r#"<!DOCTYPE html>
+<html>
+<body>
+  <nav><a href="/">Home</a> <a href="/about">About</a> <a href="/contact">Contact</a></nav>
+  <article>
+    <h1>The History of Scraping</h1>
+    <p>The first paragraph of this article carries enough prose to be
+       meaningful content, well beyond the threshold.</p>
+    <p>A second paragraph adds independent substance so the verdict does
+       not hinge on a single lucky sentence.</p>
+  </article>
+  <footer><p>Copyright 2026 Example Site. All rights reserved.</p></footer>
+</body>
+</html>"#;
+        assert_eq!(detect_spa(html, false), SpaSignal::StaticContent);
+    }
+
+    /// #785 edge: content exactly at the threshold (50 chars of paragraph
+    /// text, chrome excluded) stays static — the gate is `>=` on content
+    /// text, not total text.
+    #[test]
+    fn test_content_text_exact_threshold_stays_static() {
+        let html = format!(
+            "<html><body><nav>{}</nav><p>{}</p></body></html>",
+            "b".repeat(80),
+            "a".repeat(50),
+        );
+        assert_eq!(detect_spa(&html, false), SpaSignal::StaticContent);
+    }
+
+    /// #785: when content text is insufficient, a mount-point marker still
+    /// enriches the verdict (preserves MountPoint diagnostics for known
+    /// shells dressed with chrome).
+    #[test]
+    fn test_boilerplate_shell_with_mount_point_reports_marker() {
+        let html = r#"<html><body>
+  <nav><a href="/">Brand Name</a> <a href="/login">Sign in to your account</a></nav>
+  <div id="root"></div>
+  <footer><p>Some footer credit text here</p></footer>
+</body></html>"#;
+        let signal = detect_spa(html, false);
+        assert!(
+            matches!(
+                &signal,
+                SpaSignal::SpaDetected(SpaReason::MountPoint(m)) if m == "React #root"
+            ),
+            "mount-point marker must win over BoilerplateOnlyText reason, got: {signal:?}"
+        );
     }
 }

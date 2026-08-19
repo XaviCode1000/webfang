@@ -100,6 +100,11 @@ impl ResultsCollector {
     /// * `capacity` - Tamaño del buffer del canal (backpressure).
     /// * `max_capacity` - Pre-allocación para el Vec interno
     pub fn new(capacity: usize, max_capacity: Option<usize>) -> Self {
+        // tokio mpsc panics on a zero buffer (#780); the CLI parser rejects
+        // --max-pages 0, but programmatic / config-file paths still need a
+        // backstop. Clamp to 1: identical semantics for the crawl (backpressure
+        // channel of 1 slot, no silent loss).
+        let capacity = capacity.max(1);
         let (tx, mut rx) = mpsc::channel(capacity);
         let counter = Arc::new(AtomicUsize::new(0));
         let vec_capacity = max_capacity.unwrap_or(capacity);
