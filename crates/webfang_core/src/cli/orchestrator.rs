@@ -228,18 +228,21 @@ pub async fn run(
     drop(elastic_ingestion);
     tokio::task::yield_now().await;
 
+    // #779: export the successfully-scraped pages BEFORE the report/exit
+    // decision. Previously `report_phase` short-circuited on partial success
+    // (some pages failed, some succeeded) and `export_phase` never ran — so a
+    // partial-success crawl silently discarded all its content (exit 69 with an
+    // empty output directory), unlike batch mode which always exports.
+    #[cfg(feature = "ai")]
+    let export_exit = export_phase(&results, &opts, state_store.as_ref(), ai_cleaner).await;
+    #[cfg(not(feature = "ai"))]
+    let export_exit = export_phase(&results, &opts, state_store.as_ref()).await;
+
     if let Some(exit) = report_phase(&results, &failures, blocked, opts.verbosity) {
         return exit;
     }
 
-    #[cfg(feature = "ai")]
-    {
-        export_phase(&results, &opts, state_store.as_ref(), ai_cleaner).await
-    }
-    #[cfg(not(feature = "ai"))]
-    {
-        export_phase(&results, &opts, state_store.as_ref()).await
-    }
+    export_exit
 }
 
 /// #705 Paso 2: a `--resume` run where every discovered URL was already
