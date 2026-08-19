@@ -372,23 +372,15 @@ pub struct CrawlerArgs {
     pub obscura_binary: String,
 
     /// Enable DOM pre-pruning before Readability (removes invisible/empty wrappers).
-    /// Enabled by default.
+    /// Default: enabled (true). Set to false via --dom-preprune=false or WEBFANG_DOM_PREPRUNE=false.
     #[arg(
         long,
         env = "WEBFANG_DOM_PREPRUNE",
-        action = clap::ArgAction::SetTrue
+        value_parser = clap::value_parser!(bool),
+        default_value = "true"
     )]
+    #[clap(next_help_heading = "Cleanup")]
     pub dom_preprune: bool,
-}
-
-/// Parse DOM_PREPRUNE as a boolean, accepting "true"/"1"/"yes"/"t" as true,
-/// "false"/"0"/"no"/"f" as false. Case-insensitive.
-fn parse_dom_preprune(s: &str) -> Result<bool, String> {
-    match s.to_lowercase().as_str() {
-        "true" | "1" | "yes" | "y" | "t" => Ok(true),
-        "false" | "0" | "no" | "n" | "f" => Ok(false),
-        _ => Err(format!("valor inválido para --dom-preprune: '{s}' (esperado: true|false)").to_string()),
-    }
 }
 
 #[cfg(test)]
