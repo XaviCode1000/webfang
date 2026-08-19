@@ -18,6 +18,8 @@ pub mod export_factory;
 pub mod export_utils;
 pub mod extraction;
 pub mod http_client;
+pub mod llm_extraction;
+
 pub mod pipeline;
 pub mod progress_observer;
 pub mod rate_limiter;

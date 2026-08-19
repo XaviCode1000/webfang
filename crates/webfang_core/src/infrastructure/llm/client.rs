@@ -89,7 +89,10 @@ impl OpenAiLlmClient {
 }
 
 impl LlmPort for OpenAiLlmClient {
-    fn send_completion<'a>(&'a self, request: LlmRequest) -> Pin<Box<dyn Future<Output = Result<LlmResponse>> + Send + 'a>> {
+    fn send_completion<'a>(
+        &'a self,
+        request: LlmRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<LlmResponse>> + Send + 'a>> {
         Box::pin(async move {
             let endpoint = format!(
                 "{}/chat/completions",
@@ -123,7 +126,9 @@ impl LlmPort for OpenAiLlmClient {
 
             let body = response.text().await.map_err(ScraperError::from)?;
             let parsed: CompletionResponse = serde_json::from_str(&body).map_err(|e| {
-                ScraperError::Extraction(format!("el proveedor LLM devolvió un cuerpo inválido: {e}"))
+                ScraperError::Extraction(format!(
+                    "el proveedor LLM devolvió un cuerpo inválido: {e}"
+                ))
             })?;
 
             let choice = parsed.choices.first().ok_or_else(|| {
