@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use webfang_core::infrastructure::converter::html_cleaner::clean_html;
-use webfang_core::infrastructure::scraper::readability;
+use webfang_core::infrastructure::scraper::{dom_pruner, readability};
 
 fn realistic_html() -> String {
     r##"<!DOCTYPE html>
@@ -286,5 +286,23 @@ fn bench_readability(c: &mut Criterion) {
     complex_group.finish();
 }
 
-criterion_group!(benches, bench_readability);
+/// Benchmark DOM pre-pruning performance
+fn bench_dom_pruning(c: &mut Criterion) {
+    let html = realistic_html();
+    let size = html.len();
+
+    // Benchmark with display:none elements
+    let mut prune_group = c.benchmark_group("dom_pruning");
+    prune_group.throughput(Throughput::Bytes(size as u64));
+    prune_group.bench_function("prune_dom_realistic", |b| {
+        b.iter(|| {
+            let (result, ratio) = dom_pruner::prune_dom(black_box(&html));
+            assert!(ratio >= 0.0 && ratio <= 1.0);
+            black_box((result, ratio))
+        })
+    });
+    prune_group.finish();
+}
+
+criterion_group!(benches, bench_readability, bench_dom_pruning);
 criterion_main!(benches);
