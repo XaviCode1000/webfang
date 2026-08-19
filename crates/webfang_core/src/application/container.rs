@@ -26,6 +26,7 @@ use crate::application::http_client::{HttpClient, HttpClientConfig};
 use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::domain::credentials::CredentialStore;
 use crate::domain::embedding_port::EmbeddingPort;
+use crate::domain::llm_port::LlmPort;
 use crate::domain::note_repository::NoteRepository;
 use crate::domain::ports::HttpClientPort;
 use crate::domain::repository::{DynVectorRepository, MultiVectorRepository};
@@ -108,6 +109,12 @@ pub struct Container {
     /// Text chunker for Markdown segmentation (#386). Unset when the `ai`
     /// feature is off. Always compiled — the trait is a domain port.
     text_chunker: OnceCell<Arc<dyn TextChunker>>,
+
+    /// LLM completion port for structured extraction (#789). Unset when the
+    /// `ai` feature is off or no provider is configured; the service maps
+    /// this absence to an honest Config error. Always compiled — the trait
+    /// is a domain port.
+    llm_port: OnceCell<Arc<dyn LlmPort>>,
 }
 
 /// Vault-search AI ports (#433), constructed in the binary layer (CLI/MCP) and
@@ -199,6 +206,7 @@ impl Container {
             embedding_port: OnceCell::new(),
             note_repository: OnceCell::new(),
             text_chunker: OnceCell::new(),
+            llm_port: OnceCell::new(),
         })
     }
 
@@ -265,6 +273,14 @@ impl Container {
     /// Get the text chunker, if one was injected (#386).
     pub fn text_chunker(&self) -> Option<Arc<dyn TextChunker>> {
         self.text_chunker.get().cloned()
+    }
+
+    /// Get the LLM completion port, if one was injected (#789).
+    ///
+    /// Clones the `Arc` (cheap) so callers can hold the port across an
+    /// `.await` without borrowing the container (`async-clone-before-await`).
+    pub fn llm_port(&self) -> Option<Arc<dyn LlmPort>> {
+        self.llm_port.get().cloned()
     }
 
     /// Access the elastic ingestion pipeline, if activated.
@@ -335,6 +351,18 @@ impl Container {
     /// the first chunker.
     pub fn with_text_chunker(self, chunker: Arc<dyn TextChunker>) -> Self {
         let _ = self.text_chunker.set(chunker);
+        self
+    }
+
+    /// Inject an LLM completion port for structured extraction (#789).
+    ///
+    /// Takes `Arc<dyn LlmPort>` — the concrete `OpenAiLlmClient` is built in
+    /// the CLI/MCP layer and injected here. Absence stays the default no-op.
+    ///
+    /// Injection is at-most-once ([`OnceCell`] semantics): a second call keeps
+    /// the first port.
+    pub fn with_llm_port(self, port: Arc<dyn LlmPort>) -> Self {
+        let _ = self.llm_port.set(port);
         self
     }
 
@@ -666,6 +694,57 @@ mod tests {
         assert!(
             container.cleaner().is_some(),
             "cleaner() must be Some after with_cleaner injection"
+        );
+    }
+
+    /// Stub LLM port — answers any request with an empty records object.
+    struct StubLlm;
+
+    impl crate::domain::llm_port::LlmPort for StubLlm {
+        fn send_completion<'a>(
+            &'a self,
+            _request: crate::domain::llm_port::LlmRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = std::result::Result<
+                            crate::domain::llm_port::LlmResponse,
+                            crate::error::ScraperError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async {
+                Ok(crate::domain::llm_port::LlmResponse {
+                    content: "{}".into(),
+                    input_tokens: 1,
+                    output_tokens: 1,
+                })
+            })
+        }
+    }
+
+    /// #789 (absence): a freshly built container reports no LLM port.
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[tokio::test]
+    async fn llm_port_absent_by_default() {
+        let (_tmp, container) = make_test_container().await;
+        assert!(
+            container.llm_port().is_none(),
+            "llm_port() must be None when no port was injected"
+        );
+    }
+
+    /// #789 (injection): `with_llm_port` makes the accessor report present.
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[tokio::test]
+    async fn with_llm_port_sets_llm_port() {
+        let (_tmp, container) = make_test_container().await;
+        let container = container.with_llm_port(Arc::new(StubLlm));
+        assert!(
+            container.llm_port().is_some(),
+            "llm_port() must be Some after with_llm_port injection"
         );
     }
 
