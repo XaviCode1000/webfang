@@ -16,6 +16,9 @@ mcp = ["webfang_core/mcp"]
 # the consumer (CLI binary, MCP example) opts in with `--features ai,persistence`.
 ai = ["dep:webfang_ai", "webfang_ai/ai", "webfang_core/ai"]
 persistence = ["webfang_core/persistence"]
+# AXTree snapshot tool (#788): forwards to core's chromium gate (mcp→core only,
+# no direct chromiumoxide dependency here).
+chromium = ["webfang_core/chromium"]
 
 [dependencies]
 webfang_core = { workspace = true }

@@ -10,6 +10,7 @@ use rmcp::handler::server::tool::ToolRouter;
 
 pub mod ai;
 pub mod assets;
+pub mod axtree;
 pub mod content;
 pub mod export;
 pub mod obsidian;
@@ -17,7 +18,7 @@ pub mod scraping;
 pub mod security;
 pub mod url_utils;
 
-/// Build the combined ToolRouter from all 8 category modules.
+/// Build the combined ToolRouter from all 9 category modules.
 pub fn build_tool_router() -> ToolRouter<McpHandler> {
     scraping::build_router()
         + content::build_router()
@@ -27,4 +28,5 @@ pub fn build_tool_router() -> ToolRouter<McpHandler> {
         + obsidian::build_router()
         + assets::build_router()
         + ai::build_router()
+        + axtree::build_router()
 }

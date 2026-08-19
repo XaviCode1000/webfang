@@ -724,6 +724,52 @@ impl VerifyWafIntegrityParams {
     }
 }
 
+/// Serde default for `interactive_only = true` (spec R3).
+fn default_true() -> bool {
+    true
+}
+
+/// Snapshot serialization formats for `get_accessibility_snapshot` (spec R3).
+#[derive(Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SnapshotFormatParams {
+    /// Interactive-only `@eN` refs with a `token_estimate` (default).
+    #[default]
+    Compact,
+    /// Playwright MCP AXSnapshot format — not implemented yet.
+    PlaywrightMcp,
+}
+
+/// Parameters for the `get_accessibility_snapshot` tool.
+#[derive(Deserialize, JsonSchema, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct GetAccessibilitySnapshotParams {
+    /// URL to snapshot (must start with http:// or https://)
+    pub url: String,
+    /// Optional case-insensitive substring to filter nodes by name or role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
+    /// Emit only interactive nodes (default: true)
+    #[serde(default = "default_true")]
+    pub interactive_only: bool,
+    /// Snapshot format (default: compact)
+    #[serde(default)]
+    pub format: SnapshotFormatParams,
+}
+
+impl GetAccessibilitySnapshotParams {
+    /// # Errors
+    /// Returns `McpError::invalid_params` if `url` is not a valid http(s) URL
+    /// or `selector` exceeds 1024 bytes.
+    pub fn validate(&self) -> Result<(), McpError> {
+        require_http_url("url", &self.url)?;
+        if let Some(sel) = &self.selector {
+            require_max_len("selector", sel, 1024)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

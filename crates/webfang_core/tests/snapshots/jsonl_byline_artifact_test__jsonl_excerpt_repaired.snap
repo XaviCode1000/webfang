@@ -1,0 +1,6 @@
+---
+source: crates/webfang_core/tests/jsonl_byline_artifact_test.rs
+assertion_line: 74
+expression: redacted
+---
+{"checksum_sha256":"4bfaed9e32117169f9955aa2d64bf359f4e6f0a0b142b76fd65a0a5ccca0389a","content":"“The world as we have created it is a process of our thinking. It cannot be changed without changing our thinking.” by (about) Tags: change “It is our choices, Harry, that show what we truly are, far more than our abilities.” by J.K. Rowling (about)","content_length":249,"extra_metadata":{"author":"Albert Einstein","domain":"127.0.0.1","excerpt":"“The world as we have created it is a process of our thinking. It cannot be changed without changing our thinking.” by Albert Einstein"},"metadata_version":"2.1.0","reading_time":1,"timestamp_utc":"<TIMESTAMP>","title":"Quotes to Scrape","url":"http://127.0.0.1:<PORT>/","word_count":45}

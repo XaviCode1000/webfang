@@ -346,6 +346,20 @@ async fn __main() -> CliExit {
     let opts = CrawlOptions::from(args);
     let opts = preflight::apply_config_defaults(opts, &config_defaults);
 
+    // 6b2. Initialize logging (hoisted above the preflight gates on purpose):
+    // the 6c-6f2 gates emit `warn!` diagnostics, and a subscriber is only
+    // installed by `init_logging_dual` (`try_init` makes repeated calls a
+    // no-op, so nothing downstream needs updating). A gate that fails fast
+    // must leave its reason on stderr — otherwise the WARN would be silently
+    // dropped (#796). Still stderr-only, respects quiet + NO_COLOR.
+    let no_color = is_no_color();
+    let log_level = resolve_log_level(opts.verbosity);
+    let file_trace_layer = build_file_trace_layer(trace_file);
+
+    // Initialize logging (stderr + optional JSONL file trace layer)
+    #[allow(clippy::let_unit_value)]
+    let _guard = init_logging_dual(log_level, opts.export.quiet, no_color, file_trace_layer);
+
     // 6c. JS strategy dependency preflight (#685): --js-strategy full needs
     // Chrome installed — fail fast with exit 78 before any crawl starts.
     if let Err(exit) = preflight::check_js_dependencies(&opts) {
@@ -370,14 +384,15 @@ async fn __main() -> CliExit {
         return exit;
     }
 
-    // 7. Initialize logging (stderr-only, respects quiet + NO_COLOR)
-    let no_color = is_no_color();
-    let log_level = resolve_log_level(opts.verbosity);
-    let file_trace_layer = build_file_trace_layer(trace_file);
-
-    // Initialize logging (stderr + optional JSONL file trace layer)
-    #[allow(clippy::let_unit_value)]
-    let _guard = init_logging_dual(log_level, opts.export.quiet, no_color, file_trace_layer);
+    // 6f2. Vector export preflight (#796): --export-format vector without
+    // --clean-ai would write an invalid export.json (no embeddings) yet
+    // report success — fail fast before any network I/O, mirroring the
+    // output-vectors gate (#703). Placed here (after the #762 vault gate,
+    // before the orchestrator) to match the fail-fast philosophy of the other
+    // 6c-6f gates; dry-run is not exempt for the same reason.
+    if let Err(exit) = preflight::check_export_format_vector(&opts) {
+        return exit;
+    }
 
     // 8. Build optional engines and delegate to orchestrator
     build_and_run(opts).await

@@ -346,6 +346,85 @@ mod output_vectors_without_clean_ai {
 }
 
 // ---------------------------------------------------------------------------
+// --export-format vector without --clean-ai → exit 65, no artifact (#796)
+// ---------------------------------------------------------------------------
+
+/// `webfang --export-format vector` WITHOUT `--clean-ai` must fail fast with
+/// exit 65 (EX_DATA) and a Spanish explanation — never run the scrape and
+/// drop an invalid `export.json` (`dimensions: null`, `model_name: null`,
+/// documents without `embeddings`) into a RAG pipeline while reporting
+/// success (issue #796).
+///
+/// Mirrors the `output_vectors_without_clean_ai` module: the preflight check
+/// runs BEFORE any network I/O, so a live mock server is mounted to prove the
+/// gate fires even when the page is perfectly scrape-able — if the guard
+/// regressed, the run would succeed and create artifacts this test forbids.
+/// (No `.expect()` on the mock — with the fail-fast in place the request
+/// never lands, and wiremock would fail the test on drop over the unmet
+/// expectation.)
+///
+/// No `#[ignore]`: the gate fires before any ONNX model could load.
+#[cfg(feature = "ai")]
+mod export_format_vector_without_clean_ai {
+    use crate::assert_snapshot_redacted;
+    use crate::BehavioralTest;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    const PAGE_HTML: &str = r#"
+<html><head><title>Vector Gate Test</title></head>
+<body><main><article>
+<h1>Gate Me</h1>
+<p>Small valid page so a regression letting the run proceed would scrape it.</p>
+</article></main></body></html>
+"#;
+
+    #[tokio::test]
+    async fn export_format_vector_without_clean_ai_exits_65_and_writes_no_file() {
+        let t = BehavioralTest::new().await;
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(PAGE_HTML))
+            .mount(&t.server)
+            .await;
+
+        let output = t
+            .scraper_cmd()
+            .arg("--single-page")
+            .arg("--export-format")
+            .arg("vector")
+            .arg("--quiet")
+            .output()
+            .expect("run webfang");
+
+        // Semantic invariants (the contract under test): exit 65 (EX_DATA),
+        // the Spanish message, and — the core invariant — NO export artifact
+        // created anywhere under the output directory.
+        assert_eq!(
+            output.status.code(),
+            Some(65),
+            "--export-format vector without --clean-ai must exit 65 (EX_DATA)"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("No hay vectores para exportar"),
+            "stderr must carry the Spanish error, got: {stderr}"
+        );
+        assert_snapshot_redacted(
+            "export_format_vector_without_clean_ai_stderr",
+            t.out.path(),
+            stderr,
+        );
+        let json_files = t.find_files("json");
+        assert!(
+            json_files.is_empty(),
+            "no export artifact must be created when the flag gate rejects the run: {json_files:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // JS-shell content → exit 65 (EX_DATA) — honest data-format failure (#706)
 // ---------------------------------------------------------------------------
 

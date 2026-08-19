@@ -472,7 +472,9 @@ async fn build_scraped_content(
                 ),
                 content: article.text_content,
                 url: ValidUrl::new(url.clone()),
-                excerpt: article.excerpt,
+                excerpt: article.excerpt.as_deref().map(|e| {
+                    crate::domain::excerpt_repair::repair_empty_byline(e, author.as_deref())
+                }),
                 author,
                 date: article.published_time,
                 // Store CLEAN HTML from Readability (not raw HTML with nav/ads/footer)

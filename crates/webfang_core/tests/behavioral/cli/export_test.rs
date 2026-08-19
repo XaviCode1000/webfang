@@ -18,7 +18,11 @@ const PAGE_HTML: &str = r#"
 ///
 /// Semantic JSON assertions instead of snapshots on purpose: the header embeds
 /// a `created_at` timestamp that is non-deterministic by design.
+///
+/// Requires a cached ONNX model: `--export-format vector` needs `--clean-ai`
+/// (preflight #796).
 #[tokio::test]
+#[ignore = "requires cached ONNX model"]
 async fn vector_export_total_documents_matches_documents() {
     let t = BehavioralTest::new().await;
 
@@ -33,6 +37,7 @@ async fn vector_export_total_documents_matches_documents() {
         .arg("--single-page")
         .arg("--export-format")
         .arg("vector")
+        .arg("--clean-ai")
         .arg("--quiet")
         .assert()
         .success();

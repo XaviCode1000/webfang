@@ -1,0 +1,13 @@
+[
+  {"nodeId": "1", "ignored": false, "role": {"type": "internalRole", "value": "genericcontainer"}, "name": {"type": "computedString", "value": "Account form"}},
+  {"nodeId": "2", "ignored": false, "role": {"type": "internalRole", "value": "form"}, "name": {"type": "computedString", "value": "Account"}},
+  {"nodeId": "3", "ignored": false, "role": {"type": "internalRole", "value": "textbox"}, "name": {"type": "computedString", "value": "Username"}},
+  {"nodeId": "4", "ignored": false, "role": {"type": "internalRole", "value": "textbox"}, "name": {"type": "computedString", "value": "Password"}},
+  {"nodeId": "5", "ignored": false, "role": {"type": "internalRole", "value": "checkbox"}, "name": {"type": "computedString", "value": "Remember me"}},
+  {"nodeId": "6", "ignored": false, "role": {"type": "internalRole", "value": "button"}, "name": {"type": "computedString", "value": "Submit"}},
+  {"nodeId": "7", "ignored": false, "role": {"type": "internalRole", "value": "radio"}, "name": {"type": "computedString", "value": "Monthly billing"}},
+  {"nodeId": "8", "ignored": false, "role": {"type": "internalRole", "value": "combobox"}, "name": {"type": "computedString", "value": "Country"}},
+  {"nodeId": "9", "ignored": false, "role": {"type": "internalRole", "value": "link"}, "name": {"type": "computedString", "value": "Forgot password"}},
+  {"nodeId": "10", "ignored": true, "role": {"type": "internalRole", "value": "generic"}, "name": {"type": "computedString", "value": "Decorative divider"}},
+  {"nodeId": "11", "ignored": false, "role": {"type": "internalRole", "value": "heading"}, "name": {"type": "computedString", "value": "Create account"}}
+]
