@@ -400,7 +400,7 @@ fn test_ai_config_defaults_without_ai_feature() {
 
 #[test]
 fn test_dom_preprune_defaults_to_true() {
-    clean_env();
+    let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_DOM_PREPRUNE"]);
     // Default value from clap is true
     let args = Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
     assert!(args.crawler.dom_preprune, "dom_preprune defaults to true");
@@ -417,28 +417,25 @@ fn test_dom_preprune_flag_enables() {
 #[test]
 fn test_dom_preprune_false() {
     clean_env();
-    let args = Args::try_parse_from(["webfang", "-u", "https://example.com", "--dom-preprune", "false"])
+    let args = Args::try_parse_from(["webfang", "-u", "https://example.com", "--dom-preprune=false"])
         .expect("valid args");
-    assert!(!args.crawler.dom_preprune, "--dom-preprune false disables dom_preprune");
+    assert!(!args.crawler.dom_preprune, "--dom-preprune=false disables dom_preprune");
 }
 
 #[test]
 fn test_dom_preprune_env_var_true() {
-    clean_env();
-    std::env::set_var("WEBFANG_DOM_PREPRUNE", "true");
-    let args = Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
+    let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_DOM_PREPRUNE", "true")]);
+    let args =
+        Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
     assert!(args.crawler.dom_preprune, "WEBFANG_DOM_PREPRUNE=true enables dom_preprune");
-    std::env::remove_var("WEBFANG_DOM_PREPRUNE");
 }
 
 #[test]
 fn test_dom_preprune_env_var_false() {
-    clean_env();
-    std::env::set_var("WEBFANG_DOM_PREPRUNE", "false");
-    let args = Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
-    // Note: clap's value_parser!(bool) uses Rust's parse, which recognizes "false"
+    let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_DOM_PREPRUNE", "false")]);
+    let args =
+        Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
     assert!(!args.crawler.dom_preprune, "WEBFANG_DOM_PREPRUNE=false disables dom_preprune");
-    std::env::remove_var("WEBFANG_DOM_PREPRUNE");
 }
 
 fn assert_defaults_top_level(opts: &webfang_core::application::crawl_options::CrawlOptions) {

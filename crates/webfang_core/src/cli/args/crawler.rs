@@ -376,8 +376,8 @@ pub struct CrawlerArgs {
     #[arg(
         long,
         env = "WEBFANG_DOM_PREPRUNE",
-        value_parser = clap::value_parser!(bool),
-        default_value = "true"
+        default_value = "true",
+        num_args(0..=1)
     )]
     #[clap(next_help_heading = "Cleanup")]
     pub dom_preprune: bool,
