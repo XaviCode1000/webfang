@@ -100,6 +100,8 @@ pub struct ScraperConfig {
     pub adaptive_selectors: bool,
     /// Bypass WAF/CAPTCHA detection entirely (REQ-WAF-07).
     pub ignore_waf: bool,
+    /// Enable DOM pre-pruning before Readability (removes invisible/empty wrappers).
+    pub dom_preprune: bool,
 }
 
 impl Default for ScraperConfig {
@@ -120,6 +122,7 @@ impl Default for ScraperConfig {
             asset_naming: AssetNamingStrategy::Hash,
             adaptive_selectors: false,
             ignore_waf: false,
+            dom_preprune: true,
         }
     }
 }
@@ -267,6 +270,13 @@ impl ScraperConfig {
     #[must_use]
     pub fn with_asset_naming(mut self, v: AssetNamingStrategy) -> Self {
         self.asset_naming = v;
+        self
+    }
+
+    /// Enable/disable DOM pre-pruning before Readability.
+    #[must_use]
+    pub fn with_dom_preprune(mut self, enabled: bool) -> Self {
+        self.dom_preprune = enabled;
         self
     }
 }
