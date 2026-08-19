@@ -399,46 +399,45 @@ fn test_ai_config_defaults_without_ai_feature() {
 // ========================================================================
 
 #[test]
-fn test_dom_preprune_defaults_to_false_not_set() {
+fn test_dom_preprune_defaults_to_true() {
     clean_env();
-    // When flag not passed to clap, default is false
-    // But CrawlLimits sets dom_preprune=true as its default
+    // Default value from clap is true
     let args = Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
-    // Via clap's SetTrue action: flag not passed → false
-    // The true default is in CrawlLimits::default()
-    assert!(!args.crawler.dom_preprune, "when flag not passed, clap returns false (Default)");
+    assert!(args.crawler.dom_preprune, "dom_preprune defaults to true");
 }
 
 #[test]
 fn test_dom_preprune_flag_enables() {
     clean_env();
-    let args = Args::try_parse_from(["webfang", "-u", "https://example.com", "--dom-preprune"])
-        .expect("valid args");
-    assert!(args.crawler.dom_preprune, "--dom-preprune enables dom_preprune");
+    // With default_value="true", --dom-preprune alone uses the default
+    let args = Args::try_parse_from(["webfang", "-u", "https://example.com", "--dom-preprune"]).expect("valid args");
+    assert!(args.crawler.dom_preprune, "--dom-preprune enables dom_preprune (uses default_value)");
 }
 
 #[test]
-fn test_dom_preprune_propagates_to_crawl_options() {
+fn test_dom_preprune_false() {
     clean_env();
-    let args = Args::try_parse_from(["webfang", "-u", "https://example.com", "--dom-preprune"])
+    let args = Args::try_parse_from(["webfang", "-u", "https://example.com", "--dom-preprune", "false"])
         .expect("valid args");
-    let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
-    // The final default is true from CrawlLimits::default()
-    assert!(
-        opts.crawl.dom_preprune,
-        "CrawlLimits::default() sets dom_preprune=true"
-    );
+    assert!(!args.crawler.dom_preprune, "--dom-preprune false disables dom_preprune");
 }
 
 #[test]
-fn test_dom_preprune_override_explicit_false_not_supported() {
-    // Note: --no-dom-preprune is not automatically supported by clap's SetTrue action
-    // User would need to use env var or code-level configuration to disable
+fn test_dom_preprune_env_var_true() {
+    clean_env();
+    std::env::set_var("WEBFANG_DOM_PREPRUNE", "true");
+    let args = Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
+    assert!(args.crawler.dom_preprune, "WEBFANG_DOM_PREPRUNE=true enables dom_preprune");
+    std::env::remove_var("WEBFANG_DOM_PREPRUNE");
+}
+
+#[test]
+fn test_dom_preprune_env_var_false() {
     clean_env();
     std::env::set_var("WEBFANG_DOM_PREPRUNE", "false");
     let args = Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
-    // env var is not read by clap's SetTrue action - it expects true/false string
-    assert!(args.crawler.dom_preprune, "env var requires special parsing, not automatic");
+    // Note: clap's value_parser!(bool) uses Rust's parse, which recognizes "false"
+    assert!(!args.crawler.dom_preprune, "WEBFANG_DOM_PREPRUNE=false disables dom_preprune");
     std::env::remove_var("WEBFANG_DOM_PREPRUNE");
 }
 
