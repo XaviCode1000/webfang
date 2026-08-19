@@ -2,9 +2,6 @@
 //!
 //! Provides utilities for detecting file types from URLs and content.
 
-#[cfg(any(feature = "images", feature = "documents"))]
-use mimetype_detector::detect;
-
 /// Detect MIME type from file extension (static mapping)
 #[cfg(any(feature = "images", feature = "documents"))]
 fn get_mime_from_extension(ext: &str) -> Option<&'static str> {
@@ -61,39 +58,6 @@ impl AssetType {
     }
 }
 
-/// Known MIME types for images
-#[allow(dead_code)]
-const IMAGE_MIMES: &[&str] = &[
-    "image/jpeg",
-    "image/png",
-    "image/gif",
-    "image/webp",
-    "image/svg+xml",
-    "image/bmp",
-    "image/tiff",
-    "image/x-icon",
-];
-
-/// Known MIME types for documents
-#[allow(dead_code)]
-const DOCUMENT_MIMES: &[&str] = &[
-    "application/pdf",
-    "application/msword",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "application/vnd.ms-excel",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "application/vnd.ms-powerpoint",
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    "text/csv",
-    "application/vnd.oasis.opendocument.text",
-    "application/vnd.oasis.opendocument.spreadsheet",
-    "application/epub+zip",
-    "application/rtf",
-    "application/json",
-    "application/xml",
-    "text/xml",
-];
-
 /// Known file extensions for images
 const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico", "tiff", "tif",
@@ -105,8 +69,11 @@ const DOCUMENT_EXTENSIONS: &[&str] = &[
     "json", "xml",
 ];
 
-#[cfg(any(feature = "images", feature = "documents"))]
-/// Detect asset type from URL by extension
+/// Detect asset type from URL by extension.
+///
+/// The two prior cfg-gated variants (with/without the `images`/`documents`
+/// features) were byte-identical, so they are collapsed into one. The result
+/// depends only on the URL path extension, never on `mimetype-detector`.
 pub fn detect_from_url(url: &str) -> AssetType {
     // Parse URL and get path
     if let Ok(parsed) = url::Url::parse(url) {
@@ -115,16 +82,6 @@ pub fn detect_from_url(url: &str) -> AssetType {
     }
 
     // Fallback: try to detect from the URL string itself
-    AssetType::Unknown
-}
-
-#[cfg(not(any(feature = "images", feature = "documents")))]
-/// Detect asset type from URL by extension (fallback without mimetype-detector)
-pub fn detect_from_url(url: &str) -> AssetType {
-    if let Ok(parsed) = url::Url::parse(url) {
-        let path = parsed.path();
-        return detect_from_path(path);
-    }
     AssetType::Unknown
 }
 
@@ -144,31 +101,6 @@ pub fn detect_from_path(path: &str) -> AssetType {
     } else {
         AssetType::Unknown
     }
-}
-
-#[cfg(any(feature = "images", feature = "documents"))]
-/// Detect asset type from raw bytes (magic bytes)
-pub fn detect_from_bytes(data: &[u8]) -> AssetType {
-    if data.is_empty() {
-        return AssetType::Unknown;
-    }
-
-    let mime = detect(data);
-
-    if IMAGE_MIMES.contains(&mime.mime()) {
-        AssetType::Image
-    } else if DOCUMENT_MIMES.contains(&mime.mime()) {
-        AssetType::Document
-    } else {
-        AssetType::Unknown
-    }
-}
-
-#[cfg(not(any(feature = "images", feature = "documents")))]
-/// Detect asset type from raw bytes (fallback)
-pub fn detect_from_bytes(_data: &[u8]) -> AssetType {
-    // Without mimetype-detector, we can't detect from bytes
-    AssetType::Unknown
 }
 
 /// Check if URL points to an image
