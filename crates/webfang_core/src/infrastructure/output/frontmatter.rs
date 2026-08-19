@@ -9,57 +9,10 @@
 //! - Tags (if available, for Obsidian compatibility)
 //! - Rich metadata (word count, reading time, language, content type, status)
 
-use std::borrow::Cow;
-use std::sync::LazyLock;
-
 use chrono::Utc;
 use serde::Serialize;
 
-/// Collapse whitespace runs in `text` to single spaces, zero-cost when clean.
-///
-/// Readability excerpts can carry extraction artifacts such as doubled
-/// spaces ("...by  (about)", RIESGO-OBS-001). Borrowing the input when it
-/// is already clean keeps the common path allocation-free; only dirty
-/// excerpts pay for a cleaned clone.
-fn normalize_whitespace(text: &str) -> Cow<'_, str> {
-    let needs_cleanup = text.chars().any(|c| c.is_whitespace() && c != ' ') || text.contains("  ");
-    if needs_cleanup {
-        Cow::Owned(text.split_whitespace().collect::<Vec<_>>().join(" "))
-    } else {
-        Cow::Borrowed(text)
-    }
-}
-
-/// A byline fragment whose author name is missing: `by (about)`, `by (more)…`.
-///
-/// Reproduced from quotes.toscrape.com (#762): Readability captures the
-/// author NAME node (`<small itemprop="author">`) as the page byline and
-/// strips it from the body, leaving only the wrapper's `by ` prefix and the
-/// sibling `(about)` anchor behind — the excerpt then ships `… by (about)`.
-/// Compile-time-constant pattern, so `expect` documents a true invariant
-/// (same convention as the `author_extractor` static selectors).
-#[allow(clippy::expect_used)]
-static EMPTY_BYLINE_FRAGMENT: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"\bby\s+\([^)]*\)")
-        // LCOV_EXCL_LINE defensive: fixed pattern, compile cannot fail
-        .expect("BUG: invalid byline fragment regex")
-});
-
-/// Repair a residual empty-byline fragment in `excerpt` (#762).
-///
-/// When the author name could be resolved (the extractor cascade found it),
-/// the fragment is completed to `by <author>`; otherwise it is dropped —
-/// a `by` with no name is noise, not information. The removal can resurrect
-/// doubled spaces or trailing seams, so the result is re-normalized.
-fn repair_empty_byline(excerpt: &str, author: Option<&str>) -> String {
-    let repaired: Cow<'_, str> =
-        EMPTY_BYLINE_FRAGMENT.replace_all(excerpt, |_: &regex::Captures| match author {
-            Some(name) => format!("by {name}"),
-            None => String::new(),
-        });
-    // Re-normalize: dropping the fragment can leave `…  …` or trailing space.
-    normalize_whitespace(repaired.trim()).into_owned()
-}
+use crate::domain::excerpt_repair::repair_empty_byline;
 
 /// Frontmatter data structure
 #[derive(Debug, Serialize)]
@@ -274,32 +227,10 @@ mod tests {
     }
 
     // ====================================================================
-    // #695 — excerpt whitespace normalization (RIESGO-OBS-001)
+    // #695 / #762 — excerpt whitespace normalization + empty byline repair
+    // (the repair invariant itself is unit-tested in domain::excerpt_repair;
+    // these tests cover the public generate() API surface only)
     // ====================================================================
-
-    /// Clean excerpts are borrowed untouched (zero-cost path).
-    #[test]
-    fn normalize_whitespace_borrows_clean_text() {
-        let out = normalize_whitespace("a clean excerpt");
-        assert!(matches!(out, Cow::Borrowed(_)));
-        assert_eq!(out, "a clean excerpt");
-    }
-
-    /// Doubled spaces (the Readability "...by  (about)" artifact) collapse
-    /// to single spaces via the owned path.
-    #[test]
-    fn normalize_whitespace_collapses_double_spaces() {
-        let out = normalize_whitespace("...by  (about)");
-        assert!(matches!(out, Cow::Owned(_)));
-        assert_eq!(out, "...by (about)");
-    }
-
-    /// Tabs and newlines collapse to single spaces too.
-    #[test]
-    fn normalize_whitespace_collapses_tabs_and_newlines() {
-        let out = normalize_whitespace("word\t\nword");
-        assert_eq!(out, "word word");
-    }
 
     /// The frontmatter serializes the normalized excerpt. Since #762 the
     /// empty-byline fragment is DROPPED when no author is available (the
@@ -317,46 +248,6 @@ mod tests {
         assert!(fm.contains("excerpt: '...'"), "got: {fm}");
         assert!(!fm.contains("by (about)"), "got: {fm}");
         assert!(!fm.contains("by  (about)"), "got: {fm}");
-    }
-
-    // ====================================================================
-    // #762 — empty byline fragment repair
-    // ====================================================================
-
-    /// With a resolved author, the residual `by (about)` is completed to
-    /// `by <author>` instead of shipping an empty name slot.
-    #[test]
-    fn repair_empty_byline_completes_with_author() {
-        let repaired = repair_empty_byline(
-            "“The world… changing our thinking.” by  (about)",
-            Some("Albert Einstein"),
-        );
-        assert_eq!(
-            repaired,
-            "“The world… changing our thinking.” by Albert Einstein"
-        );
-    }
-
-    /// Without an author, the fragment is dropped entirely — a `by` with no
-    /// name is noise. The trailing seam is trimmed.
-    #[test]
-    fn repair_empty_byline_drops_without_author() {
-        let repaired = repair_empty_byline("“The world… changing our thinking.” by (about)", None);
-        assert_eq!(repaired, "“The world… changing our thinking.”");
-    }
-
-    /// Text that does not match stays untouched (after normalization pass).
-    #[test]
-    fn repair_empty_byline_leaves_clean_excerpt_alone() {
-        let repaired = repair_empty_byline("A clean excerpt without scars", Some("Someone"));
-        assert_eq!(repaired, "A clean excerpt without scars");
-    }
-
-    /// A real "by" phrase with an actual name is NOT mistaken for a scar.
-    #[test]
-    fn repair_empty_byline_keeps_real_by_phrases() {
-        let repaired = repair_empty_byline("Written by Jane Austen", Some("Jane Austen"));
-        assert_eq!(repaired, "Written by Jane Austen");
     }
 
     /// End-to-end: generate() emits the repaired excerpt in the YAML.
