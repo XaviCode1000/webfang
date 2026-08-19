@@ -402,15 +402,31 @@ async fn export_phase(
 
 /// Run dry-run: discover URLs and print them without scraping.
 async fn run_dry_run(opts: CrawlOptions) -> CliExit {
-    // Bug 4: honest dry-run - call real URL discovery
-    info!("Dry-run: discovering URLs without scraping...");
     let tls_emulation = match HttpClientConfig::profile_from_name(&opts.network.h2_profile) {
         Ok(profile) => profile,
         Err(e) => return CliExit::ConfigError(e.to_string()),
     };
-
     let crawler_config = build_crawler_config_for_discovery(&opts, tls_emulation);
 
+    // #784: with --batch-file, opts.url is empty, so discovering from it would
+    // report "0 URL(s) would be scraped". List the batch URLs the user actually
+    // supplied instead — that is the set a dry run should preview.
+    if opts.batch.batch_file.is_some() {
+        let manager = match load_batch_manager(&opts, crawler_config).await {
+            Ok(m) => m,
+            Err(e) => return e,
+        };
+        let urls = manager.urls();
+        info!("Dry-run: listing {} batch URL(s) without scraping", urls.len());
+        println!("\nDry-run: {} URL(s) would be scraped:", urls.len());
+        for url in &urls {
+            println!("  {url}");
+        }
+        return CliExit::Success;
+    }
+
+    // Bug 4: honest dry-run - call real URL discovery
+    info!("Dry-run: discovering URLs without scraping...");
     let discovered = match crate::cli::url_discovery::discover_urls(&crawler_config, &opts).await {
         Ok(urls) => urls,
         Err(e) => return CliExit::NetworkError(format!("URL discovery failed: {e}")),
