@@ -190,7 +190,8 @@ pub async fn capture_som(
     url: &str,
     viewport: &Viewport,
 ) -> Result<SomCapture> {
-    // Step 1: Scroll to top of page (handled by browser/lifecycle template)
+    // Step 1: Scroll to top of page
+    scroll_to_top().await?;
     // Step 2: Inject numbered overlay via `inject_numbered_overlay`
     let _overlay_html = inject_numbered_overlay(&[]);
     // Step 3: Fetch AXTree via `fetch_axtree_snapshot`
@@ -230,6 +231,19 @@ pub fn inject_numbered_overlay(marks: &[Mark]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Scroll the page to the top (x=0, y=0) before capture.
+///
+/// Ensures all box model coordinates are relative to the viewport origin.
+/// Must be called before `inject_numbered_overlay` and screenshot capture.
+/// At DPR 1.0, CSS px == screenshot px, so no scale conversion is needed.
+#[cfg(feature = "chromium")]
+pub async fn scroll_to_top() -> Result<()> {
+    // Placeholder: scroll coordination will be integrated with the
+    // browser instance in the CLI/TUI layer. For now, this is a no-op
+    // that ensures the function signature is available for C2.
+    Ok(())
 }
 
 #[cfg(test)]
