@@ -420,7 +420,10 @@ async fn run_dry_run(opts: CrawlOptions) -> CliExit {
             Err(e) => return e,
         };
         let urls = manager.urls();
-        info!("Dry-run: listing {} batch URL(s) without scraping", urls.len());
+        info!(
+            "Dry-run: listing {} batch URL(s) without scraping",
+            urls.len()
+        );
         println!("\nDry-run: {} URL(s) would be scraped:", urls.len());
         for url in &urls {
             println!("  {url}");

@@ -87,7 +87,10 @@ impl BatchManager {
     /// Flatten all URLs across every job. Used by the dry-run path to report
     /// the exact set that would be scraped without performing any fetch.
     pub fn urls(&self) -> Vec<String> {
-        self.jobs.iter().flat_map(|j| j.urls.iter().cloned()).collect()
+        self.jobs
+            .iter()
+            .flat_map(|j| j.urls.iter().cloned())
+            .collect()
     }
 
     /// Capture every fetched page body into `sink` (#631).
@@ -323,8 +326,8 @@ https://example.com/blog
         // Regression for #784: the dry-run path lists batch URLs via
         // `urls()`, so it must flatten every job's URL list correctly.
         let urls = vec![
-        "https://a.com".to_string(),
-        "https://b.com/page".to_string(),
+            "https://a.com".to_string(),
+            "https://b.com/page".to_string(),
         ];
         let manager = BatchManager::from_urls(urls, test_config(), 2);
         assert_eq!(manager.urls(), vec!["https://a.com", "https://b.com/page"]);

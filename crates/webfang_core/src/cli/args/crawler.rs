@@ -445,7 +445,10 @@ mod tests {
     fn parse_selector_accepts_valid_css() {
         assert_eq!(parse_selector("article p"), Ok("article p".to_string()));
         assert_eq!(parse_selector("body"), Ok("body".to_string()));
-        assert_eq!(parse_selector(".content > h1"), Ok(".content > h1".to_string()));
+        assert_eq!(
+            parse_selector(".content > h1"),
+            Ok(".content > h1".to_string())
+        );
     }
 
     #[test]
