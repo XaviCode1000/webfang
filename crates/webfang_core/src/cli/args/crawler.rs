@@ -367,7 +367,7 @@ pub struct CrawlerArgs {
     pub js_strategy: JsStrategy,
 
     /// Path to the obscura binary (default: "obscura")
-#[arg(long, default_value = "obscura", env = "WEBFANG_OBSCURA_BINARY")]
+    #[arg(long, default_value = "obscura", env = "WEBFANG_OBSCURA_BINARY")]
     #[clap(next_help_heading = "JS Rendering")]
     pub obscura_binary: String,
 

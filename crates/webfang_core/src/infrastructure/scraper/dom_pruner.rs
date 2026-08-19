@@ -5,14 +5,39 @@
 //! - Empty wrapper elements (no attributes, no text content)
 //!
 //! Runs AFTER html_cleaner::clean_html since it catches CSS-invisibility missed by attribute-based removal.
+//!
+//! Note: This uses regex-based removal as scraper crate's NodeHandle API
+//! doesn't support direct DOM mutation for this use case.
 
+use once_cell::sync::Lazy;
+use regex::Regex;
 use tracing::{debug, instrument};
+
+/// Regex to remove elements with display:none or display: none
+#[allow(clippy::unwrap_used)] // These patterns are compile-time constants
+static DISPLAY_NONE_RE: Lazy<Regex> = Lazy::new(|| {
+    regex::Regex::new(r"(?is)<(?:div|span|p|section|article|footer|nav|aside|header|main|ul|ol|li)[^>]*display\s*:\s*none[^>]*>.*?</(?:div|span|p|section|article|footer|nav|aside|header|main|ul|ol|li)>").unwrap()
+});
+
+/// Regex to remove elements with visibility:hidden
+#[allow(clippy::unwrap_used)]
+static VISIBILITY_HIDDEN_RE: Lazy<Regex> = Lazy::new(|| {
+    regex::Regex::new(r"(?is)<(?:div|span|p|section|article|footer|nav|aside|header|main|ul|ol|li)[^>]*visibility\s*:\s*hidden[^>]*>.*?</(?:div|span|p|section|article|footer|nav|aside|header|main|ul|ol|li)>").unwrap()
+});
 
 /// Tags to consider for empty-wrapper removal.
 static PRUNE_TAGS: &[&str] = &["div", "span", "p", "section", "article"];
 
-/// Remove elements with inline CSS invisibility and empty wrappers.
-/// Uses iterative pattern matching to handle nested elements.
+/// Pre-compiled empty wrapper regex patterns
+#[allow(clippy::unwrap_used)]
+static EMPTY_WRAPPER_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+    PRUNE_TAGS
+        .iter()
+        .map(|tag| regex::Regex::new(&format!(r"(?is)<{tag}[^>]*>\s*</{tag}>")).unwrap())
+        .collect()
+});
+
+/// Remove elements with display:none and visibility:hidden using pre-compiled regexes.
 fn remove_invisible(html: &str) -> String {
     let mut result = html.to_string();
     let mut changed = true;
@@ -23,24 +48,25 @@ fn remove_invisible(html: &str) -> String {
         changed = false;
         iterations += 1;
 
-        // Remove elements with display:none (single and with colon)
-        let re = regex::Regex::new(r"(?is)<(?:div|span|p|section|article|footer|nav|aside|header|main|ul|ol|li)[^>]*display\s*:\s*none[^>]*>.*?</(?:div|span|p|section|article|footer|nav|aside|header|main|ul|ol|li)>").unwrap();
         let before = result.clone();
-        result = re.replace_all(&result, "").to_string();
-        if before != result { changed = true; }
+        result = DISPLAY_NONE_RE.replace_all(&result, "").to_string();
+        if before != result {
+            changed = true;
+        }
 
-        // Remove elements with visibility:hidden
-        let re = regex::Regex::new(r"(?is)<(?:div|span|p|section|article|footer|nav|aside|header|main|ul|ol|li)[^>]*visibility\s*:\s*hidden[^>]*>.*?</(?:div|span|p|section|article|footer|nav|aside|header|main|ul|ol|li)>").unwrap();
         let before = result.clone();
-        result = re.replace_all(&result, "").to_string();
-        if before != result { changed = true; }
+        result = VISIBILITY_HIDDEN_RE.replace_all(&result, "").to_string();
+        if before != result {
+            changed = true;
+        }
 
         // Remove empty wrappers (no attributes, no content)
-        for tag in PRUNE_TAGS {
-            let re = regex::Regex::new(&format!(r"(?is)<{0}[^>]*>\s*</{0}>", tag)).unwrap();
+        for re in EMPTY_WRAPPER_PATTERNS.iter() {
             let before = result.clone();
             result = re.replace_all(&result, "").to_string();
-            if before != result { changed = true; }
+            if before != result {
+                changed = true;
+            }
         }
     }
 
@@ -133,7 +159,10 @@ mod tests {
     fn prune_reports_positive_ratio_when_content_removed() {
         let html = r#"<div style="display:none">hidden content</div><p>visible</p>"#;
         let (_result, ratio) = prune_dom(html);
-        assert!(ratio > 0.0, "Should have positive reduction ratio when content is removed");
+        assert!(
+            ratio > 0.0,
+            "Should have positive reduction ratio when content is removed"
+        );
     }
 
     #[test]

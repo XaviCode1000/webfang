@@ -410,32 +410,48 @@ fn test_dom_preprune_defaults_to_true() {
 fn test_dom_preprune_flag_enables() {
     clean_env();
     // With default_value="true", --dom-preprune alone uses the default
-    let args = Args::try_parse_from(["webfang", "-u", "https://example.com", "--dom-preprune"]).expect("valid args");
-    assert!(args.crawler.dom_preprune, "--dom-preprune enables dom_preprune (uses default_value)");
+    let args = Args::try_parse_from(["webfang", "-u", "https://example.com", "--dom-preprune"])
+        .expect("valid args");
+    assert!(
+        args.crawler.dom_preprune,
+        "--dom-preprune enables dom_preprune (uses default_value)"
+    );
 }
 
 #[test]
 fn test_dom_preprune_false() {
     clean_env();
-    let args = Args::try_parse_from(["webfang", "-u", "https://example.com", "--dom-preprune=false"])
-        .expect("valid args");
-    assert!(!args.crawler.dom_preprune, "--dom-preprune=false disables dom_preprune");
+    let args = Args::try_parse_from([
+        "webfang",
+        "-u",
+        "https://example.com",
+        "--dom-preprune=false",
+    ])
+    .expect("valid args");
+    assert!(
+        !args.crawler.dom_preprune,
+        "--dom-preprune=false disables dom_preprune"
+    );
 }
 
 #[test]
 fn test_dom_preprune_env_var_true() {
     let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_DOM_PREPRUNE", "true")]);
-    let args =
-        Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
-    assert!(args.crawler.dom_preprune, "WEBFANG_DOM_PREPRUNE=true enables dom_preprune");
+    let args = Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
+    assert!(
+        args.crawler.dom_preprune,
+        "WEBFANG_DOM_PREPRUNE=true enables dom_preprune"
+    );
 }
 
 #[test]
 fn test_dom_preprune_env_var_false() {
     let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_DOM_PREPRUNE", "false")]);
-    let args =
-        Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
-    assert!(!args.crawler.dom_preprune, "WEBFANG_DOM_PREPRUNE=false disables dom_preprune");
+    let args = Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
+    assert!(
+        !args.crawler.dom_preprune,
+        "WEBFANG_DOM_PREPRUNE=false disables dom_preprune"
+    );
 }
 
 fn assert_defaults_top_level(opts: &webfang_core::application::crawl_options::CrawlOptions) {
@@ -458,7 +474,10 @@ fn assert_defaults_crawl(opts: &webfang_core::application::crawl_options::CrawlO
     assert!(!opts.crawl.use_sitemap);
     assert!(opts.crawl.sitemap_url.is_none());
     // dom_preprune: true is set in CrawlLimits::default() and in ScraperConfig::default()
-    assert!(opts.crawl.dom_preprune, "dom_preprune defaults to true in CrawlLimits");
+    assert!(
+        opts.crawl.dom_preprune,
+        "dom_preprune defaults to true in CrawlLimits"
+    );
 }
 
 fn assert_defaults_network(opts: &webfang_core::application::crawl_options::CrawlOptions) {
