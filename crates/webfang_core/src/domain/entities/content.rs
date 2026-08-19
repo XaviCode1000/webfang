@@ -362,25 +362,20 @@ impl DocumentChunk<Draft> {
     /// be exported, they must inherit identity from the `ScrapedContent` they
     /// originated from. This method performs that enrichment in place.
     ///
-    /// Metadata (`excerpt`, `author`, `date`, `domain`) is merged: existing
-    /// entries from the AI chunk are preserved, and any missing keys are filled
-    /// from the scraped page.
+    /// Only unambiguous page-level facts are merged into the chunk metadata:
+    /// `url`, `title`, `date`, and `domain`. The page-level `author` and
+    /// `excerpt` are intentionally NOT copied — they describe the whole page,
+    /// not the individual AI-chunk's content, and a wrong (page-inherited)
+    /// author is worse than an absent one in a RAG corpus. AI-side entries
+    /// already present are preserved.
     #[must_use]
     pub fn enrich_from_scraped_content(mut self, scraped: &ScrapedContent) -> Self {
         self.url = scraped.url.to_string();
         self.title = scraped.title.clone();
 
-        // Merge metadata from scraped page, preserving any AI-side entries.
-        if let Some(ref excerpt) = scraped.excerpt {
-            self.metadata
-                .entry("excerpt".to_string())
-                .or_insert_with(|| excerpt.clone());
-        }
-        if let Some(ref author) = scraped.author {
-            self.metadata
-                .entry("author".to_string())
-                .or_insert_with(|| author.clone());
-        }
+        // Merge page-level facts (date/domain) from the scraped page,
+        // preserving any AI-side entries. `author`/`excerpt` are deliberately
+        // omitted — see the doc comment above.
         if let Some(ref date) = scraped.date {
             self.metadata
                 .entry("date".to_string())
@@ -1029,12 +1024,21 @@ mod tests {
         assert_eq!(enriched.title, "Source Page Title");
         assert_eq!(enriched.content, "AI-cleaned semantic content");
         assert_eq!(enriched.embeddings, Some(vec![0.1, 0.2, 0.3]));
-        assert_eq!(enriched.metadata["excerpt"], "An excerpt");
-        assert_eq!(enriched.metadata["author"], "Author Name");
+        // #800: page-level author/excerpt must NOT leak into the AI chunk.
+        // Absent is truthful — per-chunk attribution is unknowable without ML.
+        assert!(
+            !enriched.metadata.contains_key("excerpt"),
+            "AI chunk must NOT inherit the page excerpt"
+        );
+        assert!(
+            !enriched.metadata.contains_key("author"),
+            "AI chunk must NOT inherit the page author"
+        );
         assert_eq!(enriched.metadata["date"], "2024-01-15");
         assert_eq!(enriched.metadata["domain"], "example.com");
 
-        // The enriched chunk must now pass validation (the core of #569).
+        // The enriched chunk must still pass validation (the core of #569):
+        // url/title/date/domain are enough for a valid chunk.
         assert!(
             enriched.validate().is_ok(),
             "enriched AI chunk must pass validation"
