@@ -417,7 +417,8 @@ fn clean_html_for_scrape(html: &str, dom_preprune: bool) -> String {
         // First remove nav/header/footer/aside/[hidden]/[aria-hidden] via html_cleaner,
         // then remove CSS-invisible and empty wrappers via dom_pruner
         let primed = crate::infrastructure::converter::html_cleaner::clean_html(html);
-        let (pruned, reduction_ratio) = crate::infrastructure::scraper::dom_pruner::prune_dom(&primed);
+        let (pruned, reduction_ratio) =
+            crate::infrastructure::scraper::dom_pruner::prune_dom(&primed);
         debug!(
             "🧹 DOM pre-pruned: {} → {} bytes ({}:0.2% reduction)",
             primed.len(),
@@ -428,7 +429,7 @@ fn clean_html_for_scrape(html: &str, dom_preprune: bool) -> String {
     } else {
         crate::infrastructure::converter::html_cleaner::clean_html(html)
     };
-    
+
     debug!(
         "🧹 Cleaned HTML: {} → {} bytes ({}:0.2% reduction)",
         html.len(),
