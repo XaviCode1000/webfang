@@ -4,6 +4,7 @@
 //! used before the main scraping orchestrator begins.
 
 use std::path::PathBuf;
+use std::process::Command;
 use tracing::warn;
 
 use crate::application::crawl_options::CrawlOptions;
@@ -145,12 +146,16 @@ const DEFAULT_CHROME_CANDIDATES: [&str; 4] = [
 /// - [`Static`](crate::domain::JsStrategy::Static): no external binary is
 ///   needed — returns immediately without touching disk or spawning
 ///   processes.
-/// - [`Hybrid`](crate::domain::JsStrategy::Hybrid) (#787): Layer 2 shells
+/// - [`Hybrid`](crate::domain::JsStrategy::Hybrid) (#787, #793): Layer 2 shells
 ///   out to Obscura (`ObscuraDownloader`), so the configured
 ///   `--obscura-binary` (default `obscura`) must exist. A value with a path
 ///   separator must exist as a file; a bare name must resolve via `PATH`.
 ///   This turns a missing binary into a clean config error (exit 78)
-///   instead of a silent Layer-2 fallback mid-crawl.
+///   instead of a silent Layer-2 fallback mid-crawl. Once resolved, the
+///   binary must report a version of at least [`MINIMUM_OBSCURA_VERSION`]
+///   (#793): an older dump format would silently feed the wrong content
+///   shape to Layer 2. A failing or unreadable `--version` probe degrades
+///   to a warning (best-effort for unknown builds).
 /// - [`Full`](crate::domain::JsStrategy::Full) renders pages through
 ///   Chromiumoxide, which spawns a real Chrome/Chromium binary. Two
 ///   independent preconditions are checked, in order:
@@ -166,14 +171,14 @@ const DEFAULT_CHROME_CANDIDATES: [&str; 4] = [
 ///      confusing mid-crawl browser launch failure.
 ///
 /// Runs once, in a synchronous context, before crawl start — a brief
-/// blocking `--version` probe (Full) is acceptable there. The Hybrid check
-/// is a pure filesystem lookup (no spawn).
+/// blocking `--version` probe (Full and Hybrid) is acceptable there.
 ///
 /// # Errors
 ///
 /// Returns [`crate::CliExit::ConfigError`] (exit 78) when the strategy is
 /// [`Hybrid`](crate::domain::JsStrategy::Hybrid) and the configured Obscura
-/// binary does not exist (neither as a path nor on `PATH`), or when it is
+/// binary does not exist (neither as a path nor on `PATH`) or reports a
+/// version older than [`MINIMUM_OBSCURA_VERSION`] (#793), or when it is
 /// [`Full`](crate::domain::JsStrategy::Full) and either the binary was
 /// built without the `chromium` feature, or no Chrome/Chromium candidate
 /// on `PATH` reports a version.
@@ -274,16 +279,7 @@ fn resolve_obscura_binary(binary: &str, path_value: &str) -> Option<PathBuf> {
 /// Hybrid-strategy check (#787): the configured Obscura binary exists.
 fn check_obscura_binary(binary: &str, path_value: &str) -> Result<(), CliExit> {
     match resolve_obscura_binary(binary, path_value) {
-        Some(resolved) => {
-            // English tracing fields, never the user-facing message.
-            tracing::info!(
-                strategy = "hybrid",
-                binary = %binary,
-                resolved = %resolved.display(),
-                "obscura_dependency_checked"
-            );
-            Ok(())
-        },
+        Some(resolved) => check_obscura_version(binary, &resolved),
         None if has_path_separator(binary) => Err(CliExit::ConfigError(format!(
             "--js-strategy hybrid requiere el binario obscura: la ruta \"{binary}\" no existe \
              o no es un archivo; verificá --obscura-binary o WEBFANG_OBSCURA_BINARY"
@@ -291,6 +287,109 @@ fn check_obscura_binary(binary: &str, path_value: &str) -> Result<(), CliExit> {
         None => Err(CliExit::ConfigError(format!(
             "--js-strategy hybrid requiere el binario \"{binary}\": no se encontró en PATH; \
              instalalo o configurá una ruta con --obscura-binary o WEBFANG_OBSCURA_BINARY"
+        ))),
+    }
+}
+
+/// Minimum Obscura version for the Layer 2 dump-format contract (#793):
+/// `obscura fetch --dump html` was verified in 0.2.0; an older binary may
+/// change dump semantics and silently feed the wrong content shape to Layer 2.
+const MINIMUM_OBSCURA_VERSION: (u64, u64, u64) = (0, 2, 0);
+
+/// User-facing spelling of [`MINIMUM_OBSCURA_VERSION`] for Spanish errors.
+const MINIMUM_OBSCURA_VERSION_STR: &str = "0.2.0";
+
+/// Verdict of the Obscura version assessment (#793).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VersionVerdict {
+    /// Parsed version is >= the minimum.
+    Meets,
+    /// Parsed version is below the minimum.
+    TooOld,
+    /// Probe failed or output was unparseable — degrade, do not block.
+    Unknown,
+}
+
+/// Parse a pure MAJOR.MINOR.PATCH token into a semantic triple.
+///
+/// Tolerates a leading `v`/`V`, a `-`/`+` suffix on the patch segment
+/// (`0.2.0-rc.1`, `0.2.0+build`), and extra dotted segments (ignored).
+fn parse_version_token(token: &str) -> Option<(u64, u64, u64)> {
+    let cleaned = token.strip_prefix(['v', 'V']).unwrap_or(token);
+    let mut parts = cleaned.splitn(4, '.');
+    let major = parts.next()?;
+    let minor = parts.next()?;
+    let patch = parts.next()?.split(['-', '+']).next()?;
+    Some((major.parse().ok()?, minor.parse().ok()?, patch.parse().ok()?))
+}
+
+/// Extract the first semver-like version from raw `--version` output (#793).
+///
+/// Pure: no process or environment access — unit-tested without mutation.
+fn parse_obscura_version(output: &str) -> Option<(u64, u64, u64)> {
+    output.split_whitespace().find_map(parse_version_token)
+}
+
+/// Classify an optional parsed version against the minimum (#793). Pure.
+fn assess_obscura_version(parsed: Option<(u64, u64, u64)>) -> VersionVerdict {
+    match parsed {
+        Some(version) if version >= MINIMUM_OBSCURA_VERSION => VersionVerdict::Meets,
+        Some(_) => VersionVerdict::TooOld,
+        None => VersionVerdict::Unknown,
+    }
+}
+
+/// Run `<resolved> --version` once and parse its output (#793).
+///
+/// Returns `None` when the probe cannot run, exits non-zero, or prints no
+/// semver-like token on stdout or stderr. Blocking spawn: acceptable once,
+/// pre-crawl (same pattern as [`binary_reports_version`] for Full).
+fn probe_obscura_version(resolved: &std::path::Path) -> Option<(u64, u64, u64)> {
+    let output = Command::new(resolved).arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_obscura_version(&stdout)
+        .or_else(|| parse_obscura_version(&String::from_utf8_lossy(&output.stderr)))
+}
+
+/// Version half of the Hybrid check (#793): enforce the minimum contract on
+/// a resolved binary. An unreadable build degrades to a warning (unknown
+/// custom builds must not be hard-blocked); a parseable older version fails
+/// fast with exit 78.
+fn check_obscura_version(binary: &str, resolved: &std::path::Path) -> Result<(), CliExit> {
+    let parsed = probe_obscura_version(resolved);
+    let version = parsed.map_or_else(
+        || "unknown".to_string(),
+        |(major, minor, patch)| format!("{major}.{minor}.{patch}"),
+    );
+
+    match assess_obscura_version(parsed) {
+        VersionVerdict::Meets => {
+            tracing::info!(
+                strategy = "hybrid",
+                binary = %binary,
+                resolved = %resolved.display(),
+                version = %version,
+                "obscura_dependency_checked"
+            );
+            Ok(())
+        },
+        VersionVerdict::Unknown => {
+            warn!(
+                strategy = "hybrid",
+                binary = %binary,
+                resolved = %resolved.display(),
+                "obscura_version_unreadable: --version probe failed or unparseable — \
+                 continuing best-effort"
+            );
+            Ok(())
+        },
+        VersionVerdict::TooOld => Err(CliExit::ConfigError(format!(
+            "--js-strategy hybrid requiere obscura {MINIMUM_OBSCURA_VERSION_STR} o superior: \
+             el binario \"{binary}\" reporta la versión {version}; actualizalo o cambiá la \
+             ruta con --obscura-binary o WEBFANG_OBSCURA_BINARY"
         ))),
     }
 }
@@ -1135,6 +1234,155 @@ mod tests {
             "an existing explicit obscura path must satisfy hybrid preflight"
         );
     }
+
+    // ========================================================================
+    // #793 — Obscura minimum-version contract (parse / assess / gate)
+    // ========================================================================
+
+    /// `parse_obscura_version` extracts the first semver-like token from raw
+    /// `--version` output — pure, no process or env access.
+    #[test]
+    fn parse_obscura_version_extracts_semver_token() {
+        assert_eq!(parse_obscura_version("obscura 0.2.0"), Some((0, 2, 0)));
+        assert_eq!(parse_obscura_version("obscura 0.1.9"), Some((0, 1, 9)));
+        assert_eq!(parse_obscura_version("0.10.3 (build 42)"), Some((0, 10, 3)));
+        assert_eq!(parse_obscura_version("v1.2.3"), Some((1, 2, 3)));
+    }
+
+    /// Pre-release/build suffixes on the patch segment still parse; missing
+    /// versions, non-numeric segments, and empty output do not.
+    #[test]
+    fn parse_obscura_version_rejects_garbage() {
+        assert_eq!(parse_obscura_version("obscura 0.2.0-rc.1"), Some((0, 2, 0)));
+        assert_eq!(parse_obscura_version("obscura 0.2.0+build"), Some((0, 2, 0)));
+        assert_eq!(parse_obscura_version("no version here"), None);
+        assert_eq!(parse_obscura_version(""), None);
+        assert_eq!(parse_obscura_version("version x.y.z"), None);
+        assert_eq!(parse_obscura_version("obscura 0.2"), None);
+    }
+
+    /// `assess_obscura_version` classifies against the 0.2.0 minimum — the
+    /// exact boundary, above it, below it, and the missing case.
+    #[test]
+    fn assess_obscura_version_classifies_meets_too_old_unknown() {
+        assert_eq!(assess_obscura_version(Some((0, 2, 0))), VersionVerdict::Meets);
+        assert_eq!(assess_obscura_version(Some((0, 3, 0))), VersionVerdict::Meets);
+        assert_eq!(assess_obscura_version(Some((1, 0, 0))), VersionVerdict::Meets);
+        assert_eq!(assess_obscura_version(Some((0, 1, 9))), VersionVerdict::TooOld);
+        assert_eq!(assess_obscura_version(None), VersionVerdict::Unknown);
+    }
+
+    /// Write an executable fake `obscura` whose `--version` prints
+    /// `obscura <version>` (#793). Deterministic: no network, no real binary.
+    #[cfg(unix)]
+    fn write_obscura_with_version(dir: &std::path::Path, version: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let bin_path = dir.join("obscura");
+        std::fs::write(
+            &bin_path,
+            format!("#!/bin/sh\necho \"obscura {version}\"\n"),
+        )
+        .expect("write fake obscura");
+        std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod +x fake obscura");
+        bin_path
+    }
+
+    /// Hybrid + obscura 0.2.0: the version contract is met, preflight passes.
+    #[cfg_attr(miri, ignore)] // Command::spawn unsupported by Miri (#775)
+    #[cfg(unix)]
+    #[test]
+    fn hybrid_version_020_passes() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let bin_path = write_obscura_with_version(tmp.path(), "0.2.0");
+
+        let mut opts = CrawlOptions::default();
+        opts.network.js_strategy = JsStrategy::Hybrid;
+        opts.network.obscura_binary = bin_path.to_string_lossy().into_owned();
+        assert!(
+            check_js_dependencies_with(&["definitely-not-installed-9x4k"], false, "", &opts)
+                .is_ok(),
+            "obscura 0.2.0 must satisfy the version contract"
+        );
+    }
+
+    /// Hybrid + obscura 0.1.9: config error (exit 78) naming the found
+    /// version, the required version, and both override surfaces.
+    #[cfg_attr(miri, ignore)] // Command::spawn unsupported by Miri (#775)
+    #[cfg(unix)]
+    #[test]
+    fn hybrid_version_below_minimum_errors() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let bin_path = write_obscura_with_version(tmp.path(), "0.1.9");
+
+        let mut opts = CrawlOptions::default();
+        opts.network.js_strategy = JsStrategy::Hybrid;
+        opts.network.obscura_binary = bin_path.to_string_lossy().into_owned();
+        let err = check_js_dependencies_with(&["definitely-not-installed-9x4k"], false, "", &opts)
+            .expect_err("obscura below 0.2.0 must fail hybrid preflight");
+        match err {
+            CliExit::ConfigError(msg) => {
+                assert!(
+                    msg.contains("0.1.9") && msg.contains(MINIMUM_OBSCURA_VERSION_STR),
+                    "config error must name found vs required version, got: {msg}"
+                );
+                assert!(
+                    msg.contains("--obscura-binary") && msg.contains("WEBFANG_OBSCURA_BINARY"),
+                    "config error must name the override surfaces, got: {msg}"
+                );
+            },
+            other => panic!("expected ConfigError, got: {other:?}"),
+        }
+    }
+
+    /// Hybrid + obscura printing garbage on `--version`: warn-and-continue —
+    /// unknown builds are not hard-blocked.
+    #[cfg_attr(miri, ignore)] // Command::spawn unsupported by Miri (#775)
+    #[cfg(unix)]
+    #[test]
+    fn hybrid_version_garbage_degrades_to_warning() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let bin_path = tmp.path().join("obscura");
+        std::fs::write(&bin_path, "#!/bin/sh\necho \"custom build\"\n").expect("write fake obscura");
+        std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod +x fake obscura");
+
+        let mut opts = CrawlOptions::default();
+        opts.network.js_strategy = JsStrategy::Hybrid;
+        opts.network.obscura_binary = bin_path.to_string_lossy().into_owned();
+        assert!(
+            check_js_dependencies_with(&["definitely-not-installed-9x4k"], false, "", &opts)
+                .is_ok(),
+            "an unparseable --version must degrade to a warning, not block"
+        );
+    }
+
+    /// Hybrid + obscura exiting non-zero on `--version`: same warn-degrade.
+    #[cfg_attr(miri, ignore)] // Command::spawn unsupported by Miri (#775)
+    #[cfg(unix)]
+    #[test]
+    fn hybrid_version_probe_failure_degrades_to_warning() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let bin_path = tmp.path().join("obscura");
+        std::fs::write(&bin_path, "#!/bin/sh\nexit 3\n").expect("write fake obscura");
+        std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod +x fake obscura");
+
+        let mut opts = CrawlOptions::default();
+        opts.network.js_strategy = JsStrategy::Hybrid;
+        opts.network.obscura_binary = bin_path.to_string_lossy().into_owned();
+        assert!(
+            check_js_dependencies_with(&["definitely-not-installed-9x4k"], false, "", &opts)
+                .is_ok(),
+            "a failing --version probe must degrade to a warning, not block"
+        );
+    }
+
 
     /// `Full` strategy on a binary built WITHOUT the `chromium` feature
     /// fails fast with a config error naming the feature — before any PATH
