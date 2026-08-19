@@ -297,7 +297,7 @@ fn bench_dom_pruning(c: &mut Criterion) {
     prune_group.bench_function("prune_dom_realistic", |b| {
         b.iter(|| {
             let (result, ratio) = dom_pruner::prune_dom(black_box(&html));
-            assert!(ratio >= 0.0 && ratio <= 1.0);
+            assert!((0.0..=1.0).contains(&ratio));
             black_box((result, ratio))
         })
     });
