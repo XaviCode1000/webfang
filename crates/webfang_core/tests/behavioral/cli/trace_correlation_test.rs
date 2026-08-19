@@ -58,7 +58,8 @@ async fn mount_two_page_site(server: &wiremock::MockServer) -> String {
 ///     spans, with every traceparent embedding that same trace UUID, and
 /// (c) export the same identities in the vector JSON documents.
 /// Run a sitemap scrape with `--trace-file` + vector export and return the
-/// child process output.
+/// child process output. Vector export requires `--clean-ai` (preflight #796),
+/// so the command needs a cached ONNX model.
 fn run_scrape_with_trace(
     base: &str,
     output_dir: &std::path::Path,
@@ -70,6 +71,7 @@ fn run_scrape_with_trace(
         .arg("--use-sitemap")
         .arg("--export-format")
         .arg("vector")
+        .arg("--clean-ai")
         .arg("--output")
         .arg(output_dir)
         .arg("--trace-file")
@@ -210,7 +212,9 @@ fn assert_vector_export_identities(t: &BehavioralTest, lines: &[serde_json::Valu
     );
 }
 
+/// Vector export requires `--clean-ai`, hence a cached ONNX model (preflight #796).
 #[tokio::test]
+#[ignore = "requires cached ONNX model"]
 async fn scrape_trace_and_vector_export_share_per_page_correlation() {
     let t = BehavioralTest::new().await;
     let base = mount_two_page_site(&t.server).await;
