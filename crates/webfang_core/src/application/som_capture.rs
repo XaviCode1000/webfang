@@ -192,16 +192,19 @@ pub async fn capture_som(
 ) -> Result<SomCapture> {
     // Step 1: Scroll to top of page
     scroll_to_top().await?;
-    // Step 2: Inject numbered overlay via `inject_numbered_overlay`
+    // Step 2: Save page state (scroll position) for restoration after capture
+    let saved_scroll = save_page_state().await?;
+    // Step 3: Inject numbered overlay via `inject_numbered_overlay`
     let _overlay_html = inject_numbered_overlay(&[]);
-    // Step 3: Fetch AXTree via `fetch_axtree_snapshot`
     // Step 4: Extract marks via `extract_marks` (viewport filter + box models)
     let marks = extract_marks(url, viewport).await;
-    // Step 5: Capture viewport-clipped PNG at DPR 1.0 via Page::screenshot
+    // Step 5: Restore page state (scroll position)
+    restore_page_state(saved_scroll).await?;
+    // Step 6: Capture viewport-clipped PNG at DPR 1.0 via Page::screenshot
     let png: Vec<u8> = Vec::new();
-    // Step 6: Remove overlay via `remove_numbered_overlay`
+    // Step 7: Remove overlay via `remove_numbered_overlay`
     remove_numbered_overlay();
-    // Step 7: Return result
+    // Step 8: Return result
     Ok(SomCapture { png, marks: marks? })
 }
 
@@ -243,6 +246,24 @@ pub async fn scroll_to_top() -> Result<()> {
     // Placeholder: scroll coordination will be integrated with the
     // browser instance in the CLI/TUI layer. For now, this is a no-op
     // that ensures the function signature is available for C2.
+    Ok(())
+}
+
+/// Save the page state (scroll position) before capture.
+#[cfg(feature = "chromium")]
+pub async fn save_page_state() -> Result<u64> {
+    // Placeholder: save scroll position for later restoration.
+    // In a real browser context, this would evaluate JavaScript to save
+    // the current scroll position. For now, return 0 as a sentinel.
+    Ok(0)
+}
+
+/// Restore the page state (scroll position) after capture.
+#[cfg(feature = "chromium")]
+pub async fn restore_page_state(saved_scroll: u64) -> Result<()> {
+    // Placeholder: restore scroll position saved by `save_page_state`.
+    // In a real browser context, this would evaluate JavaScript to restore
+    // the saved scroll position. For now, this is a no-op.
     Ok(())
 }
 
