@@ -46,6 +46,7 @@ pub mod content_processor;
 pub mod embedding_port;
 /// Shared excerpt byline-repair invariant (regex + whitespace), pure & IO-free.
 pub(crate) mod excerpt_repair;
+pub mod llm_port;
 pub mod note_repository;
 pub mod semantic_cleaner;
 pub mod semantic_inspector;
