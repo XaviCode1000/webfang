@@ -17,6 +17,7 @@ pub mod downloader;
 pub mod error;
 pub mod export;
 pub mod http;
+pub mod llm;
 pub mod network;
 pub mod observability;
 pub mod obsidian;

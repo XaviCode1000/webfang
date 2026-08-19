@@ -21,7 +21,7 @@ use crate::error::ScraperError;
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// A single chat message (`system` / `user` / `assistant`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ChatMessage {
     /// Message role: `system`, `user`, or `assistant`.
     pub role: String,
