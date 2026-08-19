@@ -283,3 +283,129 @@ async fn download_pdf_saves_binary_file() {
         "saved PDF content should match the original"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Shared asset across crawl pages: dedup by URL (#782)
+// ---------------------------------------------------------------------------
+
+/// Pad text so every crawl page clears the minimum-content guard (XC-2).
+const DEDUP_PAD: &str = "substantive server-rendered text that comfortably \
+                         clears the crawl minimum content guard threshold";
+
+/// Page body embedding the shared asset and enough text to pass the guard.
+fn dedup_page(tag: usize) -> String {
+    format!(
+        "<html><body><article><h1>Page {tag}</h1>\
+         <p>{DEDUP_PAD}</p>\
+         <img src=\"/shared.png\" alt=\"shared asset {tag}\">\
+         </article></body></html>"
+    )
+}
+
+/// #782 regression: a crawl where TWO pages embed the SAME asset URL must
+/// fetch that asset from the server exactly ONCE — the second page reuses
+/// the already-downloaded file. Proven at the wire level (exactly one
+/// `GET /shared.png`) and at the filesystem level (exactly ONE file in
+/// `images/`, no hash-suffixed duplicate from the collision renamer).
+#[tokio::test]
+async fn download_assets_dedupes_shared_url_across_crawl_pages() {
+    let server = MockServer::start().await;
+    let output = TempDir::new().unwrap();
+
+    let hub = format!(
+        "<html><body><article><h1>Hub</h1>\
+         <a href=\"/page-a\">A</a><a href=\"/page-b\">B</a>\
+         <p>{DEDUP_PAD}</p></article></body></html>"
+    );
+
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(hub))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/page-a"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(dedup_page(1)))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/page-b"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(dedup_page(2)))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/shared.png"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(PNG_BYTES.to_vec())
+                .insert_header("content-type", "image/png"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    crate::cmd()
+        .arg("--url")
+        .arg(server.uri())
+        .arg("--ignore-robots")
+        .arg("--max-depth")
+        .arg("1")
+        .arg("--concurrency")
+        .arg("2")
+        .arg("--download-assets")
+        .arg("--download-concurrency")
+        .arg("2")
+        .arg("--output")
+        .arg(output.path())
+        .arg("--quiet")
+        .assert()
+        .success();
+
+    // Preconditions: BOTH pages were scraped — otherwise the dedup assertion
+    // below would be vacuous. DOM discovery may fetch a page an extra time
+    // (discovery walk + scrape), so `>= 1`.
+    let requests = server.received_requests().await.unwrap();
+    let page_a = requests
+        .iter()
+        .filter(|r| r.url.path() == "/page-a")
+        .count();
+    let page_b = requests
+        .iter()
+        .filter(|r| r.url.path() == "/page-b")
+        .count();
+    assert!(page_a >= 1, "page-a must be scraped, got {page_a}");
+    assert!(page_b >= 1, "page-b must be scraped, got {page_b}");
+
+    // Wire-level proof: the shared asset was requested exactly ONCE even
+    // though both page batches referenced it.
+    let asset_requests = requests
+        .iter()
+        .filter(|r| r.url.path() == "/shared.png")
+        .count();
+    assert_eq!(
+        asset_requests, 1,
+        "shared asset URL must be downloaded exactly once per crawl, got {asset_requests}"
+    );
+
+    // Filesystem proof: exactly ONE file for the shared asset.
+    let image_files: Vec<_> = std::fs::read_dir(output.path().join("images"))
+        .expect("images/ directory must exist after --download-assets")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_file()))
+        .collect();
+    assert_eq!(
+        image_files.len(),
+        1,
+        "exactly one asset file expected for the shared URL, got {}: {image_files:?}",
+        image_files.len()
+    );
+
+    let saved = std::fs::read(image_files[0].path()).expect("read the asset file");
+    assert_eq!(
+        saved, PNG_BYTES,
+        "the single asset file must hold the original bytes"
+    );
+}

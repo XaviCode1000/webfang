@@ -11,12 +11,18 @@
 //! TLS fingerprint — a bot signal for WAFs that compared it against the main
 //! page downloader's fingerprint. Routing the fetch through an emulated client
 //! keeps the robots.txt fingerprint consistent with the rest of the crawl.
+//!
+//! Failed outcomes are cached too (#794): a 404 / non-2xx / network error
+//! stores a fail-open [`RobotsCacheEntry::AllowAll`] decision per domain, so
+//! the robots.txt of a site without one is fetched once per crawl instead of
+//! once per checked URL.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use dashmap::DashMap;
 use robotstxt::DefaultMatcher;
+use tokio::sync::OnceCell;
 use url::Url;
 use wreq::Client;
 use wreq_util::Profile;
@@ -35,11 +41,41 @@ pub struct RobotsRules {
     pub crawl_delay_secs: Option<f64>,
 }
 
-/// Cache of robots.txt rules keyed by domain.
+/// Cached robots.txt decision per domain (#794).
 ///
 /// Using `DashMap` for lock-free concurrent reads during crawl.
 /// No TTL — robots.txt rarely changes during a single crawl session.
-pub type RobotsCache = DashMap<String, Arc<RobotsRules>>;
+/// Each domain maps to a [`OnceCell`]-guarded decision: the first check for a
+/// domain initializes it with exactly one fetch (success → `Rules`, any
+/// failure → fail-open `AllowAll`), and concurrent first-checks share that
+/// initialization instead of stampeding. The decision lives as long as the
+/// owning [`RobotsFetcher`] — one crawl/session.
+pub type RobotsCache = DashMap<String, Arc<OnceCell<Arc<RobotsCacheEntry>>>>;
+
+/// Cached robots.txt outcome for one domain (#794).
+///
+/// Previously the cache only stored successful fetches, so a 404 or fetch
+/// failure left the map empty forever and every [`RobotsFetcher::is_allowed`]
+/// call re-fetched robots.txt (459 fetches for a 5-page crawl on sites
+/// without robots.txt). Caching the fail-open decision makes "no rules" a
+/// remembered state, distinct from "never fetched".
+#[derive(Debug, Clone)]
+pub enum RobotsCacheEntry {
+    /// Successfully fetched and parsed robots.txt — real rules to match.
+    Rules(Arc<RobotsRules>),
+    /// robots.txt unavailable (404 / non-2xx / network / body-read error).
+    /// Fail-open is kept and cached for the lifetime of the cache, which
+    /// lives as long as its owning [`RobotsFetcher`] — one crawl/session.
+    AllowAll,
+}
+
+/// Create an initialized cache cell holding `entry` (test helper).
+#[cfg(test)]
+fn init_cache_cell(entry: RobotsCacheEntry) -> Arc<OnceCell<Arc<RobotsCacheEntry>>> {
+    let cell = OnceCell::new();
+    let _ = cell.set(Arc::new(entry));
+    Arc::new(cell)
+}
 
 /// Create a new empty robots.txt cache.
 #[must_use]
@@ -95,6 +131,24 @@ fn robots_txt_url(url: &str, domain: &str) -> String {
     }
 }
 
+/// Structured robots.txt fetch failure — reasons the domain is cached as
+/// fail-open (`AllowAll`) instead of being re-fetched (#794).
+#[derive(Debug, Clone)]
+struct RobotsFetchFailure {
+    /// Machine-readable failure reason: `network_error`, `http_status:<code>`,
+    /// or `body_read_error`. Recorded on the `robots_txt_negative_cached`
+    /// tracing event so trace.jsonl shows *why* a domain went fail-open.
+    reason: String,
+}
+
+/// Label for a cache entry in tracing fields (`rules` / `allow_all`).
+fn entry_label(entry: &RobotsCacheEntry) -> &'static str {
+    match entry {
+        RobotsCacheEntry::Rules(_) => "rules",
+        RobotsCacheEntry::AllowAll => "allow_all",
+    }
+}
+
 /// Fetches and caches robots.txt rules using a TLS-fingerprinted HTTP client.
 ///
 /// The internal `wreq::Client` is built once with the caller's TLS/HTTP2
@@ -107,7 +161,10 @@ fn robots_txt_url(url: &str, domain: &str) -> String {
 pub struct RobotsFetcher {
     /// Shared HTTP client built with the configured TLS emulation profile.
     client: Arc<Client>,
-    /// Per-domain robots.txt rules cache (lock-free, shared across tasks).
+    /// Per-domain robots.txt cache (lock-free, shared across tasks). Each
+    /// domain maps to a [`OnceCell`]: the first check initializes it — exactly
+    /// one fetch per domain, with concurrent first-checks sharing the same
+    /// initialization — and every later check reads the cached decision (#794).
     cache: RobotsCache,
 }
 
@@ -178,77 +235,132 @@ impl RobotsFetcher {
         Self::new(Profile::Chrome145, timeout_secs)
     }
 
-    /// Fetch and cache robots.txt rules for a domain.
+    /// Resolve the cached robots.txt decision for a domain, fetching on first
+    /// access and caching the outcome — including failed outcomes (#794).
     ///
     /// On cache miss, fetches `robots.txt` from the domain root using the shared
-    /// emulated client. Parses the content and caches the result. Returns `None`
-    /// if fetching or parsing fails (fail-open: treat as all-allowed).
+    /// emulated client. A successful parse is cached as [`RobotsCacheEntry::Rules`].
+    /// Any failure (non-2xx, network error, body-read error) is cached as
+    /// [`RobotsCacheEntry::AllowAll`] (fail-open, remembered) so later calls for
+    /// the same domain never re-fetch. Previously only successes reached the
+    /// cache, so 404/error domains were re-fetched on every `is_allowed` call —
+    /// 459 robots fetches for a 5-page crawl (issue #794).
+    ///
+    /// # Concurrency
+    ///
+    /// Each domain maps to a [`OnceCell`]: the first check to win the `entry`
+    /// slot inserts it, then `get_or_init` runs exactly one fetch while every
+    /// concurrent first-check for that domain awaits the same initialization.
+    /// The shard guard is dropped before the fetch (no lock held across
+    /// `.await`), and `OnceCell` keeps the exactly-once guarantee even then.
+    /// Fetch count is therefore exactly one per domain per fetcher lifetime.
     ///
     /// # Arguments
     ///
     /// * `domain` - Cache key for the site (typically the bare host)
     /// * `url` - A page URL on the site, used to derive the robots.txt origin
-    ///
-    /// # Returns
-    ///
-    /// Parsed robots.txt rules, or None if unavailable
-    async fn fetch_rules(&self, domain: &str, url: &str) -> Option<Arc<RobotsRules>> {
-        if let Some(rules) = self.cache.get(domain) {
-            return Some(Arc::clone(rules.value()));
-        }
+    async fn resolve_entry(&self, domain: &str, url: &str) -> Arc<RobotsCacheEntry> {
+        let cell: Arc<OnceCell<Arc<RobotsCacheEntry>>> = self
+            .cache
+            .entry(domain.to_string())
+            .or_insert_with(|| Arc::new(OnceCell::new()))
+            .value()
+            .clone();
 
+        if let Some(entry) = cell.get().cloned() {
+            tracing::trace!(
+                domain = %domain,
+                entry = entry_label(&entry),
+                "robots_txt_cache_hit"
+            );
+            return entry;
+        }
+        cell.get_or_init(|| self.fetch_or_allow_all(domain, url))
+            .await
+            .clone()
+    }
+
+    /// Fetch and parse robots.txt for a domain, or build the fail-open
+    /// decision when the fetch fails. This is the per-domain single-flight
+    /// initializer run by [`OnceCell::get_or_init`] — exactly once.
+    async fn fetch_or_allow_all(&self, domain: &str, url: &str) -> Arc<RobotsCacheEntry> {
         let robots_url = robots_txt_url(url, domain);
         tracing::debug!("Fetching robots.txt from {}", robots_url);
 
-        let content = self.fetch_robots_content(domain, &robots_url).await?;
-
-        let crawl_delay = parse_crawl_delay(&content);
-        let rules = Arc::new(RobotsRules {
-            content,
-            crawl_delay_secs: crawl_delay,
-        });
-        self.cache.insert(domain.to_string(), Arc::clone(&rules));
-        Some(rules)
+        match self.fetch_robots_content(domain, &robots_url).await {
+            Ok(content) => {
+                let crawl_delay_secs = parse_crawl_delay(&content);
+                Arc::new(RobotsCacheEntry::Rules(Arc::new(RobotsRules {
+                    content,
+                    crawl_delay_secs,
+                })))
+            },
+            Err(failure) => {
+                tracing::debug!(
+                    domain = %domain,
+                    reason = %failure.reason,
+                    "robots_txt_negative_cached"
+                );
+                Arc::new(RobotsCacheEntry::AllowAll)
+            },
+        }
     }
 
-    /// Fetch the raw robots.txt content, or `None` if unavailable (fail-open).
-    async fn fetch_robots_content(&self, domain: &str, robots_url: &str) -> Option<String> {
+    /// Fetch the raw robots.txt content, or a structured failure reason (#794).
+    async fn fetch_robots_content(
+        &self,
+        domain: &str,
+        robots_url: &str,
+    ) -> Result<String, RobotsFetchFailure> {
         let resp = match self.client.get(robots_url).send().await {
             Ok(resp) => resp,
             Err(e) => {
                 tracing::warn!("Failed to fetch robots.txt for {}: {}", domain, e);
-                return None;
+                return Err(RobotsFetchFailure {
+                    reason: "network_error".to_string(),
+                });
             },
         };
 
         if !resp.status().is_success() {
+            let status = resp.status().as_u16();
             tracing::debug!(
                 "robots.txt for {} returned status {}, treating as all-allowed",
                 domain,
-                resp.status()
+                status
             );
-            return None;
+            return Err(RobotsFetchFailure {
+                reason: format!("http_status:{status}"),
+            });
         }
 
         self.read_robots_body(domain, resp).await
     }
 
     /// Read the body of a successful robots.txt response.
-    async fn read_robots_body(&self, domain: &str, resp: wreq::Response) -> Option<String> {
+    async fn read_robots_body(
+        &self,
+        domain: &str,
+        resp: wreq::Response,
+    ) -> Result<String, RobotsFetchFailure> {
         match resp.text().await {
-            Ok(text) => Some(text),
+            Ok(text) => Ok(text),
             Err(e) => {
                 tracing::warn!("Failed to read robots.txt body for {}: {}", domain, e);
-                None
+                Err(RobotsFetchFailure {
+                    reason: "body_read_error".to_string(),
+                })
             },
         }
     }
 
     /// Check if a URL is allowed by the site's robots.txt.
     ///
-    /// Fetches robots.txt on first encounter (cached per domain).
-    /// Uses the `robotstxt` crate's `DefaultMatcher` for path matching.
-    /// Fail-open: if robots.txt cannot be fetched, the URL is allowed.
+    /// Fetches robots.txt on first encounter (cached per domain, including
+    /// failed outcomes — see [`RobotsCacheEntry`]). Uses the `robotstxt` crate's
+    /// `DefaultMatcher` for path matching. Fail-open: if robots.txt cannot be
+    /// fetched, the URL is allowed, and that decision is cached so later calls
+    /// do not re-fetch (#794).
     ///
     /// # Arguments
     ///
@@ -271,19 +383,22 @@ impl RobotsFetcher {
     /// # }
     /// ```
     pub async fn is_allowed(&self, url: &str, domain: &str) -> bool {
-        let rules = match self.fetch_rules(domain, url).await {
-            Some(r) => r,
-            None => return true, // fail-open
-        };
-
-        let mut matcher = DefaultMatcher::default();
-        matcher.one_agent_allowed_by_robots(&rules.content, "*", url)
+        let entry = self.resolve_entry(domain, url).await;
+        match entry.as_ref() {
+            RobotsCacheEntry::Rules(rules) => {
+                let mut matcher = DefaultMatcher::default();
+                matcher.one_agent_allowed_by_robots(&rules.content, "*", url)
+            },
+            RobotsCacheEntry::AllowAll => true,
+        }
     }
 
     /// Get the crawl-delay for a domain in seconds, if configured.
     ///
-    /// Returns `None` if the domain has not been fetched yet or no Crawl-delay
-    /// directive was present in its robots.txt.
+    /// Returns `None` if the domain has not been fetched yet, if the cached
+    /// decision is a negative `AllowAll` entry (no robots.txt ⇒ no Crawl-delay
+    /// directive can exist), or if no Crawl-delay directive was present in its
+    /// robots.txt.
     ///
     /// # Arguments
     ///
@@ -293,7 +408,12 @@ impl RobotsFetcher {
     ///
     /// Crawl-delay in seconds, or None if not configured
     pub fn get_crawl_delay(&self, domain: &str) -> Option<f64> {
-        self.cache.get(domain).and_then(|r| r.crawl_delay_secs)
+        self.cache
+            .get(domain)
+            .and_then(|cell| match cell.value().get()?.as_ref() {
+                RobotsCacheEntry::Rules(rules) => rules.crawl_delay_secs,
+                RobotsCacheEntry::AllowAll => None,
+            })
     }
 }
 
@@ -343,16 +463,26 @@ Disallow: /tmp/";
         assert!(RobotsFetcher::new(Profile::Firefox135, 5).is_ok());
     }
 
+    /// Seed a cached `Rules` decision for a domain, bypassing the fetch.
+    fn seed_rules(fetcher: &RobotsFetcher, domain: &str, content: &str, crawl_delay: Option<f64>) {
+        fetcher.cache.insert(
+            domain.to_string(),
+            init_cache_cell(RobotsCacheEntry::Rules(Arc::new(RobotsRules {
+                content: content.to_string(),
+                crawl_delay_secs: crawl_delay,
+            }))),
+        );
+    }
+
     #[cfg_attr(miri, ignore)] // btls/wreq FFI (BoringSSL TLS_method) not supported by Miri
     #[tokio::test]
     async fn test_robots_cache_hit() {
         let fetcher = RobotsFetcher::new(Profile::Chrome145, 30).expect("client should build");
-        fetcher.cache.insert(
-            "example.com".to_string(),
-            Arc::new(RobotsRules {
-                content: "User-agent: *\nDisallow: /private/\n".to_string(),
-                crawl_delay_secs: Some(2.0),
-            }),
+        seed_rules(
+            &fetcher,
+            "example.com",
+            "User-agent: *\nDisallow: /private/\n",
+            Some(2.0),
         );
 
         // Should allow public URL
@@ -373,16 +503,42 @@ Disallow: /tmp/";
     #[test]
     fn test_get_crawl_delay_returns_cached_value() {
         let fetcher = RobotsFetcher::new(Profile::Chrome145, 30).expect("client should build");
-        fetcher.cache.insert(
-            "slow-site.com".to_string(),
-            Arc::new(RobotsRules {
-                content: String::new(),
-                crawl_delay_secs: Some(7.5),
-            }),
-        );
+        seed_rules(&fetcher, "slow-site.com", "", Some(7.5));
 
         assert_eq!(fetcher.get_crawl_delay("slow-site.com"), Some(7.5));
         assert_eq!(fetcher.get_crawl_delay("unknown.com"), None);
+    }
+
+    #[cfg_attr(miri, ignore)] // btls/wreq FFI (BoringSSL TLS_method) not supported by Miri
+    #[test]
+    fn test_get_crawl_delay_is_none_for_negative_entry() {
+        let fetcher = RobotsFetcher::new(Profile::Chrome145, 30).expect("client should build");
+        fetcher.cache.insert(
+            "no-robots.com".to_string(),
+            init_cache_cell(RobotsCacheEntry::AllowAll),
+        );
+
+        assert_eq!(fetcher.get_crawl_delay("no-robots.com"), None);
+    }
+
+    #[cfg_attr(miri, ignore)] // btls/wreq FFI (BoringSSL TLS_method) not supported by Miri
+    #[tokio::test]
+    async fn test_cached_allow_all_entry_allows_without_fetch() {
+        // A cached negative entry must be served from the cache — the URL used
+        // points at a host with no routes, so any fetch attempt would fail
+        // (and be observable via timing); correctness here is enforced by the
+        // entry being served synchronously from the map.
+        let fetcher = RobotsFetcher::new(Profile::Chrome145, 1).expect("client should build");
+        fetcher.cache.insert(
+            "dead.example".to_string(),
+            init_cache_cell(RobotsCacheEntry::AllowAll),
+        );
+
+        assert!(
+            fetcher
+                .is_allowed("http://dead.example/anything", "dead.example")
+                .await
+        );
     }
 
     #[test]

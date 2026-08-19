@@ -34,6 +34,21 @@ pub(crate) fn parse_timeout_secs(s: &str) -> Result<u64, String> {
     Ok(v)
 }
 
+/// Validate `--max-pages`: must be >= 1. A value of 0 would panic
+/// `tokio::sync::mpsc::channel(0)` inside `ResultsCollector::new`
+/// (SIGABRT, #780 — the MCP path already rejects this; #598/#611 only
+/// covered MCP). Rejecting here gives a clear usage error (exit 64)
+/// instead of a runtime panic (exit 134).
+pub(crate) fn parse_max_pages(s: &str) -> Result<usize, String> {
+    let v: usize = s
+        .parse()
+        .map_err(|_| format!("'{s}' no es un número válido para --max-pages"))?;
+    if v == 0 {
+        return Err("--max-pages debe ser >= 1 (0 no deja páginas para scrapear)".to_string());
+    }
+    Ok(v)
+}
+
 /// Crawler and discovery configuration arguments.
 #[derive(Args, Debug, Default)]
 pub struct CrawlerArgs {
@@ -55,7 +70,12 @@ pub struct CrawlerArgs {
     pub delay_ms: u64,
 
     /// Maximum pages to scrape
-    #[arg(long, default_value = "10", env = "WEBFANG_MAX_PAGES")]
+    #[arg(
+        long,
+        default_value = "10",
+        env = "WEBFANG_MAX_PAGES",
+        value_parser = parse_max_pages
+    )]
     #[clap(next_help_heading = "Discovery")]
     pub max_pages: usize,
 
@@ -350,6 +370,17 @@ pub struct CrawlerArgs {
     #[arg(long, default_value = "obscura", env = "WEBFANG_OBSCURA_BINARY")]
     #[clap(next_help_heading = "JS Rendering")]
     pub obscura_binary: String,
+
+    /// Enable DOM pre-pruning before Readability (removes invisible/empty wrappers).
+    /// Default: enabled (true). Set to false via --dom-preprune=false or WEBFANG_DOM_PREPRUNE=false.
+    #[arg(
+        long,
+        env = "WEBFANG_DOM_PREPRUNE",
+        default_value = "true",
+        num_args(0..=1)
+    )]
+    #[clap(next_help_heading = "Cleanup")]
+    pub dom_preprune: bool,
 }
 
 #[cfg(test)]
@@ -374,5 +405,26 @@ mod tests {
     fn parse_timeout_secs_rejects_non_numeric() {
         let err = parse_timeout_secs("abc").unwrap_err();
         assert_eq!(err, "'abc' no es un número válido para --timeout-secs");
+    }
+
+    #[test]
+    fn parse_max_pages_accepts_valid_value() {
+        assert_eq!(parse_max_pages("5"), Ok(5));
+    }
+
+    #[test]
+    fn parse_max_pages_rejects_zero() {
+        // Bug #780: max_pages 0 panics mpsc::channel(0) → SIGABRT.
+        let err = parse_max_pages("0").unwrap_err();
+        assert_eq!(
+            err,
+            "--max-pages debe ser >= 1 (0 no deja páginas para scrapear)"
+        );
+    }
+
+    #[test]
+    fn parse_max_pages_rejects_non_numeric() {
+        let err = parse_max_pages("abc").unwrap_err();
+        assert_eq!(err, "'abc' no es un número válido para --max-pages");
     }
 }

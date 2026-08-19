@@ -200,6 +200,9 @@ pub async fn scrape_urls(
         http_config.max_retries,
         http_config.backoff_base_ms,
         http_config.backoff_max_ms,
+        // #787: propagate --obscura-binary into the Hybrid Layer 2 downloader
+        // instead of always resolving the bare `obscura` name from PATH.
+        &opts.network.obscura_binary,
     )?;
 
     let _total_urls = urls.len();

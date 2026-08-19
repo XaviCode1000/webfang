@@ -265,7 +265,7 @@ async fn scrape_with_config_inner(
     // Clean HTML boilerplate (scripts, styles, nav, sidebar, footer) BEFORE
     // Readability. This helps legible find the main content without being
     // confused by navigation elements, JavaScript bundles, and CSS.
-    let cleaned_html = clean_html_for_scrape(html);
+    let cleaned_html = clean_html_for_scrape(html, config);
 
     // Apply CSS selector extraction if a non-default selector is configured.
     let extract_result = extract_with_selector(&cleaned_html, &config.selector, inspector);
@@ -411,10 +411,13 @@ fn extract_original_title(html: &str) -> String {
 
 /// Clean HTML boilerplate (scripts, styles, nav, sidebar, footer) BEFORE
 /// Readability, logging the reduction.
-fn clean_html_for_scrape(html: &str) -> String {
-    let cleaned_html = crate::infrastructure::converter::html_cleaner::clean_html(html);
+/// Applies DOM pre-pruning (#791) when enabled.
+fn clean_html_for_scrape(html: &str, config: &ScraperConfig) -> String {
+    let pruned_html = crate::application::extraction::prune_dom_if_enabled(html, config);
+    let cleaned_html = crate::infrastructure::converter::html_cleaner::clean_html(&pruned_html);
+
     debug!(
-        "🧹 Cleaned HTML: {} → {} bytes ({}% reduction)",
+        "🧹 Cleaned HTML: {} → {} bytes ({}:0.2% reduction)",
         html.len(),
         cleaned_html.len(),
         ((html.len() - cleaned_html.len()) as f64 / html.len() as f64 * 100.0).round()

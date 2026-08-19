@@ -394,6 +394,66 @@ fn test_ai_config_defaults_without_ai_feature() {
     assert_eq!(opts.ai_config, AiConfig::default());
 }
 
+// ========================================================================
+// #791 — --dom-preprune flag tests
+// ========================================================================
+
+#[test]
+fn test_dom_preprune_defaults_to_true() {
+    let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_DOM_PREPRUNE"]);
+    // Default value from clap is true
+    let args = Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
+    assert!(args.crawler.dom_preprune, "dom_preprune defaults to true");
+}
+
+#[test]
+fn test_dom_preprune_flag_enables() {
+    clean_env();
+    // With default_value="true", --dom-preprune alone uses the default
+    let args = Args::try_parse_from(["webfang", "-u", "https://example.com", "--dom-preprune"])
+        .expect("valid args");
+    assert!(
+        args.crawler.dom_preprune,
+        "--dom-preprune enables dom_preprune (uses default_value)"
+    );
+}
+
+#[test]
+fn test_dom_preprune_false() {
+    clean_env();
+    let args = Args::try_parse_from([
+        "webfang",
+        "-u",
+        "https://example.com",
+        "--dom-preprune=false",
+    ])
+    .expect("valid args");
+    assert!(
+        !args.crawler.dom_preprune,
+        "--dom-preprune=false disables dom_preprune"
+    );
+}
+
+#[test]
+fn test_dom_preprune_env_var_true() {
+    let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_DOM_PREPRUNE", "true")]);
+    let args = Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
+    assert!(
+        args.crawler.dom_preprune,
+        "WEBFANG_DOM_PREPRUNE=true enables dom_preprune"
+    );
+}
+
+#[test]
+fn test_dom_preprune_env_var_false() {
+    let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_DOM_PREPRUNE", "false")]);
+    let args = Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
+    assert!(
+        !args.crawler.dom_preprune,
+        "WEBFANG_DOM_PREPRUNE=false disables dom_preprune"
+    );
+}
+
 fn assert_defaults_top_level(opts: &webfang_core::application::crawl_options::CrawlOptions) {
     // url defaults to example.com when None
     assert_eq!(opts.url.as_str(), "https://example.com/");
@@ -413,6 +473,11 @@ fn assert_defaults_crawl(opts: &webfang_core::application::crawl_options::CrawlO
     assert!(opts.crawl.state_dir.is_none());
     assert!(!opts.crawl.use_sitemap);
     assert!(opts.crawl.sitemap_url.is_none());
+    // dom_preprune: true is set in CrawlLimits::default() and in ScraperConfig::default()
+    assert!(
+        opts.crawl.dom_preprune,
+        "dom_preprune defaults to true in CrawlLimits"
+    );
 }
 
 fn assert_defaults_network(opts: &webfang_core::application::crawl_options::CrawlOptions) {
@@ -577,6 +642,7 @@ proptest! {
                 download_concurrency: 3,
                 download_assets: false,
                 trace_file: None,
+                dom_preprune: true,
                 headers: vec![],
                 cookies: vec![],
             },
@@ -686,6 +752,7 @@ proptest! {
                 download_concurrency: 3,
                 download_assets: false,
                 trace_file: None,
+                dom_preprune: true,
                 headers: vec![],
                 cookies: vec![],
             },
@@ -774,6 +841,7 @@ proptest! {
                 download_concurrency: 3,
                 download_assets: false,
                 trace_file: None,
+                dom_preprune: true,
                 headers: vec![],
                 cookies: vec![],
             },
@@ -856,6 +924,7 @@ proptest! {
                 download_concurrency: 3,
                 download_assets: false,
                 trace_file: None,
+                dom_preprune: true,
                 headers: vec![],
                 cookies: vec![],
             },
@@ -942,6 +1011,7 @@ proptest! {
                 download_concurrency: 3,
                 download_assets: false,
                 trace_file: None,
+                dom_preprune: true,
                 headers: vec![],
                 cookies: vec![],
             },
@@ -1020,6 +1090,7 @@ proptest! {
                 download_concurrency: 3,
                 download_assets: false,
                 trace_file: None,
+                dom_preprune: true,
                 headers: vec![],
                 cookies: vec![],
             },
@@ -1096,6 +1167,7 @@ proptest! {
                 download_concurrency: 3,
                 download_assets: false,
                 trace_file: None,
+                dom_preprune: true,
                 headers: vec![],
                 cookies: vec![],
             },

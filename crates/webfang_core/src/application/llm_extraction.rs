@@ -83,9 +83,10 @@ impl LlmExtractionService {
         model: &str,
         config: &LlmConfig,
     ) -> Result<LlmExtraction> {
-        let llm = self.llm_port.clone().ok_or_else(|| {
-            ScraperError::Config("no hay proveedor LLM configurado".to_string())
-        })?;
+        let llm = self
+            .llm_port
+            .clone()
+            .ok_or_else(|| ScraperError::Config("no hay proveedor LLM configurado".to_string()))?;
 
         // [1]-[3] Gates before any I/O.
         validate_schema(schema)
