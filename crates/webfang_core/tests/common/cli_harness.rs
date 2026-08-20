@@ -99,7 +99,13 @@ pub(crate) fn webfang_path() -> std::path::PathBuf {
         .status()
         .expect("spawn cargo to build webfang");
     assert!(status.success(), "cargo build --bin webfang failed");
-    let mut built = workspace_root.join("target").join("debug").join("webfang");
+    let mut built = if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
+        std::path::PathBuf::from(target_dir)
+            .join("debug")
+            .join("webfang")
+    } else {
+        workspace_root.join("target").join("debug").join("webfang")
+    };
     if cfg!(windows) {
         built.set_extension("exe");
     }

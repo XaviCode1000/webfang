@@ -432,6 +432,21 @@ pub fn check_elastic_sink(opts: &CrawlOptions) -> Result<(), CliExit> {
     ))
 }
 
+/// Orphan-flag guard (#799): `--db-path` is only consumed by the elastic
+/// ingestion pipeline (`build_elastic_ingestion`), so without `--elastic` it is a
+/// silent no-op -- the run "succeeds" but persists nothing. Reject it up front
+/// with a clear message instead of letting the user lose data unknowingly.
+pub fn check_db_path_requires_elastic(opts: &CrawlOptions) -> Result<(), CliExit> {
+    if opts.elastic.db_path.is_some() && !opts.elastic.enabled {
+        return Err(CliExit::ConfigError(
+            "--db-path solo tiene efecto junto con --elastic; ejecuta con --elastic para \
+                 persistir en la base de datos SQLite, o quita --db-path"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Preflight: `--clean-ai` on a binary built WITHOUT the `ai` feature must
 /// fail before any network request (#761).
 ///
@@ -1588,6 +1603,23 @@ mod tests {
             ..CrawlOptions::default()
         };
         assert!(check_clean_ai_feature_with(true, &opts).is_ok());
+    }
+
+    #[test]
+    fn db_path_without_elastic_is_rejected() {
+        // #799: --db-path without --elastic is a silent no-op; reject it up
+        // front so the user does not lose data unknowingly.
+        let mut opts = CrawlOptions::default();
+        opts.elastic.db_path = Some(std::path::PathBuf::from("/tmp/test.db"));
+        assert!(check_db_path_requires_elastic(&opts).is_err());
+    }
+
+    #[test]
+    fn db_path_with_elastic_is_allowed() {
+        let mut opts = CrawlOptions::default();
+        opts.elastic.enabled = true;
+        opts.elastic.db_path = Some(std::path::PathBuf::from("/tmp/test.db"));
+        assert!(check_db_path_requires_elastic(&opts).is_ok());
     }
 
     /// No `--clean-ai`: passes regardless of the feature state.

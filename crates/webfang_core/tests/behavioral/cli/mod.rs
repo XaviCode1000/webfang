@@ -4,6 +4,7 @@ mod core_test;
 mod crawl_test;
 mod dom_pruning_test;
 mod download_test;
+mod dry_run_batch_test;
 mod dry_run_test;
 mod error_path_test;
 mod export_test;

@@ -105,7 +105,6 @@ sys-info = "0.9"
 tracing-tree = "0.4"
 
 # MIME detection
-mimetype-detector = "0.3"
 
 # AI features
 tokenizers = "0.21"

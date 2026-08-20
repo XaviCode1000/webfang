@@ -221,7 +221,11 @@ impl UrlPath {
         if self.is_root {
             return format!("index.{extension}");
         }
-        let path_trimmed = self.raw.trim_start_matches('/');
+        // Decode percent-encoded segments (e.g. %C3%B3 → ó) so the filename
+        // reflects the human-readable URL instead of its percent-encoded form
+        // (the `url` crate keeps encoding in `parsed.path()`). See issue #783.
+        let decoded = percent_encoding::percent_decode_str(&self.raw).decode_utf8_lossy();
+        let path_trimmed = decoded.trim_start_matches('/');
         // Convert /docs/api/v2/users/ → docs-api-v2-users
         let slug = path_trimmed
             .trim_end_matches('/')
@@ -517,6 +521,25 @@ mod tests {
     fn test_url_path_with_query_string() {
         let path = UrlPath::from_url_path("/docs?foo=bar");
         assert_eq!(path.to_safe_filename(), "docs.md");
+    }
+
+    #[test]
+    fn test_url_path_decodes_percent_encoding_in_filename() {
+        // Regression for #783: percent-encoded path segments (e.g. %C3%B3 → ó)
+        // must be decoded in the generated filename, not kept verbatim.
+        let path = UrlPath::from_url_with_query(
+            "https://es.wikipedia.org/wiki/Rust_(lenguaje_de_programaci%C3%B3n)",
+        )
+        .unwrap();
+        let filename = path.to_safe_filename();
+        assert!(
+            filename.contains("programación"),
+            "filename should decode %C3%B3n to ó, got: {filename}"
+        );
+        assert!(
+            !filename.contains("%C3%B3n"),
+            "filename must not keep percent-encoding, got: {filename}"
+        );
     }
 
     #[test]

@@ -69,7 +69,14 @@ pub struct SharedRateLimiter(Arc<CrawlRateLimiter>);
 impl SharedRateLimiter {
     /// Create a new shared rate limiter from config
     pub fn new(config: &RateLimiterConfig) -> Result<Self, ScraperError> {
-        let quota = Quota::with_period(Duration::from_millis(config.delay_ms))
+        // A zero delay means "no delay between requests": governor rejects a
+        // zero period (`Quota::with_period(Duration::ZERO)` is `None`), which
+        // would otherwise surface as a config error and abort discovery.
+        // Clamp to a 1ms floor so the bucket stays valid while imposing no
+        // perceptible spacing (the burst grants `concurrency` immediate
+        // permits).
+        let period_ms = config.delay_ms.max(1);
+        let quota = Quota::with_period(Duration::from_millis(period_ms))
             .ok_or_else(|| ScraperError::Config("Invalid period".into()))?;
 
         let quota = quota.allow_burst(
@@ -237,11 +244,15 @@ mod tests {
     }
 
     #[test]
-    fn test_rate_limiter_config_zero_delay_returns_error() {
-        // delay_ms=0 → debe retornar error, no panic
+    fn test_rate_limiter_config_zero_delay_is_valid_noop() {
+        // delay_ms=0 → "sin delay": el bucket debe construirse (no error).
+        // Se clampa a 1ms internamente para que governor sea válido.
         let config = RateLimiterConfig::new(0, 1);
         let result = SharedRateLimiter::new(&config);
-        assert!(result.is_err(), "delay_ms=0 debería retornar error");
+        assert!(
+            result.is_ok(),
+            "delay_ms=0 debería ser válido (sin delay), no un error de configuración"
+        );
     }
 
     #[test]

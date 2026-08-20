@@ -11,8 +11,8 @@ homepage.workspace = true
 
 [features]
 default = ["images", "documents"]
-images = ["dep:mimetype-detector"]
-documents = ["dep:mimetype-detector"]
+images = []
+documents = []
 persistence = ["dep:rusqlite", "dep:deadpool-sqlite", "dep:sys-info"]
 console = ["dep:console-subscriber"]
 dev-tracing = ["dep:tracing-tree"]
@@ -115,9 +115,6 @@ async-compression = { workspace = true }
 # Competitive Features
 crc32fast = { workspace = true }
 robotstxt = { workspace = true }
-
-# MIME detection (optional)
-mimetype-detector = { workspace = true, optional = true }
 
 # SQLite persistence (feature-gated)
 rusqlite = { workspace = true, optional = true }

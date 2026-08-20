@@ -372,6 +372,13 @@ async fn __main() -> CliExit {
         return exit;
     }
 
+    // 6d2. Orphan --db-path guard (#799): --db-path is a silent no-op without
+    // --elastic, so reject it before any crawl starts (exit 78) instead of
+    // letting the run persist nothing.
+    if let Err(exit) = preflight::check_db_path_requires_elastic(&opts) {
+        return exit;
+    }
+
     // 6e. AI feature preflight (#761): --clean-ai on a non-AI build must
     // fail before any network request, not after a full scrape.
     if let Err(exit) = preflight::check_clean_ai_feature(&opts) {

@@ -1,6 +1,7 @@
 use crate::domain::config::ConcurrencyConfig;
 use crate::domain::JsStrategy;
 use clap::Args;
+use scraper::Selector;
 
 /// Validate `--download-concurrency`: must be >= 1. A value of 0 would make
 /// `buffer_unordered(0)` hang forever (deadlock, D1). Rejecting here satisfies
@@ -22,6 +23,15 @@ pub(crate) fn parse_download_concurrency(s: &str) -> Result<usize, String> {
 /// `Duration::from_secs(0)` as the request timeout, so every request fails
 /// instantly with "operation timed out". Rejecting here gives a clear CLI
 /// error instead of a crawl where every page fails.
+/// Validate `--selector`: must parse as a CSS selector via `scraper`. Invalid
+/// selectors currently surface only at scrape time (sometimes as a 30s network
+/// timeout), so reject them up front with a clear Spanish usage error (exit 64
+/// once `parse_args` maps the clap error). See issue #797.
+pub(crate) fn parse_selector(s: &str) -> Result<String, String> {
+    Selector::parse(s).map_err(|e| format!("selector CSS inválido «{s}»: {e}"))?;
+    Ok(s.to_string())
+}
+
 pub(crate) fn parse_timeout_secs(s: &str) -> Result<u64, String> {
     let v: u64 = s
         .parse()
@@ -59,7 +69,13 @@ pub struct CrawlerArgs {
     pub url: Option<String>,
 
     /// CSS selector for content extraction
-    #[arg(short, long, default_value = "body", env = "WEBFANG_SELECTOR")]
+    #[arg(
+            short,
+            long,
+            default_value = "body",
+            env = "WEBFANG_SELECTOR",
+            value_parser = parse_selector
+        )]
     #[clap(next_help_heading = "Target")]
     pub selector: String,
 
@@ -426,5 +442,26 @@ mod tests {
     fn parse_max_pages_rejects_non_numeric() {
         let err = parse_max_pages("abc").unwrap_err();
         assert_eq!(err, "'abc' no es un número válido para --max-pages");
+    }
+
+    #[test]
+    fn parse_selector_accepts_valid_css() {
+        assert_eq!(parse_selector("article p"), Ok("article p".to_string()));
+        assert_eq!(parse_selector("body"), Ok("body".to_string()));
+        assert_eq!(
+            parse_selector(".content > h1"),
+            Ok(".content > h1".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_selector_rejects_invalid_css() {
+        // Regression for #797: an invalid CSS selector must be rejected at
+        // parse time (clap error -> exit 64), not at scrape time (30s timeout).
+        let err = parse_selector(":::invalid").unwrap_err();
+        assert!(
+            err.contains("selector CSS inválido"),
+            "expected Spanish invalid-selector message, got: {err}"
+        );
     }
 }

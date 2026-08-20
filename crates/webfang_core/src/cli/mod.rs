@@ -17,7 +17,6 @@ pub mod scrape_flow;
 pub mod shutdown;
 pub mod summary;
 pub mod url_discovery;
-pub mod wizard;
 
 pub use crate::CliExit;
 pub use args::{Args, Commands, Shell};
