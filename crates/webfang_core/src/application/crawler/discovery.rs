@@ -341,6 +341,7 @@ async fn scrape_single_url_for_tui_inner(
             html: None,
             assets,
             correlation_id: Some(correlation),
+            quality_hint: None,
         });
     }
 

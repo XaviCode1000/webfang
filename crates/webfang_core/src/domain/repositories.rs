@@ -106,6 +106,7 @@ mod tests {
             html: None,
             assets: vec![],
             correlation_id: None,
+            quality_hint: None,
         };
         let result = repo.save(&content);
         assert!(result.is_ok());

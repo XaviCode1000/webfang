@@ -323,6 +323,7 @@ mod tests {
             html: Some(html.to_string()),
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         }
     }
 

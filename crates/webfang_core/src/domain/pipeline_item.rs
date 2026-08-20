@@ -209,6 +209,7 @@ mod tests {
             html: Some("<html><body>raw</body></html>".into()),
             assets: vec![],
             correlation_id: None,
+            quality_hint: None,
         };
 
         let item: ScrapedItem = content.into();
@@ -251,6 +252,7 @@ mod tests {
             html: None,
             assets: vec![],
             correlation_id: None,
+            quality_hint: None,
         };
 
         let item: ScrapedItem = content.into();

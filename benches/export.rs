@@ -24,6 +24,7 @@ fn sample_chunks(count: usize) -> Vec<ScrapedContent> {
             html: None,
             assets: vec![],
             correlation_id: None,
+            quality_hint: None,
         })
         .collect()
 }

@@ -157,8 +157,11 @@ pub fn webfang_path() -> PathBuf {
         .and_then(|p| p.parent())
         .and_then(|p| p.parent())
         .expect("resolve workspace root");
+    let target_root = env::var("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| workspace_root.join("target"));
     let cargo = option_env!("CARGO").unwrap_or("cargo");
-    let mut built = workspace_root.join("target").join("debug").join("webfang");
+    let mut built = target_root.join("debug").join("webfang");
     if cfg!(windows) {
         built.set_extension("exe");
     }

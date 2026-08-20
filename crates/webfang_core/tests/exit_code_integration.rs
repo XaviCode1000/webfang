@@ -29,8 +29,11 @@ fn webfang_path() -> PathBuf {
         .parent()
         .and_then(|p| p.parent())
         .expect("resolve workspace root");
+    let target_root = std::env::var("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| workspace_root.join("target"));
     for profile in ["debug", "release"] {
-        let mut candidate = workspace_root.join("target").join(profile).join("webfang");
+        let mut candidate = target_root.join(profile).join("webfang");
         if cfg!(windows) {
             candidate.set_extension("exe");
         }
@@ -44,7 +47,7 @@ fn webfang_path() -> PathBuf {
         .status()
         .expect("spawn cargo to build webfang");
     assert!(status.success(), "cargo build --bin webfang failed");
-    let mut built = workspace_root.join("target").join("debug").join("webfang");
+    let mut built = target_root.join("debug").join("webfang");
     if cfg!(windows) {
         built.set_extension("exe");
     }

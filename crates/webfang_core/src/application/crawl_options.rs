@@ -60,6 +60,9 @@ pub struct CrawlOptions {
     pub ai: bool,
     /// Enable adaptive CSS selector repair (2-tier cascade).
     pub adaptive_selectors: bool,
+    /// Record extraction failure fingerprints in SQLite and attach them to
+    /// low-quality extraction hints (#792).
+    pub extraction_fingerprint: bool,
     /// Crawl scope and discovery settings.
     pub crawl: CrawlLimits,
     /// HTTP and network settings.
@@ -324,6 +327,7 @@ impl Default for CrawlOptions {
             quiet: false,
             ai: false,
             adaptive_selectors: false,
+            extraction_fingerprint: false,
             crawl: CrawlLimits::default(),
             network: NetworkOptions::default(),
             export: ExportOptions::default(),

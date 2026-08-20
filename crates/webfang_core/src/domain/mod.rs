@@ -22,6 +22,8 @@ pub mod dom_inspector;
 pub mod entities;
 pub mod error;
 pub mod exporter;
+pub mod extraction_quality;
+pub mod fingerprint_repository;
 pub mod http_config;
 pub mod http_error;
 pub mod http_port;

@@ -329,6 +329,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         }];
 
         let result = save_as_markdown(&results, output_dir, &ObsidianOptions::default());
@@ -359,6 +360,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         }];
 
         let result = save_as_json(&results, output_dir);
@@ -384,6 +386,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         }];
 
         let second = vec![ScrapedContent {
@@ -396,6 +399,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         }];
 
         save_as_json(&first, output_dir).unwrap();

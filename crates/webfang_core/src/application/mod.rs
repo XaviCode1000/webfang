@@ -33,6 +33,8 @@ pub mod vault_search;
 
 #[cfg(feature = "adaptive-selectors")]
 pub mod adaptive_engine;
+#[cfg(feature = "adaptive-selectors")]
+pub mod structural_score;
 
 pub use batch::{
     BatchJob, BatchManager, BatchManagerSummary, BatchProcessor, BatchProgress, BatchResult,

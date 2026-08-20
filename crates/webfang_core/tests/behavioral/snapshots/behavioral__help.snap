@@ -1,6 +1,5 @@
 ---
 source: crates/webfang_core/tests/behavioral/main.rs
-assertion_line: 58
 expression: value.into()
 ---
 CLI Arguments for the webfang binary.
@@ -95,6 +94,11 @@ Options:
           Download all assets (images + documents) from the page
           
           [env: WEBFANG_DOWNLOAD_ASSETS=]
+
+      --extraction-fingerprint
+          Record extraction failure fingerprints in SQLite and attach them to low-quality extraction hints (#792). Repeated low-score extractions on the same site/selector pair accumulate a failure count surfaced in the hint, instead of degrading silently
+          
+          [env: WEBFANG_EXTRACTION_FINGERPRINT=]
 
       --clean-ai
           Use AI-powered semantic cleaning for better RAG output
