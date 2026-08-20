@@ -56,6 +56,7 @@ pub struct CompactSnapshot {
 ///
 /// # Errors
 /// Returns `DownloadError::Internal` for formats outside the shipped slice.
+#[allow(dead_code)] // spec R3 — only called under `chromium` feature + tests; silences llvm-cov dead_code (#810)
 pub(crate) fn require_supported_format(format: SnapshotFormat) -> Result<(), DownloadError> {
     match format {
         SnapshotFormat::Compact => Ok(()),
