@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # Ratchet gate for code duplication (issue #516).
+# Migrated to jscpd-rs 0.1.12 (Rust, drop-in jscpd) — see migrate/jscpd-rs.
+# Tool MSRV 1.93 > workspace 1.88: install as binary via
+#   cargo install jscpd-rs --version 0.1.12 --locked
+# (do NOT add to workspace Cargo.toml). Binary is `jscpd` (drop-in).
 #
 # Runs jscpd over crates/ and fails hard if the number of duplicated lines in
 # Rust sources exceeds the committed baseline (scripts/quality-baselines.json).
@@ -22,12 +26,12 @@ fi
 
 BASELINE="$(python3 -c "import json;print(json.load(open('$BASELINE_FILE'))['duplicated_lines_rust'])")"
 
-# Locate jscpd (installed via npm) — prefer a pinned install over npx re-download.
-if command -v jscpd >/dev/null 2>&1; then
-  JSCPD="jscpd"
-else
-  JSCPD="npx --yes jscpd"
+# jscpd-rs (Rust): binary `jscpd` must be pre-installed (no npx fallback).
+if ! command -v jscpd >/dev/null 2>&1; then
+  echo "::error::jscpd no encontrado. Instala con: cargo install jscpd-rs --version 0.1.12 --locked"
+  exit 1
 fi
+JSCPD="jscpd"
 
 echo "Running jscpd over crates/ (baseline duplicated-lines: $BASELINE)..."
 # jscpd's json reporter writes to <output-dir>/jscpd-report.json (--output is a dir).
@@ -40,7 +44,15 @@ try:
     with open(sys.argv[1]) as fh:
         d = json.load(fh)
     rust = d.get("statistics", {}).get("formats", {}).get("rust", {})
-    print(int(rust.get("duplicatedLines", 0)) if rust else 0)
+    # jscpd (npm): rust.duplicatedLines | jscpd-rs: rust.total.duplicatedLines
+    val = rust.get("duplicatedLines")
+    if val is None:
+        total = rust.get("total")
+        if isinstance(total, dict):
+            val = total.get("duplicatedLines", 0)
+        else:
+            val = 0
+    print(int(val) if val is not None else 0)
 except Exception:
     print("-1")
 PY
