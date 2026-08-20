@@ -396,7 +396,7 @@ fn check_obscura_version(binary: &str, resolved: &std::path::Path) -> Result<(),
              ruta con --obscura-binary o WEBFANG_OBSCURA_BINARY"
         ))),
     }
-
+}
 
 /// Preflight: `--elastic` must have at least one wirable vector sink (#695).
 ///

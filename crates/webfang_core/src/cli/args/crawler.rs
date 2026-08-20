@@ -442,6 +442,9 @@ mod tests {
     fn parse_max_pages_rejects_non_numeric() {
         let err = parse_max_pages("abc").unwrap_err();
         assert_eq!(err, "'abc' no es un número válido para --max-pages");
+    }
+
+    #[test]
     fn parse_selector_accepts_valid_css() {
         assert_eq!(parse_selector("article p"), Ok("article p".to_string()));
         assert_eq!(parse_selector("body"), Ok("body".to_string()));
