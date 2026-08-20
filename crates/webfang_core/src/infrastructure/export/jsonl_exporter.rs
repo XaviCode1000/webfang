@@ -153,7 +153,26 @@ impl<'a> WebfangMetadata<'a> {
         let extra_metadata = if chunk.metadata.is_empty() {
             None
         } else {
-            Some(chunk.metadata.clone())
+            let mut meta = chunk.metadata.clone();
+            // Repair empty-byline artifact in excerpt (#800) — defense in depth
+            // on top of the origin repair in extraction.rs / scraper_service.rs.
+            // The frontmatter path already repairs; JSONL must not ship raw
+            // `by (about)` when the excerpt carries the scar. Idempotent.
+            if let Some(raw_excerpt) = meta.get("excerpt").cloned() {
+                let author = meta.get("author").map(|s| s.as_str());
+                let repaired =
+                    crate::domain::excerpt_repair::repair_empty_byline(&raw_excerpt, author);
+                if repaired.is_empty() {
+                    meta.remove("excerpt");
+                } else if repaired != raw_excerpt {
+                    meta.insert("excerpt".to_string(), repaired);
+                }
+            }
+            if meta.is_empty() {
+                None
+            } else {
+                Some(meta)
+            }
         };
 
         Self {
@@ -479,5 +498,140 @@ mod tests {
         let metadata = WebfangMetadata::from_chunk(&chunk);
         assert_eq!(metadata.word_count, Some(5));
         assert_eq!(metadata.reading_time, Some(1));
+    }
+
+    // #800 — excerpt byline repair in JSONL extra_metadata (defense in depth
+    // on top of the origin repair in extraction.rs / scraper_service.rs).
+    #[test]
+    fn test_webfang_metadata_repairs_excerpt_with_author() {
+        use crate::domain::Validated;
+        use chrono::Utc;
+        use uuid::Uuid;
+
+        let mut meta = std::collections::HashMap::new();
+        meta.insert(
+            "excerpt".to_string(),
+            "“…changing our thinking.” by  (about)".to_string(),
+        );
+        meta.insert("author".to_string(), "Albert Einstein".to_string());
+
+        let chunk = crate::domain::DocumentChunkValidated {
+            id: Uuid::new_v4(),
+            url: "https://quotes.toscrape.com/".to_string(),
+            title: "Quotes".to_string(),
+            content: "content".to_string(),
+            metadata: meta,
+            timestamp: Utc::now(),
+            embeddings: None,
+            correlation_id: None,
+            _state: std::marker::PhantomData::<Validated>,
+        };
+
+        let metadata = WebfangMetadata::from_chunk(&chunk);
+        let json = serde_json::to_string(&metadata).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let extra = value["extra_metadata"].as_object().unwrap();
+        assert_eq!(
+            extra["excerpt"],
+            "“…changing our thinking.” by Albert Einstein"
+        );
+        assert!(
+            !extra["excerpt"].as_str().unwrap().contains("by (about)"),
+            "empty-byline fragment must not survive JSONL"
+        );
+    }
+
+    #[test]
+    fn test_webfang_metadata_repairs_excerpt_without_author_drops_fragment() {
+        use crate::domain::Validated;
+        use chrono::Utc;
+        use uuid::Uuid;
+
+        let mut meta = std::collections::HashMap::new();
+        meta.insert(
+            "excerpt".to_string(),
+            "…changing our thinking. by  (about)".to_string(),
+        );
+
+        let chunk = crate::domain::DocumentChunkValidated {
+            id: Uuid::new_v4(),
+            url: "https://quotes.toscrape.com/".to_string(),
+            title: "Quotes".to_string(),
+            content: "content".to_string(),
+            metadata: meta,
+            timestamp: Utc::now(),
+            embeddings: None,
+            correlation_id: None,
+            _state: std::marker::PhantomData::<Validated>,
+        };
+
+        let metadata = WebfangMetadata::from_chunk(&chunk);
+        let json = serde_json::to_string(&metadata).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let extra = value["extra_metadata"].as_object().unwrap();
+        assert_eq!(extra["excerpt"], "…changing our thinking.");
+        assert!(!extra["excerpt"].as_str().unwrap().contains("by (about)"));
+    }
+
+    #[test]
+    fn test_webfang_metadata_leaves_clean_excerpt_alone() {
+        use crate::domain::Validated;
+        use chrono::Utc;
+        use uuid::Uuid;
+
+        let mut meta = std::collections::HashMap::new();
+        meta.insert(
+            "excerpt".to_string(),
+            "A clean excerpt without scars".to_string(),
+        );
+        meta.insert("author".to_string(), "Jane Doe".to_string());
+
+        let chunk = crate::domain::DocumentChunkValidated {
+            id: Uuid::new_v4(),
+            url: "https://example.com/".to_string(),
+            title: "Test".to_string(),
+            content: "content".to_string(),
+            metadata: meta,
+            timestamp: Utc::now(),
+            embeddings: None,
+            correlation_id: None,
+            _state: std::marker::PhantomData::<Validated>,
+        };
+
+        let metadata = WebfangMetadata::from_chunk(&chunk);
+        let json = serde_json::to_string(&metadata).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let extra = value["extra_metadata"].as_object().unwrap();
+        assert_eq!(extra["excerpt"], "A clean excerpt without scars");
+    }
+
+    #[test]
+    fn test_webfang_metadata_repairs_excerpt_idempotent() {
+        use crate::domain::Validated;
+        use chrono::Utc;
+        use uuid::Uuid;
+
+        let mut meta = std::collections::HashMap::new();
+        let repaired = "“…changing our thinking.” by Albert Einstein".to_string();
+        meta.insert("excerpt".to_string(), repaired.clone());
+        meta.insert("author".to_string(), "Albert Einstein".to_string());
+
+        let chunk = crate::domain::DocumentChunkValidated {
+            id: Uuid::new_v4(),
+            url: "https://quotes.toscrape.com/".to_string(),
+            title: "Quotes".to_string(),
+            content: "content".to_string(),
+            metadata: meta,
+            timestamp: Utc::now(),
+            embeddings: None,
+            correlation_id: None,
+            _state: std::marker::PhantomData::<Validated>,
+        };
+
+        let metadata = WebfangMetadata::from_chunk(&chunk);
+        let json = serde_json::to_string(&metadata).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let extra = value["extra_metadata"].as_object().unwrap();
+        assert_eq!(extra["excerpt"], repaired);
     }
 }

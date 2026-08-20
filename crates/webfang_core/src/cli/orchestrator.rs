@@ -118,6 +118,13 @@ pub async fn run(
         return exit;
     }
 
+    // #796: pre-flight gate for `--export-format vector` without `--clean-ai` —
+    // mirrors the CLI preflight in `main.rs` so the MCP / batch path is also
+    // covered (defense in depth: no invalid `export.json` with `dimensions: null`).
+    if let Err(exit) = crate::cli::preflight::check_export_format_vector(&opts) {
+        return exit;
+    }
+
     // Process-level graceful shutdown (#653). The guard owns ONE signal
     // listener for the whole run; every phase observes its token cooperatively
     // so a SIGINT drains in-flight work and still exports it, instead of being
@@ -766,6 +773,12 @@ async fn run_batch(
     // truth as `run()` (see `output_vectors_gate`). First statement here so the
     // exit fires before any crawl, spool, or sink wiring runs.
     if let Some(exit) = output_vectors_gate(&opts) {
+        return exit;
+    }
+
+    // #796: same `export_format vector` gate as `run()` — covers the batch path
+    // so `--batch --export-format vector` without `--clean-ai` also fails fast.
+    if let Err(exit) = crate::cli::preflight::check_export_format_vector(&opts) {
         return exit;
     }
 

@@ -453,6 +453,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "servo_arc 0.4.3 Tree Borrows false positive in Selector::parse (scraper/selectors) — #810"
+    )]
     fn parse_selector_accepts_valid_css() {
         assert_eq!(parse_selector("article p"), Ok("article p".to_string()));
         assert_eq!(parse_selector("body"), Ok("body".to_string()));
@@ -463,6 +467,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "servo_arc 0.4.3 Tree Borrows false positive in Selector::parse (scraper/selectors) — #810"
+    )]
     fn parse_selector_rejects_invalid_css() {
         // Regression for #797: an invalid CSS selector must be rejected at
         // parse time (clap error -> exit 64), not at scrape time (30s timeout).
