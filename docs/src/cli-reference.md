@@ -137,6 +137,17 @@ Options:
           
           [env: WEBFANG_DOWNLOAD_ASSETS=]
 
+      --extraction-fingerprint
+          Record extraction failure fingerprints in SQLite and attach them to low-quality extraction hints (#792). Repeated low-score extractions on the same site/selector pair accumulate a failure count surfaced in the hint, instead of degrading silently
+          
+          [env: WEBFANG_EXTRACTION_FINGERPRINT=]
+
+      --clean-ai
+          Use AI-powered semantic cleaning for better RAG output
+          
+          [env: WEBFANG_CLEAN_AI=]
+          [alias: --ai]
+
   -v, --verbose...
           Verbosity level: -v (INFO), -vv (DEBUG), -vvv (TRACE)
           
@@ -310,6 +321,13 @@ Options:
           [env: WEBFANG_OBSCURA_BINARY=]
           [default: obscura]
 
+      --dom-preprune [<DOM_PREPRUNE>]
+          Enable DOM pre-pruning before Readability (removes invisible/empty wrappers). Default: enabled (true). Set to false via --dom-preprune=false or WEBFANG_DOM_PREPRUNE=false
+          
+          [env: WEBFANG_DOM_PREPRUNE=]
+          [default: true]
+          [possible values: true, false]
+
   -o, --output <OUTPUT>
           Output directory for scraped content
           
@@ -410,7 +428,9 @@ Options:
           [env: WEBFANG_OBSIDIAN_RELATIVE_ASSETS=]
 
       --vault <VAULT>
-          Path to Obsidian vault (auto-detects if not provided)
+          Path to Obsidian vault (auto-detects if not provided).
+          
+          When provided explicitly, the vault becomes the output base: Markdown, downloaded assets and the RAG export are written inside it — no need to duplicate the path in `-o` (which then must stay at its default). Auto-detected or config-file vaults do NOT redirect output (#762).
           
           [env: WEBFANG_OBSIDIAN_VAULT=]
 
@@ -423,6 +443,29 @@ Options:
           Add rich metadata to frontmatter
           
           [env: WEBFANG_OBSIDIAN_RICH_METADATA=]
+
+      --threshold <THRESHOLD>
+          Relevance threshold for AI semantic filtering (0.0-1.0)
+          
+          [env: WEBFANG_THRESHOLD=]
+          [default: 0.3]
+
+      --max-tokens <MAX_TOKENS>
+          Maximum tokens per chunk for AI processing
+          
+          [env: WEBFANG_MAX_TOKENS=]
+          [default: 32768]
+
+      --offline
+          Run AI model in offline mode
+          
+          [env: WEBFANG_OFFLINE=]
+
+      --ai-model <AI_MODEL>
+          AI model to use: granite-97m (default, fast) or granite-311m (higher quality)
+          
+          [env: AI_MODEL_ID=]
+          [possible values: granite-97m, granite-311m]
 
       --tui
           Unified TUI mode: config form (collapsible sections) → URL selector → scraping
