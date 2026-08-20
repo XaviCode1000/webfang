@@ -16,6 +16,8 @@ pub mod crawler;
 pub mod downloader;
 pub mod error;
 pub mod export;
+// No-op fingerprint repository — always compiled, no deps (#792 Slice B).
+pub mod fingerprint;
 pub mod http;
 pub mod llm;
 pub mod network;
