@@ -146,6 +146,7 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
     /// to exactly one field in `CrawlOptions`. The `url` field is parsed
     /// from `Option<String>` into `Url` (panics if invalid; CLI validation
     /// guarantees validity before this point).
+    #[allow(clippy::too_many_lines)]
     fn from(args: Args) -> Self {
         use crate::application::crawl_options::{
             CrawlLimits, ExportOptions, IngestionTuning, NetworkOptions,

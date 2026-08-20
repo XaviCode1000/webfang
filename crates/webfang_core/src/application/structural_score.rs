@@ -35,6 +35,21 @@ pub fn compute_structural_score(
     }
 }
 
+/// Convenience: compute a quality hint from a cascade trace + extract result.
+///
+/// Encapsulates the full pipeline: trace → structural score → hint (if low).
+/// Returns `None` when the score is above the threshold (healthy extraction).
+#[cfg(feature = "adaptive-selectors")]
+#[must_use]
+pub fn compute_quality_hint(
+    trace: &CascadeTrace,
+    extract_result: &ExtractResult,
+) -> Option<crate::domain::extraction_quality::ExtractionQualityHint> {
+    let cfg = ErrorHintConfig::default();
+    let score = compute_structural_score(trace, extract_result, &cfg);
+    score.to_hint(&cfg)
+}
+
 /// Semantic drift factor: how close Tier 2 confidence is to the threshold.
 /// `None` (Tier 2 skipped) is treated as neutral-healthy (1.0).
 #[cfg(feature = "adaptive-selectors")]

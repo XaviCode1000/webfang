@@ -41,7 +41,7 @@ impl Default for ErrorHintConfig {
 /// Stored in the domain for Slice B's FingerprintRepository to persist.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FingerprintRecord {
-    /// Site base URL (e.g., "https://example.com").
+    /// Site base URL (e.g., `<https://example.com>`).
     pub site_base_url: String,
     /// Normalized failed selector signature.
     pub selector_signature: String,

@@ -306,11 +306,7 @@ pub async fn extract_content(
     // Compute structural quality hint if adaptive repair was attempted (#792).
     #[cfg(feature = "adaptive-selectors")]
     let quality_hint = adaptive_trace.and_then(|trace| {
-        use crate::application::structural_score::compute_structural_score;
-        use crate::domain::extraction_quality::ErrorHintConfig;
-        let cfg = ErrorHintConfig::default();
-        let score = compute_structural_score(&trace, &extract_result, &cfg);
-        score.to_hint(&cfg)
+        crate::application::structural_score::compute_quality_hint(&trace, &extract_result)
     });
     #[cfg(not(feature = "adaptive-selectors"))]
     let quality_hint = None;
