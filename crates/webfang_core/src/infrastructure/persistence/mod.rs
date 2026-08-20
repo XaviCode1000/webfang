@@ -6,6 +6,8 @@
 //! applied via a `post_create` pool hook so **every** pooled connection honours
 //! the spec's "each connection MUST use WAL-mode pragmas" requirement.
 
+pub mod fingerprint;
 pub mod sqlite;
 
+pub use fingerprint::SqliteFingerprintRepository;
 pub use sqlite::{create_memory_pool, create_pool, setup_schema, SqliteVectorRepository};

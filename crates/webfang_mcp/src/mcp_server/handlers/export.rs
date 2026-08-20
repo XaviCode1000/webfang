@@ -220,6 +220,7 @@ impl McpHandler {
             html: None,
             assets: vec![],
             correlation_id: None,
+            quality_hint: None,
         };
         let validated = match DocumentChunkUnvalidated::from_scraped_content(&scraped).validate() {
             Ok(v) => v,
@@ -539,6 +540,7 @@ mod handler_tests {
             html: None,
             assets: vec![],
             correlation_id: None,
+            quality_hint: None,
         };
         repo.save(&content).expect("save seed");
         for _ in 0..80 {

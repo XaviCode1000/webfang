@@ -181,6 +181,10 @@ pub async fn scrape_with_readability(
 /// engine yields a selector that matches, the repaired [`ExtractResult`] is
 /// returned; otherwise the original fallback is preserved unchanged.
 ///
+/// Returns a tuple of (ExtractResult, Option<CascadeTrace>) where the trace
+/// is populated when the adaptive engine attempted a repair. The trace
+/// enables structural scoring for honest error hints (#792).
+///
 /// `inspector` is threaded through to [`extract_with_selector`] for diagnostics
 /// (`scrape_with_config` passes its inspector; [`extract_content`] passes
 /// `None`).
@@ -191,7 +195,10 @@ pub(crate) async fn adaptive_selector_repair(
     selector: &str,
     host: Option<&str>,
     inspector: Option<&dyn DomInspectorPort>,
-) -> ExtractResult {
+) -> (
+    ExtractResult,
+    Option<crate::application::adaptive_engine::CascadeTrace>,
+) {
     if let ExtractResult::Fallback { html, diagnostic } = extract_result {
         if let Some(engine) = engine {
             match engine
@@ -203,6 +210,7 @@ pub(crate) async fn adaptive_selector_repair(
                 .await
             {
                 Ok(outcome) => {
+                    let trace = outcome.trace.clone();
                     let repaired =
                         extract_with_selector(&html, &outcome.suggestion.selector, inspector);
                     if repaired.is_matched() {
@@ -211,18 +219,18 @@ pub(crate) async fn adaptive_selector_repair(
                             method = ?outcome.status,
                             "adaptive_repair_resolved"
                         );
-                        repaired
+                        (repaired, trace)
                     } else {
-                        ExtractResult::Fallback { html, diagnostic }
+                        (ExtractResult::Fallback { html, diagnostic }, trace)
                     }
                 },
-                Err(_) => ExtractResult::Fallback { html, diagnostic },
+                Err(_) => (ExtractResult::Fallback { html, diagnostic }, None),
             }
         } else {
-            ExtractResult::Fallback { html, diagnostic }
+            (ExtractResult::Fallback { html, diagnostic }, None)
         }
     } else {
-        extract_result
+        (extract_result, None)
     }
 }
 
@@ -262,6 +270,7 @@ pub(crate) fn prune_dom_if_enabled(html: &str, config: &ScraperConfig) -> String
 
 /// Extract scraped content from raw HTML: DOM pre-pruning (#791) →
 /// boilerplate clean → CSS selector → Readability, with plain-text fallback.
+#[allow(clippy::too_many_lines)]
 pub async fn extract_content(
     html: &str,
     url: &url::Url,
@@ -282,10 +291,10 @@ pub async fn extract_content(
     // Apply CSS selector extraction if a non-default selector is configured.
     let extract_result = extract_with_selector(&cleaned_html, &config.selector, None);
     // Adaptive selector repair (Tier 1 lexical): delegate to the canonical
-    // shared helper (#442). This TUI path passes no inspector and keeps its own
-    // binary/metrics handling instead of delegating to `scrape_with_config`.
+    // shared helper (#442). Returns (ExtractResult, Option<CascadeTrace>).
+    // The trace enables structural scoring for honest error hints (#792).
     #[cfg(feature = "adaptive-selectors")]
-    let extract_result = adaptive_selector_repair(
+    let (extract_result, adaptive_trace) = adaptive_selector_repair(
         extract_result,
         engine,
         &config.selector,
@@ -293,6 +302,14 @@ pub async fn extract_content(
         None,
     )
     .await;
+
+    // Compute structural quality hint if adaptive repair was attempted (#792).
+    #[cfg(feature = "adaptive-selectors")]
+    let quality_hint = adaptive_trace.and_then(|trace| {
+        crate::application::structural_score::compute_quality_hint(&trace, &extract_result)
+    });
+    #[cfg(not(feature = "adaptive-selectors"))]
+    let quality_hint = None;
 
     let extraction_html = extract_result.as_html().to_owned();
 
@@ -336,6 +353,7 @@ pub async fn extract_content(
                 html: Some(article.content),
                 assets,
                 correlation_id: Some(correlation_id.clone()),
+                quality_hint,
             })
         },
         Err(e) => {
@@ -385,6 +403,7 @@ pub async fn extract_content(
                 html: Some(html.to_owned()),
                 assets,
                 correlation_id: Some(correlation_id.clone()),
+                quality_hint,
             })
         },
     }

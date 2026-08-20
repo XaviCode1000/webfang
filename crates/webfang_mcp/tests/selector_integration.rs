@@ -32,6 +32,7 @@ fn make_content(title: &str) -> ScrapedContent {
         html: None,
         assets: Vec::new(),
         correlation_id: None,
+        quality_hint: None,
     }
 }
 

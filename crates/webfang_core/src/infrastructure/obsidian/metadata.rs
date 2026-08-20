@@ -275,6 +275,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         };
         assert_eq!(detect_content_type(&content), ContentType::Documentation);
     }
@@ -291,6 +292,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         };
         assert_eq!(detect_content_type(&content), ContentType::Forum);
     }
@@ -307,6 +309,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         };
         assert_eq!(detect_content_type(&content), ContentType::Article);
     }
@@ -323,6 +326,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         };
         assert_eq!(detect_content_type(&content), ContentType::Other);
     }
@@ -347,6 +351,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         };
         let meta = ObsidianRichMetadata::from_content(&content);
 

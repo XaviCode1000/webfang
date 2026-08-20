@@ -164,6 +164,12 @@ pub struct ScrapedContent {
     /// `--format json` output clean and deterministic.
     #[serde(skip)]
     pub correlation_id: Option<CorrelationId>,
+    /// Extraction-quality hint (internal — not serialized).
+    ///
+    /// Populated when the adaptive repair yields a low structural score (#792).
+    /// Skipped from serialization to keep `--format json` deterministic.
+    #[serde(skip)]
+    pub quality_hint: Option<crate::domain::extraction_quality::ExtractionQualityHint>,
 }
 
 impl std::fmt::Display for ScrapedContent {
@@ -488,6 +494,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         }
     }
 
@@ -503,6 +510,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         };
 
         assert_eq!(content.title, "Test Article");
@@ -527,6 +535,7 @@ mod tests {
                 size: 2048,
             }],
             correlation_id: None,
+            quality_hint: None,
         };
 
         assert_eq!(content.author, Some("John Doe".to_string()));
@@ -584,6 +593,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         };
 
         let chunk = DocumentChunk::from_scraped_content(&scraped);
@@ -710,6 +720,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         };
         let chunk = DocumentChunk::with_id(&scraped, id);
         assert_eq!(chunk.id, id);
@@ -728,6 +739,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         };
         let chunk = DocumentChunk::from_scraped_content_with_correlation(&scraped, Some(&corr));
         assert!(chunk.correlation_id.is_some());
@@ -746,6 +758,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         };
         let chunk = DocumentChunk::from_scraped_content(&scraped);
         assert!(chunk.correlation_id.is_none());
@@ -763,6 +776,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         };
         let chunk = DocumentChunk::from_scraped_content(&scraped);
         assert_eq!(chunk.metadata["excerpt"], "excerpt text");
@@ -891,6 +905,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         };
         let json = serde_json::to_string(&content).unwrap();
         let deserialized: ScrapedContent = serde_json::from_str(&json).unwrap();
@@ -917,6 +932,7 @@ mod tests {
                 size: 1024,
             }],
             correlation_id: None,
+            quality_hint: None,
         };
         let json = serde_json::to_string(&content).unwrap();
         let deserialized: ScrapedContent = serde_json::from_str(&json).unwrap();
@@ -951,6 +967,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         };
         let chunk = DocumentChunk::from_scraped_content(&scraped);
         assert_eq!(chunk.metadata.len(), 1); // only domain
@@ -1016,6 +1033,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         };
 
         let enriched = ai_chunk.enrich_from_scraped_content(&scraped);
@@ -1064,6 +1082,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         };
 
         let enriched = ai_chunk.enrich_from_scraped_content(&scraped);
@@ -1091,6 +1110,7 @@ mod tests {
             html: None,
             assets: Vec::new(),
             correlation_id: None,
+            quality_hint: None,
         };
 
         let enriched = ai_chunk.enrich_from_scraped_content(&scraped);

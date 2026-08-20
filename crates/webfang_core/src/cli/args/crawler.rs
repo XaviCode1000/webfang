@@ -143,6 +143,14 @@ pub struct CrawlerArgs {
     #[clap(next_help_heading = "Behavior")]
     pub download_assets: bool,
 
+    /// Record extraction failure fingerprints in SQLite and attach them to
+    /// low-quality extraction hints (#792). Repeated low-score extractions on
+    /// the same site/selector pair accumulate a failure count surfaced in the
+    /// hint, instead of degrading silently.
+    #[arg(long, default_value = "false", env = "WEBFANG_EXTRACTION_FINGERPRINT")]
+    #[clap(next_help_heading = "Behavior")]
+    pub extraction_fingerprint: bool,
+
     /// Use AI-powered semantic cleaning for better RAG output
     #[cfg(feature = "ai")]
     #[arg(

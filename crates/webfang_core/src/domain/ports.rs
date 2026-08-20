@@ -256,6 +256,7 @@ mod tests {
             html: None,
             assets: vec![],
             correlation_id: None,
+            quality_hint: None,
         };
 
         mock.save(&content).await.unwrap();

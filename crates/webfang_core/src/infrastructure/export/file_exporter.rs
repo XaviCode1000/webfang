@@ -277,6 +277,7 @@ mod tests {
             html: None,
             assets: vec![],
             correlation_id: None,
+            quality_hint: None,
         };
 
         let chunk: crate::domain::DocumentChunkUnvalidated = scraped.into();

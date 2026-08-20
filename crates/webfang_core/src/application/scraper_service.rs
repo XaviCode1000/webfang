@@ -272,8 +272,9 @@ async fn scrape_with_config_inner(
 
     // Adaptive selector repair: delegate to the canonical shared helper (#442),
     // threading this use case's inspector through for diagnostics.
+    // Returns (ExtractResult, Option<CascadeTrace>) for structural scoring (#792).
     #[cfg(feature = "adaptive-selectors")]
-    let extract_result = adaptive_selector_repair(
+    let (extract_result, adaptive_trace) = adaptive_selector_repair(
         extract_result,
         engine,
         &config.selector,
@@ -281,6 +282,14 @@ async fn scrape_with_config_inner(
         inspector,
     )
     .await;
+
+    // Compute structural quality hint if adaptive repair was attempted (#792).
+    #[cfg(feature = "adaptive-selectors")]
+    let quality_hint = adaptive_trace.and_then(|trace| {
+        crate::application::structural_score::compute_quality_hint(&trace, &extract_result)
+    });
+    #[cfg(not(feature = "adaptive-selectors"))]
+    let quality_hint = None;
 
     let extraction_html = extract_result.as_html().to_owned();
 
@@ -293,6 +302,7 @@ async fn scrape_with_config_inner(
         downloader,
         &original_title,
         &correlation,
+        quality_hint,
     )
     .await?;
     results.push(content);
@@ -427,6 +437,7 @@ fn clean_html_for_scrape(html: &str, config: &ScraperConfig) -> String {
 
 /// Build a [`ScrapedContent`] from the fetched HTML, trying Readability first
 /// and falling back to plain-text extraction.
+#[allow(clippy::too_many_arguments)]
 async fn build_scraped_content(
     html: &str,
     extraction_html: &str,
@@ -435,6 +446,7 @@ async fn build_scraped_content(
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     original_title: &str,
     correlation: &CorrelationId,
+    quality_hint: Option<crate::domain::extraction_quality::ExtractionQualityHint>,
 ) -> Result<ScrapedContent> {
     match crate::infrastructure::scraper::readability::parse(extraction_html, Some(url.as_str())) {
         Ok(article) => {
@@ -482,6 +494,7 @@ async fn build_scraped_content(
                 html: Some(article.content),
                 assets,
                 correlation_id: Some(correlation.clone()),
+                quality_hint: quality_hint.clone(),
             })
         },
         Err(e) => {
@@ -529,6 +542,7 @@ async fn build_scraped_content(
                 html: Some(html.to_string()),
                 assets,
                 correlation_id: Some(correlation.clone()),
+                quality_hint: quality_hint.clone(),
             })
         },
     }
