@@ -561,25 +561,10 @@ fn io_error_for_network_message(message: &str) -> std::io::Error {
 
 /// Operational classification of errors for observability and retry logic.
 ///
-/// Partitions ScraperError variants by severity and recoverability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ErrorClass {
-    /// Transient errors that should be retried immediately (e.g., connection reset, 5xx)
-    TransientRetriable,
-    /// Transient errors that require backoff before retry (e.g., rate limit, slowloris)
-    TransientBackoff,
-    /// Permanent errors that cannot be recovered by retry (e.g., 4xx, invalid URL, WAF)
-    PermanentFatal,
-    /// Internal errors that indicate a bug (e.g., integer overflow, semaphore exhaustion)
-    InternalFatal,
-    /// Domain-level error against a single item — fall back and continue the job.
-    ///
-    /// Unlike `PermanentFatal` (which means "abort everything"), this means
-    /// "this one page failed but the pipeline is healthy, so use raw content
-    /// and keep crawling". Example: [`SemanticError::ChunkTooLarge`] where a
-    /// chunk exceeds the user's `--max-tokens` limit.
-    DomainRecoverable,
-}
+/// Moved to the domain layer per the Error Classification Matrix
+/// (`docs/error-classification-matrix.md`); re-exported here so all existing
+/// `crate::error::ErrorClass` consumers compile unchanged.
+pub use crate::domain::error::ErrorClass;
 
 impl SemanticError {
     /// Classify this error by operational severity using the unified
