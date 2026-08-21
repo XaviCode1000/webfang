@@ -96,29 +96,29 @@ jobs:
             exit 1
           fi
           echo "OK: no anyhow imports in webfang_core/src"
-          # Regression guard for #513: inter-crate dependency direction (see
-          # AGENTS.md "Inter-crate dependency direction (ENFORCED POLICY)").
-          # Fails if any crate depends on a prohibited sibling crate (e.g.
-          # webfang_core depending on cli/tui/mcp/ai, or tui on cli).
-          - name: Dependency direction gate
-            run: bash scripts/check_dependency_direction.sh
-          # Regression guard for stabilization-sitemap-regression: the ignored-test
-          # budget is a frozen Gate 0 baseline (37 rows in docs/test-inventory.md).
-          # Any #[ignore] added or fixed without updating the inventory fails here.
-          - name: Ignored-test inventory guard
-            run: bash scripts/check_ignored_guard.sh
-          # Exit-code taxonomy must be typed-error based, never message-string
-          # coupled. This forbids re-introducing the removed string match on the
-          # "no URLs found" parser message (stabilization-sitemap-regression,
-          # Message independence scenario). Test fixtures quoting the string are
-          # fine — only src/ matching logic is forbidden.
-          - name: Forbid sitemap string-match coupling
-            run: |
-              if grep -rn 'contains("no URLs found")' crates/*/src/ --include='*.rs'; then
-                echo "::error::Sitemap emptiness must be detected via typed errors (ScraperError::SitemapEmpty), never by matching message text. See docs/test-inventory.md and the sitemap_exit_code_test suite"
-                exit 1
-              fi
-              echo "OK: no string-match sitemap coupling in crates/*/src"
+      # Regression guard for #513: inter-crate dependency direction (see
+      # AGENTS.md "Inter-crate dependency direction (ENFORCED POLICY)").
+      # Fails if any crate depends on a prohibited sibling crate (e.g.
+      # webfang_core depending on cli/tui/mcp/ai, or tui on cli).
+      - name: Dependency direction gate
+        run: bash scripts/check_dependency_direction.sh
+      # Regression guard for stabilization-sitemap-regression: the ignored-test
+      # budget is a frozen Gate 0 baseline (37 rows in docs/test-inventory.md).
+      # Any #[ignore] added or fixed without updating the inventory fails here.
+      - name: Ignored-test inventory guard
+        run: bash scripts/check_ignored_guard.sh
+      # Exit-code taxonomy must be typed-error based, never message-string
+      # coupled. This forbids re-introducing the removed string match on the
+      # "no URLs found" parser message (stabilization-sitemap-regression,
+      # Message independence scenario). Test fixtures quoting the string are
+      # fine — only src/ matching logic is forbidden.
+      - name: Forbid sitemap string-match coupling
+        run: |
+          if grep -rn 'contains("no URLs found")' crates/*/src/ --include='*.rs'; then
+            echo "::error::Sitemap emptiness must be detected via typed errors (ScraperError::SitemapEmpty), never by matching message text. See docs/test-inventory.md and the sitemap_exit_code_test suite"
+            exit 1
+          fi
+          echo "OK: no string-match sitemap coupling in crates/*/src"
 
   # ============================================================================
   # TIER 1: FORMAT GATE (30-60 seconds)
