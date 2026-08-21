@@ -1,0 +1,12 @@
+---
+source: crates/webfang_core/src/infrastructure/axtree/playwright.rs
+expression: "format!(\"compact token={} nodes={}\\nplaywright token={} refs={}\\nplaywright content:\\n{}\",\ncompact_snap.token_estimate, compact_snap.nodes.len(), pw.token_estimate,\npw.ref_count, pw.content)"
+---
+compact token=23 nodes=5
+playwright token=36 refs=5
+playwright content:
+- button "Sign in" [ref=e1]
+- button "Sign up" [ref=e2]
+- link "Pricing" [ref=e3]
+- link "Docs" [ref=e4]
+- textbox "Search repositories" [ref=e5]
