@@ -30,6 +30,9 @@ pub mod http_port;
 pub mod js_renderer;
 pub mod js_strategy;
 pub mod link_extractor;
+/// Typed 8-state page lifecycle (persisted enum + compile-time
+/// typestate wrapper). See module docs for the legacy-encoding mapping.
+pub mod page_state;
 pub mod pattern_matching;
 /// Pipeline stage definitions and scraped item types for the crawl pipeline.
 pub mod pipeline_item;
