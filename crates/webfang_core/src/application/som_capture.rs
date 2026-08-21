@@ -41,7 +41,7 @@ pub struct SomCapture {
 /// Extract marks from an AX tree, filtering by viewport intersection.
 ///
 /// For each AX tree node, this function:
-/// 1. Reuses [`crate::infrastructure::axtree::fetch_raw_axtree`] (R4) for the
+/// 1. Reuses `fetch_raw_axtree` (R4) for the
 ///    raw `Vec<AxNode>` — no formatting cost when only raw nodes are needed.
 /// 2. Generates a placeholder box model (simulating `DOM.getBoxModel`)
 /// 3. Checks if the box intersects the captured viewport
