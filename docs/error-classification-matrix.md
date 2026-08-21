@@ -123,6 +123,20 @@ failure. Treatment:
 | Io permanent | 74 | EX_IOERR |
 | InternalFatal | 3 | Job failure — NOT user usage error |
 
+### Boundary status
+
+As of PR #840, the Io → 74 override (rows 21/22) is materialized end-to-end:
+`ScraperError::classify` splits `Io` by `io::ErrorKind` (mirroring
+`CrawlError::classify`), and both all-failed precedence chains in
+`cli/orchestrator.rs` (`report_phase` and `batch_exit_code`) route
+permanent-kind I/O failures through `permanent_io_error_exit_for` to
+`CliExit::IoError` (74), placed after the InternalFatal sweep and before the
+ExtractionFailed check.
+
+Remaining divergences between `ScraperError::classify` and this matrix
+(ExtractionFailed, Conversion, Readability/Extraction, Middleware,
+Ingestion) are tracked for reconciliation in issue #839.
+
 ## Exhaustiveness enforcement
 
 1. `CrawlError::classify()`: flat match, zero wildcard arms. Adding a variant
