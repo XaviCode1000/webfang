@@ -11,7 +11,6 @@ use crate::infrastructure::axtree::compact::ax_value_str;
 
 /// YAML-like accessibility snapshot with `eN` refs.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct PlaywrightSnapshot {
     /// YAML content: `- role "name" [ref=eN] [prop]` per line.
     pub content: String,
@@ -22,7 +21,6 @@ pub struct PlaywrightSnapshot {
 }
 
 /// Newtype for property bracket display: `[key=value]`.
-#[allow(dead_code)]
 pub(crate) struct PropertyBracket<'a>(pub &'a AxProperty);
 
 impl<'a> std::fmt::Display for PropertyBracket<'a> {
@@ -47,7 +45,6 @@ impl<'a> std::fmt::Display for PropertyBracket<'a> {
 }
 
 /// Snapshot-scoped reference `eN` (vs compact `@eN`).
-#[allow(dead_code)]
 pub(crate) struct AxReference(pub usize);
 
 impl std::fmt::Display for AxReference {
@@ -74,14 +71,12 @@ const INTERACTIVE_ROLES: &[&str] = &[
     "option",
 ];
 
-#[allow(dead_code)]
 fn is_interactive_role(role: &str) -> bool {
     INTERACTIVE_ROLES
         .iter()
         .any(|r| role.eq_ignore_ascii_case(r))
 }
 
-#[allow(dead_code)]
 fn escape_name(raw: &str, out: &mut String) {
     for ch in raw.chars() {
         match ch {
@@ -101,7 +96,6 @@ fn escape_name(raw: &str, out: &mut String) {
 /// substring on role/name BEFORE ref assignment (refs renumber per snapshot).
 /// Output is deterministic: pre-order `&[AxNode]` with no HashMap.
 #[cfg(feature = "chromium")]
-#[allow(dead_code)]
 pub(crate) fn playwright(
     nodes: &[AxNode],
     interactive_only: bool,
@@ -145,9 +139,9 @@ pub(crate) fn playwright(
     let mut content = String::with_capacity(filtered.len() * 48);
     let mut ref_count = 0usize;
 
-    // Pre-order indent stack — flat array is already pre-order, use depth 0 for now.
-    // Vec<usize> stack kept for determinism (no HashMap) per design.
-    let _indent_stack: Vec<usize> = Vec::with_capacity(filtered.len());
+    // Flat deterministic output: AxNode Vec has no parentId, so hierarchy
+    // cannot be reconstructed without a HashMap. Keep pre-order flat
+    // emission until parent linkage is available.
 
     for node in filtered {
         ref_count += 1;
@@ -184,12 +178,9 @@ pub(crate) fn playwright(
                 v.to_string()
             };
             if !v_str.is_empty() {
-                content.push_str(" [value=");
-                // escape value similarly? Playwright escapes value as well; keep raw for now but escape quotes.
-                let mut escaped = String::new();
-                escape_name(&v_str, &mut escaped);
-                content.push_str(&escaped);
-                content.push(']');
+                content.push_str(" [value=\"");
+                escape_name(&v_str, &mut content);
+                content.push_str("\"]");
             }
         }
 

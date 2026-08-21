@@ -43,7 +43,7 @@ impl McpHandler {
     #[tool(
         description = "Fetch a rendered page's accessibility tree and return a compact snapshot of interactive elements with @eN refs and a token_estimate. Refs are snapshot-scoped and stale after any page mutation or selector change — re-snapshot before reuse. Requires --features chromium."
     )]
-    #[instrument(skip(self), fields(url = %params.url, interactive_only = params.interactive_only, trace_id = tracing::field::Empty))]
+    #[instrument(skip(self), fields(url = %params.url, interactive_only = params.interactive_only, format = ?params.format, trace_id = tracing::field::Empty))]
     async fn get_accessibility_snapshot(
         &self,
         Parameters(params): Parameters<GetAccessibilitySnapshotParams>,
