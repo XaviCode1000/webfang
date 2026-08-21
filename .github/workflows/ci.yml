@@ -155,6 +155,7 @@ jobs:
   fmt:
     name: Check formatting
     needs: [toolchain]
+    if: false # NEGATIVE-TEST case 5: force unexpected skip
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
