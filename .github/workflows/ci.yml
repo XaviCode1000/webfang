@@ -95,7 +95,7 @@ jobs:
             echo "::error::webfang_core must use typed errors, not anyhow (issue #428). See crates/webfang_core/src/error.rs"
             exit 1
           fi
-          echo "OK: no anyhow imports in webfang_core/src"
+              echo "OK: no anyhow imports in webfang_core/src"
           # Regression guard for #513: inter-crate dependency direction (see
           # AGENTS.md "Inter-crate dependency direction (ENFORCED POLICY)").
           # Fails if any crate depends on a prohibited sibling crate (e.g.
