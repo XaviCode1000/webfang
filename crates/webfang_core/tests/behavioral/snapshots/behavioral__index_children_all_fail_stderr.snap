@@ -1,0 +1,20 @@
+---
+source: crates/webfang_core/tests/behavioral/main.rs
+expression: redacted
+---
+  <TIMESTAMP>  WARN <MODULE>: Sitemap URL returned non-2xx status: 500 Internal Server Error from http://127.0.0.1:<PORT>/child-a.xml
+    at <FILE>.rs:<LINE>
+
+  <TIMESTAMP>  WARN <MODULE>: Sitemap URL returned non-2xx status: 500 Internal Server Error from http://127.0.0.1:<PORT>/child-b.xml
+    at <FILE>.rs:<LINE>
+
+  <TIMESTAMP>  WARN <MODULE>: Failed to parse sitemap http://127.0.0.1:<PORT>/child-a.xml: http request failed: 500: server returned 500 Internal Server Error
+    at <FILE>.rs:<LINE>
+
+  <TIMESTAMP>  WARN <MODULE>: Failed to parse sitemap http://127.0.0.1:<PORT>/child-b.xml: http request failed: 500: server returned 500 Internal Server Error
+    at <FILE>.rs:<LINE>
+
+  <TIMESTAMP> ERROR <MODULE>: Failed to parse sitemap http://127.0.0.1:<PORT>/sitemap.xml: all 2 child sitemaps failed: http://127.0.0.1:<PORT>/child-a.xml: http request failed: 500: server returned 500 Internal Server Error; http://127.0.0.1:<PORT>/child-b.xml: http request failed: 500: server returned 500 Internal Server Error
+    at <FILE>.rs:<LINE>
+
+Error: URL discovery failed: error interno: parse: all 2 child sitemaps failed: http://127.0.0.1:<PORT>/child-a.xml: http request failed: 500: server returned 500 Internal Server Error; http://127.0.0.1:<PORT>/child-b.xml: http request failed: 500: server returned 500 Internal Server Error

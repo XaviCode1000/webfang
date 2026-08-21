@@ -396,6 +396,7 @@ fn headers_to_header_map(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::CrawlError;
     #[cfg(not(miri))]
     use std::time::Duration;
 
@@ -470,11 +471,17 @@ mod tests {
 
     #[test]
     fn test_parse_sitemap_invalid_xml() {
-        // Spec Scenario 9: non-XML content returns Ok with empty vec (graceful degradation)
+        // stabilization-sitemap-regression: non-XML content is a parse failure,
+        // NOT graceful degradation to empty. Empty ≡ valid structure with zero
+        // URLs; garbage input must surface as an error so the CLI maps it to
+        // exit 69 instead of silently reporting "no URLs found" (exit 2).
         let xml = "not xml at all";
         let base = Url::parse("https://example.com").unwrap();
-        let urls = parse_sitemap(xml, &base).unwrap();
-        assert!(urls.is_empty());
+        let result = parse_sitemap(xml, &base);
+        assert!(
+            matches!(result, Err(CrawlError::Parse(_))),
+            "expected Parse error for non-XML input, got {result:?}"
+        );
     }
 
     #[test]

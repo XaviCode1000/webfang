@@ -503,6 +503,11 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
                         "No URLs discovered: sitemap not found".into(),
                     ));
                 },
+                Err(crate::error::ScraperError::SitemapEmpty) => {
+                    return Err(CliExit::EmptyDiscovery(
+                        "No URLs discovered: sitemap is empty".into(),
+                    ));
+                },
                 Err(e) => {
                     return Err(CliExit::NetworkError(format!("URL discovery failed: {e}")));
                 },

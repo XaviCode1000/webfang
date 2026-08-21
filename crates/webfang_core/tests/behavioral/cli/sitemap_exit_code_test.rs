@@ -1,15 +1,14 @@
-//! Sitemap exit-code contract suite (RED — stabilization-sitemap-regression, PR A).
+//! Sitemap exit-code contract suite (stabilization-sitemap-regression, PR A).
 //!
 //! Pins the exit-code semantics for every sitemap discovery failure/success mode:
 //! - exit 2  → "no URLs discovered" (empty urlset, missing sitemap, empty children)
 //! - exit 69 → fetch/parse/config failures (404 explicit sitemap, malformed XML,
-//!             invalid `--max-depth 0`, all children failing)
+//!   invalid `--max-depth 0`, all children failing)
 //! - exit 0  → success paths (double-encoded gzip, image namespace, HEAD 405 fallback)
 //!
-//! RED expectations at commit time:
-//! - `max_depth_zero_use_sitemap_exits_69` currently exits 2 (want 69)
-//! - `head_405_get_200_exits_0` currently exits 2 / false-negative (want 0)
-//! - `index_children_all_fail_exits_69` proves string-coupling (want 69)
+//! Regression guards: `max_depth_zero_use_sitemap_exits_69`,
+//! `head_405_get_200_exits_0`, and `index_children_all_fail_exits_69` pin the
+//! typed-error fixes (string-match removal, HEAD→GET fallback, max-depth guard).
 //! - scenarios 1–7 are regression guards (may already be green).
 
 use crate::{assert_snapshot_redacted, cmd};
@@ -137,7 +136,11 @@ async fn missing_sitemap_auto_discovery_exits_2() {
         "auto-discovery with no sitemap anywhere must exit 2"
     );
     let stderr = String::from_utf8_lossy(&result.stderr).to_string();
-    assert_snapshot_redacted("missing_sitemap_auto_discovery_stderr", output.path(), stderr);
+    assert_snapshot_redacted(
+        "missing_sitemap_auto_discovery_stderr",
+        output.path(),
+        stderr,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -370,9 +373,9 @@ async fn max_depth_zero_use_sitemap_exits_69() {
 
     Mock::given(method("GET"))
         .and(path("/sitemap.xml"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(urlset_with(&[
-            format!("{base}/article"),
-        ])))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(urlset_with(&[format!("{base}/article")])),
+        )
         .mount(&server)
         .await;
 
@@ -416,9 +419,9 @@ async fn head_405_get_200_exits_0() {
         .await;
     Mock::given(method("GET"))
         .and(path("/sitemap.xml"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(urlset_with(&[
-            format!("{base}/article"),
-        ])))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(urlset_with(&[format!("{base}/article")])),
+        )
         .mount(&server)
         .await;
     Mock::given(method("GET"))

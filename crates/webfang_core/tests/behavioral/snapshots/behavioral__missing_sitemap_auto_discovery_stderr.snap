@@ -1,0 +1,8 @@
+---
+source: crates/webfang_core/tests/behavioral/main.rs
+expression: redacted
+---
+  <TIMESTAMP>  WARN <MODULE>: no sitemap found for http://127.0.0.1:<PORT>/
+    at <FILE>.rs:<LINE>
+
+Warning: No URLs discovered: sitemap not found
