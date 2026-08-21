@@ -12,7 +12,7 @@ use crate::infrastructure::axtree::compact::ax_value_str;
 /// YAML-like accessibility snapshot with `eN` refs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
-pub(crate) struct PlaywrightSnapshot {
+pub struct PlaywrightSnapshot {
     /// YAML content: `- role "name" [ref=eN] [prop]` per line.
     pub content: String,
     /// `chars() / 4` over `content`.
