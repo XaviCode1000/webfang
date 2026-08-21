@@ -316,7 +316,15 @@ impl StateStore {
         processed
     }
 
+    const CURRENT_VERSION: u32 = 1;
+
     /// Load existing state or create a new one if it doesn't exist
+    ///
+    /// Version-aware: if the persisted file has a different `version` than
+    /// `CURRENT_VERSION`, it is discarded, an `info!` is emitted, and a fresh
+    /// `ExportState::new(domain)` (version `CURRENT_VERSION`) is returned.
+    /// `NotFound` also yields a fresh state. Corrupted JSON (Serialization)
+    /// is propagated so `filter_processed_urls` can degrade to re-scrape.
     ///
     /// # Returns
     ///
@@ -332,6 +340,15 @@ impl StateStore {
     /// ```
     pub fn load_or_default(&self) -> crate::error::Result<ExportState> {
         match self.load() {
+            Ok(state) if state.version != Self::CURRENT_VERSION => {
+                info!(
+                    version = state.version,
+                    expected = Self::CURRENT_VERSION,
+                    domain = %self.domain,
+                    "discarding stale StateStore version, returning fresh state"
+                );
+                Ok(ExportState::new(&self.domain))
+            },
             Ok(state) => {
                 info!("Loaded existing state for domain: {}", self.domain);
                 Ok(state)
@@ -527,5 +544,97 @@ mod tests {
         let mut temp_path = final_path.clone();
         temp_path.set_extension("tmp");
         assert!(!temp_path.exists());
+    }
+
+    // --- Sprint 0 Gate 0: version gate RED tests ---
+
+    #[test]
+    fn test_load_or_default_discards_stale_version_zero() {
+        let dir = tempdir().unwrap();
+        let mut cache_dir = dir.path().to_path_buf();
+        cache_dir.push("webfang/state");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let state_path = cache_dir.join("stale-zero.com.json");
+        let mut file = File::create(&state_path).unwrap();
+        writeln!(
+            file,
+            r#"{{"domain":"stale-zero.com","processed_urls":["https://stale-zero.com/a"],"last_export":null,"total_exported":1,"version":0}}"#
+        )
+        .unwrap();
+        let mut store = StateStore::new("stale-zero.com");
+        store.cache_dir = cache_dir;
+        let state = store.load_or_default().unwrap();
+        assert_eq!(
+            state.version, 1,
+            "stale v0 must be discarded and replaced with fresh v1"
+        );
+        assert_eq!(state.domain, "stale-zero.com");
+        assert!(
+            state.processed_urls.is_empty(),
+            "stale processed_urls must be discarded"
+        );
+        assert_eq!(state.total_exported, 0);
+    }
+
+    #[test]
+    fn test_load_or_default_keeps_current_version_one() {
+        let dir = tempdir().unwrap();
+        let mut cache_dir = dir.path().to_path_buf();
+        cache_dir.push("webfang/state");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let state_path = cache_dir.join("current-one.com.json");
+        let mut file = File::create(&state_path).unwrap();
+        writeln!(
+            file,
+            r#"{{"domain":"current-one.com","processed_urls":["https://current-one.com/a"],"last_export":null,"total_exported":1,"version":1}}"#
+        )
+        .unwrap();
+        let mut store = StateStore::new("current-one.com");
+        store.cache_dir = cache_dir;
+        let state = store.load_or_default().unwrap();
+        assert_eq!(state.version, 1);
+        assert_eq!(state.processed_urls.len(), 1);
+        assert_eq!(state.processed_urls[0], "https://current-one.com/a");
+    }
+
+    #[test]
+    fn test_load_or_default_corrupt_propagates_error() {
+        let dir = tempdir().unwrap();
+        let mut cache_dir = dir.path().to_path_buf();
+        cache_dir.push("webfang/state");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let state_path = cache_dir.join("corrupt.com.json");
+        std::fs::write(&state_path, "not json at all {{{").unwrap();
+        let mut store = StateStore::new("corrupt.com");
+        store.cache_dir = cache_dir;
+        let err = store.load_or_default().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Serialization") || msg.contains("expected") || msg.contains("parse"),
+            "corrupt JSON must propagate Serialization error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_load_does_not_discard_stale_version() {
+        let dir = tempdir().unwrap();
+        let mut cache_dir = dir.path().to_path_buf();
+        cache_dir.push("webfang/state");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let state_path = cache_dir.join("load-raw.com.json");
+        let mut file = File::create(&state_path).unwrap();
+        writeln!(
+            file,
+            r#"{{"domain":"load-raw.com","processed_urls":["https://load-raw.com/a"],"last_export":null,"total_exported":1,"version":0}}"#
+        )
+        .unwrap();
+        let mut store = StateStore::new("load-raw.com");
+        store.cache_dir = cache_dir;
+        let state = store.load().unwrap();
+        assert_eq!(
+            state.version, 0,
+            "load() must return raw version without discarding"
+        );
+        assert_eq!(state.processed_urls.len(), 1);
     }
 }
