@@ -376,8 +376,14 @@ jobs:
           cargo test -p webfang_ai --features ai --test ai_integration -- \
             --ignored --test-threads=1
           # CLI+AI tests (#[ignore]'d, require model)
+          # --skip: waf_gauntlet_observability_trace is #[ignore]'d for KNOWN
+          # FLAKINESS (wiremock FIFO doesn't guarantee 403→429→200 order — see
+          # its own doc comment/TODO), not for the model requirement. The
+          # blanket --ignored here would run it and fail nondeterministically.
+          # It keeps running daily as advisory via bug-discovery.yml.
           cargo test -p webfang_core --features ai --test behavioral -- \
-            --ignored --test-threads=1
+            --ignored --test-threads=1 \
+            --skip waf_gauntlet_observability_trace
           # MCP+AI tests (#[ignore]'d, require model)
           cargo test -p webfang_mcp --features mcp,ai --test mcp_behavioral_test -- \
             --ignored --test-threads=1
