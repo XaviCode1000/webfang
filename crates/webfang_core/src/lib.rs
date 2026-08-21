@@ -54,12 +54,11 @@ pub mod infrastructure;
 pub(crate) mod test_fixtures;
 
 #[cfg(test)]
-mod gate_negative_case3 {
-    // NEGATIVE TEST case 3: unused import -> clippy -D warnings must fail
-    use std::collections::HashMap;
+mod gate_negative_case4 {
+    // NEGATIVE TEST case 4: failing test -> test-core job must fail
     #[test]
-    fn unused_import_marker() {
-        assert!(true);
+    fn gate_must_block_on_test_failure() {
+        assert_eq!(1, 2, "negative test: gate must block");
     }
 }
 
