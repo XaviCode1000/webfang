@@ -119,6 +119,33 @@ jobs:
             exit 1
           fi
           echo "OK: no string-match sitemap coupling in crates/*/src"
+      # Regression guard for #836: block-scalar nesting bugs in workflow YAML
+      # (steps swallowed into a `run: |` block) stay valid YAML and only fail
+      # at runtime post-merge (#833→#835). actionlint + shellcheck catch them
+      # statically. Both binaries are downloaded pinned + checksum-verified.
+      - name: Lint GitHub Actions workflows (actionlint)
+        run: |
+          AL_VERSION=1.7.12
+          SC_VERSION=0.11.0
+          DIR=$(mktemp -d)
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${AL_VERSION}/actionlint_${AL_VERSION}_linux_amd64.tar.gz" -o "${DIR}/actionlint.tar.gz"
+          EXPECTED=$(grep "actionlint_${AL_VERSION}_linux_amd64.tar.gz\$" <(curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${AL_VERSION}/actionlint_${AL_VERSION}_checksums.txt") | awk '{print $1}')
+          echo "${EXPECTED}  ${DIR}/actionlint.tar.gz" | sha256sum -c -
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${SC_VERSION}/shellcheck-v${SC_VERSION}.linux.x86_64.tar.xz" -o "${DIR}/shellcheck.tar.xz"
+          SC_SHA256=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          echo "${SC_SHA256}  ${DIR}/shellcheck.tar.xz" | sha256sum -c -
+          tar -xzf "${DIR}/actionlint.tar.gz" -C "$DIR" actionlint
+          tar -xJf "${DIR}/shellcheck.tar.xz" -C "$DIR" shellcheck-v${SC_VERSION}/shellcheck --strip-components=1
+          "$DIR/actionlint" -version
+          # The -ignore list is pre-existing style debt (SC2086 word-splitting,
+          # SC2129 redirects, ...). Structural codes like SC2215 ("flag used as
+          # command name" = a step swallowed into a run: block) stay FATAL.
+          # Keep in sync with the actionlint hook in .pre-commit-config.yaml.
+          "$DIR/actionlint" \
+            -ignore 'SC2010' -ignore 'SC2012' -ignore 'SC2027' \
+            -ignore 'SC2034' -ignore 'SC2046' -ignore 'SC2086' \
+            -ignore 'SC2126' -ignore 'SC2129' \
+            .github/workflows/*.yml
 
   # ============================================================================
   # TIER 1: FORMAT GATE (30-60 seconds)
@@ -147,11 +174,12 @@ jobs:
 
   # ============================================================================
   # TIER 2: CLIPPY GATE (2-3 minutes)
-  # Compiles once + lints. If this fails, tests don't run.
+  # Compiles once + lints. Runs in parallel with fmt/test-core (fan-out from
+  # toolchain); the CI Gate job aggregates the final verdict.
   # ============================================================================
   clippy:
     name: Clippy (strict)
-    needs: [fmt]
+    needs: [toolchain]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -193,11 +221,11 @@ jobs:
   # ============================================================================
   # TIER 3: TEST CORE — Split by category for targeted feedback.
   # Unit tests first (fast), then integration + behavioral (heavier).
-  # Gate: must pass before full suite.
+  # Runs in parallel with clippy (fan-out from toolchain).
   # ============================================================================
   test-core:
     name: Tests (unit + integration + behavioral)
-    needs: [clippy]
+    needs: [toolchain]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -333,7 +361,7 @@ jobs:
           ls -lh "$BLOB_FILE"
       - name: AI integration tests (CLI+AI, MCP+AI, AI crate)
         run: |
-          set -e
+          set -eo pipefail
           # webfang_ai tests (#[ignore]'d, require model, run serially to avoid OOM)
           cargo test -p webfang_ai --features ai --test ai_integration -- \
             --ignored --test-threads=1 2>&1 | tail -5
@@ -352,7 +380,7 @@ jobs:
   # ============================================================================
   security:
     name: Security Audit
-    needs: [fmt]
+    needs: [toolchain]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -388,6 +416,34 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       - name: Doctests
         run: cargo test --doc --workspace --all-features
+
+  # ============================================================================
+  # FINAL GATE: the ONLY required check produced by this workflow.
+  # Aggregates every PR-blocking job. Fails on `failure` AND on unexpected
+  # `skipped`/`cancelled` — GitHub treats skipped required checks as satisfied,
+  # which allowed PR #833 to merge with 4 required checks SKIPPED and 1 FAILED.
+  # Branch protection must require exactly "CI Gate" from ci.yml (plus
+  # "Validate PR metadata" and "cargo-mutants (PR diff)" from their own
+  # workflows, both skip-proof by construction).
+  # NEVER add a required producer without listing it in `needs:` here.
+  # ============================================================================
+  gate:
+    name: CI Gate
+    needs: [toolchain, fmt, clippy, test-core, test-full, security, doc-quality]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify all required jobs succeeded
+        env:
+          RESULTS: ${{ toJson(needs) }}
+        run: |
+          echo "$RESULTS"
+          if echo "$RESULTS" | jq -e '.[] | select(.result != "success")' > /dev/null; then
+            echo "::error::One or more required CI jobs did not succeed (failure/skipped/cancelled)."
+            exit 1
+          fi
+          echo "All required CI jobs succeeded."
 
   # ============================================================================
   # FEATURE MATRIX: cargo-hack checks each feature in isolation (Wave 4, #403).
