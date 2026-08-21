@@ -53,6 +53,16 @@ pub mod infrastructure;
 #[cfg(test)]
 pub(crate) mod test_fixtures;
 
+#[cfg(test)]
+mod gate_negative_case3 {
+    // NEGATIVE TEST case 3: unused import -> clippy -D warnings must fail
+    use std::collections::HashMap;
+    #[test]
+    fn unused_import_marker() {
+        assert!(true);
+    }
+}
+
 // ============================================================================
 // Re-exports
 // ============================================================================
@@ -137,7 +147,6 @@ pub(crate) mod built_info {
 
 /// Return the extended version string including git commit and build date.
 pub fn version_string() -> String {
-    let _negative_test_marker    =    true;
     let commit = built_info::GIT_COMMIT_HASH_SHORT.unwrap_or("unknown");
     let build = built_info::BUILT_TIME_UTC;
     format!(
