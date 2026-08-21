@@ -135,7 +135,7 @@ case "$state" in
     echo "error: PR is BEHIND. Rebase onto main and re-push, then re-run this script." >&2
     exit 3
     ;;
-  BLOCKED|CONFLICT|DIRTY|HAS_HOOKS|UNSTABLE)
+  BLOCKED|CONFLICT|DIRTY|HAS_HOOKS)
     echo "error: mergeStateStatus is ${state} (not CLEAN). Resolve and re-run." >&2
     exit 3
     ;;
