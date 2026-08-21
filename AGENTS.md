@@ -632,3 +632,22 @@ scripts/merge-when-green.sh <PR-N> --dry-run # Poll and report; do not merge
 cargo +nightly miri test infrastructure::bridge::
 cargo +nightly miri test infrastructure::network::
 ```
+
+---
+
+## 🚧 Sprint 0 Gate 0 — Freeze + StateStore (sdd/stabilization-sprint0-baseline)
+
+### Freeze policy
+
+- `FREEZE_FEATURES=true` in `.github/workflows/pr-validation.yml` (workflow `env`). Toggle to `false` for instant rollback, no deploy.
+- When frozen, `type:feature` and `type:breaking-change` are **blocked** with `::error::Gate 0 freeze … Ver sdd/stabilization-sprint0-baseline`.
+- Bypass only with **both** `freeze-exception` label **and** CODEOWNER approval via `gh api repos/$REPO/pulls/$PR/reviews` (`APPROVED` count >0). Fail-closed when `gh` empty or non-numeric.
+- `enforce_admins:true` (branch protection, `strict:true`) guarantees admins also blocked. Documented here and in `pr-validation.yml` comment.
+
+### StateStore resume contract
+
+- `ExportState { version:1 }` — `#[serde(default="default_version")] pub version:u32`, `default_version()->1`, `new()` sets `1` (`crates/webfang_core/src/domain/entities/export.rs`).
+- `StateStore::load_or_default()` (`crates/webfang_core/src/infrastructure/export/state_store.rs: CURRENT_VERSION=1`): stale `version !=1` → `tracing::info!(version, domain)` + fresh `ExportState::new(domain)`; `NotFound` → fresh; corrupt JSON (Serialization) → propagate → `filter_processed_urls` logs via `log_scrape_error` and returns all URLs (re-scrape, no hard error).
+- Legacy JSON missing `version` deserializes to `1` via `default_version` (no crash).
+- `CrawlCheckpoint` (JSON+CRC32, `checkpoint_interval=100`) is **out-of-scope**: engine-internal, not wired to `--resume`. Checkpoints viejos se invalidan en v-next por `version` mismatch — recrea estado sin crash.
+- See `COMPATIBILITY-MATRIX.md` and `docs/test-inventory.md`.
