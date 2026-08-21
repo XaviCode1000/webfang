@@ -137,6 +137,7 @@ pub(crate) mod built_info {
 
 /// Return the extended version string including git commit and build date.
 pub fn version_string() -> String {
+    let _negative_test_marker    =    true;
     let commit = built_info::GIT_COMMIT_HASH_SHORT.unwrap_or("unknown");
     let build = built_info::BUILT_TIME_UTC;
     format!(

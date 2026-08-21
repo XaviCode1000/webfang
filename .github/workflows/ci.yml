@@ -152,9 +152,6 @@ jobs:
   # No compilation needed — instant feedback on style.
   # If this fails, NOTHING else runs.
   # ============================================================================
-      - name: NEGATIVE TEST case 1 — force toolchain failure
-        run: exit 1
-
   fmt:
     name: Check formatting
     needs: [toolchain]
