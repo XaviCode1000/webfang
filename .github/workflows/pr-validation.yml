@@ -1,10 +1,17 @@
 name: PR Validation
 
 env:
-  # Temporarily OFF (2026-08-21): draining pre-freeze PR #814 — single-maintainer
-  # repo cannot self-approve the freeze-exception CODEOWNER path. Restore "true"
-  # immediately after #814 merges. See AGENTS.md Freeze policy.
-  FREEZE_FEATURES: "false"
+  # Gate 0 freeze (Sprint 0 stabilization): blocks type:feature and
+  # type:breaking-change PRs. See AGENTS.md Freeze policy.
+  FREEZE_FEATURES: "true"
+  # Drain window expiry (ISO date YYYY-MM-DD) or empty = no active drain.
+  # Contract: setting FREEZE_FEATURES="false" REQUIRES all three:
+  #   (a) a linked issue documenting why the drain is open,
+  #   (b) this date set to a hard deadline,
+  #   (c) the closing revert PR created in the same batch that opens the drain.
+  # After this date EVERY PR fails validation until the flag is restored —
+  # a forgotten drain fails closed instead of silently disabling the gate.
+  FREEZE_DRAIN_UNTIL: ""
 
 on:
   pull_request:
@@ -93,8 +100,19 @@ jobs:
           PR_NUMBER: ${{ steps.prnum.outputs.pr }}
           REPO: ${{ github.repository }}
           FREEZE: ${{ env.FREEZE_FEATURES }}
+          DRAIN_UNTIL: ${{ env.FREEZE_DRAIN_UNTIL }}
         run: |
           set -euo pipefail
+          # Drain window expiry — fail closed on EVERY PR once past the
+          # deadline, so an open drain cannot outlive its TTL silently.
+          if [ -n "$DRAIN_UNTIL" ]; then
+            today=$(date -u +%Y-%m-%d)
+            if [ "$today" \> "$DRAIN_UNTIL" ]; then
+              echo "::error::Gate 0 freeze drain expired on $DRAIN_UNTIL and was never restored. Restore FREEZE_FEATURES=\"true\" (or deliberately extend FREEZE_DRAIN_UNTIL in a new commit) before any PR can merge."
+              exit 1
+            fi
+            echo "Drain active until $DRAIN_UNTIL"
+          fi
           [ "$FREEZE" = "true" ] || { echo "Freeze OFF — skip"; exit 0; }
           labels=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels --jq '[.labels[].name]')
           echo "Labels: $labels"
