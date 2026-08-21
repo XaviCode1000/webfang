@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # rust-toolchain.toml pins 1.88.0; install it FIRST so cargo-based steps
       # (rustdoc) never race toolchain bootstrap with the runner's sccache
@@ -113,7 +113,7 @@ jobs:
       pages: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # rust-toolchain.toml pins 1.88.0; install it FIRST so cargo-based steps
       # (rustdoc) never race toolchain bootstrap with the runner's sccache
@@ -200,15 +200,15 @@ jobs:
       # Artifact name expected by deploy-pages defaults to "github-pages".
       - name: Configure GitHub Pages
         id: pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Upload GitHub Pages artifact (mdBook + combined rustdoc)
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v5
         with:
           path: docs/book
 
       - name: Upload LLM markdown artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: webfang-docs-llm
           path: docs/book/webfang-docs-llm
@@ -217,6 +217,6 @@ jobs:
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
         with:
           artifact_name: github-pages
