@@ -245,6 +245,16 @@ pub async fn run(
     #[cfg(not(feature = "ai"))]
     let export_exit = export_phase(&results, &opts, state_store.as_ref()).await;
 
+    // Special cell — Cancelled (error-classification-matrix): cooperative
+    // cancellation is a control signal, not an operational failure, so it
+    // wins over classification-based routing below — a Ctrl-C mid-crawl
+    // exits 0 even with partial failures (#509 semantics at the CLI
+    // boundary). Export above already ran: captured content is still
+    // written (graceful shutdown).
+    if let Some(exit) = crate::cli::error::cancelled_exit(cancel.is_cancelled()) {
+        return exit;
+    }
+
     if let Some(exit) = report_phase(&results, &failures, blocked, opts.verbosity) {
         return exit;
     }
@@ -843,6 +853,13 @@ async fn run_batch(
     // with `#537` severity routing: partial success -> 69, all-fail with an
     // internal fatal error -> 3, otherwise 0. Crawl failures were only logged
     // above, so this is the only place the batch's true status surfaces.
+
+    // Special cell — Cancelled: same precedence as the single-run path —
+    // cancellation beats classification-based routing and exits 0.
+    if let Some(exit) = crate::cli::error::cancelled_exit(cancel.is_cancelled()) {
+        return exit;
+    }
+
     let total_failed = summary.failed + failures.len();
     let mut all_errors = summary.errors;
     all_errors.extend(failures);
