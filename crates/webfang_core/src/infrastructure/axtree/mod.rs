@@ -13,6 +13,9 @@
 #[cfg(feature = "chromium")]
 mod compact;
 
+#[cfg(feature = "chromium")]
+mod playwright;
+
 use url::Url;
 
 use super::downloader::DownloadError;
