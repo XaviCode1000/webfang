@@ -62,6 +62,10 @@ impl ExportFormat {
     }
 }
 
+fn default_version() -> u32 {
+    1
+}
+
 /// Metadata for the export state file
 ///
 /// Stored at `~/.cache/webfang/state/<domain>.json`
@@ -69,6 +73,9 @@ impl ExportFormat {
 /// to support incremental exports and resume capability.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ExportState {
+    /// Schema version for forward-compatible evolution. Current: 1.
+    #[serde(default = "default_version")]
+    pub version: u32,
     /// Domain this state belongs to (e.g., "example.com")
     pub domain: String,
     /// URLs that have been successfully exported
@@ -85,6 +92,7 @@ impl ExportState {
     pub fn new(domain: impl Into<String>) -> Self {
         Self {
             domain: domain.into(),
+            version: 1,
             processed_urls: Vec::new(),
             last_export: None,
             total_exported: 0,
@@ -262,5 +270,48 @@ mod tests {
             let deserialized: ExportFormat = serde_json::from_str(&json).unwrap();
             assert_eq!(fmt, deserialized);
         }
+    }
+
+    // --- Sprint 0 Gate 0: StateStore version contract (RED before GREEN) ---
+
+    #[test]
+    fn test_export_state_new_version_is_one() {
+        let state = ExportState::new("example.com");
+        assert_eq!(state.version, 1);
+    }
+
+    #[test]
+    fn test_export_state_legacy_json_missing_version_defaults_to_one() {
+        let legacy_json = r#"{"domain":"example.com","processed_urls":[],"total_exported":0}"#;
+        let state: ExportState = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(
+            state.version, 1,
+            "legacy JSON without version must default to 1 via default_version()"
+        );
+    }
+
+    #[test]
+    fn test_export_state_roundtrip_preserves_version_one() {
+        let state = ExportState::new("example.com");
+        assert_eq!(state.version, 1);
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(
+            json.contains("\"version\":1"),
+            "serialized JSON must contain version:1, got: {json}"
+        );
+        let deserialized: ExportState = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.version, 1);
+        assert_eq!(deserialized.domain, "example.com");
+    }
+
+    #[test]
+    fn test_export_state_explicit_version_zero_deserializes() {
+        let json_zero =
+            r#"{"domain":"example.com","processed_urls":[],"total_exported":0,"version":0}"#;
+        let state: ExportState = serde_json::from_str(json_zero).unwrap();
+        assert_eq!(
+            state.version, 0,
+            "explicit version:0 must be preserved for mismatch discard path"
+        );
     }
 }

@@ -1,5 +1,8 @@
 name: PR Validation
 
+env:
+  FREEZE_FEATURES: "true"
+
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize, labeled, unlabeled]
@@ -79,3 +82,31 @@ jobs:
             exit 1
           fi
           echo "OK: nombre de rama."
+
+      # Freeze Gate 0 — enforce_admins:true (branch protection) guarantees admins also blocked
+      - name: Freeze Gate 0 — reject type:feature/breaking-change
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.prnum.outputs.pr }}
+          REPO: ${{ github.repository }}
+          FREEZE: ${{ env.FREEZE_FEATURES }}
+        run: |
+          set -euo pipefail
+          [ "$FREEZE" = "true" ] || { echo "Freeze OFF — skip"; exit 0; }
+          labels=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels --jq '[.labels[].name]')
+          echo "Labels: $labels"
+          # Check if labels contain frozen types (value inspection, not just prefix)
+          has_frozen=false
+          if echo "$labels" | jq -e 'contains(["type:feature"]) or contains(["type:breaking-change"])' >/dev/null; then
+            has_frozen=true
+          fi
+          if [ "$has_frozen" != "true" ]; then echo "OK: no frozen type"; exit 0; fi
+          if echo "$labels" | jq -e 'contains(["freeze-exception"])' >/dev/null; then
+            decision=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" --jq '[.[] | select(.state=="APPROVED") | .author.login] | length' 2>&1 || echo 0)
+            # Ensure decision is numeric; non-numeric (fail-closed) => 0
+            if ! printf '%s' "$decision" | grep -qE '^[0-9]+$'; then decision=0; fi
+            if [ "$decision" -gt 0 ]; then echo "OK: freeze-exception + CODEOWNER approval"; exit 0; fi
+            echo "::error::Gate 0 freeze — 'freeze-exception' requires CODEOWNER approval (see sdd/stabilization-sprint0-baseline, AGENTS.md Freeze policy)."; exit 1
+          fi
+          echo "::error::Gate 0 freeze activo (Sprint 0) — type:feature/type:breaking-change bloqueado. Usa label 'freeze-exception' + aprobación CODEOWNER o espera a Sprint 1. Ver sdd/stabilization-sprint0-baseline (SDD Gate 0)."
+          exit 1

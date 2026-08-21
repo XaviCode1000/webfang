@@ -3,6 +3,14 @@
 //! Saves and loads crawl state (visited URLs, queued URLs, pages crawled)
 //! using JSON serialization with CRC32 integrity checks and atomic writes.
 //!
+//! # Scope — Sprint 0 Gate 0 (out-of-scope for `--resume`)
+//!
+//! `CrawlCheckpoint` / `BincodeCheckpoint` (JSON+CRC32, `version:u32`,
+//! `checkpoint_interval=100`) is **engine-internal** and **not wired to CLI
+//! `--resume`**. The CLI resume path uses `StateStore` (`ExportState`
+//! file-per-domain JSON with `version:1` + discard-on-mismatch). Do not
+//! conflate the two systems. See `sdd/stabilization-sprint0-baseline`.
+//!
 //! # Design Decisions
 //!
 //! - **Sealed trait pattern** (`api-sealed-trait`): Prevents external implementations
