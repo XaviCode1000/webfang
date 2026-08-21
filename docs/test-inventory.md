@@ -3,6 +3,8 @@
 **Source of truth:** `rg -n "#\[ignore" crates/ --glob '!target'` — **37 rows** (32 test attributes + 5 doc/comment mentions).
 Generated: `2026-08-21`. Linked to `COMPATIBILITY-MATRIX.md`.
 
+**CI enforcement:** this baseline is a frozen budget — `scripts/check_ignored_guard.sh` runs in the CI `toolchain` job and fails on any drift between this inventory and the live count (stabilization-sitemap-regression). Update this file in the same PR when adding/removing an ignored test.
+
 ## Summary by group
 
 | Group | Count | Reason pattern | Issue | Next action |
