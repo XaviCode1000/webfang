@@ -8,7 +8,10 @@
 # Behavior:
 #   1. Polls `gh pr checks <N> --watch --required --fail-fast` until all required
 #      checks are SUCCESS or one FAILS/CANCELS.
-#   2. Verifies mergeStateStatus is CLEAN (not BEHIND, BLOCKED, or CONFLICT).
+#   2. Verifies mergeStateStatus is CLEAN or UNSTABLE (not BEHIND, BLOCKED, or
+#      CONFLICT). UNSTABLE with required checks green is this repo's normal
+#      green state: several jobs are skipped by design on PRs (Deploy Docs,
+#      Miri shards), and each SKIPPED pushes the state to UNSTABLE (#823).
 #   3. Squash-merges with `gh pr merge --squash`, then deletes the remote head
 #      branch for same-owner PRs. Local branch/worktree cleanup is left to the
 #      post-merge runbook (see 'Post-merge runbook' below).
@@ -17,7 +20,7 @@
 #   0  PR merged.
 #   1  Invalid arguments or missing gh.
 #   2  Required check FAILED or was CANCELLED.
-#   3  All checks green but merge state is not CLEAN (e.g. BEHIND — rebase first).
+#   3  All checks green but merge state is not mergeable (e.g. BEHIND — rebase first).
 #   4  gh command failure (network, auth, etc.).
 #
 # Notes:
@@ -126,8 +129,8 @@ echo "    all required checks are GREEN."
 # --- 2. Verify merge state is CLEAN ------------------------------------------
 state=$(gh pr view "$pr_number" --json mergeStateStatus --jq .mergeStateStatus)
 case "$state" in
-  CLEAN)
-    : ;;  # good
+  CLEAN|UNSTABLE)
+    : ;;  # good — UNSTABLE with required green is mergeable (skipped jobs, #823)
   BEHIND)
     echo "error: PR is BEHIND. Rebase onto main and re-push, then re-run this script." >&2
     exit 3
