@@ -53,14 +53,7 @@ pub mod infrastructure;
 #[cfg(test)]
 pub(crate) mod test_fixtures;
 
-#[cfg(test)]
-mod gate_negative_case4 {
-    // NEGATIVE TEST case 4: failing test -> test-core job must fail
-    #[test]
-    fn gate_must_block_on_test_failure() {
-        assert_eq!(1, 2, "negative test: gate must block");
-    }
-}
+
 
 // ============================================================================
 // Re-exports
