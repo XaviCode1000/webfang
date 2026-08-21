@@ -119,6 +119,33 @@ jobs:
             exit 1
           fi
           echo "OK: no string-match sitemap coupling in crates/*/src"
+      # Regression guard for #836: block-scalar nesting bugs in workflow YAML
+      # (steps swallowed into a `run: |` block) stay valid YAML and only fail
+      # at runtime post-merge (#833→#835). actionlint + shellcheck catch them
+      # statically. Both binaries are downloaded pinned + checksum-verified.
+      - name: Lint GitHub Actions workflows (actionlint)
+        run: |
+          AL_VERSION=1.7.12
+          SC_VERSION=0.11.0
+          DIR=$(mktemp -d)
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${AL_VERSION}/actionlint_${AL_VERSION}_linux_amd64.tar.gz" -o "${DIR}/actionlint.tar.gz"
+          EXPECTED=$(grep "actionlint_${AL_VERSION}_linux_amd64.tar.gz\$" <(curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${AL_VERSION}/actionlint_${AL_VERSION}_checksums.txt") | awk '{print $1}')
+          echo "${EXPECTED}  ${DIR}/actionlint.tar.gz" | sha256sum -c -
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${SC_VERSION}/shellcheck-v${SC_VERSION}.linux.x86_64.tar.xz" -o "${DIR}/shellcheck.tar.xz"
+          SC_SHA256=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          echo "${SC_SHA256}  ${DIR}/shellcheck.tar.xz" | sha256sum -c -
+          tar -xzf "${DIR}/actionlint.tar.gz" -C "$DIR" actionlint
+          tar -xJf "${DIR}/shellcheck.tar.xz" -C "$DIR" shellcheck-v${SC_VERSION}/shellcheck --strip-components=1
+          "$DIR/actionlint" -version
+          # The -ignore list is pre-existing style debt (SC2086 word-splitting,
+          # SC2129 redirects, ...). Structural codes like SC2215 ("flag used as
+          # command name" = a step swallowed into a run: block) stay FATAL.
+          # Keep in sync with the actionlint hook in .pre-commit-config.yaml.
+          "$DIR/actionlint" \
+            -ignore 'SC2010' -ignore 'SC2012' -ignore 'SC2027' \
+            -ignore 'SC2034' -ignore 'SC2046' -ignore 'SC2086' \
+            -ignore 'SC2126' -ignore 'SC2129' \
+            .github/workflows/*.yml
 
   # ============================================================================
   # TIER 1: FORMAT GATE (30-60 seconds)
