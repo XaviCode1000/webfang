@@ -573,6 +573,11 @@ Squash would crush N independent fixes into one commit, losing per-fix revert
 granularity. The merge commit preserves each original commit in main's history.
 Note: `merge-when-green.sh` hardcodes `--squash`, so do NOT use it for batch PRs.
 
+> ⚠️ **`UNSTABLE` ≠ failed merge.** With non-required checks failing/skipped,
+> `mergeStateStatus` can be `UNSTABLE` while required checks are green; `gh pr merge`
+> still merges (respects branch protection). Always verify with
+> `gh pr view <N> --json state,mergeCommit` before assuming failure or retrying (#819).
+
 **Issue cleanup is automatic:** the `Closes #N` keywords in the batch PR body close
 all linked issues at merge time. Never close them manually before the merge — that
 is premature (the fix is not in main yet) and breaks the auto-close trace.
@@ -639,10 +644,21 @@ cargo +nightly miri test infrastructure::network::
 
 ### Freeze policy
 
-- `FREEZE_FEATURES=true` in `.github/workflows/pr-validation.yml` (workflow `env`). Toggle to `false` for instant rollback, no deploy.
-- When frozen, `type:feature` and `type:breaking-change` are **blocked** with `::error::Gate 0 freeze … Ver sdd/stabilization-sprint0-baseline`.
-- Bypass only with **both** `freeze-exception` label **and** CODEOWNER approval via `gh api repos/$REPO/pulls/$PR/reviews` (`APPROVED` count >0). Fail-closed when `gh` empty or non-numeric.
+- `FREEZE_FEATURES=true` in `.github/workflows/pr-validation.yml` (workflow `env`). When frozen, `type:feature` and `type:breaking-change` are **blocked** with `::error::Gate 0 freeze … Ver sdd/stabilization-sprint0-baseline`.
+- Bypass only with **both** `freeze-exception` label **and** CODEOWNER approval via `gh api repos/$REPO/pulls/$PR/reviews` (`APPROVED` count >0). Fail-closed when `gh` empty or non-numeric. **In this single-maintainer repo the bypass is unreachable** (GitHub forbids self-approval) — verified empirically with PR #814.
 - `enforce_admins:true` (branch protection, `strict:true`) guarantees admins also blocked. Documented here and in `pr-validation.yml` comment.
+
+### Drain contract (opening the freeze)
+
+Setting `FREEZE_FEATURES="false"` is NOT a bare toggle. It REQUIRES all three, in the same batch:
+
+1. **Linked issue** documenting why the drain is open and what it drains.
+2. **Hard deadline**: set `FREEZE_DRAIN_UNTIL` (ISO date `YYYY-MM-DD`) in the workflow `env`. Empty = no active drain.
+3. **Closing revert PR** restoring `"true"`, created before or with the drain-opening commit.
+
+Enforcement is fail-closed (#820/#821): once today's UTC date passes `FREEZE_DRAIN_UNTIL`, **every** PR fails `Validate PR metadata` until the flag is restored or the deadline is deliberately extended in a new commit. A forgotten drain cannot silently disable Gate 0.
+
+> ⚠️ **Gotcha:** for `pull_request` events GitHub evaluates the workflow file from the PR's own merge ref, not main's. A batch PR that *contains* `FREEZE_FEATURES="false"` passes its own Gate 0 validation even with a `type:feature` label. This is how drain batches merge — and why the closing revert must exist as its own tracked step.
 
 ### StateStore resume contract
 
