@@ -174,11 +174,12 @@ jobs:
 
   # ============================================================================
   # TIER 2: CLIPPY GATE (2-3 minutes)
-  # Compiles once + lints. If this fails, tests don't run.
+  # Compiles once + lints. Runs in parallel with fmt/test-core (fan-out from
+  # toolchain); the CI Gate job aggregates the final verdict.
   # ============================================================================
   clippy:
     name: Clippy (strict)
-    needs: [fmt]
+    needs: [toolchain]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -220,11 +221,11 @@ jobs:
   # ============================================================================
   # TIER 3: TEST CORE — Split by category for targeted feedback.
   # Unit tests first (fast), then integration + behavioral (heavier).
-  # Gate: must pass before full suite.
+  # Runs in parallel with clippy (fan-out from toolchain).
   # ============================================================================
   test-core:
     name: Tests (unit + integration + behavioral)
-    needs: [clippy]
+    needs: [toolchain]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -360,7 +361,7 @@ jobs:
           ls -lh "$BLOB_FILE"
       - name: AI integration tests (CLI+AI, MCP+AI, AI crate)
         run: |
-          set -e
+          set -eo pipefail
           # webfang_ai tests (#[ignore]'d, require model, run serially to avoid OOM)
           cargo test -p webfang_ai --features ai --test ai_integration -- \
             --ignored --test-threads=1 2>&1 | tail -5
@@ -379,7 +380,7 @@ jobs:
   # ============================================================================
   security:
     name: Security Audit
-    needs: [fmt]
+    needs: [toolchain]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -415,6 +416,34 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       - name: Doctests
         run: cargo test --doc --workspace --all-features
+
+  # ============================================================================
+  # FINAL GATE: the ONLY required check produced by this workflow.
+  # Aggregates every PR-blocking job. Fails on `failure` AND on unexpected
+  # `skipped`/`cancelled` — GitHub treats skipped required checks as satisfied,
+  # which allowed PR #833 to merge with 4 required checks SKIPPED and 1 FAILED.
+  # Branch protection must require exactly "CI Gate" from ci.yml (plus
+  # "Validate PR metadata" and "cargo-mutants (PR diff)" from their own
+  # workflows, both skip-proof by construction).
+  # NEVER add a required producer without listing it in `needs:` here.
+  # ============================================================================
+  gate:
+    name: CI Gate
+    needs: [toolchain, fmt, clippy, test-core, test-full, security, doc-quality]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify all required jobs succeeded
+        env:
+          RESULTS: ${{ toJson(needs) }}
+        run: |
+          echo "$RESULTS"
+          if echo "$RESULTS" | jq -e '.[] | select(.result != "success")' > /dev/null; then
+            echo "::error::One or more required CI jobs did not succeed (failure/skipped/cancelled)."
+            exit 1
+          fi
+          echo "All required CI jobs succeeded."
 
   # ============================================================================
   # FEATURE MATRIX: cargo-hack checks each feature in isolation (Wave 4, #403).
