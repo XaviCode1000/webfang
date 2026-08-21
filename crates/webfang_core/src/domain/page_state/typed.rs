@@ -10,7 +10,6 @@
 //! The trybuild suite under `tests/compile_fail/page_state/` is the
 //! executable proof that illegal transitions do not compile.
 
-use std::convert::TryFrom;
 use std::fmt;
 use std::marker::PhantomData;
 use std::path::PathBuf;
@@ -20,6 +19,53 @@ use super::status::PageStatus;
 mod sealed {
     /// Sealing trait: only the eight marker structs below may implement it.
     pub trait Sealed {}
+}
+
+/// Read-only view over a raw persisted record, exposing exactly the fields
+/// the load-time validation table reads (D2).
+///
+/// PR2's 9-field `RawRecord` implements this once; the reconciliation below
+/// stays generic so the store plugs in without edits here.
+pub trait PersistedRecord {
+    /// Persisted lifecycle status.
+    fn status(&self) -> PageStatus;
+
+    /// Output path recorded at the EXPORTED checkpoint.
+    fn output_location(&self) -> Option<&str>;
+
+    /// Hash of the serialized payload (dedup/reconciliation key).
+    fn content_hash(&self) -> Option<&str>;
+
+    /// Whether a classified error is attached.
+    fn has_last_error(&self) -> bool;
+
+    /// True attempt count.
+    fn attempts(&self) -> u32;
+}
+
+/// Why a persisted record could not be reconstructed into its typed state.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ReconcileError {
+    /// The record's persisted status does not match the target state.
+    #[error("record status {found:?} cannot reconcile into state {expected:?}")]
+    StatusMismatch {
+        /// State being reconstructed.
+        expected: PageStatus,
+        /// Status actually persisted on the record.
+        found: PageStatus,
+    },
+    /// `Exported`/`Committed` records must carry an output location.
+    #[error("status {0:?} requires output_location")]
+    MissingOutputLocation(PageStatus),
+    /// `Exported`/`Committed` records must carry a content hash.
+    #[error("status {0:?} requires content_hash")]
+    MissingContentHash(PageStatus),
+    /// Committed items carry null last_error by contract.
+    #[error("COMMITTED record must carry no last_error")]
+    CommittedWithLastError,
+    /// A committed item was driven at least once.
+    #[error("COMMITTED record requires attempts >= 1")]
+    CommittedWithZeroAttempts,
 }
 
 /// Ties a zero-sized marker type to its persisted [`PageStatus`].
@@ -201,3 +247,64 @@ impl<R> Stateful<R, Exported> {
 
 // `Stateful<R, Committed>` deliberately has NO transition methods: COMMITTED
 // is terminal in the type system.
+
+mod reconcile {
+    use super::{PageStatus, PersistedRecord, ReconcileError};
+
+    /// D2 load-time invariant table — the single validation point between
+    /// disk truth and the typed machine.
+    pub(super) fn validate<R: PersistedRecord>(
+        record: &R,
+        target: PageStatus,
+    ) -> Result<(), ReconcileError> {
+        if record.status() != target {
+            return Err(ReconcileError::StatusMismatch {
+                expected: target,
+                found: record.status(),
+            });
+        }
+        if matches!(target, PageStatus::Exported | PageStatus::Committed) {
+            record
+                .output_location()
+                .ok_or(ReconcileError::MissingOutputLocation(target))?;
+            record
+                .content_hash()
+                .ok_or(ReconcileError::MissingContentHash(target))?;
+        }
+        if target == PageStatus::Committed {
+            if record.has_last_error() {
+                return Err(ReconcileError::CommittedWithLastError);
+            }
+            if record.attempts() < 1 {
+                return Err(ReconcileError::CommittedWithZeroAttempts);
+            }
+        }
+        Ok(())
+    }
+}
+
+macro_rules! impl_state_reconcile {
+    ($($marker:ident),+ $(,)?) => {$(
+        impl<R: PersistedRecord> Stateful<R, $marker> {
+            /// Boundary reconciliation (D1 crux): reconstruct this exact
+            /// state from raw persisted data after validating the D2
+            /// invariant table. The single validation point between disk
+            /// truth and the typed machine.
+            ///
+            /// Deliberately NOT `TryFrom`: `impl TryFrom<R> for
+            /// Stateful<R, S>` conflicts with std's reflexive
+            /// `impl<T> From<T> for T` blanket under coherence.
+            pub fn reconcile(record: R) -> Result<Self, ReconcileError> {
+                reconcile::validate(&record, <$marker as StateMarker>::STATUS)?;
+                Ok(Self {
+                    record,
+                    _marker: PhantomData,
+                })
+            }
+        }
+    )+};
+}
+
+impl_state_reconcile!(
+    Discovered, Queued, Fetching, Fetched, Extracted, Processed, Exported, Committed,
+);

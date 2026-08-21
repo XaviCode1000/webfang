@@ -13,8 +13,8 @@
 //! Runtime logic exists ONLY at the persistence seam: reconstructing a
 //! `Stateful` from raw persisted data validates the record's invariants once
 //! (per-state `TryFrom`, see [`typed::PersistedRecord`] and
-//! [`typed::ReconcileError`], added at the boundary task of PR1).
-//! In-memory code physically cannot express an illegal move.
+//! [`typed::ReconcileError`]). In-memory code physically cannot express an
+//! illegal move.
 //!
 //! # Legacy partial encodings (R1 mitigation)
 //!
@@ -31,7 +31,7 @@ pub mod status;
 pub mod typed;
 
 pub use status::PageStatus;
-pub use typed::{StateMarker, Stateful};
+pub use typed::{PersistedRecord, ReconcileError, StateMarker, Stateful};
 pub use typed::{
     Committed, Discovered, Extracted, Exported, Fetched, Fetching, Processed, Queued,
 };

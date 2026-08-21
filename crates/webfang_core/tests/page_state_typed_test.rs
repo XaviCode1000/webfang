@@ -8,8 +8,8 @@
 use std::path::PathBuf;
 
 use webfang_core::domain::page_state::{
-    Committed, Discovered, Extracted, Exported, Fetched, Fetching, PageStatus, Processed, Queued,
-    Stateful,
+    Committed, Discovered, Extracted, Exported, Fetched, Fetching, PageStatus, PersistedRecord,
+    Processed, Queued, ReconcileError, Stateful,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,4 +117,145 @@ fn page_status_is_copy_and_structurally_comparable() {
     // Copy semantics: `a` remains usable after assignment.
     assert_eq!(a, b);
     assert_ne!(a, PageStatus::Committed);
+}
+
+/// Minimal stand-in for PR2's 9-field `RawRecord`: exposes exactly the
+/// fields the D2 load-time validation table reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Raw {
+    status: PageStatus,
+    output_location: Option<String>,
+    content_hash: Option<String>,
+    last_error: Option<&'static str>,
+    attempts: u32,
+}
+
+impl Raw {
+    fn at(status: PageStatus) -> Self {
+        Self {
+            status,
+            output_location: None,
+            content_hash: None,
+            last_error: None,
+            attempts: 0,
+        }
+    }
+
+    fn exported() -> Self {
+        let mut r = Self::at(PageStatus::Exported);
+        r.output_location = Some("out/a.jsonl".into());
+        r.content_hash = Some("hash-a".into());
+        r
+    }
+}
+
+impl PersistedRecord for Raw {
+    fn status(&self) -> PageStatus {
+        self.status
+    }
+
+    fn output_location(&self) -> Option<&str> {
+        self.output_location.as_deref()
+    }
+
+    fn content_hash(&self) -> Option<&str> {
+        self.content_hash.as_deref()
+    }
+
+    fn has_last_error(&self) -> bool {
+        self.last_error.is_some()
+    }
+
+    fn attempts(&self) -> u32 {
+        self.attempts
+    }
+}
+
+#[test]
+fn try_from_reconciles_every_matching_state() {
+    fn committed() -> Raw {
+        let mut r = Raw::exported();
+        r.status = PageStatus::Committed;
+        r.attempts = 1;
+        r
+    }
+
+    let discovered: Stateful<Raw, Discovered> =
+        Stateful::<Raw, Discovered>::reconcile(Raw::at(PageStatus::Discovered)).expect("discovered reconciles");
+    assert_eq!(discovered.status(), PageStatus::Discovered);
+
+    let queued: Stateful<Raw, Queued> =
+        Stateful::<Raw, Queued>::reconcile(Raw::at(PageStatus::Queued)).expect("queued reconciles");
+    assert_eq!(queued.status(), PageStatus::Queued);
+
+    let fetching: Stateful<Raw, Fetching> =
+        Stateful::<Raw, Fetching>::reconcile(Raw::at(PageStatus::Fetching)).expect("fetching reconciles");
+    assert_eq!(fetching.status(), PageStatus::Fetching);
+
+    let fetched: Stateful<Raw, Fetched> =
+        Stateful::<Raw, Fetched>::reconcile(Raw::at(PageStatus::Fetched)).expect("fetched reconciles");
+    assert_eq!(fetched.status(), PageStatus::Fetched);
+
+    let extracted: Stateful<Raw, Extracted> =
+        Stateful::<Raw, Extracted>::reconcile(Raw::at(PageStatus::Extracted)).expect("extracted reconciles");
+    assert_eq!(extracted.status(), PageStatus::Extracted);
+
+    let processed: Stateful<Raw, Processed> =
+        Stateful::<Raw, Processed>::reconcile(Raw::at(PageStatus::Processed)).expect("processed reconciles");
+    assert_eq!(processed.status(), PageStatus::Processed);
+
+    let exported: Stateful<Raw, Exported> =
+        Stateful::<Raw, Exported>::reconcile(Raw::exported()).expect("exported reconciles");
+    assert_eq!(exported.status(), PageStatus::Exported);
+
+    let committed: Stateful<Raw, Committed> =
+        Stateful::<Raw, Committed>::reconcile(committed()).expect("committed reconciles");
+    assert_eq!(committed.status(), PageStatus::Committed);
+}
+
+#[test]
+fn try_from_rejects_status_mismatch() {
+    // A record persisted as QUEUED cannot be reconstructed at DISCOVERED.
+    let err = Stateful::<Raw, Discovered>::reconcile(Raw::at(PageStatus::Queued))
+        .expect_err("mismatch must fail");
+    assert_eq!(
+        err,
+        ReconcileError::StatusMismatch {
+            expected: PageStatus::Discovered,
+            found: PageStatus::Queued,
+        }
+    );
+}
+
+#[test]
+fn exported_requires_output_location_and_content_hash() {
+    let mut raw = Raw::at(PageStatus::Exported);
+    raw.content_hash = Some("hash".into());
+
+    let err =
+        Stateful::<Raw, Exported>::reconcile(raw).expect_err("missing output_location must fail");
+    assert_eq!(err, ReconcileError::MissingOutputLocation(PageStatus::Exported));
+
+    let mut raw = Raw::at(PageStatus::Exported);
+    raw.output_location = Some("out/a.jsonl".into());
+    let err =
+        Stateful::<Raw, Exported>::reconcile(raw).expect_err("missing content_hash must fail");
+    assert_eq!(err, ReconcileError::MissingContentHash(PageStatus::Exported));
+}
+
+#[test]
+fn committed_requires_clean_error_state_and_one_attempt() {
+    let mut raw = Raw::exported();
+    raw.status = PageStatus::Committed;
+    raw.last_error = Some("boom");
+    raw.attempts = 1;
+    let err =
+        Stateful::<Raw, Committed>::reconcile(raw).expect_err("last_error on COMMITTED must fail");
+    assert_eq!(err, ReconcileError::CommittedWithLastError);
+
+    let mut raw = Raw::exported();
+    raw.status = PageStatus::Committed;
+    let err =
+        Stateful::<Raw, Committed>::reconcile(raw).expect_err("zero attempts on COMMITTED must fail");
+    assert_eq!(err, ReconcileError::CommittedWithZeroAttempts);
 }
