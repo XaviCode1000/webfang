@@ -269,6 +269,15 @@ jobs:
           SNAPSHOT_DIR="$MODEL_DIR/snapshots/835ad14087e140460703cf0fae09f97d469d65c2"
           SNAPSHOT_FILE="$SNAPSHOT_DIR/onnx/model.onnx"
           SNAPSHOT_TOKENIZER="$SNAPSHOT_DIR/tokenizer.json"
+          # Write the ref BEFORE the cache-hit check, unconditionally.
+          # hf-hub 0.5.0 reads refs/main VERBATIM (no trim) to build the
+          # snapshot path (#843): a trailing newline makes every lookup miss
+          # and all model-dependent tests fail instantly. Older versions of
+          # this step wrote the ref with `echo`, poisoning restored caches —
+          # rewriting it here (printf = no newline, matches hf-hub's own
+          # writer) heals them on first run after this change.
+          mkdir -p "$MODEL_DIR/refs"
+          printf '%s' "835ad14087e140460703cf0fae09f97d469d65c2" > "$MODEL_DIR/refs/main"
           if [ -f "$SNAPSHOT_FILE" ] || [ -L "$SNAPSHOT_FILE" ]; then
             echo "Model already cached, skipping download"
             exit 0
@@ -285,9 +294,6 @@ jobs:
             "https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/main/tokenizer.json"
           echo "Verifying tokenizer SHA256..."
           echo "$TOKENIZER_BLOB_SHA  $TOKENIZER_BLOB_FILE" | sha256sum --check --status
-          # Create hf_hub cache structure: refs/main + snapshot symlinks
-          mkdir -p "$MODEL_DIR/refs"
-          echo "835ad14087e140460703cf0fae09f97d469d65c2" > "$MODEL_DIR/refs/main"
           ln -s "../../../blobs/$BLOB_SHA" "$SNAPSHOT_FILE"
           ln -s "../../blobs/$TOKENIZER_BLOB_SHA" "$SNAPSHOT_TOKENIZER"
           echo "Model + tokenizer downloaded, verified, and cached"
@@ -336,6 +342,10 @@ jobs:
           SNAPSHOT_DIR="$MODEL_DIR/snapshots/835ad14087e140460703cf0fae09f97d469d65c2"
           SNAPSHOT_FILE="$SNAPSHOT_DIR/onnx/model.onnx"
           SNAPSHOT_TOKENIZER="$SNAPSHOT_DIR/tokenizer.json"
+          # Same ref-repair as the test-ai block above (#843): printf writes
+          # no trailing newline; hf-hub 0.5.0 reads refs/main verbatim.
+          mkdir -p "$MODEL_DIR/refs"
+          printf '%s' "835ad14087e140460703cf0fae09f97d469d65c2" > "$MODEL_DIR/refs/main"
           if [ -f "$SNAPSHOT_FILE" ] || [ -L "$SNAPSHOT_FILE" ]; then
             echo "Model already cached, skipping download"
             exit 0
@@ -352,9 +362,6 @@ jobs:
             "https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/main/tokenizer.json"
           echo "Verifying tokenizer SHA256..."
           echo "$TOKENIZER_BLOB_SHA  $TOKENIZER_BLOB_FILE" | sha256sum --check --status
-          # Create hf_hub cache structure: refs/main + snapshot symlinks
-          mkdir -p "$MODEL_DIR/refs"
-          echo "835ad14087e140460703cf0fae09f97d469d65c2" > "$MODEL_DIR/refs/main"
           ln -s "../../../blobs/$BLOB_SHA" "$SNAPSHOT_FILE"
           ln -s "../../blobs/$TOKENIZER_BLOB_SHA" "$SNAPSHOT_TOKENIZER"
           echo "Model + tokenizer downloaded, verified, and cached"
@@ -362,15 +369,18 @@ jobs:
       - name: AI integration tests (CLI+AI, MCP+AI, AI crate)
         run: |
           set -eo pipefail
+          # Full output, no tail truncation: `| tail -5` hid the actual panic
+          # messages of these suites for months (#843). pipefail preserves the
+          # exit code; logs belong in CI untruncated.
           # webfang_ai tests (#[ignore]'d, require model, run serially to avoid OOM)
           cargo test -p webfang_ai --features ai --test ai_integration -- \
-            --ignored --test-threads=1 2>&1 | tail -5
+            --ignored --test-threads=1
           # CLI+AI tests (#[ignore]'d, require model)
           cargo test -p webfang_core --features ai --test behavioral -- \
-            --ignored --test-threads=1 2>&1 | tail -5
+            --ignored --test-threads=1
           # MCP+AI tests (#[ignore]'d, require model)
           cargo test -p webfang_mcp --features mcp,ai --test mcp_behavioral_test -- \
-            --ignored --test-threads=1 2>&1 | tail -5
+            --ignored --test-threads=1
 
   # ============================================================================
   # SECURITY: No Rust compile — runs in PARALLEL with tests
