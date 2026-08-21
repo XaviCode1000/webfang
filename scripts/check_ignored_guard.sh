@@ -13,8 +13,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INVENTORY="$REPO_ROOT/docs/test-inventory.md"
 
-command -v rg >/dev/null 2>&1 || {
-    echo "::error::check_ignored_guard: ripgrep (rg) is required but not installed."
+command -v rg >/dev/null 2>&1 || command -v grep >/dev/null 2>&1 || {
+    echo "::error::check_ignored_guard: either ripgrep (rg) or grep is required but neither is installed."
     exit 1
 }
 [[ -f "$INVENTORY" ]] || {
@@ -36,7 +36,16 @@ SORTED_LIVE_FILE="$TMPDIR_GUARD/live-sorted.txt"
 INVENTORY_SORTED_FILE="$TMPDIR_GUARD/inventory-sorted.txt"
 trap 'rm -rf "$TMPDIR_GUARD"' EXIT
 
-rg -n '#\[ignore' crates/ --glob '!target' >"$LIVE_FILE" || true
+# Live scan. Primary: ripgrep (matches the documented source-of-truth command).
+# Fallback: GNU grep with an equivalent invocation (GitHub runners and minimal
+# dev environments may lack rg); -I skips binaries, --exclude-dir mirrors
+# rg's --glob '!target', and .gitignore-respect differences are immaterial
+# under crates/ where no generated artifacts live.
+if command -v rg >/dev/null 2>&1; then
+    rg -n '#\[ignore' crates/ --glob '!target' >"$LIVE_FILE" || true
+else
+    grep -rnI '#\[ignore' crates/ --exclude-dir=target >"$LIVE_FILE" || true
+fi
 LIVE="$(wc -l <"$LIVE_FILE" | tr -d ' ')"
 [[ "$LIVE" =~ ^[0-9]+$ ]] || {
     echo "::error::check_ignored_guard: live #[ignore] count is not numeric ('$LIVE')."
