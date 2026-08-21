@@ -395,6 +395,13 @@ impl DocumentChunk<Draft> {
             }
         }
 
+        // Propagate per-page trace identity (same policy as `From<ScrapedContent>`):
+        // a chunk without its own correlation inherits the page's traceparent,
+        // keeping vector exports joinable with the JSONL trace (#843).
+        if self.correlation_id.is_none() {
+            self.correlation_id = scraped.correlation_id.as_ref().map(|c| c.to_traceparent());
+        }
+
         self
     }
 
