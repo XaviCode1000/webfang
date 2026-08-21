@@ -14,7 +14,9 @@ use rmcp::{model::CallToolResult, model::Content, ErrorData as McpError};
 use tracing::instrument;
 
 #[cfg(feature = "chromium")]
-use webfang_core::infrastructure::axtree::{fetch_axtree_snapshot, SnapshotFormat};
+use webfang_core::infrastructure::axtree::{
+    fetch_axtree_snapshot, fetch_playwright_snapshot, SnapshotFormat,
+};
 
 /// Build an honest tool error (`isError:true`) carrying a Spanish message
 /// (same contract as `ai.rs` / `export.rs`).
@@ -66,35 +68,56 @@ impl McpHandler {
 /// Chromium-enabled path: run the core engine and surface failures as honest
 /// Spanish errors (spec R5).
 #[cfg(feature = "chromium")]
+#[tracing::instrument(skip_all, fields(format = %format!("{format:?}"), ref_count, token_estimate))]
 async fn fetch_snapshot(
     url: &url::Url,
     interactive_only: bool,
     selector: Option<&str>,
     format: SnapshotFormatParams,
 ) -> Result<CallToolResult, McpError> {
-    let core_format = match format {
-        SnapshotFormatParams::Compact => SnapshotFormat::Compact,
-        SnapshotFormatParams::PlaywrightMcp => return Ok(honest_error(
-            "formato no soportado: playwright-mcp aún no está implementado. Usa format=compact.",
-        )),
-    };
-    match fetch_axtree_snapshot(url, interactive_only, selector, core_format).await {
-        Ok(snapshot) => {
-            tracing::info!(
-                token_estimate = snapshot.token_estimate,
-                interactive = snapshot.nodes.len(),
-                "axtree snapshot produced"
-            );
-            match serde_json::to_string(&snapshot) {
-                Ok(json) => Ok(CallToolResult::success(vec![Content::text(json)])),
+    match format {
+        SnapshotFormatParams::Compact => {
+            let core_format = SnapshotFormat::Compact;
+            match fetch_axtree_snapshot(url, interactive_only, selector, core_format).await {
+                Ok(snapshot) => {
+                    tracing::Span::current().record("ref_count", snapshot.nodes.len());
+                    tracing::Span::current().record("token_estimate", snapshot.token_estimate);
+                    tracing::info!(
+                        token_estimate = snapshot.token_estimate,
+                        interactive = snapshot.nodes.len(),
+                        "axtree snapshot produced"
+                    );
+                    match serde_json::to_string(&snapshot) {
+                        Ok(json) => Ok(CallToolResult::success(vec![Content::text(json)])),
+                        Err(e) => Ok(honest_error(format!(
+                            "error al serializar la respuesta: {e}"
+                        ))),
+                    }
+                },
                 Err(e) => Ok(honest_error(format!(
-                    "error al serializar la respuesta: {e}"
+                    "no se pudo obtener el árbol de accesibilidad: {e}"
                 ))),
             }
         },
-        Err(e) => Ok(honest_error(format!(
-            "no se pudo obtener el árbol de accesibilidad: {e}"
-        ))),
+        SnapshotFormatParams::PlaywrightMcp => {
+            match fetch_playwright_snapshot(url, interactive_only, selector).await {
+                Ok(snapshot) => {
+                    tracing::Span::current().record("ref_count", snapshot.ref_count);
+                    tracing::Span::current().record("token_estimate", snapshot.token_estimate);
+                    tracing::info!(
+                        token_estimate = snapshot.token_estimate,
+                        ref_count = snapshot.ref_count,
+                        "axtree playwright snapshot produced"
+                    );
+                    Ok(CallToolResult::success(vec![Content::text(
+                        snapshot.content,
+                    )]))
+                },
+                Err(e) => Ok(honest_error(format!(
+                    "no se pudo obtener el árbol de accesibilidad: {e}"
+                ))),
+            }
+        },
     }
 }
 
