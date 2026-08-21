@@ -111,6 +111,27 @@ pub fn filter_committed(
     (pending, RunId::new())
 }
 
+/// Bridge a legacy `StateStore` handle onto the v2 `RecordStore` seam:
+/// same directory + domain, so a legacy v1 state file migrates in place
+/// on first load (Gate 2 policy lives inside `RecordStore`).
+pub(crate) fn record_store_bridge(
+    state_store: &crate::infrastructure::export::state_store::StateStore,
+) -> RecordStore {
+    use crate::infrastructure::export::RecordStore;
+
+    let path = state_store.get_state_path();
+    let dir = path.parent().map_or_else(
+        || std::path::PathBuf::from("."),
+        std::path::Path::to_path_buf,
+    );
+    let domain = path
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("unknown")
+        .to_string();
+    RecordStore::new(domain).with_state_dir(dir)
+}
+
 /// Type-level skip decision: true iff the record for `url` reconstructs as
 /// `Stateful<_, Committed>` (status match + D2 invariant table pass).
 fn is_committed_proven(url: &str, records: &DomainRecords) -> bool {

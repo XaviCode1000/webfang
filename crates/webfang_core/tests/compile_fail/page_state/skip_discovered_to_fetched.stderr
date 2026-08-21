@@ -1,8 +1,8 @@
-error[E0599]: no method named `fetched` found for struct `Stateful<String, webfang_core::domain::page_state::Discovered>` in the current scope
- --> tests/compile_fail/page_state/skip_discovered_to_fetched.rs:8:15
-  |
-8 |     let _ = s.fetched();
-  |               ^^^^^^^ method not found in `Stateful<String, Discovered>`
-  |
-  = note: the method was found for
-          - `Stateful<R, webfang_core::domain::page_state::Fetching>`
+error[E0599]: no method named `fetched` found for struct `Stateful<Rec, webfang_core::domain::page_state::Discovered>` in the current scope
+  --> tests/compile_fail/page_state/skip_discovered_to_fetched.rs:50:15
+   |
+50 |     let _ = s.fetched();
+   |               ^^^^^^^ method not found in `Stateful<Rec, Discovered>`
+   |
+   = note: the method was found for
+           - `Stateful<R, webfang_core::domain::page_state::Fetching>`

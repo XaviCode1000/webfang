@@ -30,10 +30,7 @@ use crate::domain::page_state::PageStatus;
 /// Envelope format version this module reads and writes.
 pub(crate) const CURRENT_VERSION: u32 = 2;
 
-/// `run_id` stamped on records created by the v1→v2 migration (D2). Records
-/// carrying this id predate hash tracking, so the load-time invariant table
-/// exempts them from the `output_location`/`content_hash` requirement.
-pub const MIGRATED_V1_RUN_ID: &str = "migrated-v1";
+pub use crate::domain::page_state::MIGRATED_V1_RUN_ID;
 
 /// Keyed by canonical URL; deterministic serialization order.
 pub type DomainRecords = BTreeMap<String, RawRecord>;
@@ -92,6 +89,14 @@ impl crate::domain::page_state::PersistedRecord for RawRecord {
 
     fn attempts(&self) -> u32 {
         self.attempts
+    }
+
+    fn set_status(&mut self, status: PageStatus) {
+        self.status = status;
+    }
+
+    fn is_migrated_v1(&self) -> bool {
+        self.run_id == MIGRATED_V1_RUN_ID
     }
 }
 
@@ -406,7 +411,7 @@ impl RecordStore {
         match envelope
             .get("version")
             .and_then(serde_json::Value::as_u64)
-            .unwrap_or_default() as u32
+            .unwrap_or(1) as u32
         {
             CURRENT_VERSION => {
                 let file: StoreFile = serde_json::from_value(envelope)
