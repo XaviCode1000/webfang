@@ -751,6 +751,9 @@ impl From<crate::infrastructure::error::InfraError> for ScraperError {
             crate::infrastructure::error::InfraError::H2Config(msg) => ScraperError::H2Config(msg),
             crate::infrastructure::error::InfraError::UrlParse(e) => ScraperError::UrlParse(e),
             crate::infrastructure::error::InfraError::Io(e) => ScraperError::Io(e),
+            crate::infrastructure::error::InfraError::FeatureGated(msg) => {
+                ScraperError::FeatureGated(msg)
+            },
         }
     }
 }
@@ -767,8 +770,15 @@ impl From<crate::domain::UnknownProfileError> for ScraperError {
 impl From<crate::infrastructure::downloader::DownloadError> for ScraperError {
     /// Page-download failures map to [`ScraperError::Download`], preserving the
     /// full cause chain (`#[source]`) for `Error::source()` traversal (D4).
+    /// `FeatureGated` is mapped directly to `FeatureGated` (PermanentFatal,
+    /// Spanish, exit 78) instead of being erased into `Download`.
     fn from(e: crate::infrastructure::downloader::DownloadError) -> Self {
-        ScraperError::Download(Box::new(e))
+        match e {
+            crate::infrastructure::downloader::DownloadError::FeatureGated(msg) => {
+                ScraperError::FeatureGated(msg)
+            },
+            other => ScraperError::Download(Box::new(other)),
+        }
     }
 }
 

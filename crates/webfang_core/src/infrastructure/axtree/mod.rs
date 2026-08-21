@@ -11,7 +11,10 @@
 //! feature-agnostic so the non-chromium stub keeps an identical signature.
 
 #[cfg(feature = "chromium")]
-mod compact;
+pub(crate) mod compact;
+
+#[cfg(feature = "chromium")]
+pub(crate) mod playwright;
 
 use url::Url;
 
@@ -59,12 +62,13 @@ pub struct CompactSnapshot {
 #[allow(dead_code)] // spec R3 — only called under `chromium` feature + tests; silences llvm-cov dead_code (#810)
 pub(crate) fn require_supported_format(format: SnapshotFormat) -> Result<(), DownloadError> {
     match format {
-        SnapshotFormat::Compact => Ok(()),
-        SnapshotFormat::PlaywrightMcp => Err(DownloadError::Internal(
-            "playwright-mcp format is not implemented (use compact)".to_string(),
-        )),
+        SnapshotFormat::Compact | SnapshotFormat::PlaywrightMcp => Ok(()),
     }
 }
+
+/// Chromium-gated Playwright snapshot type (R1).
+#[cfg(feature = "chromium")]
+pub(crate) use playwright::PlaywrightSnapshot;
 
 /// Raw CDP `Accessibility.getFullAXTree` command (chromiumoxide 0.7.0 has no
 /// typed variant — see `chromiumoxide_cdp/src/cdp.rs`).
@@ -104,22 +108,17 @@ impl chromiumoxide::types::Command for GetFullAXTree {
     type Response = GetFullAXTreeResponse;
 }
 
-/// Fetch a compact accessibility snapshot for `url` via a fresh headless
-/// Chromium session (CDP `Accessibility.getFullAXTree`).
+/// RAII CDP helper centralizing launch → goto → execute → close (R4).
 ///
-/// Mirrors the launch → navigate → execute → close lifecycle of
-/// `ChromiumoxideDownloader::fetch`; sessions are not reused between calls.
-///
-/// # Errors
-/// Returns [`DownloadError`] on launch/navigation/CDP failure or timeout.
+/// Guarantees deterministic `browser.close() + handler abort` even on
+/// 30s/10s timeout, shared by `fetch_raw_axtree` callers (compact,
+/// playwright, som_capture).
 #[cfg(feature = "chromium")]
-#[tracing::instrument]
-pub async fn fetch_axtree_snapshot(
-    url: &Url,
-    interactive_only: bool,
-    selector: Option<&str>,
-    format: SnapshotFormat,
-) -> Result<CompactSnapshot, DownloadError> {
+pub(crate) async fn with_cdp_page<F, T, Fut>(url: &Url, f: F) -> Result<T, DownloadError>
+where
+    F: FnOnce(chromiumoxide::Page) -> Fut,
+    Fut: std::future::Future<Output = Result<T, DownloadError>>,
+{
     use chromiumoxide::browser::HeadlessMode;
     use chromiumoxide::{Browser, BrowserConfig};
     use futures::StreamExt;
@@ -127,8 +126,7 @@ pub async fn fetch_axtree_snapshot(
 
     const NAV_TIMEOUT: Duration = Duration::from_secs(30);
     const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
-
-    require_supported_format(format)?;
+    let _ = SNAPSHOT_TIMEOUT;
 
     if !url.scheme().starts_with("http") {
         return Err(DownloadError::InvalidUrl(format!(
@@ -148,42 +146,89 @@ pub async fn fetch_axtree_snapshot(
         .await
         .map_err(|e| DownloadError::Internal(format!("Chrome launch failed: {e}")))?;
 
-    // Process CDP messages in an isolated task to prevent hangs.
     let handler_job = tokio::spawn(async move { while handler.next().await.is_some() {} });
 
-    let page = browser
-        .new_page("about:blank")
-        .await
-        .map_err(|e| DownloadError::Internal(e.to_string()))?;
+    let result = async {
+        let page = browser
+            .new_page("about:blank")
+            .await
+            .map_err(|e| DownloadError::Internal(e.to_string()))?;
 
-    timeout(NAV_TIMEOUT, page.goto(url.as_str()))
-        .await
-        .map_err(|_| DownloadError::Timeout(NAV_TIMEOUT.as_secs()))?
-        .map_err(|e| DownloadError::Internal(e.to_string()))?;
+        // Pre-goto SSRF check is done by caller; post-goto redirect check
+        // re-validates final URL via literal-IP guard (out-of-scope hostname DNS already checked at entry).
+        timeout(NAV_TIMEOUT, page.goto(url.as_str()))
+            .await
+            .map_err(|_| DownloadError::Timeout(NAV_TIMEOUT.as_secs()))?
+            .map_err(|e| DownloadError::Internal(e.to_string()))?;
 
-    let response = timeout(
-        SNAPSHOT_TIMEOUT,
-        page.execute(GetFullAXTree {
-            fetch_relatives: None,
-        }),
-    )
-    .await
-    .map_err(|_| DownloadError::Timeout(SNAPSHOT_TIMEOUT.as_secs()))?
-    .map_err(|e| DownloadError::Internal(e.to_string()))?;
+        f(page).await
+    }
+    .await;
 
-    // Deterministic shutdown — prevents zombie processes.
+    // Deterministic finally — close + abort handler even on timeout.
     browser.close().await.ok();
-    handler_job.await.ok();
+    handler_job.abort();
 
-    Ok(compact::compact(
-        &response.result.nodes,
-        interactive_only,
-        selector,
-    ))
+    result
 }
 
-/// Non-chromium stub — identical signature, honest "not enabled" error
-/// (mirrors `chromiumoxide_downloader.rs`).
+/// Fetch raw `Vec<AxNode>` via `with_cdp_page` (R4).
+#[cfg(feature = "chromium")]
+pub(crate) async fn fetch_raw_axtree(
+    url: &Url,
+) -> Result<Vec<chromiumoxide::cdp::browser_protocol::accessibility::AxNode>, DownloadError> {
+    with_cdp_page(url, |page| async move {
+        use tokio::time::{timeout, Duration};
+        const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
+        let response = timeout(
+            SNAPSHOT_TIMEOUT,
+            page.execute(GetFullAXTree {
+                fetch_relatives: None,
+            }),
+        )
+        .await
+        .map_err(|_| DownloadError::Timeout(SNAPSHOT_TIMEOUT.as_secs()))?
+        .map_err(|e| DownloadError::Internal(e.to_string()))?;
+        Ok(response.result.nodes)
+    })
+    .await
+}
+
+/// Fetch a compact accessibility snapshot for `url` via a fresh headless
+/// Chromium session (CDP `Accessibility.getFullAXTree`).
+///
+/// Mirrors the launch → navigate → execute → close lifecycle of
+/// `ChromiumoxideDownloader::fetch`; sessions are not reused between calls.
+///
+/// # Errors
+/// Returns [`DownloadError`] on launch/navigation/CDP failure or timeout.
+#[cfg(feature = "chromium")]
+#[tracing::instrument]
+pub async fn fetch_axtree_snapshot(
+    url: &Url,
+    interactive_only: bool,
+    selector: Option<&str>,
+    format: SnapshotFormat,
+) -> Result<CompactSnapshot, DownloadError> {
+    require_supported_format(format)?;
+    let nodes = fetch_raw_axtree(url).await?;
+    Ok(compact::compact(&nodes, interactive_only, selector))
+}
+
+/// Fetch a Playwright MCP YAML snapshot (R1).
+#[cfg(feature = "chromium")]
+#[allow(dead_code)]
+#[tracing::instrument]
+pub async fn fetch_playwright_snapshot(
+    url: &Url,
+    interactive_only: bool,
+    selector: Option<&str>,
+) -> Result<PlaywrightSnapshot, DownloadError> {
+    let nodes = fetch_raw_axtree(url).await?;
+    Ok(playwright::playwright(&nodes, interactive_only, selector))
+}
+
+/// Non-chromium stubs — honest FeatureGated (R5).
 #[cfg(not(feature = "chromium"))]
 #[tracing::instrument]
 pub async fn fetch_axtree_snapshot(
@@ -193,7 +238,32 @@ pub async fn fetch_axtree_snapshot(
     format: SnapshotFormat,
 ) -> Result<CompactSnapshot, DownloadError> {
     let _ = (url, interactive_only, selector, format);
-    Err(DownloadError::Internal(
+    Err(DownloadError::FeatureGated(
+        "AXTree not enabled (compile with --features chromium)".to_string(),
+    ))
+}
+
+/// Placeholder PlaywrightSnapshot for non-chromium stub compilation.
+#[cfg(not(feature = "chromium"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlaywrightSnapshot {
+    /// YAML content.
+    pub content: String,
+    /// `chars() / 4`.
+    pub token_estimate: usize,
+    /// Number of refs.
+    pub ref_count: usize,
+}
+
+/// Fetch Playwright stub for non-chromium (R5).
+#[cfg(not(feature = "chromium"))]
+#[allow(dead_code)]
+pub(crate) async fn fetch_playwright_snapshot(
+    _url: &Url,
+    _interactive_only: bool,
+    _selector: Option<&str>,
+) -> Result<PlaywrightSnapshot, DownloadError> {
+    Err(DownloadError::FeatureGated(
         "AXTree not enabled (compile with --features chromium)".to_string(),
     ))
 }
@@ -203,12 +273,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn require_supported_format_rejects_playwright_mcp() {
+    fn require_supported_format_accepts_both() {
         assert!(require_supported_format(SnapshotFormat::Compact).is_ok());
-        let err = require_supported_format(SnapshotFormat::PlaywrightMcp).unwrap_err();
         assert!(
-            matches!(err, DownloadError::Internal(ref msg) if msg.contains("playwright-mcp")),
-            "expected unsupported-format error, got: {err}"
+            require_supported_format(SnapshotFormat::PlaywrightMcp).is_ok(),
+            "PlaywrightMcp must be Ok after R4"
         );
     }
 
@@ -220,8 +289,8 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(err, DownloadError::Internal(ref msg) if msg.contains("not enabled")),
-            "expected stub error, got: {err}"
+            matches!(err, DownloadError::FeatureGated(ref msg) if msg.contains("not enabled")),
+            "expected FeatureGated stub error, got: {err}"
         );
     }
 

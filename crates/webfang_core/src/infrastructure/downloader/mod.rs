@@ -170,6 +170,11 @@ pub enum DownloadError {
     #[error("insufficient resources: {0}")]
     ResourceExhausted(String),
 
+    /// Feature not compiled in (e.g. chromium disabled) — typed so
+    /// classification and Clone don't rely on string matching (R5).
+    #[error("funcionalidad no disponible: {0}")]
+    FeatureGated(String),
+
     /// Acquisition cancelled by the engine's cancellation token (#509) —
     /// the caller was waiting for a resource permit when shutdown fired.
     #[error("operation cancelled while waiting for resources")]
@@ -208,6 +213,7 @@ impl Clone for DownloadError {
             DownloadError::Timeout(s) => DownloadError::Timeout(*s),
             DownloadError::Internal(s) => DownloadError::Internal(s.clone()),
             DownloadError::ResourceExhausted(s) => DownloadError::ResourceExhausted(s.clone()),
+            DownloadError::FeatureGated(s) => DownloadError::FeatureGated(s.clone()),
             DownloadError::Cancelled => DownloadError::Cancelled,
         }
     }
@@ -296,6 +302,7 @@ impl DownloadError {
             Self::Network(_) => ErrorClass::InternalFatal,
             Self::Internal(_) => ErrorClass::InternalFatal,
             Self::ResourceExhausted(_) => ErrorClass::InternalFatal,
+            Self::FeatureGated(_) => ErrorClass::PermanentFatal,
             Self::Cancelled => ErrorClass::InternalFatal,
         }
     }
@@ -513,5 +520,29 @@ mod tests {
         let crawl_err: crate::domain::CrawlError = err.into();
         assert!(crawl_err.to_string().contains("download error"));
         assert!(crawl_err.to_string().contains("reset"));
+    }
+
+    #[test]
+    fn test_download_error_feature_gated_clone_and_classify() {
+        let original = DownloadError::FeatureGated("chromium disabled".to_string());
+        let cloned = original.clone();
+        assert!(
+            matches!(cloned, DownloadError::FeatureGated(ref s) if s == "chromium disabled"),
+            "FeatureGated clone must preserve String, got: {cloned:?}"
+        );
+        assert_eq!(
+            cloned.classify(),
+            crate::error::ErrorClass::PermanentFatal,
+            "FeatureGated must classify as PermanentFatal"
+        );
+        assert!(
+            cloned.to_string().contains("chromium disabled"),
+            "Display must contain payload"
+        );
+        // Spanish Display prefix check
+        assert!(
+            cloned.to_string().contains("funcionalidad no disponible"),
+            "FeatureGated Display must be Spanish, got: {cloned}"
+        );
     }
 }

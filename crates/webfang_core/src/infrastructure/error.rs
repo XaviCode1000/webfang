@@ -75,6 +75,21 @@ pub enum InfraError {
     /// I/O error (file system, etc.)
     #[error("Error de I/O: {0}")]
     Io(#[from] std::io::Error),
+
+    /// Feature not compiled in (e.g. chromium disabled) — typed Spanish Display.
+    #[error("funcionalidad no disponible: {0}")]
+    FeatureGated(String),
+}
+
+impl From<crate::infrastructure::downloader::DownloadError> for InfraError {
+    fn from(err: crate::infrastructure::downloader::DownloadError) -> Self {
+        match err {
+            crate::infrastructure::downloader::DownloadError::FeatureGated(msg) => {
+                InfraError::FeatureGated(msg)
+            },
+            other => InfraError::Download(Box::new(other)),
+        }
+    }
 }
 
 #[cfg(test)]
