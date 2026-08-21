@@ -352,3 +352,5 @@ codedb index .
 ## License
 
 MIT OR Apache-2.0
+
+<!-- ci-gate contract validation: see issue #841 -->
