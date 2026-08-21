@@ -1,0 +1,11 @@
+---
+source: crates/webfang_core/src/infrastructure/axtree/playwright.rs
+expression: snap.content
+---
+- textbox "Username" [ref=e1]
+- textbox "Password" [ref=e2]
+- checkbox "Remember me" [ref=e3]
+- button "Submit" [ref=e4]
+- radio "Monthly billing" [ref=e5]
+- combobox "Country" [ref=e6]
+- link "Forgot password" [ref=e7]

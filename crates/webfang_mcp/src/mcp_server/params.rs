@@ -832,4 +832,45 @@ mod tests {
             "traversal must still be rejected"
         );
     }
+
+    #[test]
+    fn get_accessibility_snapshot_params_unknown_field_rejected() {
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "foo": "bar"
+        });
+        let res = serde_json::from_value::<GetAccessibilitySnapshotParams>(json);
+        assert!(
+            res.is_err(),
+            "deny_unknown_fields must reject foo, got: {res:?}"
+        );
+        let msg = res.unwrap_err().to_string();
+        assert!(msg.contains("foo"), "error must mention foo, got: {msg}");
+    }
+
+    #[test]
+    fn get_accessibility_snapshot_params_kebab_case_format() {
+        let params: GetAccessibilitySnapshotParams = serde_json::from_value(serde_json::json!({
+            "url": "https://example.com",
+            "format": "playwright-mcp"
+        }))
+        .expect("kebab-case playwright-mcp must deserialize");
+        assert_eq!(params.format, SnapshotFormatParams::PlaywrightMcp);
+        let params2: GetAccessibilitySnapshotParams = serde_json::from_value(serde_json::json!({
+            "url": "https://example.com",
+            "format": "compact"
+        }))
+        .expect("compact must deserialize");
+        assert_eq!(params2.format, SnapshotFormatParams::Compact);
+    }
+
+    #[test]
+    fn snapshot_format_params_unknown_format_rejected() {
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "format": "unknown"
+        });
+        let res = serde_json::from_value::<GetAccessibilitySnapshotParams>(json);
+        assert!(res.is_err(), "unknown format must be rejected");
+    }
 }

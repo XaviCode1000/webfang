@@ -12,9 +12,13 @@ use rmcp::tool;
 use rmcp::tool_router;
 use rmcp::{model::CallToolResult, model::Content, ErrorData as McpError};
 use tracing::instrument;
+use webfang_core::domain::CorrelationId;
+use webfang_core::infrastructure::observability::log_scrape_error;
 
 #[cfg(feature = "chromium")]
-use webfang_core::infrastructure::axtree::{fetch_axtree_snapshot, SnapshotFormat};
+use webfang_core::infrastructure::axtree::{
+    fetch_axtree_snapshot, fetch_playwright_snapshot, SnapshotFormat,
+};
 
 /// Build an honest tool error (`isError:true`) carrying a Spanish message
 /// (same contract as `ai.rs` / `export.rs`).
@@ -32,69 +36,149 @@ impl McpHandler {
     /// `Accessibility.getFullAXTree`, then serializes interactive elements as
     /// `@eN`-referenced nodes with a `token_estimate`. Requires the
     /// `chromium` feature.
+    ///
+    /// Refs (`@eN` for compact, `eN` for playwright-mcp) are snapshot-scoped
+    /// and become stale after any page mutation or selector change — callers
+    /// MUST re-snapshot before reusing a prior `eN` (R7 stale-ref contract).
     #[tool(
-        description = "Fetch a rendered page's accessibility tree and return a compact snapshot of interactive elements with @eN refs and a token_estimate. Requires --features chromium."
+        description = "Fetch a rendered page's accessibility tree and return a compact snapshot of interactive elements with @eN refs and a token_estimate. Refs are snapshot-scoped and stale after any page mutation or selector change — re-snapshot before reuse. Requires --features chromium."
     )]
-    #[instrument(skip(self), fields(url = %params.url, interactive_only = params.interactive_only))]
+    #[instrument(skip(self), fields(url = %params.url, interactive_only = params.interactive_only, format = ?params.format, trace_id = tracing::field::Empty))]
     async fn get_accessibility_snapshot(
         &self,
         Parameters(params): Parameters<GetAccessibilitySnapshotParams>,
     ) -> Result<CallToolResult, McpError> {
+        let root_correlation = CorrelationId::new();
+        tracing::Span::current().record(
+            "trace_id",
+            tracing::field::display(root_correlation.trace_id()),
+        );
         params.validate()?;
 
         let _permit = acquire_semaphore!(self, scraping);
 
         let url = url::Url::parse(&params.url).map_err(|e| {
+            log_scrape_error(
+                &e,
+                &params.url,
+                "axtree.validate_url",
+                Some(&root_correlation),
+                "URL parsing failed",
+            );
             McpError::invalid_params(
                 format!("URL inválida: {e}"),
                 Some(serde_json::Value::String("url".to_string())),
             )
         })?;
 
-        crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
+        if let Err(e) = crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await {
+            log_scrape_error(
+                &e,
+                url.as_str(),
+                "axtree.validate_ssrf",
+                Some(&root_correlation),
+                "SSRF validation failed",
+            );
+            return Err(e);
+        }
 
         fetch_snapshot(
             &url,
             params.interactive_only,
             params.selector.as_deref(),
             params.format,
+            &root_correlation,
         )
         .await
     }
 }
 
 /// Chromium-enabled path: run the core engine and surface failures as honest
-/// Spanish errors (spec R5).
+/// Spanish errors (spec R5). Refs in the returned `Content::text` are
+/// snapshot-scoped; callers MUST re-snapshot after any page mutation or
+/// selector change before reusing a prior `eN` (R7 stale-ref contract).
 #[cfg(feature = "chromium")]
+#[tracing::instrument(skip_all, fields(format = %format!("{format:?}"), ref_count, token_estimate, trace_id = %correlation.trace_id()))]
 async fn fetch_snapshot(
     url: &url::Url,
     interactive_only: bool,
     selector: Option<&str>,
     format: SnapshotFormatParams,
+    correlation: &CorrelationId,
 ) -> Result<CallToolResult, McpError> {
-    let core_format = match format {
-        SnapshotFormatParams::Compact => SnapshotFormat::Compact,
-        SnapshotFormatParams::PlaywrightMcp => return Ok(honest_error(
-            "formato no soportado: playwright-mcp aún no está implementado. Usa format=compact.",
-        )),
-    };
-    match fetch_axtree_snapshot(url, interactive_only, selector, core_format).await {
-        Ok(snapshot) => {
-            tracing::info!(
-                token_estimate = snapshot.token_estimate,
-                interactive = snapshot.nodes.len(),
-                "axtree snapshot produced"
-            );
-            match serde_json::to_string(&snapshot) {
-                Ok(json) => Ok(CallToolResult::success(vec![Content::text(json)])),
-                Err(e) => Ok(honest_error(format!(
-                    "error al serializar la respuesta: {e}"
-                ))),
+    let child = correlation.child();
+    match format {
+        SnapshotFormatParams::Compact => {
+            let core_format = SnapshotFormat::Compact;
+            match fetch_axtree_snapshot(url, interactive_only, selector, core_format).await {
+                Ok(snapshot) => {
+                    tracing::Span::current().record("ref_count", snapshot.nodes.len());
+                    tracing::Span::current().record("token_estimate", snapshot.token_estimate);
+                    tracing::info!(
+                        token_estimate = snapshot.token_estimate,
+                        ref_count = snapshot.nodes.len(),
+                        trace_id = %child.trace_id(),
+                        "axtree snapshot produced"
+                    );
+                    match serde_json::to_string(&snapshot) {
+                        Ok(json) => Ok(CallToolResult::success(vec![Content::text(json)])),
+                        Err(e) => {
+                            log_scrape_error(
+                                &e,
+                                url.as_str(),
+                                "axtree.serialize",
+                                Some(&child),
+                                "compact snapshot serialization failed",
+                            );
+                            Ok(honest_error(format!(
+                                "error al serializar la respuesta: {e}"
+                            )))
+                        },
+                    }
+                },
+                Err(e) => {
+                    log_scrape_error(
+                        &e,
+                        url.as_str(),
+                        "axtree.fetch_compact",
+                        Some(&child),
+                        "compact snapshot fetch failed",
+                    );
+                    Ok(honest_error(format!(
+                        "no se pudo obtener el árbol de accesibilidad: {e}"
+                    )))
+                },
             }
         },
-        Err(e) => Ok(honest_error(format!(
-            "no se pudo obtener el árbol de accesibilidad: {e}"
-        ))),
+        SnapshotFormatParams::PlaywrightMcp => {
+            match fetch_playwright_snapshot(url, interactive_only, selector).await {
+                Ok(snapshot) => {
+                    tracing::Span::current().record("ref_count", snapshot.ref_count);
+                    tracing::Span::current().record("token_estimate", snapshot.token_estimate);
+                    tracing::info!(
+                        token_estimate = snapshot.token_estimate,
+                        ref_count = snapshot.ref_count,
+                        trace_id = %child.trace_id(),
+                        "axtree playwright snapshot produced"
+                    );
+                    Ok(CallToolResult::success(vec![Content::text(
+                        snapshot.content,
+                    )]))
+                },
+                Err(e) => {
+                    log_scrape_error(
+                        &e,
+                        url.as_str(),
+                        "axtree.fetch_playwright",
+                        Some(&child),
+                        "playwright snapshot fetch failed",
+                    );
+                    Ok(honest_error(format!(
+                        "no se pudo obtener el árbol de accesibilidad: {e}"
+                    )))
+                },
+            }
+        },
     }
 }
 
@@ -105,6 +189,7 @@ async fn fetch_snapshot(
     _interactive_only: bool,
     _selector: Option<&str>,
     _format: SnapshotFormatParams,
+    _correlation: &CorrelationId,
 ) -> Result<CallToolResult, McpError> {
     Ok(honest_error(
         "funcionalidad no disponible: captura del árbol de accesibilidad. Reconstruye con --features chromium para habilitarla.",
