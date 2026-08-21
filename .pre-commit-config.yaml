@@ -7,6 +7,7 @@
 # Hooks:
 #   1. rustfmt --check: Verifica formato (falla si no está formateado)
 #   2. clippy: Verifica linting (falla si hay warnings)
+#   3. actionlint: Valida workflows de GitHub Actions (falla con errores de semántica)
 #
 # Uso:
 #   - pre-commit run --all-files  # Verificar todo
@@ -42,6 +43,37 @@ repos:
         pass_filenames: false
         types: [rust]
         exclude: "^target/"
+
+      # Valida workflows de GitHub Actions (detecta errores de semántica que
+      # check-yaml no ve, p.ej. pasos anidados dentro de un bloque `run: |`).
+      # Requiere shellcheck en PATH (mise lo instala) para analizar los
+      # bloques `run:`. Los -ignore son deuda preexistente de estilo
+      # (SC2086 etc.) — NO ignorar códigos estructurales como SC2215.
+      # Mantener en sync con el paso "Lint GitHub Actions workflows" en ci.yml.
+      - id: actionlint
+        name: actionlint
+        description: Lint GitHub Actions workflows
+        entry: actionlint
+        args:
+          - -ignore
+          - "SC2010"
+          - -ignore
+          - "SC2012"
+          - -ignore
+          - "SC2027"
+          - -ignore
+          - "SC2034"
+          - -ignore
+          - "SC2046"
+          - -ignore
+          - "SC2086"
+          - -ignore
+          - "SC2126"
+          - -ignore
+          - "SC2129"
+        language: system
+        files: ^\.github/workflows/.*\.ya?ml$
+        pass_filenames: false
 
   # =============================================================================
   # Universal hooks

@@ -23,6 +23,8 @@ typos = "1.42.3"                       # spell checker (aqua shorthand, pinned f
 "cargo:cargo-edit" = "0.13.5"           # cargo add/rm/upgrade (pinned — newer requires rustc ≥1.89)
 "aqua:mitsuhiko/insta" = "1.48.0"       # cargo-insta CLI (prebuilt) — pinned to match insta lib in Cargo.lock
 "cargo:bacon" = "latest"                # watch-mode background checker (uses repo bacon.toml)
+"aqua:rhysd/actionlint" = "1.7.12"      # GitHub Actions workflow linter — catches block-scalar nesting bugs YAML parsers miss (#836)
+"aqua:koalaman/shellcheck" = "0.11.0"   # required by actionlint's shellcheck rule — without it, `run: |` nesting bugs go undetected (#836)
 "aqua:rust-lang/mdBook" = "0.4.51"
 "aqua:jgm/pandoc" = "3.10.1"
 
