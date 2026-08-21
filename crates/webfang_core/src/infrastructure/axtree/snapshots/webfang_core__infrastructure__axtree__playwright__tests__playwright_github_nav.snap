@@ -1,0 +1,9 @@
+---
+source: crates/webfang_core/src/infrastructure/axtree/playwright.rs
+expression: snap.content
+---
+- button "Sign in" [ref=e1]
+- button "Sign up" [ref=e2]
+- link "Pricing" [ref=e3]
+- link "Docs" [ref=e4]
+- textbox "Search repositories" [ref=e5]

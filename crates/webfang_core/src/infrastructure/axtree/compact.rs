@@ -89,7 +89,7 @@ fn is_interactive_role(role: &str) -> bool {
 }
 
 /// Extract the string payload of an `AxValue` (empty when absent).
-fn ax_value_str(value: Option<&AxValue>) -> &str {
+pub(crate) fn ax_value_str(value: Option<&AxValue>) -> &str {
     value
         .and_then(|v| v.value.as_ref())
         .and_then(serde_json::Value::as_str)
