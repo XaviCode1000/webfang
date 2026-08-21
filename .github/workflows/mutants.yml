@@ -64,7 +64,7 @@ jobs:
     timeout-minutes: 90
     # NO continue-on-error: a surviving mutant (exit 2) blocks the PR.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -122,7 +122,7 @@ jobs:
 
       - name: Upload results
         if: always() && steps.hotpath.outputs.changed == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: mutants-pr
           path: mutants-output.txt
@@ -141,7 +141,7 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -180,7 +180,7 @@ jobs:
           fi
 
       - name: Upload results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         if: always()
         with:
           name: mutants-${{ matrix.shard }}
@@ -194,7 +194,7 @@ jobs:
     needs: mutants-weekly
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           pattern: mutants-*
           merge-multiple: true

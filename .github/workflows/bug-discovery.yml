@@ -22,7 +22,7 @@ jobs:
       WEBFANG_OBSIDIAN_WIKI_LINKS: "true"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://poison:4317"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
@@ -38,12 +38,12 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - name: Cache ONNX model (Granite-97M)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           # Stable key: never bump the suffix so the cached model survives across
           # merges. A changing key would invalidate the cache and force a re-download
