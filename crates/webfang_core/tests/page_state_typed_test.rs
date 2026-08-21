@@ -15,11 +15,39 @@ use webfang_core::domain::page_state::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Rec {
     url: String,
+    status: PageStatus,
 }
 
 fn rec(url: &str) -> Rec {
     Rec {
         url: url.to_string(),
+        status: PageStatus::Discovered,
+    }
+}
+
+impl PersistedRecord for Rec {
+    fn status(&self) -> PageStatus {
+        self.status
+    }
+
+    fn output_location(&self) -> Option<&str> {
+        None
+    }
+
+    fn content_hash(&self) -> Option<&str> {
+        None
+    }
+
+    fn has_last_error(&self) -> bool {
+        false
+    }
+
+    fn attempts(&self) -> u32 {
+        0
+    }
+
+    fn set_status(&mut self, status: PageStatus) {
+        self.status = status;
     }
 }
 
@@ -64,7 +92,11 @@ fn transitions_move_the_record_through_intact() {
         .export_flushed(PathBuf::from("out/b.jsonl"))
         .commit();
 
-    assert_eq!(s.into_record(), original);
+    // The payload persisted status tracks the typestate position (D2
+    // reconciliation requires field == marker on load).
+    let mut expected = original.clone();
+    expected.status = PageStatus::Committed;
+    assert_eq!(s.into_record(), expected);
 }
 
 #[test]
@@ -168,6 +200,10 @@ impl PersistedRecord for Raw {
 
     fn attempts(&self) -> u32 {
         self.attempts
+    }
+
+    fn set_status(&mut self, status: PageStatus) {
+        self.status = status;
     }
 }
 

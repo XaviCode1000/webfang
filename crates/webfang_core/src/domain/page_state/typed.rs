@@ -41,6 +41,16 @@ pub trait PersistedRecord {
 
     /// True attempt count.
     fn attempts(&self) -> u32;
+
+    /// Persist the lifecycle position (called by [`Stateful::advance`] so the
+    /// payload never lags the typestate marker).
+    fn set_status(&mut self, status: PageStatus);
+
+    /// True for records synthesized by the v1-to-v2 migration: they predate
+    /// hash tracking, so the Committed output/hash requirement does not apply.
+    fn is_migrated_v1(&self) -> bool {
+        false
+    }
 }
 
 /// Why a persisted record could not be reconstructed into its typed state.
@@ -140,7 +150,7 @@ impl<R: PartialEq, S: StateMarker> PartialEq for Stateful<R, S> {
 
 impl<R: Eq, S: StateMarker> Eq for Stateful<R, S> {}
 
-impl<R, S: StateMarker> Stateful<R, S> {
+impl<R: PersistedRecord, S: StateMarker> Stateful<R, S> {
     /// The persisted status this value is proven to be in.
     pub fn status(&self) -> PageStatus {
         S::STATUS
@@ -162,7 +172,10 @@ impl<R, S: StateMarker> Stateful<R, S> {
         self.record
     }
 
-    fn advance<S2: StateMarker>(self) -> Stateful<R, S2> {
+    fn advance<S2: StateMarker>(mut self) -> Stateful<R, S2> {
+        // Keep the persisted status field in lockstep with the type-level
+        // position — a stale field would fail D2 reconciliation on load.
+        self.record.set_status(S2::STATUS);
         Stateful {
             record: self.record,
             _marker: PhantomData,
@@ -170,7 +183,7 @@ impl<R, S: StateMarker> Stateful<R, S> {
     }
 }
 
-impl<R> Stateful<R, Discovered> {
+impl<R: PersistedRecord> Stateful<R, Discovered> {
     /// Start of the lifecycle: wrap a freshly discovered record.
     pub const fn new(record: R) -> Self {
         Self {
@@ -186,7 +199,7 @@ impl<R> Stateful<R, Discovered> {
     }
 }
 
-impl<R> Stateful<R, Queued> {
+impl<R: PersistedRecord> Stateful<R, Queued> {
     /// QUEUED → FETCHING.
     #[must_use]
     pub fn start_fetch(self) -> Stateful<R, Fetching> {
@@ -194,7 +207,7 @@ impl<R> Stateful<R, Queued> {
     }
 }
 
-impl<R> Stateful<R, Fetching> {
+impl<R: PersistedRecord> Stateful<R, Fetching> {
     /// FETCHING → FETCHED.
     #[must_use]
     pub fn fetched(self) -> Stateful<R, Fetched> {
@@ -202,7 +215,7 @@ impl<R> Stateful<R, Fetching> {
     }
 }
 
-impl<R> Stateful<R, Fetched> {
+impl<R: PersistedRecord> Stateful<R, Fetched> {
     /// FETCHED → EXTRACTED.
     #[must_use]
     pub fn extracted(self) -> Stateful<R, Extracted> {
@@ -210,7 +223,7 @@ impl<R> Stateful<R, Fetched> {
     }
 }
 
-impl<R> Stateful<R, Extracted> {
+impl<R: PersistedRecord> Stateful<R, Extracted> {
     /// EXTRACTED → PROCESSED.
     #[must_use]
     pub fn processed(self) -> Stateful<R, Processed> {
@@ -218,7 +231,7 @@ impl<R> Stateful<R, Extracted> {
     }
 }
 
-impl<R> Stateful<R, Processed> {
+impl<R: PersistedRecord> Stateful<R, Processed> {
     /// PROCESSED → EXPORTED, after the output flush barrier acked (D3 step 1).
     ///
     /// `output_location` is recorded on the persisted record at the
@@ -229,7 +242,7 @@ impl<R> Stateful<R, Processed> {
     }
 }
 
-impl<R> Stateful<R, Exported> {
+impl<R: PersistedRecord> Stateful<R, Exported> {
     /// EXPORTED → COMMITTED — the commit point (D3 step 4); only reachable
     /// once the EXPORTED checkpoint was durably persisted.
     #[must_use]
@@ -263,7 +276,11 @@ mod reconcile {
                 found: record.status(),
             });
         }
-        if matches!(target, PageStatus::Exported | PageStatus::Committed) {
+        // v1-migrated records predate hash tracking: the migration stamps
+        // `run_id == MIGRATED_V1_RUN_ID` and is exempt from this requirement.
+        if matches!(target, PageStatus::Exported | PageStatus::Committed)
+            && !record.is_migrated_v1()
+        {
             record
                 .output_location()
                 .ok_or(ReconcileError::MissingOutputLocation(target))?;

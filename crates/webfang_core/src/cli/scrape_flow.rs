@@ -11,6 +11,7 @@ use crate::application::crawl_options::CrawlOptions;
 use crate::application::crawler::build_fetch_router;
 use crate::application::export_factory;
 use crate::application::progress_observer::ProgressObserver;
+use crate::application::resume::{filter_committed, record_store_bridge};
 use crate::application::scrape_single_url_for_tui;
 use crate::cli::error::CliExit;
 use crate::domain::entities::progress::{ScrapeError, ScrapeStatus};
@@ -41,7 +42,7 @@ pub async fn apply_resume_mode(
     urls_to_scrape: Vec<Url>,
     opts: &CrawlOptions,
     target_url: &str,
-    root_correlation: &CorrelationId,
+    _root_correlation: &CorrelationId,
 ) -> Result<(Vec<Url>, Option<StateStore>), CliExit> {
     let state_store: Option<StateStore> = if opts.crawl.resume {
         info!("Resume mode enabled - tracking processed URLs");
@@ -64,9 +65,14 @@ pub async fn apply_resume_mode(
         None
     };
 
+    // PR3: the single resume gate — skip ONLY COMMITTED-proven records,
+    // via the v2 RecordStore (legacy v1 files migrate in place on load).
     let filtered = if opts.crawl.resume {
         match state_store.as_ref() {
-            Some(store) => filter_processed_urls(urls_to_scrape, store, root_correlation),
+            Some(store) => {
+                let record_store = record_store_bridge(store);
+                filter_committed(urls_to_scrape, &record_store).0
+            },
             None => urls_to_scrape,
         }
     } else {
@@ -88,48 +94,6 @@ fn resolve_state_dir(opts: &CrawlOptions) -> PathBuf {
             });
         cache_base.join("webfang").join("state")
     })
-}
-
-/// Drop URLs already processed by a prior run, degrading gracefully on error.
-fn filter_processed_urls(
-    urls_to_scrape: Vec<Url>,
-    store: &StateStore,
-    root_correlation: &CorrelationId,
-) -> Vec<Url> {
-    match store.load_or_default() {
-        Ok(state) => {
-            let original_count = urls_to_scrape.len();
-            let filtered: Vec<_> = urls_to_scrape
-                .into_iter()
-                .filter(|url| {
-                    let should_skip = store.is_processed(&state, url.as_str());
-                    if should_skip {
-                        info!("Skipping already processed: {}", url);
-                    }
-                    !should_skip
-                })
-                .collect();
-
-            let skipped_count = original_count - filtered.len();
-            info!(
-                "Resume mode: {} URLs already processed, {} new URLs to scrape",
-                skipped_count,
-                filtered.len()
-            );
-
-            filtered
-        },
-        Err(e) => {
-            log_scrape_error(
-                &e,
-                "",
-                "state-load",
-                Some(root_correlation),
-                "could not load checkpoint state",
-            );
-            urls_to_scrape
-        },
-    }
 }
 
 /// Scrape all URLs, reporting progress via the provided observer.

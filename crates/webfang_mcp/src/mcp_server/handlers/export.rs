@@ -39,14 +39,7 @@ fn export_results(
     filename: &SanitizedFilename,
 ) -> Result<CallToolResult, McpError> {
     let count = results.len();
-    match process_results(
-        results,
-        output_dir.clone(),
-        format,
-        filename.as_str(),
-        None,
-        false,
-    ) {
+    match process_results(results, output_dir.clone(), format, filename.as_str(), None) {
         Ok(_) => {
             let path = resolve_export_path(&output_dir, filename, format);
             tracing::info!(documents = count, path = %path.display(), "export completed");
