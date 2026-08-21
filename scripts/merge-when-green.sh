@@ -177,20 +177,26 @@ echo "    merged."
 
 if [[ $delete_remote -eq 1 ]]; then
   echo "==> Deleting remote branch '${head_branch}' (local cleanup: runbook)."
-  if git push origin --delete "refs/heads/${head_branch}"; then
+  # Check BEFORE pushing: after the merge the ref may already be gone (e.g.
+  # deleted by another process), and `git push --delete` on an absent ref
+  # prints a noisy "[remote rejected]" error even though nothing is wrong.
+  if ! refs="$(git ls-remote origin "refs/heads/${head_branch}")"; then
+    echo "warning: merge succeeded, but remote branch cleanup could not be verified." >&2
+    exit 0
+  fi
+
+  if [[ -z "$refs" ]]; then
+    echo "    remote branch already absent."
+  elif git push origin --delete "refs/heads/${head_branch}"; then
     echo "    remote branch deleted."
   else
-    if ! refs="$(git ls-remote origin "refs/heads/${head_branch}")"; then
-      echo "warning: merge succeeded, but remote branch cleanup could not be verified." >&2
+    # Residual check-then-delete race: re-verify quietly before warning.
+    if refs="$(git ls-remote origin "refs/heads/${head_branch}")" && [[ -z "$refs" ]]; then
+      echo "    remote branch already absent."
+    else
+      echo "warning: merge succeeded but remote branch '${head_branch}' could not be deleted." >&2
       exit 0
     fi
-
-    if [[ -n "$refs" ]]; then
-      echo "warning: merge succeeded but remote branch '${head_branch}' still exists." >&2
-      exit 0
-    fi
-
-    echo "    remote branch already absent."
   fi
 fi
 
