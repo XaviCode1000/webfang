@@ -431,7 +431,24 @@ impl ScraperError {
             Self::PayloadTooLarge => ErrorClass::PermanentFatal,
             Self::Http { .. } => ErrorClass::PermanentFatal,
             Self::SemaphoreInanition => ErrorClass::InternalFatal,
-            Self::Io(_) => ErrorClass::InternalFatal,
+            // Rows 21/22: classify by `io::ErrorKind`, mirroring
+            // `CrawlError::classify` — transient kinds (`Interrupted`,
+            // `WouldBlock`, `TimedOut`) are retriable; the rest (permanent:
+            // `NotFound`, `PermissionDenied`, ...) are PermanentFatal, which
+            // the CLI boundary maps to the typed exit-74 override via
+            // `permanent_io_error_exit_for`.
+            Self::Io(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::Interrupted
+                        | std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                ErrorClass::TransientRetriable
+            },
+            // Row 22 (rest of the io kinds).
+            Self::Io(_) => ErrorClass::PermanentFatal,
             Self::Serialization(_) => ErrorClass::InternalFatal,
             Self::Yaml(_) => ErrorClass::InternalFatal,
             Self::UrlParse(_) => ErrorClass::InternalFatal,
@@ -804,6 +821,44 @@ mod tests {
             matches!(err, ScraperError::Io(_)),
             "std::io::Error must convert to ScraperError::Io"
         );
+    }
+
+    // Matrix rows 21/22: `ScraperError::Io` must classify by
+    // `io::ErrorKind`, mirroring `CrawlError::classify` — transient kinds
+    // are retriable, permanent kinds (NotFound, PermissionDenied, rest)
+    // are fatal-permanent, never InternalFatal.
+    #[test]
+    fn classify_io_transient_kind_is_transient_retriable() {
+        let transient_kinds = [
+            std::io::ErrorKind::Interrupted,
+            std::io::ErrorKind::WouldBlock,
+            std::io::ErrorKind::TimedOut,
+        ];
+        for kind in transient_kinds {
+            let err = ScraperError::Io(std::io::Error::new(kind, "transient io"));
+            assert_eq!(
+                err.classify(),
+                ErrorClass::TransientRetriable,
+                "io kind {kind:?} must classify TransientRetriable"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_io_permanent_kind_is_permanent_fatal() {
+        let permanent_kinds = [
+            std::io::ErrorKind::NotFound,
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::InvalidData,
+        ];
+        for kind in permanent_kinds {
+            let err = ScraperError::Io(std::io::Error::new(kind, "permanent io"));
+            assert_eq!(
+                err.classify(),
+                ErrorClass::PermanentFatal,
+                "io kind {kind:?} must classify PermanentFatal"
+            );
+        }
     }
 
     #[test]
@@ -1256,10 +1311,12 @@ mod tests {
         assert_eq!(err.classify(), ErrorClass::InternalFatal);
     }
 
+    // Matrix row 22: non-transient io kinds (incl. `Other`) are PermanentFatal,
+    // not InternalFatal — the CLI maps them to the typed exit-74 override.
     #[test]
-    fn test_classify_internal_fatal_io() {
+    fn test_classify_permanent_io_other_kind() {
         let err: ScraperError = std::io::Error::new(std::io::ErrorKind::Other, "test").into();
-        assert_eq!(err.classify(), ErrorClass::InternalFatal);
+        assert_eq!(err.classify(), ErrorClass::PermanentFatal);
     }
 
     #[test]
