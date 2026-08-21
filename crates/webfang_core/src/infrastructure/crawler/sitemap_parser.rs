@@ -562,12 +562,30 @@ impl SitemapParser {
 
         if all_urls.is_empty() {
             if !failures.is_empty() {
-                let failure_msgs: Vec<String> = failures
+                // Split children that were valid but EMPTY (NoUrlsFound) from
+                // children that genuinely failed to fetch/parse. An index whose
+                // children are all empty is "no URLs discovered" (exit 2 via
+                // NoUrlsFound→SitemapEmpty), NOT an infrastructure failure; only
+                // real fetch/parse failures yield AllChildrenFailed (exit 69 via
+                // Parse→Internal). Previously both collapsed into
+                // AllChildrenFailed and the CLI string-matched the message to
+                // tell them apart (stabilization-sitemap-regression).
+                let (empty_children, real_failures): (Vec<_>, Vec<_>) = failures
+                    .into_iter()
+                    .partition(|(_, e)| matches!(e, SitemapError::NoUrlsFound));
+                if real_failures.is_empty() {
+                    tracing::debug!(
+                        "all {} child sitemaps were empty — no URLs discovered",
+                        empty_children.len()
+                    );
+                    return Err(SitemapError::NoUrlsFound);
+                }
+                let failure_msgs: Vec<String> = real_failures
                     .iter()
                     .map(|(url, e)| format!("{url}: {e}"))
                     .collect();
                 return Err(SitemapError::AllChildrenFailed(
-                    failures.len(),
+                    real_failures.len(),
                     failure_msgs.join("; "),
                 ));
             }
@@ -620,6 +638,7 @@ where
     let mut buf = Vec::new();
     let mut root_tag: Option<Vec<u8>> = None;
     let mut is_index = false;
+    let mut saw_element = false;
 
     // State machine for metadata parsing
     let mut in_url = false;
@@ -636,6 +655,7 @@ where
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
+                saw_element = true;
                 let name = e.name();
 
                 // Bug 7: classify by root element (only when handling index)
@@ -747,6 +767,14 @@ where
             _ => {},
         }
         buf.clear();
+    }
+
+    // A body with no XML elements at all (e.g. plain text garbage) is NOT an
+    // empty sitemap — it has no recognizable structure. Distinguishing this
+    // from a valid-but-empty `<urlset/>` keeps AllChildrenFailed counts honest
+    // (stabilization-sitemap-regression).
+    if !saw_element {
+        return Err(SitemapError::InvalidStructure);
     }
 
     Ok((urls, is_index))

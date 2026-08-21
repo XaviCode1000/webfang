@@ -1,0 +1,8 @@
+---
+source: crates/webfang_core/tests/behavioral/main.rs
+expression: redacted
+---
+  <TIMESTAMP> ERROR <MODULE>: Failed to parse sitemap http://127.0.0.1:<PORT>/sitemap.xml: XML parsing failed: syntax error: tag not closed: `>` not found before end of input
+    at <FILE>.rs:<LINE>
+
+Error: URL discovery failed: error interno: parse: XML parsing failed: syntax error: tag not closed: `>` not found before end of input

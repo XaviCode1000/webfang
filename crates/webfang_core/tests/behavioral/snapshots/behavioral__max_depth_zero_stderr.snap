@@ -1,0 +1,5 @@
+---
+source: crates/webfang_core/tests/behavioral/main.rs
+expression: redacted
+---
+Error: URL discovery failed: maximum depth 0 exceeded at depth 1

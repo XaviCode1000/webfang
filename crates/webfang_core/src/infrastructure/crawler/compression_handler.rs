@@ -113,6 +113,12 @@ impl CompressionHandler {
     }
 
     /// Detect compression format and decompress content
+    ///
+    /// Some servers double-encode `.gz` sitemaps (gzip-of-gzip): after
+    /// stripping the first layer the payload still carries compression magic
+    /// bytes. Re-sniff once and decompress at most ONE additional layer
+    /// (2 total, never a loop) so double-encoded sitemaps parse instead of
+    /// feeding the second gzip layer to the XML parser.
     pub(crate) async fn detect_and_decompress(&self, content: &[u8], url: &str) -> Result<Vec<u8>> {
         let formats = Self::detect_compression(content, url);
 
@@ -121,6 +127,31 @@ impl CompressionHandler {
             return Ok(content.to_vec());
         }
 
+        let mut decompressed = self.decompress_formats(content, &formats).await?;
+
+        // Bounded second layer: re-sniff the decompressed payload once.
+        let nested_formats = Self::detect_compression(&decompressed, url);
+        if !nested_formats.is_empty() {
+            tracing::debug!(
+                url = %url,
+                detected = ?nested_formats,
+                "nested compression layer detected, decompressing once more"
+            );
+            decompressed = self
+                .decompress_formats(&decompressed, &nested_formats)
+                .await?;
+        }
+
+        Ok(decompressed)
+    }
+
+    /// Decompress `content` trying each detected format in order — fail closed
+    /// on error.
+    async fn decompress_formats(
+        &self,
+        content: &[u8],
+        formats: &[CompressionType],
+    ) -> Result<Vec<u8>> {
         // Try each detected format in order - fail closed on error
         for format in formats {
             match format {

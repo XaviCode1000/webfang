@@ -1,0 +1,14 @@
+---
+source: crates/webfang_core/tests/behavioral/main.rs
+expression: redacted
+---
+  <TIMESTAMP>  WARN <MODULE>: Failed to parse sitemap http://127.0.0.1:<PORT>/child-a.xml: no URLs found in sitemap
+    at <FILE>.rs:<LINE>
+
+  <TIMESTAMP>  WARN <MODULE>: Failed to parse sitemap http://127.0.0.1:<PORT>/child-b.xml: no URLs found in sitemap
+    at <FILE>.rs:<LINE>
+
+  <TIMESTAMP> ERROR <MODULE>: Failed to parse sitemap http://127.0.0.1:<PORT>/sitemap.xml: no URLs found in sitemap
+    at <FILE>.rs:<LINE>
+
+Warning: No URLs discovered from sitemaps

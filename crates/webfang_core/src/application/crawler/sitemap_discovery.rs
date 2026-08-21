@@ -122,7 +122,27 @@ async fn crawl_with_sitemap_internal(
         .await;
     }
 
-    Ok(build_discovered_urls(relevant_urls, &base, config))
+    build_discovered_urls_or_limit_error(relevant_urls, &base, config)
+}
+
+/// Apply the depth gate to discovered sitemap URLs and surface a crawl-limit
+/// error when the configuration makes the result empty.
+///
+/// `max_depth 0` means "only the seed page": a sitemap that lists the seed
+/// itself still yields it (depth 0), but a sitemap listing only deeper URLs
+/// yields nothing — that is a configuration limit, not an empty sitemap, so it
+/// maps to exit 69 via `MaxDepthExceeded` instead of exit 2
+/// (stabilization-sitemap-regression, scenario 8).
+fn build_discovered_urls_or_limit_error(
+    relevant_urls: Vec<SitemapUrl>,
+    base: &Url,
+    config: &CrawlerConfig,
+) -> Result<Vec<DiscoveredUrl>, CrawlError> {
+    let discovered = build_discovered_urls(relevant_urls, base, config);
+    if discovered.is_empty() && config.max_depth == 0 {
+        return Err(CrawlError::MaxDepthExceeded { current: 1, max: 0 });
+    }
+    Ok(discovered)
 }
 
 /// Build the shared discovery HTTP client with the #281/#312 timeout and TLS
@@ -211,6 +231,10 @@ async fn parse_sitemap(
             SitemapError::DecompressionError(e) => {
                 CrawlError::Parse(format!("decompression failed: {e}"))
             },
+            // All children FAILED to fetch/parse (HTTP errors) — this is an
+            // infrastructure failure (exit 69 via Parse→Internal), NOT a
+            // fully-empty sitemap (which is NoUrlsFound→SitemapEmpty→exit 2).
+            // Keep this mapping.
             SitemapError::AllChildrenFailed(count, details) => {
                 CrawlError::Parse(format!("all {count} child sitemaps failed: {details}"))
             },
@@ -502,6 +526,12 @@ async fn probe_single_path(base: &Url, client: &wreq::Client, path: &str) -> Opt
 }
 
 /// HEAD-probe a resolved sitemap URL, returning it when the server answers 2xx.
+///
+/// Servers that reject HEAD (405/501) or answer any other non-2xx to HEAD while
+/// still serving the resource over GET get ONE GET retry: a HEAD-only failure
+/// must not silently kill sitemap discovery (stabilization-sitemap-regression,
+/// scenario 9).
+#[tracing::instrument(skip(client), fields(url = %sitemap_str))]
 async fn probe_head_success(client: &wreq::Client, sitemap_str: &str) -> Option<String> {
     tracing::info!("Trying fallback sitemap: {}", sitemap_str);
 
@@ -509,6 +539,19 @@ async fn probe_head_success(client: &wreq::Client, sitemap_str: &str) -> Option<
     tracing::info!("  Status: {}", response.status());
     if response.status().is_success() {
         tracing::debug!("Found sitemap at fallback location: {}", sitemap_str);
+        return Some(sitemap_str.to_string());
+    }
+
+    // HEAD was rejected — retry once with GET on the same client.
+    tracing::info!(
+        url = %sitemap_str,
+        status = %response.status(),
+        "HEAD rejected, retrying with GET"
+    );
+    let get_response = client.get(sitemap_str).send().await.ok()?;
+    tracing::info!("  GET status: {}", get_response.status());
+    if get_response.status().is_success() {
+        tracing::debug!("Found sitemap via GET fallback: {}", sitemap_str);
         return Some(sitemap_str.to_string());
     }
     None

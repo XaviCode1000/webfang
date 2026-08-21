@@ -43,10 +43,11 @@ pub async fn discover_urls(
     let discovered_urls = match discover_urls_for_tui(opts.url.as_str(), crawler_config).await {
         Ok(urls) => urls,
         Err(e) => {
-            // Treat "no URLs found" as empty discovery (technical success),
-            // not as a network error. Only propagate real errors (timeouts, etc.).
-            let msg = e.to_string();
-            if msg.contains("no URLs found") {
+            // Treat an empty sitemap as empty discovery (technical success),
+            // not as a network error. Typed match on `SitemapEmpty` — string
+            // matching on the display message coupled exit codes to wording
+            // (stabilization-sitemap-regression). Only propagate real errors.
+            if matches!(e, crate::error::ScraperError::SitemapEmpty) {
                 if let Some(pb) = discovery_pb.as_ref() {
                     pb.finish_with_message("No URLs found");
                 }
