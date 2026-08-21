@@ -6,6 +6,8 @@
 use std::process::ExitCode;
 use thiserror::Error;
 
+use crate::error::{ErrorClass, ScraperError};
+
 // ============================================================================
 // Exit code constants
 // ============================================================================
@@ -123,7 +125,7 @@ pub fn format_cli_error(err: &CliError, no_color: bool) -> String {
 /// Exit codes following sysexits convention:
 /// 0 = success, 64 = usage error, 65 = data format error, 69 = service unavailable (network/partial),
 /// 74 = I/O error, 76 = protocol error, 77 = forbidden (robots.txt), 78 = config error
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CliExit {
     /// Exit 0 — everything OK
     Success,
@@ -152,6 +154,141 @@ pub enum CliExit {
         /// Number of failed URLs
         failed: usize,
     },
+}
+
+// ============================================================================
+// Error Classification Matrix — class → exit mapping (CLI boundary only)
+//
+// Contract: docs/error-classification-matrix.md (ID 261bdb66-197e-420f-a73b-
+// 66c0e889102d), sections "Default exit codes by class", "Typed overrides over
+// class defaults", and "Special cell — Cancelled". Exit-code knowledge stays
+// OUT of the domain: classification lives in `CrawlError::classify()`, this is
+// the only place that turns a class into an exit code.
+// ============================================================================
+
+/// Default CLI exit code for an [`ErrorClass`], per the matrix row
+/// "Default exit codes by class".
+///
+/// Returns `None` for [`ErrorClass::PermanentFatal`] and
+/// [`ErrorClass::DomainRecoverable`] because neither has a single default:
+/// `PermanentFatal` is variant-dependent (64/65/69/76/77/78 per contract rows)
+/// and `DomainRecoverable` depends on run outcome (0 if any item succeeded,
+/// 65 if ALL items failed). Forcing either onto one code would misreport.
+#[must_use]
+pub const fn default_exit_code_for_class(class: ErrorClass) -> Option<u8> {
+    match class {
+        ErrorClass::TransientRetriable | ErrorClass::TransientBackoff => Some(EXIT_UNAVAILABLE),
+        // An internal bug is a job failure, NEVER UsageError 64.
+        ErrorClass::InternalFatal => Some(EXIT_SCRAPER_FAILURE),
+        ErrorClass::PermanentFatal | ErrorClass::DomainRecoverable => None,
+    }
+}
+
+/// Build the default [`CliExit`] for an [`ErrorClass`] with a caller-supplied
+/// message. See [`default_exit_code_for_class`] for why the two
+/// variant-dependent classes return `None`.
+#[must_use]
+pub fn cli_exit_for_class(class: ErrorClass, message: impl Into<String>) -> Option<CliExit> {
+    match class {
+        ErrorClass::TransientRetriable | ErrorClass::TransientBackoff => {
+            Some(CliExit::NetworkError(message.into()))
+        },
+        ErrorClass::InternalFatal => Some(CliExit::ScraperFailure(message.into())),
+        ErrorClass::PermanentFatal | ErrorClass::DomainRecoverable => None,
+    }
+}
+
+/// Typed override — all URLs blocked by robots.txt / WAF → [`CliExit::Forbidden`]
+/// (exit 77). Caller lacks permission; that is not a service fault.
+///
+/// Fires only when NOTHING was scraped and NOTHING failed, mirroring the
+/// routing guard in `orchestrator::report_phase`; this function is the
+/// canonical form so the orchestrator can adopt it without behavior change.
+#[must_use]
+pub fn forbidden_exit_when_all_blocked(
+    results_len: usize,
+    failures_len: usize,
+    blocked: usize,
+) -> Option<CliExit> {
+    (results_len == 0 && failures_len == 0 && blocked > 0).then(|| {
+        CliExit::Forbidden(format!(
+            "{blocked} URL(s) bloqueadas por robots.txt. Usa --ignore-robots para omitir esta verificación."
+        ))
+    })
+}
+
+/// Typed override — extraction failures → [`CliExit::DataFormatError`] (exit 65).
+/// Content-quality failure, not network: pages were fetched but carried no
+/// usable content.
+///
+/// Canonical form of the typed `matches!` routing in
+/// `orchestrator::data_format_error_for_extraction_failed`. Returns `None`
+/// when no failure is an extraction failure.
+#[must_use]
+pub fn data_format_error_exit_when_extraction_failed(
+    failures: &[(String, ScraperError)],
+) -> Option<CliExit> {
+    let extraction_failed = failures
+        .iter()
+        .filter(|(_, e)| matches!(e, ScraperError::ExtractionFailed { .. }))
+        .count();
+    (extraction_failed > 0).then(|| {
+        CliExit::DataFormatError(format!(
+            "extracción sin contenido útil: {extraction_failed} URL(s) devolvieron contenido insuficiente o requieren renderizado de JavaScript"
+        ))
+    })
+}
+
+/// Typed override — sitemap empty / sitemap not found →
+/// [`CliExit::EmptyDiscovery`] (exit 2). Technical success with a null result,
+/// not an operational failure.
+#[must_use]
+pub fn empty_discovery_exit_for(error: &ScraperError) -> Option<CliExit> {
+    matches!(
+        error,
+        ScraperError::SitemapEmpty | ScraperError::SitemapNotFound(_)
+    )
+    .then(|| CliExit::EmptyDiscovery(format!("no URLs discovered: {error}")))
+}
+
+/// Typed override — config errors ([`ScraperError::Config`] /
+/// [`ScraperError::H2Config`]) → [`CliExit::ConfigError`] (exit 78, EX_CONFIG).
+#[must_use]
+pub fn config_error_exit_for(error: &ScraperError) -> Option<CliExit> {
+    matches!(error, ScraperError::Config(_) | ScraperError::H2Config(_))
+        .then(|| CliExit::ConfigError(error.to_string()))
+}
+
+/// Typed override — permanent I/O errors → [`CliExit::IoError`] (exit 74,
+/// EX_IOERR).
+///
+/// Transient I/O kinds (`Interrupted`, `WouldBlock`, `TimedOut`) return `None`:
+/// they classify [`ErrorClass::TransientRetriable`] and keep the class default
+/// (exit 69) instead of the permanent-Io override.
+#[must_use]
+pub fn permanent_io_error_exit_for(error: &std::io::Error) -> Option<CliExit> {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::Interrupted
+            | std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+    ) {
+        None
+    } else {
+        Some(CliExit::IoError(error.to_string()))
+    }
+}
+
+/// Special cell — Cancelled. Cooperative cancellation is a control signal, NOT
+/// an operational failure: intercepted BEFORE any classification-based routing,
+/// it yields [`CliExit::Success`] (exit 0).
+///
+/// The domain's defensive fallback (`CrawlError::Cancelled → InternalFatal`)
+/// only covers signals escaping through unexpected paths; this function is the
+/// primary interception point at the CLI boundary.
+#[must_use]
+pub fn cancelled_exit(cancelled: bool) -> Option<CliExit> {
+    cancelled.then_some(CliExit::Success)
 }
 
 impl std::process::Termination for CliExit {
@@ -202,6 +339,7 @@ impl std::process::Termination for CliExit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::ErrorClass;
     use std::process::Termination;
 
     // UT-01: ConfigFile formatting
@@ -315,6 +453,197 @@ mod tests {
         let exit = CliExit::Forbidden("all URLs blocked by robots.txt".into());
         let code = exit.report();
         assert_eq!(code, ExitCode::from(EXIT_FORBIDDEN));
+    }
+
+    // ====================================================================
+    // Error Classification Matrix — Sprint 1-2 P0-err final DoD item.
+    // Contract: docs/error-classification-matrix.md (ID 261bdb66).
+    // ====================================================================
+
+    // DoD: each ErrorClass maps to its documented default exit code.
+    #[test]
+    fn default_exit_code_transient_retriable_is_69() {
+        assert_eq!(
+            default_exit_code_for_class(ErrorClass::TransientRetriable),
+            Some(EXIT_UNAVAILABLE)
+        );
+    }
+
+    #[test]
+    fn default_exit_code_transient_backoff_is_69() {
+        assert_eq!(
+            default_exit_code_for_class(ErrorClass::TransientBackoff),
+            Some(EXIT_UNAVAILABLE)
+        );
+    }
+
+    #[test]
+    fn default_exit_code_internal_fatal_is_scraper_failure_never_usage() {
+        // InternalFatal must map to ScraperFailure (3), NEVER UsageError 64:
+        // an internal bug is not user error.
+        assert_eq!(
+            default_exit_code_for_class(ErrorClass::InternalFatal),
+            Some(EXIT_SCRAPER_FAILURE)
+        );
+    }
+
+    #[test]
+    fn permanent_fatal_has_no_single_default_exit() {
+        // Variant-dependent per contract rows (64/65/69/76/77/78): forcing a
+        // single code here would be wrong, so the mapping honestly returns None.
+        assert_eq!(
+            default_exit_code_for_class(ErrorClass::PermanentFatal),
+            None
+        );
+    }
+
+    #[test]
+    fn domain_recoverable_has_no_single_default_exit() {
+        // Contract: 0 if any item succeeded; 65 if ALL items failed — decided
+        // by run outcome, not by the class alone.
+        assert_eq!(
+            default_exit_code_for_class(ErrorClass::DomainRecoverable),
+            None
+        );
+    }
+
+    #[test]
+    fn cli_exit_for_class_transient_maps_to_network_error_variant() {
+        let exit = cli_exit_for_class(ErrorClass::TransientRetriable, "boom");
+        assert!(matches!(exit, Some(CliExit::NetworkError(_))));
+        assert_eq!(exit.unwrap().report(), ExitCode::from(EXIT_UNAVAILABLE));
+    }
+
+    #[test]
+    fn cli_exit_for_class_internal_fatal_maps_to_scraper_failure_variant() {
+        let exit = cli_exit_for_class(ErrorClass::InternalFatal, "bug");
+        assert!(matches!(exit, Some(CliExit::ScraperFailure(_))));
+        assert_eq!(exit.unwrap().report(), ExitCode::from(EXIT_SCRAPER_FAILURE));
+    }
+
+    #[test]
+    fn cli_exit_for_class_variant_dependent_classes_return_none() {
+        assert_eq!(cli_exit_for_class(ErrorClass::PermanentFatal, "x"), None);
+        assert_eq!(cli_exit_for_class(ErrorClass::DomainRecoverable, "x"), None);
+    }
+
+    // ---- Typed overrides over class defaults ----
+
+    #[test]
+    fn forbidden_override_when_all_blocked_maps_to_77() {
+        let exit = forbidden_exit_when_all_blocked(0, 0, 5);
+        assert!(matches!(exit, Some(CliExit::Forbidden(_))));
+        assert_eq!(exit.unwrap().report(), ExitCode::from(EXIT_FORBIDDEN));
+    }
+
+    #[test]
+    fn forbidden_override_requires_nothing_scraped_or_failed() {
+        // Any real failure or any scraped page keeps historical routing (None).
+        assert_eq!(forbidden_exit_when_all_blocked(1, 0, 5), None);
+        assert_eq!(forbidden_exit_when_all_blocked(0, 2, 5), None);
+        assert_eq!(forbidden_exit_when_all_blocked(0, 0, 0), None);
+    }
+
+    #[test]
+    fn data_format_override_when_extraction_failed_maps_to_65() {
+        let failures = vec![(
+            "https://example.com".to_string(),
+            crate::error::ScraperError::ExtractionFailed {
+                url: "https://example.com".into(),
+                reason: "empty shell".into(),
+            },
+        )];
+        let exit = data_format_error_exit_when_extraction_failed(&failures);
+        assert!(matches!(exit, Some(CliExit::DataFormatError(_))));
+        assert_eq!(exit.unwrap().report(), ExitCode::from(EXIT_DATA_ERROR));
+    }
+
+    #[test]
+    fn data_format_override_ignores_non_extraction_failures() {
+        let failures = vec![(
+            "https://example.com".to_string(),
+            crate::error::ScraperError::Network(Box::<std::io::Error>::new(std::io::Error::other(
+                "reset",
+            ))),
+        )];
+        assert_eq!(
+            data_format_error_exit_when_extraction_failed(&failures),
+            None
+        );
+        assert_eq!(data_format_error_exit_when_extraction_failed(&[]), None);
+    }
+
+    #[test]
+    fn empty_discovery_override_for_sitemap_variants_maps_to_2() {
+        for err in [
+            crate::error::ScraperError::SitemapEmpty,
+            crate::error::ScraperError::SitemapNotFound("none".into()),
+        ] {
+            let exit = empty_discovery_exit_for(&err);
+            assert!(matches!(exit, Some(CliExit::EmptyDiscovery(_))));
+            assert_eq!(exit.unwrap().report(), ExitCode::from(EXIT_EMPTY_DISCOVERY));
+        }
+    }
+
+    #[test]
+    fn empty_discovery_override_ignores_other_errors() {
+        let err = crate::error::ScraperError::Network(Box::<std::io::Error>::new(
+            std::io::Error::other("reset"),
+        ));
+        assert_eq!(empty_discovery_exit_for(&err), None);
+    }
+
+    #[test]
+    fn config_override_maps_to_78() {
+        for err in [
+            crate::error::ScraperError::Config("bad key".into()),
+            crate::error::ScraperError::H2Config("bad alpn".into()),
+        ] {
+            let exit = config_error_exit_for(&err);
+            assert!(matches!(exit, Some(CliExit::ConfigError(_))));
+            assert_eq!(exit.unwrap().report(), ExitCode::from(EXIT_CONFIG));
+        }
+    }
+
+    #[test]
+    fn config_override_ignores_non_config_errors() {
+        let err = crate::error::ScraperError::InvalidUrl("nope".into());
+        assert_eq!(config_error_exit_for(&err), None);
+    }
+
+    #[test]
+    fn permanent_io_override_maps_to_74() {
+        let exit = permanent_io_error_exit_for(&std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert!(matches!(exit, Some(CliExit::IoError(_))));
+        assert_eq!(exit.unwrap().report(), ExitCode::from(EXIT_IO_ERROR));
+    }
+
+    #[test]
+    fn transient_io_kinds_keep_the_class_default_instead_of_74() {
+        // Rows 21: Interrupted / WouldBlock / TimedOut are TransientRetriable;
+        // the class default (69) applies, so no typed override fires.
+        for kind in [
+            std::io::ErrorKind::Interrupted,
+            std::io::ErrorKind::WouldBlock,
+            std::io::ErrorKind::TimedOut,
+        ] {
+            let err = std::io::Error::from(kind);
+            assert_eq!(permanent_io_error_exit_for(&err), None);
+        }
+    }
+
+    // ---- Special cell — Cancelled ----
+
+    #[test]
+    fn cancelled_maps_to_success_exit_0_before_classification() {
+        let exit = cancelled_exit(true).expect("cancellation must yield an exit");
+        assert!(matches!(exit, CliExit::Success));
+        assert_eq!(exit.report(), ExitCode::from(EXIT_SUCCESS));
+    }
+
+    #[test]
+    fn non_cancelled_run_yields_no_cancelled_interception() {
+        assert_eq!(cancelled_exit(false), None);
     }
 
     // T-1.4: All variants map to their named constants (exhaustive)
