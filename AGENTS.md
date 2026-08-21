@@ -511,8 +511,9 @@ The script:
 
 - Polls `gh pr checks <N> --watch --required --fail-fast` until all required checks are
   SUCCESS or one FAILS/CANCELS (exit 2 on failure).
-- Verifies `mergeStateStatus == CLEAN`. If `BEHIND`, exits 3 and asks you to rebase
-  (single maintainer, ~30s; no auto-rebase needed).
+- Verifies `mergeStateStatus` is `CLEAN` or `UNSTABLE` (UNSTABLE with required checks
+  green is the repo's normal green state — skipped-by-design jobs push it there, #823).
+  If `BEHIND`, exits 3 and asks you to rebase (single maintainer, ~30s; no auto-rebase needed).
 - Calls `gh pr merge <N> --squash --delete-branch`. This **respects branch protection** —
   required checks must be green at merge time. It is NOT the synchronous-PUT bypass
   (`gh api -X PUT .../pulls/N/merge`) which bypasses required checks and should not be
