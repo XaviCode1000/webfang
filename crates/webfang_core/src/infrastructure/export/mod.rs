@@ -10,11 +10,13 @@
 
 pub mod file_exporter;
 pub mod jsonl_exporter;
+pub mod record_store;
 pub mod state_store;
 pub mod vector_exporter;
 
 // Re-export for convenience
 pub use file_exporter::FileExporter;
 pub use jsonl_exporter::JsonlExporter;
+pub use record_store::{DomainRecords, LastError, RawRecord, RecordStore, RecordStoreError};
 pub use state_store::StateStore;
 pub use vector_exporter::VectorExporter;
