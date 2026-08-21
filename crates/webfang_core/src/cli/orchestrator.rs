@@ -245,6 +245,16 @@ pub async fn run(
     #[cfg(not(feature = "ai"))]
     let export_exit = export_phase(&results, &opts, state_store.as_ref()).await;
 
+    // Special cell — Cancelled (error-classification-matrix): cooperative
+    // cancellation is a control signal, not an operational failure, so it
+    // wins over classification-based routing below — a Ctrl-C mid-crawl
+    // exits 0 even with partial failures (#509 semantics at the CLI
+    // boundary). Export above already ran: captured content is still
+    // written (graceful shutdown).
+    if let Some(exit) = crate::cli::error::cancelled_exit(cancel.is_cancelled()) {
+        return exit;
+    }
+
     if let Some(exit) = report_phase(&results, &failures, blocked, opts.verbosity) {
         return exit;
     }
@@ -659,14 +669,17 @@ fn format_failure(url: &str, error: &crate::error::ScraperError, verbosity: u8) 
 /// instead of the misleading "no pages scraped" network error. Any real
 /// failure or any scraped page keeps the historical routing below.
 ///
-/// Severity routing (#537 + #706) applies when every URL failed:
+/// Severity routing (#537 + #706 + matrix rows 21/22) applies when every
+/// URL failed:
 ///
 /// 1. An internal-fatal failure wins → `CliExit::ScraperFailure` (3) — an
 ///    internal bug must not masquerade as a transient network outage.
-/// 2. Any [`crate::error::ScraperError::ExtractionFailed`] is next →
+/// 2. A permanent-kind [`crate::error::ScraperError::Io`] failure is next →
+///    `CliExit::IoError` (74) — an unwritable output path is EX_IOERR.
+/// 3. Any [`crate::error::ScraperError::ExtractionFailed`] is next →
 ///    `CliExit::DataFormatError` (65) — the pages were fetched but carried
 ///    no usable content (JS-only shells, poor fallback).
-/// 3. Anything else keeps `CliExit::NetworkError` (69).
+/// 4. Anything else keeps `CliExit::NetworkError` (69).
 ///
 /// The partial-success case always reports `PartialSuccess` (69) regardless of
 /// failure severity: some content was scraped, which is the dominant signal.
@@ -694,10 +707,20 @@ fn report_phase(
     }
 
     if results.is_empty() {
-        // Exit-code precedence in the all-fail arm: internal-fatal (3) outranks
-        // extraction-failed (65), which outranks the transient fallback (69)
-        // (#706). An internal bug must never masquerade as a data-format error.
+        // Exit-code precedence in the all-fail arm: internal-fatal (3)
+        // outranks the permanent-Io override (74), which outranks
+        // extraction-failed (65), which outranks the transient fallback
+        // (69) (#706 + matrix rows 21/22). An internal bug must never
+        // masquerade as a data-format error. The Io override sits here —
+        // AFTER the InternalFatal sweep, BEFORE extraction-failed — because
+        // since `ScraperError::classify` splits by kind, a permanent io
+        // error is PermanentFatal (never caught by the 3 sweep), and a run
+        // that failed entirely on an unwritable output path must report 74,
+        // not fall through to 65/69.
         if let Some(exit) = scraper_failure_for_internal_fatal(failures) {
+            return Some(exit);
+        }
+        if let Some(exit) = permanent_io_error_for_failures(failures) {
             return Some(exit);
         }
         if let Some(exit) = data_format_error_for_extraction_failed(failures) {
@@ -732,6 +755,22 @@ fn scraper_failure_for_internal_fatal(
             "Scraper failure: {internal_fatal} internal error(s) out of {} URLs",
             failures.len()
         ))
+    })
+}
+
+/// Typed override — permanent-kind I/O failures → [`CliExit::IoError`]
+/// (74, EX_IOERR), folding [`ScraperError::Io`] failures through the
+/// canonical [`crate::cli::error::permanent_io_error_exit_for`] helper
+/// (matrix rows 21/22). Transient io kinds return `None` and keep the
+/// class-default routing.
+fn permanent_io_error_for_failures(
+    failures: &[(String, crate::error::ScraperError)],
+) -> Option<CliExit> {
+    failures.iter().find_map(|(_, e)| match e {
+        crate::error::ScraperError::Io(io_err) => {
+            crate::cli::error::permanent_io_error_exit_for(io_err)
+        },
+        _ => None,
     })
 }
 
@@ -843,6 +882,13 @@ async fn run_batch(
     // with `#537` severity routing: partial success -> 69, all-fail with an
     // internal fatal error -> 3, otherwise 0. Crawl failures were only logged
     // above, so this is the only place the batch's true status surfaces.
+
+    // Special cell — Cancelled: same precedence as the single-run path —
+    // cancellation beats classification-based routing and exits 0.
+    if let Some(exit) = crate::cli::error::cancelled_exit(cancel.is_cancelled()) {
+        return exit;
+    }
+
     let total_failed = summary.failed + failures.len();
     let mut all_errors = summary.errors;
     all_errors.extend(failures);
@@ -1167,13 +1213,14 @@ async fn load_batch_manager_from_stdin(
 
 /// Determine the CLI exit code from batch scrape results.
 ///
-/// Severity routing (#537 + #706) for all-fail runs
+/// Severity routing (#537 + #706 + matrix rows 21/22) for all-fail runs
 /// (`failed > 0 && succeeded == 0`):
 ///
 /// 1. An internal-fatal failure wins → `CliExit::ScraperFailure` (3).
-/// 2. Any [`crate::error::ScraperError::ExtractionFailed`] is next →
+/// 2. A permanent-kind I/O failure is next → `CliExit::IoError` (74).
+/// 3. Any [`crate::error::ScraperError::ExtractionFailed`] is next →
 ///    `CliExit::DataFormatError` (65).
-/// 3. Anything else keeps `CliExit::NetworkError` (69).
+/// 4. Anything else keeps `CliExit::NetworkError` (69).
 ///
 /// Partial success remains `CliExit::PartialSuccess` (69) regardless of
 /// failure severity — some content was scraped, which is the dominant signal.
@@ -1183,9 +1230,15 @@ fn batch_exit_code(
     errors: &[(String, crate::error::ScraperError)],
 ) -> CliExit {
     if failed > 0 && succeeded == 0 {
-        // Same precedence as `report_phase` (#706): internal-fatal (3) first,
-        // then extraction-failed (65), then the transient fallback (69).
+        // Same precedence as `report_phase` (#706): internal-fatal (3)
+        // first, then the permanent-Io override (74), then
+        // extraction-failed (65), then the transient fallback (69).
+        // The 74 override must precede extraction-failed so an all-fail run
+        // caused by an unwritable output path reports 74 truthfully.
         if let Some(exit) = scraper_failure_for_internal_fatal(errors) {
+            return exit;
+        }
+        if let Some(exit) = permanent_io_error_for_failures(errors) {
             return exit;
         }
         if let Some(exit) = data_format_error_for_extraction_failed(errors) {
@@ -1511,6 +1564,82 @@ mod tests {
             reason: "contenido insuficiente (0 caracteres) — la página devolvió muy poco contenido extraíble"
                 .to_string(),
         }
+    }
+
+    // ===== permanent-Io exit-74 override tests (matrix rows 21/22) =====
+
+    fn io_err(kind: std::io::ErrorKind) -> crate::error::ScraperError {
+        crate::error::ScraperError::Io(std::io::Error::new(kind, "io failure"))
+    }
+
+    #[test]
+    fn batch_exit_code_all_permanent_io_returns_io_error_74() {
+        // Matrix row 22: an all-failed run caused by a permanent io error
+        // (unwritable output path) must exit 74 (EX_IOERR), not 3 or 69.
+        let errors = vec![(
+            "https://x.example.com".to_string(),
+            io_err(std::io::ErrorKind::PermissionDenied),
+        )];
+
+        let exit = batch_exit_code(0, 1, &errors);
+
+        assert!(
+            matches!(exit, CliExit::IoError(_)),
+            "permanent-kind Io all-fail must route to IoError(74), got {exit:?}"
+        );
+    }
+
+    #[test]
+    fn report_phase_all_permanent_io_returns_io_error_74() {
+        // Same contract through the single-page `report_phase` path.
+        let failures = vec![(
+            "https://x.example.com".to_string(),
+            io_err(std::io::ErrorKind::NotFound),
+        )];
+
+        let exit = report_phase(&[], &failures, 0, 0);
+
+        assert!(
+            matches!(exit, Some(CliExit::IoError(_))),
+            "permanent-kind Io all-fail must route to IoError(74), got {exit:?}"
+        );
+    }
+
+    #[test]
+    fn batch_exit_code_transient_io_keeps_network_error_69() {
+        // Matrix row 21: transient io kinds keep the class default (69);
+        // the 74 override must NOT fire for them.
+        let errors = vec![(
+            "https://x.example.com".to_string(),
+            io_err(std::io::ErrorKind::Interrupted),
+        )];
+
+        let exit = batch_exit_code(0, 1, &errors);
+
+        assert!(
+            matches!(exit, CliExit::NetworkError(_)),
+            "transient-kind Io all-fail must keep NetworkError(69), got {exit:?}"
+        );
+    }
+
+    #[test]
+    fn batch_exit_code_internal_fatal_outranks_permanent_io() {
+        // Precedence: the InternalFatal sweep still wins over the Io override —
+        // a run with a genuine internal bug reports 3, not 74.
+        let errors = vec![
+            ("https://x.example.com".to_string(), internal_err("bug")),
+            (
+                "https://y.example.com".to_string(),
+                io_err(std::io::ErrorKind::PermissionDenied),
+            ),
+        ];
+
+        let exit = batch_exit_code(0, 2, &errors);
+
+        assert!(
+            matches!(exit, CliExit::ScraperFailure(_)),
+            "InternalFatal must outrank the permanent-Io override, got {exit:?}"
+        );
     }
 
     // ===== extraction-failed exit-65 routing tests (#706) =====

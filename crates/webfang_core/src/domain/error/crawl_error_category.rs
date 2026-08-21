@@ -130,7 +130,47 @@ impl From<&CrawlError> for CrawlErrorCategory {
             },
             CrawlError::RateLimited(..) => Self::RateLimit,
             CrawlError::Parse(..) => Self::Extraction,
-            _ => Self::Internal,
+            // Every arm below was previously the `_ => Self::Internal`
+            // catch-all. Each is now mapped explicitly per the Error
+            // Classification Matrix (docs/error-classification-matrix.md);
+            // the comment cites the matrix row driving the choice.
+            // Row 15 (validation): no dedicated validation category exists,
+            // so the Internal catch-all remains the closest match.
+            CrawlError::InvalidUrl(_) => Self::Internal,
+            // Rows 9/10/11/12 (limits/budget family): budget stops are not
+            // operational failures and there is no budget category; the
+            // Internal catch-all is the closest existing category.
+            CrawlError::MaxDepthExceeded { .. }
+            | CrawlError::MaxPagesExceeded { .. }
+            | CrawlError::UrlExcluded(_)
+            | CrawlError::ResourceExhausted { .. }
+            | CrawlError::SitemapDepthExceeded => Self::Internal,
+            // Row 18 (domain/content family): a rejected content type is a
+            // content-processing failure, so it lands in Extraction next to
+            // `Parse`.
+            CrawlError::InvalidContentType(_) => Self::Extraction,
+            // Rows 21/22 (io by kind): infrastructure failures → Internal.
+            CrawlError::Io(_) => Self::Internal,
+            CrawlError::Internal(_) => Self::Internal,
+            // Row 20 (sitemap discovery family): no dedicated discovery
+            // category exists; Internal remains the catch-all.
+            CrawlError::SitemapNotFound(_) | CrawlError::Discovery(_) => Self::Internal,
+            CrawlError::SitemapEmpty => Self::Internal,
+            // Row 23 (persistence/internal infrastructure).
+            CrawlError::Storage(_) | CrawlError::Checkpoint(_) => Self::Internal,
+            // Row 24 (internal infrastructure: session pool lifecycle).
+            CrawlError::SessionPool(_) => Self::Internal,
+            // Taxonomy: per-URL retry-budget terminal state; job continues.
+            // No dedicated retry category exists → Internal catch-all.
+            CrawlError::RetryExhausted { .. } => Self::Internal,
+            // Family 1 (HTTP request construction/body-read failure):
+            // closest existing category is Http.
+            CrawlError::RequestFailed(_) => Self::Http,
+            // Row 13 (backpressure configuration bug) → Internal.
+            CrawlError::SemaphoreInanition => Self::Internal,
+            // Special cell — Cancelled: control signal, not an operational
+            // failure category; Internal catch-all if it ever surfaces.
+            CrawlError::Cancelled => Self::Internal,
         }
     }
 }
@@ -308,6 +348,54 @@ mod tests {
 
         let err = CrawlError::InvalidUrl("bad".into());
         assert_eq!(CrawlErrorCategory::from(&err), CrawlErrorCategory::Internal);
+    }
+
+    #[test]
+    fn every_former_catch_all_variant_is_mapped_explicitly() {
+        use crate::domain::error::ResourceKind;
+
+        // Triangulation for the removed `_ => Internal` arm: variants that
+        // keep the Internal catch-all keep it by explicit matrix-row
+        // decision, and the two family-matched ones land in their family
+        // category.
+        let internal = [
+            CrawlError::MaxDepthExceeded { current: 5, max: 3 },
+            CrawlError::MaxPagesExceeded { max: 10 },
+            CrawlError::UrlExcluded("https://spam.com".into()),
+            CrawlError::ResourceExhausted {
+                resource: ResourceKind::RamBudget,
+                limit: 1,
+                actual: 2,
+            },
+            CrawlError::SitemapDepthExceeded,
+            CrawlError::Io(std::io::Error::other("io")),
+            CrawlError::SitemapNotFound("https://example.com".into()),
+            CrawlError::Discovery("robots.txt unreachable".into()),
+            CrawlError::SitemapEmpty,
+            CrawlError::SessionPool("pool exhausted".into()),
+            CrawlError::RetryExhausted {
+                url: "https://example.com".into(),
+                attempts: 3,
+            },
+            CrawlError::SemaphoreInanition,
+            CrawlError::Cancelled,
+        ];
+        for err in &internal {
+            assert_eq!(
+                CrawlErrorCategory::from(err),
+                CrawlErrorCategory::Internal,
+                "expected Internal for {err:?}"
+            );
+        }
+
+        let err = CrawlError::InvalidContentType("image/png".into());
+        assert_eq!(
+            CrawlErrorCategory::from(&err),
+            CrawlErrorCategory::Extraction
+        );
+
+        let err = CrawlError::RequestFailed("body read failed".into());
+        assert_eq!(CrawlErrorCategory::from(&err), CrawlErrorCategory::Http);
     }
 
     #[test]
