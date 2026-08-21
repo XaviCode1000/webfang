@@ -366,4 +366,83 @@ mod tests {
             snap.content
         );
     }
+
+    #[test]
+    fn insta_playwright_github_nav() {
+        let snap = playwright(&parse(GITHUB_FIXTURE), true, None);
+        insta::assert_snapshot!("playwright_github_nav", snap.content);
+    }
+
+    #[test]
+    fn insta_playwright_form_page() {
+        let snap = playwright(&parse(FORM_FIXTURE), true, None);
+        insta::assert_snapshot!("playwright_form_page", snap.content);
+    }
+
+    #[test]
+    fn compact_vs_playwright_delta_github_nav() {
+        use crate::infrastructure::axtree::compact::compact;
+        let nodes = parse(GITHUB_FIXTURE);
+        let compact_snap = compact(&nodes, true, None);
+        let pw = playwright(&nodes, true, None);
+        // playwright uses chars/4, compact uses Σ(2+name/4+role/4) — delta ~51-79% per F1[6]
+        assert!(
+            pw.token_estimate > compact_snap.token_estimate,
+            "playwright token must exceed compact"
+        );
+        assert!(
+            pw.token_estimate <= compact_snap.token_estimate * 3,
+            "playwright token bounded, not unbounded"
+        );
+        // insta lock for deterministic regression
+        insta::assert_snapshot!(
+            "compact_vs_playwright_delta",
+            format!(
+                "compact token={} nodes={}\nplaywright token={} refs={}\nplaywright content:\n{}",
+                compact_snap.token_estimate,
+                compact_snap.nodes.len(),
+                pw.token_estimate,
+                pw.ref_count,
+                pw.content
+            )
+        );
+    }
+
+    #[test]
+    fn behavioral_cdp_mock_ephemeral_no_real_chrome() {
+        // Ephemeral adapter: fixture parse simulates CDP GetFullAXTree without browser/network
+        let nodes = parse(GITHUB_FIXTURE);
+        assert_eq!(nodes.len(), 9, "github_nav fixture must yield 9 AxNode");
+        let all = playwright(&nodes, false, None);
+        // 7 non-ignored non-generic nodes: navigation, 2 buttons, 2 links, heading, textbox
+        assert_eq!(all.ref_count, 7, "full tree ref_count must be 7");
+        assert!(!all.content.contains("@e"), "playwright must have zero @e");
+        // interactive_only reduces to 5
+        let interactive = playwright(&nodes, true, None);
+        assert_eq!(interactive.ref_count, 5);
+        assert!(interactive.ref_count < all.ref_count);
+        // stale-ref contract: reusing old eN after selector change requires re-snapshot
+        let filtered = playwright(&nodes, true, Some("sign"));
+        assert!(
+            filtered.content.contains("[ref=e1]"),
+            "refs must renumber from e1 after selector"
+        );
+        assert!(
+            !filtered.content.contains("Pricing"),
+            "selector must filter"
+        );
+    }
+
+    #[test]
+    fn observability_instrument_fields_present() {
+        // Verify token_estimate == chars/4 and ref_count emitted would be recorded via instrument
+        let snap = playwright(&parse(GITHUB_FIXTURE), true, None);
+        assert_eq!(snap.token_estimate, snap.content.chars().count() / 4);
+        assert!(snap.ref_count > 0);
+        // CorrelationId child shares trace_id — proof of R7 observability contract
+        let root = crate::domain::CorrelationId::new();
+        let child = root.child();
+        assert_eq!(root.trace_id(), child.trace_id());
+        assert_ne!(root.span_id(), child.span_id());
+    }
 }

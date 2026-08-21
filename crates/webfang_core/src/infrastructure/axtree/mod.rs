@@ -11,7 +11,7 @@
 //! feature-agnostic so the non-chromium stub keeps an identical signature.
 
 #[cfg(feature = "chromium")]
-mod compact;
+pub(crate) mod compact;
 
 #[cfg(feature = "chromium")]
 pub(crate) mod playwright;
@@ -174,7 +174,9 @@ where
 
 /// Fetch raw `Vec<AxNode>` via `with_cdp_page` (R4).
 #[cfg(feature = "chromium")]
-pub(crate) async fn fetch_raw_axtree(url: &Url) -> Result<Vec<chromiumoxide::cdp::browser_protocol::accessibility::AxNode>, DownloadError> {
+pub(crate) async fn fetch_raw_axtree(
+    url: &Url,
+) -> Result<Vec<chromiumoxide::cdp::browser_protocol::accessibility::AxNode>, DownloadError> {
     with_cdp_page(url, |page| async move {
         use tokio::time::{timeout, Duration};
         const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);

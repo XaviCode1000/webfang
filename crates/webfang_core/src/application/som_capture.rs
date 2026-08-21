@@ -41,21 +41,38 @@ pub struct SomCapture {
 /// Extract marks from an AX tree, filtering by viewport intersection.
 ///
 /// For each AX tree node, this function:
-/// 1. Generates a placeholder box model (simulating `DOM.getBoxModel`)
-/// 2. Checks if the box intersects the captured viewport
-/// 3. Emits a mark if the box intersects, with the node's name as label
-///
-/// # Arguments
-/// * `viewport` - The captured viewport dimensions
-///
-/// # Returns
-/// A vector of `Mark` objects, one per intersecting node.
+/// 1. Reuses [`crate::infrastructure::axtree::fetch_raw_axtree`] (R4) for the
+///    raw `Vec<AxNode>` — no formatting cost when only raw nodes are needed.
+/// 2. Generates a placeholder box model (simulating `DOM.getBoxModel`)
+/// 3. Checks if the box intersects the captured viewport
+/// 4. Emits a mark if the box intersects, with the node's name as label
 #[cfg(feature = "chromium")]
-pub async fn extract_marks(_url: &str) -> crate::Result<Vec<Mark>> {
-    // TODO: Implement full AXTree extraction when CDP client is available.
-    // For now, return empty marks to allow compilation and testing of
-    // the viewport filter logic without a running browser.
-    Ok(vec![])
+pub async fn extract_marks(url: &str) -> crate::Result<Vec<Mark>> {
+    use crate::infrastructure::axtree::fetch_raw_axtree;
+    let parsed =
+        url::Url::parse(url).map_err(|e| crate::ScraperError::invalid_url(e.to_string()))?;
+    let nodes = fetch_raw_axtree(&parsed)
+        .await
+        .map_err(|e| crate::ScraperError::extraction(format!("SOM fetch_raw failed: {e}")))?;
+    // Compact path kept for mark ref assignment without extra allocation.
+    let snapshot = crate::infrastructure::axtree::compact::compact(&nodes, true, None);
+    let mut marks = Vec::with_capacity(snapshot.nodes.len());
+    for (idx, node) in snapshot.nodes.iter().enumerate() {
+        let (box_, valid) = simulate_box_model(node, idx);
+        if valid {
+            marks.push(Mark {
+                r#ref: node.r#ref.clone(),
+                number: (idx + 1) as u32,
+                r#box: box_,
+                label: if node.name.is_empty() {
+                    None
+                } else {
+                    Some(node.name.clone())
+                },
+            });
+        }
+    }
+    Ok(marks)
 }
 
 /// Simulate a `DOM.getBoxModel` call for a compact node.
