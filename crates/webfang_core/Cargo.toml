@@ -140,6 +140,12 @@ criterion = { version = "0.5", features = ["html_reports"] }
 insta = { workspace = true }
 regex = { workspace = true }
 webfang_test_utils = { workspace = true }
+trybuild = "1"
+
+# Compile-fail proof suite lives in a subdir; declare it explicitly.
+[[test]]
+name = "page_state"
+path = "tests/compile_fail/page_state.rs"
 
 # ---------------------------------------------------------------------------
 

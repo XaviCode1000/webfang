@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use webfang_core::domain::page_state::{
-    Committed, Discovered, Extracted, Exported, Fetched, Fetching, PageStatus, PersistedRecord,
+    Committed, Discovered, Exported, Extracted, Fetched, Fetching, PageStatus, PersistedRecord,
     Processed, Queued, ReconcileError, Stateful,
 };
 
@@ -181,7 +181,8 @@ fn try_from_reconciles_every_matching_state() {
     }
 
     let discovered: Stateful<Raw, Discovered> =
-        Stateful::<Raw, Discovered>::reconcile(Raw::at(PageStatus::Discovered)).expect("discovered reconciles");
+        Stateful::<Raw, Discovered>::reconcile(Raw::at(PageStatus::Discovered))
+            .expect("discovered reconciles");
     assert_eq!(discovered.status(), PageStatus::Discovered);
 
     let queued: Stateful<Raw, Queued> =
@@ -189,19 +190,23 @@ fn try_from_reconciles_every_matching_state() {
     assert_eq!(queued.status(), PageStatus::Queued);
 
     let fetching: Stateful<Raw, Fetching> =
-        Stateful::<Raw, Fetching>::reconcile(Raw::at(PageStatus::Fetching)).expect("fetching reconciles");
+        Stateful::<Raw, Fetching>::reconcile(Raw::at(PageStatus::Fetching))
+            .expect("fetching reconciles");
     assert_eq!(fetching.status(), PageStatus::Fetching);
 
     let fetched: Stateful<Raw, Fetched> =
-        Stateful::<Raw, Fetched>::reconcile(Raw::at(PageStatus::Fetched)).expect("fetched reconciles");
+        Stateful::<Raw, Fetched>::reconcile(Raw::at(PageStatus::Fetched))
+            .expect("fetched reconciles");
     assert_eq!(fetched.status(), PageStatus::Fetched);
 
     let extracted: Stateful<Raw, Extracted> =
-        Stateful::<Raw, Extracted>::reconcile(Raw::at(PageStatus::Extracted)).expect("extracted reconciles");
+        Stateful::<Raw, Extracted>::reconcile(Raw::at(PageStatus::Extracted))
+            .expect("extracted reconciles");
     assert_eq!(extracted.status(), PageStatus::Extracted);
 
     let processed: Stateful<Raw, Processed> =
-        Stateful::<Raw, Processed>::reconcile(Raw::at(PageStatus::Processed)).expect("processed reconciles");
+        Stateful::<Raw, Processed>::reconcile(Raw::at(PageStatus::Processed))
+            .expect("processed reconciles");
     assert_eq!(processed.status(), PageStatus::Processed);
 
     let exported: Stateful<Raw, Exported> =
@@ -234,13 +239,19 @@ fn exported_requires_output_location_and_content_hash() {
 
     let err =
         Stateful::<Raw, Exported>::reconcile(raw).expect_err("missing output_location must fail");
-    assert_eq!(err, ReconcileError::MissingOutputLocation(PageStatus::Exported));
+    assert_eq!(
+        err,
+        ReconcileError::MissingOutputLocation(PageStatus::Exported)
+    );
 
     let mut raw = Raw::at(PageStatus::Exported);
     raw.output_location = Some("out/a.jsonl".into());
     let err =
         Stateful::<Raw, Exported>::reconcile(raw).expect_err("missing content_hash must fail");
-    assert_eq!(err, ReconcileError::MissingContentHash(PageStatus::Exported));
+    assert_eq!(
+        err,
+        ReconcileError::MissingContentHash(PageStatus::Exported)
+    );
 }
 
 #[test]
@@ -255,7 +266,7 @@ fn committed_requires_clean_error_state_and_one_attempt() {
 
     let mut raw = Raw::exported();
     raw.status = PageStatus::Committed;
-    let err =
-        Stateful::<Raw, Committed>::reconcile(raw).expect_err("zero attempts on COMMITTED must fail");
+    let err = Stateful::<Raw, Committed>::reconcile(raw)
+        .expect_err("zero attempts on COMMITTED must fail");
     assert_eq!(err, ReconcileError::CommittedWithZeroAttempts);
 }

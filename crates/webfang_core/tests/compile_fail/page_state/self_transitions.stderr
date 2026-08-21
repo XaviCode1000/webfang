@@ -1,0 +1,53 @@
+error[E0599]: no method named `queue` found for struct `Stateful<String, webfang_core::domain::page_state::Queued>` in the current scope
+ --> tests/compile_fail/page_state/self_transitions.rs:9:19
+  |
+9 |         let _ = q.queue();
+  |                   ^^^^^ method not found in `Stateful<String, Queued>`
+  |
+  = note: the method was found for
+          - `Stateful<R, webfang_core::domain::page_state::Discovered>`
+
+error[E0599]: no method named `start_fetch` found for struct `Stateful<String, webfang_core::domain::page_state::Fetching>` in the current scope
+  --> tests/compile_fail/page_state/self_transitions.rs:15:19
+   |
+15 |         let _ = f.start_fetch();
+   |                   ^^^^^^^^^^^ method not found in `Stateful<String, Fetching>`
+   |
+   = note: the method was found for
+           - `Stateful<R, webfang_core::domain::page_state::Queued>`
+
+error[E0599]: no method named `fetched` found for struct `Stateful<String, webfang_core::domain::page_state::Fetched>` in the current scope
+  --> tests/compile_fail/page_state/self_transitions.rs:22:19
+   |
+22 |         let _ = f.fetched();
+   |                   ^^^^^^^ method not found in `Stateful<String, Fetched>`
+   |
+   = note: the method was found for
+           - `Stateful<R, webfang_core::domain::page_state::Fetching>`
+
+error[E0599]: no method named `extracted` found for struct `Stateful<String, webfang_core::domain::page_state::Extracted>` in the current scope
+  --> tests/compile_fail/page_state/self_transitions.rs:32:19
+   |
+32 |         let _ = e.extracted();
+   |                   ^^^^^^^^^ method not found in `Stateful<String, Extracted>`
+   |
+   = note: the method was found for
+           - `Stateful<R, webfang_core::domain::page_state::Fetched>`
+
+error[E0599]: no method named `processed` found for struct `Stateful<String, webfang_core::domain::page_state::Processed>` in the current scope
+  --> tests/compile_fail/page_state/self_transitions.rs:43:19
+   |
+43 |         let _ = p.processed();
+   |                   ^^^^^^^^^ method not found in `Stateful<String, Processed>`
+   |
+   = note: the method was found for
+           - `Stateful<R, webfang_core::domain::page_state::Extracted>`
+
+error[E0599]: no method named `export_flushed` found for struct `Stateful<String, webfang_core::domain::page_state::Exported>` in the current scope
+  --> tests/compile_fail/page_state/self_transitions.rs:56:19
+   |
+56 |         let _ = e.export_flushed(PathBuf::from("out/self.jsonl"));
+   |                   ^^^^^^^^^^^^^^ method not found in `Stateful<String, Exported>`
+   |
+   = note: the method was found for
+           - `Stateful<R, webfang_core::domain::page_state::Processed>`

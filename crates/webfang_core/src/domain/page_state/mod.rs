@@ -31,7 +31,5 @@ pub mod status;
 pub mod typed;
 
 pub use status::PageStatus;
+pub use typed::{Committed, Discovered, Exported, Extracted, Fetched, Fetching, Processed, Queued};
 pub use typed::{PersistedRecord, ReconcileError, StateMarker, Stateful};
-pub use typed::{
-    Committed, Discovered, Extracted, Exported, Fetched, Fetching, Processed, Queued,
-};
