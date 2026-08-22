@@ -112,6 +112,33 @@ async fn waf_gauntlet_403_429_200_success() {
     );
 }
 
+/// Mount the trace-oriented WAF sequence: 403 → 429 → 429 → 200…
+///
+/// Why TWO 429s: the initial 403 triggers the rotated-User-Agent retry
+/// (#503 path). When that rotated request itself receives a 429, production
+/// captures the status and re-enters the loop WITHOUT emitting a log event
+/// (`wreq_downloader::fetch_inner`). A 429 only produces a trace event
+/// ("Retrying … after status 429") when a PRIMARY loop attempt receives it,
+/// so the second 429 lands on attempt 1 and exercises the unified
+/// rate-limit retry path whose trace event this test asserts.
+async fn mount_waf_trace_sequence(server: &MockServer, mock_path: &str) {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let counter_clone = Arc::clone(&counter);
+
+    Mock::given(method("GET"))
+        .and(path(mock_path))
+        .respond_with(move |_req: &wiremock::Request| {
+            let count = counter_clone.fetch_add(1, Ordering::SeqCst);
+            match count {
+                0 => ResponseTemplate::new(403),
+                1 | 2 => ResponseTemplate::new(429).insert_header("Retry-After", "0"),
+                _ => ResponseTemplate::new(200).set_body_string(GAUNTLET_HTML),
+            }
+        })
+        .mount(server)
+        .await;
+}
+
 // ===========================================================================
 // Test 2 — Observability: JSONL trace with correlated trace_id + retry events
 // ===========================================================================
@@ -119,15 +146,15 @@ async fn waf_gauntlet_403_429_200_success() {
 /// The `--trace-file` JSONL must contain retry events (403 warn, 429 debug)
 /// and every line must share the same `trace_id` (root span correlation).
 ///
-/// Flaky in CI: wiremock FIFO matching doesn't guarantee 403→429→200 order when
-/// User-Agent changes between requests. The functional test
-/// `waf_gauntlet_403_429_200_success` proves the retry logic works correctly.
-/// TODO: re-enable when wiremock is replaced with a deterministic mock server.
+/// Uses `mount_waf_trace_sequence` (403 → 429 → 429 → 200): see its doc
+/// comment for why a second 429 is required for the 429 event to appear.
+/// The functional test `waf_gauntlet_403_429_200_success` proves the plain
+/// 403 → 429 → 200 retry logic works correctly.
 #[ignore]
 #[tokio::test]
 async fn waf_gauntlet_observability_trace() {
     let t = BehavioralTest::new().await;
-    mount_waf_sequence(&t.server, "/gauntlet").await;
+    mount_waf_trace_sequence(&t.server, "/gauntlet").await;
 
     let trace_path = t.out.path().join("trace.jsonl");
     let base = t.server.uri();
