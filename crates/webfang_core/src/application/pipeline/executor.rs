@@ -3,8 +3,9 @@ use tracing::{instrument, Instrument};
 
 /// Executes a sequence of [`PipelineStage`]s on [`ScrapedItem`]s.
 ///
-/// Stages are processed in insertion order. The first stage to return
-/// [`StageOutcome::Skip`] or [`StageOutcome::Reject`] short-circuits the pipeline.
+/// Stages are processed in insertion order. The first stage to return a
+/// non-`Continue` outcome (`Filtered`, `Rejected`, or `Failed`) short-circuits
+/// the pipeline and the outcome is returned verbatim.
 pub struct PipelineExecutor {
     stages: Vec<Box<dyn PipelineStage>>,
 }
@@ -23,8 +24,8 @@ impl PipelineExecutor {
     /// Run all stages on `item` in order.
     ///
     /// Returns [`StageOutcome::Continue`] with the final item if every stage
-    /// passes. Returns early on the first [`StageOutcome::Skip`] or
-    /// [`StageOutcome::Reject`].
+    /// passes. Returns verbatim the first non-`Continue` outcome (`Filtered`,
+    /// `Rejected`, or `Failed`) without running later stages.
     #[instrument(skip(self, item), fields(stages = self.stages.len(), url = %item.url))]
     pub async fn execute(&self, mut item: ScrapedItem) -> StageOutcome {
         for stage in &self.stages {
@@ -38,12 +39,7 @@ impl PipelineExecutor {
             let outcome = stage.process(item).instrument(stage_span).await;
             match outcome {
                 StageOutcome::Continue(updated) => item = updated,
-                StageOutcome::Reject(reason) => {
-                    return StageOutcome::Reject(reason);
-                },
-                StageOutcome::Skip => {
-                    return StageOutcome::Skip;
-                },
+                other => return other,
             }
         }
         StageOutcome::Continue(item)
@@ -212,7 +208,11 @@ mod tests {
             _item: ScrapedItem,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = StageOutcome> + Send + '_>>
         {
-            Box::pin(async move { StageOutcome::Skip })
+            Box::pin(async move {
+                StageOutcome::Filtered {
+                    reason: crate::domain::pipeline_item::FilterReason::NonContentPath,
+                }
+            })
         }
     }
 
@@ -228,7 +228,11 @@ mod tests {
             _item: ScrapedItem,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = StageOutcome> + Send + '_>>
         {
-            Box::pin(async move { StageOutcome::Reject("invalid content".into()) })
+            Box::pin(async move {
+                StageOutcome::Rejected {
+                    reason: crate::domain::pipeline_item::RejectReason::EmptyContent,
+                }
+            })
         }
     }
 
@@ -313,7 +317,12 @@ mod tests {
         let item = ScrapedItem::default();
         let result = executor.execute(item).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0);
-        assert_eq!(result, StageOutcome::Skip);
+        assert_eq!(
+            result,
+            StageOutcome::Filtered {
+                reason: crate::domain::pipeline_item::FilterReason::NonContentPath
+            }
+        );
     }
 
     #[tokio::test]
@@ -329,7 +338,12 @@ mod tests {
         let item = ScrapedItem::default();
         let result = executor.execute(item).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0);
-        assert_eq!(result, StageOutcome::Reject("invalid content".into()));
+        assert_eq!(
+            result,
+            StageOutcome::Rejected {
+                reason: crate::domain::pipeline_item::RejectReason::EmptyContent
+            }
+        );
     }
 
     #[tokio::test]
@@ -355,7 +369,12 @@ mod tests {
 
         let item = ScrapedItem::default();
         let result = executor.execute(item).await;
-        assert_eq!(result, StageOutcome::Skip);
+        assert_eq!(
+            result,
+            StageOutcome::Filtered {
+                reason: crate::domain::pipeline_item::FilterReason::NonContentPath
+            }
+        );
     }
 
     #[test]
