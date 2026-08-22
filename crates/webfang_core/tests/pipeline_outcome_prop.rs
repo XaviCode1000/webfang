@@ -76,8 +76,8 @@ impl PipelineStage for FixedOutcomeStage {
 
 /// Static single-letter tags avoid leaking strings per proptest case.
 const LETTERS: [&str; 26] = [
-    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q",
-    "r", "s", "t", "u", "v", "w", "x", "y", "z",
+    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s",
+    "t", "u", "v", "w", "x", "y", "z",
 ];
 
 fn item_for(url: &str) -> ScrapedItem {
