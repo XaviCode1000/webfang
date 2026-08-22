@@ -59,6 +59,30 @@ pub struct ObsidianOptions {
     pub vault_path: Option<std::path::PathBuf>,
 }
 
+/// Write bytes atomically: temp file in the SAME directory + rename.
+///
+/// A crash mid-write leaves either the previous complete file or the new
+/// complete file under the final name; the leftover `.tmp` is never read as
+/// output (and is GC'd by the JSONL session on the next run of that output).
+fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    use std::fs;
+
+    let file_name = path
+        .file_name()
+        .map(std::ffi::OsStr::to_string_lossy)
+        .unwrap_or_else(|| "output".into());
+    let tmp = path.with_file_name(format!(".{file_name}.tmp"));
+    fs::write(&tmp, bytes)?;
+    match fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Best-effort cleanup so stray temps do not accumulate.
+            let _ = fs::remove_file(&tmp);
+            Err(From::from(e))
+        },
+    }
+}
+
 /// Save scraped results to output directory
 ///
 /// # Arguments
@@ -103,7 +127,7 @@ fn save_as_markdown(
                 let fallback_path = output_dir.join("index.md");
                 fs::create_dir_all(output_dir)?;
                 let content = format!("# {}\n\n{}", item.title, item.content);
-                fs::write(&fallback_path, content)?;
+                write_atomic(&fallback_path, content.as_bytes())?;
                 continue;
             },
         };
@@ -165,7 +189,7 @@ fn save_as_markdown(
         );
 
         let final_content = format!("---\n{}\n---\n\n{}", fm.trim_end(), processed);
-        fs::write(&full_path, final_content)?;
+        write_atomic(&full_path, final_content.as_bytes())?;
         tracing::info!("💾 Saved: {}", full_path.display());
     }
 
@@ -246,7 +270,7 @@ fn save_as_text(
                      ========================================",
                     item.title, item.url, author, date, item.content
                 );
-                fs::write(&fallback_path, &content)?;
+                write_atomic(&fallback_path, content.as_bytes())?;
                 continue;
             },
         };
@@ -277,7 +301,7 @@ fn save_as_text(
              ========================================",
             item.title, item.url, author, date, item.content
         );
-        fs::write(&full_path, &content)?;
+        write_atomic(&full_path, content.as_bytes())?;
         tracing::info!("💾 Saved: {}", full_path.display());
     }
 
@@ -302,7 +326,7 @@ fn save_as_json(results: &[ScrapedContent], output_dir: &Path) -> Result<()> {
     merged.extend_from_slice(results);
 
     let json = serde_json::to_string_pretty(&merged)?;
-    fs::write(&json_path, json)?;
+    write_atomic(&json_path, json.as_bytes())?;
     tracing::info!("💾 Saved: {}", json_path.display());
 
     Ok(())

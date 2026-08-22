@@ -142,6 +142,9 @@ regex = { workspace = true }
 webfang_test_utils = { workspace = true }
 trybuild = "1"
 
+# Integration tests parse exported JSONL lines directly.
+serde_json = { workspace = true }
+
 # Compile-fail proof suite lives in a subdir; declare it explicitly.
 [[test]]
 name = "page_state"
