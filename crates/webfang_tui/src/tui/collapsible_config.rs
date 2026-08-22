@@ -24,6 +24,7 @@ use ratatui::widgets::{Block, List, ListItem, Paragraph};
 use ratatui::Frame;
 use ratatui_form::{Form, FormResult};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::action::Action;
@@ -105,6 +106,10 @@ pub struct CollapsibleConfig {
     pub cancelled: bool,
     /// Action channel sender
     action_tx: Option<UnboundedSender<Action>>,
+    /// User-touched fields (last-write-wins, pruned when reverted to initial)
+    touched: BTreeMap<String, Value>,
+    /// Snapshot of initial form values for revert pruning (design D2)
+    initial: BTreeMap<String, Value>,
 }
 
 impl Default for CollapsibleConfig {
@@ -116,13 +121,29 @@ impl Default for CollapsibleConfig {
 impl CollapsibleConfig {
     /// Create a new collapsible config with all sections.
     pub fn new() -> Self {
+        let sections = Self::build_sections();
+        let touched = BTreeMap::new();
+        let initial = {
+            let mut merged = serde_json::Map::new();
+            for section in &sections {
+                let section_data = section.form.to_json();
+                if let Value::Object(map) = section_data {
+                    for (k, v) in map {
+                        merged.insert(k, v);
+                    }
+                }
+            }
+            merged.into_iter().collect::<BTreeMap<String, Value>>()
+        };
         Self {
-            sections: Self::build_sections(),
+            sections,
             cursor: 0,
             mode: ConfigMode::SectionList,
             submitted: false,
             cancelled: false,
             action_tx: None,
+            touched,
+            initial,
         }
     }
 
@@ -263,6 +284,19 @@ impl CollapsibleConfig {
     pub fn is_section_expanded(&self, index: usize) -> bool {
         self.sections.get(index).is_some_and(|s| s.expanded)
     }
+
+    /// Serialize ONLY user-touched fields (design D2).
+    ///
+    /// Last-write-wins map pruned when a field reverts to its initial value.
+    #[must_use]
+    pub fn touched_overrides(&self) -> Value {
+        let map: serde_json::Map<String, Value> = self
+            .touched
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        Value::Object(map)
+    }
 }
 
 // ============================================================================
@@ -286,10 +320,10 @@ impl Component for CollapsibleConfig {
             return Ok(Some(Action::ConfigCancelled));
         }
 
-        // Ctrl+S to submit
+        // Ctrl+S to submit — emit ONLY touched overrides (design D2)
         if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('s')) {
             self.submitted = true;
-            return Ok(Some(Action::ConfigDone(Some(self.to_json()))));
+            return Ok(Some(Action::ConfigDone(Some(self.touched_overrides()))));
         }
 
         match self.mode {
@@ -494,23 +528,37 @@ impl CollapsibleConfig {
                 Ok(None)
             },
             _ => {
-                // Delegate to form
-                if let Some(form) = self.focused_form() {
+                // D2: snapshot before delegating to form, diff after, insert changed keys
+                let before = self.to_json();
+                let form_result = if let Some(form) = self.focused_form() {
                     form.handle_input(key);
-                    match form.result() {
-                        FormResult::Submitted => {
-                            // Section form submitted, go back to section list
-                            self.mode = ConfigMode::SectionList;
-                            Ok(None)
-                        },
-                        FormResult::Cancelled => {
-                            self.mode = ConfigMode::SectionList;
-                            Ok(None)
-                        },
-                        FormResult::Active => Ok(None),
-                    }
+                    Some(form.result().clone())
                 } else {
-                    Ok(None)
+                    None
+                };
+                let after = self.to_json();
+                if let (Value::Object(before_map), Value::Object(after_map)) = (before, after) {
+                    for (k, after_v) in after_map {
+                        if before_map.get(&k) != Some(&after_v) {
+                            let init_v = self.initial.get(&k);
+                            if Some(&after_v) == init_v {
+                                self.touched.remove(&k);
+                            } else {
+                                self.touched.insert(k, after_v);
+                            }
+                        }
+                    }
+                }
+                match form_result {
+                    Some(FormResult::Submitted) => {
+                        self.mode = ConfigMode::SectionList;
+                        Ok(None)
+                    },
+                    Some(FormResult::Cancelled) => {
+                        self.mode = ConfigMode::SectionList;
+                        Ok(None)
+                    },
+                    _ => Ok(None),
                 }
             },
         }
@@ -605,5 +653,101 @@ mod tests {
     fn section_content_colors() {
         assert_eq!(Theme::section_content(true), Theme::text());
         assert_eq!(Theme::section_content(false), Theme::text_muted());
+    }
+
+    // ========================================================================
+    // Phase 4 RED — D2 touched-only tracking (must fail before GREEN)
+    // ========================================================================
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn touched_overrides_initially_empty() {
+        let cfg = CollapsibleConfig::new();
+        let v = cfg.touched_overrides();
+        assert!(v.is_object());
+        assert_eq!(
+            v.as_object().unwrap().len(),
+            0,
+            "new session must emit {{}}"
+        );
+    }
+
+    #[test]
+    fn empty_edit_session_emits_empty_payload() {
+        let mut cfg = CollapsibleConfig::new();
+        // No field edits, just navigation
+        cfg.handle_key_event(key(KeyCode::Down)).unwrap();
+        cfg.handle_key_event(key(KeyCode::Up)).unwrap();
+        let v = cfg.touched_overrides();
+        assert_eq!(v.as_object().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn single_edit_emits_only_touched_field() {
+        let mut cfg = CollapsibleConfig::new();
+        // Focus Output section (index 1) which contains format; switch to FieldEdit
+        cfg.cursor = 1;
+        cfg.handle_key_event(key(KeyCode::Enter)).unwrap(); // SectionList -> FieldEdit
+                                                            // Tab to 'format' select (index 1 in Output form: output(0), format(1))
+        cfg.handle_key_event(key(KeyCode::Tab)).unwrap();
+        // Select field: Enter toggles open, Down moves, Enter selects
+        // Default is "markdown"; change to "json" (second option)
+        cfg.handle_key_event(key(KeyCode::Enter)).unwrap(); // open
+        cfg.handle_key_event(key(KeyCode::Down)).unwrap(); // highlight json
+        cfg.handle_key_event(key(KeyCode::Enter)).unwrap(); // select json
+        let v = cfg.touched_overrides();
+        let obj = v.as_object().expect("touched_overrides must be object");
+        assert_eq!(
+            obj.len(),
+            1,
+            "only one field should be touched, got: {obj:?}"
+        );
+        assert_eq!(obj.get("format").and_then(|x| x.as_str()), Some("json"));
+        // Untouched fields must be absent
+        assert!(!obj.contains_key("max_pages"));
+        assert!(!obj.contains_key("output"));
+    }
+
+    #[test]
+    fn edit_then_revert_emits_nothing() {
+        let mut cfg = CollapsibleConfig::new();
+        // Edit a text field then revert to initial value
+        cfg.cursor = 2; // Discovery
+        cfg.handle_key_event(key(KeyCode::Enter)).unwrap(); // -> FieldEdit
+                                                            // Discovery fields: use_sitemap(0), sitemap_url(1), max_pages(2), max_depth(3), sitemap_depth(4)
+                                                            // Tab twice to reach max_pages (index 2)
+        cfg.handle_key_event(key(KeyCode::Tab)).unwrap();
+        cfg.handle_key_event(key(KeyCode::Tab)).unwrap();
+        // Type '9' appending to "10" => "109"
+        cfg.handle_key_event(key(KeyCode::Char('9'))).unwrap();
+        // Backspace removes last char => back to "10" (initial)
+        cfg.handle_key_event(key(KeyCode::Backspace)).unwrap();
+        let v = cfg.touched_overrides();
+        assert_eq!(
+            v.as_object().unwrap().len(),
+            0,
+            "reverted field must not be emitted, got: {v}"
+        );
+    }
+
+    #[test]
+    fn untouched_fields_absent_from_export() {
+        let mut cfg = CollapsibleConfig::new();
+        // Edit only one field in Obsidian section
+        cfg.cursor = 6; // Obsidian
+        cfg.handle_key_event(key(KeyCode::Enter)).unwrap();
+        // Obsidian fields: wiki_links(0), tags(1), relative_assets(2), rich_metadata(3), vault(4), quick_save(5)
+        // wiki_links is checkbox; toggle it
+        cfg.handle_key_event(key(KeyCode::Char(' '))).unwrap();
+        let v = cfg.touched_overrides();
+        let obj = v.as_object().unwrap();
+        assert_eq!(obj.len(), 1);
+        assert!(obj.contains_key("obsidian_wiki_links"));
+        assert!(!obj.contains_key("url"));
+        assert!(!obj.contains_key("format"));
+        assert!(!obj.contains_key("max_pages"));
     }
 }
