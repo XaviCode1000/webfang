@@ -20,63 +20,14 @@
 //! - `scrape_date`: Date of scrape (optional)
 //! - `extra_metadata`: Additional metadata HashMap (optional)
 
-use std::fs::{self, OpenOptions};
-use std::io::{BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::fs;
 
-use fs2::FileExt;
+use std::path::PathBuf;
+
 use serde::Serialize;
 
 use crate::domain::entities::DocumentChunkValidated;
 use crate::domain::exporter::{ExportResult, ExporterConfig, ExporterError};
-
-/// RAII wrapper around an exclusive file lock. While alive it holds the lock;
-/// on drop it releases the lock **and deletes the lock file** so no `.lock`
-/// orphan is left behind (issue #582).
-///
-/// `#[must_use]` warns if a caller acquires the lock but lets it drop
-/// immediately (a likely bug — the lock would be released before any write).
-#[must_use]
-struct FileLock {
-    handle: std::fs::File,
-    lock_path: PathBuf,
-}
-
-impl FileLock {
-    /// Acquire an exclusive lock at `<path>.jsonl.lock`.
-    fn acquire(path: &Path) -> ExportResult<Self> {
-        let lock_path = path.with_extension("jsonl.lock");
-        // M1 FIX: Write PID metadata to lock file for debugging
-        let mut lock_file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&lock_path)
-            .map_err(|e| ExporterError::WriteError(format!("{}: {}", lock_path.display(), e)))?;
-        use std::io::Write;
-        let _ = writeln!(lock_file, "pid={} op=exclusive_write", std::process::id());
-        // allow: fs2::FileExt::lock_exclusive, clippy misidentifies as std::io::FileExt (1.89+)
-        #[allow(clippy::incompatible_msrv)]
-        lock_file
-            .lock_exclusive()
-            .map_err(|e| ExporterError::WriteError(format!("failed to acquire file lock: {e}")))?;
-        Ok(Self {
-            handle: lock_file,
-            lock_path,
-        })
-    }
-}
-
-impl Drop for FileLock {
-    fn drop(&mut self) {
-        // Release the OS-level exclusive lock, then delete the lock file. Both
-        // best-effort: a failure here must not mask the real export result.
-        // Fully qualified syntax: avoids unstable_name_collisions with future
-        // std::fs::File::unlock (rust-lang/rust#48919).
-        let _ = fs2::FileExt::unlock(&self.handle);
-        let _ = fs::remove_file(&self.lock_path);
-    }
-}
 
 /// Webfang JSONL metadata schema (v2.1.0)
 ///
@@ -202,13 +153,41 @@ impl<'a> WebfangMetadata<'a> {
 #[derive(Debug)]
 pub struct JsonlExporter {
     config: ExporterConfig,
+    /// Single-writer session (PR4, design D4): created lazily on first
+    /// write, ONE writer thread per run; owns torn-tail recovery, the
+    /// content-hash index, and the flush-ack barrier.
+    session: std::sync::OnceLock<super::jsonl_writer::JsonlSession>,
 }
 
 impl JsonlExporter {
+    /// Access the per-run single-writer session, creating it on first use.
+    ///
+    /// One session per RUN (the exporter instance lives for the run): its
+    /// open() performs torn-tail recovery + hash-index build + tmp GC before
+    /// any append of this run touches the file.
+    fn session(&self) -> ExportResult<&super::jsonl_writer::JsonlSession> {
+        if let Some(session) = self.session.get() {
+            return Ok(session);
+        }
+        let path = self.config.output_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(ExporterError::DirectoryCreation)?;
+        }
+        let (session, _hash_index) = super::jsonl_writer::JsonlSession::open(&path)
+            .map_err(|e| ExporterError::WriteError(format!("{}: {}", path.display(), e)))?;
+        let _ = self.session.set(session);
+        self.session.get().ok_or_else(|| {
+            ExporterError::WriteError("JSONL session initialization vanished".to_owned())
+        })
+    }
+
     /// Create a new JsonlExporter with the given configuration
     #[must_use]
     pub fn new(config: ExporterConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            session: std::sync::OnceLock::new(),
+        }
     }
 
     /// Create from output directory and filename
@@ -219,43 +198,6 @@ impl JsonlExporter {
         Self::new(config)
     }
 
-    /// Get the file handle, creating directory if needed
-    fn writer(&self) -> ExportResult<BufWriter<std::fs::File>> {
-        let path = self.config.output_path();
-
-        // Create parent directory if it doesn't exist
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(ExporterError::DirectoryCreation)?;
-        }
-
-        // Acquire an exclusive file lock for the duration of this write, then
-        // release it (and delete the lock file) when the returned writer is
-        // dropped. A short-lived lock avoids blocking a second exporter pointing
-        // at the same file (e.g. the append path in `test_jsonl_exporter_append`),
-        // and deleting the file prevents orphaned `.lock` leftovers (issue #582).
-        let _lock = FileLock::acquire(&path)?;
-
-        // Fix: Only truncate if file doesn't exist yet.
-        // Prevents data loss when writer() is called multiple times
-        // (once per document in export(), once per batch in export_batch())
-        let file_exists = path.exists();
-        // When file exists: open in append mode (preserve content).
-        // When file does not exist: create + write + truncate (fresh start).
-        // Split into two branches to avoid clippy warning on .write + .append.
-        let file = if file_exists {
-            OpenOptions::new().create(true).append(true).open(&path)
-        } else {
-            OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&path)
-        }
-        .map_err(|e| ExporterError::WriteError(format!("{}: {}", path.display(), e)))?;
-
-        Ok(BufWriter::new(file))
-    }
-
     /// Serialize a single document to JSON line with WebfangMetadata
     fn serialize_line(&self, doc: &DocumentChunkValidated) -> ExportResult<String> {
         let metadata = WebfangMetadata::from_chunk(doc);
@@ -263,13 +205,27 @@ impl JsonlExporter {
     }
 }
 
+impl Drop for JsonlExporter {
+    fn drop(&mut self) {
+        // Drain queued appends, final-flush, join the writer. Deterministic:
+        // no orphaned buffered bytes survive this exporter's lifetime.
+        if let Some(session) = self.session.get() {
+            let _ = session.close_blocking();
+        }
+    }
+}
+
 impl crate::domain::exporter::Exporter for JsonlExporter {
     fn export(&self, document: DocumentChunkValidated) -> ExportResult<()> {
         let line = self.serialize_line(&document)?;
-        let mut writer = self.writer()?;
-        writer.write_all(line.as_bytes())?;
-        writer.write_all(b"\n")?;
-        writer.flush()?;
+        let session = self.session()?;
+        // D3 step-1: export() returns only after the writer's OS-level flush
+        // ack \u2014 the ack IS the durability barrier for the record-store save
+        // that follows in the commit protocol.
+        session
+            .append_blocking(format!("{line}\n").as_bytes())
+            .and_then(|()| session.flush_blocking())
+            .map_err(|e| ExporterError::WriteError(e.to_string()))?;
         tracing::debug!("Exported document to JSONL: {}", document.id);
         Ok(())
     }
@@ -277,15 +233,18 @@ impl crate::domain::exporter::Exporter for JsonlExporter {
     #[tracing::instrument(skip(self, documents), fields(exporter = "jsonl", documents = documents.len()))]
     fn export_batch(&self, documents: &[DocumentChunkValidated]) -> ExportResult<()> {
         let count = documents.len();
-        let mut writer = self.writer()?;
+        let session = self.session()?;
 
         for doc in documents {
             let line = self.serialize_line(doc)?;
-            writer.write_all(line.as_bytes())?;
-            writer.write_all(b"\n")?;
+            session
+                .append_blocking(format!("{line}\n").as_bytes())
+                .map_err(|e| ExporterError::WriteError(e.to_string()))?;
         }
-
-        writer.flush()?;
+        // One flush barrier per batch; every queued byte is durable on return.
+        session
+            .flush_blocking()
+            .map_err(|e| ExporterError::WriteError(e.to_string()))?;
         tracing::info!("Batch exported {} documents to JSONL", count);
         Ok(())
     }

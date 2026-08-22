@@ -431,13 +431,10 @@ fn exported_record_with_hash_in_index_promotes_straight_to_committed() {
         1,
         "no re-export when output proven flushed"
     );
-    let raw = std::fs::read_to_string(dir.path().join("exp.test.json"))
-        .unwrap_or_else(|e| format!("READ ERR: {e}"));
-    eprintln!("RAW FILE: {}", raw);
-    let dbg = store.load().unwrap();
-    eprintln!("DEBUG keys: {:?}", dbg.keys().collect::<Vec<_>>());
-    eprintln!("DEBUG entry: {:?}", dbg.get("https://exp.test/a"));
-    assert_eq!(dbg["https://exp.test/a"].status, PageStatus::Committed);
+    assert_eq!(
+        store.load().unwrap()["https://exp.test/a"].status,
+        PageStatus::Committed
+    );
 }
 
 #[test]

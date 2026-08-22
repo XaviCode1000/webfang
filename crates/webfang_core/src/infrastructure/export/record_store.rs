@@ -961,7 +961,14 @@ mod tests {
 
         store.save(&records).unwrap();
         let second = fs::read_to_string(store.state_path()).unwrap();
-        assert_eq!(first, second, "identical data must serialize identically");
+        // Compare the RECORDS payload only: the envelope stamps `updated_at`
+        // from the file mtime, which legitimately advances between saves.
+        let first_v: serde_json::Value = serde_json::from_str(&first).unwrap();
+        let second_v: serde_json::Value = serde_json::from_str(&second).unwrap();
+        assert_eq!(
+            first_v["records"], second_v["records"],
+            "identical data must serialize identically"
+        );
         let a_pos = first.find("\"https://stable.test/a\"").expect("a present");
         let z_pos = first.find("\"https://stable.test/z\"").expect("z present");
         assert!(
