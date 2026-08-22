@@ -8,7 +8,11 @@
 /// Operational classification of errors for observability and retry logic.
 ///
 /// Partitions error variants by severity and recoverability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// Serializes as its snake_case variant name so persisted records
+/// (`RawRecord.last_error.class`) stay stable across releases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ErrorClass {
     /// Transient errors that should be retried immediately (e.g., connection reset, 5xx)
     TransientRetriable,
