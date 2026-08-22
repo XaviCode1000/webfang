@@ -24,6 +24,162 @@
 
 use webfang_core::cli::orchestrator;
 
+#[cfg(test)]
+mod args;
+
+// ============================================================================
+// D1 provenance capture (stabilization-config-normalization, Phase 1 prototype)
+// ============================================================================
+
+/// Every arg id whose provenance the normalization pipeline consumes.
+///
+/// Ids are clap's derive-generated ids (kebab-case), one per contested field
+/// across the flattened groups (`crawler`, `export`, `obsidian`, `tui`, `ai`).
+#[cfg(test)]
+const CONTESTED_ARG_IDS: &[&str] = &[
+    // target / crawler
+    "url",
+    "selector",
+    "delay_ms",
+    "max_pages",
+    "concurrency",
+    "use_sitemap",
+    "sitemap_url",
+    "single_page",
+    "resume",
+    "state_dir",
+    "download_images",
+    "download_documents",
+    "download_assets",
+    "extraction_fingerprint",
+    "clean_ai",
+    "adaptive_selectors",
+    "verbose",
+    "quiet",
+    "dry_run",
+    "trace_file",
+    "max_depth",
+    "timeout_secs",
+    "include_pattern",
+    "exclude_pattern",
+    "asset_naming",
+    "download_concurrency",
+    "max_retries",
+    "backoff_base_ms",
+    "backoff_max_ms",
+    "accept_language",
+    "user_agent",
+    "header",
+    "cookie",
+    "max_file_size",
+    "download_timeout",
+    "sitemap_depth",
+    "checkpoint_interval",
+    "no_checkpoint",
+    "ignore_robots",
+    "ignore_waf",
+    "autoscale",
+    "no_session_health",
+    "h2_profile",
+    "js_strategy",
+    "obscura_binary",
+    "dom_preprune",
+    // export
+    "output",
+    "format",
+    "export_format",
+    "cpu_cores",
+    "ram_budget",
+    "db_path",
+    "elastic",
+    "output_vectors",
+    "batch",
+    "batch_file",
+    "batch_concurrency",
+    "pipeline",
+    "pipeline_output",
+    // obsidian
+    "obsidian_relative_assets",
+    "obsidian_rich_metadata",
+    "obsidian_tags",
+    "obsidian_wiki_links",
+    "quick_save",
+    "vault",
+    // tui
+    "config_tui",
+    "interactive",
+    "tui",
+    // ai
+    "ai_model",
+    "max_tokens",
+    "offline",
+    "threshold",
+];
+
+/// Provenance map `arg_id → explicit stage` captured from a single clap parse
+/// pass (design.md D1).
+///
+/// Only EXPLICIT sources are recorded: `CommandLine` and `EnvVariable`. Absent
+/// ids and `DefaultValue` are omitted — those stages simply never write.
+/// Phase 1 keeps this a test-visible prototype living beside `parse_args()`;
+/// Phase 3 re-homes it onto [`webfang_core::cli::ConfigSource`] inside the
+/// normalization pipeline.
+#[cfg(test)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArgSources {
+    entries: Vec<(&'static str, Stage)>,
+}
+
+/// Coarse stage classification used by the Phase 1 prototype.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    /// Value came from the command line this invocation.
+    Cli,
+    /// Value came from a `WEBFANG_*` environment variable.
+    Environment,
+}
+
+#[cfg(test)]
+impl ArgSources {
+    /// Capture per-arg provenance from already-parsed matches.
+    ///
+    /// One conceptual parse pass: clap builds `ArgMatches` once; reading
+    /// `value_source` per contested id is O(1) map lookups afterwards.
+    pub fn capture(matches: &clap::ArgMatches) -> Self {
+        use clap::parser::ValueSource;
+        // Ids actually present in these matches (defaults included). Querying
+        // value_source with an id that never entered the map panics, so the
+        // contested list is intersected with the present-id set first.
+        let present: std::collections::HashSet<&str> =
+            matches.ids().map(|id| id.as_str()).collect();
+        let entries = CONTESTED_ARG_IDS
+            .iter()
+            .filter(|id| present.contains(*id))
+            .filter_map(|id| match matches.value_source(id) {
+                Some(ValueSource::CommandLine) => Some((*id, Stage::Cli)),
+                Some(ValueSource::EnvVariable) => Some((*id, Stage::Environment)),
+                _ => None, // DefaultValue → stage skips
+            })
+            .collect();
+        Self { entries }
+    }
+
+    /// Whether `id` was explicitly provided on the command line.
+    pub fn is_cli(&self, id: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|(k, s)| *k == id && *s == Stage::Cli)
+    }
+
+    /// Whether `id` was explicitly provided through its env variable.
+    pub fn is_env(&self, id: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|(k, s)| *k == id && *s == Stage::Environment)
+    }
+}
+
 use std::env;
 use std::io::{self, IsTerminal};
 use std::panic;
