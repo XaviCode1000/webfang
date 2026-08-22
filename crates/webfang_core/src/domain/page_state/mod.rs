@@ -2,18 +2,18 @@
 //!
 //! Two-layer typestate design (D1, frozen):
 //!
-//! - **Layer 1** ([`status::PageStatus`]) — plain serde enum, the ONLY
+//! - **Layer 1** ([`crate::domain::page_state::status::PageStatus`]) — plain serde enum, the ONLY
 //!   serialized form. Persisted records may hold ANY status after a crash;
 //!   that is honest durable truth.
-//! - **Layer 2** ([`typed`]) — zero-sized state markers + [`typed::Stateful`]
+//! - **Layer 2** ([`crate::domain::page_state::typed`]) — zero-sized state markers + [`crate::domain::page_state::typed::Stateful`]
 //!   phantom wrapper. Legal transitions are methods defined only on
 //!   source-state impls; illegal transitions do not compile (SC1, proven by
 //!   the trybuild suite in `tests/compile_fail/page_state/`).
 //!
 //! Runtime logic exists ONLY at the persistence seam: reconstructing a
 //! `Stateful` from raw persisted data validates the record's invariants once
-//! (per-state `TryFrom`, see [`typed::PersistedRecord`] and
-//! [`typed::ReconcileError`]). In-memory code physically cannot express an
+//! (per-state `TryFrom`, see [`crate::domain::page_state::typed::PersistedRecord`] and
+//! [`crate::domain::page_state::typed::ReconcileError`]). In-memory code physically cannot express an
 //! illegal move.
 //!
 //! # Legacy partial encodings (R1 mitigation)
