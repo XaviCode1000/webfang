@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ⚠️ Breaking Changes
 
+#### Config precedence fix — TOML no longer beats explicit default-equal CLI/env values (Sprint 6, #302, Gate 3)
+- **What changed:** configuration values now carry per-value provenance (`ConfigValue<T>` / `ConfigSource`: Default → ConfigFile → Environment → Cli → Tui) and merge through a single rank-guarded pipeline. An explicit `--flag` or `WEBFANG_*` env var **always** outranks the TOML config file — even when its value equals the built-in default (e.g. `--max-pages 10` with `max_pages = 25` in the TOML file now keeps **10**; previously the sentinel-based merger silently let the TOML value win).
+- **TUI behavior:** the unified TUI (`--tui`) only emits fields you actually edited. Untouched form defaults no longer clobber CLI/env values on entry.
+- **Who is affected:** scripts or users relying on the old quirk where a TOML value overrode an explicit CLI/env value that happened to equal the default.
+- **Migration:** remove the conflicting key from your config file or rely on the new documented precedence (`Tui-explicit > Cli > Environment > ConfigFile > Default`). Team ruling for regressions is **revert-over-compat-shim**: if this change breaks a critical workflow, revert the sprint rather than layering a compatibility shim.
+
 #### OpenTelemetry removal (observability roadmap Fase 5, #356)
 - **Removed the `otel` and `otel-metrics` features** along with the `opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp`, and `tracing-opentelemetry` dependencies.
 - OTel targets distributed systems; WebFang is a single-binary CLI. The always-available **FileTraceLayer** (`--trace-file`) plus native **correlation IDs** cover tracing/correlation without external infrastructure.
