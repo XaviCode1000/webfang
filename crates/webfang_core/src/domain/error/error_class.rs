@@ -33,15 +33,15 @@ pub enum ErrorClass {
 
 impl std::fmt::Display for ErrorClass {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-// Matches the serde snake_case representation so logs and persisted
-// records (`RawRecord.last_error.class`) spell classes identically.
-let name = match self {
-Self::TransientRetriable => "transient_retriable",
-Self::TransientBackoff => "transient_backoff",
-Self::PermanentFatal => "permanent_fatal",
-Self::InternalFatal => "internal_fatal",
-Self::DomainRecoverable => "domain_recoverable",
-};
-f.write_str(name)
+        // Matches the serde snake_case representation so logs and persisted
+        // records (`RawRecord.last_error.class`) spell classes identically.
+        let name = match self {
+            Self::TransientRetriable => "transient_retriable",
+            Self::TransientBackoff => "transient_backoff",
+            Self::PermanentFatal => "permanent_fatal",
+            Self::InternalFatal => "internal_fatal",
+            Self::DomainRecoverable => "domain_recoverable",
+        };
+        f.write_str(name)
     }
 }

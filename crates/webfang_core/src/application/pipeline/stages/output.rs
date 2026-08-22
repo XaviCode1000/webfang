@@ -30,23 +30,23 @@ impl OutputError {
     /// healthy, so the class is domain-recoverable. Backend failures are
     /// indeterminate transport faults (rows 1/8 rationale): transient.
     pub(crate) fn classify(&self) -> crate::domain::error::ErrorClass {
-use crate::domain::error::ErrorClass;
+        use crate::domain::error::ErrorClass;
 
-match self {
-Self::Io(e)
-if matches!(
-e.kind(),
-std::io::ErrorKind::Interrupted
-| std::io::ErrorKind::WouldBlock
-| std::io::ErrorKind::TimedOut
-) =>
-{
-ErrorClass::TransientRetriable
-},
-Self::Io(_) => ErrorClass::PermanentFatal,
-Self::Serialization(_) => ErrorClass::DomainRecoverable,
-Self::Backend(_) => ErrorClass::TransientRetriable,
-}
+        match self {
+            Self::Io(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::Interrupted
+                        | std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                ErrorClass::TransientRetriable
+            },
+            Self::Io(_) => ErrorClass::PermanentFatal,
+            Self::Serialization(_) => ErrorClass::DomainRecoverable,
+            Self::Backend(_) => ErrorClass::TransientRetriable,
+        }
     }
 }
 

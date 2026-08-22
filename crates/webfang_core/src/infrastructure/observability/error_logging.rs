@@ -23,23 +23,23 @@ use crate::domain::CorrelationId;
 /// * `correlation_id` - Optional correlation ID; its `trace_id` is logged when present.
 /// * `context` - Human-readable context message (English, internal log).
 pub fn log_classified_error<E: std::fmt::Display + ?Sized>(
-error: &E,
-class: crate::domain::error::ErrorClass,
-url: &str,
-stage: &str,
-correlation_id: Option<&CorrelationId>,
-context: &str,
+    error: &E,
+    class: crate::domain::error::ErrorClass,
+    url: &str,
+    stage: &str,
+    correlation_id: Option<&CorrelationId>,
+    context: &str,
 ) {
-// `?class` keeps the enum variant name verbatim in a structured field;
-// it is never interpolated into the message string.
-tracing::error!(
-error = %error,
-class = ?class,
-url = %url,
-stage = %stage,
-trace_id = correlation_id.map(|c| c.trace_id().to_string()),
-"{context}"
-);
+    // `?class` keeps the enum variant name verbatim in a structured field;
+    // it is never interpolated into the message string.
+    tracing::error!(
+    error = %error,
+    class = ?class,
+    url = %url,
+    stage = %stage,
+    trace_id = correlation_id.map(|c| c.trace_id().to_string()),
+    "{context}"
+    );
 }
 
 /// Log a structured error with full operational context.
@@ -134,32 +134,32 @@ mod tests {
         );
     }
 
-        #[test]
-        fn test_log_classified_error_emits_class_field() {
-            let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
-            let _guard = tracing::subscriber::set_default(capture_subscriber(buf.clone()));
+    #[test]
+    fn test_log_classified_error_emits_class_field() {
+        let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let _guard = tracing::subscriber::set_default(capture_subscriber(buf.clone()));
 
-            let err = std::io::Error::other("connection reset");
-            log_classified_error(
-                &err,
-                crate::domain::error::ErrorClass::TransientRetriable,
-                "https://example.com/page",
-                "fetch",
-                None,
-                "page fetch failed",
-            );
+        let err = std::io::Error::other("connection reset");
+        log_classified_error(
+            &err,
+            crate::domain::error::ErrorClass::TransientRetriable,
+            "https://example.com/page",
+            "fetch",
+            None,
+            "page fetch failed",
+        );
 
-            let out = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
-            assert!(out.contains("ERROR"), "should be ERROR level: {out}");
-            assert!(
-                out.contains("class=TransientRetriable"),
-                "class must be a structured field: {out}"
-            );
-            assert!(out.contains("connection reset"), "error display: {out}");
-        }
+        let out = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
+        assert!(out.contains("ERROR"), "should be ERROR level: {out}");
+        assert!(
+            out.contains("class=TransientRetriable"),
+            "class must be a structured field: {out}"
+        );
+        assert!(out.contains("connection reset"), "error display: {out}");
+    }
 
-        #[test]
-        fn test_log_scrape_error_without_correlation_id() {
+    #[test]
+    fn test_log_scrape_error_without_correlation_id() {
         let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
         let _guard = tracing::subscriber::set_default(capture_subscriber(buf.clone()));
 
