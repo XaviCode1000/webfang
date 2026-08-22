@@ -21,7 +21,7 @@ use crate::domain::session_port::SessionId;
 use crate::domain::{CorrelationId, CrawlError, CrawlErrorCategory, DiscoveredUrl};
 use crate::infrastructure::crawler::{is_internal_link, UrlSource};
 use crate::infrastructure::downloader::Cookie;
-use crate::infrastructure::observability::log_scrape_error;
+use crate::infrastructure::observability::{log_classified_error, log_scrape_error};
 
 /// Handle result from a completed crawl task
 pub(crate) fn handle_crawl_result(
@@ -316,11 +316,16 @@ async fn run_pipeline(ctx: &CrawlTaskCtx, url_str: &str, response: &str, status_
             false
         },
         StageOutcome::Failed { class } => {
-            log_scrape_error(
-                &format!("pipeline failed: {class:?}"),
+            // #865: the ErrorClass travels as a structured tracing field
+            // (never string-formatted into the message) so per-class
+            // runner policy is observable. Control flow is unchanged:
+            // observability only, retry wiring is deferred (matrix L151).
+            log_classified_error(
+                &class,
+                class,
                 url_str,
                 "pipeline",
-                None,
+                Some(&ctx.correlation_id),
                 "pipeline failed",
             );
             false
@@ -329,10 +334,22 @@ async fn run_pipeline(ctx: &CrawlTaskCtx, url_str: &str, response: &str, status_
 }
 
 /// Write a processed item to every configured output stage.
+///
+/// An output-stage failure must not crash the task (#865): it becomes an
+/// ERROR event carrying the classified [`ErrorClass`] as a structured
+/// field so sink failures are observable without retry wiring (deferred
+/// to Sprint 7-8 per the error classification matrix).
 async fn write_to_output_stages(ctx: &CrawlTaskCtx, item: &ScrapedItem) {
     for stage in &ctx.output_stages {
         if let Err(e) = stage.write(item).await {
-            warn!("Output stage '{}' failed: {}", stage.name(), e);
+            log_classified_error(
+&e,
+e.classify(),
+&item.url,
+stage.name(),
+Some(&ctx.correlation_id),
+"output stage write failed",
+            );
         }
     }
 }
@@ -491,7 +508,6 @@ mod tests {
         }
     }
 
-    #[allow(dead_code)]
     enum PipelineBehavior {
         Continue,
         Filtered,
