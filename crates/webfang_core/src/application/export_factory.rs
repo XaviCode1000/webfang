@@ -686,6 +686,10 @@ pub fn process_results(
             SingleItemOutcome::Skipped => {},
             SingleItemOutcome::Cancelled => {
                 tracing::info!("cancellation observed; draining before final persist");
+                // Crash-injection (PR5b): die MID-DRAIN, after some items
+                // completed their full D3 sequence but before the final
+                // persist — the drain-ordering kill window.
+                crate::cli::crash_points::hit(crate::cli::crash_points::DURING_CANCEL_DRAIN);
                 break;
             },
         }
@@ -1113,5 +1117,143 @@ mod tests {
             result.is_ok(),
             "create_state_store must be infallible (lazy): it performs no I/O at creation time"
         );
+    }
+
+    // =========================================================================
+    // SC7 / E8 - cooperative cancellation: drain-before-final-persist ordering
+    // =========================================================================
+
+    #[test]
+    fn cancellation_drains_in_flight_item_and_persists_honest_statuses() {
+        let dir = TempDir::new().unwrap();
+        let store = RecordStore::new("cancel.test").with_state_dir(dir.path().to_path_buf());
+        let ctx_store = store.clone();
+
+        // Cancel deterministically at the 2nd EXPORTED checkpoint save: item1
+        // finishes its full D3 sequence, item2 reaches its flush-proof point,
+        // THEN cancellation is observed between items and the run drains.
+        let token = tokio_util::sync::CancellationToken::new();
+        let export_count = std::sync::atomic::AtomicUsize::new(0);
+        let token_ref = &token;
+        let counter_ref = &export_count;
+        let observer = move |status: PageStatus| {
+            if status == PageStatus::Exported
+                && counter_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1
+            {
+                token_ref.cancel();
+            }
+        };
+        let ctx = ResumeContext::new(&ctx_store)
+            .with_resume(false)
+            .observing_cancel(&token)
+            .with_persist_observer(&observer);
+
+        let results = [
+            make_scraped_content("https://cancel.test/one", "One", "first distinct body"),
+            make_scraped_content("https://cancel.test/two", "Two", "second distinct body"),
+            make_scraped_content("https://cancel.test/three", "Three", "third distinct body"),
+        ];
+        process_results(
+            &results,
+            dir.path().to_path_buf(),
+            ExportFormat::Jsonl,
+            "export",
+            Some(&ctx),
+        )
+        .unwrap();
+
+        // Drain ordering: items 1-2 completed their ATOMIC D3 sequence
+        // (in-flight work never half-done); item 3 never started.
+        let records = store.load().unwrap();
+        assert_eq!(
+            records.len(),
+            2,
+            "drained run persists exactly the in-flight items"
+        );
+        for url in ["https://cancel.test/one", "https://cancel.test/two"] {
+            let r = &records[url];
+            assert_eq!(
+                r.status,
+                PageStatus::Committed,
+                "{url} must be fully committed"
+            );
+            assert!(r.last_error.is_none(), "{url}: no phantom errors");
+        }
+        assert!(
+            !records.contains_key("https://cancel.test/three"),
+            "item after cancellation must NOT exist (no invented state)"
+        );
+        let lines = std::fs::read_to_string(dir.path().join("export.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count();
+        assert_eq!(lines, 2, "exactly the drained items' lines on disk");
+    }
+
+    #[test]
+    fn resume_after_cancellation_re_drives_non_committed_exactly_once() {
+        let dir = TempDir::new().unwrap();
+        let store = RecordStore::new("cancel2.test").with_state_dir(dir.path().to_path_buf());
+
+        // Cancelled first run: only item 'a' completes its D3 sequence.
+        let token = tokio_util::sync::CancellationToken::new();
+        let ctx_store_a = store.clone();
+        {
+            let token_ref = &token;
+            let observer = move |status: PageStatus| {
+                if status == PageStatus::Committed {
+                    token_ref.cancel();
+                }
+            };
+            let ctx = ResumeContext::new(&ctx_store_a)
+                .with_resume(false)
+                .observing_cancel(&token)
+                .with_persist_observer(&observer);
+            process_results(
+                &[
+                    make_scraped_content("https://cancel2.test/a", "A", "alpha content"),
+                    make_scraped_content("https://cancel2.test/b", "B", "beta content"),
+                ],
+                dir.path().to_path_buf(),
+                ExportFormat::Jsonl,
+                "export",
+                Some(&ctx),
+            )
+            .unwrap();
+        }
+        let lines_after_cancel = std::fs::read_to_string(dir.path().join("export.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .count();
+        assert_eq!(
+            lines_after_cancel, 1,
+            "cancelled run exported exactly one line"
+        );
+
+        // Resume rerun: Committed 'a' skips; 'b' re-drives fresh - once.
+        let ctx_store_b = store.clone();
+        let second = ResumeContext::new(&ctx_store_b).with_resume(true);
+        process_results(
+            &[
+                make_scraped_content("https://cancel2.test/a", "A", "alpha content"),
+                make_scraped_content("https://cancel2.test/b", "B", "beta content"),
+            ],
+            dir.path().to_path_buf(),
+            ExportFormat::Jsonl,
+            "export",
+            Some(&second),
+        )
+        .unwrap();
+
+        let records = store.load().unwrap();
+        for url in ["https://cancel2.test/a", "https://cancel2.test/b"] {
+            assert_eq!(records[url].status, PageStatus::Committed, "{url}");
+        }
+        let lines_final = std::fs::read_to_string(dir.path().join("export.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .count();
+        assert_eq!(lines_final, 2, "no duplicated lines across cancel+resume");
     }
 }
