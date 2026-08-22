@@ -400,7 +400,10 @@ fn test_ai_config_defaults_without_ai_feature() {
 
 #[test]
 fn test_dom_preprune_defaults_to_true() {
-    let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_DOM_PREPRUNE"]);
+    // AI_MODEL_ID must be unset too: clap reads it via `env = "AI_MODEL_ID"`
+    // on --ai-model, so a poisoned value (CI bug-discovery) fails every parse
+    // with InvalidValue before the flag under test is even evaluated.
+    let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_DOM_PREPRUNE", "AI_MODEL_ID"]);
     // Default value from clap is true
     let args = Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
     assert!(args.crawler.dom_preprune, "dom_preprune defaults to true");
@@ -436,6 +439,10 @@ fn test_dom_preprune_false() {
 
 #[test]
 fn test_dom_preprune_env_var_true() {
+    // clean_env() unsets AI_MODEL_ID (clap env fallback on --ai-model would
+    // reject a poisoned value); EnvGuard::with then sets only the flag under
+    // test. Two EnvGuards cannot be nested (ENV_LOCK deadlock).
+    clean_env();
     let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_DOM_PREPRUNE", "true")]);
     let args = Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
     assert!(
@@ -446,6 +453,8 @@ fn test_dom_preprune_env_var_true() {
 
 #[test]
 fn test_dom_preprune_env_var_false() {
+    // Same hermeticity rationale as test_dom_preprune_env_var_true.
+    clean_env();
     let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_DOM_PREPRUNE", "false")]);
     let args = Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
     assert!(
