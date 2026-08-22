@@ -15,7 +15,7 @@
 //!     ├─→ handle_completions()        ← Subcommand handling
 //!     ├─→ run_config_tui()             ← Config TUI (if --config-tui)
 //!     ├─→ ConfigDefaults::load()      ← TOML config
-//!     ├─→ preflight::apply_config_defaults() ← Config merge
+//!     ├─→ preflight::normalize()      ← Config merge
 //!     ├─→ init_logging_dual()         ← stderr-only tracing
 //!     └─→ orchestrator::run()         ← Full pipeline
 //! ```
