@@ -81,6 +81,7 @@ once_cell = { workspace = true }
 uuid = { workspace = true }
 walkdir = { workspace = true }
 fs2 = { workspace = true }
+libc = { workspace = true }
 sysinfo = { workspace = true }
 aho-corasick = { workspace = true }
 whatlang = { workspace = true }
@@ -217,3 +218,7 @@ workspace = true
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[[test]]
+name = "crash_matrix_test"
+path = "tests/crash_matrix_test.rs"

@@ -7,6 +7,7 @@ pub mod args;
 pub mod commands;
 pub mod completions;
 pub mod config;
+pub mod crash_points;
 pub mod elastic;
 pub mod error;
 pub mod export_flow;

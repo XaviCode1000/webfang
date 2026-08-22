@@ -144,6 +144,7 @@ pulldown-cmark = "0.13"
 whatlang = "0.18"
 walkdir = "2"
 fs2 = "0.4"
+libc = "0.2"
 async-compression = { version = "0.4.41", features = ["tokio", "gzip", "deflate", "brotli", "zstd"] }
 
 # Browser automation (CDP)
