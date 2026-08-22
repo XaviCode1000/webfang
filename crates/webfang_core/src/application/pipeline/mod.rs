@@ -63,7 +63,7 @@ mod integration_tests {
         };
 
         let result = executor.execute(item).await;
-        assert!(matches!(result, StageOutcome::Reject(_)));
+        assert!(matches!(result, StageOutcome::Rejected { .. }));
     }
 
     #[tokio::test]
@@ -80,6 +80,11 @@ mod integration_tests {
         };
 
         let result = executor.execute(item).await;
-        assert_eq!(result, StageOutcome::Skip);
+        assert_eq!(
+            result,
+            StageOutcome::Filtered {
+                reason: crate::domain::pipeline_item::FilterReason::NonContentPath
+            }
+        );
     }
 }

@@ -5,6 +5,7 @@ use std::pin::Pin;
 use serde::{Deserialize, Serialize};
 
 use super::entities::ScrapedContent;
+use super::error::ErrorClass;
 
 /// A scraped item flowing through the processing pipeline.
 ///
@@ -70,17 +71,95 @@ impl From<ScrapedContent> for ScrapedItem {
     }
 }
 
+/// Reason why an item was filtered out as non-content.
+///
+/// Filtered items are silently skipped without error reporting.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FilterReason {
+    /// The URL path corresponds to a non-content resource such as robots.txt or sitemap.xml.
+    NonContentPath,
+}
+
+impl fmt::Display for FilterReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonContentPath => write!(f, "non-content path"),
+        }
+    }
+}
+
+/// Reason why an item was rejected during validation.
+///
+/// Each variant carries typed context so callers can render
+/// precise diagnostics without string parsing.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RejectReason {
+    /// URL string is empty.
+    EmptyUrl,
+    /// URL string cannot be parsed as a valid URL.
+    InvalidUrl {
+        /// The original URL string that failed to parse.
+        url: String,
+    },
+    /// URL scheme is not http or https.
+    UnsupportedScheme {
+        /// The scheme that was found (e.g. "ftp").
+        scheme: String,
+    },
+    /// URL has no host component.
+    MissingHost,
+    /// HTTP status code indicates an error (outside 200..=399).
+    HttpStatus {
+        /// The status code that triggered rejection.
+        code: u16,
+    },
+    /// Content (raw_html) is empty after trimming.
+    EmptyContent,
+}
+
+impl fmt::Display for RejectReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyUrl => write!(f, "URL is empty"),
+            Self::InvalidUrl { url } => write!(f, "URL is not valid: {url}"),
+            Self::UnsupportedScheme { scheme } => write!(
+                f,
+                "URL scheme '{scheme}' is not supported (requires http or https)"
+            ),
+            Self::MissingHost => write!(f, "URL has no host"),
+            Self::HttpStatus { code } => write!(f, "HTTP status {code} indicates an error"),
+            Self::EmptyContent => write!(f, "Content is empty"),
+        }
+    }
+}
+
 /// Outcome returned by a [`PipelineStage`] after processing an item.
 ///
-/// Controls whether the pipeline continues, short-circuits, or rejects an item.
+/// Controls whether the pipeline continues or short-circuits.
+/// `Filtered`, `Rejected`, and `Failed` all short-circuit the pipeline and
+/// return verbatim without running later stages. `Failed` carries an
+/// [`ErrorClass`] so the RUNNER (application layer) can decide retry/abort
+/// policy from the class — the domain only reports the classification.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StageOutcome {
     /// Pipeline continues with the (possibly modified) item.
     Continue(ScrapedItem),
-    /// Item is silently skipped — pipeline stops processing it.
-    Skip,
-    /// Item is rejected with a reason. Pipeline stops processing it.
-    Reject(String),
+    /// Item was filtered as non-content — pipeline stops processing it silently.
+    Filtered {
+        /// Why the item was filtered.
+        reason: FilterReason,
+    },
+    /// Item was rejected — pipeline stops processing it.
+    Rejected {
+        /// Why the item was rejected.
+        reason: RejectReason,
+    },
+    /// Item processing failed — short-circuits like [`Self::Rejected`] but
+    /// carries an operational [`ErrorClass`] for the runner to decide policy.
+    Failed {
+        /// Operational classification of the failure.
+        class: ErrorClass,
+    },
 }
 
 /// A single processing step in the item pipeline.
@@ -140,12 +219,60 @@ mod tests {
             StageOutcome::Continue(item.clone()),
             StageOutcome::Continue(item.clone())
         );
-        assert_eq!(StageOutcome::Skip, StageOutcome::Skip);
         assert_eq!(
-            StageOutcome::Reject("bad".into()),
-            StageOutcome::Reject("bad".into())
+            StageOutcome::Filtered {
+                reason: FilterReason::NonContentPath
+            },
+            StageOutcome::Filtered {
+                reason: FilterReason::NonContentPath
+            }
         );
-        assert_ne!(StageOutcome::Skip, StageOutcome::Reject("bad".into()));
+        assert_eq!(
+            StageOutcome::Rejected {
+                reason: RejectReason::EmptyUrl
+            },
+            StageOutcome::Rejected {
+                reason: RejectReason::EmptyUrl
+            }
+        );
+        assert_eq!(
+            StageOutcome::Failed {
+                class: crate::domain::error::ErrorClass::TransientBackoff
+            },
+            StageOutcome::Failed {
+                class: crate::domain::error::ErrorClass::TransientBackoff
+            }
+        );
+        assert_ne!(
+            StageOutcome::Filtered {
+                reason: FilterReason::NonContentPath
+            },
+            StageOutcome::Rejected {
+                reason: RejectReason::EmptyUrl
+            }
+        );
+    }
+
+    #[test]
+    fn test_filter_reason_display_non_empty() {
+        assert!(!FilterReason::NonContentPath.to_string().is_empty());
+    }
+
+    #[test]
+    fn test_reject_reason_display_non_empty() {
+        let reasons = [
+            RejectReason::EmptyUrl,
+            RejectReason::InvalidUrl { url: "bad".into() },
+            RejectReason::UnsupportedScheme {
+                scheme: "ftp".into(),
+            },
+            RejectReason::MissingHost,
+            RejectReason::HttpStatus { code: 404 },
+            RejectReason::EmptyContent,
+        ];
+        for r in reasons {
+            assert!(!r.to_string().is_empty(), "{r:?} rendered empty");
+        }
     }
 
     #[test]
