@@ -79,14 +79,7 @@ impl ConcurrencyConfig {
     #[must_use]
     pub fn new(value: usize) -> Self {
         Self {
-            value: Some(
-                clamp_budget(
-                    value,
-                    NonZeroUsize::MIN,
-                    MAX_CONCURRENCY_CEILING,
-                )
-                .get(),
-            ),
+            value: Some(clamp_budget(value, NonZeroUsize::MIN, MAX_CONCURRENCY_CEILING).get()),
             auto_detect: false,
         }
     }
@@ -119,12 +112,7 @@ impl ConcurrencyConfig {
             _ => (cores - 1).min(8),
         };
 
-        clamp_budget(
-            optimal,
-            NonZeroUsize::MIN,
-            MAX_CONCURRENCY_CEILING,
-        )
-        .get()
+        clamp_budget(optimal, NonZeroUsize::MIN, MAX_CONCURRENCY_CEILING).get()
     }
 
     /// Check if this config uses auto-detection.
