@@ -219,10 +219,12 @@ path = "tests/crash_matrix_test.rs"
 
 # ---------------------------------------------------------------------------
 # Gate 3 equivalence matrix (stabilization-config-normalization, tracker
-# #302): lives in the workspace-root `tests/` tree alongside the benches;
-# wired explicitly because the workspace root is virtual (no `[package]`)
-# and auto-discovery would miss it.
+# #302): wired explicitly alongside the other integration tests.
 # ---------------------------------------------------------------------------
 [[test]]
 name = "gate3_config_equivalence_test"
 path = "tests/gate3_config_equivalence_test.rs"
+
+[[test]]
+name = "pipeline_outcome_prop"
+path = "tests/pipeline_outcome_prop.rs"
