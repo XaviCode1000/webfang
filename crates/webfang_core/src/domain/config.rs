@@ -3,6 +3,10 @@
 //! These types are shared across CLI, application, and infrastructure layers.
 //! The domain layer owns these types; other layers import from here.
 
+use std::num::NonZeroUsize;
+
+use super::budget::clamp::{clamp_budget, MAX_CONCURRENCY_CEILING};
+
 // Re-export ExportFormat from entities (it's defined there with serde derives)
 pub use super::entities::ExportFormat;
 
@@ -75,7 +79,14 @@ impl ConcurrencyConfig {
     #[must_use]
     pub fn new(value: usize) -> Self {
         Self {
-            value: Some(value.clamp(1, 16)),
+            value: Some(
+                clamp_budget(
+                    value,
+                    NonZeroUsize::new(1).expect("static 1 is non-zero"),
+                    MAX_CONCURRENCY_CEILING,
+                )
+                .get(),
+            ),
             auto_detect: false,
         }
     }
@@ -108,7 +119,12 @@ impl ConcurrencyConfig {
             _ => (cores - 1).min(8),
         };
 
-        optimal.clamp(1, 16)
+        clamp_budget(
+            optimal,
+            NonZeroUsize::new(1).expect("static 1 is non-zero"),
+            MAX_CONCURRENCY_CEILING,
+        )
+        .get()
     }
 
     /// Check if this config uses auto-detection.
@@ -264,5 +280,44 @@ mod tests {
 
         let config = ConcurrencyConfig::new(0);
         assert_eq!(config.resolve(), 1);
+    }
+
+    /// Characterization sweep: every explicit value must produce exactly
+    /// what the canonical budget clamp produces (single-source invariant).
+    #[test]
+    fn explicit_values_match_canonical_clamp_sweep() {
+        use std::num::NonZeroUsize;
+
+        let one = NonZeroUsize::new(1).expect("1 is non-zero");
+        for value in [0, 1, 2, 3, 15, 16, 17, 100, usize::MAX] {
+            let expected = crate::domain::budget::clamp::clamp_budget(
+                value,
+                one,
+                crate::domain::budget::clamp::MAX_CONCURRENCY_CEILING,
+            );
+            assert_eq!(
+                ConcurrencyConfig::new(value).resolve(),
+                expected.get(),
+                "explicit {value} diverges from canonical clamp"
+            );
+        }
+    }
+
+    /// Characterization of the auto-detection table: reference impl of
+    /// TODAY'S `resolve()` math (1-2→1, 3-4→3, 5-7→5, else min(cores−1, 8)).
+    /// Guards the "auto" path while the clamp sites delegate.
+    #[test]
+    fn auto_path_matches_legacy_table() {
+        let cores = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(2);
+        let expected = match cores {
+            1 | 2 => 1,
+            3 | 4 => 3,
+            5..=7 => 5,
+            _ => (cores - 1).min(8),
+        }
+        .clamp(1, 16);
+        assert_eq!(ConcurrencyConfig::default().resolve(), expected);
     }
 }
