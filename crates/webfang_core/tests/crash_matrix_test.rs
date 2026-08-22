@@ -28,8 +28,9 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
 use webfang_core::cli::crash_points::{
-    MID_FETCH, MID_JSONL_LINE, MID_STATE_FILE_WRITE, POST_FETCH_PRE_EXTRACT, POST_FLUSH_PRE_COMMIT,
-    PRE_FIRST_PERSIST, TMP_WRITTEN_PRE_RENAME, WHILE_HOLDING_LOCK,
+    MID_EXTRACTION, MID_FETCH, MID_JSONL_LINE, MID_STATE_FILE_WRITE, POST_EXTRACTION_PRE_PIPELINE,
+    POST_FETCH_PRE_EXTRACT, POST_FLUSH_PRE_COMMIT, PRE_FIRST_PERSIST, TMP_WRITTEN_PRE_RENAME,
+    WHILE_HOLDING_LOCK,
 };
 use webfang_core::domain::page_state::PageStatus;
 use webfang_core::infrastructure::export::RecordStore;
@@ -216,6 +217,16 @@ async fn crash_mid_fetch_recovers_with_zero_loss() {
 #[tokio::test]
 async fn crash_post_fetch_pre_extract_recovers_with_zero_loss() {
     crash_row(POST_FETCH_PRE_EXTRACT).await;
+}
+
+#[tokio::test]
+async fn crash_mid_extraction_recovers_with_zero_loss() {
+    crash_row(MID_EXTRACTION).await;
+}
+
+#[tokio::test]
+async fn crash_post_extraction_pre_pipeline_recovers_with_zero_loss() {
+    crash_row(POST_EXTRACTION_PRE_PIPELINE).await;
 }
 
 #[tokio::test]

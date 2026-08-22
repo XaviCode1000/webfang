@@ -27,6 +27,12 @@ pub const PRE_FIRST_PERSIST: &str = "pre_first_persist";
 pub const MID_FETCH: &str = "mid_fetch";
 /// After fetch + cleaning, before selector extraction.
 pub const POST_FETCH_PRE_EXTRACT: &str = "post_fetch_pre_extract";
+/// Inside selector/content extraction: HTML cleaned + selector applied,
+/// Readability/content build not yet returned.
+pub const MID_EXTRACTION: &str = "mid_extraction";
+/// Extraction completed (ScrapedContent built), before the record/pipeline
+/// stage persists anything.
+pub const POST_EXTRACTION_PRE_PIPELINE: &str = "post_extraction_pre_pipeline";
 /// Inside the JSONL writer loop: half of one append payload hits disk first.
 pub const MID_JSONL_LINE: &str = "mid_jsonl_line";
 /// In `CommitSession::commit_item`: flush ack received, EXPORTED not saved.

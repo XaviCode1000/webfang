@@ -311,6 +311,10 @@ pub async fn extract_content(
     #[cfg(not(feature = "adaptive-selectors"))]
     let quality_hint = None;
 
+    // Crash-injection: inside extraction — cleaned HTML has been through the
+    // CSS selector step; content assembly not yet complete.
+    crate::cli::crash_points::hit(crate::cli::crash_points::MID_EXTRACTION);
+
     let extraction_html = extract_result.as_html().to_owned();
 
     // Try Readability first, fallback to plain text extraction

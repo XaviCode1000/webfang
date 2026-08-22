@@ -238,6 +238,10 @@ pub async fn scrape_single_url_for_tui(
         trace_id = %correlation.trace_id()
     )
 )]
+// The crash-injection pin for POST_EXTRACTION_PRE_PIPELINE pushes this
+// function past clippy's 100-line budget; the span body is cohesive and
+// splitting it would obscure the pipeline order the harness depends on.
+#[allow(clippy::too_many_lines)]
 async fn scrape_single_url_for_tui_inner(
     downloader: &dyn Downloader,
     url: &Url,
@@ -373,7 +377,11 @@ async fn scrape_single_url_for_tui_inner(
 
     // Crash-injection: fetched + WAF-checked; extraction not yet run.
     crate::cli::crash_points::hit(crate::cli::crash_points::POST_FETCH_PRE_EXTRACT);
-    extract_content(&html, url, config, asset_downloader, engine, &correlation).await
+    let content =
+        extract_content(&html, url, config, asset_downloader, engine, &correlation).await?;
+    // Crash-injection: extraction returned ScrapedContent; nothing persisted yet.
+    crate::cli::crash_points::hit(crate::cli::crash_points::POST_EXTRACTION_PRE_PIPELINE);
+    Ok(content)
 }
 
 /// Convert lowercased string headers into a wreq [`wreq::header::HeaderMap`]
