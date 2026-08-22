@@ -216,3 +216,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 [[test]]
 name = "crash_matrix_test"
 path = "tests/crash_matrix_test.rs"
+
+# ---------------------------------------------------------------------------
+# Gate 3 equivalence matrix (stabilization-config-normalization, tracker
+# #302): lives in the workspace-root `tests/` tree alongside the benches;
+# wired explicitly because the workspace root is virtual (no `[package]`)
+# and auto-discovery would miss it.
+# ---------------------------------------------------------------------------
+[[test]]
+name = "gate3_config_equivalence_test"
+path = "tests/gate3_config_equivalence_test.rs"

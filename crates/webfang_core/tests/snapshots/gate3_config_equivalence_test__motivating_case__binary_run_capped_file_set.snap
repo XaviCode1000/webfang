@@ -1,0 +1,9 @@
+---
+source: crates/webfang_core/tests/gate3_config_equivalence_test.rs
+expression: redacted
+---
+index.md
+p1.md
+p2.md
+p3.md
+p4.md
