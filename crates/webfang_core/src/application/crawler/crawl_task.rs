@@ -581,7 +581,56 @@ mod tests {
         }
     }
 
-    // ── Test helpers ──
+        /// Output stage whose writes always fail with a fixed backend error.
+        struct FailingOutputStage {
+            message: String,
+        }
+
+        impl OutputStage for FailingOutputStage {
+            fn name(&self) -> &str {
+                "failing_output"
+            }
+            fn write<'a>(
+                &'a self,
+                _item: &'a ScrapedItem,
+            ) -> Pin<Box<dyn Future<Output = Result<(), OutputError>> + Send + 'a>> {
+                let message = self.message.clone();
+                Box::pin(async move { Err(OutputError::Backend(message)) })
+            }
+        }
+
+        /// In-memory writer capturing tracing events, mirroring the pattern
+        /// used in `infrastructure/observability/error_logging.rs` tests.
+        #[derive(Clone)]
+        struct LogBuffer(Arc<Mutex<Vec<u8>>>);
+
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
+            type Writer = LogGuard;
+            fn make_writer(&'a self) -> Self::Writer {
+                LogGuard(self.0.clone())
+            }
+        }
+
+        struct LogGuard(Arc<Mutex<Vec<u8>>>);
+
+        impl std::io::Write for LogGuard {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("log buffer lock").extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        fn capture_subscriber(buf: LogBuffer) -> impl tracing::Subscriber {
+            tracing_subscriber::fmt()
+                .with_writer(buf)
+                .with_ansi(false)
+                .finish()
+        }
+
+        // ── Test helpers ──
 
     struct TestCtxBuilder {
         fetcher: Arc<dyn PageFetcher>,
@@ -944,8 +993,68 @@ mod tests {
         assert!(sent.is_empty());
     }
 
-    #[tokio::test]
-    async fn test_no_pipeline_skips_processing() {
+        #[tokio::test]
+        async fn test_pipeline_failed_logs_class_as_structured_field() {
+            let buf = LogBuffer(Arc::new(Mutex::new(Vec::new())));
+            let _guard = tracing::subscriber::set_default(capture_subscriber(buf.clone()));
+            let (collector, sent) = mock_collector();
+            let ctx = TestCtxBuilder::new(collector)
+                .pipeline(Arc::new(MockPipeline {
+                    behavior: PipelineBehavior::Failed(
+                        crate::domain::error::ErrorClass::TransientBackoff,
+                    ),
+                }))
+                .build();
+
+            let result = run_crawl_task(ctx, test_url("https://example.com/", 0)).await;
+            assert!(result.is_ok());
+            assert!(sent.lock().expect("lock not poisoned").is_empty());
+
+            let out = String::from_utf8_lossy(&buf.0.lock().expect("lock not poisoned")).to_string();
+            assert!(
+                out.contains("class=TransientBackoff"),
+                "ErrorClass must travel as a structured field, got: {out}"
+            );
+            assert!(out.contains("ERROR"), "should be ERROR level: {out}");
+            assert!(
+                out.contains("stage=pipeline"),
+                "stage field must identify the pipeline: {out}"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_output_stage_failure_logged_with_class_and_does_not_crash() {
+            let buf = LogBuffer(Arc::new(Mutex::new(Vec::new())));
+            let _guard = tracing::subscriber::set_default(capture_subscriber(buf.clone()));
+            let (collector, _) = mock_collector();
+            let stage: Arc<Box<dyn OutputStage>> = Arc::new(Box::new(FailingOutputStage {
+                message: "disk full".to_string(),
+            }));
+            let ctx = TestCtxBuilder::new(collector)
+                .pipeline(Arc::new(MockPipeline {
+                    behavior: PipelineBehavior::Continue,
+                }))
+                .output_stage(stage)
+                .build();
+
+            // The task must NOT crash because an output sink failed.
+            let result = run_crawl_task(ctx, test_url("https://example.com/", 0)).await;
+            assert!(result.is_ok(), "output-stage failure must not abort the task");
+
+            let out = String::from_utf8_lossy(&buf.0.lock().expect("lock not poisoned")).to_string();
+            assert!(
+                out.contains("class=TransientRetriable"),
+                "output-stage failure must carry its ErrorClass as a structured field, got: {out}"
+            );
+            assert!(out.contains("ERROR"), "should be ERROR level: {out}");
+            assert!(
+                out.contains("failing_output"),
+                "the failing stage must be identifiable by name: {out}"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_no_pipeline_skips_processing() {
         let (collector, sent) = mock_collector();
         let ctx = TestCtxBuilder::new(collector).build();
 
