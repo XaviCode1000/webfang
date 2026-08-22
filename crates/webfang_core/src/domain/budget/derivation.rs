@@ -5,11 +5,11 @@
 //! what makes these derivations unit-testable across synthetic core counts
 //! and safe under `cargo miri` (see task 1.9).
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 
 use super::clamp::{clamp_budget, MAX_CONCURRENCY_CEILING};
 use super::detector::DetectedHw;
-use super::tiers::CrawlConcurrency;
+use super::tiers::{BurstPermits, CrawlConcurrency};
 
 /// Legacy auto-detection table from `ConcurrencyConfig::resolve()`.
 ///
@@ -40,6 +40,35 @@ pub fn derive_auto_crawl(detected: DetectedHw) -> CrawlConcurrency {
     CrawlConcurrency::from(value)
 }
 
+/// Derive the rate-limiter burst permit count (decision Q1 DECOUPLE).
+///
+/// * `explicit = Some(b)` → the operator's value wins verbatim.
+/// * `explicit = None` → TODAY'S effective default: the auto-crawl table
+///   evaluated against the DETECTOR SEAM snapshot — never re-read from the
+///   configured crawler concurrency, so raising crawler concurrency does not
+///   move the burst.
+///
+/// The explicit override surface (`WEBFANG_RATE_LIMIT_BURST` env + optional
+/// CLI flag) lands in Phase 2 via `BudgetOverrides`; this function is its
+/// pure core.
+#[must_use]
+pub fn derive_burst(explicit: Option<BurstPermits>, detected: DetectedHw) -> BurstPermits {
+    match explicit {
+        Some(b) => b,
+        None => {
+            let raw = auto_crawl_table(detected.parallelism);
+            // Table output is 1..=16 by construction: both guards are
+            // programmer-error traps, never reachable states.
+            let permits = u32::try_from(raw)
+                .unwrap_or_else(|_| unreachable!("auto-crawl table output fits u32"));
+            BurstPermits::from(
+                NonZeroU32::new(permits)
+                    .unwrap_or_else(|| unreachable!("auto-crawl table never yields zero")),
+            )
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,7 +88,8 @@ mod tests {
 
     fn hw(cores: usize) -> DetectedHw {
         DetectedHw::new(
-            NonZeroUsize::new(cores).unwrap_or_else(|| panic!("test core count {cores} is non-zero")),
+            NonZeroUsize::new(cores)
+                .unwrap_or_else(|| panic!("test core count {cores} is non-zero")),
             None,
         )
     }
@@ -113,5 +143,60 @@ mod tests {
     fn fixed_detector_drives_the_table_without_io() {
         let det = FixedDetector::with_detection(NonZeroUsize::new(6).unwrap(), Some(8));
         assert_eq!(derive_auto_crawl(*det.detected()).get(), 5);
+    }
+
+    // --- derive_burst (Q1 DECOUPLE) -------------------------------------
+
+    fn burst_hw(cores: usize) -> DetectedHw {
+        hw(cores)
+    }
+
+    #[test]
+    fn explicit_override_wins_over_default() {
+        let explicit = BurstPermits::new(2).expect("2 is non-zero");
+        assert_eq!(derive_burst(Some(explicit), burst_hw(8)).get(), 2);
+        // Even where the table would say something else entirely.
+        let explicit_big = BurstPermits::new(64).expect("64 is non-zero");
+        assert_eq!(derive_burst(Some(explicit_big), burst_hw(1)).get(), 64);
+    }
+
+    #[test]
+    fn default_equals_auto_crawl_table_from_detector_seam() {
+        for cores in [1usize, 3, 6, 9, 24] {
+            assert_eq!(
+                derive_burst(None, burst_hw(cores)).get() as usize,
+                legacy_auto_crawl(cores),
+                "default burst for {cores} cores must equal today's table"
+            );
+        }
+    }
+
+    /// THE SPEC SCENARIO: crawler concurrency raised N→M>N must leave the
+    /// burst at B. The burst derivation consumes ONLY the detector seam
+    /// snapshot — a different configured crawler value is not an input.
+    #[test]
+    fn raising_configured_crawler_concurrency_leaves_burst_unchanged() {
+        let detected = burst_hw(8);
+        let burst_before = derive_burst(None, detected);
+        let crawl_n = derive_auto_crawl(detected); // operator at default N
+                                                   // Operator raises the configured crawler concurrency to M > N.
+        let m_raw = crawl_n.get() + 9;
+        let crawl_m = CrawlConcurrency::from(
+            NonZeroUsize::new(m_raw.min(MAX_CONCURRENCY_CEILING)).expect("M is non-zero"),
+        );
+        assert!(crawl_m.get() > crawl_n.get());
+        assert_eq!(derive_burst(None, detected), burst_before);
+    }
+
+    #[test]
+    fn burst_never_zero_across_sweep() {
+        for cores in 1..=32usize {
+            assert!(derive_burst(None, burst_hw(cores)).get() >= 1);
+        }
+    }
+
+    #[test]
+    fn zero_is_unrepresentable_as_explicit_override() {
+        assert!(BurstPermits::new(0).is_err());
     }
 }
