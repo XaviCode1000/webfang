@@ -21,7 +21,7 @@ use crate::domain::session_port::SessionId;
 use crate::domain::{CorrelationId, CrawlError, CrawlErrorCategory, DiscoveredUrl};
 use crate::infrastructure::crawler::{is_internal_link, UrlSource};
 use crate::infrastructure::downloader::Cookie;
-use crate::infrastructure::observability::log_scrape_error;
+use crate::infrastructure::observability::{log_classified_error, log_scrape_error};
 
 /// Handle result from a completed crawl task
 pub(crate) fn handle_crawl_result(
@@ -316,11 +316,16 @@ async fn run_pipeline(ctx: &CrawlTaskCtx, url_str: &str, response: &str, status_
             false
         },
         StageOutcome::Failed { class } => {
-            log_scrape_error(
-                &format!("pipeline failed: {class:?}"),
+            // #865: the ErrorClass travels as a structured tracing field
+            // (never string-formatted into the message) so per-class
+            // runner policy is observable. Control flow is unchanged:
+            // observability only, retry wiring is deferred (matrix L151).
+            log_classified_error(
+                &class,
+                class,
                 url_str,
                 "pipeline",
-                None,
+                Some(&ctx.correlation_id),
                 "pipeline failed",
             );
             false
@@ -329,10 +334,22 @@ async fn run_pipeline(ctx: &CrawlTaskCtx, url_str: &str, response: &str, status_
 }
 
 /// Write a processed item to every configured output stage.
+///
+/// An output-stage failure must not crash the task (#865): it becomes an
+/// ERROR event carrying the classified [`ErrorClass`] as a structured
+/// field so sink failures are observable without retry wiring (deferred
+/// to Sprint 7-8 per the error classification matrix).
 async fn write_to_output_stages(ctx: &CrawlTaskCtx, item: &ScrapedItem) {
     for stage in &ctx.output_stages {
         if let Err(e) = stage.write(item).await {
-            warn!("Output stage '{}' failed: {}", stage.name(), e);
+            log_classified_error(
+                &e,
+                e.classify(),
+                &item.url,
+                stage.name(),
+                Some(&ctx.correlation_id),
+                "output stage write failed",
+            );
         }
     }
 }
@@ -491,7 +508,6 @@ mod tests {
         }
     }
 
-    #[allow(dead_code)]
     enum PipelineBehavior {
         Continue,
         Filtered,
@@ -579,6 +595,58 @@ mod tests {
                 Ok(())
             })
         }
+    }
+
+    /// Output stage whose writes always fail with a fixed backend error.
+    struct FailingOutputStage {
+        message: String,
+    }
+
+    impl OutputStage for FailingOutputStage {
+        fn name(&self) -> &str {
+            "failing_output"
+        }
+        fn write<'a>(
+            &'a self,
+            _item: &'a ScrapedItem,
+        ) -> Pin<Box<dyn Future<Output = Result<(), OutputError>> + Send + 'a>> {
+            let message = self.message.clone();
+            Box::pin(async move { Err(OutputError::Backend(message)) })
+        }
+    }
+
+    /// In-memory writer capturing tracing events, mirroring the pattern
+    /// used in `infrastructure/observability/error_logging.rs` tests.
+    #[derive(Clone)]
+    struct LogBuffer(Arc<Mutex<Vec<u8>>>);
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
+        type Writer = LogGuard;
+        fn make_writer(&'a self) -> Self::Writer {
+            LogGuard(self.0.clone())
+        }
+    }
+
+    struct LogGuard(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogGuard {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("log buffer lock")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn capture_subscriber(buf: LogBuffer) -> impl tracing::Subscriber {
+        tracing_subscriber::fmt()
+            .with_writer(buf)
+            .with_ansi(false)
+            .finish()
     }
 
     // ── Test helpers ──
@@ -942,6 +1010,69 @@ mod tests {
         assert!(result.is_ok());
         let sent = sent.lock().expect("lock not poisoned");
         assert!(sent.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_failed_logs_class_as_structured_field() {
+        let buf = LogBuffer(Arc::new(Mutex::new(Vec::new())));
+        let _guard = tracing::subscriber::set_default(capture_subscriber(buf.clone()));
+        let (collector, sent) = mock_collector();
+        let ctx = TestCtxBuilder::new(collector)
+            .pipeline(Arc::new(MockPipeline {
+                behavior: PipelineBehavior::Failed(
+                    crate::domain::error::ErrorClass::TransientBackoff,
+                ),
+            }))
+            .build();
+
+        let result = run_crawl_task(ctx, test_url("https://example.com/", 0)).await;
+        assert!(result.is_ok());
+        assert!(sent.lock().expect("lock not poisoned").is_empty());
+
+        let out = String::from_utf8_lossy(&buf.0.lock().expect("lock not poisoned")).to_string();
+        assert!(
+            out.contains("class=TransientBackoff"),
+            "ErrorClass must travel as a structured field, got: {out}"
+        );
+        assert!(out.contains("ERROR"), "should be ERROR level: {out}");
+        assert!(
+            out.contains("stage=pipeline"),
+            "stage field must identify the pipeline: {out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_output_stage_failure_logged_with_class_and_does_not_crash() {
+        let buf = LogBuffer(Arc::new(Mutex::new(Vec::new())));
+        let _guard = tracing::subscriber::set_default(capture_subscriber(buf.clone()));
+        let (collector, _) = mock_collector();
+        let stage: Arc<Box<dyn OutputStage>> = Arc::new(Box::new(FailingOutputStage {
+            message: "disk full".to_string(),
+        }));
+        let ctx = TestCtxBuilder::new(collector)
+            .pipeline(Arc::new(MockPipeline {
+                behavior: PipelineBehavior::Continue,
+            }))
+            .output_stage(stage)
+            .build();
+
+        // The task must NOT crash because an output sink failed.
+        let result = run_crawl_task(ctx, test_url("https://example.com/", 0)).await;
+        assert!(
+            result.is_ok(),
+            "output-stage failure must not abort the task"
+        );
+
+        let out = String::from_utf8_lossy(&buf.0.lock().expect("lock not poisoned")).to_string();
+        assert!(
+            out.contains("class=TransientRetriable"),
+            "output-stage failure must carry its ErrorClass as a structured field, got: {out}"
+        );
+        assert!(out.contains("ERROR"), "should be ERROR level: {out}");
+        assert!(
+            out.contains("failing_output"),
+            "the failing stage must be identifiable by name: {out}"
+        );
     }
 
     #[tokio::test]
