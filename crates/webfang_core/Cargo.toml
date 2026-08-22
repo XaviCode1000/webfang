@@ -216,3 +216,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [[test]]
 name = "crash_matrix_test"
 path = "tests/crash_matrix_test.rs"
+
+[[test]]
+name = "pipeline_outcome_prop"
+path = "tests/pipeline_outcome_prop.rs"

@@ -87,7 +87,7 @@ pub use js_renderer::{JsRenderError, JsRenderer};
 pub use js_strategy::JsStrategy;
 pub use link_extractor::{LinkExtractor, LinkProcessor};
 pub use pattern_matching::{match_url_pattern, matches_pattern};
-pub use pipeline_item::{PipelineStage, ScrapedItem, StageOutcome};
+pub use pipeline_item::{FilterReason, PipelineStage, RejectReason, ScrapedItem, StageOutcome};
 pub use ports::AssetDownloaderPort;
 pub use profile::{profile_from_name, valid_profile_names};
 pub use repositories::CrawlResultRepository;

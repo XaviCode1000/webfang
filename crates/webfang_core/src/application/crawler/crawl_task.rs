@@ -289,7 +289,7 @@ fn capture_content(ctx: &CrawlTaskCtx, url_str: &str, response: &str) {
 
 /// Run the content pipeline if configured. Returns `true` when processing
 /// should continue (no pipeline, or `Continue`); `false` when the item was
-/// skipped or rejected (the caller should stop processing this page).
+/// filtered, rejected, or failed (the caller should stop processing this page).
 async fn run_pipeline(ctx: &CrawlTaskCtx, url_str: &str, response: &str, status_code: u16) -> bool {
     let Some(ref pipeline) = ctx.pipeline else {
         return true;
@@ -307,12 +307,22 @@ async fn run_pipeline(ctx: &CrawlTaskCtx, url_str: &str, response: &str, status_
             write_to_output_stages(ctx, &processed_item).await;
             true
         },
-        StageOutcome::Skip => {
-            debug!("Pipeline skipped item: {}", url_str);
+        StageOutcome::Filtered { reason } => {
+            debug!(url = %url_str, reason = %reason, "pipeline filtered item");
             false
         },
-        StageOutcome::Reject(reason) => {
-            warn!("Pipeline rejected {}: {}", url_str, reason);
+        StageOutcome::Rejected { reason } => {
+            warn!(url = %url_str, reason = %reason, "pipeline rejected item");
+            false
+        },
+        StageOutcome::Failed { class } => {
+            log_scrape_error(
+                &format!("pipeline failed: {class:?}"),
+                url_str,
+                "pipeline",
+                None,
+                "pipeline failed",
+            );
             false
         },
     }
@@ -481,10 +491,12 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     enum PipelineBehavior {
         Continue,
-        Skip,
-        Reject(String),
+        Filtered,
+        Rejected(crate::domain::pipeline_item::RejectReason),
+        Failed(crate::domain::error::ErrorClass),
     }
 
     struct MockPipeline {
@@ -499,8 +511,13 @@ mod tests {
             Box::pin(async move {
                 match &self.behavior {
                     PipelineBehavior::Continue => StageOutcome::Continue(item),
-                    PipelineBehavior::Skip => StageOutcome::Skip,
-                    PipelineBehavior::Reject(reason) => StageOutcome::Reject(reason.clone()),
+                    PipelineBehavior::Filtered => StageOutcome::Filtered {
+                        reason: crate::domain::pipeline_item::FilterReason::NonContentPath,
+                    },
+                    PipelineBehavior::Rejected(reason) => StageOutcome::Rejected {
+                        reason: reason.clone(),
+                    },
+                    PipelineBehavior::Failed(class) => StageOutcome::Failed { class: *class },
                 }
             })
         }
@@ -900,7 +917,7 @@ mod tests {
         let (collector, sent) = mock_collector();
         let ctx = TestCtxBuilder::new(collector)
             .pipeline(Arc::new(MockPipeline {
-                behavior: PipelineBehavior::Skip,
+                behavior: PipelineBehavior::Filtered,
             }))
             .build();
 
@@ -915,7 +932,9 @@ mod tests {
         let (collector, sent) = mock_collector();
         let ctx = TestCtxBuilder::new(collector)
             .pipeline(Arc::new(MockPipeline {
-                behavior: PipelineBehavior::Reject("bad content".to_string()),
+                behavior: PipelineBehavior::Rejected(
+                    crate::domain::pipeline_item::RejectReason::EmptyContent,
+                ),
             }))
             .build();
 
