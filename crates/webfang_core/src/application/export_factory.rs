@@ -630,6 +630,12 @@ pub fn process_results(
 ) -> Result<Vec<String>, ExporterError> {
     info!("Processing {} results for export", results.len());
 
+    // Fail-fast on uncreatable output_dir (ENOTDIR through a regular file,
+    // permission denied, etc.): surface as ExporterError::DirectoryCreation
+    // so the MCP/CLI caller gets an honest isError:true instead of a fake
+    // success that swallows the per-item error (D3 swallow bug, #854).
+    std::fs::create_dir_all(&output_dir).map_err(ExporterError::DirectoryCreation)?;
+
     // Hash-index BEFORE the exporter touches the file, so membership
     // reflects exactly the bytes flushed by previous runs (D3 seam).
     let output_path = output_dir.join(format!("{filename}.jsonl"));
@@ -710,6 +716,8 @@ pub fn process_results_with_chunks(
     use sha2::{Digest, Sha256};
 
     info!("Processing {} cleaned chunks for export", chunks.len());
+
+    std::fs::create_dir_all(&output_dir).map_err(ExporterError::DirectoryCreation)?;
 
     let output_path = output_dir.join(format!("{filename}.jsonl"));
     let mut session = CommitSession::open(ctx, &output_path);
