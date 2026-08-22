@@ -150,7 +150,9 @@ async fn mount_waf_trace_sequence(server: &MockServer, mock_path: &str) {
 /// comment for why a second 429 is required for the 429 event to appear.
 /// The functional test `waf_gauntlet_403_429_200_success` proves the plain
 /// 403 → 429 → 200 retry logic works correctly.
-#[ignore]
+///
+/// Runs in normal CI: the mock is counter-based (deterministic order), so the
+/// historical wiremock-FIFO flakiness that motivated `#[ignore]` no longer applies.
 #[tokio::test]
 async fn waf_gauntlet_observability_trace() {
     let t = BehavioralTest::new().await;
