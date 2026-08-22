@@ -28,7 +28,6 @@ use std::env;
 use std::io::{self, IsTerminal};
 use std::panic;
 
-use clap::Parser;
 #[cfg(feature = "ui")]
 use inquire::Text;
 #[cfg(any(feature = "ai", feature = "adaptive-selectors"))]
@@ -41,6 +40,7 @@ use webfang_core::application::crawl_options::CrawlOptions;
 use webfang_core::cli::config::ConfigDefaults;
 use webfang_core::cli::error::CliExit;
 use webfang_core::cli::preflight;
+use webfang_core::cli::preflight::{ArgSources, TuiOverrides};
 #[cfg(feature = "ai")]
 use webfang_core::domain::semantic_cleaner::SemanticCleaner;
 #[cfg(feature = "adaptive-selectors")]
@@ -306,9 +306,9 @@ pub async fn main() -> CliExit {
 }
 
 async fn __main() -> CliExit {
-    // 1. Parse CLI arguments
-    let mut args = match parse_args() {
-        Ok(args) => args,
+    // 1. Parse CLI arguments (single pass, provenance captured)
+    let (mut args, arg_sources) = match parse_args() {
+        Ok(v) => v,
         Err(exit) => return exit,
     };
 
@@ -322,11 +322,11 @@ async fn __main() -> CliExit {
         return orchestrator::handle_completions(shell);
     }
 
-    // 3. Unified TUI mode (if --tui flag is set)
-    match handle_tui_mode(args).await {
-        Ok(updated) => args = updated,
+    // 3. Unified TUI mode — returns touched-only overrides
+    let tui_overrides = match handle_tui_mode(&mut args).await {
+        Ok(v) => v,
         Err(exit) => return exit,
-    }
+    };
 
     // 4. URL handling with interactive wizard
     if let Err(exit) = resolve_url(&mut args).await {
@@ -344,12 +344,41 @@ async fn __main() -> CliExit {
         }
     }
 
-    // 6. Extract trace_file before args is moved into CrawlOptions
-    let trace_file = args.crawler.trace_file.take();
+    // 6. Trace file (cloned before normalize borrows args)
+    let trace_file = args.crawler.trace_file.clone();
 
-    // 6b. Convert Args → CrawlOptions and apply config file defaults
-    let opts = CrawlOptions::from(args);
-    let opts = preflight::apply_config_defaults(opts, &config_defaults);
+    // 6b. Single normalization pipeline (design D3) — replaces legacy merges
+    let normalized =
+        match preflight::normalize(&args, &arg_sources, &config_defaults, tui_overrides) {
+            Ok(n) => n,
+            Err(e) => return e,
+        };
+    // Project contested fields; copy non-contested from Args via From
+    let base = CrawlOptions::from(args);
+    let projected = normalized.into_crawl_options();
+    // Overwrite contested fields with provenance-correct values, keep base for the rest
+    let mut opts = base;
+    opts.crawl.max_pages = projected.crawl.max_pages;
+    opts.crawl.max_depth = projected.crawl.max_depth;
+    opts.crawl.sitemap_url = projected.crawl.sitemap_url;
+    opts.crawl.use_sitemap = projected.crawl.use_sitemap;
+    opts.crawl.selector = projected.crawl.selector;
+    opts.network.delay_ms = projected.network.delay_ms;
+    opts.network.timeout_secs = projected.network.timeout_secs;
+    opts.network.concurrency = projected.network.concurrency;
+    opts.export.output_dir = projected.export.output_dir;
+    opts.export.output_format = projected.export.output_format;
+    opts.export.export_format = projected.export.export_format;
+    opts.export.obsidian_tags = projected.export.obsidian_tags;
+    opts.export.obsidian_wiki_links = projected.export.obsidian_wiki_links;
+    opts.export.obsidian_relative_assets = projected.export.obsidian_relative_assets;
+    opts.export.obsidian_rich_metadata = projected.export.obsidian_rich_metadata;
+    opts.export.obsidian_vault = projected.export.obsidian_vault;
+    opts.export.quick_save = projected.export.quick_save;
+    opts.crawl.ignore_waf = projected.crawl.ignore_waf;
+    if opts.crawl.sitemap_url.is_some() {
+        opts.crawl.use_sitemap = true;
+    }
 
     // 6b2. Initialize logging (hoisted above the preflight gates on purpose):
     // the 6c-6f2 gates emit `warn!` diagnostics, and a subscriber is only
@@ -411,12 +440,14 @@ async fn __main() -> CliExit {
 }
 
 /// Parse CLI arguments, translating clap's help/version/error cases into exits.
-fn parse_args() -> Result<Args, CliExit> {
-    match Args::try_parse() {
-        Ok(args) => Ok(args),
+///
+/// Single parse pass per design D1: `ArgMatches` built once, `Args` derived
+/// via `FromArgMatches`, provenance captured via `ArgSources::capture`.
+fn parse_args() -> Result<(Args, ArgSources), CliExit> {
+    use clap::{CommandFactory, FromArgMatches};
+    let matches = match Args::command().try_get_matches() {
+        Ok(m) => m,
         Err(e) => {
-            // clap returns DisplayHelp/DisplayVersion for --help/--version
-            // These are NOT errors — print and exit 0
             if e.kind() == clap::error::ErrorKind::DisplayHelp
                 || e.kind() == clap::error::ErrorKind::DisplayVersion
             {
@@ -424,9 +455,22 @@ fn parse_args() -> Result<Args, CliExit> {
                 return Err(CliExit::Success);
             }
             eprintln!("{e}");
-            Err(CliExit::UsageError("invalid arguments".into()))
+            return Err(CliExit::UsageError("invalid arguments".into()));
         },
-    }
+    };
+    let args = Args::from_arg_matches(&matches).map_err(|e| {
+        if e.kind() == clap::error::ErrorKind::DisplayHelp
+            || e.kind() == clap::error::ErrorKind::DisplayVersion
+        {
+            e.print().ok();
+            CliExit::Success
+        } else {
+            eprintln!("{e}");
+            CliExit::UsageError("invalid arguments".into())
+        }
+    })?;
+    let sources = ArgSources::capture(&matches);
+    Ok((args, sources))
 }
 
 /// Run the unified TUI (or reject it when the `ui` feature is off).
@@ -434,15 +478,18 @@ fn parse_args() -> Result<Args, CliExit> {
 /// Returns the (possibly TUI-modified) args, or the `CliExit` to propagate —
 /// including `CliExit::Success` when the user cancels the TUI.
 #[cfg(feature = "ui")]
-async fn handle_tui_mode(mut args: Args) -> Result<Args, CliExit> {
+async fn handle_tui_mode(args: &mut Args) -> Result<Option<TuiOverrides>, CliExit> {
     if args.tui.tui {
-        // Run unified TUI: config form → URL selector → scraping
         let tui_result = run_unified_tui().await;
         match tui_result {
             Ok(Some(config_values)) => {
-                apply_selected_urls(&mut args, &config_values);
-                args = preflight::apply_tui_config_args(args, &config_values);
+                apply_selected_urls(args, &config_values);
                 println!("Config applied from TUI.");
+                let mut filtered = config_values.clone();
+                if let serde_json::Value::Object(ref mut map) = filtered {
+                    map.remove("selected_urls");
+                }
+                return Ok(Some(TuiOverrides::from_json(filtered)));
             },
             Ok(None) => {
                 println!("TUI cancelled.");
@@ -451,7 +498,6 @@ async fn handle_tui_mode(mut args: Args) -> Result<Args, CliExit> {
             Err(e) => return Err(e),
         }
     } else if args.tui.config_tui || args.tui.interactive {
-        // [DEPRECATED] Legacy flags — redirect to unified TUI
         if args.tui.config_tui {
             eprintln!(
                 "Warning: --config-tui is deprecated, use --tui instead. Will be removed in v0.6.0"
@@ -462,14 +508,18 @@ async fn handle_tui_mode(mut args: Args) -> Result<Args, CliExit> {
         let tui_result = run_unified_tui().await;
         match tui_result {
             Ok(Some(config_values)) => {
-                apply_selected_urls(&mut args, &config_values);
-                args = preflight::apply_tui_config_args(args, &config_values);
+                apply_selected_urls(args, &config_values);
+                let mut filtered = config_values.clone();
+                if let serde_json::Value::Object(ref mut map) = filtered {
+                    map.remove("selected_urls");
+                }
+                return Ok(Some(TuiOverrides::from_json(filtered)));
             },
             Ok(None) => return Err(CliExit::Success),
             Err(e) => return Err(e),
         }
     }
-    Ok(args)
+    Ok(None)
 }
 
 /// Apply Phase 2 selected URLs to args (multi-URL → batch file).
@@ -529,7 +579,7 @@ fn write_batch_file(path: &std::path::Path, urls: &[String]) -> Result<(), CliEx
 
 /// When `ui` is OFF, any TUI flag triggers a graceful Spanish error (spec S2.2).
 #[cfg(not(feature = "ui"))]
-async fn handle_tui_mode(args: Args) -> Result<Args, CliExit> {
+async fn handle_tui_mode(args: &mut Args) -> Result<Option<TuiOverrides>, CliExit> {
     if args.tui.tui || args.tui.config_tui || args.tui.interactive {
         eprintln!("Error: La interfaz TUI no está disponible en esta compilación.");
         eprintln!();
@@ -541,7 +591,7 @@ async fn handle_tui_mode(args: Args) -> Result<Args, CliExit> {
                 .into(),
         ));
     }
-    Ok(args)
+    Ok(None)
 }
 
 /// Ensure a URL is present, prompting interactively when stdin is a TTY.

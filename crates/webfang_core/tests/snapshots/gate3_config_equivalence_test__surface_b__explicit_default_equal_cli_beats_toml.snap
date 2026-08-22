@@ -1,0 +1,8 @@
+---
+source: crates/webfang_core/tests/gate3_config_equivalence_test.rs
+expression: redacted
+---
+{
+  "max_pages": "10",
+  "max_pages_source": "Cli"
+}

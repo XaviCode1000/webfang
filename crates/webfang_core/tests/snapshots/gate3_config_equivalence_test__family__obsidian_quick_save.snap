@@ -1,0 +1,24 @@
+---
+source: crates/webfang_core/tests/gate3_config_equivalence_test.rs
+expression: redacted
+---
+{
+  "concurrency": "ConcurrencyConfig { value: None, auto_detect: true }",
+  "delay_ms": "1000",
+  "export_format": "Jsonl",
+  "format": "Markdown",
+  "ignore_waf": "false",
+  "max_depth": "2",
+  "max_pages": "10",
+  "obsidian_relative_assets": "false",
+  "obsidian_rich_metadata": "false",
+  "obsidian_tags": "",
+  "obsidian_wiki_links": "false",
+  "output": "output",
+  "quick_save": "true",
+  "selector": "body",
+  "sitemap_url": "None",
+  "timeout_secs": "30",
+  "use_sitemap": "false",
+  "vault": "None"
+}
