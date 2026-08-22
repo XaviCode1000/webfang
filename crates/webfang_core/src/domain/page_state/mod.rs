@@ -31,5 +31,10 @@ pub mod status;
 pub mod typed;
 
 pub use status::PageStatus;
+
+/// `run_id` stamped on records created by the v1→v2 migration. Records
+/// carrying this id predate hash tracking, so the D2 invariant table exempts
+/// them from the `output_location`/`content_hash` requirement.
+pub const MIGRATED_V1_RUN_ID: &str = "migrated-v1";
 pub use typed::{Committed, Discovered, Exported, Extracted, Fetched, Fetching, Processed, Queued};
 pub use typed::{PersistedRecord, ReconcileError, StateMarker, Stateful};

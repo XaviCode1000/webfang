@@ -2,16 +2,438 @@
 //!
 //! Provides flexible factory methods for creating appropriate exporters
 //! based on ExportFormat enum values.
+//!
+//! # D3 commit-point protocol (PR3)
+//!
+//! [`process_results`] drives each item through the frozen per-item sequence:
+//!
+//! ```text
+//! 1. output stage append + flush Ok          ← OUTPUT DURABLE (flush barrier)
+//! 2. record.advance(Processed → Exported)    ← in-memory
+//! 3. record_store.save()                     ← EXPORTED CHECKPOINT DURABLE
+//! 4. record.advance(Exported → Committed)    ← in-memory
+//! 5. record_store.save()                     ← ★ COMMIT POINT ★
+//! ```
+//!
+//! Until PR4 introduces the single-writer JSONL session, the exporter's
+//! successful return IS the flush barrier (each `JsonlExporter::export`
+//! flushes before returning `Ok`). No record ever claims more than what was
+//! durably flushed.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
-use tracing::info;
 
-use crate::{
-    domain::{entities::ExportFormat, exporter::ExporterError, Exporter, ExporterConfig},
-    infrastructure::export::{
-        jsonl_exporter, state_store::StateStore, vector_exporter::VectorExporter,
-    },
+use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
+
+use crate::application::resume::{canonical_key, load_preserving, RunId};
+use crate::domain::page_state::{PageStatus, Stateful};
+use crate::domain::{entities::ExportFormat, exporter::ExporterError, Exporter, ExporterConfig};
+use crate::infrastructure::export::{
+    jsonl_exporter, state_store::StateStore, vector_exporter::VectorExporter, DomainRecords,
+    LastError, RawRecord, RecordStore,
 };
+
+/// Per-run resume/commit context handed to the export functions (D5 seams).
+///
+/// Groups the record store, this run's identity, and the skip-policy switch.
+/// With `resume = false` the gate never consults prior history (fresh run
+/// re-drives everything while old records stay preserved — A2/E10).
+pub struct ResumeContext<'a> {
+    pub(crate) store: &'a RecordStore,
+    pub(crate) run_id: RunId,
+    pub(crate) resume: bool,
+    pub(crate) cancel: Option<&'a CancellationToken>,
+    /// Test-only observer fired after every record-store save with the
+    /// persisted status (ordering proof: EXPORTED strictly before COMMITTED).
+    pub(crate) persist_observer: Option<&'a dyn Fn(PageStatus)>,
+}
+
+impl<'a> ResumeContext<'a> {
+    /// A context for `store` with a fresh [`RunId`] and no skipping.
+    #[must_use]
+    pub fn new(store: &'a RecordStore) -> Self {
+        Self {
+            store,
+            run_id: RunId::new(),
+            resume: false,
+            cancel: None,
+            persist_observer: None,
+        }
+    }
+
+    /// Enable `--resume` semantics: skip ONLY `COMMITTED`-proven records.
+    #[must_use]
+    pub fn with_resume(mut self, resume: bool) -> Self {
+        self.resume = resume;
+        self
+    }
+
+    /// Observe cooperative cancellation between items (drain-before-final-
+    /// persist: the in-flight item always completes its full D3 sequence).
+    #[must_use]
+    pub fn observing_cancel(mut self, token: &'a CancellationToken) -> Self {
+        self.cancel = Some(token);
+        self
+    }
+
+    /// Test-only observer hook for the PR5 crash-matrix ordering proof
+    /// (asserts EXPORTED persists strictly before COMMITTED). Unused until
+    /// the harness lands.
+    #[allow(dead_code)]
+    #[must_use]
+    pub(crate) fn with_persist_observer(mut self, f: &'a dyn Fn(PageStatus)) -> Self {
+        self.persist_observer = Some(f);
+        self
+    }
+}
+
+/// Why an item took a particular route through the export phase.
+enum ItemDecision {
+    /// Record proven `COMMITTED` — skip entirely (type-level gate).
+    AlreadyCommitted,
+    /// Output flush proven via content-hash membership — promote to
+    /// `COMMITTED` without appending (D3 recovery actions 3–4).
+    PromoteFromFlushProof,
+    /// Normal path: append, checkpoint `EXPORTED`, commit.
+    DriveAndCommit,
+}
+
+/// Per-run commit session: the loaded record map plus the content-hash index
+/// of the target output file (D3 recovery seam).
+pub(crate) struct CommitSession<'a> {
+    ctx: Option<&'a ResumeContext<'a>>,
+    records: DomainRecords,
+    /// `checksum_sha256` values parsed from every valid line already in the
+    /// output file. Membership proves "bytes flushed" without timing guesses.
+    hash_index: HashSet<String>,
+}
+
+impl<'a> CommitSession<'a> {
+    fn open(ctx: Option<&'a ResumeContext<'a>>, output_path: &std::path::Path) -> Self {
+        let records = ctx.map_or_else(DomainRecords::new, |c| load_preserving(c.store));
+        let hash_index = build_content_hash_index(output_path);
+        Self {
+            ctx,
+            records,
+            hash_index,
+        }
+    }
+
+    fn cancelled(&self) -> bool {
+        self.ctx
+            .and_then(|c| c.cancel)
+            .is_some_and(|t| t.is_cancelled())
+    }
+
+    /// The resume-gate decision for one item. With `resume = false` every
+    /// item re-drives (fresh-run semantics); with `resume = true` only
+    /// `COMMITTED`-proven records skip.
+    fn decide(&self, url: &str) -> ItemDecision {
+        let Some(ctx) = self.ctx else {
+            return ItemDecision::DriveAndCommit;
+        };
+        if !ctx.resume {
+            return ItemDecision::DriveAndCommit;
+        }
+        let Some(record) = self.records.get(&canonical_key(url)) else {
+            return ItemDecision::DriveAndCommit;
+        };
+        // Type-level gate: skip ONLY when the record reconciles into the
+        // terminal state through the D2 invariant table (SC2 mechanism).
+        if Stateful::<RawRecord, crate::domain::page_state::Committed>::reconcile(record.clone())
+            .is_ok()
+        {
+            return ItemDecision::AlreadyCommitted;
+        }
+        if let Some(hash) = &record.content_hash {
+            if self.hash_index.contains(hash) {
+                return ItemDecision::PromoteFromFlushProof;
+            }
+        }
+        ItemDecision::DriveAndCommit
+    }
+
+    fn promote_from_flush_proof(&mut self, url: &str, output_location: String) {
+        use crate::domain::page_state::Exported;
+
+        let key = canonical_key(url);
+        let Some(ctx) = self.ctx else { return };
+        let Some(record) = self.records.remove(&key) else {
+            return;
+        };
+        // Flush is PROVEN by hash membership, so advancing is honest.
+        // EXPORTED records take their legal direct transition (commit);
+        // ONLY lower states walk the drive chain — driving an EXPORTED
+        // record would hit the terminal-state guard and lose its
+        // content_hash (the dedup identity of the flushed line).
+        let exported: Stateful<RawRecord, Exported> = if record.status == PageStatus::Exported {
+            match Stateful::<RawRecord, Exported>::reconcile(record.clone()) {
+                Ok(exported) => exported,
+                Err(e) => {
+                    tracing::warn!(url, error = %e, "EXPORTED record broke invariants; re-driving fresh");
+                    let mut processed = drive_to_processed(record, &ctx.run_id);
+                    {
+                        let payload = processed.record_mut();
+                        payload.updated_at = now_millis();
+                    }
+                    processed.export_flushed(PathBuf::from(&output_location))
+                },
+            }
+        } else {
+            let mut processed = drive_to_processed(record, &ctx.run_id);
+            {
+                let payload = processed.record_mut();
+                payload.attempts += 1;
+                payload.last_error = None;
+                payload.updated_at = now_millis();
+                if payload.output_location.is_none() {
+                    payload.output_location = Some(output_location.clone());
+                }
+            }
+            processed.export_flushed(PathBuf::from(&output_location))
+        };
+        self.records.insert(key.clone(), exported.record().clone());
+        self.save_notifying(PageStatus::Exported);
+        // COMMIT POINT — no re-append; the line is already on disk.
+        let committed = exported.commit();
+        info!(url, "flush-proof promotion: advancing to COMMITTED");
+        self.records.insert(key, committed.into_record());
+        self.save_notifying(PageStatus::Committed);
+    }
+
+    /// Record an item failure honestly: attempts++, classified last_error,
+    /// updated_at — persisted at the record's NON-advanced state (SC6).
+    /// A never-seen URL gets a fresh DISCOVERED record carrying the failure.
+    fn fail_item(&mut self, url: &str, class: crate::error::ErrorClass, message: &str) {
+        let Some(ctx) = self.ctx else { return };
+        let key = canonical_key(url);
+        let record = self.records.entry(key).or_insert_with(|| RawRecord {
+            url: url.to_string(),
+            canonical_url: canonical_key(url),
+            run_id: ctx.run_id.as_str().to_string(),
+            content_hash: None,
+            attempts: 0,
+            status: PageStatus::Discovered,
+            last_error: None,
+            output_location: None,
+            updated_at: now_millis(),
+        });
+        record.attempts += 1;
+        record.last_error = Some(LastError {
+            class,
+            message: message.to_string(),
+        });
+        record.updated_at = now_millis();
+        warn!(url, class = ?class, "item failed; status NOT advanced");
+        self.save_quiet();
+    }
+
+    /// D3 steps 2–5 for one successfully flushed item.
+    fn commit_item(
+        &mut self,
+        url: &str,
+        content_hash: String,
+        output_location: PathBuf,
+        run_id: &RunId,
+    ) {
+        let key = canonical_key(url);
+        // Drive the record to PROCESSED along its legal chain (fresh URLs
+        // enter as DISCOVERED; re-drives resume from their recorded state).
+        let existing = self.records.remove(&key);
+        // A2 fresh-run semantics: a terminal-state record from a PREVIOUS
+        // run re-drives under the new run_id — the new run starts its own
+        // honest lifecycle from DISCOVERED.
+        let existing = existing.filter(|record| {
+            !matches!(record.status, PageStatus::Exported | PageStatus::Committed)
+        });
+        let mut processed = match existing {
+            Some(record) => drive_to_processed(record, run_id),
+            None => Stateful::<RawRecord, crate::domain::page_state::Discovered>::new(RawRecord {
+                url: url.to_string(),
+                canonical_url: key.clone(),
+                run_id: run_id.as_str().to_string(),
+                content_hash: None,
+                attempts: 0,
+                status: PageStatus::Discovered,
+                last_error: None,
+                output_location: None,
+                updated_at: now_millis(),
+            })
+            .queue()
+            .start_fetch()
+            .fetched()
+            .extracted()
+            .processed(),
+        };
+        {
+            let payload = processed.record_mut();
+            payload.run_id = run_id.as_str().to_string();
+            payload.content_hash = Some(content_hash);
+            payload.output_location = Some(output_location.display().to_string());
+            payload.attempts += 1;
+            payload.last_error = None; // success clears last_error (SC6)
+            payload.updated_at = now_millis();
+        }
+        // Step 2–3: EXPORTED checkpoint durable BEFORE the commit point.
+        let exported = processed.export_flushed(output_location);
+        self.records.insert(key.clone(), exported.record().clone());
+        self.save_notifying(PageStatus::Exported);
+        // Steps 4–5: ★ COMMIT POINT ★ — rename(2) persisting Committed,
+        // strictly after the output flush ack + EXPORTED checkpoint.
+        let committed = exported.commit();
+        self.records.insert(key, committed.into_record());
+        self.save_notifying(PageStatus::Committed);
+    }
+
+    fn save_and_notify(&self, observer: Option<&dyn Fn(PageStatus)>, status: PageStatus) {
+        let Some(ctx) = self.ctx else { return };
+        match ctx.store.save(&self.records) {
+            Ok(()) => {
+                if let Some(f) = observer.or(ctx.persist_observer) {
+                    f(status);
+                }
+            },
+            Err(e) => tracing::error!(error = %e, "record-store save failed"),
+        }
+    }
+
+    /// Drain-before-final-persist (E8): after cancellation stops new items,
+    /// one final save persists any remaining honest state before exit.
+    pub(crate) fn final_persist(&self) {
+        let Some(ctx) = self.ctx else { return };
+        if let Err(e) = ctx.store.save(&self.records) {
+            tracing::error!(error = %e, "final record-store persist failed");
+        }
+    }
+
+    /// Save and fire the ordering observer with the persisted status.
+    fn save_notifying(&self, status: PageStatus) {
+        self.save_and_notify(None, status);
+    }
+
+    /// Save failure state WITHOUT firing the transition observer (a failed
+    /// item did not advance; the observer tracks lifecycle transitions only).
+    fn save_quiet(&self) {
+        if let Some(ctx) = self.ctx {
+            if let Err(e) = ctx.store.save(&self.records) {
+                tracing::error!(error = %e, "record-store save failed");
+            }
+        }
+    }
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+/// Walk a raw record forward along its legal chain to `PROCESSED`. Every arm
+/// reconciles at the recorded position first — the typestate guarantees no
+/// illegal move is expressible even during recovery re-drives.
+/// Walk a raw record forward along its legal chain to `PROCESSED`. Every
+/// arm reconciles at the recorded position first — the typestate guarantees
+/// no illegal move is expressible even during recovery re-drives. A
+/// reconciliation failure (impossible persisted state that slipped past
+/// load-time quarantine) degrades to a fresh DISCOVERED lifecycle under the
+/// current run instead of panicking.
+fn drive_to_processed(
+    record: RawRecord,
+    run_id: &RunId,
+) -> Stateful<RawRecord, crate::domain::page_state::Processed> {
+    use crate::domain::page_state::{
+        Discovered, Extracted, Fetched, Fetching, Processed, Queued, ReconcileError,
+    };
+    let url = record.url.clone();
+    let canonical_url = record.canonical_url.clone();
+    let result = match record.status {
+        PageStatus::Discovered => Stateful::<RawRecord, Discovered>::reconcile(record)
+            .map(|s| s.queue().start_fetch().fetched().extracted().processed()),
+        PageStatus::Queued => Stateful::<RawRecord, Queued>::reconcile(record)
+            .map(|s| s.start_fetch().fetched().extracted().processed()),
+        PageStatus::Fetching => Stateful::<RawRecord, Fetching>::reconcile(record)
+            .map(|s| s.fetched().extracted().processed()),
+        PageStatus::Fetched => {
+            Stateful::<RawRecord, Fetched>::reconcile(record).map(|s| s.extracted().processed())
+        },
+        PageStatus::Extracted => {
+            Stateful::<RawRecord, Extracted>::reconcile(record).map(|s| s.processed())
+        },
+        PageStatus::Processed => Stateful::<RawRecord, Processed>::reconcile(record),
+        // Terminal states are filtered upstream (A2 fresh-run re-drive).
+        PageStatus::Exported | PageStatus::Committed => Err(ReconcileError::StatusMismatch {
+            expected: PageStatus::Processed,
+            found: record.status,
+        }),
+    };
+    result.unwrap_or_else(|e| {
+        tracing::warn!(
+            error = %e,
+            "quarantining impossible persisted state; starting fresh lifecycle"
+        );
+        fresh_discovered(&url, &canonical_url, run_id)
+            .queue()
+            .start_fetch()
+            .fetched()
+            .extracted()
+            .processed()
+    })
+}
+
+/// Start a brand-new DISCOVERED lifecycle for one URL under `run_id`
+/// (A2: a new run owns its records; history stays on disk until commit).
+fn fresh_discovered(
+    url: &str,
+    canonical_url: &str,
+    run_id: &RunId,
+) -> Stateful<RawRecord, crate::domain::page_state::Discovered> {
+    Stateful::<RawRecord, crate::domain::page_state::Discovered>::new(RawRecord {
+        url: url.to_string(),
+        canonical_url: canonical_url.to_string(),
+        run_id: run_id.as_str().to_string(),
+        content_hash: None,
+        attempts: 0,
+        status: PageStatus::Discovered,
+        last_error: None,
+        output_location: None,
+        updated_at: now_millis(),
+    })
+}
+
+fn build_content_hash_index(path: &std::path::Path) -> HashSet<String> {
+    let Ok(bytes) = std::fs::read_to_string(path) else {
+        return HashSet::new();
+    };
+    let mut index = HashSet::new();
+    let mut lines = 0usize;
+    for line in bytes.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        lines += 1;
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(hash) = value.get("checksum_sha256").and_then(|h| h.as_str()) {
+                index.insert(hash.to_string());
+            }
+        }
+    }
+    info!(file = %path.display(), lines, hashes = index.len(), "indexed output file for resume dedup");
+    index
+}
+
+/// Map an export-stage failure onto the SC6 taxonomy: item-data problems are
+/// `DomainRecoverable` (record + continue); environment failures stay fatal.
+fn classify_export_failure(err: &ExporterError) -> crate::error::ErrorClass {
+    use crate::error::ErrorClass;
+    match err {
+        ExporterError::Serialization(_) | ExporterError::InvalidConfig(_) => {
+            ErrorClass::DomainRecoverable
+        },
+        _ => ErrorClass::InternalFatal,
+    }
+}
 
 /// Create exporter based on output format
 pub fn create_exporter(
@@ -116,88 +538,133 @@ pub fn create_state_store(
     Ok(store)
 }
 
-/// Process export results and update state store if resume mode is enabled
-///
-/// # Arguments
-///
-/// * `results` - Scraped content results to export
-/// * `output_dir` - Output directory for export files
-/// * `format` - Export format to use
-/// * `filename` - Base filename for export
-/// * `state_store` - Optional state store for resume tracking
-/// * `resume_mode` - Whether resume mode is enabled
-///
-/// # Returns
-///
-/// * `Ok(Vec<String>)` - List of processed URLs
-/// * `Err(ExporterError)` - Export failed
+/// Outcome of one item through the export phase.
+enum SingleItemOutcome {
+    /// Counted as processed this run.
+    Driven,
+    /// COMMITTED-proven skip (not counted as processed).
+    Skipped,
+    /// Cooperative cancellation observed; stop the loop.
+    Cancelled,
+}
+
+/// D3 sequence for exactly one scraped item (decide → flush → checkpoint
+/// → commit, or honest failure recording). Extracted from
+/// `process_results` to stay within complexity ratchets.
+fn process_single_item(
+    session: &mut CommitSession<'_>,
+    exporter: &dyn crate::domain::Exporter,
+    result: &crate::domain::ScrapedContent,
+    output_path: &std::path::Path,
+    run_id: &RunId,
+) -> SingleItemOutcome {
+    use crate::domain::entities::DocumentChunkUnvalidated;
+    use sha2::{Digest, Sha256};
+
+    let url_str = result.url.as_str().to_string();
+    match session.decide(&url_str) {
+        ItemDecision::AlreadyCommitted => {
+            info!(url = %url_str, "resume gate: COMMITTED-proven; skipping");
+            return SingleItemOutcome::Skipped;
+        },
+        ItemDecision::PromoteFromFlushProof => {
+            session.promote_from_flush_proof(&url_str, output_path.display().to_string());
+            if session.cancelled() {
+                return SingleItemOutcome::Cancelled;
+            }
+            return SingleItemOutcome::Driven;
+        },
+        ItemDecision::DriveAndCommit => {},
+    }
+
+    // Item-data problems are DomainRecoverable per SC6: record the
+    // classified failure and continue - never abort the export.
+    let chunk = DocumentChunkUnvalidated::from_scraped_content(result);
+    let validated = match chunk.validate() {
+        Ok(validated) => validated,
+        Err(e) => {
+            let err = ExporterError::InvalidConfig(e.to_string());
+            let class = classify_export_failure(&err);
+            session.fail_item(&url_str, class, &err.to_string());
+            return SingleItemOutcome::Skipped;
+        },
+    };
+
+    match exporter.export(validated) {
+        Ok(()) => {
+            // Same digest the JsonlExporter stamps into the line -
+            // membership proves flush without timing guesses.
+            let content_hash = format!("{:x}", Sha256::digest(result.content.as_bytes()));
+            session.commit_item(&url_str, content_hash, output_path.to_path_buf(), run_id);
+            if session.cancelled() {
+                return SingleItemOutcome::Cancelled;
+            }
+            SingleItemOutcome::Driven
+        },
+        Err(e) => {
+            let class = classify_export_failure(&e);
+            session.fail_item(&url_str, class, &e.to_string());
+            warn!(url = %url_str, error = %e, "item export failed; continuing");
+            if session.cancelled() {
+                return SingleItemOutcome::Cancelled;
+            }
+            SingleItemOutcome::Skipped
+        },
+    }
+}
+
+/// Convert scraped results into the target export format with exactly-once
+/// semantics: every item flows through the D3 sequence (flush → EXPORTED
+/// checkpoint → COMMITTED) under the resume gate.
 ///
 /// # Errors
 ///
-/// Returns error if:
-/// - Exporter creation fails
-/// - Export operation fails
-/// - State store update fails
+/// Returns [`ExporterError`] only for exporter construction failures;
+/// item-level failures are recorded per-record and never abort the run.
 pub fn process_results(
     results: &[crate::domain::ScrapedContent],
     output_dir: PathBuf,
     format: ExportFormat,
     filename: &str,
-    state_store: Option<&StateStore>,
-    resume_mode: bool,
+    ctx: Option<&ResumeContext<'_>>,
 ) -> Result<Vec<String>, ExporterError> {
-    use crate::domain::entities::DocumentChunkUnvalidated;
-
     info!("Processing {} results for export", results.len());
 
-    // Create exporter
-    let exporter = create_exporter(output_dir, filename, format)?;
+    // Fail-fast on uncreatable output_dir (ENOTDIR through a regular file,
+    // permission denied, etc.): surface as ExporterError::DirectoryCreation
+    // so the MCP/CLI caller gets an honest isError:true instead of a fake
+    // success that swallows the per-item error (D3 swallow bug, #854).
+    std::fs::create_dir_all(&output_dir).map_err(ExporterError::DirectoryCreation)?;
 
-    // Convert results to DocumentChunk and export
+    // Hash-index BEFORE the exporter touches the file, so membership
+    // reflects exactly the bytes flushed by previous runs (D3 seam).
+    let output_path = output_dir.join(format!("{filename}.jsonl"));
+    let mut session = CommitSession::open(ctx, &output_path);
+    let fallback_run_id = RunId::new();
+    let run_id = ctx.map_or(&fallback_run_id, |c| &c.run_id);
+
+    let exporter = create_exporter(output_dir, filename, format)?;
     let mut processed_urls = Vec::new();
 
-    // Load or create export state if resume mode is enabled
-    let mut export_state = if resume_mode {
-        if let Some(store) = state_store {
-            Some(store.load_or_default()?)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
     for result in results {
-        let chunk = DocumentChunkUnvalidated::from_scraped_content(result);
-        let validated = chunk
-            .validate()
-            .map_err(|e| ExporterError::InvalidConfig(e.to_string()))?;
-
-        // Export the chunk
-        exporter.export(validated)?;
-
-        // Track URL
-        let url_str = result.url.as_str().to_string();
-        processed_urls.push(url_str.clone());
-
-        // Update state store if resume mode is enabled
-        if resume_mode {
-            if let Some(store) = state_store {
-                if let Some(ref mut state) = export_state {
-                    store.mark_processed(state, &url_str);
-                }
-            }
+        match process_single_item(
+            &mut session,
+            exporter.as_ref(),
+            result,
+            &output_path,
+            run_id,
+        ) {
+            SingleItemOutcome::Driven => {
+                processed_urls.push(result.url.as_str().to_string());
+            },
+            SingleItemOutcome::Skipped => {},
+            SingleItemOutcome::Cancelled => {
+                tracing::info!("cancellation observed; draining before final persist");
+                break;
+            },
         }
     }
-
-    // Save state if resume mode is enabled
-    if resume_mode {
-        if let Some(store) = state_store {
-            if let Some(state) = export_state {
-                store.save(&state)?;
-            }
-        }
-    }
+    session.final_persist();
 
     info!(
         "✅ Export completado: {} documentos procesados",
@@ -244,14 +711,21 @@ pub fn process_results_with_chunks(
     output_dir: PathBuf,
     format: ExportFormat,
     filename: &str,
-    state_store: Option<&crate::infrastructure::export::state_store::StateStore>,
-    resume_mode: bool,
+    ctx: Option<&ResumeContext<'_>>,
 ) -> Result<Vec<String>, ExporterError> {
+    use sha2::{Digest, Sha256};
+
     info!("Processing {} cleaned chunks for export", chunks.len());
+
+    std::fs::create_dir_all(&output_dir).map_err(ExporterError::DirectoryCreation)?;
+
+    let output_path = output_dir.join(format!("{filename}.jsonl"));
+    let mut session = CommitSession::open(ctx, &output_path);
+    let fallback_run_id = RunId::new();
+    let run_id = ctx.map_or(&fallback_run_id, |c| &c.run_id);
 
     let exporter = create_exporter(output_dir, filename, format)?;
 
-    // Track URLs before batch export
     let processed_urls: Vec<String> = chunks.iter().map(|c| c.url.clone()).collect();
 
     // Validate chunks before passing to export_batch
@@ -265,26 +739,22 @@ pub fn process_results_with_chunks(
         exporter.export_batch(&validated_chunks)?;
     }
 
-    let mut export_state = if resume_mode {
-        if let Some(store) = state_store {
-            Some(store.load_or_default()?)
-        } else {
-            None
+    for (chunk, url_str) in chunks.iter().zip(&processed_urls) {
+        match session.decide(url_str) {
+            ItemDecision::AlreadyCommitted => continue,
+            ItemDecision::PromoteFromFlushProof => {
+                session.promote_from_flush_proof(url_str, output_path.display().to_string());
+            },
+            ItemDecision::DriveAndCommit => {
+                let content_hash = format!("{:x}", Sha256::digest(chunk.content.as_bytes()));
+                session.commit_item(url_str, content_hash, output_path.clone(), run_id);
+            },
         }
-    } else {
-        None
-    };
-
-    if resume_mode {
-        if let Some(store) = state_store {
-            if let Some(ref mut state) = export_state {
-                for url_str in &processed_urls {
-                    store.mark_processed(state, url_str);
-                }
-                store.save(state)?;
-            }
+        if session.cancelled() {
+            break;
         }
     }
+    session.final_persist();
 
     info!(
         "✅ AI-cleaned export completed: {} chunks processed",
@@ -362,7 +832,6 @@ mod tests {
             ExportFormat::Jsonl,
             "export",
             None,
-            false,
         )
         .unwrap();
 
@@ -384,7 +853,6 @@ mod tests {
             ExportFormat::Jsonl,
             "export",
             None,
-            false,
         )
         .unwrap();
 
@@ -409,7 +877,6 @@ mod tests {
             ExportFormat::Jsonl,
             "export",
             None,
-            false,
         )
         .unwrap();
 
@@ -429,7 +896,6 @@ mod tests {
             ExportFormat::Vector,
             "export",
             None,
-            false,
         )
         .unwrap();
 
@@ -438,9 +904,10 @@ mod tests {
     }
 
     #[test]
-    fn test_process_results_invalid_content_returns_error() {
+    fn test_process_results_invalid_content_records_failure_and_continues() {
         let temp_dir = TempDir::new().unwrap();
-        // Empty content fails validation
+        // Empty content fails validation: per SC6 the item-level failure is
+        // recorded (DomainRecoverable) and the run continues - it never aborts.
         let content = make_scraped_content("https://example.com", "Title", "");
 
         let result = process_results(
@@ -449,10 +916,9 @@ mod tests {
             ExportFormat::Jsonl,
             "export",
             None,
-            false,
         );
 
-        assert!(result.is_err());
+        assert!(result.is_ok(), "item failures never abort the export");
     }
 
     // =========================================================================
@@ -533,7 +999,6 @@ mod tests {
             ExportFormat::Auto,
             "export",
             None,
-            false,
         )
         .unwrap();
 
@@ -555,7 +1020,6 @@ mod tests {
             ExportFormat::Auto,
             "export",
             None,
-            false,
         )
         .unwrap();
 
@@ -572,7 +1036,7 @@ mod tests {
     #[test]
     fn test_process_results_resume_mode_tracks_urls() {
         let temp_dir = TempDir::new().unwrap();
-        let store = create_state_store(temp_dir.path().to_path_buf(), "example.com").unwrap();
+        let _store = create_state_store(temp_dir.path().to_path_buf(), "example.com").unwrap();
 
         let content = make_scraped_content("https://example.com/page", "Page", "Body");
 
@@ -581,8 +1045,7 @@ mod tests {
             temp_dir.path().to_path_buf(),
             ExportFormat::Jsonl,
             "export",
-            Some(&store),
-            true, // resume_mode
+            None, // legacy StateStore no longer drives export; RecordStore does (resume_gate_test)
         )
         .unwrap();
 

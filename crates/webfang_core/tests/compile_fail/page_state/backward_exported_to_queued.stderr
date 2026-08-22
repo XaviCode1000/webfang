@@ -1,16 +1,16 @@
-error[E0599]: no method named `queue` found for struct `Stateful<String, webfang_core::domain::page_state::Exported>` in the current scope
-  --> tests/compile_fail/page_state/backward_exported_to_queued.rs:12:15
+error[E0599]: no method named `queue` found for struct `Stateful<Rec, webfang_core::domain::page_state::Exported>` in the current scope
+  --> tests/compile_fail/page_state/backward_exported_to_queued.rs:52:15
    |
-12 |     let _ = s.queue();
-   |               ^^^^^ method not found in `Stateful<String, Exported>`
+52 |     let _ = s.queue();
+   |               ^^^^^ method not found in `Stateful<Rec, Exported>`
    |
-note: there's an earlier shadowed binding `s` of type `Stateful<String, webfang_core::domain::page_state::Discovered>` that has method `queue` available
-  --> tests/compile_fail/page_state/backward_exported_to_queued.rs:9:9
+note: there's an earlier shadowed binding `s` of type `Stateful<Rec, webfang_core::domain::page_state::Discovered>` that has method `queue` available
+  --> tests/compile_fail/page_state/backward_exported_to_queued.rs:49:9
    |
-9  |     let s = Stateful::new(String::from("https://example.com/back"));
-   |         ^ `s` of type `Stateful<String, webfang_core::domain::page_state::Discovered>` that has method `queue` defined earlier here
-10 |     let s = s.queue().start_fetch().fetched().extracted().processed();
-11 |     let s = s.export_flushed(PathBuf::from("out/back.jsonl"));
-   |         - earlier `s` shadowed here with type `Stateful<String, webfang_core::domain::page_state::Exported>`
+49 |     let s = Stateful::new(rec("https://example.com/back"));
+   |         ^ `s` of type `Stateful<Rec, webfang_core::domain::page_state::Discovered>` that has method `queue` defined earlier here
+50 |     let s = s.queue().start_fetch().fetched().extracted().processed();
+51 |     let s = s.export_flushed(PathBuf::from("out/back.jsonl"));
+   |         - earlier `s` shadowed here with type `Stateful<Rec, webfang_core::domain::page_state::Exported>`
    = note: the method was found for
            - `Stateful<R, webfang_core::domain::page_state::Discovered>`
