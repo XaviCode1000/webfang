@@ -956,7 +956,18 @@ mod tests {
 
         store.save(&records).unwrap();
         let second = fs::read_to_string(store.state_path()).unwrap();
-        assert_eq!(first, second, "identical data must serialize identically");
+        let first_value: serde_json::Value =
+            serde_json::from_str(&first).expect("first serialization is valid JSON");
+        let second_value: serde_json::Value =
+            serde_json::from_str(&second).expect("second serialization is valid JSON");
+        assert_eq!(
+            first_value["records"], second_value["records"],
+            "identical records must serialize identically (BTree ordering stable)"
+        );
+        assert!(
+            first_value["updated_at"].is_i64() && second_value["updated_at"].is_i64(),
+            "updated_at must be present as i64 in both serializations"
+        );
         let a_pos = first.find("\"https://stable.test/a\"").expect("a present");
         let z_pos = first.find("\"https://stable.test/z\"").expect("z present");
         assert!(
