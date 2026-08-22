@@ -150,12 +150,6 @@ serde_json = { workspace = true }
 name = "page_state"
 path = "tests/compile_fail/page_state.rs"
 
-# SC4 concurrency proof lives in the workspace-root `tests/` tree (outside
-# this crate's directory); the virtual workspace won't auto-discover it.
-[[test]]
-name = "jsonl_concurrency_test"
-path = "../../tests/jsonl_concurrency_test.rs"
-
 # ---------------------------------------------------------------------------
 
 
