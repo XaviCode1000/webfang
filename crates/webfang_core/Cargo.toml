@@ -220,3 +220,7 @@ path = "tests/crash_matrix_test.rs"
 [[test]]
 name = "pipeline_outcome_prop"
 path = "tests/pipeline_outcome_prop.rs"
+
+[[test]]
+name = "pipeline_cross_layer_consistency"
+path = "tests/pipeline_cross_layer_consistency.rs"
