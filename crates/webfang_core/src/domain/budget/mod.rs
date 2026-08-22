@@ -7,3 +7,6 @@
 //! nothing outside `domain`.
 
 pub(crate) mod clamp;
+/// Hardware-detector seam + pure derivation fns live in sibling modules;
+/// tier newtypes and the tier aggregate are re-exported here.
+pub mod tiers;

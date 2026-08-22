@@ -82,7 +82,7 @@ impl ConcurrencyConfig {
             value: Some(
                 clamp_budget(
                     value,
-                    NonZeroUsize::new(1).expect("static 1 is non-zero"),
+                    NonZeroUsize::MIN,
                     MAX_CONCURRENCY_CEILING,
                 )
                 .get(),
@@ -121,7 +121,7 @@ impl ConcurrencyConfig {
 
         clamp_budget(
             optimal,
-            NonZeroUsize::new(1).expect("static 1 is non-zero"),
+            NonZeroUsize::MIN,
             MAX_CONCURRENCY_CEILING,
         )
         .get()
