@@ -205,9 +205,9 @@ All behavioral tests that produce Markdown/JSON/stderr output MUST use snapshots
 
 **Sanitization (mandatory):** always apply `redact_nondeterministic()` which normalizes: TempDir path → `[TEMP_PATH]`, ISO-8601 timestamps → `[TIMESTAMP]`, wiremock ports → `[PORT]`, ANSI escapes → `[ANSI]`. For additional non-deterministic fields, use `insta::with_settings!({ add_filter(...) })`.
 
-### Test quality — contract-based-test-audit
+### Test quality — six-node diagnostic
 
-When writing or modifying tests, **load the `contract-based-test-audit` skill**. It enforces a 6-node diagnostic:
+When writing or modifying tests, apply this 6-node diagnostic:
 
 1. **Observable behavior** — test public ports only, never internal state.
 2. **Ephemeral adapters** — wiremock for HTTP (no real network), TempDir for filesystem.
@@ -600,7 +600,7 @@ merged as `84dc0c1`. Saved ~54 min of CI (3 × 27 min → 1 × 27 min).
 | :--- | :--- | :--- |
 | Any code work (read/write/edit) | `codedb` + `codegraph` | Intelligence Gate: explore impact before edit, `cargo check` before commit |
 | Writing Rust code | `rust-skills` (category per task type) | 265 rules across 26 categories. Category prefixes: `own-`, `err-`, `async-`, `api-`, `test-`, etc. |
-| **Writing or modifying tests** | **`contract-based-test-audit`** + `rust-skills(test-)` | 6-node diagnostic: observable behavior, ephemeral adapters, semantic assertions, determinism |
+| **Writing or modifying tests** | `rust-skills(test-)` | 6-node test quality diagnostic: observable behavior, ephemeral adapters, semantic assertions, determinism |
 | Planning commits | `work-unit-commits` | Commit by deliverable behavior, not by file type. Keep tests/docs with code |
 | Creating PRs | `branch-pr` | Issue-first checks, CI-enforced rules |
 | Writing docs / guides | `cognitive-doc-design` | Reduce cognitive load, review-facing docs |
@@ -638,6 +638,24 @@ scripts/merge-when-green.sh <PR-N> --dry-run # Poll and report; do not merge
 cargo +nightly miri test infrastructure::bridge::
 cargo +nightly miri test infrastructure::network::
 ```
+
+### Git aliases (use them — agents included)
+
+The maintainer's git config ships these aliases. Prefer them over raw commands; they encode the project's inspection workflow:
+
+| Alias | Expands to | Use for |
+| :--- | :--- | :--- |
+| `git ddiff` | `-c diff.external=difft diff` | Diff with Difftastic (semantic, tree-sitter-based) — much more readable than Myers diff for Rust refactors |
+| `git dshow` | `-c diff.external=difft show --ext-diff` | Show a commit with Difftastic rendering |
+| `git dlog` | `-c diff.external=difft log --ext-diff` | History walk with Difftastic per-commit diffs |
+| `git lg` | `log --graph --decorate --all` | Branch topology at a glance |
+| `git ll` | `log --oneline --decorate --all` | Compact history across all refs |
+| `git last` | `log -1 HEAD` | Latest commit summary |
+| `git unstage` | `restore --staged` | Unstage files WITHOUT touching the worktree (preferred over any stash-like workaround) |
+| `git amend` | `commit --amend --no-edit` | Fold staged changes into the previous commit (work-unit commits discipline) |
+| `git root` | `rev-parse --show-toplevel` | Resolve the current worktree root — use it to verify CWD before any edit |
+
+Notes for agents: `ddiff`/`dshow`/`dlog` require `difft` (Difftastic) on PATH. `git root` is the fastest CWD sanity check against the worktree-isolation rules in 🌳 above.
 
 ---
 
