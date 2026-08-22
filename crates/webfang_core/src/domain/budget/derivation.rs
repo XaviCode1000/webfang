@@ -9,7 +9,7 @@ use std::num::{NonZeroU32, NonZeroUsize};
 
 use super::clamp::{clamp_budget, MAX_CONCURRENCY_CEILING};
 use super::detector::DetectedHw;
-use super::tiers::{BurstPermits, CrawlConcurrency};
+use super::tiers::{BurstPermits, CrawlConcurrency, MaxChromeInstances};
 
 /// Legacy auto-detection table from `ConcurrencyConfig::resolve()`.
 ///
@@ -69,10 +69,235 @@ pub fn derive_burst(explicit: Option<BurstPermits>, detected: DetectedHw) -> Bur
     }
 }
 
+// --- Governor RAM formula (task 1.7) ---------------------------------
+
+/// Approximate RAM cost of one Chrome instance (200 MB), mirroring the
+/// resource governor's legacy `CHROME_INSTANCE_COST` constant.
+pub(crate) const CHROME_INSTANCE_COST_BYTES: u64 = 200_000_000;
+
+/// Fraction of total RAM budgeted to Chrome instances; mirrors the
+/// governor's legacy `RAM_BUDGET_FRACTION`. Kept as `f64` so derived
+/// outputs stay identical to today's governor math.
+const RAM_BUDGET_FRACTION: f64 = 0.6;
+
+/// RAM-usage thresholds for the Chrome-instance budget.
+///
+/// * at/above [`RamThresholds::warning_percent`] → budget halved,
+/// * at/above [`RamThresholds::critical_percent`] → new instances denied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RamThresholds {
+    /// Usage percentage at/above which the instance budget is halved.
+    pub warning_percent: u8,
+    /// Usage percentage at/above which new Chrome instances are denied.
+    pub critical_percent: u8,
+}
+
+impl Default for RamThresholds {
+    fn default() -> Self {
+        Self {
+            warning_percent: 80,
+            critical_percent: 90,
+        }
+    }
+}
+
+/// Explicit outcome of the RAM-based Chrome-instance derivation.
+///
+/// Denial is a first-class variant — never a zero permit count — because
+/// [`MaxChromeInstances`](super::super::tiers::MaxChromeInstances) cannot
+/// represent 0 by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaxChromeDecision {
+    /// Permit acquisition allowed with this instance ceiling.
+    Allow(MaxChromeInstances),
+    /// RAM usage at/above the critical threshold; new instances denied.
+    Deny,
+}
+
+/// Derive the ResourceGovernor's Chrome-instance budget from RAM.
+///
+/// Pure plain-data function (Miri-safe): reproduces TODAY'S governor math
+/// — `(total_ram_bytes * 0.6) / 200 MB`, floored at 1 — and layers the
+/// usage-pressure tiers on top:
+///
+/// * usage `< warning`  → full budget,
+/// * `warning ≤ usage < critical` → budget halved (floored at 1),
+/// * usage `≥ critical` → [`MaxChromeDecision::Deny`].
+///
+/// Usage is computed from `used_ram_bytes` over `total_ram_bytes` exactly
+/// like the governor's integer `used * 100 / total`; values above 100%
+/// clamp to 100%.
+#[must_use]
+pub fn derive_max_instances(
+    total_ram_bytes: u64,
+    used_ram_bytes: u64,
+    thresholds: RamThresholds,
+) -> MaxChromeDecision {
+    // Integer usage percentage, identical to the governor's
+    // `used * 100 / total`; over-total usage clamps to 100%.
+    let used = used_ram_bytes.min(total_ram_bytes);
+    let usage_percent = if total_ram_bytes == 0 {
+        0
+    } else {
+        used.saturating_mul(100) / total_ram_bytes
+    } as u8;
+
+    if usage_percent >= thresholds.critical_percent {
+        return MaxChromeDecision::Deny;
+    }
+
+    // Legacy governor math kept verbatim (`compute_max_instances`): the
+    // float multiply is intentional so outputs stay bit-identical.
+    let budget = (total_ram_bytes as f64 * RAM_BUDGET_FRACTION) as u64;
+    let full = (budget / CHROME_INSTANCE_COST_BYTES).max(1);
+
+    let effective = if usage_percent >= thresholds.warning_percent {
+        // Governor halves the available permits at/above the warning
+        // threshold; floor at 1 so a permit count of 0 is unrepresentable.
+        (full / 2).max(1)
+    } else {
+        full
+    };
+
+    let instances =
+        usize::try_from(effective).unwrap_or_else(|_| unreachable!("instance budget fits usize"));
+    MaxChromeDecision::Allow(
+        MaxChromeInstances::new(instances)
+            .unwrap_or_else(|_| unreachable!("instance budget never yields zero")),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::budget::detector::{FixedDetector, HardwareDetector};
+
+    // --- derive_max_instances (governor RAM formula, task 1.7) -----------
+
+    /// Verbatim replica of TODAY'S `ResourceGovernor::compute_max_instances`
+    /// math so any drift in either direction fails loudly.
+    fn legacy_compute_max_instances(total_ram_bytes: u64) -> u64 {
+        const CHROME_INSTANCE_COST: u64 = 200_000_000;
+        let budget = (total_ram_bytes as f64 * 0.6) as u64;
+        (budget / CHROME_INSTANCE_COST).max(1)
+    }
+
+    const GB: u64 = 1_000_000_000;
+
+    #[test]
+    fn full_budget_matches_governor_formula() {
+        let decision = derive_max_instances(16 * GB, 0, RamThresholds::default());
+        assert_eq!(
+            decision,
+            MaxChromeDecision::Allow(
+                MaxChromeInstances::try_from(legacy_compute_max_instances(16 * GB) as usize)
+                    .expect("formula output is non-zero")
+            )
+        );
+    }
+
+    #[test]
+    fn tiny_or_absent_ram_floors_at_one() {
+        for total in [0_u64, 1, 100_000_000] {
+            let decision = derive_max_instances(total, 0, RamThresholds::default());
+            assert_eq!(
+                decision,
+                MaxChromeDecision::Allow(MaxChromeInstances::new(1).expect("1 is non-zero")),
+                "total {total} must floor the budget at one instance"
+            );
+        }
+    }
+
+    #[test]
+    fn usage_below_warning_keeps_full_budget() {
+        // 79% of 16 GB.
+        let used = 16 * GB * 79 / 100;
+        let decision = derive_max_instances(16 * GB, used, RamThresholds::default());
+        assert_eq!(
+            decision,
+            MaxChromeDecision::Allow(
+                MaxChromeInstances::try_from(legacy_compute_max_instances(16 * GB) as usize)
+                    .expect("non-zero")
+            )
+        );
+    }
+
+    #[test]
+    fn warning_threshold_halves_budget() {
+        // Exactly 80% of 16 GB → halved from 48 to 24.
+        let used = 16 * GB * 80 / 100;
+        let decision = derive_max_instances(16 * GB, used, RamThresholds::default());
+        let full = legacy_compute_max_instances(16 * GB);
+        assert_eq!(full, 48);
+        assert_eq!(
+            decision,
+            MaxChromeDecision::Allow(MaxChromeInstances::new((full / 2) as usize).expect("24"))
+        );
+    }
+
+    #[test]
+    fn critical_threshold_denies_explicitly() {
+        // Exactly 90% of 16 GB → deny signal, never a zero permit count.
+        let used = 16 * GB * 90 / 100;
+        let decision = derive_max_instances(16 * GB, used, RamThresholds::default());
+        assert_eq!(decision, MaxChromeDecision::Deny);
+    }
+
+    #[test]
+    fn just_below_critical_still_halves_not_denies() {
+        let used = 16 * GB * 89 / 100;
+        let full = legacy_compute_max_instances(16 * GB);
+        let decision = derive_max_instances(16 * GB, used, RamThresholds::default());
+        assert_eq!(
+            decision,
+            MaxChromeDecision::Allow(MaxChromeInstances::new((full / 2) as usize).expect("24"))
+        );
+    }
+
+    #[test]
+    fn usage_above_total_clamps_to_full_pressure() {
+        let decision = derive_max_instances(GB, 2 * GB, RamThresholds::default());
+        assert_eq!(decision, MaxChromeDecision::Deny);
+    }
+
+    #[test]
+    fn custom_thresholds_are_honored() {
+        let thresholds = RamThresholds {
+            warning_percent: 50,
+            critical_percent: 60,
+        };
+        let full = legacy_compute_max_instances(16 * GB);
+        // 55% → between custom thresholds → halved.
+        let used = 16 * GB * 55 / 100;
+        assert_eq!(
+            derive_max_instances(16 * GB, used, thresholds),
+            MaxChromeDecision::Allow(MaxChromeInstances::new((full / 2) as usize).expect("24"))
+        );
+        // 60% → at custom critical → deny.
+        let used = 16 * GB * 60 / 100;
+        assert_eq!(
+            derive_max_instances(16 * GB, used, thresholds),
+            MaxChromeDecision::Deny
+        );
+    }
+
+    /// TRIANGULATE: sweep RAM sizes; with zero usage pressure every output is
+    /// byte-identical to today's governor formula.
+    #[test]
+    fn sweep_zero_usage_matches_legacy_formula() {
+        for gib in [1_u64, 2, 4, 8, 12, 16, 24, 32, 64] {
+            let total = gib * GB;
+            let decision = derive_max_instances(total, 0, RamThresholds::default());
+            let expected = legacy_compute_max_instances(total);
+            assert_eq!(
+                decision,
+                MaxChromeDecision::Allow(
+                    MaxChromeInstances::try_from(expected as usize).expect("non-zero")
+                ),
+                "{gib} GiB diverges from legacy governor formula"
+            );
+        }
+    }
 
     /// Reference implementation of TODAY'S `resolve()` math, kept verbatim
     /// from `domain/config.rs` so drift in either direction fails loudly.
