@@ -15,6 +15,7 @@ use url::Url;
 
 pub mod clock;
 pub mod config;
+pub mod config_value;
 pub mod crawl_job;
 pub mod crawler_entities;
 pub mod credentials;
