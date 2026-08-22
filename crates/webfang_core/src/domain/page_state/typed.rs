@@ -42,7 +42,7 @@ pub trait PersistedRecord {
     /// True attempt count.
     fn attempts(&self) -> u32;
 
-    /// Persist the lifecycle position (called by [`Stateful::advance`] so the
+    /// Persist the lifecycle position (called by `Stateful::advance` so the
     /// payload never lags the typestate marker).
     fn set_status(&mut self, status: PageStatus);
 
