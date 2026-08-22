@@ -129,38 +129,56 @@ impl<'a> CommitSession<'a> {
     /// The resume-gate decision for one item. With `resume = false` every
     /// item re-drives (fresh-run semantics); with `resume = true` only
     /// `COMMITTED`-proven records skip.
-    fn decide(&self, url: &str) -> ItemDecision {
+    fn decide(&self, url: &str, fresh_hash: Option<&str>) -> ItemDecision {
         let Some(ctx) = self.ctx else {
             return ItemDecision::DriveAndCommit;
         };
         if !ctx.resume {
             return ItemDecision::DriveAndCommit;
         }
-        let Some(record) = self.records.get(&canonical_key(url)) else {
-            return ItemDecision::DriveAndCommit;
-        };
-        // Type-level gate: skip ONLY when the record reconciles into the
-        // terminal state through the D2 invariant table (SC2 mechanism).
-        if Stateful::<RawRecord, crate::domain::page_state::Committed>::reconcile(record.clone())
-            .is_ok()
-        {
-            return ItemDecision::AlreadyCommitted;
-        }
-        if let Some(hash) = &record.content_hash {
-            if self.hash_index.contains(hash) {
-                return ItemDecision::PromoteFromFlushProof;
-            }
+        match self.records.get(&canonical_key(url)) {
+            Some(record) => {
+                // Type-level gate: skip ONLY when the record reconciles into
+                // the terminal state through the D2 table (SC2 mechanism).
+                if Stateful::<RawRecord, crate::domain::page_state::Committed>::reconcile(
+                    record.clone(),
+                )
+                .is_ok()
+                {
+                    return ItemDecision::AlreadyCommitted;
+                }
+                if let Some(hash) = &record.content_hash {
+                    if self.hash_index.contains(hash) {
+                        return ItemDecision::PromoteFromFlushProof;
+                    }
+                }
+            },
+            None => {
+                // Flush-proof WITHOUT a record: a previous run may have died
+                // after flushing this exact content but before persisting ANY
+                // record. The record's own claim takes precedence when one
+                // exists (an unproven EXPORTED must re-export).
+                if let Some(fresh) = fresh_hash {
+                    if self.hash_index.contains(fresh) {
+                        return ItemDecision::PromoteFromFlushProof;
+                    }
+                }
+            },
         }
         ItemDecision::DriveAndCommit
     }
 
-    fn promote_from_flush_proof(&mut self, url: &str, output_location: String) {
+    fn promote_from_flush_proof(&mut self, url: &str, output_location: String, content_hash: &str) {
         use crate::domain::page_state::Exported;
 
         let key = canonical_key(url);
         let Some(ctx) = self.ctx else { return };
-        let Some(record) = self.records.remove(&key) else {
-            return;
+        // A record-less promotion means the previous run died before ANY
+        // persistence: synthesize a fresh lifecycle so the URL still lands in
+        // the store Committed (invariant: every input URL present).
+        let record = match self.records.remove(&key) {
+            Some(record) => record,
+            None => fresh_discovered(url, &key, &ctx.run_id).into_record(),
         };
         // Flush is PROVEN by hash membership, so advancing is honest.
         // EXPORTED records take their legal direct transition (commit);
@@ -176,6 +194,7 @@ impl<'a> CommitSession<'a> {
                     {
                         let payload = processed.record_mut();
                         payload.updated_at = now_millis();
+                        payload.content_hash = Some(content_hash.to_owned());
                     }
                     processed.export_flushed(PathBuf::from(&output_location))
                 },
@@ -187,6 +206,7 @@ impl<'a> CommitSession<'a> {
                 payload.attempts += 1;
                 payload.last_error = None;
                 payload.updated_at = now_millis();
+                payload.content_hash = Some(content_hash.to_owned());
                 if payload.output_location.is_none() {
                     payload.output_location = Some(output_location.clone());
                 }
@@ -237,6 +257,9 @@ impl<'a> CommitSession<'a> {
         output_location: PathBuf,
         run_id: &RunId,
     ) {
+        // Crash-injection point: exporter returned (flush ack received)
+        // but EXPORTED checkpoint not yet saved - the critical D3 window.
+        crate::cli::crash_points::hit(crate::cli::crash_points::POST_FLUSH_PRE_COMMIT);
         let key = canonical_key(url);
         // Drive the record to PROCESSED along its legal chain (fresh URLs
         // enter as DISCOVERED; re-drives resume from their recorded state).
@@ -562,13 +585,20 @@ fn process_single_item(
     use sha2::{Digest, Sha256};
 
     let url_str = result.url.as_str().to_string();
-    match session.decide(&url_str) {
+    // Same digest the JsonlExporter stamps into the line; computed up
+    // front so decide() can prove flush membership even with no record.
+    let content_hash = format!("{:x}", Sha256::digest(result.content.as_bytes()));
+    match session.decide(&url_str, Some(content_hash.as_str())) {
         ItemDecision::AlreadyCommitted => {
             info!(url = %url_str, "resume gate: COMMITTED-proven; skipping");
             return SingleItemOutcome::Skipped;
         },
         ItemDecision::PromoteFromFlushProof => {
-            session.promote_from_flush_proof(&url_str, output_path.display().to_string());
+            session.promote_from_flush_proof(
+                &url_str,
+                output_path.display().to_string(),
+                &content_hash,
+            );
             if session.cancelled() {
                 return SingleItemOutcome::Cancelled;
             }
@@ -592,10 +622,12 @@ fn process_single_item(
 
     match exporter.export(validated) {
         Ok(()) => {
-            // Same digest the JsonlExporter stamps into the line -
-            // membership proves flush without timing guesses.
-            let content_hash = format!("{:x}", Sha256::digest(result.content.as_bytes()));
-            session.commit_item(&url_str, content_hash, output_path.to_path_buf(), run_id);
+            session.commit_item(
+                &url_str,
+                content_hash.clone(),
+                output_path.to_path_buf(),
+                run_id,
+            );
             if session.cancelled() {
                 return SingleItemOutcome::Cancelled;
             }
@@ -660,6 +692,10 @@ pub fn process_results(
             SingleItemOutcome::Skipped => {},
             SingleItemOutcome::Cancelled => {
                 tracing::info!("cancellation observed; draining before final persist");
+                // Crash-injection (PR5b): die MID-DRAIN, after some items
+                // completed their full D3 sequence but before the final
+                // persist — the drain-ordering kill window.
+                crate::cli::crash_points::hit(crate::cli::crash_points::DURING_CANCEL_DRAIN);
                 break;
             },
         }
@@ -740,13 +776,19 @@ pub fn process_results_with_chunks(
     }
 
     for (chunk, url_str) in chunks.iter().zip(&processed_urls) {
-        match session.decide(url_str) {
+        // Same digest the exporter stamps into the vector line; computed up
+        // front so decide() can prove flush membership even with no record.
+        let content_hash = format!("{:x}", Sha256::digest(chunk.content.as_bytes()));
+        match session.decide(url_str, Some(content_hash.as_str())) {
             ItemDecision::AlreadyCommitted => continue,
             ItemDecision::PromoteFromFlushProof => {
-                session.promote_from_flush_proof(url_str, output_path.display().to_string());
+                session.promote_from_flush_proof(
+                    url_str,
+                    output_path.display().to_string(),
+                    &content_hash,
+                );
             },
             ItemDecision::DriveAndCommit => {
-                let content_hash = format!("{:x}", Sha256::digest(chunk.content.as_bytes()));
                 session.commit_item(url_str, content_hash, output_path.clone(), run_id);
             },
         }
@@ -1083,5 +1125,143 @@ mod tests {
             result.is_ok(),
             "create_state_store must be infallible (lazy): it performs no I/O at creation time"
         );
+    }
+
+    // =========================================================================
+    // SC7 / E8 - cooperative cancellation: drain-before-final-persist ordering
+    // =========================================================================
+
+    #[test]
+    fn cancellation_drains_in_flight_item_and_persists_honest_statuses() {
+        let dir = TempDir::new().unwrap();
+        let store = RecordStore::new("cancel.test").with_state_dir(dir.path().to_path_buf());
+        let ctx_store = store.clone();
+
+        // Cancel deterministically at the 2nd EXPORTED checkpoint save: item1
+        // finishes its full D3 sequence, item2 reaches its flush-proof point,
+        // THEN cancellation is observed between items and the run drains.
+        let token = tokio_util::sync::CancellationToken::new();
+        let export_count = std::sync::atomic::AtomicUsize::new(0);
+        let token_ref = &token;
+        let counter_ref = &export_count;
+        let observer = move |status: PageStatus| {
+            if status == PageStatus::Exported
+                && counter_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1
+            {
+                token_ref.cancel();
+            }
+        };
+        let ctx = ResumeContext::new(&ctx_store)
+            .with_resume(false)
+            .observing_cancel(&token)
+            .with_persist_observer(&observer);
+
+        let results = [
+            make_scraped_content("https://cancel.test/one", "One", "first distinct body"),
+            make_scraped_content("https://cancel.test/two", "Two", "second distinct body"),
+            make_scraped_content("https://cancel.test/three", "Three", "third distinct body"),
+        ];
+        process_results(
+            &results,
+            dir.path().to_path_buf(),
+            ExportFormat::Jsonl,
+            "export",
+            Some(&ctx),
+        )
+        .unwrap();
+
+        // Drain ordering: items 1-2 completed their ATOMIC D3 sequence
+        // (in-flight work never half-done); item 3 never started.
+        let records = store.load().unwrap();
+        assert_eq!(
+            records.len(),
+            2,
+            "drained run persists exactly the in-flight items"
+        );
+        for url in ["https://cancel.test/one", "https://cancel.test/two"] {
+            let r = &records[url];
+            assert_eq!(
+                r.status,
+                PageStatus::Committed,
+                "{url} must be fully committed"
+            );
+            assert!(r.last_error.is_none(), "{url}: no phantom errors");
+        }
+        assert!(
+            !records.contains_key("https://cancel.test/three"),
+            "item after cancellation must NOT exist (no invented state)"
+        );
+        let lines = std::fs::read_to_string(dir.path().join("export.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count();
+        assert_eq!(lines, 2, "exactly the drained items' lines on disk");
+    }
+
+    #[test]
+    fn resume_after_cancellation_re_drives_non_committed_exactly_once() {
+        let dir = TempDir::new().unwrap();
+        let store = RecordStore::new("cancel2.test").with_state_dir(dir.path().to_path_buf());
+
+        // Cancelled first run: only item 'a' completes its D3 sequence.
+        let token = tokio_util::sync::CancellationToken::new();
+        let ctx_store_a = store.clone();
+        {
+            let token_ref = &token;
+            let observer = move |status: PageStatus| {
+                if status == PageStatus::Committed {
+                    token_ref.cancel();
+                }
+            };
+            let ctx = ResumeContext::new(&ctx_store_a)
+                .with_resume(false)
+                .observing_cancel(&token)
+                .with_persist_observer(&observer);
+            process_results(
+                &[
+                    make_scraped_content("https://cancel2.test/a", "A", "alpha content"),
+                    make_scraped_content("https://cancel2.test/b", "B", "beta content"),
+                ],
+                dir.path().to_path_buf(),
+                ExportFormat::Jsonl,
+                "export",
+                Some(&ctx),
+            )
+            .unwrap();
+        }
+        let lines_after_cancel = std::fs::read_to_string(dir.path().join("export.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .count();
+        assert_eq!(
+            lines_after_cancel, 1,
+            "cancelled run exported exactly one line"
+        );
+
+        // Resume rerun: Committed 'a' skips; 'b' re-drives fresh - once.
+        let ctx_store_b = store.clone();
+        let second = ResumeContext::new(&ctx_store_b).with_resume(true);
+        process_results(
+            &[
+                make_scraped_content("https://cancel2.test/a", "A", "alpha content"),
+                make_scraped_content("https://cancel2.test/b", "B", "beta content"),
+            ],
+            dir.path().to_path_buf(),
+            ExportFormat::Jsonl,
+            "export",
+            Some(&second),
+        )
+        .unwrap();
+
+        let records = store.load().unwrap();
+        for url in ["https://cancel2.test/a", "https://cancel2.test/b"] {
+            assert_eq!(records[url].status, PageStatus::Committed, "{url}");
+        }
+        let lines_final = std::fs::read_to_string(dir.path().join("export.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .count();
+        assert_eq!(lines_final, 2, "no duplicated lines across cancel+resume");
     }
 }

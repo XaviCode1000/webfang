@@ -341,6 +341,7 @@ impl RecordStore {
             })?;
         }
         let _lock = StoreLock::acquire(&path)?;
+        crate::cli::crash_points::hit(crate::cli::crash_points::WHILE_HOLDING_LOCK);
         self.save_locked(records, now_millis())
     }
 
@@ -361,12 +362,19 @@ impl RecordStore {
         let bytes = serde_json::to_vec_pretty(&envelope)
             .map_err(|_| RecordStoreError::Corrupt { path: path.clone() })?;
         let tmp = self.tmp_path(&path);
+        // Crash-injection: leave a TRUNCATED tmp before dying (surviving
+        // occurrences overwrite with the full payload below).
+        if crate::cli::crash_points::is_armed_for(crate::cli::crash_points::MID_STATE_FILE_WRITE) {
+            let _ = self.fs.write(&tmp, &bytes[..bytes.len() / 2]);
+            crate::cli::crash_points::hit(crate::cli::crash_points::MID_STATE_FILE_WRITE);
+        }
         self.fs
             .write(&tmp, &bytes)
             .map_err(|source| RecordStoreError::Io {
                 path: tmp.clone(),
                 source,
             })?;
+        crate::cli::crash_points::hit(crate::cli::crash_points::TMP_WRITTEN_PRE_RENAME);
         if let Err(source) = self.fs.rename(&tmp, &path) {
             let _ = fs::remove_file(&tmp);
             return Err(RecordStoreError::Io { path, source });

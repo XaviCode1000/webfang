@@ -296,7 +296,18 @@ fn writer_loop(
     let outcome = loop {
         match rx.blocking_recv() {
             Some(LineMsg::Append(bytes)) => {
-                if let Err(e) = file.write_all(&bytes) {
+                // Crash-injection: flush HALF of one line to produce a true
+                // torn tail, then die (surviving occurrences complete the line).
+                if crate::cli::crash_points::is_armed_for(crate::cli::crash_points::MID_JSONL_LINE)
+                {
+                    let split = bytes.len() / 2;
+                    let _ = file.write_all(&bytes[..split]);
+                    let _ = file.flush();
+                    crate::cli::crash_points::hit(crate::cli::crash_points::MID_JSONL_LINE);
+                    if file.write_all(&bytes[split..]).is_err() {
+                        break Err(io::Error::last_os_error());
+                    }
+                } else if let Err(e) = file.write_all(&bytes) {
                     break Err(e);
                 }
             },

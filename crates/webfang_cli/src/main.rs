@@ -279,6 +279,11 @@ fn prompt_for_url() -> Result<String, CliExit> {
 
 #[tokio::main]
 pub async fn main() -> CliExit {
+    // D6 crash-injection harness: arm BEFORE anything else so every pinned
+    // site (even the earliest pipeline stage) sees the same parsed spec.
+    // Inert unless WEBFANG_CRASH_AT is set (one OnceLock write).
+    webfang_core::cli::crash_points::arm_from_env();
+
     // Suppress OTel background thread panics during Tokio runtime shutdown.
     // The BatchSpanProcessor and PeriodicReader threads panic when the reactor
     // drops before they finish — this is a known SDK limitation, not our bug.

@@ -139,6 +139,8 @@ async fn run_crawl_task_inner(
         url::Url::parse(&url_str).map_err(|e| CrawlError::Internal(format!("invalid URL: {e}")))?;
 
     let outcome = fetch_page(&ctx, &parsed_url, &url_str, &page_correlation).await?;
+    // Crash-injection: fetch completed, nothing processed yet (batch path).
+    crate::cli::crash_points::hit(crate::cli::crash_points::MID_FETCH);
     // The post-redirect URL is where the content actually lives. It drives
     // output keying, deduplication, relative-link resolution, and the recorded
     // result, so aliases collapse onto one document instead of producing
@@ -155,6 +157,8 @@ async fn run_crawl_task_inner(
 
     capture_content(&ctx, final_url.as_str(), &response);
 
+    // Crash-injection: fetched + spooled; clean/validate/extraction not run.
+    crate::cli::crash_points::hit(crate::cli::crash_points::POST_FETCH_PRE_EXTRACT);
     if !run_pipeline(&ctx, final_url.as_str(), &response, outcome.status).await {
         return Ok(());
     }

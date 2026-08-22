@@ -6232,6 +6232,7 @@ dependencies = [
  "indicatif 0.17.11",
  "insta",
  "legible",
+ "libc",
  "lol_html",
  "num_cpus",
  "once_cell",
