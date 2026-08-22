@@ -142,10 +142,19 @@ regex = { workspace = true }
 webfang_test_utils = { workspace = true }
 trybuild = "1"
 
+# Integration tests parse exported JSONL lines directly.
+serde_json = { workspace = true }
+
 # Compile-fail proof suite lives in a subdir; declare it explicitly.
 [[test]]
 name = "page_state"
 path = "tests/compile_fail/page_state.rs"
+
+# SC4 concurrency proof lives in the workspace-root `tests/` tree (outside
+# this crate's directory); the virtual workspace won't auto-discover it.
+[[test]]
+name = "jsonl_concurrency_test"
+path = "../../tests/jsonl_concurrency_test.rs"
 
 # ---------------------------------------------------------------------------
 
