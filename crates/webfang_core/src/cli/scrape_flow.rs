@@ -79,6 +79,10 @@ pub async fn apply_resume_mode(
         urls_to_scrape
     };
 
+    // Crash-injection: discovery + resume filtering done, nothing
+    // persisted yet in this run.
+    crate::cli::crash_points::hit(crate::cli::crash_points::PRE_FIRST_PERSIST);
+
     Ok((filtered, state_store))
 }
 

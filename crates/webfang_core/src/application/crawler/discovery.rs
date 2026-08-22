@@ -265,6 +265,9 @@ async fn scrape_single_url_for_tui_inner(
         return Err(ScraperError::http(page.status, url.as_str()));
     }
 
+    // Crash-injection: response received, nothing extracted yet.
+    crate::cli::crash_points::hit(crate::cli::crash_points::MID_FETCH);
+
     // Check content-type before reading body to handle binary content (PDFs, etc.)
     let content_type = page
         .headers
@@ -368,6 +371,8 @@ async fn scrape_single_url_for_tui_inner(
         return Err(ScraperError::waf_blocked(url.to_string(), chain));
     }
 
+    // Crash-injection: fetched + WAF-checked; extraction not yet run.
+    crate::cli::crash_points::hit(crate::cli::crash_points::POST_FETCH_PRE_EXTRACT);
     extract_content(&html, url, config, asset_downloader, engine, &correlation).await
 }
 
