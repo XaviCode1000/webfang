@@ -9,6 +9,8 @@
 pub(crate) mod clamp;
 /// Canonical hardware-detection seam (`HardwareDetector`, Q2 UNIFY NOW).
 pub mod detector;
+/// Pure derivation fns: hardware snapshots → tier newtypes (no IO, no clock).
+pub mod derivation;
 /// Hardware-detector seam + pure derivation fns live in sibling modules;
 /// tier newtypes and the tier aggregate are re-exported here.
 pub mod tiers;
