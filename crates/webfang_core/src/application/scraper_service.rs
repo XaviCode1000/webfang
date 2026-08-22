@@ -243,6 +243,8 @@ async fn scrape_with_config_inner(
     info!("🌐 Fetching: {}", url);
 
     let response = fetch_html(client, url, &correlation).await?;
+    // Crash-injection: response body fully received, nothing processed.
+    crate::cli::crash_points::hit(crate::cli::crash_points::MID_FETCH);
 
     let html: &str = &response.body;
     log_html_size(html, url);
@@ -266,6 +268,8 @@ async fn scrape_with_config_inner(
     // Readability. This helps legible find the main content without being
     // confused by navigation elements, JavaScript bundles, and CSS.
     let cleaned_html = clean_html_for_scrape(html, config);
+    // Crash-injection: fetched + cleaned, extraction not yet run.
+    crate::cli::crash_points::hit(crate::cli::crash_points::POST_FETCH_PRE_EXTRACT);
 
     // Apply CSS selector extraction if a non-default selector is configured.
     let extract_result = extract_with_selector(&cleaned_html, &config.selector, inspector);
