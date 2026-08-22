@@ -42,6 +42,6 @@ pub fn init_console() {
     // No-op - console not enabled
 }
 
-pub use error_logging::log_scrape_error;
+pub use error_logging::{log_classified_error, log_scrape_error};
 pub use file_trace_layer::FileTraceLayer;
 pub use logging::{init_json_logging, init_json_logging_dual, LogFormat, LogGuard};
