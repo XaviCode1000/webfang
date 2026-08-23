@@ -22,15 +22,16 @@ use self::derivation::{
     derive_auto_crawl, derive_burst, derive_max_instances, MaxChromeDecision, RamThresholds,
 };
 use self::detector::HardwareDetector;
-/// Re-exported for adapter layers (preflight budget staging, CLI parsers).
-pub use self::tiers::BurstPermits;
 use self::tiers::{
-    BatchConcurrency, BudgetTiers, CrawlConcurrency, DomainSlots, DownloadConcurrency,
-    ElasticPermits, GlobalConcurrency, InferenceWorkers, MaxChromeInstances, OperationTier,
+    BatchConcurrency, BudgetTiers, DownloadConcurrency, ElasticPermits, GlobalConcurrency,
+    InferenceWorkers, MaxChromeInstances, OperationTier,
 };
+/// Re-exported for adapter layers (preflight budget staging, CLI parsers,
+/// hot-path adapters deriving their bounds from the model).
+pub use self::tiers::{BurstPermits, CrawlConcurrency, DomainSlots};
 
 /// Default per-domain session-pool slots; TODAY'S `SessionPoolConfig
-/// ::pool_size` value.
+/// ::pool_size` value (task 2.2c wires this tier into the pool config).
 pub(crate) const DOMAIN_SLOTS_DEFAULT: usize = 8;
 
 /// Default asset-download concurrency; TODAY'S fixed default of 3.

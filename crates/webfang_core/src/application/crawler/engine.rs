@@ -104,8 +104,9 @@ pub struct Engine {
     /// to prevent the tokio runtime from hanging waiting for it.
     signal_handle: Option<tokio::task::JoinHandle<()>>,
     /// Immutable budget snapshot built once at entry; every derived tier
-    /// (burst today, crawl/domain in the remaining 2a rewiring) reads from it.
-    #[allow(dead_code)] // scheduler/session-pool tiers consume this within the same PR2 cluster
+    /// (burst + crawl today, domain in the remaining 2a rewiring) reads from
+    /// it.
+    #[allow(dead_code)] // session-pool Domain tier consumes this in 2.2c, next commit
     budget: BudgetModel,
 }
 
@@ -152,7 +153,9 @@ impl Engine {
 
         // Scheduling policy owns the visited set, its checkpoint string mirror,
         // and the shared discovery queue (Arc-shared with the per-page tasks).
-        let scheduler = CrawlScheduler::new(config_clone.concurrency);
+        // The spawn bound derives from the model's Operation.crawl tier, not
+        // from `CrawlerConfig.concurrency` (task 2.2b).
+        let scheduler = CrawlScheduler::new(budget.crawl());
 
         // Results collector via mpsc channel
         let collector = ResultsCollector::new(config_clone.max_pages, Some(config_clone.max_pages));
@@ -1390,11 +1393,20 @@ mod tests {
         engine.shutdown().await;
 
         // The fix guarantees the loop breaks as soon as counter >= max_pages.
-        // Up to (concurrency - 1) in-flight tasks may still land, so we allow
-        // a small slack but assert it stays bounded.
+        // Up to (spawn bound - 1) in-flight tasks may still land, so we allow
+        // a small slack but assert it stays bounded. Since task 2.2b the
+        // spawn bound is the model's Operation.crawl tier — the configured
+        // `concurrency(5)` no longer gates spawning.
+        let crawl_tier = BudgetModel::build(
+            BudgetOverrides::default(),
+            &crate::domain::budget::detector::SystemDetector,
+        )
+        .crawl()
+        .get();
         assert!(
-            result.total_pages <= 2 + 5,
-            "total_pages={} must not overshoot max_pages=2 by more than concurrency slack",
+            result.total_pages <= 2 + crawl_tier,
+            "total_pages={} must not overshoot max_pages=2 by more than the \
+                 Operation.crawl tier slack ({crawl_tier})",
             result.total_pages
         );
         // Critical: must NOT have fetched all 20 links.
