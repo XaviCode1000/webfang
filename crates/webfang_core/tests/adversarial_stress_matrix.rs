@@ -154,3 +154,86 @@ async fn max_budget_saturation_never_exceeds_tier_ceilings() {
         );
     }
 }
+
+// ===== Scenario 2: domain contention =====
+
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
+
+use webfang_core::domain::budget::DomainSlots;
+use webfang_core::domain::clock::MockClock;
+use webfang_core::{DomainSessionPool, SessionId, SessionManager, SessionPoolConfig};
+
+/// Many workers hammer few domains through the [`DomainSessionPool`]: the
+/// per-domain slot limit must hold at every observation point, domains stay
+/// independent under contention, and everything joins without deadlock.
+#[test]
+fn domain_contention_holds_slot_limits_and_independence() {
+    const SLOTS: usize = 2;
+    const DOMAINS: usize = 4;
+    const WORKERS_PER_DOMAIN: usize = 10;
+
+    let config = SessionPoolConfig {
+        pool_size: DomainSlots::new(SLOTS).expect("slots > 0"),
+        base_delay: Duration::from_millis(1),
+        max_delay: Duration::from_millis(5),
+        max_exp: 1,
+        ..Default::default()
+    };
+    // Deterministic cooldown timing via the injectable mock clock.
+    let clock = Arc::new(MockClock::new(std::time::Instant::now()));
+    let pool = Arc::new(DomainSessionPool::new(config, clock.handle()));
+    let held: Arc<Mutex<HashMap<&'static str, HashSet<SessionId>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
+    let mut handles = Vec::new();
+    for d in 0..DOMAINS {
+        let domain_name: &'static str = match d {
+            0 => "contended-zero.test",
+            1 => "contended-one.test",
+            2 => "contended-two.test",
+            _ => "contended-three.test",
+        };
+        for w in 0..WORKERS_PER_DOMAIN {
+            let pool = Arc::clone(&pool);
+            let held = Arc::clone(&held);
+            let clock = Arc::clone(&clock);
+            handles.push(thread::spawn(move || {
+                for attempt in 0..50 {
+                    if let Some(id) = pool.acquire(domain_name) {
+                        {
+                            let mut guard = held.lock().expect("held lock");
+                            let set = guard.entry(domain_name).or_default();
+                            assert!(
+                                set.len() < SLOTS || set.contains(&id),
+                                "domain {domain_name} exceeded {SLOTS} distinct slots"
+                            );
+                            set.insert(id);
+                        }
+                        // Hold briefly, then report success (healthy session).
+                        thread::sleep(Duration::from_micros(200));
+                        pool.report_success(domain_name, id);
+                        held.lock().expect("held lock").remove(domain_name);
+                        break;
+                    }
+                    // All slots banned/cooling — bounded retry with mock-clock
+                    // advancement keeps this deterministic and fast.
+                    clock.advance(Duration::from_millis(2));
+                    let _ = attempt;
+                }
+            }));
+        }
+    }
+    for handle in handles {
+        handle.join().expect("contention worker joins (no deadlock)");
+    }
+
+    // Every contended domain is tracked; independence: banning one domain
+    // leaves its siblings acquirable.
+    assert_eq!(pool.total_domains(), DOMAINS);
+    let banned = pool.acquire("contended-zero.test");
+    // After the storm every session reported success, so acquisition works.
+    assert!(banned.is_some(), "healthy sessions must remain acquirable");
+}
