@@ -374,3 +374,65 @@ async fn backpressure_full_sink_drops_nothing_and_drains_completely() {
     expected.sort();
     assert_eq!(seen, expected, "round-trip must reproduce the exact URL set");
 }
+
+// ===== Scenario 5: mixed Operation/Asset tier isolation =====
+
+/// Operation-tier work (crawl) and Asset-tier downloads run simultaneously
+/// at their respective ceilings: each tier independently respects its own
+/// budget and neither can steal capacity from the other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn mixed_tiers_isolate_operation_from_asset_budgets() {
+    let model = preset_model(4, 2, 3);
+    let operation = Arc::new(Semaphore::new(model.crawl().get()));
+    let asset = Arc::new(Semaphore::new(model.asset().get()));
+
+    // Saturate the Operation tier completely.
+    let mut op_held = Vec::new();
+    for _ in 0..model.crawl().get() {
+        op_held.push(operation.clone().try_acquire_owned().expect("op slot"));
+    }
+    assert_eq!(operation.available_permits(), 0);
+
+    // Asset tier is UNAFFECTED by Operation saturation — immediate acquire,
+    // zero waiting, no slot stealing across tiers.
+    let steal_probe = tokio::time::timeout(
+        Duration::from_millis(100),
+        asset.clone().acquire_owned(),
+    )
+    .await
+    .expect("asset must not wait on Operation saturation")
+    .expect("asset permit available");
+    drop(steal_probe);
+    drop(op_held);
+
+    // Simultaneous storms at both tiers: high-water marks are independent
+    // and each stays within its own ceiling while the other is saturated.
+    let op_max = max_tracker();
+    let asset_max = max_tracker();
+    let (op_sem, asset_sem) = (Arc::clone(&operation), Arc::clone(&asset));
+    let op_storm = storm_the_tier(op_sem, model.crawl().get() * 10, Arc::clone(&op_max));
+    let asset_storm = storm_the_tier(asset_sem, model.asset().get() * 10, Arc::clone(&asset_max));
+    let both = futures::future::join(op_storm, asset_storm);
+    tokio::time::timeout(Duration::from_secs(30), both)
+        .await
+        .expect("mixed-tier storms must drain without deadlock");
+
+    assert!(
+        op_max.load(Ordering::SeqCst) <= model.crawl().get(),
+        "Operation tier exceeded its ceiling"
+    );
+    assert!(
+        asset_max.load(Ordering::SeqCst) <= model.asset().get(),
+        "Asset tier exceeded its ceiling"
+    );
+    assert_eq!(
+        operation.available_permits(),
+        model.crawl().get(),
+        "Operation permits fully restored"
+    );
+    assert_eq!(
+        asset.available_permits(),
+        model.asset().get(),
+        "Asset permits fully restored"
+    );
+}
