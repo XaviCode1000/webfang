@@ -699,6 +699,8 @@ fn budget_override(v: u32) -> Result<BudgetOverrides, CliExit> {
     Ok(BudgetOverrides {
         rate_burst: Some(rate_burst),
         crawl: None,
+        batch: None,
+        asset: None,
     })
 }
 

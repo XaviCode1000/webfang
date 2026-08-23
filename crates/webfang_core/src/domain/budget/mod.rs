@@ -55,6 +55,12 @@ pub struct BudgetOverrides {
     /// Explicit crawl/scrape concurrency (`--concurrency` / TOML / TUI when
     /// not "auto"). `None` = auto-derive from the detector seam.
     pub crawl: Option<CrawlConcurrency>,
+    /// Explicit batch concurrency (`--batch-concurrency`). `None` = tier
+    /// default.
+    pub batch: Option<BatchConcurrency>,
+    /// Explicit asset-download concurrency (`--download-concurrency`).
+    /// `None` = tier default.
+    pub asset: Option<DownloadConcurrency>,
 }
 
 /// Immutable snapshot of every concurrency budget, built ONCE at engine /
@@ -91,12 +97,18 @@ impl BudgetModel {
         );
         let domain = DomainSlots::new(DOMAIN_SLOTS_DEFAULT)
             .unwrap_or_else(|_| unreachable!("domain slot default is non-zero"));
-        let batch = BatchConcurrency::new(BATCH_CONCURRENCY_DEFAULT)
-            .unwrap_or_else(|_| unreachable!("batch default is non-zero"));
+        // Explicit operator overrides win per-knob; None falls back to
+        // the tier default (today's constant).
+        let batch = overrides.batch.unwrap_or_else(|| {
+            BatchConcurrency::new(BATCH_CONCURRENCY_DEFAULT)
+                .unwrap_or_else(|_| unreachable!("batch default is non-zero"))
+        });
         let inference = InferenceWorkers::new(INFERENCE_WORKERS_DEFAULT)
             .unwrap_or_else(|_| unreachable!("inference default is non-zero"));
-        let asset = DownloadConcurrency::new(DOWNLOAD_CONCURRENCY_DEFAULT)
-            .unwrap_or_else(|_| unreachable!("download default is non-zero"));
+        let asset = overrides.asset.unwrap_or_else(|| {
+            DownloadConcurrency::new(DOWNLOAD_CONCURRENCY_DEFAULT)
+                .unwrap_or_else(|_| unreachable!("download default is non-zero"))
+        });
 
         // Elastic mirrors the legacy `num_cpus::get().max(4)` bound, fed
         // through the canonical seam instead of a second core counter.
@@ -301,6 +313,8 @@ mod tests {
         let overrides = BudgetOverrides {
             rate_burst: Some(BurstPermits::new(7).expect("7 is non-zero")),
             crawl: None,
+            batch: None,
+            asset: None,
         };
         let model = BudgetModel::build(overrides, &detector(6, Some(16 * GB)));
         assert_eq!(model.burst().get(), 7);
@@ -323,6 +337,8 @@ mod tests {
         let overrides = BudgetOverrides {
             rate_burst: None,
             crawl: crate::domain::budget::tiers::CrawlConcurrency::new(12).ok(),
+            batch: None,
+            asset: None,
         };
         let model = BudgetModel::build(overrides, &detector(2, None));
         assert_eq!(model.crawl().get(), 12);
@@ -333,9 +349,31 @@ mod tests {
         let overrides = BudgetOverrides {
             rate_burst: None,
             crawl: None,
+            batch: None,
+            asset: None,
         };
         let model = BudgetModel::build(overrides, &detector(6, None));
         assert_eq!(model.crawl().get(), 5);
+    }
+
+    #[test]
+    fn explicit_batch_and_asset_overrides_win() {
+        let overrides = BudgetOverrides {
+            rate_burst: None,
+            crawl: None,
+            batch: crate::domain::budget::tiers::BatchConcurrency::new(9).ok(),
+            asset: crate::domain::budget::tiers::DownloadConcurrency::new(6).ok(),
+        };
+        let model = BudgetModel::build(overrides, &detector(6, None));
+        assert_eq!(model.batch().get(), 9);
+        assert_eq!(model.asset().get(), 6);
+    }
+
+    #[test]
+    fn batch_and_asset_none_keep_tier_defaults() {
+        let model = BudgetModel::build(BudgetOverrides::default(), &detector(6, None));
+        assert_eq!(model.batch().get(), 5);
+        assert_eq!(model.asset().get(), 3);
     }
 
     /// TRIANGULATE: governor tier equals the legacy formula across a RAM

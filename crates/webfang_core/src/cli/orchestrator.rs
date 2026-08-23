@@ -432,7 +432,11 @@ async fn run_dry_run(opts: CrawlOptions) -> CliExit {
     // report "0 URL(s) would be scraped". List the batch URLs the user actually
     // supplied instead — that is the set a dry run should preview.
     if opts.batch.batch_file.is_some() {
-        let manager = match load_batch_manager(&opts, crawler_config).await {
+        let budget = crate::domain::budget::BudgetModel::build(
+            opts.budget_overrides,
+            &crate::domain::budget::detector::SystemDetector,
+        );
+        let manager = match load_batch_manager(&opts, crawler_config, &budget).await {
             Ok(m) => m,
             Err(e) => return e,
         };
@@ -549,18 +553,18 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
         )
     };
 
+    // Budget model built ONCE at flow entry (design D4): operator overrides
+    // plus the canonical detector seam feed every downstream bound.
+    let budget = crate::domain::budget::BudgetModel::build(
+        opts.budget_overrides,
+        &crate::domain::budget::detector::SystemDetector,
+    );
+
     let mut scraper_config = ScraperConfig::default()
         .with_output_dir(resolve_persistence_root(opts))
-        // Scraper concurrency derives from the budget model's Operation.crawl
-        // tier (task 2.5b) — built ONCE at flow entry from operator overrides
-        // plus the canonical detector seam (design D4).
-        .with_scraper_concurrency({
-            let budget = crate::domain::budget::BudgetModel::build(
-                opts.budget_overrides,
-                &crate::domain::budget::detector::SystemDetector,
-            );
-            budget.crawl().get()
-        })
+        // Scraper + asset-download bounds derive from the model's Operation.crawl
+        // and Asset tiers (task 2.5b); explicit flags arrive via BudgetOverrides.
+        .with_scraper_concurrency(budget.crawl().get())
         .with_max_pages(opts.crawl.max_pages)
         .with_selector(opts.crawl.selector.clone())
         .with_ignore_waf(opts.crawl.ignore_waf)
@@ -579,7 +583,7 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
     scraper_config =
         scraper_config.with_asset_h2_profile(parse_asset_h2_profile(&opts.network.h2_profile));
     scraper_config = scraper_config.with_asset_naming(parse_asset_naming(&opts.asset_naming));
-    scraper_config = scraper_config.with_download_concurrency(opts.download_concurrency);
+    scraper_config = scraper_config.with_download_concurrency(budget.asset().get());
     scraper_config = scraper_config.with_max_file_size(opts.network.max_file_size);
     scraper_config = scraper_config.with_download_timeout(opts.network.download_timeout_secs);
 
@@ -942,7 +946,7 @@ async fn prepare_batch_manager(
         &crate::domain::budget::detector::SystemDetector,
     );
     let crawler_config = build_batch_crawler_config(opts, tls_emulation, &budget);
-    let manager = load_batch_manager(opts, crawler_config)
+    let manager = load_batch_manager(opts, crawler_config, &budget)
         .await?
         .with_content_sink(sink);
 
@@ -954,7 +958,7 @@ async fn prepare_batch_manager(
     info!(
         "Starting batch processing: {} URLs, concurrency={}",
         manager.url_count(),
-        opts.batch.concurrency
+        budget.batch().get()
     );
 
     Ok(manager)
@@ -987,10 +991,15 @@ async fn flush_batch_sink(sink: &BoundedFileSink) -> Result<(), CliExit> {
 async fn build_batch_sink(opts: &CrawlOptions) -> Result<BoundedFileSink, CliExit> {
     let spool_path = resolve_persistence_root(opts).join(".webfang-batch-capture.jsonl");
     // One buffered page per concurrent crawl, plus headroom, keeps the writer
-    // from becoming the bottleneck without unbounding memory.
-    let buffer = opts
-        .batch
-        .concurrency
+    // from becoming the bottleneck without unbounding memory. The bound derives
+    // from the budget model's Operation.batch tier (task 2.5c).
+    let budget = crate::domain::budget::BudgetModel::build(
+        opts.budget_overrides,
+        &crate::domain::budget::detector::SystemDetector,
+    );
+    let buffer = budget
+        .batch()
+        .get()
         .saturating_mul(2)
         .max(crate::application::crawler::bounded_sink::DEFAULT_SINK_BUFFER);
     BoundedFileSink::new(spool_path, buffer).await.map_err(|e| {
@@ -1196,16 +1205,17 @@ fn build_batch_crawler_config(
 async fn load_batch_manager(
     opts: &CrawlOptions,
     crawler_config: CrawlerConfig,
+    budget: &crate::domain::budget::BudgetModel,
 ) -> Result<BatchManager, CliExit> {
     if let Some(ref path) = opts.batch.batch_file {
         info!("Reading URLs from file: {}", path.display());
-        BatchManager::from_file(path, crawler_config, opts.batch.concurrency).map_err(|e| {
+        BatchManager::from_file(path, crawler_config, budget.batch().get()).map_err(|e| {
             error!(error = %e, "Failed to read URLs from file");
             CliExit::IoError(format!("Failed to read URLs from file: {e}"))
         })
     } else {
         info!("Reading URLs from stdin");
-        load_batch_manager_from_stdin(crawler_config, opts.batch.concurrency).await
+        load_batch_manager_from_stdin(crawler_config, budget.batch().get()).await
     }
 }
 
