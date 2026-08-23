@@ -239,6 +239,30 @@ pub fn data_format_error_exit_when_extraction_failed(
     })
 }
 
+/// Typed override — internal-fatal failures → [`CliExit::ScraperFailure`]
+/// (exit 3, matrix row "Default exit codes by class" → `InternalFatal`).
+/// An internal bug is a job failure, never a transient network outage.
+///
+/// Canonical form of the severity routing in
+/// `orchestrator::report_phase` / `orchestrator::batch_exit_code`.
+/// Returns `None` when no failure classifies as
+/// [`ErrorClass::InternalFatal`], letting the caller keep its fallback arm.
+#[must_use]
+pub fn scraper_failure_exit_when_internal_fatal(
+    failures: &[(String, ScraperError)],
+) -> Option<CliExit> {
+    let internal_fatal = failures
+        .iter()
+        .filter(|(_, e)| e.classify() == ErrorClass::InternalFatal)
+        .count();
+    (internal_fatal > 0).then(|| {
+        CliExit::ScraperFailure(format!(
+            "Scraper failure: {internal_fatal} internal error(s) out of {} URLs",
+            failures.len()
+        ))
+    })
+}
+
 /// Typed override — sitemap empty / sitemap not found →
 /// [`CliExit::EmptyDiscovery`] (exit 2). Technical success with a null result,
 /// not an operational failure.
@@ -630,6 +654,52 @@ mod tests {
             let err = std::io::Error::from(kind);
             assert_eq!(permanent_io_error_exit_for(&err), None);
         }
+    }
+
+    #[test]
+    fn scraper_failure_override_when_internal_fatal_maps_to_3() {
+        let failures = vec![
+            (
+                "https://example.com".to_string(),
+                crate::error::ScraperError::Internal("boom".into()),
+            ),
+            (
+                "https://example.org".to_string(),
+                crate::error::ScraperError::Internal("crash".into()),
+            ),
+        ];
+        let exit = scraper_failure_exit_when_internal_fatal(&failures);
+        let CliExit::ScraperFailure(msg) = exit.clone().expect("internal-fatal must yield an exit")
+        else {
+            unreachable!("checked above");
+        };
+        assert_eq!(msg, "Scraper failure: 2 internal error(s) out of 2 URLs");
+        assert_eq!(
+            exit.expect("checked above").report(),
+            ExitCode::from(EXIT_SCRAPER_FAILURE)
+        );
+    }
+
+    #[test]
+    fn scraper_failure_override_ignores_non_internal_fatal_failures() {
+        // TransientRetriable and PermanentFatal never trigger the exit-3 fold.
+        let failures = vec![
+            (
+                "https://example.com".to_string(),
+                crate::error::ScraperError::Network(Box::<std::io::Error>::new(
+                    std::io::Error::from(std::io::ErrorKind::TimedOut),
+                )),
+            ),
+            (
+                "https://example.org".to_string(),
+                crate::error::ScraperError::ExtractionFailed {
+                    url: "https://example.org".into(),
+                    reason: "empty shell".into(),
+                },
+            ),
+        ];
+        assert_eq!(scraper_failure_exit_when_internal_fatal(&failures), None);
+        assert_eq!(scraper_failure_exit_when_internal_fatal(&[]), None);
     }
 
     // ---- Special cell — Cancelled ----

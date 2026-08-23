@@ -74,7 +74,7 @@ fn stdin_is_tty() -> bool {
 async fn run_unified_tui() -> Result<Option<serde_json::Value>, CliExit> {
     // Check if stdout is a TTY
     if !io::stdout().is_terminal() {
-        tracing::error!("--tui requiere un terminal interactivo");
+        tracing::error!("--tui requires an interactive terminal");
         return Err(CliExit::UsageError(
             "--tui requiere un terminal interactivo".into(),
         ));
@@ -86,7 +86,7 @@ async fn run_unified_tui() -> Result<Option<serde_json::Value>, CliExit> {
     let mut config_app = match App::new(AppMode::Config) {
         Ok(app) => app,
         Err(e) => {
-            tracing::error!(error = %e, "Error al crear la aplicación TUI");
+            tracing::error!(error = %e, "Failed to create TUI application");
             return Err(CliExit::UsageError(format!(
                 "Error creando la aplicación: {e}"
             )));
@@ -120,7 +120,7 @@ async fn run_unified_tui() -> Result<Option<serde_json::Value>, CliExit> {
         Ok(AppResult::None) => return Ok(None), // User cancelled
         Ok(_) => return Ok(None),
         Err(e) => {
-            tracing::error!(error = %e, "Error en TUI de configuración");
+            tracing::error!(error = %e, "Error in configuration TUI");
             return Ok(None);
         },
     };
@@ -153,12 +153,12 @@ async fn run_url_selection_phase(
         .get("url")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            tracing::error!("URL base faltante en configuración TUI");
+            tracing::error!("Missing base URL in TUI configuration");
             CliExit::UsageError("URL base es obligatoria en la TUI".into())
         })?;
 
     let seed_url = url::Url::parse(seed_url_str).map_err(|e| {
-        tracing::error!(error = %e, "URL base inválida");
+        tracing::error!(error = %e, "Invalid base URL");
         CliExit::UsageError(format!("URL base inválida: {e}"))
     })?;
 
@@ -168,7 +168,7 @@ async fn run_url_selection_phase(
     let discovered = discover_urls_for_tui(seed_url_str, &crawler_config)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, "Fallo en descubrimiento de URLs");
+            tracing::error!(error = %e, "URL discovery failed");
             CliExit::UsageError(format!("Fallo en descubrimiento: {e}"))
         })?;
 
@@ -180,7 +180,7 @@ async fn run_url_selection_phase(
     }
 
     let selected = run_selector(&discovered).await.map_err(|e| {
-        tracing::error!(error = %e, "Error en selector de URLs");
+        tracing::error!(error = %e, "Error in URL selector");
         CliExit::UsageError(format!("Error en selector: {e}"))
     })?;
 
@@ -497,27 +497,6 @@ async fn handle_tui_mode(args: &mut Args) -> Result<Option<TuiOverrides>, CliExi
             },
             Err(e) => return Err(e),
         }
-    } else if args.tui.config_tui || args.tui.interactive {
-        if args.tui.config_tui {
-            eprintln!(
-                "Warning: --config-tui is deprecated, use --tui instead. Will be removed in v0.6.0"
-            );
-        } else {
-            eprintln!("Warning: --interactive is deprecated, use --tui instead. Will be removed in v0.6.0");
-        }
-        let tui_result = run_unified_tui().await;
-        match tui_result {
-            Ok(Some(config_values)) => {
-                apply_selected_urls(args, &config_values);
-                let mut filtered = config_values.clone();
-                if let serde_json::Value::Object(ref mut map) = filtered {
-                    map.remove("selected_urls");
-                }
-                return Ok(Some(TuiOverrides::from_json(filtered)));
-            },
-            Ok(None) => return Err(CliExit::Success),
-            Err(e) => return Err(e),
-        }
     }
     Ok(None)
 }
@@ -555,7 +534,7 @@ fn apply_selected_urls(args: &mut Args, config_values: &serde_json::Value) {
             },
             Err(e) => {
                 let msg = format!("{e:?}");
-                tracing::error!(error = %msg, "Error creando batch temporal desde TUI");
+                tracing::error!(error = %msg, "Error creating temporary batch from TUI");
             },
         }
     }
@@ -580,7 +559,7 @@ fn write_batch_file(path: &std::path::Path, urls: &[String]) -> Result<(), CliEx
 /// When `ui` is OFF, any TUI flag triggers a graceful Spanish error (spec S2.2).
 #[cfg(not(feature = "ui"))]
 async fn handle_tui_mode(args: &mut Args) -> Result<Option<TuiOverrides>, CliExit> {
-    if args.tui.tui || args.tui.config_tui || args.tui.interactive {
+    if args.tui.tui {
         eprintln!("Error: La interfaz TUI no está disponible en esta compilación.");
         eprintln!();
         eprintln!("Para habilitarla, compile con el feature 'ui' del crate CLI");
@@ -868,7 +847,18 @@ async fn build_ai_cleaner(
 
     // Resolve model variant: CLI flag takes precedence over AI_MODEL_ID env var
     let model_variant = if opts.ai_config.model.is_empty() {
-        webfang_ai::AiModel::from_env_or_default()
+        // Flag absent: honor AI_MODEL_ID if set, failing loudly when its
+        // value is not a valid model ID (#874). Unset → silent Granite-97M
+        // default (the user made no choice).
+        match webfang_ai::AiModel::from_env() {
+            Ok(Some(variant)) => variant,
+            Ok(None) => webfang_ai::AiModel::default(),
+            Err(e) => {
+                return Err(CliExit::UsageError(format!(
+                    "Modelo AI inválido para la variable de entorno AI_MODEL_ID: {e}"
+                )));
+            },
+        }
     } else {
         match opts.ai_config.model.parse::<webfang_ai::AiModel>() {
             Ok(variant) => variant,

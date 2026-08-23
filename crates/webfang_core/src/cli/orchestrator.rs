@@ -33,26 +33,6 @@ use crate::application::adaptive_engine::AdaptiveSelectorEngine;
 #[cfg(not(feature = "adaptive-selectors"))]
 type AdaptiveSelectorEngine = ();
 
-/// Create an unbounded channel and a `LiveProgressObserver` wired to it.
-///
-/// Returns `(observer, rx)` where:
-/// - `observer` wraps the `tx` side and can be passed to `scrape_urls`
-/// - `rx` is the receiving end for the TUI progress view
-///
-/// The caller must pass `rx` to `run_progress_view` on the main thread
-/// (crossterm TTY ownership requirement).
-pub fn prepare_progress_channel(
-    quiet: bool,
-) -> (
-    Box<dyn crate::domain::ports::ProgressObserver>,
-    tokio::sync::mpsc::UnboundedReceiver<crate::domain::entities::progress::ScrapeProgress>,
-) {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let observer =
-        Box::new(crate::application::progress_observer::LiveProgressObserver::new(Some(tx), quiet));
-    (observer, rx)
-}
-
 /// Pre-flight gate for `--output-vectors` (#703, #652).
 ///
 /// `--output-vectors` can only write embeddings when semantic cleaning is
@@ -187,9 +167,8 @@ pub async fn run(
         Err(e) => return e,
     };
 
-    // Create observer with stderr fallback (no channel) for non-TUI mode.
-    // For TUI mode, call `prepare_progress_channel()` from main.rs and pass
-    // the observer here instead.
+    // Create observer with stderr fallback (no channel) for non-TUI mode:
+    // scraping runs fully headless; there is no TUI progress screen.
     let observer = Box::new(
         crate::application::progress_observer::LiveProgressObserver::new(None, opts.export.quiet),
     );
@@ -700,10 +679,13 @@ fn report_phase(
         });
     }
 
-    if results.is_empty() && failures.is_empty() && blocked > 0 {
-        return Some(CliExit::Forbidden(format!(
-            "{blocked} URL(s) bloqueadas por robots.txt. Usa --ignore-robots para omitir esta verificación."
-        )));
+    // Canonical robots-blocked override (#705): fires only when NOTHING was
+    // scraped and NOTHING failed, delegating to the single implementation in
+    // `cli::error` (#839).
+    if let Some(exit) =
+        crate::cli::error::forbidden_exit_when_all_blocked(results.len(), failures.len(), blocked)
+    {
+        return Some(exit);
     }
 
     if results.is_empty() {
@@ -717,13 +699,27 @@ fn report_phase(
         // error is PermanentFatal (never caught by the 3 sweep), and a run
         // that failed entirely on an unwritable output path must report 74,
         // not fall through to 65/69.
-        if let Some(exit) = scraper_failure_for_internal_fatal(failures) {
+        // Exit-code precedence in the all-fail arm: internal-fatal (3)
+        // outranks the permanent-Io override (74), which outranks
+        // extraction-failed (65), which outranks the transient fallback
+        // (69) (#706 + matrix rows 21/22). An internal bug must never
+        // masquerade as a data-format error. The Io override sits here —
+        // AFTER the InternalFatal sweep, BEFORE extraction-failed — because
+        // since `ScraperError::classify` splits by kind, a permanent io
+        // error is PermanentFatal (never caught by the 3 sweep), and a run
+        // that failed entirely on an unwritable output path must report 74,
+        // not fall through to 65/69. Each arm delegates to its canonical
+        // mapping function in `cli::error` (#839) so every exit-code
+        // decision has exactly one implementation.
+        if let Some(exit) = crate::cli::error::scraper_failure_exit_when_internal_fatal(failures) {
             return Some(exit);
         }
         if let Some(exit) = permanent_io_error_for_failures(failures) {
             return Some(exit);
         }
-        if let Some(exit) = data_format_error_for_extraction_failed(failures) {
+        if let Some(exit) =
+            crate::cli::error::data_format_error_exit_when_extraction_failed(failures)
+        {
             return Some(exit);
         }
         eprintln!("No pages were successfully scraped");
@@ -738,31 +734,13 @@ fn report_phase(
 
 /// Fold an all-failed error set into a severity-aware exit (#537).
 ///
-/// Returns `Some(CliExit::ScraperFailure(..))` when at least one failure
-/// classifies as [`crate::error::ErrorClass::InternalFatal`], with a message
-/// that calls out the internal-fatal count. Returns `None` when every failure
-/// is transient/permanent — the caller then keeps its historical
-/// `CliExit::NetworkError` arm.
-fn scraper_failure_for_internal_fatal(
-    failures: &[(String, crate::error::ScraperError)],
-) -> Option<CliExit> {
-    let internal_fatal = failures
-        .iter()
-        .filter(|(_, e)| e.classify() == crate::error::ErrorClass::InternalFatal)
-        .count();
-    (internal_fatal > 0).then(|| {
-        CliExit::ScraperFailure(format!(
-            "Scraper failure: {internal_fatal} internal error(s) out of {} URLs",
-            failures.len()
-        ))
-    })
-}
-
-/// Typed override — permanent-kind I/O failures → [`CliExit::IoError`]
-/// (74, EX_IOERR), folding [`ScraperError::Io`] failures through the
-/// canonical [`crate::cli::error::permanent_io_error_exit_for`] helper
-/// (matrix rows 21/22). Transient io kinds return `None` and keep the
-/// class-default routing.
+/// Severity routing lives entirely in the canonical mapping functions of
+/// [`crate::cli::error`] (#839): internal-fatal → `ScraperFailure` (3) via
+/// `scraper_failure_exit_when_internal_fatal`, permanent-Io → `IoError`
+/// (74) via the per-item `permanent_io_error_exit_for`, extraction-failed →
+/// `DataFormatError` (65) via `data_format_error_exit_when_extraction_failed`.
+/// This local adapter only dispatches the variant through the canonical
+/// per-item helper, keeping one implementation of the 74 decision.
 fn permanent_io_error_for_failures(
     failures: &[(String, crate::error::ScraperError)],
 ) -> Option<CliExit> {
@@ -771,32 +749,6 @@ fn permanent_io_error_for_failures(
             crate::cli::error::permanent_io_error_exit_for(io_err)
         },
         _ => None,
-    })
-}
-
-/// Fold an all-failed error set into exit 65 when the failures are
-/// extraction failures (#706, Option A — typed variant match).
-///
-/// A run where every URL failed with
-/// [`crate::error::ScraperError::ExtractionFailed`] (JS-shell or near-empty
-/// content) is a DATA-FORMAT error (exit 65), not a network outage (69): the
-/// pages were fetched fine, they just carried no usable content. Typed
-/// `matches!` on the variant — never string-sniffing the reason, and
-/// `ErrorClass` stays untouched (PermanentFatal). Intentionally covers the
-/// poor-fallback 69→65 shift (CE-3): those failures are `ExtractionFailed`
-/// too, and empty output is exactly the data-format case. Returns `None`
-/// when no failure is an extraction failure.
-fn data_format_error_for_extraction_failed(
-    failures: &[(String, crate::error::ScraperError)],
-) -> Option<CliExit> {
-    let extraction_failed = failures
-        .iter()
-        .filter(|(_, e)| matches!(e, crate::error::ScraperError::ExtractionFailed { .. }))
-        .count();
-    (extraction_failed > 0).then(|| {
-        CliExit::DataFormatError(format!(
-            "extracción sin contenido útil: {extraction_failed} URL(s) devolvieron contenido insuficiente o requieren renderizado de JavaScript"
-        ))
     })
 }
 
@@ -1234,14 +1186,17 @@ fn batch_exit_code(
         // first, then the permanent-Io override (74), then
         // extraction-failed (65), then the transient fallback (69).
         // The 74 override must precede extraction-failed so an all-fail run
-        // caused by an unwritable output path reports 74 truthfully.
-        if let Some(exit) = scraper_failure_for_internal_fatal(errors) {
+        // caused by an unwritable output path reports 74 truthfully. Each
+        // arm delegates to its canonical mapping function in `cli::error`
+        // (#839) so every exit-code decision has exactly one implementation.
+        if let Some(exit) = crate::cli::error::scraper_failure_exit_when_internal_fatal(errors) {
             return exit;
         }
         if let Some(exit) = permanent_io_error_for_failures(errors) {
             return exit;
         }
-        if let Some(exit) = data_format_error_for_extraction_failed(errors) {
+        if let Some(exit) = crate::cli::error::data_format_error_exit_when_extraction_failed(errors)
+        {
             return exit;
         }
         CliExit::NetworkError("All batch URLs failed".into())

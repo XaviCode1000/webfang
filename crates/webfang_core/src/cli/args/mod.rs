@@ -171,7 +171,9 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
                 single_page: args.crawler.single_page,
                 include_patterns: args.crawler.include_patterns,
                 exclude_patterns: args.crawler.exclude_patterns,
-                interactive: args.tui.interactive,
+                // No CLI flag sets this anymore (#880 removed --interactive);
+                // internal knob, defaults to false.
+                interactive: false,
                 resume: args.crawler.resume,
                 state_dir: args.crawler.state_dir,
                 use_sitemap: args.crawler.use_sitemap,
@@ -253,6 +255,17 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
             asset_naming: args.crawler.asset_naming,
             download_concurrency: args.crawler.download_concurrency,
             ai_config,
+            budget_overrides: crate::domain::budget::BudgetOverrides {
+                // Same validation as the preflight pipeline; the legacy
+                // `From<Args>` path cannot return Result, so a rejected
+                // value (0) degrades to the derived default here.
+                rate_burst: args.crawler.rate_limit_burst.as_deref().and_then(|raw| {
+                    crate::cli::args::crawler::parse_rate_limit_burst(raw)
+                        .ok()
+                        .flatten()
+                        .and_then(|v| crate::domain::budget::BurstPermits::new(v).ok())
+                }),
+            },
         }
     }
 }
