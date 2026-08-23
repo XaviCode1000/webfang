@@ -1,4 +1,7 @@
 {
+  "format": {
+    "enabled": false
+  },
   "rules": {
     "line-length": { "disable": ["line-length"] },
     "high-complexity": { "threshold": 30 }
