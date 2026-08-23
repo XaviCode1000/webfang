@@ -29,25 +29,37 @@ pub fn rss_bytes() -> Option<u64> {
     Some(resident_pages.saturating_mul(page_size_bytes()))
 }
 
+// Documented approximation: 4096 covers x86_64 Linux CI runners.
+//
+// The workspace denies `unsafe_code`, so `libc::sysconf(_SC_PAGESIZE)` is not
+// available here. On 64 KiB-page kernels (some aarch64 configs) this
+// OVERESTIMATES absolute MiB by up to 16x; entry counts are exact and all
+// BEFORE/AFTER comparisons use the same constant, so relative deltas stay valid
+// on any kernel. Absolute numbers in reports assume a 4 KiB page.
 fn page_size_bytes() -> u64 {
-    // Rust exposes no stable page_size API; 4096 is universal on our CI
-    // targets (x86_64/aarch64 linux). Documented assumption.
     4_096
 }
 
-/// Destination of the measurement report.
+/// Destination of the measurement report. `None` when
+/// `WEBFANG_MEMORY_REPORT_PATH` is unset: probes then print to stdout instead
+/// of touching the filesystem, so ordinary test runs never litter the working
+/// tree or `target/`.
 #[must_use]
-pub fn report_path() -> PathBuf {
+pub fn report_path() -> Option<PathBuf> {
     std::env::var("WEBFANG_MEMORY_REPORT_PATH")
+        .ok()
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("target/memory-report.md"))
 }
 
-/// Append one probe line under `section`. Creates the file (with a header)
-/// when missing. Never panics on I/O failure — measurement must not break
-/// the test that hosts it; failures surface as a stderr note instead.
+/// Append one probe line under `section`. With the env var set, creates the
+/// file (with a header) when missing; without it, prints the line instead.
+/// Never panics on I/O failure — measurement must not break the test that
+/// hosts it; failures surface as a stderr note instead.
 pub fn append_report(section: &str, line: &str) {
-    let path = report_path();
+    let Some(path) = report_path() else {
+        println!("memory_probe [{section}]: {line}");
+        return;
+    };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }

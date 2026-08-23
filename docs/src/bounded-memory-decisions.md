@@ -30,10 +30,18 @@ anywhere, per design D2.)
 - `Downloader::with_asset_cache_capacity(config, capacity)`; capacity derived from the
   budget model's Asset tier at the production wiring site (orchestrator): tier ×
   `ASSET_CACHE_ENTRIES_PER_PERMIT` (8 192). Default tier 3 → 24 576 entries ≈ ≤15 MiB ceiling.
-- FIFO eviction of oldest INITIALIZED entries; in-flight (uninitialized) cells rotate to
-  the back and are never evicted (no duplicate connections).
-- Legacy ctor `Downloader::new` keeps `usize::MAX` (unbounded) → byte-identical to
-  pre-cap releases for every other call path.
+- FIFO eviction with three classes: initialized cells are normal victims; actively
+  downloading cells (RAII-guarded `in_flight` registry, cleared on completion, failure
+  OR task cancellation #509) rotate to the back and are never evicted (no duplicate
+  connections); uninitialized cells WITHOUT an active download are permanent-failure
+  zombies and ARE evicted — otherwise error-heavy long runs would grow unbounded
+  through the retry-on-failure design of `run_download`.
+- Legacy ctor `Downloader::new` keeps `usize::MAX` (unbounded) AND skips the insertion
+  ledger entirely (no per-URL strings, no mutex traffic) → memory-behavior identical to
+  pre-cap releases on every other call path. Both constructors share one wreq client
+  builder, so the SSRF policy (#703) cannot diverge.
+- Ledger membership is a parallel `HashSet`: O(1) per insert under the ledger mutex,
+  not O(queue) string scans.
 - Documented residual (design D2 PARTIAL): an evicted URL encountered again later may be
   re-downloaded once.
 
@@ -46,9 +54,23 @@ anywhere, per design D2.)
 The plateau test asserts retention ≤ cap under a 50k-entry fill with cap=10k;
 growth is now O(cap), not O(workload).
 
+Why measured 18.2 MiB vs the ~15 MiB entry ceiling: the delta is the ledger
+(FIFO strings + membership set, ~140 B × 24 576 ≈ 3.3 MiB) plus allocator slack;
+both are also bounded by the cap.
+
+RSS absolute values assume a 4 KiB page (`unsafe_code` is workspace-denied, so
+the real kernel page size cannot be queried); entry counts are exact and every
+BEFORE/AFTER comparison uses the same constant, so relative deltas hold on any
+kernel. On 64 KiB-page aarch64 configs absolute MiB reads up to ~16x high.
+
 ## Byte-identity verification (Group D)
 
 `bounded_cache_within_cap_is_byte_identical_to_unbounded`: a 60-entry workload fully
 inside a 100-entry cap produces byte-identical cached assets (url/local_path/
-content_hash/size) between the bounded downloader and an unbounded baseline — the cap
-never perturbs runs that complete within limits.
+content_hash/mime_type/size) between the bounded downloader and an unbounded baseline
+— the cap never perturbs runs that complete within limits.
+
+Review-driven eviction-class tests: `abandoned_failure_zombies_evicted_inflight_preserved`
+(zombies evicted FIFO-first, successes retained, in-flight never touched) and
+`eviction_terminates_when_excess_is_all_inflight` (rotation bound terminates; completed
+cells become evictable again), plus `legacy_unbounded_skips_insertion_ledger`.
