@@ -10,6 +10,7 @@ use tracing::warn;
 
 use crate::application::crawl_options::CrawlOptions;
 use crate::cli::config::ConfigDefaults;
+use crate::domain::budget::{BudgetOverrides, BurstPermits};
 use crate::domain::config_value::{ConfigSource, ConfigValue};
 use crate::domain::JsStrategy;
 use crate::infrastructure::observability::log_scrape_error;
@@ -76,6 +77,7 @@ impl ArgSources {
             "vault",
             "quick_save",
             "ignore_waf",
+            "rate_limit_burst",
         ];
         let present: std::collections::HashSet<&str> =
             matches.ids().map(|id| id.as_str()).collect();
@@ -159,6 +161,8 @@ pub(crate) struct FieldBook {
     quick_save: ConfigValue<bool>,
     // behavior
     ignore_waf: ConfigValue<bool>,
+    // budget model overrides (additive; Q1 burst knob — design D4)
+    budget_overrides: ConfigValue<BudgetOverrides>,
 }
 
 impl Default for FieldBook {
@@ -194,6 +198,10 @@ pub struct NormalizedConfig {
     pub vault: ConfigValue<Option<PathBuf>>,
     pub quick_save: ConfigValue<bool>,
     pub ignore_waf: ConfigValue<bool>,
+    /// Operator-level budget overrides carried to `BudgetModel::build`
+    /// (design D4). Additive slot: the default (`rate_burst: None`)
+    /// reproduces today's derived numbers exactly.
+    pub budget_overrides: ConfigValue<BudgetOverrides>,
 }
 
 impl NormalizedConfig {
@@ -218,6 +226,7 @@ impl NormalizedConfig {
             vault: book.vault,
             quick_save: book.quick_save,
             ignore_waf: book.ignore_waf,
+            budget_overrides: book.budget_overrides,
         }
     }
 
@@ -245,6 +254,7 @@ impl NormalizedConfig {
         opts.export.obsidian_vault = self.vault.value;
         opts.export.quick_save = self.quick_save.value;
         opts.crawl.ignore_waf = self.ignore_waf.value;
+        opts.budget_overrides = self.budget_overrides.value;
         // cross-field rule already applied in the pipeline
         if opts.crawl.sitemap_url.is_some() {
             opts.crawl.use_sitemap = true;
@@ -290,6 +300,7 @@ fn stage_defaults() -> FieldBook {
         vault: ConfigValue::new(None, ConfigSource::Default),
         quick_save: ConfigValue::new(false, ConfigSource::Default),
         ignore_waf: ConfigValue::new(false, ConfigSource::Default),
+        budget_overrides: ConfigValue::new(BudgetOverrides::default(), ConfigSource::Default),
     }
 }
 
@@ -616,6 +627,69 @@ fn stage_env_cli(book: &mut FieldBook, args: &Args, sources: &ArgSources) -> usi
     n += stage_env_cli_output(book, args, sources);
     n += stage_env_cli_obsidian(book, args, sources);
     n
+}
+
+/// Stage operator budget overrides (task 2.1, design D4).
+///
+/// Runs AFTER [`apply_cross_field_rules`] and BEFORE [`validate_stage`] so the
+/// existing rank-guarded stages keep their stage ordering untouched. TOML is
+/// staged first at `ConfigFile` rank, then env/cli via the provenance map.
+#[instrument(skip_all, fields(fields_written))]
+fn stage_budget_overrides(
+    book: &mut FieldBook,
+    args: &Args,
+    sources: &ArgSources,
+    config: &ConfigDefaults,
+) -> Result<usize, CliExit> {
+    let mut n = 0;
+    // TOML tier first (lowest explicit rank).
+    if let Some(v) = config.rate_limit_burst {
+        if try_write(
+            &mut book.budget_overrides,
+            budget_override(v)?,
+            ConfigSource::ConfigFile,
+            "rate_limit_burst",
+        ) {
+            n += 1;
+        }
+    }
+    // env/cli tier via the provenance map. The raw string is parsed here so
+    // CLI, env, and programmatic input share ONE accept / reject-0 /
+    // warn-and-default semantic (`parse_rate_limit_burst`).
+    if let Some(src) = sources.source_of("rate_limit_burst") {
+        if let Some(raw) = args.crawler.rate_limit_burst.as_deref() {
+            match crate::cli::args::crawler::parse_rate_limit_burst(raw) {
+                Ok(Some(v)) => {
+                    if try_write(
+                        &mut book.budget_overrides,
+                        budget_override(v)?,
+                        src,
+                        "rate_limit_burst",
+                    ) {
+                        n += 1;
+                    }
+                },
+                // Non-numeric: the parser already emitted the warning.
+                Ok(None) => {},
+                Err(msg) => return Err(CliExit::ConfigError(msg)),
+            }
+        }
+    }
+    Ok(n)
+}
+
+/// Wrap a raw burst value into [`BudgetOverrides`], rejecting 0 with the same
+/// Spanish boundary error the clap value parser uses (defense for programmatic
+/// `Args` construction and TOML values, which bypass the CLI parser).
+fn budget_override(v: u32) -> Result<BudgetOverrides, CliExit> {
+    let rate_burst = BurstPermits::new(v).map_err(|_| {
+        CliExit::ConfigError(
+            "--rate-limit-burst debe ser >= 1 (0 no permite ningún request en ráfaga)".to_string(),
+        )
+    })?;
+    Ok(BudgetOverrides {
+        rate_burst: Some(rate_burst),
+    })
 }
 
 fn apply_tui_numeric(
@@ -960,6 +1034,7 @@ pub fn normalize(
         total += stage_tui(&mut book, t)?;
     }
     total += apply_cross_field_rules(&mut book);
+    total += stage_budget_overrides(&mut book, args, sources, config)?;
     validate_stage(&book)?;
     tracing::Span::current().record("fields_written", total);
     info!(fields_written = total, "normalization_complete");
@@ -2391,6 +2466,92 @@ mod normalization_pipeline_tests {
         assert_eq!(opts.crawl.max_pages, expected.crawl.max_pages);
         assert_eq!(opts.crawl.selector, expected.crawl.selector);
         assert_eq!(opts.export.output_format, expected.export.output_format);
+    }
+
+    #[test]
+    fn stage_budget_overrides_writes_cli_burst() {
+        let mut book = stage_defaults();
+        let mut args = dummy_args();
+        args.crawler.rate_limit_burst = Some("7".to_string());
+        let mut sources = ArgSources::default();
+        sources.set("rate_limit_burst", ConfigSource::Cli);
+        let written = stage_budget_overrides(&mut book, &args, &sources, &dummy_config())
+            .expect("staging ok");
+        assert_eq!(written, 1);
+        assert_eq!(book.budget_overrides.source, ConfigSource::Cli);
+        assert_eq!(
+            book.budget_overrides.value.rate_burst,
+            BurstPermits::new(7).ok()
+        );
+    }
+
+    #[test]
+    fn stage_budget_overrides_toml_staged_at_config_file_rank_and_cli_outranks() {
+        let mut book = stage_defaults();
+        let config = ConfigDefaults {
+            rate_limit_burst: Some(4),
+            ..dummy_config()
+        };
+        let no_sources = ArgSources::default();
+        let written = stage_budget_overrides(&mut book, &dummy_args(), &no_sources, &config)
+            .expect("staging ok");
+        assert_eq!(written, 1);
+        assert_eq!(book.budget_overrides.source, ConfigSource::ConfigFile);
+        // CLI outranks the TOML value
+        let mut args = dummy_args();
+        args.crawler.rate_limit_burst = Some("6".to_string());
+        let mut sources = ArgSources::default();
+        sources.set("rate_limit_burst", ConfigSource::Cli);
+        let written_cli =
+            stage_budget_overrides(&mut book, &args, &sources, &config).expect("staging ok");
+        assert_eq!(written_cli, 1);
+        assert_eq!(book.budget_overrides.source, ConfigSource::Cli);
+        assert_eq!(
+            book.budget_overrides.value.rate_burst,
+            BurstPermits::new(6).ok()
+        );
+    }
+
+    #[test]
+    fn budget_overrides_default_is_none() {
+        let book = stage_defaults();
+        assert_eq!(book.budget_overrides.value.rate_burst, None);
+        assert_eq!(book.budget_overrides.source, ConfigSource::Default);
+    }
+
+    #[test]
+    fn burst_zero_rejected_with_spanish_error() {
+        let mut book = stage_defaults();
+        let mut args = dummy_args();
+        args.crawler.rate_limit_burst = Some("0".to_string()); // bypasses clap parser (programmatic)
+        let mut sources = ArgSources::default();
+        sources.set("rate_limit_burst", ConfigSource::Cli);
+        let err = stage_budget_overrides(&mut book, &args, &sources, &dummy_config())
+            .expect_err("zero burst must be rejected");
+        match err {
+            CliExit::ConfigError(msg) => assert!(
+                msg.contains("--rate-limit-burst debe ser >= 1"),
+                "unexpected error: {msg}"
+            ),
+            other => panic!("expected ConfigError, got {other:?}"),
+        }
+        // slot untouched
+        assert_eq!(book.budget_overrides.value.rate_burst, None);
+    }
+
+    #[test]
+    fn normalize_end_to_end_burst_reaches_crawl_options() {
+        let mut args = dummy_args();
+        args.crawler.rate_limit_burst = Some("9".to_string());
+        let mut sources = ArgSources::default();
+        sources.set("rate_limit_burst", ConfigSource::Environment);
+        let normalized = normalize(&args, &sources, &dummy_config(), None).expect("normalize ok");
+        assert_eq!(
+            normalized.budget_overrides.value.rate_burst,
+            BurstPermits::new(9).ok()
+        );
+        let opts = normalized.into_crawl_options();
+        assert_eq!(opts.budget_overrides.rate_burst, BurstPermits::new(9).ok());
     }
 
     #[test]

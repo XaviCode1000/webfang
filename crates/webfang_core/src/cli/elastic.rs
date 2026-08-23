@@ -109,7 +109,7 @@ pub(super) async fn build_elastic_ingestion(
                     "no se pudo crear el contenedor para ingesta elástica: {e}"
                 )));
             }
-            warn!("no se pudo crear el contenedor para ingesta elástica: {e}");
+            warn!("failed to create container for elastic ingestion: {e}");
             return Ok(None);
         },
     };

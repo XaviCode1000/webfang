@@ -48,6 +48,9 @@ pub mod url_validation;
 pub mod url_validator;
 pub mod value_objects;
 
+/// Budget model: Global→Domain→Operation→Asset concurrency tiers,
+/// canonical clamp, hardware-detector seam, and pure derivation fns.
+pub mod budget;
 pub mod content_processor;
 pub mod embedding_port;
 /// Shared excerpt byline-repair invariant (regex + whitespace), pure & IO-free.
