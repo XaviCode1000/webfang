@@ -1,9 +1,10 @@
-//! Tokenizer — HuggingFace tokenization for all-MiniLM-L6-v2
+//! Tokenizer — HuggingFace tokenization for IBM Granite embedding models
 //!
 //! Handles tokenization of text chunks into token IDs compatible with the model:
-//! - WordPiece tokenization (BERT-style)
-//! - Special tokens: `[CLS]`, `[SEP]`, `[PAD]`
-//! - Truncation and padding to max_length (384)
+//! - BPE subword tokenization (per the model's tokenizer.json)
+//! - Granite special tokens (`<|startoftext|>`, `<|endoftext|>`); legacy BERT-era
+//!   `[CLS]`/`[SEP]` IDs are kept in `special_tokens` for backward compatibility
+//! - Truncation at `DEFAULT_MAX_LENGTH` (32,768 tokens)
 //! - Batch tokenization for throughput
 //! - **Returns ModelInput**: input_ids, attention_mask, token_type_ids
 //!
@@ -101,13 +102,17 @@ impl TokenBatch {
     }
 }
 
-/// HuggingFace tokenizer wrapper for all-MiniLM-L6-v2
+/// HuggingFace tokenizer wrapper for IBM Granite embedding models.
+///
+/// The `MiniLmTokenizer` type name is legacy naming from the pre-Granite era;
+/// renaming it is tracked as a follow-up API refactor (out of scope here).
 ///
 /// This tokenizer handles:
-/// - WordPiece tokenization
-/// - Special token insertion (`[CLS]`, `[SEP]`)
-/// - Truncation to max_length
-/// - Padding to max_length
+/// - BPE tokenization per the loaded Granite tokenizer.json
+/// - Special-token handling (Granite `<|startoftext|>` / `<|endoftext|>`;
+///   legacy BERT-era `[CLS]`/`[SEP]` insertion retained by `tokenize`)
+/// - Truncation at the configured max_length (`DEFAULT_MAX_LENGTH` by default)
+/// - Padding per the tokenizer's own padding configuration
 /// - **Returns ModelInput**: Complete input for ONNX model
 ///
 /// # Examples
