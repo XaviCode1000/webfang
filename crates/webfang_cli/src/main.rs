@@ -847,7 +847,18 @@ async fn build_ai_cleaner(
 
     // Resolve model variant: CLI flag takes precedence over AI_MODEL_ID env var
     let model_variant = if opts.ai_config.model.is_empty() {
-        webfang_ai::AiModel::from_env_or_default()
+        // Flag absent: honor AI_MODEL_ID if set, failing loudly when its
+        // value is not a valid model ID (#874). Unset → silent Granite-97M
+        // default (the user made no choice).
+        match webfang_ai::AiModel::from_env() {
+            Ok(Some(variant)) => variant,
+            Ok(None) => webfang_ai::AiModel::default(),
+            Err(e) => {
+                return Err(CliExit::UsageError(format!(
+                    "Modelo AI inválido para la variable de entorno AI_MODEL_ID: {e}"
+                )));
+            },
+        }
     } else {
         match opts.ai_config.model.parse::<webfang_ai::AiModel>() {
             Ok(variant) => variant,
