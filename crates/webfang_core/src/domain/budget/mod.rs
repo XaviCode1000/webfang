@@ -184,6 +184,24 @@ impl BudgetModel {
     pub const fn max_chrome_instances(&self) -> Option<MaxChromeInstances> {
         self.tiers.max_chrome_instances
     }
+
+    /// Test-only convenience preset: a model derived from a fixed 6-core,
+    /// RAM-less [`detector::FixedDetector`] snapshot through the canonical
+    /// [`BudgetModel::build`] path (auto table for 6 cores ⇒ crawl = 5).
+    ///
+    /// Unit tests use this instead of inline magic numbers so assertions stay
+    /// tied to real derivation rules; it is compiled only under `cfg(test)`
+    /// and never ships in the production surface.
+    #[cfg(test)]
+    #[must_use]
+    pub fn for_test_preset() -> BudgetModel {
+        let detector = self::detector::FixedDetector::with_detection(
+            std::num::NonZeroUsize::new(6)
+                .unwrap_or_else(|| unreachable!("preset core count is non-zero")),
+            None,
+        );
+        BudgetModel::build(BudgetOverrides::default(), &detector)
+    }
 }
 
 #[cfg(test)]

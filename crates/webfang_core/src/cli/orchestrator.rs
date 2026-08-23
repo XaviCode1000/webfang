@@ -551,7 +551,16 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
 
     let mut scraper_config = ScraperConfig::default()
         .with_output_dir(resolve_persistence_root(opts))
-        .with_scraper_concurrency(opts.network.concurrency.resolve())
+        // Scraper concurrency derives from the budget model's Operation.crawl
+        // tier (task 2.5b) — built ONCE at flow entry from operator overrides
+        // plus the canonical detector seam (design D4).
+        .with_scraper_concurrency({
+            let budget = crate::domain::budget::BudgetModel::build(
+                opts.budget_overrides,
+                &crate::domain::budget::detector::SystemDetector,
+            );
+            budget.crawl().get()
+        })
         .with_max_pages(opts.crawl.max_pages)
         .with_selector(opts.crawl.selector.clone())
         .with_ignore_waf(opts.crawl.ignore_waf)
@@ -928,7 +937,11 @@ async fn prepare_batch_manager(
     tls_emulation: wreq_util::Profile,
     sink: std::sync::Arc<BoundedFileSink>,
 ) -> Result<BatchManager, CliExit> {
-    let crawler_config = build_batch_crawler_config(opts, tls_emulation);
+    let budget = crate::domain::budget::BudgetModel::build(
+        opts.budget_overrides,
+        &crate::domain::budget::detector::SystemDetector,
+    );
+    let crawler_config = build_batch_crawler_config(opts, tls_emulation, &budget);
     let manager = load_batch_manager(opts, crawler_config)
         .await?
         .with_content_sink(sink);
@@ -1149,12 +1162,16 @@ fn resolve_batch_tls_emulation(opts: &CrawlOptions) -> Result<wreq_util::Profile
 
 /// Build the crawler config for the batch engine, honoring `--h2-profile`.
 ///
-/// `--delay-ms` and `--concurrency` are propagated here (#653): without them
-/// the batch engine crawled at full speed with its own default concurrency,
+/// `--delay-ms` and the concurrency bound are propagated here (#653): without
+/// them the batch engine crawled at full speed with its own default concurrency,
 /// making both flags silent no-ops on the `--batch` path.
+///
+/// The concurrency bound comes from the run's [`BudgetModel`] Operation.crawl
+/// tier (task 2.5b).
 fn build_batch_crawler_config(
     opts: &CrawlOptions,
     tls_emulation: wreq_util::Profile,
+    budget: &crate::domain::budget::BudgetModel,
 ) -> CrawlerConfig {
     let mut crawler_config = CrawlerConfig::builder(opts.url.clone())
         .max_pages(opts.crawl.max_pages)
@@ -1165,7 +1182,9 @@ fn build_batch_crawler_config(
         .use_sitemap(opts.crawl.use_sitemap)
         .timeout_secs(opts.network.timeout_secs)
         .delay_ms(opts.network.delay_ms)
-        .concurrency(opts.network.concurrency.resolve())
+        // Concurrency bound derives from the run's budget model
+        // Operation.crawl tier (task 2.5b), not from the raw CLI flag.
+        .concurrency(budget.crawl().get())
         .tls_emulation(tls_emulation);
     if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
         crawler_config = crawler_config.sitemap_url(sitemap_url);
@@ -1309,20 +1328,25 @@ mod tests {
     // ===== build_batch_crawler_config tests (#653) =====
 
     #[test]
-    fn batch_config_propagates_delay_and_concurrency() {
-        // Regression for #653: `--delay-ms` and `--concurrency` were dropped on
-        // the batch path, so per-URL rate limiting never engaged.
+    fn batch_config_propagates_delay_and_model_concurrency() {
+        // Regression for #653: per-URL rate limiting never engaged on the
+        // batch path. The concurrency bound now derives from the run's
+        // BudgetModel crawl tier — NOT from the raw CLI flag.
         let mut opts = CrawlOptions::default();
         opts.network.delay_ms = 750;
-        opts.network.concurrency = crate::ConcurrencyConfig::new(4);
+        // Explicit flag value must be superseded by the model tier.
+        opts.network.concurrency = crate::ConcurrencyConfig::new(2);
+        let budget = crate::domain::budget::BudgetModel::for_test_preset();
 
-        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145);
+        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145, &budget);
 
         assert_eq!(config.delay_ms, 750, "--delay-ms must reach the crawler");
         assert_eq!(
-            config.concurrency, 4,
-            "--concurrency must reach the crawler"
+            config.concurrency,
+            budget.crawl().get(),
+            "batch crawler bound must equal the model's Operation.crawl tier"
         );
+        assert_ne!(config.concurrency, 2, "flag must not win over the model");
     }
 
     #[test]
@@ -1330,7 +1354,11 @@ mod tests {
         let mut opts = CrawlOptions::default();
         opts.network.delay_ms = 0;
 
-        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145);
+        let config = build_batch_crawler_config(
+            &opts,
+            wreq_util::Profile::Chrome145,
+            &crate::domain::budget::BudgetModel::for_test_preset(),
+        );
 
         assert_eq!(config.delay_ms, 0);
     }
