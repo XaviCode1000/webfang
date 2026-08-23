@@ -28,6 +28,7 @@ use super::progress::CrawlProgress;
 use crate::application::crawler::crawl_task_ctx::CrawlTaskCtx;
 use crate::application::pipeline::{OutputStage, PipelineExecutor};
 use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
+use crate::domain::budget::{BudgetModel, BudgetOverrides};
 use crate::domain::clock::SystemClock;
 use crate::domain::{
     CorrelationId, CrawlError, CrawlErrorCategory, CrawlResult, CrawlerConfig, JsStrategy,
@@ -99,20 +100,50 @@ pub struct Engine {
     pipeline: Option<Arc<PipelineExecutor>>,
     /// Output stages that receive items after pipeline processing.
     output_stages: Vec<Arc<Box<dyn OutputStage>>>,
-    /// Handle for the signal handler task — aborted on shutdown
+    /// Optional handle for the signal handler task — aborted on shutdown
     /// to prevent the tokio runtime from hanging waiting for it.
     signal_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Immutable budget snapshot built once at entry; every derived tier
+    /// (burst today, crawl/domain in the remaining 2a rewiring) reads from it.
+    #[allow(dead_code)] // scheduler/session-pool tiers consume this within the same PR2 cluster
+    budget: BudgetModel,
+}
+
+/// Rate-limiter burst source derived from the budget model (design D4/D1):
+/// the burst is an INDEPENDENT tier — it must never re-read
+/// `CrawlerConfig.concurrency`, so raising the crawler concurrency leaves
+/// the token-bucket burst unchanged.
+fn rate_limiter_config(config: &CrawlerConfig, budget: &BudgetModel) -> RateLimiterConfig {
+    RateLimiterConfig::new(config.delay_ms, budget.burst().get())
 }
 
 impl Engine {
     /// Create a new Engine from a CrawlerConfig
     fn new(config: CrawlerConfig, ignore_robots: bool) -> Result<Self, CrawlError> {
+        Self::with_budget(config, ignore_robots, BudgetOverrides::default())
+    }
+
+    /// Create an Engine whose concurrency budgets derive from a
+    /// [`BudgetModel`] built ONCE at entry (design D4). `Engine::new`
+    /// delegates with default overrides; the orchestrator entry point
+    /// forwards operator overrides (`BudgetModel::build` stays here so the
+    /// model is constructed exactly once per crawl).
+    fn with_budget(
+        config: CrawlerConfig,
+        ignore_robots: bool,
+        overrides: BudgetOverrides,
+    ) -> Result<Self, CrawlError> {
         let config = Arc::new(config);
         let config_clone = Arc::clone(&config);
 
-        // Create rate limiter using SharedRateLimiter (single source of truth)
-        let rate_limiter_config =
-            RateLimiterConfig::new(config_clone.delay_ms, config_clone.concurrency as u32);
+        // ONE budget derivation per run — every tier below reads from this
+        // immutable snapshot.
+        let budget =
+            BudgetModel::build(overrides, &crate::domain::budget::detector::SystemDetector);
+
+        // Create rate limiter using SharedRateLimiter (single source of truth).
+        // Burst derives from the model (Q1 DECOUPLE); delay_ms unchanged.
+        let rate_limiter_config = rate_limiter_config(&config_clone, &budget);
         let rate_limiter = match SharedRateLimiter::new(&rate_limiter_config) {
             Ok(limiter) => limiter,
             // LCOV_EXCL_LINE defensive: rate-limiter-config — SharedRateLimiter::new fails only on invalid config, an invariant
@@ -144,6 +175,7 @@ impl Engine {
             collector,
             scheduler,
             rate_limiter,
+            budget,
             error_count,
             error_breakdown,
             checkpoint_store: BincodeCheckpoint::new(),
@@ -1148,9 +1180,78 @@ async fn crawl_site_with_options_inner(
 #[cfg(not(miri))] // wiremock + wreq use boring-sys2 FFI (unsupported by Miri)
 mod tests {
     use super::*;
+    use crate::domain::budget::detector::FixedDetector;
+    use crate::domain::budget::{BudgetModel, BudgetOverrides};
     use url::Url;
-    use wiremock::matchers::path;
+    use wiremock::matchers::{path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Spec scenario (Q1 DECOUPLE): raising the configured crawler
+    /// concurrency must NOT move the rate-limiter burst — the burst is a
+    /// budget-model tier derived from the detector seam, independent of
+    /// `CrawlerConfig.concurrency`.
+    #[tokio::test]
+    async fn raising_crawler_concurrency_leaves_rate_limiter_burst_unchanged() {
+        let seed = Url::parse("http://127.0.0.1:9/").expect("valid seed URL");
+        let low = CrawlerConfig::builder(seed.clone()).concurrency(1).build();
+        let high = CrawlerConfig::builder(seed).concurrency(16).build();
+
+        let engine_low = Engine::new(low, true).expect("engine must build");
+        let engine_high = Engine::new(high, true).expect("engine must build");
+
+        assert_eq!(
+            engine_low.budget.burst().get(),
+            engine_high.budget.burst().get(),
+            "burst must not track crawler concurrency"
+        );
+        assert!(engine_high.budget.burst().get() > 0);
+    }
+
+    /// The RateLimiterConfig construction point derives its burst from the
+    /// model: with a FixedDetector of 4 cores the auto table yields crawl
+    /// (= default burst) 3, regardless of any crawler concurrency value.
+    #[test]
+    fn rate_limiter_config_burst_comes_from_budget_model() {
+        let detector =
+            FixedDetector::with_detection(std::num::NonZeroUsize::new(4).expect("non-zero"), None);
+        let budget = BudgetModel::build(BudgetOverrides::default(), &detector);
+        let seed = Url::parse("http://127.0.0.1:9/").expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed).concurrency(16).build();
+
+        let rl_config = rate_limiter_config(&config, &budget);
+        assert_eq!(rl_config.delay_ms, config.delay_ms);
+        assert_eq!(
+            rl_config.concurrency,
+            budget.burst().get(),
+            "burst must come from the model, not config.concurrency"
+        );
+        assert_eq!(rl_config.concurrency, 3, "4-core auto table value");
+    }
+
+    /// Triangulation sweep: across the whole 1..=32 core range the
+    /// construction point emits exactly the model's burst tier, whatever
+    /// the configured crawler concurrency claims.
+    #[test]
+    fn rate_limiter_burst_sweep_matches_model_across_core_counts() {
+        let seed = Url::parse("http://127.0.0.1:9/").expect("valid seed URL");
+        for cores in 1..=32usize {
+            let detector = FixedDetector::with_detection(
+                std::num::NonZeroUsize::new(cores).expect("cores non-zero"),
+                None,
+            );
+            let budget = BudgetModel::build(BudgetOverrides::default(), &detector);
+            for concurrency in [1usize, 8, 16] {
+                let config = CrawlerConfig::builder(seed.clone())
+                    .concurrency(concurrency)
+                    .build();
+                assert_eq!(
+                    rate_limiter_config(&config, &budget).concurrency,
+                    budget.burst().get(),
+                    "burst diverged from model at cores={cores} concurrency={concurrency}"
+                );
+            }
+        }
+    }
 
     /// Shutdown while a worker waits: cancellation must abort the parked
     /// worker and `run()` must return within seconds, not after the 60s
@@ -1159,13 +1260,22 @@ mod tests {
     async fn cancellation_aborts_rate_blocked_worker_and_run_returns_within_bound() {
         let server = MockServer::start().await;
         let port = server.address().port();
+        // Burst-decoupled (#302 D1): the token-bucket burst no longer tracks
+        // `config.concurrency`, so blocking a worker behind the 60s refill
+        // must not depend on burst == 1. Link MORE URLs than the maximum
+        // possible burst (ceiling 16): at least one worker necessarily waits
+        // for a refill that never comes before cancellation fires.
+        let links: String = (0..20)
+            .map(|i| format!(r#"<a href=\"http://127.0.0.1:{port}/linked{i}\">next</a>"#))
+            .collect();
         Mock::given(path("/"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
-                "<html><body><a href=\"http://127.0.0.1:{port}/linked\">next</a></body></html>"
-            )))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(format!("<html><body>{links}</body></html>")),
+            )
             .mount(&server)
             .await;
-        Mock::given(path("/linked"))
+        Mock::given(path_regex("/linked\\d+".to_string()))
             .respond_with(
                 ResponseTemplate::new(200).set_body_string("<html><body>linked</body></html>"),
             )
@@ -1175,7 +1285,7 @@ mod tests {
         let seed = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("valid seed URL");
         let config = CrawlerConfig::builder(seed)
             .max_depth(1)
-            .max_pages(10)
+            .max_pages(50) // above link count: page count must be bounded by burst, not max_pages
             .concurrency(1)
             .delay_ms(60_000) // 60s refill: without cancellation run() hangs ~1 min
             .timeout_secs(5)
@@ -1187,10 +1297,6 @@ mod tests {
 
         let run_handle = tokio::spawn(async move { engine.run().await });
 
-        // Wait until the seed fetch lands; its discovered /linked task is then
-        // dispatched into the rate-limit wait (burst already consumed). Even if
-        // cancellation wins that race, the task still returns Cancelled without
-        // fetching — both orderings must satisfy the assertions below.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
             let seed_received = server
@@ -1207,6 +1313,8 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        // Let immediate-burst workers land so late-discovered workers are
+        // genuinely parked on the 60s refill when cancellation fires.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         cancel.cancel();
@@ -1217,17 +1325,20 @@ mod tests {
             .expect("spawned run task must not panic");
         let crawl = result.expect("cancelled crawl must still return a result");
 
-        assert_eq!(crawl.total_pages, 1, "only the seed was fetched");
+        // #509 acceptance: blocked workers abort as control signals.
         assert_eq!(crawl.errors, 0, "cancelled tasks are control signals");
-
-        let requested_linked = server
-            .received_requests()
-            .await
-            .map(|reqs| reqs.iter().any(|r| r.url.path() == "/linked"))
-            .unwrap_or(true);
+        // Burst ceiling bounds immediate fetches (seed + <= burst links);
+        // the 60s refill means the cancelled run can NEVER fetch all 20.
+        let max_burst = crate::domain::budget::clamp::MAX_CONCURRENCY_CEILING;
         assert!(
-            !requested_linked,
-            "rate-blocked worker must be cancelled before fetching"
+            crawl.total_pages <= 1 + max_burst,
+            "total_pages={} exceeds seed + maximum burst {max_burst}",
+            crawl.total_pages
+        );
+        assert!(
+            crawl.total_pages < 20,
+            "cancelled run must not fetch all 20 links (60s refill), got {}",
+            crawl.total_pages
         );
     }
 
