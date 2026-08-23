@@ -112,7 +112,9 @@ async fn console_smoke_delta_stays_under_ceiling_and_returns_to_baseline() {
     sampler.abort();
     let grace_deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let alive = tokio::runtime::Handle::current().metrics().num_alive_tasks();
+        let alive = tokio::runtime::Handle::current()
+            .metrics()
+            .num_alive_tasks();
         if alive <= baseline + 1 || Instant::now() >= grace_deadline {
             assert!(
                 alive <= baseline + 1,
@@ -133,8 +135,9 @@ async fn console_smoke_delta_stays_under_ceiling_and_returns_to_baseline() {
     );
 
     // 4. JSON stats artifact for the Gate 4 dossier.
-    let stats_path: std::path::PathBuf =
-        std::env::var("WEBFANG_CONSOLE_STATS_PATH").map(Into::into).unwrap_or_else(|_| {
+    let stats_path: std::path::PathBuf = std::env::var("WEBFANG_CONSOLE_STATS_PATH")
+        .map(Into::into)
+        .unwrap_or_else(|_| {
             let dir = stats_dir.get_or_init(|| tempfile::TempDir::new().expect("temp dir"));
             dir.path().join("console_smoke_stats.json")
         });

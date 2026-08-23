@@ -303,6 +303,37 @@ jobs:
       - run: cargo nextest run --all-features --test-threads 4 --retries 2
 
   # ============================================================================
+  # TOKIO CONSOLE SMOKE (Sprint 7-8 P1-conc - change stabilization-concurrency-budget)
+  #
+  # Runtime task-budget proof: compiles the workspace with the `console`
+  # feature under RUSTFLAGS="--cfg tokio_unstable" (compile proof for
+  # webfang_cli catches unexpected_cfgs breakage) and runs the in-process
+  # smoke test asserting (a) the workload-attributable alive-task delta
+  # stays within the budget-model Global ceiling and (b) alive tasks
+  # return to baseline within the shutdown grace. Thresholds are
+  # env-configurable (WEBFANG_CONSOLE_MAX_TASKS / _SMOKE_SECS /
+  # _STATS_PATH) -- never hardcoded.
+  # ============================================================================
+  tokio-console-smoke:
+    name: Tokio console smoke (unstable cfg)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RUSTFLAGS: --cfg tokio_unstable
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Distinct cache key: unstable cfg changes build fingerprints.
+          key: tokio-unstable
+      - uses: taiki-e/install-action@nextest
+      - name: Compile proof (webfang_cli with console under unstable cfg)
+        run: cargo check -p webfang_cli --features console
+      - name: Console smoke test (delta ceiling + baseline recovery)
+        run: cargo nextest run -p webfang_core --features console --test tokio_console_smoke_test
+
+  # ============================================================================
   # TEST AI (NON-REQUIRED): AI integration tests with ONNX model.
   #
   # These tests are #[ignore]'d by design — they load a 372MB ONNX model and run
