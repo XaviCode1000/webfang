@@ -70,7 +70,21 @@ pub async fn build_container() -> webfang_core::di::Container {
 pub fn spawn_ai_wiring(container: Arc<webfang_core::application::container::Container>) {
     use tracing::Instrument;
 
-    let variant = webfang_ai::AiModel::from_env_or_default();
+    // Loud env resolution (#874): a set-but-invalid AI_MODEL_ID must never be
+    // silently downgraded to the default model — skip AI wiring with an error
+    // log instead (English logs per project convention; the MCP tools then keep
+    // their pre-existing honest "not available" error during this run).
+    let variant = match webfang_ai::AiModel::from_env() {
+        Ok(Some(variant)) => variant,
+        Ok(None) => webfang_ai::AiModel::default(),
+        Err(e) => {
+            tracing::error!(
+                "AI wiring skipped: AI_MODEL_ID is set to an unknown model and \
+                 cannot be silently defaulted ({e})"
+            );
+            return;
+        },
+    };
     let span = tracing::info_span!("ai_lazy_wiring", model = variant.display_name());
 
     tokio::spawn(

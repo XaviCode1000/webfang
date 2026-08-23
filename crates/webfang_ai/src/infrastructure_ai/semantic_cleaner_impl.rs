@@ -108,7 +108,11 @@ pub struct ModelConfig {
 
 impl Default for ModelConfig {
     fn default() -> Self {
-        let model_variant = AiModel::from_env_or_default();
+        // A bare default configuration is always Granite-97M and never consults
+        // the environment: `AI_MODEL_ID` is resolved LOUDLY at the application
+        // entry points (CLI `build_ai_cleaner`, MCP `spawn_ai_wiring`) via
+        // `AiModel::from_env()`, which errors on set-but-invalid values (#874).
+        let model_variant = AiModel::default();
         Self {
             repo: model_variant.repo_id().to_string(),
             model_file: model_variant.model_file().to_string(),

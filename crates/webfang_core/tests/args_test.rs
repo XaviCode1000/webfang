@@ -139,7 +139,7 @@ fn args_with_all_fields_set() -> Args {
             js_strategy: webfang_core::domain::JsStrategy::Hybrid,
             obscura_binary: "/usr/local/bin/obscura".into(),
             asset_naming: "slug".into(),
-            download_concurrency: 5,
+            download_concurrency: Some(5),
             ..Default::default()
         },
 
@@ -154,7 +154,7 @@ fn args_with_all_fields_set() -> Args {
             output_vectors: None,
             batch: true,
             batch_file: Some(std::path::PathBuf::from("/tmp/urls.txt")),
-            batch_concurrency: 8,
+            batch_concurrency: Some(8),
             pipeline: true,
             pipeline_output: webfang_core::domain::config::PipelineOutputFormat::None,
         },
@@ -170,11 +170,7 @@ fn args_with_all_fields_set() -> Args {
 
         ai: AiArgs::default(),
 
-        tui: TuiArgs {
-            interactive: true,
-            config_tui: true,
-            ..Default::default()
-        },
+        tui: TuiArgs::default(),
     }
 }
 
@@ -194,7 +190,7 @@ fn assert_full_parity_crawl_limits(opts: &webfang_core::application::crawl_optio
         vec!["/blog/**".to_owned(), "/docs/**".to_owned()]
     );
     assert_eq!(opts.crawl.exclude_patterns, vec!["/admin/**".to_owned()]);
-    assert!(opts.crawl.interactive);
+    assert!(!opts.crawl.interactive);
     assert!(opts.crawl.resume);
     assert_eq!(
         opts.crawl.state_dir,
@@ -280,7 +276,7 @@ fn assert_full_parity_item_pipeline(opts: &webfang_core::application::crawl_opti
 
 fn assert_full_parity_asset_naming(opts: &webfang_core::application::crawl_options::CrawlOptions) {
     assert_eq!(opts.asset_naming, "slug");
-    assert_eq!(opts.download_concurrency, 5);
+    assert_eq!(opts.download_concurrency, Some(5));
 }
 
 #[test]
@@ -631,8 +627,6 @@ proptest! {
         resume in proptest::bool::ANY,
         download_images in proptest::bool::ANY,
         download_documents in proptest::bool::ANY,
-        interactive in proptest::bool::ANY,
-        config_tui in proptest::bool::ANY,
         quiet in proptest::bool::ANY,
         dry_run in proptest::bool::ANY,
         use_sitemap in proptest::bool::ANY,
@@ -685,7 +679,8 @@ proptest! {
                 js_strategy: webfang_core::domain::JsStrategy::Static,
                 obscura_binary: "obscura".into(),
                 asset_naming: "hash".into(),
-                download_concurrency: 3,
+                download_concurrency: Some(3),
+                rate_limit_burst: None,
                 download_assets: false,
                 trace_file: None,
                 dom_preprune: true,
@@ -709,11 +704,7 @@ proptest! {
                 obsidian_rich_metadata: rich_metadata,
             },
             ai: AiArgs::default(),
-            tui: TuiArgs {
-                interactive,
-                config_tui,
-                ..Default::default()
-            },
+            tui: TuiArgs::default(),
         };
 
         let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
@@ -727,7 +718,7 @@ proptest! {
         prop_assert_eq!(opts.crawl.resume, resume);
         prop_assert_eq!(opts.network.download_images, download_images);
         prop_assert_eq!(opts.network.download_documents, download_documents);
-        prop_assert_eq!(opts.crawl.interactive, interactive);
+        prop_assert_eq!(opts.crawl.interactive, false); // no CLI flag sets it (#880)
         prop_assert_eq!(opts.quiet, quiet);
         prop_assert_eq!(opts.export.quiet, quiet);
         prop_assert_eq!(opts.export.dry_run, dry_run);
@@ -796,7 +787,8 @@ proptest! {
                 js_strategy: webfang_core::domain::JsStrategy::Static,
                 obscura_binary: "obscura".into(),
                 asset_naming: "hash".into(),
-                download_concurrency: 3,
+                download_concurrency: Some(3),
+                rate_limit_burst: None,
                 download_assets: false,
                 trace_file: None,
                 dom_preprune: true,
@@ -886,7 +878,8 @@ proptest! {
                 js_strategy: webfang_core::domain::JsStrategy::Static,
                 obscura_binary: "obscura".into(),
                 asset_naming: "hash".into(),
-                download_concurrency: 3,
+                download_concurrency: Some(3),
+                rate_limit_burst: None,
                 download_assets: false,
                 trace_file: None,
                 dom_preprune: true,
@@ -970,7 +963,8 @@ proptest! {
                 js_strategy: webfang_core::domain::JsStrategy::Static,
                 obscura_binary: "obscura".into(),
                 asset_naming: "hash".into(),
-                download_concurrency: 3,
+                download_concurrency: Some(3),
+                rate_limit_burst: None,
                 download_assets: false,
                 trace_file: None,
                 dom_preprune: true,
@@ -1058,7 +1052,8 @@ proptest! {
                 js_strategy: webfang_core::domain::JsStrategy::Static,
                 obscura_binary: "obscura".into(),
                 asset_naming: "hash".into(),
-                download_concurrency: 3,
+                download_concurrency: Some(3),
+                rate_limit_burst: None,
                 download_assets: false,
                 trace_file: None,
                 dom_preprune: true,
@@ -1138,7 +1133,8 @@ proptest! {
                 js_strategy: webfang_core::domain::JsStrategy::Static,
                 obscura_binary: "obscura".into(),
                 asset_naming: "hash".into(),
-                download_concurrency: 3,
+                download_concurrency: Some(3),
+                rate_limit_burst: None,
                 download_assets: false,
                 trace_file: None,
                 dom_preprune: true,
@@ -1216,7 +1212,8 @@ proptest! {
                 js_strategy: webfang_core::domain::JsStrategy::Static,
                 obscura_binary: "obscura".into(),
                 asset_naming: "hash".into(),
-                download_concurrency: 3,
+                download_concurrency: Some(3),
+                rate_limit_burst: None,
                 download_assets: false,
                 trace_file: None,
                 dom_preprune: true,

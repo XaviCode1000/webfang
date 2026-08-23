@@ -196,11 +196,13 @@ pub async fn scrape_urls(
         fingerprint_repo: build_fingerprint_repo(opts).await,
     };
 
-    // Honor `--concurrency` (#653): the previous sequential loop made the flag
-    // a no-op on the default scrape path. `buffer_unordered` keeps at most
+    // Concurrency bound (#653): the previous sequential loop made concurrency a
+    // no-op on the default scrape path. `buffer_unordered` keeps at most
     // `concurrency` fetches in flight; the enumerated index restores the
-    // original URL order afterwards so output stays deterministic.
-    let concurrency = opts.network.concurrency.resolve().max(1);
+    // original URL order afterwards so output stays deterministic. The bound
+    // derives from the budget model's Operation.crawl tier (task 2.5a) — the
+    // NonZero tier type guarantees ≥ 1, so no `.max(1)` guard is needed.
+    let concurrency = scrape_concurrency(opts, &crate::domain::budget::detector::SystemDetector);
     info!(
         concurrency,
         urls = processing_count,
@@ -285,6 +287,20 @@ struct ScrapeContext<'a> {
 }
 
 /// Apply the `max_pages` cap to the URL list when configured.
+/// Scrape-path `buffer_unordered` bound.
+///
+/// Derives from the budget model's Operation.crawl tier built from the run's
+/// operator overrides plus the given hardware detector (task 2.5a); the
+/// enforcement mechanism (`buffer_unordered`) is unchanged.
+fn scrape_concurrency(
+    opts: &CrawlOptions,
+    detector: &dyn crate::domain::budget::detector::HardwareDetector,
+) -> usize {
+    crate::domain::budget::BudgetModel::build(opts.budget_overrides, detector)
+        .crawl()
+        .get()
+}
+
 fn apply_max_pages_limit(urls: &[Url], scraper_config: &ScraperConfig) -> Vec<Url> {
     if let Some(max_pages) = scraper_config.max_pages {
         let limited: Vec<_> = urls.iter().take(max_pages).cloned().collect();
@@ -518,11 +534,32 @@ fn build_http_client_config(
 mod tests {
     use super::{apply_resume_mode, build_http_client_config, scrape_urls, RobotsFetcher};
     use crate::application::crawl_options::CrawlOptions;
+    use std::num::NonZeroUsize;
     use tempfile::TempDir;
     use tokio_util::sync::CancellationToken;
     use url::Url;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, ResponseTemplate};
+
+    // ===== scrape-path concurrency derives from the budget model (task 2.5a) =====
+
+    fn fixed_cores(n: usize) -> crate::domain::budget::detector::FixedDetector {
+        crate::domain::budget::detector::FixedDetector::with_detection(
+            NonZeroUsize::new(n).expect("test core counts are non-zero"),
+            None,
+        )
+    }
+
+    /// The scrape bound must follow the INJECTED detector's crawl tier —
+    /// never the host's `available_parallelism` and never the raw CLI flag.
+    #[test]
+    fn scrape_concurrency_follows_injected_detector_crawl_tier() {
+        let opts = CrawlOptions::default();
+
+        // Auto table: 6 cores ⇒ 5, ≥9 cores ⇒ min(cores−1, 8) = 8.
+        assert_eq!(super::scrape_concurrency(&opts, &fixed_cores(6)), 5);
+        assert_eq!(super::scrape_concurrency(&opts, &fixed_cores(9)), 8);
+    }
 
     // ===== extraction fingerprint wiring tests (#792 Slice B) =====
 

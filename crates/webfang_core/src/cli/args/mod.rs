@@ -148,6 +148,11 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
     /// guarantees validity before this point).
     #[allow(clippy::too_many_lines)]
     fn from(args: Args) -> Self {
+        // Capture BEFORE the move into NetworkOptions: explicit operator
+        // concurrency feeds the budget model as a crawl-tier override.
+        let explicit_crawl = args.crawler.concurrency.get();
+        let explicit_batch = args.export.batch_concurrency;
+        let explicit_download = args.crawler.download_concurrency;
         use crate::application::crawl_options::{
             CrawlLimits, ExportOptions, IngestionTuning, NetworkOptions,
         };
@@ -171,7 +176,9 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
                 single_page: args.crawler.single_page,
                 include_patterns: args.crawler.include_patterns,
                 exclude_patterns: args.crawler.exclude_patterns,
-                interactive: args.tui.interactive,
+                // No CLI flag sets this anymore (#880 removed --interactive);
+                // internal knob, defaults to false.
+                interactive: false,
                 resume: args.crawler.resume,
                 state_dir: args.crawler.state_dir,
                 use_sitemap: args.crawler.use_sitemap,
@@ -253,6 +260,26 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
             asset_naming: args.crawler.asset_naming,
             download_concurrency: args.crawler.download_concurrency,
             ai_config,
+            budget_overrides: crate::domain::budget::BudgetOverrides {
+                // Same validation as the preflight pipeline; the legacy
+                // `From<Args>` path cannot return Result, so a rejected
+                // value (0) degrades to the derived default here.
+                rate_burst: args.crawler.rate_limit_burst.as_deref().and_then(|raw| {
+                    crate::cli::args::crawler::parse_rate_limit_burst(raw)
+                        .ok()
+                        .flatten()
+                        .and_then(|v| crate::domain::budget::BurstPermits::new(v).ok())
+                }),
+                // Explicit `--concurrency` (when not "auto") feeds the
+                // model as a crawl override — same explicit-wins rule as
+                // the preflight pipeline path.
+                crawl: explicit_crawl
+                    .and_then(|v| crate::domain::budget::tiers::CrawlConcurrency::new(v).ok()),
+                batch: explicit_batch
+                    .and_then(|v| crate::domain::budget::tiers::BatchConcurrency::new(v).ok()),
+                asset: explicit_download
+                    .and_then(|v| crate::domain::budget::tiers::DownloadConcurrency::new(v).ok()),
+            },
         }
     }
 }
@@ -421,15 +448,16 @@ mod tests {
             "3",
         ])
         .expect("valid args");
-        assert_eq!(args.export.batch_concurrency, 3);
+        assert_eq!(args.export.batch_concurrency, Some(3));
     }
 
     #[test]
-    fn batch_concurrency_default_is_five() {
+    fn batch_concurrency_omitted_is_none_auto() {
         clean_env();
         let args =
             Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
-        assert_eq!(args.export.batch_concurrency, 5);
+        // Omitted flag = auto: the budget model derives the tier.
+        assert_eq!(args.export.batch_concurrency, None);
     }
 
     // ========================================================================

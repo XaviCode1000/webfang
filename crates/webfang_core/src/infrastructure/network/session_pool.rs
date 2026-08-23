@@ -9,6 +9,24 @@
 //! - **Exponential backoff** — `base_delay * 2^min(failures, max_exp)`, capped at `max_delay`
 //! - **TTL eviction** — stale sessions removed on `acquire()`, no background thread
 //! - **Zero-cost abstraction** — `impl SessionManager` not `Box<dyn SessionManager>`
+//!
+//! # D6 lock-across-await audit (task 2.3, change stabilization-concurrency-budget)
+//!
+//! Functions rewired by commit de54342a (budget-derived pool size):
+//!
+//! | Function | `.await` points | Guard discipline | Verdict |
+//! |---|---|---|---|
+//! | `SessionPoolConfig::default` | none (sync fn) | pure value construction, no locks | PASS |
+//! | `DomainSessionPool::acquire` | none (sync `SessionManager` method) | DashMap `RefMut` from `entry().or_insert_with(..)` is explicitly `drop(sessions)`-ped BEFORE any re-entrant map access (the RefMut-dropped-BEFORE-gauge ordering invariant, see comment above the drop in `acquire`) | PASS |
+//!
+//! Cross-check: the crate's only `tokio::sync::Mutex` guards live in
+//! `infrastructure/crawler/url_queue.rs` inside documented sync-only sections
+//! (invariant AL-2); this module never spans an await while holding a guard.
+//!
+//! Enforcement: `#![deny(clippy::await_holding_lock)]` below fails the build if
+//! a future edit ever holds a `std` lock guard across an `.await` in this module.
+
+#![deny(clippy::await_holding_lock)]
 
 use std::fmt;
 use std::sync::Arc;
@@ -17,6 +35,7 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use tracing::{debug, instrument, warn};
 
+use crate::domain::budget::DomainSlots;
 use crate::domain::clock::{Clock, SystemClock};
 use crate::domain::session_port::SessionId;
 
@@ -54,8 +73,11 @@ impl SessionState {
 /// Configuration for the session pool.
 #[derive(Debug, Clone)]
 pub struct SessionPoolConfig {
-    /// Number of session slots per domain.
-    pub pool_size: usize,
+    /// Number of session slots per domain — the budget model's `Domain`
+    /// tier (task 2.2c). A plain `usize` would let zero or unclamped values
+    /// in; the [`DomainSlots`] newtype makes an invalid slot count
+    /// unrepresentable (design D4).
+    pub pool_size: DomainSlots,
     /// Base delay for exponential backoff.
     pub base_delay: Duration,
     /// Maximum delay cap for backoff.
@@ -69,7 +91,9 @@ pub struct SessionPoolConfig {
 impl Default for SessionPoolConfig {
     fn default() -> Self {
         Self {
-            pool_size: 8,
+            // LCOV_EXCL_LINE defensive: domain-slot-default — the constant is non-zero by definition
+            pool_size: DomainSlots::new(crate::domain::budget::DOMAIN_SLOTS_DEFAULT)
+                .unwrap_or_else(|_| unreachable!("domain slot default is non-zero")),
             base_delay: Duration::from_secs(1),
             max_delay: Duration::from_secs(60),
             max_exp: 6,
@@ -257,7 +281,7 @@ impl SessionManager for DomainSessionPool {
         let mut sessions = self
             .sessions
             .entry(domain.to_string())
-            .or_insert_with(|| vec![SessionState::healthy(); self.config.pool_size]);
+            .or_insert_with(|| vec![SessionState::healthy(); self.config.pool_size.get()]);
 
         // Evict stale sessions first
         let now = self.clock.now();
@@ -354,6 +378,11 @@ mod sealed {
 mod tests {
     use super::*;
     use crate::domain::clock::MockClock;
+
+    /// Test constructor for the NonZero-gated Domain tier.
+    fn slots(n: usize) -> DomainSlots {
+        DomainSlots::new(n).expect("test slot count non-zero")
+    }
 
     // ── Task 3.3: State transitions ──
 
@@ -542,12 +571,59 @@ mod tests {
         assert_eq!(sessions[0].status, SessionStatus::Healthy);
     }
 
+    // ── Task 2.2(c): pool size follows the budget model's Domain tier ──
+
+    /// Task 2.2(c): the pool's slot count follows the injected [`BudgetModel`]
+    /// Domain tier — a raw `usize` is no longer representable (D4 newtype),
+    /// so a miswired or zero slot count cannot compile.
+    #[test]
+    fn pool_size_follows_budget_model_domain_tier() {
+        use std::num::NonZeroUsize;
+
+        use crate::domain::budget::detector::FixedDetector;
+        use crate::domain::budget::{BudgetModel, BudgetOverrides};
+
+        fn config_from_cores(cores: usize) -> (SessionPoolConfig, usize) {
+            let detector = FixedDetector::with_detection(
+                NonZeroUsize::new(cores).expect("test cores non-zero"),
+                None,
+            );
+            let model = BudgetModel::build(BudgetOverrides::default(), &detector);
+            let expected = model.domain().get();
+            let config = SessionPoolConfig {
+                base_delay: Duration::from_secs(1),
+                pool_size: model.domain(),
+                ..SessionPoolConfig::default()
+            };
+            (config, expected)
+        }
+
+        // TRIANGULATE across detector variants — every variant must resolve
+        // the pool to exactly its model's Domain tier.
+        for cores in [2, 4, 16] {
+            let (config, expected) = config_from_cores(cores);
+            assert_eq!(config.pool_size.get(), expected);
+
+            let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
+            let _id = pool.acquire("example.com").expect("should acquire");
+            assert_eq!(
+                pool.domain_count("example.com"),
+                expected,
+                "cores={cores}: live slot count must equal the model Domain tier"
+            );
+        }
+
+        // Zero slots are unrepresentable: the NonZero guard rejects them at
+        // construction instead of silently degrading the pool.
+        assert!(DomainSlots::new(0).is_err());
+    }
+
     // ── Task 3.3: Pool size limit ──
 
     #[test]
     fn pool_respects_configured_size() {
         let config = SessionPoolConfig {
-            pool_size: 3,
+            pool_size: slots(3),
             ..Default::default()
         };
         let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
@@ -559,7 +635,7 @@ mod tests {
     #[test]
     fn acquire_returns_different_sessions() {
         let config = SessionPoolConfig {
-            pool_size: 4,
+            pool_size: slots(4),
             ..Default::default()
         };
         let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
@@ -603,7 +679,7 @@ mod tests {
         let clock = MockClock::new(Instant::now());
         let pool = DomainSessionPool::new(
             SessionPoolConfig {
-                pool_size: 1,
+                pool_size: slots(1),
                 base_delay: Duration::from_millis(1),
                 max_delay: Duration::from_millis(10),
                 max_exp: 1,
@@ -637,7 +713,7 @@ mod tests {
     #[test]
     fn default_config_values() {
         let config = SessionPoolConfig::default();
-        assert_eq!(config.pool_size, 8);
+        assert_eq!(config.pool_size.get(), 8);
         assert_eq!(config.base_delay, Duration::from_secs(1));
         assert_eq!(config.max_delay, Duration::from_secs(60));
         assert_eq!(config.max_exp, 6);

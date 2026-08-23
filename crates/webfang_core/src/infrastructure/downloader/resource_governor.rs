@@ -28,12 +28,6 @@ use tracing::{debug, warn};
 
 use super::DownloadError;
 
-/// Approximate RAM cost of one Chrome instance (200 MB).
-const CHROME_INSTANCE_COST: u64 = 200_000_000;
-
-/// Fraction of available RAM we're willing to allocate to Chrome instances.
-const RAM_BUDGET_FRACTION: f64 = 0.6;
-
 /// RAM usage percentage that triggers a warning and reduces capacity by half.
 const WARNING_THRESHOLD: u8 = 80;
 
@@ -143,11 +137,24 @@ impl ResourceGovernor {
     }
 
     /// Compute `max_instances` from current system RAM.
+    ///
+    /// Delegates to the budget model's pure derivation (task 2.7): one source
+    /// of truth for the RAM formula. At zero usage pressure the decision can
+    /// never be `Deny`, so the legacy floor (`max(1)`) is preserved via the
+    /// derivation's own minimum.
     fn compute_max_instances() -> usize {
         let total = Self::total_ram_bytes();
-        let budget = (total as f64 * RAM_BUDGET_FRACTION) as u64;
-        let max = budget / CHROME_INSTANCE_COST;
-        max.max(1) as usize // at least 1 permit even on tiny machines
+        match crate::domain::budget::derivation::derive_max_instances(
+            total,
+            0,
+            crate::domain::budget::derivation::RamThresholds::default(),
+        ) {
+            crate::domain::budget::derivation::MaxChromeDecision::Allow(instances) => {
+                instances.get()
+            },
+            // Unreachable at zero pressure; keep the legacy floor defensively.
+            crate::domain::budget::derivation::MaxChromeDecision::Deny => 1,
+        }
     }
 
     /// Total system RAM in bytes.
@@ -197,6 +204,38 @@ impl From<ResourceError> for DownloadError {
 #[cfg(test)]
 #[cfg(not(miri))] // sysinfo uses sysconf (unsupported by Miri — but TSan covers the semaphore)
 mod tests {
+    /// Task 2.7: the governor's live budget must equal the budget model's
+    /// pure derivation for the same injected RAM values (single source of
+    /// truth), including the legacy floor on tiny machines.
+    #[test]
+    fn compute_max_instances_matches_budget_model_derivation() {
+        use crate::domain::budget::{detector::FixedDetector, BudgetModel, BudgetOverrides};
+        for total_gib in [1_u64, 2, 4, 8, 16, 32, 64] {
+            let total = total_gib * 1024 * 1024 * 1024;
+            let detector = FixedDetector::with_detection(
+                std::num::NonZeroUsize::new(8).expect("8 is non-zero"),
+                Some(total),
+            );
+            let model = BudgetModel::build(BudgetOverrides::default(), &detector);
+            let model_max = model
+                .max_chrome_instances()
+                .map(crate::domain::budget::tiers::MaxChromeInstances::get)
+                .unwrap_or(1);
+            // Legacy inline formula (pre-delegation reference):
+            let legacy = (((total as f64 * 0.6) as u64) / 200_000_000).max(1) as usize;
+            assert_eq!(
+                model_max, legacy,
+                "model must reproduce legacy at {total_gib}GiB"
+            );
+            assert_eq!(
+                ResourceGovernor::with_max_instances(model_max, CancellationToken::new())
+                    .available_permits(),
+                model_max,
+                "governor accepts the model-derived ceiling at {total_gib}GiB"
+            );
+        }
+    }
+
     use super::*;
 
     use std::time::Duration;

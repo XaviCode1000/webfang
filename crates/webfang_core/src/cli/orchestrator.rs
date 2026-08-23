@@ -33,26 +33,6 @@ use crate::application::adaptive_engine::AdaptiveSelectorEngine;
 #[cfg(not(feature = "adaptive-selectors"))]
 type AdaptiveSelectorEngine = ();
 
-/// Create an unbounded channel and a `LiveProgressObserver` wired to it.
-///
-/// Returns `(observer, rx)` where:
-/// - `observer` wraps the `tx` side and can be passed to `scrape_urls`
-/// - `rx` is the receiving end for the TUI progress view
-///
-/// The caller must pass `rx` to `run_progress_view` on the main thread
-/// (crossterm TTY ownership requirement).
-pub fn prepare_progress_channel(
-    quiet: bool,
-) -> (
-    Box<dyn crate::domain::ports::ProgressObserver>,
-    tokio::sync::mpsc::UnboundedReceiver<crate::domain::entities::progress::ScrapeProgress>,
-) {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let observer =
-        Box::new(crate::application::progress_observer::LiveProgressObserver::new(Some(tx), quiet));
-    (observer, rx)
-}
-
 /// Pre-flight gate for `--output-vectors` (#703, #652).
 ///
 /// `--output-vectors` can only write embeddings when semantic cleaning is
@@ -187,9 +167,8 @@ pub async fn run(
         Err(e) => return e,
     };
 
-    // Create observer with stderr fallback (no channel) for non-TUI mode.
-    // For TUI mode, call `prepare_progress_channel()` from main.rs and pass
-    // the observer here instead.
+    // Create observer with stderr fallback (no channel) for non-TUI mode:
+    // scraping runs fully headless; there is no TUI progress screen.
     let observer = Box::new(
         crate::application::progress_observer::LiveProgressObserver::new(None, opts.export.quiet),
     );
@@ -432,7 +411,11 @@ async fn run_dry_run(opts: CrawlOptions) -> CliExit {
     // report "0 URL(s) would be scraped". List the batch URLs the user actually
     // supplied instead — that is the set a dry run should preview.
     if opts.batch.batch_file.is_some() {
-        let manager = match load_batch_manager(&opts, crawler_config).await {
+        let budget = crate::domain::budget::BudgetModel::build(
+            opts.budget_overrides,
+            &crate::domain::budget::detector::SystemDetector,
+        );
+        let manager = match load_batch_manager(&opts, crawler_config, &budget).await {
             Ok(m) => m,
             Err(e) => return e,
         };
@@ -549,9 +532,18 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
         )
     };
 
+    // Budget model built ONCE at flow entry (design D4): operator overrides
+    // plus the canonical detector seam feed every downstream bound.
+    let budget = crate::domain::budget::BudgetModel::build(
+        opts.budget_overrides,
+        &crate::domain::budget::detector::SystemDetector,
+    );
+
     let mut scraper_config = ScraperConfig::default()
         .with_output_dir(resolve_persistence_root(opts))
-        .with_scraper_concurrency(opts.network.concurrency.resolve())
+        // Scraper + asset-download bounds derive from the model's Operation.crawl
+        // and Asset tiers (task 2.5b); explicit flags arrive via BudgetOverrides.
+        .with_scraper_concurrency(budget.crawl().get())
         .with_max_pages(opts.crawl.max_pages)
         .with_selector(opts.crawl.selector.clone())
         .with_ignore_waf(opts.crawl.ignore_waf)
@@ -570,7 +562,7 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
     scraper_config =
         scraper_config.with_asset_h2_profile(parse_asset_h2_profile(&opts.network.h2_profile));
     scraper_config = scraper_config.with_asset_naming(parse_asset_naming(&opts.asset_naming));
-    scraper_config = scraper_config.with_download_concurrency(opts.download_concurrency);
+    scraper_config = scraper_config.with_download_concurrency(budget.asset().get());
     scraper_config = scraper_config.with_max_file_size(opts.network.max_file_size);
     scraper_config = scraper_config.with_download_timeout(opts.network.download_timeout_secs);
 
@@ -700,10 +692,13 @@ fn report_phase(
         });
     }
 
-    if results.is_empty() && failures.is_empty() && blocked > 0 {
-        return Some(CliExit::Forbidden(format!(
-            "{blocked} URL(s) bloqueadas por robots.txt. Usa --ignore-robots para omitir esta verificación."
-        )));
+    // Canonical robots-blocked override (#705): fires only when NOTHING was
+    // scraped and NOTHING failed, delegating to the single implementation in
+    // `cli::error` (#839).
+    if let Some(exit) =
+        crate::cli::error::forbidden_exit_when_all_blocked(results.len(), failures.len(), blocked)
+    {
+        return Some(exit);
     }
 
     if results.is_empty() {
@@ -717,13 +712,27 @@ fn report_phase(
         // error is PermanentFatal (never caught by the 3 sweep), and a run
         // that failed entirely on an unwritable output path must report 74,
         // not fall through to 65/69.
-        if let Some(exit) = scraper_failure_for_internal_fatal(failures) {
+        // Exit-code precedence in the all-fail arm: internal-fatal (3)
+        // outranks the permanent-Io override (74), which outranks
+        // extraction-failed (65), which outranks the transient fallback
+        // (69) (#706 + matrix rows 21/22). An internal bug must never
+        // masquerade as a data-format error. The Io override sits here —
+        // AFTER the InternalFatal sweep, BEFORE extraction-failed — because
+        // since `ScraperError::classify` splits by kind, a permanent io
+        // error is PermanentFatal (never caught by the 3 sweep), and a run
+        // that failed entirely on an unwritable output path must report 74,
+        // not fall through to 65/69. Each arm delegates to its canonical
+        // mapping function in `cli::error` (#839) so every exit-code
+        // decision has exactly one implementation.
+        if let Some(exit) = crate::cli::error::scraper_failure_exit_when_internal_fatal(failures) {
             return Some(exit);
         }
         if let Some(exit) = permanent_io_error_for_failures(failures) {
             return Some(exit);
         }
-        if let Some(exit) = data_format_error_for_extraction_failed(failures) {
+        if let Some(exit) =
+            crate::cli::error::data_format_error_exit_when_extraction_failed(failures)
+        {
             return Some(exit);
         }
         eprintln!("No pages were successfully scraped");
@@ -738,31 +747,13 @@ fn report_phase(
 
 /// Fold an all-failed error set into a severity-aware exit (#537).
 ///
-/// Returns `Some(CliExit::ScraperFailure(..))` when at least one failure
-/// classifies as [`crate::error::ErrorClass::InternalFatal`], with a message
-/// that calls out the internal-fatal count. Returns `None` when every failure
-/// is transient/permanent — the caller then keeps its historical
-/// `CliExit::NetworkError` arm.
-fn scraper_failure_for_internal_fatal(
-    failures: &[(String, crate::error::ScraperError)],
-) -> Option<CliExit> {
-    let internal_fatal = failures
-        .iter()
-        .filter(|(_, e)| e.classify() == crate::error::ErrorClass::InternalFatal)
-        .count();
-    (internal_fatal > 0).then(|| {
-        CliExit::ScraperFailure(format!(
-            "Scraper failure: {internal_fatal} internal error(s) out of {} URLs",
-            failures.len()
-        ))
-    })
-}
-
-/// Typed override — permanent-kind I/O failures → [`CliExit::IoError`]
-/// (74, EX_IOERR), folding [`ScraperError::Io`] failures through the
-/// canonical [`crate::cli::error::permanent_io_error_exit_for`] helper
-/// (matrix rows 21/22). Transient io kinds return `None` and keep the
-/// class-default routing.
+/// Severity routing lives entirely in the canonical mapping functions of
+/// [`crate::cli::error`] (#839): internal-fatal → `ScraperFailure` (3) via
+/// `scraper_failure_exit_when_internal_fatal`, permanent-Io → `IoError`
+/// (74) via the per-item `permanent_io_error_exit_for`, extraction-failed →
+/// `DataFormatError` (65) via `data_format_error_exit_when_extraction_failed`.
+/// This local adapter only dispatches the variant through the canonical
+/// per-item helper, keeping one implementation of the 74 decision.
 fn permanent_io_error_for_failures(
     failures: &[(String, crate::error::ScraperError)],
 ) -> Option<CliExit> {
@@ -771,32 +762,6 @@ fn permanent_io_error_for_failures(
             crate::cli::error::permanent_io_error_exit_for(io_err)
         },
         _ => None,
-    })
-}
-
-/// Fold an all-failed error set into exit 65 when the failures are
-/// extraction failures (#706, Option A — typed variant match).
-///
-/// A run where every URL failed with
-/// [`crate::error::ScraperError::ExtractionFailed`] (JS-shell or near-empty
-/// content) is a DATA-FORMAT error (exit 65), not a network outage (69): the
-/// pages were fetched fine, they just carried no usable content. Typed
-/// `matches!` on the variant — never string-sniffing the reason, and
-/// `ErrorClass` stays untouched (PermanentFatal). Intentionally covers the
-/// poor-fallback 69→65 shift (CE-3): those failures are `ExtractionFailed`
-/// too, and empty output is exactly the data-format case. Returns `None`
-/// when no failure is an extraction failure.
-fn data_format_error_for_extraction_failed(
-    failures: &[(String, crate::error::ScraperError)],
-) -> Option<CliExit> {
-    let extraction_failed = failures
-        .iter()
-        .filter(|(_, e)| matches!(e, crate::error::ScraperError::ExtractionFailed { .. }))
-        .count();
-    (extraction_failed > 0).then(|| {
-        CliExit::DataFormatError(format!(
-            "extracción sin contenido útil: {extraction_failed} URL(s) devolvieron contenido insuficiente o requieren renderizado de JavaScript"
-        ))
     })
 }
 
@@ -928,8 +893,12 @@ async fn prepare_batch_manager(
     tls_emulation: wreq_util::Profile,
     sink: std::sync::Arc<BoundedFileSink>,
 ) -> Result<BatchManager, CliExit> {
-    let crawler_config = build_batch_crawler_config(opts, tls_emulation);
-    let manager = load_batch_manager(opts, crawler_config)
+    let budget = crate::domain::budget::BudgetModel::build(
+        opts.budget_overrides,
+        &crate::domain::budget::detector::SystemDetector,
+    );
+    let crawler_config = build_batch_crawler_config(opts, tls_emulation, &budget);
+    let manager = load_batch_manager(opts, crawler_config, &budget)
         .await?
         .with_content_sink(sink);
 
@@ -941,7 +910,7 @@ async fn prepare_batch_manager(
     info!(
         "Starting batch processing: {} URLs, concurrency={}",
         manager.url_count(),
-        opts.batch.concurrency
+        budget.batch().get()
     );
 
     Ok(manager)
@@ -974,10 +943,15 @@ async fn flush_batch_sink(sink: &BoundedFileSink) -> Result<(), CliExit> {
 async fn build_batch_sink(opts: &CrawlOptions) -> Result<BoundedFileSink, CliExit> {
     let spool_path = resolve_persistence_root(opts).join(".webfang-batch-capture.jsonl");
     // One buffered page per concurrent crawl, plus headroom, keeps the writer
-    // from becoming the bottleneck without unbounding memory.
-    let buffer = opts
-        .batch
-        .concurrency
+    // from becoming the bottleneck without unbounding memory. The bound derives
+    // from the budget model's Operation.batch tier (task 2.5c).
+    let budget = crate::domain::budget::BudgetModel::build(
+        opts.budget_overrides,
+        &crate::domain::budget::detector::SystemDetector,
+    );
+    let buffer = budget
+        .batch()
+        .get()
         .saturating_mul(2)
         .max(crate::application::crawler::bounded_sink::DEFAULT_SINK_BUFFER);
     BoundedFileSink::new(spool_path, buffer).await.map_err(|e| {
@@ -1149,12 +1123,16 @@ fn resolve_batch_tls_emulation(opts: &CrawlOptions) -> Result<wreq_util::Profile
 
 /// Build the crawler config for the batch engine, honoring `--h2-profile`.
 ///
-/// `--delay-ms` and `--concurrency` are propagated here (#653): without them
-/// the batch engine crawled at full speed with its own default concurrency,
+/// `--delay-ms` and the concurrency bound are propagated here (#653): without
+/// them the batch engine crawled at full speed with its own default concurrency,
 /// making both flags silent no-ops on the `--batch` path.
+///
+/// The concurrency bound comes from the run's [`BudgetModel`] Operation.crawl
+/// tier (task 2.5b).
 fn build_batch_crawler_config(
     opts: &CrawlOptions,
     tls_emulation: wreq_util::Profile,
+    budget: &crate::domain::budget::BudgetModel,
 ) -> CrawlerConfig {
     let mut crawler_config = CrawlerConfig::builder(opts.url.clone())
         .max_pages(opts.crawl.max_pages)
@@ -1165,7 +1143,9 @@ fn build_batch_crawler_config(
         .use_sitemap(opts.crawl.use_sitemap)
         .timeout_secs(opts.network.timeout_secs)
         .delay_ms(opts.network.delay_ms)
-        .concurrency(opts.network.concurrency.resolve())
+        // Concurrency bound derives from the run's budget model
+        // Operation.crawl tier (task 2.5b), not from the raw CLI flag.
+        .concurrency(budget.crawl().get())
         .tls_emulation(tls_emulation);
     if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
         crawler_config = crawler_config.sitemap_url(sitemap_url);
@@ -1177,16 +1157,17 @@ fn build_batch_crawler_config(
 async fn load_batch_manager(
     opts: &CrawlOptions,
     crawler_config: CrawlerConfig,
+    budget: &crate::domain::budget::BudgetModel,
 ) -> Result<BatchManager, CliExit> {
     if let Some(ref path) = opts.batch.batch_file {
         info!("Reading URLs from file: {}", path.display());
-        BatchManager::from_file(path, crawler_config, opts.batch.concurrency).map_err(|e| {
+        BatchManager::from_file(path, crawler_config, budget.batch().get()).map_err(|e| {
             error!(error = %e, "Failed to read URLs from file");
             CliExit::IoError(format!("Failed to read URLs from file: {e}"))
         })
     } else {
         info!("Reading URLs from stdin");
-        load_batch_manager_from_stdin(crawler_config, opts.batch.concurrency).await
+        load_batch_manager_from_stdin(crawler_config, budget.batch().get()).await
     }
 }
 
@@ -1234,14 +1215,17 @@ fn batch_exit_code(
         // first, then the permanent-Io override (74), then
         // extraction-failed (65), then the transient fallback (69).
         // The 74 override must precede extraction-failed so an all-fail run
-        // caused by an unwritable output path reports 74 truthfully.
-        if let Some(exit) = scraper_failure_for_internal_fatal(errors) {
+        // caused by an unwritable output path reports 74 truthfully. Each
+        // arm delegates to its canonical mapping function in `cli::error`
+        // (#839) so every exit-code decision has exactly one implementation.
+        if let Some(exit) = crate::cli::error::scraper_failure_exit_when_internal_fatal(errors) {
             return exit;
         }
         if let Some(exit) = permanent_io_error_for_failures(errors) {
             return exit;
         }
-        if let Some(exit) = data_format_error_for_extraction_failed(errors) {
+        if let Some(exit) = crate::cli::error::data_format_error_exit_when_extraction_failed(errors)
+        {
             return exit;
         }
         CliExit::NetworkError("All batch URLs failed".into())
@@ -1309,19 +1293,46 @@ mod tests {
     // ===== build_batch_crawler_config tests (#653) =====
 
     #[test]
-    fn batch_config_propagates_delay_and_concurrency() {
-        // Regression for #653: `--delay-ms` and `--concurrency` were dropped on
-        // the batch path, so per-URL rate limiting never engaged.
+    fn batch_config_propagates_delay_and_model_concurrency() {
+        // Regression for #653: per-URL rate limiting never engaged on the
+        // batch path. The concurrency bound now derives from the run's
+        // BudgetModel crawl tier; an explicit `--concurrency` value reaches
+        // it THROUGH the model (explicit-wins override, design D4).
         let mut opts = CrawlOptions::default();
         opts.network.delay_ms = 750;
-        opts.network.concurrency = crate::ConcurrencyConfig::new(4);
+        // Explicit flag feeds the model override exactly as preflight does.
+        opts.network.concurrency = crate::ConcurrencyConfig::new(2);
+        if let Some(explicit) = opts.network.concurrency.get() {
+            opts.budget_overrides.crawl =
+                crate::domain::budget::tiers::CrawlConcurrency::new(explicit).ok();
+        }
+        let budget = crate::domain::budget::BudgetModel::build(
+            opts.budget_overrides,
+            &crate::domain::budget::detector::SystemDetector,
+        );
 
-        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145);
+        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145, &budget);
 
         assert_eq!(config.delay_ms, 750, "--delay-ms must reach the crawler");
         assert_eq!(
-            config.concurrency, 4,
-            "--concurrency must reach the crawler"
+            config.concurrency, 2,
+            "explicit --concurrency must reach the crawler through the model"
+        );
+    }
+
+    #[test]
+    fn batch_config_auto_concurrency_uses_model_tier() {
+        // With no explicit flag, the model's auto-derived crawl tier is used.
+        let opts = CrawlOptions::default();
+        assert!(opts.network.concurrency.is_auto());
+        let budget = crate::domain::budget::BudgetModel::for_test_preset();
+
+        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145, &budget);
+
+        assert_eq!(
+            config.concurrency,
+            budget.crawl().get(),
+            "auto mode must use the model's derived Operation.crawl tier"
         );
     }
 
@@ -1330,7 +1341,11 @@ mod tests {
         let mut opts = CrawlOptions::default();
         opts.network.delay_ms = 0;
 
-        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145);
+        let config = build_batch_crawler_config(
+            &opts,
+            wreq_util::Profile::Chrome145,
+            &crate::domain::budget::BudgetModel::for_test_preset(),
+        );
 
         assert_eq!(config.delay_ms, 0);
     }

@@ -117,13 +117,31 @@ impl AiModel {
         }
     }
 
-    /// Resolve from environment variable, defaulting to Granite-97M
-    #[must_use]
-    pub fn from_env_or_default() -> Self {
-        std::env::var(MODEL_SELECTION_ENV)
-            .ok()
-            .and_then(|s| AiModel::parse(&s))
-            .unwrap_or(AiModel::Granite97M)
+    /// Resolve the AI model variant from the `MODEL_SELECTION_ENV` variable.
+    ///
+    /// Distinguishes an unset variable (user made no choice → `Ok(None)`,
+    /// callers apply their own silent default) from a set-but-unrecognized
+    /// value (the user's choice cannot be discarded silently → loud `Err`,
+    /// #874).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the invalid value and listing the valid model
+    /// IDs (`granite-97m`, `granite-311m`) when the variable is present but
+    /// does not parse.
+    pub fn from_env() -> Result<Option<Self>, String> {
+        Self::resolve(std::env::var(MODEL_SELECTION_ENV).ok().as_deref())
+    }
+
+    /// Pure core of [`Self::from_env`], taking the raw env value so tests stay
+    /// race-free under parallel execution (no real env mutation).
+    fn resolve(env_value: Option<&str>) -> Result<Option<Self>, String> {
+        match env_value {
+            None => Ok(None),
+            Some(value) => Self::parse(value).map(Some).ok_or_else(|| {
+                format!("Unknown AI model '{value}'. Valid values: granite-97m, granite-311m")
+            }),
+        }
     }
 }
 
@@ -223,14 +241,63 @@ mod tests {
     }
 
     #[test]
-    fn test_ai_model_from_env_or_default() {
-        // Without AI_MODEL_ID set, returns default Granite-97M.
-        // The env var may or may not be set in the test environment,
-        // so we use from_env_or_default which never fails.
-        let model = AiModel::from_env_or_default();
-        assert!(
-            model == AiModel::Granite97M || model == AiModel::Granite311M,
-            "from_env_or_default() should return a valid model, got {model:?}"
+    fn test_resolve_unset_env_returns_none() {
+        // Unset variable: user made no choice -> caller applies its own
+        // silent default. No error.
+        assert_eq!(AiModel::resolve(None), Ok(None));
+    }
+
+    #[test]
+    fn test_resolve_set_valid_env_returns_model() {
+        assert_eq!(
+            AiModel::resolve(Some("granite-311m")),
+            Ok(Some(AiModel::Granite311M))
         );
+        assert_eq!(
+            AiModel::resolve(Some("  GRANITE-97M ")),
+            Ok(Some(AiModel::Granite97M))
+        );
+    }
+
+    #[test]
+    fn test_resolve_set_invalid_env_is_loud_error() {
+        // Set-but-unrecognized (#874): the user's choice cannot be
+        // discarded silently -> loud error listing the valid values.
+        let err = AiModel::resolve(Some("not-a-model"))
+            .expect_err("set-but-invalid env must be an error, not a silent default");
+        assert!(
+            err.contains("not-a-model"),
+            "error must name the bad value, got: {err}"
+        );
+        assert!(
+            err.contains("granite-97m") && err.contains("granite-311m"),
+            "error must list valid values, got: {err}"
+        );
+
+        // Empty value counts as set-but-invalid, not as unset.
+        let err = AiModel::resolve(Some(""))
+            .expect_err("empty env value must be an error, not a silent default");
+        assert!(
+            err.contains("granite-97m") && err.contains("granite-311m"),
+            "error must list valid values, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_from_env_never_panics_and_defaults_silently_when_unset() {
+        // Wrapper over `resolve`: whatever the environment contains, this
+        // must return a Result, never panic nor silently swallow a bad value.
+        // We only assert the shape here; value-specific behavior is covered
+        // by the pure `resolve` tests above (env mutation is unsafe/racy in
+        // parallel test runs).
+        match std::env::var(MODEL_SELECTION_ENV) {
+            Ok(v) => {
+                let expected = AiModel::parse(&v).map(Some).ok_or_else(|| {
+                    format!("Unknown AI model '{v}'. Valid values: granite-97m, granite-311m")
+                });
+                assert_eq!(AiModel::from_env(), expected);
+            },
+            Err(_) => assert_eq!(AiModel::from_env(), Ok(None)),
+        }
     }
 }

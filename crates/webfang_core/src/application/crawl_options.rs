@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use url::Url;
 
+use crate::domain::budget::BudgetOverrides;
 use crate::domain::config::{ConcurrencyConfig, ExportFormat, OutputFormat, PipelineOutputFormat};
 use crate::domain::JsStrategy;
 use crate::infrastructure::autotuning::ElasticOverrides;
@@ -79,21 +80,27 @@ pub struct CrawlOptions {
     pub batch: BatchOptions,
     /// Asset naming strategy: "hash", "slug", or "content-disposition".
     pub asset_naming: String,
-    /// Maximum concurrent asset downloads per page.
-    pub download_concurrency: usize,
+    /// Maximum concurrent asset downloads per page (explicit operator
+    /// value; `None` = derived from the budget model).
+    pub download_concurrency: Option<usize>,
     /// AI semantic-cleaning settings (from CLI AI flags).
     pub ai_config: AiConfig,
+    /// Operator-level budget overrides (design D4). Feeds
+    /// `BudgetModel::build` at engine/orchestrator entry; the default
+    /// (`rate_burst: None`) reproduces today's derived numbers exactly.
+    pub budget_overrides: BudgetOverrides,
 }
 
 /// Batch processing settings.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BatchOptions {
     /// Enable batch mode — read URLs from stdin or file.
     pub enabled: bool,
     /// Path to a file containing URLs (one per line). None = read from stdin.
     pub batch_file: Option<PathBuf>,
-    /// Maximum concurrent URLs in batch mode.
-    pub concurrency: usize,
+    /// Maximum concurrent URLs in batch mode (explicit operator value;
+    /// `None` = derived from the budget model).
+    pub concurrency: Option<usize>,
 }
 
 // ============================================================================
@@ -336,18 +343,9 @@ impl Default for CrawlOptions {
             pipeline_output_format: PipelineOutputFormat::default(),
             batch: BatchOptions::default(),
             asset_naming: "hash".to_string(),
-            download_concurrency: 3,
+            download_concurrency: None,
             ai_config: AiConfig::default(),
-        }
-    }
-}
-
-impl Default for BatchOptions {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            batch_file: None,
-            concurrency: 5,
+            budget_overrides: crate::domain::budget::BudgetOverrides::default(),
         }
     }
 }
