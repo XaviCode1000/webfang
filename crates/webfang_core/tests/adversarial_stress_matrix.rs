@@ -237,3 +237,75 @@ fn domain_contention_holds_slot_limits_and_independence() {
     // After the storm every session reported success, so acquisition works.
     assert!(banned.is_some(), "healthy sessions must remain acquirable");
 }
+
+// ===== Scenario 3: mid-flight cancellation (#509) =====
+
+use tokio_util::sync::CancellationToken;
+use webfang_core::infrastructure::export::jsonl_writer::JsonlSession;
+
+/// Cancellation fired while permits are held and more are pending: every
+/// pending acquire resolves within the shutdown-grace bound, held permits
+/// return fully when their holders finish, and JSONL written before the
+/// cancel remains parseable (partial output is valid output).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn midflight_cancellation_bounded_grace_and_no_permit_leak() {
+    const GRACE: Duration = Duration::from_secs(10);
+    let token = CancellationToken::new();
+    let governor = Arc::new(ResourceGovernor::with_max_instances(2, token.clone()));
+
+    // Hold both permits.
+    let h1 = governor.acquire().await.expect("permit 1");
+    let h2 = governor.acquire().await.expect("permit 2");
+    assert_eq!(governor.available_permits(), 0);
+
+    // Pending acquires queue behind the holders.
+    let mut pending = Vec::new();
+    for _ in 0..10 {
+        let gov = Arc::clone(&governor);
+        pending.push(tokio::spawn(async move { gov.acquire().await }));
+    }
+    tokio::task::yield_now().await;
+
+    // Fire cancellation MID-FLIGHT.
+    token.cancel();
+
+    let joined = tokio::time::timeout(GRACE, futures::future::join_all(pending))
+        .await
+        .expect("pending acquires must resolve within the shutdown grace");
+    let cancelled_count = joined
+        .iter()
+        .filter(|r| matches!(r, Ok(Err(webfang_core::infrastructure::downloader::DownloadError::Cancelled))))
+        .count();
+    assert_eq!(
+        cancelled_count, 10,
+        "every pending acquire must observe the cancel"
+    );
+
+    // Holders still release cleanly; no permit leaks past cancellation.
+    drop(h1);
+    drop(h2);
+    tokio::task::yield_now().await;
+    assert_eq!(
+        governor.available_permits(),
+        2,
+        "held permits must return after cancellation"
+    );
+
+    // Partial JSONL written before a cancel stays valid.
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let path = dir.path().join("partial.jsonl");
+    let (session, _hash_index) = JsonlSession::open(&path).expect("session opens");
+    for item in 0..25 {
+        let line = format!(r#"{{"item":{item},"pre_cancel":true}}"#);
+        let mut bytes = line.into_bytes();
+        bytes.push(b'\n');
+        session.append(&bytes).await.expect("append accepted");
+    }
+    session.close().await.expect("clean close after cancel");
+    let content = std::fs::read_to_string(&path).expect("output readable");
+    assert_eq!(content.lines().count(), 25);
+    for line in content.lines() {
+        serde_json::from_str::<serde_json::Value>(line)
+            .unwrap_or_else(|e| panic!("partial output corrupt: {e}"));
+    }
+}
