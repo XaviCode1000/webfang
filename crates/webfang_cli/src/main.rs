@@ -74,7 +74,7 @@ fn stdin_is_tty() -> bool {
 async fn run_unified_tui() -> Result<Option<serde_json::Value>, CliExit> {
     // Check if stdout is a TTY
     if !io::stdout().is_terminal() {
-        tracing::error!("--tui requiere un terminal interactivo");
+        tracing::error!("--tui requires an interactive terminal");
         return Err(CliExit::UsageError(
             "--tui requiere un terminal interactivo".into(),
         ));
@@ -86,7 +86,7 @@ async fn run_unified_tui() -> Result<Option<serde_json::Value>, CliExit> {
     let mut config_app = match App::new(AppMode::Config) {
         Ok(app) => app,
         Err(e) => {
-            tracing::error!(error = %e, "Error al crear la aplicación TUI");
+            tracing::error!(error = %e, "Failed to create TUI application");
             return Err(CliExit::UsageError(format!(
                 "Error creando la aplicación: {e}"
             )));
@@ -120,7 +120,7 @@ async fn run_unified_tui() -> Result<Option<serde_json::Value>, CliExit> {
         Ok(AppResult::None) => return Ok(None), // User cancelled
         Ok(_) => return Ok(None),
         Err(e) => {
-            tracing::error!(error = %e, "Error en TUI de configuración");
+            tracing::error!(error = %e, "Error in configuration TUI");
             return Ok(None);
         },
     };
@@ -153,12 +153,12 @@ async fn run_url_selection_phase(
         .get("url")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            tracing::error!("URL base faltante en configuración TUI");
+            tracing::error!("Missing base URL in TUI configuration");
             CliExit::UsageError("URL base es obligatoria en la TUI".into())
         })?;
 
     let seed_url = url::Url::parse(seed_url_str).map_err(|e| {
-        tracing::error!(error = %e, "URL base inválida");
+        tracing::error!(error = %e, "Invalid base URL");
         CliExit::UsageError(format!("URL base inválida: {e}"))
     })?;
 
@@ -168,7 +168,7 @@ async fn run_url_selection_phase(
     let discovered = discover_urls_for_tui(seed_url_str, &crawler_config)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, "Fallo en descubrimiento de URLs");
+            tracing::error!(error = %e, "URL discovery failed");
             CliExit::UsageError(format!("Fallo en descubrimiento: {e}"))
         })?;
 
@@ -180,7 +180,7 @@ async fn run_url_selection_phase(
     }
 
     let selected = run_selector(&discovered).await.map_err(|e| {
-        tracing::error!(error = %e, "Error en selector de URLs");
+        tracing::error!(error = %e, "Error in URL selector");
         CliExit::UsageError(format!("Error en selector: {e}"))
     })?;
 
@@ -555,7 +555,7 @@ fn apply_selected_urls(args: &mut Args, config_values: &serde_json::Value) {
             },
             Err(e) => {
                 let msg = format!("{e:?}");
-                tracing::error!(error = %msg, "Error creando batch temporal desde TUI");
+                tracing::error!(error = %msg, "Error creating temporary batch from TUI");
             },
         }
     }
