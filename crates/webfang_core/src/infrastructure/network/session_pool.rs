@@ -9,6 +9,24 @@
 //! - **Exponential backoff** — `base_delay * 2^min(failures, max_exp)`, capped at `max_delay`
 //! - **TTL eviction** — stale sessions removed on `acquire()`, no background thread
 //! - **Zero-cost abstraction** — `impl SessionManager` not `Box<dyn SessionManager>`
+//!
+//! # D6 lock-across-await audit (task 2.3, change stabilization-concurrency-budget)
+//!
+//! Functions rewired by commit de54342a (budget-derived pool size):
+//!
+//! | Function | `.await` points | Guard discipline | Verdict |
+//! |---|---|---|---|
+//! | `SessionPoolConfig::default` | none (sync fn) | pure value construction, no locks | PASS |
+//! | `DomainSessionPool::acquire` | none (sync `SessionManager` method) | DashMap `RefMut` from `entry().or_insert_with(..)` is explicitly `drop(sessions)`-ped BEFORE any re-entrant map access (the RefMut-dropped-BEFORE-gauge ordering invariant, see comment above the drop in `acquire`) | PASS |
+//!
+//! Cross-check: the crate's only `tokio::sync::Mutex` guards live in
+//! `infrastructure/crawler/url_queue.rs` inside documented sync-only sections
+//! (invariant AL-2); this module never spans an await while holding a guard.
+//!
+//! Enforcement: `#![deny(clippy::await_holding_lock)]` below fails the build if
+//! a future edit ever holds a `std` lock guard across an `.await` in this module.
+
+#![deny(clippy::await_holding_lock)]
 
 use std::fmt;
 use std::sync::Arc;
