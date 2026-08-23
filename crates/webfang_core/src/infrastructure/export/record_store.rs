@@ -70,6 +70,50 @@ pub struct RawRecord {
     pub updated_at: i64,
 }
 
+impl RawRecord {
+    /// Validated constructor for a fresh DISCOVERED lifecycle (#876).
+    ///
+    /// This is the choke point every writer of new records MUST pass through:
+    /// an empty or whitespace-only URL is structurally meaningless identity
+    /// and is rejected with [`RecordStoreError::InvalidRecord`] instead of
+    /// ever becoming retrievable state. Fields default to the honest fresh
+    /// shape (`attempts = 0`, no hash, no output location, no error); callers
+    /// mutate from there via the typestate lifecycle.
+    ///
+    /// # Errors
+    ///
+    /// [`RecordStoreError::InvalidRecord`] when `url` or `canonical_url` is
+    /// empty after trimming.
+    pub fn new_discovered(
+        url: &str,
+        canonical_url: &str,
+        run_id: &str,
+        updated_at: i64,
+    ) -> Result<Self, RecordStoreError> {
+        if url.trim().is_empty() {
+            return Err(RecordStoreError::InvalidRecord {
+                reason: "url must not be empty",
+            });
+        }
+        if canonical_url.trim().is_empty() {
+            return Err(RecordStoreError::InvalidRecord {
+                reason: "canonical_url must not be empty",
+            });
+        }
+        Ok(Self {
+            url: url.to_string(),
+            canonical_url: canonical_url.to_string(),
+            run_id: run_id.to_string(),
+            content_hash: None,
+            attempts: 0,
+            status: PageStatus::Discovered,
+            last_error: None,
+            output_location: None,
+            updated_at,
+        })
+    }
+}
+
 impl crate::domain::page_state::PersistedRecord for RawRecord {
     fn status(&self) -> PageStatus {
         self.status
@@ -146,6 +190,15 @@ pub enum RecordStoreError {
         /// Underlying OS error.
         #[source]
         source: std::io::Error,
+    },
+    /// A writer attempted to create a record whose identity is structurally
+    /// meaningless (#876): an empty URL can never address a fetched page, so
+    /// it is rejected at the domain boundary instead of becoming persisted
+    /// state (fail-closed, same class as unparseable legacy input).
+    #[error("invalid record rejected at domain boundary: {reason}")]
+    InvalidRecord {
+        /// The invariant that failed (English, log-oriented).
+        reason: &'static str,
     },
 }
 
@@ -454,6 +507,14 @@ impl RecordStore {
                 tracing::warn!(error = %source, file = %path.display(), "record store backup failure; starting FRESH per explicit policy");
                 DomainRecords::new()
             },
+            // Unreachable today: load() only surfaces Io/Corrupt/
+            // UnsupportedVersion/Backup; InvalidRecord is produced by the
+            // writer-side constructor. Matched exhaustively so a future
+            // error variant can never silently fall through (fail-closed).
+            Err(err @ RecordStoreError::InvalidRecord { .. }) => {
+                tracing::warn!(error = %err, "record store rejected an invalid record; starting FRESH per explicit policy");
+                DomainRecords::new()
+            },
         }
     }
 
@@ -480,6 +541,12 @@ impl RecordStore {
 
     /// Returns the name of the first violated invariant, if any.
     fn invariant_violation(record: &RawRecord) -> Option<&'static str> {
+        // #876: an empty URL is structurally meaningless identity; such a
+        // record can never address a page and is quarantined like any
+        // other impossible state.
+        if record.url.trim().is_empty() {
+            return Some("url must not be empty");
+        }
         // v1-migrated records predate hash tracking by design; their
         // Committed status is exempt from the output/hash requirement.
         let migrated = record.run_id == MIGRATED_V1_RUN_ID;
@@ -538,6 +605,18 @@ impl RecordStore {
 
         let mut records = DomainRecords::new();
         for url in urls {
+            // #876: an empty legacy URL is malformed input of the same
+            // class as other per-record invariant violations — quarantined
+            // (dropped + warned), never promoted to Committed state. The
+            // whole-file Corrupt policy stays reserved for unparseable
+            // structure, so one bad entry never discards good neighbors.
+            if url.trim().is_empty() {
+                tracing::warn!(
+                    file = %path.display(),
+                    "v1 migration: dropping empty-string URL from legacy processed_urls (malformed legacy entry)"
+                );
+                continue;
+            }
             records.insert(
                 url.clone(),
                 RawRecord {
@@ -721,6 +800,42 @@ mod tests {
     }
 
     #[test]
+    fn new_discovered_rejects_structurally_meaningless_identity() {
+        for (url, canonical) in [
+            ("", "https://x.test/"),
+            ("https://x.test/", ""),
+            ("   ", "https://x.test/"),
+        ] {
+            let err = RawRecord::new_discovered(url, canonical, "run", 0)
+                .expect_err("empty identity must be rejected at the domain boundary");
+            assert!(
+                matches!(err, RecordStoreError::InvalidRecord { .. }),
+                "typed InvalidRecord expected, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn new_discovered_yields_honest_fresh_shape_for_valid_url() {
+        let record = RawRecord::new_discovered(
+            "https://fresh.test/a",
+            "https://fresh.test/a",
+            "run-1",
+            1_760_000_000_000,
+        )
+        .expect("valid URL constructs");
+        assert_eq!(record.url, "https://fresh.test/a");
+        assert_eq!(record.canonical_url, "https://fresh.test/a");
+        assert_eq!(record.run_id, "run-1");
+        assert_eq!(record.status, PageStatus::Discovered);
+        assert_eq!(record.attempts, 0);
+        assert_eq!(record.content_hash, None);
+        assert_eq!(record.last_error, None);
+        assert_eq!(record.output_location, None);
+        assert_eq!(record.updated_at, 1_760_000_000_000);
+    }
+
+    #[test]
     fn derived_total_exported_counts_only_committed() {
         use crate::domain::page_state::PageStatus;
         let mut records = DomainRecords::new();
@@ -847,6 +962,47 @@ mod tests {
         assert_eq!(value["version"], 2, "live file upgraded in place");
     }
 
+    /// #876: an empty-string URL in legacy state is malformed input of the
+    /// same class as a per-record invariant violation — quarantined with a
+    /// warning, never promoted to Committed, and never at the cost of its
+    /// well-formed neighbors (file-level Corrupt stays reserved for
+    /// unparseable structure).
+    #[test]
+    fn v1_migration_drops_empty_urls_but_keeps_neighbors() {
+        let dir = tempdir().unwrap();
+        let store = RecordStore::new("empty.test").with_state_dir(dir.path().to_path_buf());
+        let legacy = r#"{"version":1,"domain":"empty.test","processed_urls":["","   ","https://empty.test/good"],"last_export":"2026-08-21T12:00:00Z","total_exported":3}"#.to_string();
+        fs::write(store.state_path(), legacy).unwrap();
+
+        let loaded = store
+            .load()
+            .expect("migration must not fail the whole file");
+
+        assert_eq!(loaded.len(), 1, "only the well-formed neighbor survives");
+        assert!(!loaded.contains_key(""), "empty key must not become state");
+        assert!(!loaded.contains_key("   "));
+        let good = &loaded["https://empty.test/good"];
+        assert_eq!(good.status, PageStatus::Committed);
+        assert_eq!(good.run_id, MIGRATED_V1_RUN_ID);
+    }
+
+    /// #876: the validated constructor is the choke point every new-record
+    /// writer passes through — structurally meaningless identity must be
+    /// rejected, not persisted as retrievable state.
+    #[test]
+    fn new_discovered_rejects_empty_and_whitespace_identity() {
+        for bad in ["", "   "] {
+            let err = RawRecord::new_discovered(bad, "https://x.test/a", "run", 0)
+                .expect_err("empty url must be rejected");
+            assert!(matches!(err, RecordStoreError::InvalidRecord { .. }));
+            let err = RawRecord::new_discovered("https://x.test/a", bad, "run", 0)
+                .expect_err("empty canonical_url must be rejected");
+            assert!(matches!(err, RecordStoreError::InvalidRecord { .. }));
+        }
+        RawRecord::new_discovered("https://x.test/a", "https://x.test/a", "run", 0)
+            .expect("valid identity must construct");
+    }
+
     #[test]
     fn migrated_records_survive_invariant_validation_despite_null_hash() {
         // Migrated records are Committed with content_hash/output_location
@@ -900,6 +1056,73 @@ mod tests {
             loaded.is_empty(),
             "invariant-violating record is quarantined"
         );
+    }
+
+    // --- #876: empty-string URL is structurally meaningless identity ----
+
+    #[test]
+    fn v1_empty_string_url_is_quarantined_never_committed() {
+        let dir = tempdir().unwrap();
+        let store = RecordStore::new("empty-v1.test").with_state_dir(dir.path().to_path_buf());
+        let legacy = r#"{"version":1,"domain":"empty-v1.test","processed_urls":["","https://empty-v1.test/ok"],"last_export":"2026-08-21T12:00:00Z","total_exported":2}"#;
+        fs::write(store.state_path(), legacy).unwrap();
+
+        let loaded = store
+            .load()
+            .expect("empty legacy URL is a per-record violation, not file corruption");
+
+        assert_eq!(
+            loaded.len(),
+            1,
+            "only the valid URL may become a migrated record"
+        );
+        assert!(
+            !loaded.contains_key(""),
+            "an empty URL must never be retrievable committed state"
+        );
+        assert!(loaded.contains_key("https://empty-v1.test/ok"));
+    }
+
+    #[test]
+    fn persisted_empty_url_record_is_quarantined_on_load() {
+        let (_dir, store) = temp_store("empty-v2.test");
+        let mut bad = full_record("");
+        bad.status = PageStatus::Committed;
+        // Empty URL must be the ONLY violation here: satisfy every other
+        // committed invariant so this test isolates the #876 gap.
+        bad.last_error = None;
+        let good = full_record("https://empty-v2.test/good");
+        let mut records = DomainRecords::new();
+        records.insert(bad.url.clone(), bad);
+        records.insert(good.url.clone(), good);
+        store
+            .save(&records)
+            .expect("save succeeds; rejection happens at the load boundary");
+
+        let loaded = store
+            .load()
+            .expect("load never errors on per-record violations");
+
+        assert!(
+            !loaded.contains_key(""),
+            "an empty-URL record must be quarantined on load"
+        );
+        assert_eq!(loaded.len(), 1, "the valid neighbor survives quarantine");
+    }
+
+    #[test]
+    fn v1_whitespace_only_url_is_quarantined_never_committed() {
+        let dir = tempdir().unwrap();
+        let store = RecordStore::new("ws-v1.test").with_state_dir(dir.path().to_path_buf());
+        let legacy = r#"{"version":1,"domain":"ws-v1.test","processed_urls":["   ","https://ws-v1.test/ok"],"last_export":"2026-08-21T12:00:00Z","total_exported":2}"#;
+        fs::write(store.state_path(), legacy).unwrap();
+
+        let loaded = store
+            .load()
+            .expect("whitespace-only URL is a per-record violation, not file corruption");
+
+        assert_eq!(loaded.len(), 1, "only the valid URL survives");
+        assert!(!loaded.contains_key("   "));
     }
 
     #[test]
