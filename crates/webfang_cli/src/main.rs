@@ -497,27 +497,6 @@ async fn handle_tui_mode(args: &mut Args) -> Result<Option<TuiOverrides>, CliExi
             },
             Err(e) => return Err(e),
         }
-    } else if args.tui.config_tui || args.tui.interactive {
-        if args.tui.config_tui {
-            eprintln!(
-                "Warning: --config-tui is deprecated, use --tui instead. Will be removed in v0.6.0"
-            );
-        } else {
-            eprintln!("Warning: --interactive is deprecated, use --tui instead. Will be removed in v0.6.0");
-        }
-        let tui_result = run_unified_tui().await;
-        match tui_result {
-            Ok(Some(config_values)) => {
-                apply_selected_urls(args, &config_values);
-                let mut filtered = config_values.clone();
-                if let serde_json::Value::Object(ref mut map) = filtered {
-                    map.remove("selected_urls");
-                }
-                return Ok(Some(TuiOverrides::from_json(filtered)));
-            },
-            Ok(None) => return Err(CliExit::Success),
-            Err(e) => return Err(e),
-        }
     }
     Ok(None)
 }
@@ -580,7 +559,7 @@ fn write_batch_file(path: &std::path::Path, urls: &[String]) -> Result<(), CliEx
 /// When `ui` is OFF, any TUI flag triggers a graceful Spanish error (spec S2.2).
 #[cfg(not(feature = "ui"))]
 async fn handle_tui_mode(args: &mut Args) -> Result<Option<TuiOverrides>, CliExit> {
-    if args.tui.tui || args.tui.config_tui || args.tui.interactive {
+    if args.tui.tui {
         eprintln!("Error: La interfaz TUI no está disponible en esta compilación.");
         eprintln!();
         eprintln!("Para habilitarla, compile con el feature 'ui' del crate CLI");
@@ -868,7 +847,18 @@ async fn build_ai_cleaner(
 
     // Resolve model variant: CLI flag takes precedence over AI_MODEL_ID env var
     let model_variant = if opts.ai_config.model.is_empty() {
-        webfang_ai::AiModel::from_env_or_default()
+        // Flag absent: honor AI_MODEL_ID if set, failing loudly when its
+        // value is not a valid model ID (#874). Unset → silent Granite-97M
+        // default (the user made no choice).
+        match webfang_ai::AiModel::from_env() {
+            Ok(Some(variant)) => variant,
+            Ok(None) => webfang_ai::AiModel::default(),
+            Err(e) => {
+                return Err(CliExit::UsageError(format!(
+                    "Modelo AI inválido para la variable de entorno AI_MODEL_ID: {e}"
+                )));
+            },
+        }
     } else {
         match opts.ai_config.model.parse::<webfang_ai::AiModel>() {
             Ok(variant) => variant,

@@ -176,7 +176,9 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
                 single_page: args.crawler.single_page,
                 include_patterns: args.crawler.include_patterns,
                 exclude_patterns: args.crawler.exclude_patterns,
-                interactive: args.tui.interactive,
+                // No CLI flag sets this anymore (#880 removed --interactive);
+                // internal knob, defaults to false.
+                interactive: false,
                 resume: args.crawler.resume,
                 state_dir: args.crawler.state_dir,
                 use_sitemap: args.crawler.use_sitemap,
