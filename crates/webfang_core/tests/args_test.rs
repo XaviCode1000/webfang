@@ -139,7 +139,7 @@ fn args_with_all_fields_set() -> Args {
             js_strategy: webfang_core::domain::JsStrategy::Hybrid,
             obscura_binary: "/usr/local/bin/obscura".into(),
             asset_naming: "slug".into(),
-            download_concurrency: 5,
+            download_concurrency: Some(5),
             ..Default::default()
         },
 
@@ -154,7 +154,7 @@ fn args_with_all_fields_set() -> Args {
             output_vectors: None,
             batch: true,
             batch_file: Some(std::path::PathBuf::from("/tmp/urls.txt")),
-            batch_concurrency: 8,
+            batch_concurrency: Some(8),
             pipeline: true,
             pipeline_output: webfang_core::domain::config::PipelineOutputFormat::None,
         },
@@ -276,7 +276,7 @@ fn assert_full_parity_item_pipeline(opts: &webfang_core::application::crawl_opti
 
 fn assert_full_parity_asset_naming(opts: &webfang_core::application::crawl_options::CrawlOptions) {
     assert_eq!(opts.asset_naming, "slug");
-    assert_eq!(opts.download_concurrency, 5);
+    assert_eq!(opts.download_concurrency, Some(5));
 }
 
 #[test]
@@ -679,7 +679,7 @@ proptest! {
                 js_strategy: webfang_core::domain::JsStrategy::Static,
                 obscura_binary: "obscura".into(),
                 asset_naming: "hash".into(),
-                download_concurrency: 3,
+                download_concurrency: Some(3),
                 rate_limit_burst: None,
                 download_assets: false,
                 trace_file: None,
@@ -787,7 +787,7 @@ proptest! {
                 js_strategy: webfang_core::domain::JsStrategy::Static,
                 obscura_binary: "obscura".into(),
                 asset_naming: "hash".into(),
-                download_concurrency: 3,
+                download_concurrency: Some(3),
                 rate_limit_burst: None,
                 download_assets: false,
                 trace_file: None,
@@ -878,7 +878,7 @@ proptest! {
                 js_strategy: webfang_core::domain::JsStrategy::Static,
                 obscura_binary: "obscura".into(),
                 asset_naming: "hash".into(),
-                download_concurrency: 3,
+                download_concurrency: Some(3),
                 rate_limit_burst: None,
                 download_assets: false,
                 trace_file: None,
@@ -963,7 +963,7 @@ proptest! {
                 js_strategy: webfang_core::domain::JsStrategy::Static,
                 obscura_binary: "obscura".into(),
                 asset_naming: "hash".into(),
-                download_concurrency: 3,
+                download_concurrency: Some(3),
                 rate_limit_burst: None,
                 download_assets: false,
                 trace_file: None,
@@ -1052,7 +1052,7 @@ proptest! {
                 js_strategy: webfang_core::domain::JsStrategy::Static,
                 obscura_binary: "obscura".into(),
                 asset_naming: "hash".into(),
-                download_concurrency: 3,
+                download_concurrency: Some(3),
                 rate_limit_burst: None,
                 download_assets: false,
                 trace_file: None,
@@ -1133,7 +1133,7 @@ proptest! {
                 js_strategy: webfang_core::domain::JsStrategy::Static,
                 obscura_binary: "obscura".into(),
                 asset_naming: "hash".into(),
-                download_concurrency: 3,
+                download_concurrency: Some(3),
                 rate_limit_burst: None,
                 download_assets: false,
                 trace_file: None,
@@ -1212,7 +1212,7 @@ proptest! {
                 js_strategy: webfang_core::domain::JsStrategy::Static,
                 obscura_binary: "obscura".into(),
                 asset_naming: "hash".into(),
-                download_concurrency: 3,
+                download_concurrency: Some(3),
                 rate_limit_burst: None,
                 download_assets: false,
                 trace_file: None,

@@ -1,7 +1,7 @@
 //! Hardware autotuning for the elastic ingestion pipeline (Issue #51).
 //!
 //! Derives pipeline sizing defaults from the host hardware:
-//! - CPU cores via [`num_cpus::get()`] (Rayon pool / DB pool fan-out).
+//! - CPU cores via the canonical budget detector seam (Rayon pool / DB pool fan-out).
 //! - RAM budget via [`sys_info::mem_info()`] × 0.7 (byte-weighted semaphore).
 //!
 //! Configuration resolution priority (frozen design decision #12):
@@ -51,12 +51,15 @@ pub(crate) const ENV_DB_PATH: &str = "WEBFANG_DB_PATH";
 // Hardware detection primitives
 // ============================================================================
 
-/// Detect the number of available CPU cores via [`num_cpus::get()`].
+/// Detect the number of available CPU cores via the canonical detector seam
+/// (Q2 UNIFY NOW — identical source to every other subsystem's "auto").
 ///
 /// Falls back to [`FALLBACK_CPU_CORES`] when the platform reports 0.
 #[must_use]
 pub fn detect_cpu_cores() -> usize {
-    let n = num_cpus::get();
+    // Canonical detector seam (Q2 UNIFY NOW): one hardware source process-
+    // wide, identical to every other subsystem's "auto".
+    let n = crate::domain::budget::detector::system_parallelism().get();
     if n == 0 {
         FALLBACK_CPU_CORES
     } else {
