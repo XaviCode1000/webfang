@@ -436,3 +436,78 @@ async fn mixed_tiers_isolate_operation_from_asset_budgets() {
         "Asset permits fully restored"
     );
 }
+
+// ===== Scenario 6: JSONL fan-in corruption-proof (SC4 exact counts) =====
+
+use sha2::{Digest, Sha256};
+
+fn sha256_hex(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// The SC4 proof under a saturated budget shape: 100 tasks × 10 items share
+/// ONE writer session concurrently. After close the file holds EXACTLY 1000
+/// valid JSON lines — zero corrupt, truncated or interleaved — and every
+/// line's embedded sha256 matches its recomputed payload hash.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn fan_in_one_hundred_by_ten_is_sha256_corruption_proof() {
+    const TASKS: u32 = 100;
+    const ITEMS_PER_TASK: u32 = 10;
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let path = dir.path().join("sc4_matrix.jsonl");
+    let (session, _hash_index) = JsonlSession::open(&path).expect("session opens");
+
+    let mut handles = Vec::with_capacity(TASKS as usize);
+    for task in 0..TASKS {
+        let shared = session.clone();
+        handles.push(tokio::spawn(async move {
+            for item in 0..ITEMS_PER_TASK {
+                let payload = format!("task-{task}-item-{item}");
+                let line = format!(
+                    r#"{{"task":{task},"item":{item},"payload":"{payload}","checksum_sha256":"{}"}}"#,
+                    sha256_hex(&payload)
+                );
+                let mut bytes = line.into_bytes();
+                bytes.push(b'\n');
+                shared.append(&bytes).await.expect("append accepted");
+            }
+        }));
+    }
+    for handle in handles {
+        handle.await.expect("fan-in task joins");
+    }
+    session.close().await.expect("clean shutdown");
+
+    let content = std::fs::read_to_string(&path).expect("output readable");
+    assert!(
+        content.ends_with('\n'),
+        "file must end on a newline boundary"
+    );
+
+    let mut count = 0usize;
+    for line in content.lines() {
+        let value: serde_json::Value =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("corrupt line {count}: {e}"));
+        let payload = value["payload"]
+            .as_str()
+            .unwrap_or_else(|| panic!("line {count} lost its payload"));
+        let checksum = value["checksum_sha256"]
+            .as_str()
+            .unwrap_or_else(|| panic!("line {count} lost its checksum"));
+        assert_eq!(
+            checksum,
+            sha256_hex(payload),
+            "line {count}: interleaved or corrupted bytes detected"
+        );
+        count += 1;
+    }
+    assert_eq!(
+        count,
+        (TASKS * ITEMS_PER_TASK) as usize,
+        "exactly {} valid lines required",
+        TASKS * ITEMS_PER_TASK
+    );
+}
