@@ -156,11 +156,11 @@ impl ResourceDownloader {
         )
         .await
         .map_err(|_| {
-            tracing::error!(%url, reason = "global_timeout", "descarga abortada");
+            tracing::error!(%url, reason = "global_timeout", "download aborted");
             ScraperError::GlobalTimeout
         })?
         .map_err(|e| {
-            tracing::error!(%url, error = %e, "error de red al iniciar descarga");
+            tracing::error!(%url, error = %e, "network error starting download");
             ScraperError::from(e)
         })?;
 

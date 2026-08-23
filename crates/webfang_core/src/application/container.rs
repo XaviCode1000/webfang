@@ -188,7 +188,7 @@ impl Container {
         let crawl_result_repo = match CrawlResultRepositoryImpl::new(log_path, 1024) {
             Ok(repo) => Some(Arc::new(repo) as Arc<dyn CrawlResultRepository>),
             Err(e) => {
-                tracing::warn!("no se pudo inicializar el repositorio: {e}");
+                tracing::warn!("failed to initialize repository: {e}");
                 None
             },
         };

@@ -237,10 +237,7 @@ async fn clean_all_pages(
                         // the user's --max-tokens limit. Fall back to raw for
                         // this page and count it as a fallback (so an all-
                         // fallback job still surfaces an error, #543).
-                        warn!(
-                            "Chunk excede límite para {}, usando contenido raw: {}",
-                            url, e
-                        );
+                        warn!("Chunk exceeds limit for {}, using raw content: {}", url, e);
                         cleaned_chunks.push(DocumentChunk::from_scraped_content(&result));
                         fallback += 1;
                         if first_error.is_none() {
@@ -255,7 +252,7 @@ async fn clean_all_pages(
                     | ErrorClass::TransientBackoff
                     | ErrorClass::PermanentFatal => {
                         failed += 1;
-                        error!("Falló limpieza de contenido para {}: {}", url, e);
+                        error!("content cleanup failed for {}: {}", url, e);
                         if first_error.is_none() {
                             first_error = Some(e);
                         }
