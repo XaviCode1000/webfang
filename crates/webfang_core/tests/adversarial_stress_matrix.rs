@@ -309,3 +309,68 @@ async fn midflight_cancellation_bounded_grace_and_no_permit_leak() {
             .unwrap_or_else(|e| panic!("partial output corrupt: {e}"));
     }
 }
+
+// ===== Scenario 4: backpressure-full channels =====
+
+use webfang_core::application::crawler::{BoundedFileSink, CrawlContentSink};
+
+/// Producers outpace the bounded spool sink (channel capacity 2) with a
+/// burst of captures far beyond the buffer: backpressure is applied by the
+/// bounded channel, NOTHING is dropped, and the pipeline drains completely —
+/// every captured page round-trips through the spool.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn backpressure_full_sink_drops_nothing_and_drains_completely() {
+    const PAGES: usize = 200;
+    const TINY_BUFFER: usize = 2;
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let sink =
+        BoundedFileSink::new(dir.path().join("spool.jsonl"), TINY_BUFFER)
+            .await
+            .expect("sink opens");
+
+    // 20 concurrent producers × 10 pages each, all hammering the tiny
+    // channel simultaneously; `capture` applies backpressure inline.
+    let shared = Arc::new(sink);
+    let mut producers = Vec::new();
+    for p in 0..20usize {
+        let sink = Arc::clone(&shared);
+        producers.push(tokio::spawn(async move {
+            for i in 0..10 {
+                sink.capture(
+                    &format!("https://backpressure.test/{p}/{i}"),
+                    &format!("<p>producer {p} page {i}</p>"),
+                );
+            }
+        }));
+    }
+    for producer in producers {
+        producer.await.expect("producer joins");
+    }
+
+    assert_eq!(
+        shared.captured(),
+        PAGES,
+        "every capture must be handed to the channel"
+    );
+
+    // Drain: finish flushes everything persisted through the full channel.
+    let flushed = tokio::time::timeout(Duration::from_secs(10), shared.finish())
+        .await
+        .expect("drain completes within grace")
+        .expect("flush succeeds");
+    assert_eq!(flushed, PAGES, "nothing dropped under full backpressure");
+
+    // Round-trip proof: the spool holds exactly the produced set.
+    let mut reader = shared.reader().await.expect("reader opens");
+    let mut seen = Vec::with_capacity(PAGES);
+    while let Some(page) = reader.next_page().await.expect("spool decodes") {
+        seen.push(page.url);
+    }
+    seen.sort();
+    let mut expected: Vec<String> = (0..20usize)
+        .flat_map(|p| (0..10).map(move |i| format!("https://backpressure.test/{p}/{i}")))
+        .collect();
+    expected.sort();
+    assert_eq!(seen, expected, "round-trip must reproduce the exact URL set");
+}
