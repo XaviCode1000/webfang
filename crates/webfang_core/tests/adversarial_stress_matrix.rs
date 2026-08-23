@@ -196,7 +196,7 @@ fn domain_contention_holds_slot_limits_and_independence() {
             2 => "contended-two.test",
             _ => "contended-three.test",
         };
-        for w in 0..WORKERS_PER_DOMAIN {
+        for _w in 0..WORKERS_PER_DOMAIN {
             let pool = Arc::clone(&pool);
             let held = Arc::clone(&held);
             let clock = Arc::clone(&clock);
@@ -227,7 +227,9 @@ fn domain_contention_holds_slot_limits_and_independence() {
         }
     }
     for handle in handles {
-        handle.join().expect("contention worker joins (no deadlock)");
+        handle
+            .join()
+            .expect("contention worker joins (no deadlock)");
     }
 
     // Every contended domain is tracked; independence: banning one domain
@@ -274,7 +276,14 @@ async fn midflight_cancellation_bounded_grace_and_no_permit_leak() {
         .expect("pending acquires must resolve within the shutdown grace");
     let cancelled_count = joined
         .iter()
-        .filter(|r| matches!(r, Ok(Err(webfang_core::infrastructure::downloader::DownloadError::Cancelled))))
+        .filter(|r| {
+            matches!(
+                r,
+                Ok(Err(
+                    webfang_core::infrastructure::downloader::DownloadError::Cancelled
+                ))
+            )
+        })
         .count();
     assert_eq!(
         cancelled_count, 10,
@@ -324,10 +333,9 @@ async fn backpressure_full_sink_drops_nothing_and_drains_completely() {
     const TINY_BUFFER: usize = 2;
 
     let dir = tempfile::TempDir::new().expect("temp dir");
-    let sink =
-        BoundedFileSink::new(dir.path().join("spool.jsonl"), TINY_BUFFER)
-            .await
-            .expect("sink opens");
+    let sink = BoundedFileSink::new(dir.path().join("spool.jsonl"), TINY_BUFFER)
+        .await
+        .expect("sink opens");
 
     // 20 concurrent producers × 10 pages each, all hammering the tiny
     // channel simultaneously; `capture` applies backpressure inline.
@@ -372,7 +380,10 @@ async fn backpressure_full_sink_drops_nothing_and_drains_completely() {
         .flat_map(|p| (0..10).map(move |i| format!("https://backpressure.test/{p}/{i}")))
         .collect();
     expected.sort();
-    assert_eq!(seen, expected, "round-trip must reproduce the exact URL set");
+    assert_eq!(
+        seen, expected,
+        "round-trip must reproduce the exact URL set"
+    );
 }
 
 // ===== Scenario 5: mixed Operation/Asset tier isolation =====
@@ -395,13 +406,11 @@ async fn mixed_tiers_isolate_operation_from_asset_budgets() {
 
     // Asset tier is UNAFFECTED by Operation saturation — immediate acquire,
     // zero waiting, no slot stealing across tiers.
-    let steal_probe = tokio::time::timeout(
-        Duration::from_millis(100),
-        asset.clone().acquire_owned(),
-    )
-    .await
-    .expect("asset must not wait on Operation saturation")
-    .expect("asset permit available");
+    let steal_probe =
+        tokio::time::timeout(Duration::from_millis(100), asset.clone().acquire_owned())
+            .await
+            .expect("asset must not wait on Operation saturation")
+            .expect("asset permit available");
     drop(steal_probe);
     drop(op_held);
 
