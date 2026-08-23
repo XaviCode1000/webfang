@@ -313,8 +313,10 @@ mod tests {
     /// LIVE-MACHINE equivalence (spec RED requirement): with default overrides
     /// and the real [`SystemDetector`], EVERY tier equals TODAY'S resolved
     /// numbers field-for-field on this machine (SystemDetector reports RAM here,
-    /// so the governor tier must be `Some`).
+    /// so the governor tier must be `Some`). Requires the real (sysinfo-backed)
+    /// detector, which is cfg-gated out under Miri — excluded there accordingly.
     #[test]
+    #[cfg(not(miri))]
     fn system_detector_default_build_matches_todays_resolved_numbers_live() {
         let detector = SystemDetector::new();
         let model = BudgetModel::build(BudgetOverrides::default(), &detector);
