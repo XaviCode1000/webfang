@@ -11,7 +11,8 @@ on:
 jobs:
   poisoned-env:
     runs-on: ubuntu-latest
-    continue-on-error: true
+    # No continue-on-error: a failing job is a FINDING, not tolerated noise.
+    # Honesty is enforced end-to-end by the `discovery-gate` job below.
     env:
       WEBFANG_URL: "POISON_TRASH"
       WEBFANG_OUTPUT: "POISON_TRASH"
@@ -27,16 +28,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - name: Run tests with poisoned environment
-        run: cargo nextest run --workspace --all-features --no-fail-fast
+        run: |
+          set -o pipefail
+          cargo nextest run --workspace --all-features --no-fail-fast \
+            2>&1 | tee /tmp/poisoned-env-nextest.log
       - name: Publish results
         if: always()
         run: |
-          echo "## Poisoned Env Results" >> $GITHUB_STEP_SUMMARY
-          echo "Tests that FAIL with poisoned env are NOT hermetic." >> $GITHUB_STEP_SUMMARY
+          LOG=/tmp/poisoned-env-nextest.log
+          {
+            echo "## Poisoned Env Results"
+            if grep -qE '^[[:space:]]*FAIL[[:space:]]' "$LOG"; then
+              echo ""
+              echo "Tests that FAIL with poisoned env are NOT hermetic:"
+              echo ""
+              sed -En 's/^[[:space:]]*FAIL[[:space:]]+\[[^]]*\][[:space:]]+(.*)$/- \1/p' "$LOG"
+            else
+              echo ""
+              echo "All tests hermetic under poisoned environment."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
   ignored-tests:
     runs-on: ubuntu-latest
-    continue-on-error: true
+    # No continue-on-error: a failing job means bugs were found (or infra broke);
+    # either way the scheduled run must conclude RED, not hide behind a green check.
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -47,7 +63,9 @@ jobs:
         with:
           # Stable key: never bump the suffix so the cached model survives across
           # merges. A changing key would invalidate the cache and force a re-download
-          # on every run. restore-keys keep older variants usable as fallback.
+          # on every run. restore-keys keep older variants usable as fallback;
+          # the warm step below VALIDATES whatever was restored and rebuilds
+          # it from scratch when the layout is incomplete or corrupt.
           path: ~/.cache/huggingface/hub/
           key: onnx-model-${{ runner.os }}-granite-97m
           restore-keys: |
@@ -56,17 +74,37 @@ jobs:
         run: |
           set -e
           MODEL_DIR="$HOME/.cache/huggingface/hub/models--ibm-granite--granite-embedding-97m-multilingual-r2"
+          REV="835ad14087e140460703cf0fae09f97d469d65c2"
           BLOB_SHA="68e592b160673d30250824c1116bc6ab33f70efb22b97c9e1d7ce1e69c1c9d70"
           TOKENIZER_BLOB_SHA="4f2842d568e2724370aec203652a42ac783c7937f8347a1a2cc7506d71f1582f"
           BLOB_FILE="$MODEL_DIR/blobs/$BLOB_SHA"
           TOKENIZER_BLOB_FILE="$MODEL_DIR/blobs/$TOKENIZER_BLOB_SHA"
-          SNAPSHOT_DIR="$MODEL_DIR/snapshots/835ad14087e140460703cf0fae09f97d469d65c2"
+          SNAPSHOT_DIR="$MODEL_DIR/snapshots/$REV"
           SNAPSHOT_FILE="$SNAPSHOT_DIR/onnx/model.onnx"
           SNAPSHOT_TOKENIZER="$SNAPSHOT_DIR/tokenizer.json"
-          if [ -f "$SNAPSHOT_FILE" ] || [ -L "$SNAPSHOT_FILE" ]; then
-            echo "Model already cached, skipping download"
+
+          # hf_hub offline resolution requires: refs/main -> <rev>, and
+          # snapshots/<rev>/{onnx/model.onnx,tokenizer.json} resolving to real,
+          # non-empty blobs. A restored cache from an older restore-keys entry
+          # can satisfy mere file-existence while being unusable (observed in
+          # run 32456250722: stale -v1 restore produced OfflineMode +
+          # Lock-acquisition failures). Validate structure AND content hash;
+          # on any mismatch, wipe and re-download instead of trusting it.
+          cache_valid() {
+            [ "$(cat "$MODEL_DIR/refs/main" 2>/dev/null)" = "$REV" ] || return 1
+            [ -f "$SNAPSHOT_FILE" ] && [ -s "$SNAPSHOT_FILE" ] || return 1
+            [ -f "$SNAPSHOT_TOKENIZER" ] && [ -s "$SNAPSHOT_TOKENIZER" ] || return 1
+            echo "Verifying cached model SHA256..."
+            echo "$BLOB_SHA  $(readlink -f "$SNAPSHOT_FILE")" | sha256sum --check --status
+          }
+
+          if cache_valid; then
+            echo "Model cache present and verified, skipping download"
             exit 0
           fi
+
+          echo "Cache missing or invalid (stale restore-keys fallback) - rebuilding..."
+          rm -rf "$MODEL_DIR"
           echo "Downloading Granite-97M ONNX model (~372MB)..."
           mkdir -p "$MODEL_DIR/blobs"
           mkdir -p "$SNAPSHOT_DIR/onnx"
@@ -83,7 +121,7 @@ jobs:
           echo "Verifying tokenizer SHA256..."
           echo "$TOKENIZER_BLOB_SHA  $TOKENIZER_BLOB_FILE" | sha256sum --check --status
           mkdir -p "$MODEL_DIR/refs"
-          echo "835ad14087e140460703cf0fae09f97d469d65c2" > "$MODEL_DIR/refs/main"
+          echo "$REV" > "$MODEL_DIR/refs/main"
           ln -s "../../../blobs/$BLOB_SHA" "$SNAPSHOT_FILE"
           ln -s "../../blobs/$TOKENIZER_BLOB_SHA" "$SNAPSHOT_TOKENIZER"
           echo "Model + tokenizer downloaded, verified, and cached"
@@ -92,11 +130,53 @@ jobs:
         # Skips tests that fundamentally cannot pass in CI: timing-sensitive,
         # env-dependent, and network-requiring tests.
         run: |
+          set -o pipefail
           cargo nextest run --workspace --all-features --run-ignored only --no-fail-fast \
             -E 'not(test(/session_pool/) | test(/vault_detector/) | test(/cli_binary_test/))' \
-            --test-threads 2
-      - name: Summary
+            --test-threads 2 \
+            2>&1 | tee /tmp/ignored-tests-nextest.log
+      - name: Publish failure names
         if: always()
         run: |
-          echo "## Production Bug Discovery" >> $GITHUB_STEP_SUMMARY
-          echo "Failures here = potential production bugs." >> $GITHUB_STEP_SUMMARY
+          LOG=/tmp/ignored-tests-nextest.log
+          {
+            echo "## Production Bug Discovery"
+            if grep -qE '^[[:space:]]*FAIL[[:space:]]' "$LOG"; then
+              echo ""
+              echo "Failures here = potential production bugs. Findings:"
+              echo ""
+              sed -En 's/^[[:space:]]*FAIL[[:space:]]+\[[^]]*\][[:space:]]+(.*)$/- \1/p' "$LOG"
+            else
+              echo ""
+              echo "No findings: all ignored tests passed."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Final honest-conclusion gate. Green = no findings; red = findings to triage.
+  # Runs even when upstream jobs fail (if: always()) and turns any real failure
+  # into a visible workflow-level error instead of a masked green check.
+  discovery-gate:
+    runs-on: ubuntu-latest
+    needs: [poisoned-env, ignored-tests]
+    if: always()
+    steps:
+      - name: Triage gate (green = no findings, red = findings)
+        env:
+          POISONED_ENV_RESULT: ${{ needs.poisoned-env.result }}
+          IGNORED_TESTS_RESULT: ${{ needs.ignored-tests.result }}
+        run: |
+          {
+            echo "## Bug Discovery Gate"
+            echo ""
+            echo "| Discovery job | Result | Meaning |"
+            echo "|---------------|--------|---------|"
+            echo "| poisoned-env | \`$POISONED_ENV_RESULT\` | $([ "$POISONED_ENV_RESULT" = success ] && echo 'all tests hermetic :white_check_mark:' || echo 'non-hermetic tests found :x:') |"
+            echo "| ignored-tests | \`$IGNORED_TESTS_RESULT\` | $([ "$IGNORED_TESTS_RESULT" = success ] && echo 'no findings :white_check_mark:' || echo 'findings to triage :x:') |"
+            echo ""
+            echo "Failure names are listed in each job's summary section above."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$POISONED_ENV_RESULT" != "success" ] || [ "$IGNORED_TESTS_RESULT" != "success" ]; then
+            echo "::error::Bug discovery found failures (poisoned-env=$POISONED_ENV_RESULT, ignored-tests=$IGNORED_TESTS_RESULT). See per-job summaries for the failing test names."
+            exit 1
+          fi
+          echo "No findings: bug discovery is green."

@@ -36,7 +36,7 @@ Output is saved to `output/` as Markdown by default.
 
 ## Architecture
 
-Clean Architecture with enforced dependency direction across 5 workspace crates:
+Clean Architecture with enforced dependency direction across 5 workspace crates (plus `webfang_test_utils`, a shared dev/test-support crate):
 
 ```
 webfang_cli ──→ webfang_tui ──→ webfang_core ←── webfang_ai
@@ -67,7 +67,7 @@ webfang_cli ──────────────────────�
 | **Sitemap discovery** | Auto-discovers all pages via robots.txt + sitemap.xml |
 | **Asset download** | Images and documents (PDF, DOCX, XLSX) |
 | **WAF detection** | Detects Cloudflare, reCAPTCHA, hCaptcha, DataDome |
-| **MCP server** | 34 tools for AI agent integration |
+| **MCP server** | 36 tools for AI agent integration |
 | **Rate limiting** | Configurable with Retry-After respect |
 | **Resume** | Continues interrupted crawls with `--resume` |
 | **TLS fingerprinting** | wreq impersonates real browsers to bypass WAFs |
@@ -210,7 +210,7 @@ webfang --help
 
 ## MCP Server
 
-The MCP server provides **34 tools** for AI agent integration.
+The MCP server provides **36 tools** across **9 categories** for AI agent integration.
 
 > **Note:** the `webfang` CLI does **not** expose a `--mcp` flag (running `webfang --mcp` fails with `error: unexpected argument '--mcp' found`). The MCP server lives in the `webfang_mcp` crate and is started via its examples below.
 
@@ -229,7 +229,9 @@ cargo run -p webfang_mcp --example mcp_server_stdio --features "mcp ai persisten
 | Export (4) | `export_file`, `export_jsonl`, `export_vector`, `process_export_pipeline` |
 | URL Utils (6) | `validate_url`, `extract_domain`, `normalize_url`, `match_url_pattern`, `is_internal_link`, `url_to_file_path` |
 | Security (4) | `detect_waf`, `verify_waf_integrity`, `list_waf_providers`, `get_scrape_metrics` |
-| Obsidian (4) | `detect_obsidian_vault`, `build_obsidian_uri`, `open_in_obsidian`, `search_obsidian` |
+| Obsidian (3) | `detect_obsidian_vault`, `build_obsidian_uri`, `open_in_obsidian` |
+| AI (2) | `semantic_cleaner`, `search_obsidian` |
+| Axtree (1) | `get_accessibility_snapshot` |
 | Assets (1) | `download_assets` |
 
 ---

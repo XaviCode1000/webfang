@@ -21,7 +21,7 @@ use webfang_mcp::mcp_server::{build_container, spawn_ai_wiring, McpState};
     name = "webfang-mcp",
     version,
     about = "Webfang MCP Server (HTTP transport)",
-    long_about = "Exposes 35 scraper tools via the Model Context Protocol over Streamable HTTP."
+    long_about = "Exposes 36 tools via the Model Context Protocol over Streamable HTTP."
 )]
 struct Args {
     /// Bind address (host:port) for the MCP server.

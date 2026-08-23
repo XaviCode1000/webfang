@@ -28,7 +28,7 @@ pub struct AiArgs {
     #[clap(next_help_heading = "AI Settings")]
     pub threshold: f32,
 
-    /// Maximum tokens per chunk for AI processing
+    /// Maximum tokens per chunk before rejection (a chunk-size guard, not a context-window setting; chunks exceeding this fail)
     #[cfg(feature = "ai")]
     #[arg(long, default_value = "32768", env = "WEBFANG_MAX_TOKENS")]
     #[clap(next_help_heading = "AI Settings")]

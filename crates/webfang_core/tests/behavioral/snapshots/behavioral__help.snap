@@ -419,7 +419,7 @@ Options:
           [default: 0.3]
 
       --max-tokens <MAX_TOKENS>
-          Maximum tokens per chunk for AI processing
+          Maximum tokens per chunk before rejection (a chunk-size guard, not a context-window setting; chunks exceeding this fail)
           
           [env: WEBFANG_MAX_TOKENS=]
           [default: 32768]
