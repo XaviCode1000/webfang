@@ -33,6 +33,9 @@ CHAPTER="docs/src/cli-reference.md"
 BEGIN_MARKER="CLI-REFERENCE:BEGIN"
 END_MARKER="CLI-REFERENCE:END"
 FEATURES="ai mcp ui"
+# Honor CARGO_TARGET_DIR (shared build cache via direnv in worktrees); the
+# hardcoded target/ path silently broke every sibling-worktree run (#360).
+BIN="${CARGO_TARGET_DIR:-target}/debug/webfang"
 
 mode="generate"
 case "${1:-}" in
@@ -49,8 +52,8 @@ echo "Building webfang_cli (--features \"$FEATURES\")..."
 cargo build -p webfang_cli --features "$FEATURES" --locked
 
 # 2. Capture help via command substitution (non-tty ⇒ no ANSI, fixed wrap).
-HELP_MAIN="$(target/debug/webfang --help)"
-HELP_COMPLETIONS="$(target/debug/webfang completions --help)"
+HELP_MAIN="$($BIN --help)"
+HELP_COMPLETIONS="$($BIN completions --help)"
 
 # 3. The chapter must contain both markers; refuse to touch anything else.
 if ! grep -qF "$BEGIN_MARKER" "$CHAPTER"; then

@@ -94,7 +94,11 @@ pub struct ModelConfig {
     pub model_file: String,
     /// Offline mode (fail if not cached)
     pub offline_mode: bool,
-    /// Maximum tokens per chunk (model-specific)
+    /// Maximum tokens per chunk before rejection. This is a chunk-rejection
+    /// guard, not a context-window or generation limit: chunks whose tokenized
+    /// length exceeds this value fail with [`SemanticError::ChunkTooLarge`].
+    /// The tokenizer itself truncates sequences at the model's configured
+    /// maximum (`DEFAULT_MAX_LENGTH`, 32,768 tokens).
     pub max_tokens: usize,
     /// Relevance threshold for filtering (0.0-1.0)
     pub relevance_threshold: f32,
@@ -113,7 +117,7 @@ impl Default for ModelConfig {
             repo: model_variant.repo_id().to_string(),
             model_file: model_variant.model_file().to_string(),
             offline_mode: false,
-            max_tokens: 32768,        // Granite-97M context window (32K tokens)
+            max_tokens: 32768, // Chunk-rejection guard; matches the Granite context window (32K tokens)
             relevance_threshold: 0.3, // Moderate relevance threshold
             model_variant,
         }

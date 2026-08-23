@@ -16,7 +16,7 @@ use webfang_mcp::mcp_server::{build_container, spawn_ai_wiring, McpHandler, McpS
     name = "webfang-mcp-stdio",
     version,
     about = "Webfang MCP Server (stdio transport)",
-    long_about = "Exposes 35 scraper tools via the Model Context Protocol over stdin/stdout."
+    long_about = "Exposes 36 tools via the Model Context Protocol over stdin/stdout."
 )]
 struct Args {
     /// Enable AI semantic cleaning (requires the `ai` feature at build time).

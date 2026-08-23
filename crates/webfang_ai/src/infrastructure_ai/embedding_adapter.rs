@@ -3,15 +3,17 @@
 //! This is the concrete infrastructure implementation of the always-compiled
 //! domain port [`EmbeddingPort`](webfang_core::domain::embedding_port::EmbeddingPort). It wraps the ONNX [`InferencePool`] and the
 //! HuggingFace [`MiniLmTokenizer`] to turn raw text into fixed-dimension
-//! embedding vectors, following the Adapter pattern (infrastructure adapts the
-//! domain port to the ONNX primitives).
+//! embedding vectors for IBM Granite embedding models (Granite-97M / Granite-311M,
+//! unified 384d output), following the Adapter pattern (infrastructure adapts the
+//! domain port to the ONNX primitives). Note: `MiniLmTokenizer` is legacy naming
+//! from the pre-Granite era; an API rename is tracked as a follow-up refactor.
 //!
 //! # Architecture
 //!
 //! ```text
 //! &str / &[String]
 //!     ↓
-//! [MiniLmTokenizer] text → ModelInput (token ids + masks)
+//! [MiniLmTokenizer] text → ModelInput (token ids + masks)   // legacy name; see note above
 //!     ↓
 //! [InferencePool] ModelInput → Vec<f32> (dedicated worker threads)
 //!     ↓

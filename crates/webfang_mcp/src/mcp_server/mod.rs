@@ -4,7 +4,7 @@
 //! Architecture:
 //! - `state.rs` — McpState with embedded Container + per-category semaphores
 //! - `server.rs` — Axum router + StreamableHttpService setup
-//! - `handlers/` — 8 handler modules (one per tool category)
+//! - `handlers/` — 9 handler modules (one per tool category)
 //!
 //! Backpressure: Each category has its own tokio::sync::Semaphore
 //! to prevent resource exhaustion on constrained hardware.
@@ -118,13 +118,13 @@ pub fn spawn_ai_wiring(_container: Arc<webfang_core::application::container::Con
 /// Main MCP handler struct.
 ///
 /// Holds the application state and combined tool router.
-/// All 35 tools are registered via `#[tool_router]` macros
+/// All 36 tools are registered via `#[tool]` attributes
 /// in the handler submodules.
 #[derive(Clone)]
 pub struct McpHandler {
     /// Shared application state (DI container + semaphores)
     pub state: McpState,
-    /// Combined tool router from all 8 categories
+    /// Combined tool router from all 9 categories
     pub tool_router: ToolRouter<Self>,
 }
 
@@ -140,7 +140,7 @@ impl McpHandler {
 
 /// Implement ServerHandler for McpHandler.
 ///
-/// Uses the combined `self.tool_router` field (all 8 category routers)
+/// Uses the combined `self.tool_router` field (all 9 category routers)
 /// for tool dispatch, listing, and lookup.
 impl ServerHandler for McpHandler {
     async fn call_tool(

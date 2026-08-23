@@ -38,10 +38,12 @@
 //!
 //! # Model Information
 //!
-//! - **Model**: `sentence-transformers/all-MiniLM-L6-v2`
+//! - **Model**: IBM Granite embeddings (`ibm-granite/granite-embedding-97m-multilingual-r2`
+//!   by default; Granite-311M (`granite-311m`) tier via `AI_MODEL_ID`)
 //! - **Format**: ONNX (optimized for inference)
-//! - **Size**: ~90MB
-//! - **Max Tokens**: 512 per chunk
+//! - **Size**: ~120MB (Granite-97M) / ~350MB (Granite-311M)
+//! - **Max Tokens**: sequences truncate at 32,768 tokens (`DEFAULT_MAX_LENGTH`);
+//!   chunk rejection is governed separately by `max_tokens`
 //! - **Cache Location**: hf_hub native cache (`~/.cache/huggingface/hub`)
 //!
 //! # Rust-Skills Applied

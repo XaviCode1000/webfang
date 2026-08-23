@@ -237,7 +237,7 @@ pub fn find_most_similar(query: &[f32], candidates: &[Vec<f32>]) -> Option<usize
 ///
 /// * `token_embeddings` - Flat slice of token embeddings [seq_len * embedding_dim]
 /// * `seq_len` - Number of tokens in sequence
-/// * `embedding_dim` - Dimension of each embedding (typically 384 for all-MiniLM-L6-v2)
+/// * `embedding_dim` - Dimension of each embedding (384 for all supported IBM Granite models)
 /// * `attention_mask` - slice of 0/1 values, length must equal seq_len
 ///
 /// # Returns
