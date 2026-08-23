@@ -70,6 +70,16 @@ impl SystemDetector {
     }
 }
 
+/// Process-wide canonical hardware parallelism (decision Q2 UNIFY NOW).
+///
+/// Every subsystem that previously called `num_cpus::get()` or read
+/// `available_parallelism` directly MUST derive from this seam so that
+/// "auto" means the same thing process-wide, cgroup limits included.
+#[must_use]
+pub fn system_parallelism() -> NonZeroUsize {
+    SystemDetector.parallelism()
+}
+
 impl HardwareDetector for SystemDetector {
     fn parallelism(&self) -> NonZeroUsize {
         #[cfg(not(miri))]

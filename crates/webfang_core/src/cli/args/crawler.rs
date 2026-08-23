@@ -293,15 +293,14 @@ pub struct CrawlerArgs {
     #[arg(long, default_value = "hash", value_parser = ["hash", "slug", "content-disposition"])]
     pub asset_naming: String,
 
-    /// Maximum concurrent asset downloads per page (default: 3)
+    /// Maximum concurrent asset downloads per page (omit = auto from budget model)
     #[arg(
         long,
-        default_value = "3",
         env = "WEBFANG_DOWNLOAD_CONCURRENCY",
         value_parser = parse_download_concurrency,
         help = "Máximo de descargas de assets concurrentes por página (mínimo 1)"
     )]
-    pub download_concurrency: usize,
+    pub download_concurrency: Option<usize>,
 
     // ========== HTTP Client Settings ==========
     /// Maximum number of retry attempts

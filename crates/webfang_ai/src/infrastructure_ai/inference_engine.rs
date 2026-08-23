@@ -252,7 +252,9 @@ impl InferencePool {
     ///
     /// Returns `SemanticError::Inference` if a thread fails to spawn.
     pub fn new(model_bytes: Arc<Vec<u8>>, model_variant: AiModel) -> Result<Self, SemanticError> {
-        let worker_count = (num_cpus::get() - 1).max(1);
+        // Canonical detector seam (Q2, via core dependency): process-wide "auto".
+        let worker_count =
+            (webfang_core::domain::budget::detector::system_parallelism().get() - 1).max(1);
         let (request_tx, receiver) = crossbeam_channel::bounded::<WorkerRequest>(worker_count);
         let receiver = Arc::new(receiver);
 

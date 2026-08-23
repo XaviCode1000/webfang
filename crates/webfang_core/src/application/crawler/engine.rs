@@ -3,6 +3,20 @@
 //! The Engine manages the crawl loop, spawning tasks via JoinSet
 //! with backpressure and rate limiting. Each task fetches a URL,
 //! extracts links, and pushes discovered URLs to the queue.
+//!
+//! # D6 lock-across-await audit (task 2.3, change stabilization-concurrency-budget)
+//!
+//! Functions rewired by commit f5114cd6 (rate-limiter construction):
+//!
+//! | Function | `.await` points | Guard discipline | Verdict |
+//! |---|---|---|---|
+//! | `rate_limiter_config` | none (sync fn) | no lock guards touched | PASS |
+//! | `Engine::with_budget` | none (sync ctor) | `SharedRateLimiter::new` / `CrawlScheduler::new` consume args by value; no `std`/`RwLock`/`Mutex`/`DashMap` guard outlives its expression | PASS |
+//!
+//! Enforcement: `#![deny(clippy::await_holding_lock)]` below fails the build if
+//! a future edit ever holds a `std` lock guard across an `.await` in this module.
+
+#![deny(clippy::await_holding_lock)]
 
 use std::collections::HashSet;
 use std::path::PathBuf;

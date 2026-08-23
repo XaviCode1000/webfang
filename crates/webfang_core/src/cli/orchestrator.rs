@@ -411,7 +411,11 @@ async fn run_dry_run(opts: CrawlOptions) -> CliExit {
     // report "0 URL(s) would be scraped". List the batch URLs the user actually
     // supplied instead — that is the set a dry run should preview.
     if opts.batch.batch_file.is_some() {
-        let manager = match load_batch_manager(&opts, crawler_config).await {
+        let budget = crate::domain::budget::BudgetModel::build(
+            opts.budget_overrides,
+            &crate::domain::budget::detector::SystemDetector,
+        );
+        let manager = match load_batch_manager(&opts, crawler_config, &budget).await {
             Ok(m) => m,
             Err(e) => return e,
         };
@@ -528,9 +532,18 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
         )
     };
 
+    // Budget model built ONCE at flow entry (design D4): operator overrides
+    // plus the canonical detector seam feed every downstream bound.
+    let budget = crate::domain::budget::BudgetModel::build(
+        opts.budget_overrides,
+        &crate::domain::budget::detector::SystemDetector,
+    );
+
     let mut scraper_config = ScraperConfig::default()
         .with_output_dir(resolve_persistence_root(opts))
-        .with_scraper_concurrency(opts.network.concurrency.resolve())
+        // Scraper + asset-download bounds derive from the model's Operation.crawl
+        // and Asset tiers (task 2.5b); explicit flags arrive via BudgetOverrides.
+        .with_scraper_concurrency(budget.crawl().get())
         .with_max_pages(opts.crawl.max_pages)
         .with_selector(opts.crawl.selector.clone())
         .with_ignore_waf(opts.crawl.ignore_waf)
@@ -549,7 +562,7 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
     scraper_config =
         scraper_config.with_asset_h2_profile(parse_asset_h2_profile(&opts.network.h2_profile));
     scraper_config = scraper_config.with_asset_naming(parse_asset_naming(&opts.asset_naming));
-    scraper_config = scraper_config.with_download_concurrency(opts.download_concurrency);
+    scraper_config = scraper_config.with_download_concurrency(budget.asset().get());
     scraper_config = scraper_config.with_max_file_size(opts.network.max_file_size);
     scraper_config = scraper_config.with_download_timeout(opts.network.download_timeout_secs);
 
@@ -880,8 +893,12 @@ async fn prepare_batch_manager(
     tls_emulation: wreq_util::Profile,
     sink: std::sync::Arc<BoundedFileSink>,
 ) -> Result<BatchManager, CliExit> {
-    let crawler_config = build_batch_crawler_config(opts, tls_emulation);
-    let manager = load_batch_manager(opts, crawler_config)
+    let budget = crate::domain::budget::BudgetModel::build(
+        opts.budget_overrides,
+        &crate::domain::budget::detector::SystemDetector,
+    );
+    let crawler_config = build_batch_crawler_config(opts, tls_emulation, &budget);
+    let manager = load_batch_manager(opts, crawler_config, &budget)
         .await?
         .with_content_sink(sink);
 
@@ -893,7 +910,7 @@ async fn prepare_batch_manager(
     info!(
         "Starting batch processing: {} URLs, concurrency={}",
         manager.url_count(),
-        opts.batch.concurrency
+        budget.batch().get()
     );
 
     Ok(manager)
@@ -926,10 +943,15 @@ async fn flush_batch_sink(sink: &BoundedFileSink) -> Result<(), CliExit> {
 async fn build_batch_sink(opts: &CrawlOptions) -> Result<BoundedFileSink, CliExit> {
     let spool_path = resolve_persistence_root(opts).join(".webfang-batch-capture.jsonl");
     // One buffered page per concurrent crawl, plus headroom, keeps the writer
-    // from becoming the bottleneck without unbounding memory.
-    let buffer = opts
-        .batch
-        .concurrency
+    // from becoming the bottleneck without unbounding memory. The bound derives
+    // from the budget model's Operation.batch tier (task 2.5c).
+    let budget = crate::domain::budget::BudgetModel::build(
+        opts.budget_overrides,
+        &crate::domain::budget::detector::SystemDetector,
+    );
+    let buffer = budget
+        .batch()
+        .get()
         .saturating_mul(2)
         .max(crate::application::crawler::bounded_sink::DEFAULT_SINK_BUFFER);
     BoundedFileSink::new(spool_path, buffer).await.map_err(|e| {
@@ -1101,12 +1123,16 @@ fn resolve_batch_tls_emulation(opts: &CrawlOptions) -> Result<wreq_util::Profile
 
 /// Build the crawler config for the batch engine, honoring `--h2-profile`.
 ///
-/// `--delay-ms` and `--concurrency` are propagated here (#653): without them
-/// the batch engine crawled at full speed with its own default concurrency,
+/// `--delay-ms` and the concurrency bound are propagated here (#653): without
+/// them the batch engine crawled at full speed with its own default concurrency,
 /// making both flags silent no-ops on the `--batch` path.
+///
+/// The concurrency bound comes from the run's [`BudgetModel`] Operation.crawl
+/// tier (task 2.5b).
 fn build_batch_crawler_config(
     opts: &CrawlOptions,
     tls_emulation: wreq_util::Profile,
+    budget: &crate::domain::budget::BudgetModel,
 ) -> CrawlerConfig {
     let mut crawler_config = CrawlerConfig::builder(opts.url.clone())
         .max_pages(opts.crawl.max_pages)
@@ -1117,7 +1143,9 @@ fn build_batch_crawler_config(
         .use_sitemap(opts.crawl.use_sitemap)
         .timeout_secs(opts.network.timeout_secs)
         .delay_ms(opts.network.delay_ms)
-        .concurrency(opts.network.concurrency.resolve())
+        // Concurrency bound derives from the run's budget model
+        // Operation.crawl tier (task 2.5b), not from the raw CLI flag.
+        .concurrency(budget.crawl().get())
         .tls_emulation(tls_emulation);
     if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
         crawler_config = crawler_config.sitemap_url(sitemap_url);
@@ -1129,16 +1157,17 @@ fn build_batch_crawler_config(
 async fn load_batch_manager(
     opts: &CrawlOptions,
     crawler_config: CrawlerConfig,
+    budget: &crate::domain::budget::BudgetModel,
 ) -> Result<BatchManager, CliExit> {
     if let Some(ref path) = opts.batch.batch_file {
         info!("Reading URLs from file: {}", path.display());
-        BatchManager::from_file(path, crawler_config, opts.batch.concurrency).map_err(|e| {
+        BatchManager::from_file(path, crawler_config, budget.batch().get()).map_err(|e| {
             error!(error = %e, "Failed to read URLs from file");
             CliExit::IoError(format!("Failed to read URLs from file: {e}"))
         })
     } else {
         info!("Reading URLs from stdin");
-        load_batch_manager_from_stdin(crawler_config, opts.batch.concurrency).await
+        load_batch_manager_from_stdin(crawler_config, budget.batch().get()).await
     }
 }
 
@@ -1264,19 +1293,46 @@ mod tests {
     // ===== build_batch_crawler_config tests (#653) =====
 
     #[test]
-    fn batch_config_propagates_delay_and_concurrency() {
-        // Regression for #653: `--delay-ms` and `--concurrency` were dropped on
-        // the batch path, so per-URL rate limiting never engaged.
+    fn batch_config_propagates_delay_and_model_concurrency() {
+        // Regression for #653: per-URL rate limiting never engaged on the
+        // batch path. The concurrency bound now derives from the run's
+        // BudgetModel crawl tier; an explicit `--concurrency` value reaches
+        // it THROUGH the model (explicit-wins override, design D4).
         let mut opts = CrawlOptions::default();
         opts.network.delay_ms = 750;
-        opts.network.concurrency = crate::ConcurrencyConfig::new(4);
+        // Explicit flag feeds the model override exactly as preflight does.
+        opts.network.concurrency = crate::ConcurrencyConfig::new(2);
+        if let Some(explicit) = opts.network.concurrency.get() {
+            opts.budget_overrides.crawl =
+                crate::domain::budget::tiers::CrawlConcurrency::new(explicit).ok();
+        }
+        let budget = crate::domain::budget::BudgetModel::build(
+            opts.budget_overrides,
+            &crate::domain::budget::detector::SystemDetector,
+        );
 
-        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145);
+        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145, &budget);
 
         assert_eq!(config.delay_ms, 750, "--delay-ms must reach the crawler");
         assert_eq!(
-            config.concurrency, 4,
-            "--concurrency must reach the crawler"
+            config.concurrency, 2,
+            "explicit --concurrency must reach the crawler through the model"
+        );
+    }
+
+    #[test]
+    fn batch_config_auto_concurrency_uses_model_tier() {
+        // With no explicit flag, the model's auto-derived crawl tier is used.
+        let opts = CrawlOptions::default();
+        assert!(opts.network.concurrency.is_auto());
+        let budget = crate::domain::budget::BudgetModel::for_test_preset();
+
+        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145, &budget);
+
+        assert_eq!(
+            config.concurrency,
+            budget.crawl().get(),
+            "auto mode must use the model's derived Operation.crawl tier"
         );
     }
 
@@ -1285,7 +1341,11 @@ mod tests {
         let mut opts = CrawlOptions::default();
         opts.network.delay_ms = 0;
 
-        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145);
+        let config = build_batch_crawler_config(
+            &opts,
+            wreq_util::Profile::Chrome145,
+            &crate::domain::budget::BudgetModel::for_test_preset(),
+        );
 
         assert_eq!(config.delay_ms, 0);
     }

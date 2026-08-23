@@ -924,7 +924,18 @@ async fn build_and_run(opts: CrawlOptions) -> CliExit {
     let vault_ports = webfang_core::application::container::VaultAiPorts::default();
 
     #[cfg(feature = "adaptive-selectors")]
-    let engine_options = AdaptiveSelectorOptions::default();
+    // Inference worker bound derives from the budget model's Operation.inference
+    // tier (task 2.5d); explicit operator flags arrive via BudgetOverrides.
+    let engine_options = {
+        let budget = webfang_core::domain::budget::BudgetModel::build(
+            opts.budget_overrides,
+            &webfang_core::domain::budget::detector::SystemDetector,
+        );
+        AdaptiveSelectorOptions {
+            max_concurrent_inference: budget.inference().get(),
+            ..AdaptiveSelectorOptions::default()
+        }
+    };
     #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
     let semantic = semantic_inspector(&shared, &engine_options);
     // Without the `ai` feature there is no ONNX pool — explicit Tier 1 degrade.

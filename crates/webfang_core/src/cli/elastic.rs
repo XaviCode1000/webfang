@@ -32,7 +32,16 @@ pub(super) async fn run_elastic_ingestion(
     }
 
     let mut join_set = JoinSet::new();
-    let concurrency = num_cpus::get().max(4); // bounded concurrency
+    // Bounded concurrency derives from the budget model's Operation.elastic
+    // tier (task 2.5e) — the canonical detector seam replaces the second
+    // `num_cpus` counter; the frozen decision #12 env overrides stay layered
+    // in the autotuning path that sizes the ingestion itself.
+    let concurrency = crate::domain::budget::BudgetModel::build(
+        crate::domain::budget::BudgetOverrides::default(),
+        &crate::domain::budget::detector::SystemDetector,
+    )
+    .elastic()
+    .get();
 
     for result in results {
         let ing = std::sync::Arc::clone(ingestion);

@@ -72,10 +72,10 @@ pub struct ExportArgs {
     #[clap(next_help_heading = "Batch Processing")]
     pub batch_file: Option<std::path::PathBuf>,
 
-    /// Maximum concurrent URLs in batch mode
-    #[arg(long, default_value = "5", env = "WEBFANG_BATCH_CONCURRENCY", value_parser = parse_batch_concurrency)]
+    /// Maximum concurrent URLs in batch mode (omit = auto from budget model)
+    #[arg(long, env = "WEBFANG_BATCH_CONCURRENCY", value_parser = parse_batch_concurrency)]
     #[clap(next_help_heading = "Batch Processing")]
-    pub batch_concurrency: usize,
+    pub batch_concurrency: Option<usize>,
 
     // ========== Item Pipeline ==========
     /// Enable item pipeline processing (validate → clean → output)

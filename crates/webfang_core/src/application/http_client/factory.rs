@@ -46,7 +46,11 @@ pub(super) fn build_wreq_client(
     config: &HttpClientConfig,
     user_agent: Option<String>,
 ) -> Result<Client, ScraperError> {
-    let pool_size = std::cmp::max(6, num_cpus::get() - 1);
+    // Canonical detector seam (Q2): same "auto" as every other subsystem.
+    let pool_size = std::cmp::max(
+        6,
+        crate::domain::budget::detector::system_parallelism().get() - 1,
+    );
 
     // Build Client Hints headers for Chrome 145 (2026 Standard)
     // These MUST match the TLS fingerprint to avoid "Headless Spoofing" detection

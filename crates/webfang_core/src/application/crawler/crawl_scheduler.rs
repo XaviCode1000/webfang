@@ -19,6 +19,24 @@
 //! `pending` buffer and decides what to crawl next. The scheduler owns the
 //! canonical `Arc`s and exposes accessors so the `Engine` clones them into the
 //! task context exactly once.
+//!
+//! # D6 lock-across-await audit (task 2.3, change stabilization-concurrency-budget)
+//!
+//! Functions rewired by commit 20806c7a (scheduler gating):
+//!
+//! | Function | `.await` points | Guard discipline | Verdict |
+//! |---|---|---|---|
+//! | `CrawlScheduler::new` | none (sync fn) | constructs `RwLock`/dedup state by value; no guard held past initialization expressions | PASS |
+//! | `CrawlScheduler::effective_concurrency` | none (sync fn) | reads `SharedConcurrencyLevel` atomics only; no lock guard taken | PASS |
+//!
+//! Async callers (`snapshot_pending`, queue drain) touch the shared [`UrlQueue`](crate::infrastructure::crawler::UrlQueue)
+//! whose sole `tokio::sync::Mutex` is confined to documented sync-only sections
+//! (`infrastructure/crawler/url_queue.rs`, invariant AL-2).
+//!
+//! Enforcement: `#![deny(clippy::await_holding_lock)]` below fails the build if
+//! a future edit ever holds a `std` lock guard across an `.await` in this module.
+
+#![deny(clippy::await_holding_lock)]
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, RwLock};
