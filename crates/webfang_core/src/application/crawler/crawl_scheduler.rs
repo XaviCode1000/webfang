@@ -27,6 +27,7 @@ use url::Url;
 
 use super::concurrency_level::SharedConcurrencyLevel;
 use crate::application::deduplicator::UrlDeduplicator;
+use crate::domain::budget::CrawlConcurrency;
 use crate::domain::DiscoveredUrl;
 use crate::infrastructure::crawler::{UrlQueue, UrlSource};
 
@@ -47,19 +48,22 @@ pub(crate) struct CrawlScheduler {
     queue: Arc<UrlQueue>,
     /// Local work buffer drained from `queue`; the scheduler pops from here.
     pending: VecDeque<DiscoveredUrl>,
-    /// Base concurrency from `CrawlerConfig::concurrency`.
-    base_concurrency: usize,
+    /// Base concurrency — the budget model's `Operation.crawl` tier.
+    /// A plain `usize` would let zero or unclamped values in; the tier
+    /// newtype makes an invalid bound unrepresentable (design D4).
+    base_concurrency: CrawlConcurrency,
     /// Optional autoscale level for RAM-aware concurrency adjustment.
     autoscale_level: Option<Arc<SharedConcurrencyLevel>>,
 }
 
 impl CrawlScheduler {
-    /// Create a scheduler with fresh scheduling state.
+    /// Create a scheduler with fresh scheduling state, gated by the budget
+    /// model's crawl tier.
     ///
     /// Builds the visited set, its checkpoint string mirror, and the shared
     /// discovery queue internally; these are `Arc`-shared with the per-page
     /// tasks via the accessors below.
-    pub(crate) fn new(base_concurrency: usize) -> Self {
+    pub(crate) fn new(base_concurrency: CrawlConcurrency) -> Self {
         Self {
             visited: Arc::new(UrlDeduplicator::new()),
             visited_urls: Arc::new(RwLock::new(Vec::new())),
@@ -163,12 +167,17 @@ impl CrawlScheduler {
     }
 
     /// Effective concurrency limit (autoscale-aware).
+    ///
+    /// Autoscale levels stay WITHIN the model's `Operation.crawl` ceiling:
+    /// Normal → full tier value, Reduced → half, Critical → 0 (pause). No
+    /// re-clamp needed — the tier is already ≤ the global ceiling and every
+    /// scaled-down result is bounded by it.
     #[must_use]
     pub(crate) fn effective_concurrency(&self) -> usize {
-        self.autoscale_level
-            .as_ref()
-            .map(|level| level.effective_concurrency(self.base_concurrency))
-            .unwrap_or(self.base_concurrency)
+        match self.autoscale_level.as_ref() {
+            Some(level) => level.effective_concurrency(self.base_concurrency.get()),
+            None => self.base_concurrency.get(),
+        }
     }
 
     /// Whether another task may be spawned given `in_flight` running tasks.
@@ -209,11 +218,17 @@ mod tests {
         DiscoveredUrl::html(u.clone(), 0, u)
     }
 
+    /// Test constructor wrapping the NonZero-gated newtype: a raw `usize`
+    /// bound is no longer representable (task 2.2b — D4 tier newtype).
+    fn sched(n: usize) -> CrawlScheduler {
+        CrawlScheduler::new(CrawlConcurrency::new(n).expect("test concurrency non-zero"))
+    }
+
     // -- record_visit --
 
     #[test]
     fn record_visit_first_true_duplicate_false() {
-        let s = CrawlScheduler::new(4);
+        let s = sched(4);
         assert!(s.record_visit("https://example.com/a"));
         assert!(!s.record_visit("https://example.com/a"));
         assert!(s.record_visit("https://example.com/b"));
@@ -221,7 +236,7 @@ mod tests {
 
     #[test]
     fn record_visit_mirror_skips_duplicates() {
-        let s = CrawlScheduler::new(4);
+        let s = sched(4);
         assert!(s.record_visit("https://example.com/a"));
         assert!(s.record_visit("https://example.com/b"));
         assert!(!s.record_visit("https://example.com/a"));
@@ -235,7 +250,7 @@ mod tests {
 
     #[test]
     fn restore_visited_is_idempotent() {
-        let s = CrawlScheduler::new(4);
+        let s = sched(4);
         assert!(s.record_visit("https://example.com/a"));
         let mut set = HashSet::new();
         set.insert("https://example.com/a".to_string());
@@ -250,7 +265,7 @@ mod tests {
 
     #[test]
     fn snapshot_visited_roundtrips() {
-        let s = CrawlScheduler::new(4);
+        let s = sched(4);
         let original: HashSet<String> = [
             "https://example.com/a",
             "https://example.com/b",
@@ -265,16 +280,45 @@ mod tests {
 
     // -- effective_concurrency / can_spawn --
 
+    /// Task 2.2(b): the scheduler's spawn bound follows the injected
+    /// [`BudgetModel`]'s `Operation.crawl` tier — never a raw configured
+    /// concurrency value.
+    #[test]
+    fn scheduler_bound_follows_injected_budget_model() {
+        use crate::domain::budget::detector::FixedDetector;
+        use crate::domain::budget::{BudgetModel, BudgetOverrides};
+
+        fn scheduler_from_cores(cores: usize) -> CrawlScheduler {
+            let detector = FixedDetector::with_detection(
+                std::num::NonZeroUsize::new(cores).expect("test cores non-zero"),
+                None,
+            );
+            let model = BudgetModel::build(BudgetOverrides::default(), &detector);
+            CrawlScheduler::new(model.crawl())
+        }
+
+        // 4-core auto table → crawl 3.
+        let s = scheduler_from_cores(4);
+        assert!(s.can_spawn(2));
+        assert!(!s.can_spawn(3));
+
+        // 16-core auto table → crawl min(15, 8) = 8.
+        let s = scheduler_from_cores(16);
+        assert!(s.can_spawn(7));
+        assert!(!s.can_spawn(8));
+    }
+
     #[test]
     fn effective_concurrency_defaults_to_base() {
-        assert_eq!(CrawlScheduler::new(7).effective_concurrency(), 7);
-        assert_eq!(CrawlScheduler::new(1).effective_concurrency(), 1);
-        assert_eq!(CrawlScheduler::new(0).effective_concurrency(), 0);
+        // Zero is unrepresentable since 2.2b: `CrawlConcurrency` rejects it
+        // at construction (NonZero guard).
+        assert_eq!(sched(7).effective_concurrency(), 7);
+        assert_eq!(sched(1).effective_concurrency(), 1);
     }
 
     #[test]
     fn effective_concurrency_applies_autoscale() {
-        let mut s = CrawlScheduler::new(10);
+        let mut s = sched(10);
         let level = Arc::new(SharedConcurrencyLevel::new());
         s.set_autoscale(Arc::clone(&level));
         assert_eq!(s.effective_concurrency(), 10);
@@ -286,7 +330,7 @@ mod tests {
 
     #[test]
     fn can_spawn_boundary() {
-        let s = CrawlScheduler::new(3);
+        let s = sched(3);
         assert!(s.can_spawn(0));
         assert!(s.can_spawn(2));
         assert!(!s.can_spawn(3));
@@ -297,7 +341,7 @@ mod tests {
 
     #[tokio::test]
     async fn next_url_none_at_limit_leaves_pending_untouched() {
-        let mut s = CrawlScheduler::new(1);
+        let mut s = sched(1);
         s.seed(&url("/a")).await;
         assert!(s.has_pending_work());
         assert!(s.next_url(1).is_none());
@@ -311,7 +355,7 @@ mod tests {
 
     #[tokio::test]
     async fn next_url_skips_already_visited() {
-        let mut s = CrawlScheduler::new(10);
+        let mut s = sched(10);
         s.seed(&url("/a")).await;
         s.seed(&url("/b")).await;
         assert!(s.record_visit("https://example.com/a"));
@@ -321,7 +365,7 @@ mod tests {
 
     #[tokio::test]
     async fn next_url_marks_returned_as_visited() {
-        let mut s = CrawlScheduler::new(10);
+        let mut s = sched(10);
         s.seed(&url("/a")).await;
         let next = s.next_url(0).unwrap();
         assert_eq!(next.url.path(), "/a");
@@ -334,7 +378,7 @@ mod tests {
 
     #[tokio::test]
     async fn next_url_none_when_out_of_work() {
-        let mut s = CrawlScheduler::new(10);
+        let mut s = sched(10);
         assert!(s.next_url(0).is_none());
         s.seed(&url("/a")).await;
         assert!(s.next_url(0).is_some());
@@ -343,7 +387,7 @@ mod tests {
 
     #[tokio::test]
     async fn next_url_returns_fifo_order() {
-        let mut s = CrawlScheduler::new(10);
+        let mut s = sched(10);
         s.seed(&url("/a")).await;
         s.seed(&url("/b")).await;
         s.seed(&url("/c")).await;
@@ -357,7 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn has_pending_work_tracks_buffer() {
-        let mut s = CrawlScheduler::new(10);
+        let mut s = sched(10);
         assert!(!s.has_pending_work());
         s.seed(&url("/a")).await;
         assert!(s.has_pending_work());
@@ -367,7 +411,7 @@ mod tests {
 
     #[tokio::test]
     async fn seed_pushes_to_pending_and_queue() {
-        let mut s = CrawlScheduler::new(4);
+        let mut s = sched(4);
         let q = s.queue();
         s.seed(&url("/seed")).await;
         assert!(s.has_pending_work());
@@ -377,7 +421,7 @@ mod tests {
 
     #[tokio::test]
     async fn drain_discovered_moves_queue_into_pending() {
-        let mut s = CrawlScheduler::new(4);
+        let mut s = sched(4);
         let q = s.queue();
         assert!(q.push_prioritized(disc("/x"), UrlSource::Link).await);
         assert!(!s.has_pending_work(), "pending empty before drain");
@@ -391,7 +435,7 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_pending_captures_pending_and_queue() {
-        let mut s = CrawlScheduler::new(4);
+        let mut s = sched(4);
         // One URL sits in the pending buffer, one still in the shared queue.
         s.restore_pending(&["https://example.com/buffered".into()]);
         s.queue()
@@ -405,7 +449,7 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_pending_is_nondestructive() {
-        let mut s = CrawlScheduler::new(4);
+        let mut s = sched(4);
         s.restore_pending(&["https://example.com/buffered".into()]);
         s.queue()
             .push_prioritized(disc("/queued"), UrlSource::Link)
@@ -417,7 +461,7 @@ mod tests {
 
     #[test]
     fn restore_pending_reenqueues_for_next_url() {
-        let mut s = CrawlScheduler::new(4);
+        let mut s = sched(4);
         s.restore_pending(&[
             "https://example.com/p1".into(),
             "https://example.com/p2".into(),
@@ -430,7 +474,7 @@ mod tests {
 
     #[test]
     fn restore_pending_skips_unparseable_urls() {
-        let mut s = CrawlScheduler::new(4);
+        let mut s = sched(4);
         s.restore_pending(&["not-a-url".into(), "https://example.com/ok".into()]);
         assert_eq!(s.next_url(0).unwrap().url.path(), "/ok");
         assert!(!s.has_pending_work());
@@ -438,7 +482,7 @@ mod tests {
 
     #[tokio::test]
     async fn restore_pending_then_next_url_skips_visited() {
-        let mut s = CrawlScheduler::new(4);
+        let mut s = sched(4);
         s.record_visit("https://example.com/done");
         s.restore_pending(&[
             "https://example.com/done".into(),
@@ -454,14 +498,14 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_restore_pending_roundtrips() {
-        let mut s = CrawlScheduler::new(4);
+        let mut s = sched(4);
         s.restore_pending(&["https://example.com/buffered".into()]);
         s.queue()
             .push_prioritized(disc("/queued"), UrlSource::Link)
             .await;
         let snap = s.snapshot_pending().await;
 
-        let mut s2 = CrawlScheduler::new(4);
+        let mut s2 = sched(4);
         s2.restore_pending(&snap);
         let mut paths: Vec<String> = Vec::new();
         while let Some(d) = s2.next_url(0) {

@@ -34,6 +34,9 @@ pub struct ConfigDefaults {
     pub vault_path: Option<String>,
     /// Bypass WAF/CAPTCHA detection by default (REQ-WAF-07)
     pub ignore_waf: Option<bool>,
+    /// Default explicit rate-limiter burst permits (budget model Q1 knob;
+    /// 0 is rejected at staging with a Spanish error).
+    pub rate_limit_burst: Option<u32>,
 }
 
 impl ConfigDefaults {

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use webfang_core::domain::budget::DomainSlots;
 use webfang_core::domain::clock::{MockClock, SystemClock};
 use webfang_core::{DomainSessionPool, SessionId, SessionManager, SessionPoolConfig};
 
@@ -16,7 +17,7 @@ use webfang_core::{DomainSessionPool, SessionId, SessionManager, SessionPoolConf
 #[test]
 fn test_acquire_success_acquire_cycle() {
     let config = SessionPoolConfig {
-        pool_size: 1,
+        pool_size: DomainSlots::new(1).expect("test slot count non-zero"),
         ..Default::default()
     };
     let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
@@ -35,7 +36,7 @@ fn test_acquire_success_acquire_cycle() {
 #[test]
 fn test_ban_on_429() {
     let config = SessionPoolConfig {
-        pool_size: 1,
+        pool_size: DomainSlots::new(1).expect("test slot count non-zero"),
         base_delay: Duration::from_secs(60),
         ..Default::default()
     };
@@ -55,7 +56,7 @@ fn test_ban_on_429() {
 #[test]
 fn test_ban_on_403() {
     let config = SessionPoolConfig {
-        pool_size: 1,
+        pool_size: DomainSlots::new(1).expect("test slot count non-zero"),
         base_delay: Duration::from_secs(60),
         ..Default::default()
     };
@@ -71,7 +72,7 @@ fn test_ban_on_403() {
 #[test]
 fn test_ban_on_503() {
     let config = SessionPoolConfig {
-        pool_size: 1,
+        pool_size: DomainSlots::new(1).expect("test slot count non-zero"),
         base_delay: Duration::from_secs(60),
         ..Default::default()
     };
@@ -123,7 +124,7 @@ fn test_success_resets_after_ban() {
 #[test]
 fn test_banned_session_recovers_after_cooldown() {
     let config = SessionPoolConfig {
-        pool_size: 1,
+        pool_size: DomainSlots::new(1).expect("test slot count non-zero"),
         base_delay: Duration::from_millis(1),
         max_delay: Duration::from_millis(10),
         max_exp: 1,
@@ -206,7 +207,7 @@ fn test_concurrent_failures_same_domain() {
 #[test]
 fn test_domains_independent_failure_tracking() {
     let config = SessionPoolConfig {
-        pool_size: 1,
+        pool_size: DomainSlots::new(1).expect("test slot count non-zero"),
         base_delay: Duration::from_secs(60),
         ..Default::default()
     };
@@ -258,7 +259,7 @@ fn test_session_id_display() {
 #[test]
 fn test_default_config_values() {
     let config = SessionPoolConfig::default();
-    assert_eq!(config.pool_size, 8);
+    assert_eq!(config.pool_size.get(), 8);
     assert_eq!(config.base_delay, Duration::from_secs(1));
     assert_eq!(config.max_delay, Duration::from_secs(60));
     assert_eq!(config.max_exp, 6);
