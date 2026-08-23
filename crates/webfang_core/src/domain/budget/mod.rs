@@ -19,7 +19,7 @@ use std::num::NonZeroUsize;
 
 use self::clamp::MAX_CONCURRENCY_CEILING;
 use self::derivation::{
-    derive_auto_crawl, derive_burst, derive_max_instances, MaxChromeDecision, RamThresholds,
+    derive_burst, derive_crawl, derive_max_instances, MaxChromeDecision, RamThresholds,
 };
 use self::detector::HardwareDetector;
 use self::tiers::{
@@ -52,6 +52,9 @@ pub(crate) const INFERENCE_WORKERS_DEFAULT: usize = 4;
 pub struct BudgetOverrides {
     /// Explicit rate-limiter burst (`WEBFANG_RATE_LIMIT_BURST`, Phase 2).
     pub rate_burst: Option<BurstPermits>,
+    /// Explicit crawl/scrape concurrency (`--concurrency` / TOML / TUI when
+    /// not "auto"). `None` = auto-derive from the detector seam.
+    pub crawl: Option<CrawlConcurrency>,
 }
 
 /// Immutable snapshot of every concurrency budget, built ONCE at engine /
@@ -76,7 +79,7 @@ impl BudgetModel {
     pub fn build(overrides: BudgetOverrides, detector: &dyn HardwareDetector) -> BudgetModel {
         let detected = detector.detect();
 
-        let crawl = derive_auto_crawl(detected);
+        let crawl = derive_crawl(overrides.crawl, detected);
         let burst = derive_burst(overrides.rate_burst, detected);
 
         // Fixed defaults reproduce TODAY'S constants (see const docs for
@@ -297,6 +300,7 @@ mod tests {
     fn explicit_rate_burst_override_wins_without_moving_other_tiers() {
         let overrides = BudgetOverrides {
             rate_burst: Some(BurstPermits::new(7).expect("7 is non-zero")),
+            crawl: None,
         };
         let model = BudgetModel::build(overrides, &detector(6, Some(16 * GB)));
         assert_eq!(model.burst().get(), 7);
@@ -310,6 +314,28 @@ mod tests {
     fn governor_tier_is_none_when_ram_undetectable() {
         let model = BudgetModel::build(BudgetOverrides::default(), &detector(4, None));
         assert_eq!(model.max_chrome_instances(), None);
+    }
+
+    #[test]
+    fn explicit_crawl_override_wins_over_detector_table() {
+        // Auto table for 2 cores would yield 1; the operator's explicit
+        // value must win verbatim (spec: existing surfaces keep semantics).
+        let overrides = BudgetOverrides {
+            rate_burst: None,
+            crawl: crate::domain::budget::tiers::CrawlConcurrency::new(12).ok(),
+        };
+        let model = BudgetModel::build(overrides, &detector(2, None));
+        assert_eq!(model.crawl().get(), 12);
+    }
+
+    #[test]
+    fn crawl_none_falls_back_to_auto_table() {
+        let overrides = BudgetOverrides {
+            rate_burst: None,
+            crawl: None,
+        };
+        let model = BudgetModel::build(overrides, &detector(6, None));
+        assert_eq!(model.crawl().get(), 5);
     }
 
     /// TRIANGULATE: governor tier equals the legacy formula across a RAM

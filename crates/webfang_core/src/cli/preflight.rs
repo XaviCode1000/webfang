@@ -243,6 +243,11 @@ impl NormalizedConfig {
         opts.crawl.selector = self.selector.value;
         opts.network.delay_ms = self.delay_ms.value;
         opts.network.timeout_secs = self.timeout_secs.value;
+        // Explicit operator concurrency (CLI/TOML/TUI, not "auto") feeds
+        // the budget model as a crawl-tier override — design D4
+        // explicit-wins rule; provenance already rank-guarded upstream.
+        // NOTE: read BEFORE the move of self.concurrency.value below.
+        let explicit_crawl = self.concurrency.value.get();
         opts.network.concurrency = self.concurrency.value;
         opts.export.output_dir = self.output.value;
         opts.export.output_format = self.format.value;
@@ -255,6 +260,10 @@ impl NormalizedConfig {
         opts.export.quick_save = self.quick_save.value;
         opts.crawl.ignore_waf = self.ignore_waf.value;
         opts.budget_overrides = self.budget_overrides.value;
+        if let Some(explicit) = explicit_crawl {
+            opts.budget_overrides.crawl =
+                crate::domain::budget::tiers::CrawlConcurrency::new(explicit).ok();
+        }
         // cross-field rule already applied in the pipeline
         if opts.crawl.sitemap_url.is_some() {
             opts.crawl.use_sitemap = true;
@@ -689,6 +698,7 @@ fn budget_override(v: u32) -> Result<BudgetOverrides, CliExit> {
     })?;
     Ok(BudgetOverrides {
         rate_burst: Some(rate_burst),
+        crawl: None,
     })
 }
 

@@ -1331,22 +1331,44 @@ mod tests {
     fn batch_config_propagates_delay_and_model_concurrency() {
         // Regression for #653: per-URL rate limiting never engaged on the
         // batch path. The concurrency bound now derives from the run's
-        // BudgetModel crawl tier — NOT from the raw CLI flag.
+        // BudgetModel crawl tier; an explicit `--concurrency` value reaches
+        // it THROUGH the model (explicit-wins override, design D4).
         let mut opts = CrawlOptions::default();
         opts.network.delay_ms = 750;
-        // Explicit flag value must be superseded by the model tier.
+        // Explicit flag feeds the model override exactly as preflight does.
         opts.network.concurrency = crate::ConcurrencyConfig::new(2);
-        let budget = crate::domain::budget::BudgetModel::for_test_preset();
+        if let Some(explicit) = opts.network.concurrency.get() {
+            opts.budget_overrides.crawl =
+                crate::domain::budget::tiers::CrawlConcurrency::new(explicit).ok();
+        }
+        let budget = crate::domain::budget::BudgetModel::build(
+            opts.budget_overrides,
+            &crate::domain::budget::detector::SystemDetector,
+        );
 
         let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145, &budget);
 
         assert_eq!(config.delay_ms, 750, "--delay-ms must reach the crawler");
         assert_eq!(
+            config.concurrency, 2,
+            "explicit --concurrency must reach the crawler through the model"
+        );
+    }
+
+    #[test]
+    fn batch_config_auto_concurrency_uses_model_tier() {
+        // With no explicit flag, the model's auto-derived crawl tier is used.
+        let opts = CrawlOptions::default();
+        assert!(opts.network.concurrency.is_auto());
+        let budget = crate::domain::budget::BudgetModel::for_test_preset();
+
+        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145, &budget);
+
+        assert_eq!(
             config.concurrency,
             budget.crawl().get(),
-            "batch crawler bound must equal the model's Operation.crawl tier"
+            "auto mode must use the model's derived Operation.crawl tier"
         );
-        assert_ne!(config.concurrency, 2, "flag must not win over the model");
     }
 
     #[test]

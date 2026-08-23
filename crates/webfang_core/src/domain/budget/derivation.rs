@@ -41,6 +41,18 @@ pub fn derive_auto_crawl(detected: DetectedHw) -> CrawlConcurrency {
     CrawlConcurrency::from(value)
 }
 
+/// Derive the Operation-tier crawl concurrency with operator override support.
+///
+/// * `explicit = Some(v)` → the operator's explicit value wins verbatim
+///   (`--concurrency` / TOML / TUI when not "auto", mapped by preflight into
+///   [`BudgetOverrides::crawl`]).
+/// * `explicit = None` → the auto-crawl table over the detector seam —
+///   today's default, behavior-identical to `ConcurrencyConfig::default()`.
+#[must_use]
+pub fn derive_crawl(explicit: Option<CrawlConcurrency>, detected: DetectedHw) -> CrawlConcurrency {
+    explicit.unwrap_or_else(|| derive_auto_crawl(detected))
+}
+
 /// Derive the rate-limiter burst permit count (decision Q1 DECOUPLE).
 ///
 /// * `explicit = Some(b)` → the operator's value wins verbatim.

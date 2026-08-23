@@ -148,6 +148,9 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
     /// guarantees validity before this point).
     #[allow(clippy::too_many_lines)]
     fn from(args: Args) -> Self {
+        // Capture BEFORE the move into NetworkOptions: explicit operator
+        // concurrency feeds the budget model as a crawl-tier override.
+        let explicit_crawl = args.crawler.concurrency.get();
         use crate::application::crawl_options::{
             CrawlLimits, ExportOptions, IngestionTuning, NetworkOptions,
         };
@@ -263,6 +266,11 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
                         .flatten()
                         .and_then(|v| crate::domain::budget::BurstPermits::new(v).ok())
                 }),
+                // Explicit `--concurrency` (when not "auto") feeds the
+                // model as a crawl override — same explicit-wins rule as
+                // the preflight pipeline path.
+                crawl: explicit_crawl
+                    .and_then(|v| crate::domain::budget::tiers::CrawlConcurrency::new(v).ok()),
             },
         }
     }
