@@ -211,7 +211,6 @@ Options:
           Máximo de descargas de assets concurrentes por página (mínimo 1)
           
           [env: WEBFANG_DOWNLOAD_CONCURRENCY=]
-          [default: 3]
 
       --max-retries <MAX_RETRIES>
           Maximum number of retry attempts
@@ -399,10 +398,9 @@ Options:
           [env: WEBFANG_BATCH_FILE=]
 
       --batch-concurrency <BATCH_CONCURRENCY>
-          Maximum concurrent URLs in batch mode
+          Maximum concurrent URLs in batch mode (omit = auto from budget model)
           
           [env: WEBFANG_BATCH_CONCURRENCY=]
-          [default: 5]
 
       --pipeline
           Enable item pipeline processing (validate → clean → output)
