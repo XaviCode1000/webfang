@@ -155,7 +155,7 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
         self.persist_chunks(url, &title, &hash, size, chunks)
             .await?;
 
-        info!(%url, %hash, "ingestión completada");
+        info!(%url, %hash, "ingestion completed");
         Ok(())
     }
 
@@ -201,7 +201,7 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
         match self.downloader.download(url).await {
             Ok(b) => Ok(b),
             Err(e) => {
-                warn!(%url, error = %e, "descarga falló: abortando pipeline");
+                warn!(%url, error = %e, "download failed: aborting pipeline");
                 Err(e)
             },
         }
@@ -287,7 +287,7 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
         info!(
             count = urls.len(),
             concurrency = self.config.cpu_cores,
-            "iniciando ingestión por lote"
+            "starting batch ingestion"
         );
 
         let results = stream::iter(urls.iter().cloned())
@@ -318,11 +318,11 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
             match result {
                 Ok(Ok(())) => batch.success += 1,
                 Ok(Err(e)) => {
-                    warn!(error = %e, "ingestión individual falló en lote");
+                    warn!(error = %e, "individual ingestion failed in batch");
                     batch.errors.push(e);
                 },
                 Err(_) => {
-                    error!("pánico durante ingestión individual en lote");
+                    error!("panic during individual ingestion in batch");
                     batch.panics += 1;
                 },
             }
@@ -348,7 +348,7 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
         match self.bridge.dispatch_resource(resource).await {
             Ok(Ok(processed)) => Ok(processed.chunks),
             Ok(Err(e)) => {
-                error!(%url, error = %e, "procesamiento CPU falló: abortando pipeline");
+                error!(%url, error = %e, "CPU processing failed: aborting pipeline");
                 Err(e)
             },
             Err(_) => Err(ScraperError::ingestion(

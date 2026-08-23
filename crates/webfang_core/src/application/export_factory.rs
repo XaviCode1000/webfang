@@ -169,49 +169,15 @@ impl<'a> CommitSession<'a> {
     }
 
     fn promote_from_flush_proof(&mut self, url: &str, output_location: String, content_hash: &str) {
-        use crate::domain::page_state::Exported;
-
         let key = canonical_key(url);
         let Some(ctx) = self.ctx else { return };
-        // A record-less promotion means the previous run died before ANY
-        // persistence: synthesize a fresh lifecycle so the URL still lands in
-        // the store Committed (invariant: every input URL present).
-        let record = match self.records.remove(&key) {
-            Some(record) => record,
-            None => fresh_discovered(url, &key, &ctx.run_id).into_record(),
+        let Some(record) = self.resolve_flush_proof_record(url, &key, &ctx.run_id) else {
+            return;
         };
-        // Flush is PROVEN by hash membership, so advancing is honest.
-        // EXPORTED records take their legal direct transition (commit);
-        // ONLY lower states walk the drive chain — driving an EXPORTED
-        // record would hit the terminal-state guard and lose its
-        // content_hash (the dedup identity of the flushed line).
-        let exported: Stateful<RawRecord, Exported> = if record.status == PageStatus::Exported {
-            match Stateful::<RawRecord, Exported>::reconcile(record.clone()) {
-                Ok(exported) => exported,
-                Err(e) => {
-                    tracing::warn!(url, error = %e, "EXPORTED record broke invariants; re-driving fresh");
-                    let mut processed = drive_to_processed(record, &ctx.run_id);
-                    {
-                        let payload = processed.record_mut();
-                        payload.updated_at = now_millis();
-                        payload.content_hash = Some(content_hash.to_owned());
-                    }
-                    processed.export_flushed(PathBuf::from(&output_location))
-                },
-            }
-        } else {
-            let mut processed = drive_to_processed(record, &ctx.run_id);
-            {
-                let payload = processed.record_mut();
-                payload.attempts += 1;
-                payload.last_error = None;
-                payload.updated_at = now_millis();
-                payload.content_hash = Some(content_hash.to_owned());
-                if payload.output_location.is_none() {
-                    payload.output_location = Some(output_location.clone());
-                }
-            }
-            processed.export_flushed(PathBuf::from(&output_location))
+        let Some(exported) =
+            Self::drive_to_export_flushed(record, url, &ctx.run_id, content_hash, &output_location)
+        else {
+            return;
         };
         self.records.insert(key.clone(), exported.record().clone());
         self.save_notifying(PageStatus::Exported);
@@ -222,23 +188,102 @@ impl<'a> CommitSession<'a> {
         self.save_notifying(PageStatus::Committed);
     }
 
+    /// Fetch the record backing a flush-proof promotion. A record-less
+    /// promotion means the previous run died before ANY persistence:
+    /// synthesize a fresh lifecycle so the URL still lands in the store
+    /// Committed (invariant: every input URL present).
+    /// Returns `None` when the identity is structurally invalid (#876).
+    fn resolve_flush_proof_record(
+        &mut self,
+        url: &str,
+        key: &str,
+        run_id: &crate::application::resume::RunId,
+    ) -> Option<RawRecord> {
+        if let Some(record) = self.records.remove(key) {
+            return Some(record);
+        }
+        match fresh_discovered(url, key, run_id) {
+            Some(record) => Some(record.into_record()),
+            None => {
+                warn!(
+                    url,
+                    "record-less flush-proof promotion rejected: structurally invalid URL"
+                );
+                None
+            },
+        }
+    }
+
+    /// Advance a record to the EXPORTED state for a proven flush.
+    /// EXPORTED records take their legal direct transition (commit);
+    /// ONLY lower states walk the drive chain — driving an EXPORTED
+    /// record would hit the terminal-state guard and lose its
+    /// content_hash (the dedup identity of the flushed line).
+    /// Returns `None` when the record identity is structurally invalid (#876).
+    fn drive_to_export_flushed(
+        record: RawRecord,
+        url: &str,
+        run_id: &crate::application::resume::RunId,
+        content_hash: &str,
+        output_location: &str,
+    ) -> Option<Stateful<RawRecord, crate::domain::page_state::Exported>> {
+        use crate::domain::page_state::Exported;
+
+        let flushed_path = PathBuf::from(output_location);
+        if record.status == PageStatus::Exported {
+            if let Ok(exported) = Stateful::<RawRecord, Exported>::reconcile(record.clone()) {
+                return Some(exported);
+            }
+            tracing::warn!(url, "EXPORTED record broke invariants; re-driving fresh");
+            let mut processed = drive_to_processed(record, run_id)?;
+            {
+                let payload = processed.record_mut();
+                payload.updated_at = now_millis();
+                payload.content_hash = Some(content_hash.to_owned());
+            }
+            return Some(processed.export_flushed(flushed_path));
+        }
+        let mut processed = drive_to_processed(record, run_id)?;
+        {
+            let payload = processed.record_mut();
+            payload.attempts += 1;
+            payload.last_error = None;
+            payload.updated_at = now_millis();
+            payload.content_hash = Some(content_hash.to_owned());
+            if payload.output_location.is_none() {
+                payload.output_location = Some(output_location.to_owned());
+            }
+        }
+        Some(processed.export_flushed(flushed_path))
+    }
+
     /// Record an item failure honestly: attempts++, classified last_error,
     /// updated_at — persisted at the record's NON-advanced state (SC6).
     /// A never-seen URL gets a fresh DISCOVERED record carrying the failure.
     fn fail_item(&mut self, url: &str, class: crate::error::ErrorClass, message: &str) {
         let Some(ctx) = self.ctx else { return };
         let key = canonical_key(url);
-        let record = self.records.entry(key).or_insert_with(|| RawRecord {
-            url: url.to_string(),
-            canonical_url: canonical_key(url),
-            run_id: ctx.run_id.as_str().to_string(),
-            content_hash: None,
-            attempts: 0,
-            status: PageStatus::Discovered,
-            last_error: None,
-            output_location: None,
-            updated_at: now_millis(),
-        });
+        let record = match self.records.entry(key.clone()) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                // #876 domain boundary: an empty URL is structurally
+                // meaningless; reject instead of persisting a record that
+                // could never address a page.
+                let record = match RawRecord::new_discovered(
+                    url,
+                    &key,
+                    ctx.run_id.as_str(),
+                    now_millis(),
+                ) {
+                    Ok(record) => record,
+                    Err(err) => {
+                        warn!(url, error = %err, "rejecting record creation for structurally invalid URL");
+                        return;
+                    },
+                };
+                entry.insert(record)
+            },
+        };
         record.attempts += 1;
         record.last_error = Some(LastError {
             class,
@@ -271,23 +316,34 @@ impl<'a> CommitSession<'a> {
             !matches!(record.status, PageStatus::Exported | PageStatus::Committed)
         });
         let mut processed = match existing {
-            Some(record) => drive_to_processed(record, run_id),
-            None => Stateful::<RawRecord, crate::domain::page_state::Discovered>::new(RawRecord {
-                url: url.to_string(),
-                canonical_url: key.clone(),
-                run_id: run_id.as_str().to_string(),
-                content_hash: None,
-                attempts: 0,
-                status: PageStatus::Discovered,
-                last_error: None,
-                output_location: None,
-                updated_at: now_millis(),
-            })
-            .queue()
-            .start_fetch()
-            .fetched()
-            .extracted()
-            .processed(),
+            Some(record) => {
+                let Some(processed) = drive_to_processed(record, run_id) else {
+                    warn!(url, "record identity is structurally invalid; item left uncommitted and will re-drive next run");
+                    return;
+                };
+                processed
+            },
+            None => {
+                // #876 domain boundary: validated construction or nothing.
+                let fresh = match RawRecord::new_discovered(
+                    url,
+                    &key,
+                    run_id.as_str(),
+                    now_millis(),
+                ) {
+                    Ok(fresh) => fresh,
+                    Err(err) => {
+                        warn!(url, error = %err, "rejecting record creation for structurally invalid URL");
+                        return;
+                    },
+                };
+                Stateful::<RawRecord, crate::domain::page_state::Discovered>::new(fresh)
+                    .queue()
+                    .start_fetch()
+                    .fetched()
+                    .extracted()
+                    .processed()
+            },
         };
         {
             let payload = processed.record_mut();
@@ -353,19 +409,18 @@ fn now_millis() -> i64 {
         .unwrap_or_default()
 }
 
-/// Walk a raw record forward along its legal chain to `PROCESSED`. Every arm
-/// reconciles at the recorded position first — the typestate guarantees no
-/// illegal move is expressible even during recovery re-drives.
 /// Walk a raw record forward along its legal chain to `PROCESSED`. Every
 /// arm reconciles at the recorded position first — the typestate guarantees
-/// no illegal move is expressible even during recovery re-drives. A
-/// reconciliation failure (impossible persisted state that slipped past
+/// no illegal move is expressible even during recovery re-drives.
+/// A reconciliation failure (impossible persisted state that slipped past
 /// load-time quarantine) degrades to a fresh DISCOVERED lifecycle under the
-/// current run instead of panicking.
+/// current run instead of panicking. Returns `None` only when even that
+/// fresh lifecycle cannot be constructed (#876: structurally meaningless
+/// identity) — callers must skip the item rather than persist garbage.
 fn drive_to_processed(
     record: RawRecord,
     run_id: &RunId,
-) -> Stateful<RawRecord, crate::domain::page_state::Processed> {
+) -> Option<Stateful<RawRecord, crate::domain::page_state::Processed>> {
     use crate::domain::page_state::{
         Discovered, Extracted, Fetched, Fetching, Processed, Queued, ReconcileError,
     };
@@ -391,38 +446,43 @@ fn drive_to_processed(
             found: record.status,
         }),
     };
-    result.unwrap_or_else(|e| {
-        tracing::warn!(
+    match result {
+        Ok(processed) => Some(processed),
+        Err(e) => {
+            tracing::warn!(
             error = %e,
             "quarantining impossible persisted state; starting fresh lifecycle"
-        );
-        fresh_discovered(&url, &canonical_url, run_id)
-            .queue()
-            .start_fetch()
-            .fetched()
-            .extracted()
-            .processed()
-    })
+                        );
+            let fresh = fresh_discovered(&url, &canonical_url, run_id)?;
+            Some(
+                fresh
+                    .queue()
+                    .start_fetch()
+                    .fetched()
+                    .extracted()
+                    .processed(),
+            )
+        },
+    }
 }
 
 /// Start a brand-new DISCOVERED lifecycle for one URL under `run_id`
 /// (A2: a new run owns its records; history stays on disk until commit).
+/// Returns `None` when the URL fails the #876 domain boundary validation.
 fn fresh_discovered(
     url: &str,
     canonical_url: &str,
     run_id: &RunId,
-) -> Stateful<RawRecord, crate::domain::page_state::Discovered> {
-    Stateful::<RawRecord, crate::domain::page_state::Discovered>::new(RawRecord {
-        url: url.to_string(),
-        canonical_url: canonical_url.to_string(),
-        run_id: run_id.as_str().to_string(),
-        content_hash: None,
-        attempts: 0,
-        status: PageStatus::Discovered,
-        last_error: None,
-        output_location: None,
-        updated_at: now_millis(),
-    })
+) -> Option<Stateful<RawRecord, crate::domain::page_state::Discovered>> {
+    let record = match RawRecord::new_discovered(url, canonical_url, run_id.as_str(), now_millis())
+    {
+        Ok(record) => record,
+        Err(err) => {
+            tracing::warn!(url, error = %err, "rejecting record creation for structurally invalid URL");
+            return None;
+        },
+    };
+    Some(Stateful::<RawRecord, crate::domain::page_state::Discovered>::new(record))
 }
 
 fn build_content_hash_index(path: &std::path::Path) -> HashSet<String> {
