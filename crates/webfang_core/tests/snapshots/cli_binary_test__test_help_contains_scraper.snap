@@ -1,5 +1,6 @@
 ---
 source: crates/webfang_core/tests/cli_binary_test.rs
+assertion_line: 71
 expression: "redact_nondeterministic(Path::new(\"__no_temp__\"), &stdout)"
 ---
 CLI Arguments for the webfang binary.
@@ -54,6 +55,13 @@ Options:
           
           [env: WEBFANG_CONCURRENCY=]
           [default: auto]
+
+      --rate-limit-burst <RATE_LIMIT_BURST>
+          Explicit rate-limiter burst permits (token-bucket capacity).
+          
+          Overrides the hardware-derived budget-model default (Q1: burst is decoupled from crawl concurrency). Raw string here ON PURPOSE: validation/conversion happens once in preflight staging via `parse_rate_limit_burst` so CLI, env, and programmatic input all share one accept / reject-0 / warn-and-default semantic.
+          
+          [env: WEBFANG_RATE_LIMIT_BURST=]
 
       --use-sitemap
           Use sitemap for URL discovery NOTE: HTTP redirects (301/302) are resolved at scrape-time, not parse-time. This avoids redundant HEAD requests during sitemap parsing for better performance
