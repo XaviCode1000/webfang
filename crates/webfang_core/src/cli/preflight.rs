@@ -438,21 +438,22 @@ fn stage_config_file_obsidian(book: &mut FieldBook, config: &ConfigDefaults) -> 
             n += 1;
         }
     }
+    // Rank-guarded by `try_write` alone: at this fixed pipeline position the
+    // slot can only be `Default`-sourced, so value-emptiness must not gate
+    // the write (spec R2 forbids value-equality merge logic).
     if let Some(ref tags_str) = config.obsidian_tags {
-        if book.obsidian_tags.value.is_empty() {
-            let parsed: Vec<String> = tags_str
-                .split(',')
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect();
-            if try_write(
-                &mut book.obsidian_tags,
-                parsed,
-                ConfigSource::ConfigFile,
-                "obsidian_tags",
-            ) {
-                n += 1;
-            }
+        let parsed: Vec<String> = tags_str
+            .split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
+        if try_write(
+            &mut book.obsidian_tags,
+            parsed,
+            ConfigSource::ConfigFile,
+            "obsidian_tags",
+        ) {
+            n += 1;
         }
     }
     n
@@ -968,8 +969,9 @@ fn apply_cross_field_rules(book: &mut FieldBook) -> usize {
     if book.sitemap_url.value.is_some() && !book.use_sitemap.value {
         // keep the higher of the two provenances for auditability
         let src = std::cmp::max(book.sitemap_url.source, book.use_sitemap.source);
+        let loser = book.use_sitemap.source;
         book.use_sitemap = ConfigValue::new(true, src);
-        info!(field = "use_sitemap", winner = ?src, loser = ?ConfigSource::Default, "config_field_overridden");
+        info!(field = "use_sitemap", winner = ?src, loser = ?loser, "config_field_overridden");
         n += 1;
     }
     // Obsidian tag trim/dedup preserved verbatim inside apply_cross_field_rules

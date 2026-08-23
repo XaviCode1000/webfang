@@ -19,13 +19,17 @@
 # keeps exactly ONE H1 — the "# <crate> API Reference" wrapper — by demoting
 # the tool output's headings one level (#N → #N+1).
 #
-# BUILD_DATE: injected by CI (docs.yml). Local runs leave it empty; only
-# llms.txt then carries a "Generated: local run" note.
+# BUILD_DATE / GITHUB_SHA: injected by CI (docs.yml). Local runs leave both
+# empty; llms.txt then carries a "Generated: local run" note and omits the
+# commit line. The commit line lets consumers (just docs, NotebookLM sync)
+# verify artifact freshness against origin/main instead of guessing from a
+# timestamp alone.
 # ============================================================================
 set -euo pipefail
 
 OUT_DIR=docs/book/webfang-docs-llm
 BUILD_DATE="${BUILD_DATE:-}"
+SOURCE_COMMIT="${GITHUB_SHA:-}"
 PAGES_PREFIX="https://xavicode1000.github.io/webfang/webfang-docs-llm"
 CHAPTERS="overview debugging testing troubleshooting tui-unified-design"
 # webfang_cli is bin-only and stays excluded from the API render: it is covered
@@ -47,20 +51,87 @@ fi
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
-# Two metadata lines (Generated + blank) in CI, nothing locally.
+# Metadata lines (Generated + Source commit + blank) in CI, nothing locally.
 generated_line() {
   if [ -n "$BUILD_DATE" ]; then
     echo "Generated: $BUILD_DATE"
+    if [ -n "$SOURCE_COMMIT" ]; then
+      echo "Source commit: $SOURCE_COMMIT"
+    fi
     echo
   fi
 }
 
-# Demote every heading by exactly ONE level, deepest first (#### before ###,
-# etc.), so no heading is demoted twice. Handles H1..H6 input → H2..H7 output
-# (H7 is a markdown edge case but is never parsed back to HTML here).
+# Demote every heading by exactly ONE level in a SINGLE pass, clamped at H6.
+# Fence-aware: lines starting with `# ` inside ```/~~~ code blocks are code
+# (e.g. rustdoc doc-hidden `# hidden` lines), never headings.
+#
+# WARNING (regression guard): do NOT rewrite this as a chained `sed -e ...
+# -e ...` pipeline. sed applies its expressions SEQUENTIALLY to the same line,
+# so substitutions cascade (## → #### → …) — the original implementation meant
+# to demote uniformly but actually pushed H4 → H8 and H6 → H12, leaving
+# thousands of ≥H7 headings that CommonMark renders as plain text. awk counts
+# the leading hashes exactly once and clamps at 6 (the CommonMark maximum), so
+# H5 → H6 and H6 stays H6.
 demote_headings() {
-  sed -e 's/^######/#######/' -e 's/^#####/######/' -e 's/^####/#####/' \
-      -e 's/^###/####/' -e 's/^##/###/' -e 's/^#/##/' "$1"
+  awk '{
+    if ($0 ~ /^(`{3,}|~{3,})/) { infence = !infence; print; next }
+    if (infence) { print; next }
+    n = 0
+    while (substr($0, n + 1, 1) == "#") n++
+    if (n >= 1 && substr($0, n + 1, 1) == " ") {
+      level = (n < 6 ? n + 1 : 6)
+      print substr("######", 1, level) substr($0, n + 1)
+    } else {
+      print
+    }
+  }' "$1"
+}
+
+# Drop headings that open an EMPTY LEAF section: no body lines and no child
+# headings before the next same-or-shallower heading (or EOF). Sections with
+# children are structural parents and are kept. These come from public items
+# without doc comments; stripping them removes index noise for LLM/RAG
+# consumers instead of shipping hundreds of bare signatures.
+# Fence-aware: `# comment` inside ```/~~~ code blocks is NOT a heading.
+strip_empty_leaf_sections() {
+  python3 - "$1" <<'PYEOF'
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    lines = fh.read().split("\n")
+
+heading = re.compile(r"^(#{1,6}) ")
+fence = re.compile(r"^(`{3,}|~{3,})")
+out = []
+in_fence = False
+i = 0
+while i < len(lines):
+    line = lines[i]
+    if fence.match(line):
+        in_fence = not in_fence
+        out.append(line)
+        i += 1
+        continue
+    m = heading.match(line) if not in_fence else None
+    if not m:
+        out.append(line)
+        i += 1
+        continue
+    level = len(m.group(1))
+    j = i + 1
+    while j < len(lines) and not lines[j].strip():
+        j += 1
+    empty_leaf = j >= len(lines)  # trailing heading, nothing after
+    if not empty_leaf:
+        m2 = heading.match(lines[j])
+        empty_leaf = bool(m2) and len(m2.group(1)) <= level
+    if not empty_leaf:
+        out.append(line)
+    i += 1
+sys.stdout.write("\n".join(out))
+PYEOF
 }
 
 # Render one crate's API to "$2" via rustdoc-markdown (rustdoc JSON backend,
@@ -73,26 +144,30 @@ demote_headings() {
 render_api() {
   local crate="$1" out="$2" features
   case "$crate" in
-    webfang_core) features="default images documents persistence console dev-tracing ai adaptive-selectors ui mcp chromium" ;;
-    webfang_ai)   features="ai" ;;
-    webfang_mcp)  features="mcp ai persistence" ;;
-    *)            features="" ;;
+  webfang_core) features="default images documents persistence console dev-tracing ai adaptive-selectors ui mcp chromium" ;;
+  webfang_ai) features="ai" ;;
+  webfang_mcp) features="mcp ai persistence" ;;
+  *) features="" ;;
   esac
   local -a cmd=(rustdoc-markdown print "$crate" --manifest "crates/$crate/Cargo.toml" --include-other --output "$out.raw")
   [ -n "$features" ] && cmd+=(--features "$features")
   "${cmd[@]}"
+  demote_headings "$out.raw" >"$out.tmp"
   {
     echo "# $crate API Reference"
     generated_line
     echo "---"
     echo
-    demote_headings "$out.raw"
+    strip_empty_leaf_sections "$out.tmp"
     echo
-  } > "$out"
-  rm -f "$out.raw"
-  # H1 guard: exactly one H1 per per-source file.
-  [ "$(grep -c '^# ' "$out")" -eq 1 ] || {
-    echo "::error::$out does not have exactly one H1 heading"
+  } >"$out"
+  rm -f "$out.raw" "$out.tmp"
+  # H1 guard: exactly one H1 per per-source file. Fence-aware: `# ` lines
+  # inside ```/~~~ code blocks are Rust doc-hidden lines, not headings.
+  h1_count=$(awk '/^(`{3,}|~{3,})/ { infence = !infence; next }
+                      !infence && /^# / { c++ } END { print c + 0 }' "$out")
+  [ "$h1_count" -eq 1 ] || {
+    echo "::error::$out does not have exactly one H1 heading (found $h1_count)"
     return 1
   }
 }
@@ -110,23 +185,23 @@ emit_chapters() {
 
 per_source_file() {
   case "$1" in
-    webfang_core) echo "01-webfang_core.md" ;;
-    webfang_ai) echo "02-webfang_ai.md" ;;
-    webfang_tui) echo "03-webfang_tui.md" ;;
-    webfang_mcp) echo "04-webfang_mcp.md" ;;
-    webfang_test_utils) echo "05-webfang_test_utils.md" ;;
-    *) echo "" ;;
+  webfang_core) echo "01-webfang_core.md" ;;
+  webfang_ai) echo "02-webfang_ai.md" ;;
+  webfang_tui) echo "03-webfang_tui.md" ;;
+  webfang_mcp) echo "04-webfang_mcp.md" ;;
+  webfang_test_utils) echo "05-webfang_test_utils.md" ;;
+  *) echo "" ;;
   esac
 }
 
 crate_description() {
   case "$1" in
-    webfang_core) echo "core domain/application/infrastructure API" ;;
-    webfang_ai) echo "ONNX embeddings and semantic cleaning API" ;;
-    webfang_tui) echo "ratatui TUI selector API" ;;
-    webfang_mcp) echo "MCP server (35 tools) API" ;;
-    webfang_test_utils) echo "shared test utilities API" ;;
-    *) echo "" ;;
+  webfang_core) echo "core domain/application/infrastructure API" ;;
+  webfang_ai) echo "ONNX embeddings and semantic cleaning API" ;;
+  webfang_tui) echo "ratatui TUI selector API" ;;
+  webfang_mcp) echo "MCP server (35 tools) API" ;;
+  webfang_test_utils) echo "shared test utilities API" ;;
+  *) echo "" ;;
   esac
 }
 
@@ -147,7 +222,7 @@ done
   echo "---"
   echo
   emit_chapters "##"
-} > "$OUT_DIR/00-narrative.md"
+} >"$OUT_DIR/00-narrative.md"
 
 {
   echo "# WebFang CLI Reference"
@@ -155,7 +230,7 @@ done
   echo "---"
   echo
   sed '1s/^# /## /' docs/src/cli-reference.md
-} > "$OUT_DIR/06-cli-reference.md"
+} >"$OUT_DIR/06-cli-reference.md"
 
 # Phase 3: back-compat monolith (pre-#734 composition preserved; API sections
 # are assembled from the same per-source files, so their nested wrapper H1s
@@ -188,7 +263,7 @@ done
       echo
     fi
   done
-} > "$OUT_DIR/webfang-docs-full.md"
+} >"$OUT_DIR/webfang-docs-full.md"
 
 # Phase 4: llms.txt (v2 index).
 {
@@ -198,36 +273,39 @@ done
   echo
   if [ -n "$BUILD_DATE" ]; then
     echo "Generated: $BUILD_DATE"
+    if [ -n "$SOURCE_COMMIT" ]; then
+      echo "Source commit: $SOURCE_COMMIT"
+    fi
   else
     echo "Generated: local run (set BUILD_DATE in CI)"
   fi
   echo
   echo "Complete reference:"
   echo
-  echo "- [webfang-docs-full.md]($PAGES_PREFIX/webfang-docs-full.md): everything on this page, one file — narrative + CLI + all crate APIs (~$(wc -w < "$OUT_DIR/webfang-docs-full.md") words)"
+  echo "- [webfang-docs-full.md]($PAGES_PREFIX/webfang-docs-full.md): everything on this page, one file — narrative + CLI + all crate APIs (~$(wc -w <"$OUT_DIR/webfang-docs-full.md") words)"
   echo
   echo "Focused sources:"
   echo
-  echo "- [00-narrative.md]($PAGES_PREFIX/00-narrative.md): guides — debugging/tracing, testing, troubleshooting, TUI design ($(wc -w < "$OUT_DIR/00-narrative.md") words)"
+  echo "- [00-narrative.md]($PAGES_PREFIX/00-narrative.md): guides — debugging/tracing, testing, troubleshooting, TUI design ($(wc -w <"$OUT_DIR/00-narrative.md") words)"
   for crate in $ALL_CRATES; do
     out_file=$(per_source_file "$crate")
     [ -n "$out_file" ] && [ -f "$OUT_DIR/$out_file" ] || continue
-    echo "- [$out_file]($PAGES_PREFIX/$out_file): $(crate_description "$crate") ($(wc -w < "$OUT_DIR/$out_file") words)"
+    echo "- [$out_file]($PAGES_PREFIX/$out_file): $(crate_description "$crate") ($(wc -w <"$OUT_DIR/$out_file") words)"
   done
   echo
   echo "CLI:"
   echo
-  echo "- [06-cli-reference.md]($PAGES_PREFIX/06-cli-reference.md): complete \`webfang\` binary flag reference (--help, env vars) ($(wc -w < "$OUT_DIR/06-cli-reference.md") words)"
+  echo "- [06-cli-reference.md]($PAGES_PREFIX/06-cli-reference.md): complete \`webfang\` binary flag reference (--help, env vars) ($(wc -w <"$OUT_DIR/06-cli-reference.md") words)"
   echo
   echo "Optional:"
   echo
   echo "- [GitHub Pages site](https://xavicode1000.github.io/webfang/): human-oriented docs + rustdoc HTML under /api/"
-} > "$OUT_DIR/llms.txt"
+} >"$OUT_DIR/llms.txt"
 
 # Summary.
 echo
 echo "Output: $OUT_DIR"
 for f in llms.txt 00-narrative.md 01-webfang_core.md 02-webfang_ai.md 03-webfang_tui.md 04-webfang_mcp.md 05-webfang_test_utils.md 06-cli-reference.md webfang-docs-full.md; do
   [ -f "$OUT_DIR/$f" ] || continue
-  echo "$f $(wc -w < "$OUT_DIR/$f") words"
+  echo "$f $(wc -w <"$OUT_DIR/$f") words"
 done

@@ -20,6 +20,36 @@ pub(crate) enum OutputError {
     Backend(String),
 }
 
+impl OutputError {
+    /// Classify this output error per the Error Classification Matrix
+    /// (`docs/error-classification-matrix.md`, #865).
+    ///
+    /// Io errors mirror [`CrawlError::classify`] rows 21/22 (transient for
+    /// `Interrupted`/`WouldBlock`/`TimedOut`, permanent otherwise).
+    /// Serialization failures are single-item data issues: the pipeline is
+    /// healthy, so the class is domain-recoverable. Backend failures are
+    /// indeterminate transport faults (rows 1/8 rationale): transient.
+    pub(crate) fn classify(&self) -> crate::domain::error::ErrorClass {
+        use crate::domain::error::ErrorClass;
+
+        match self {
+            Self::Io(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::Interrupted
+                        | std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                ErrorClass::TransientRetriable
+            },
+            Self::Io(_) => ErrorClass::PermanentFatal,
+            Self::Serialization(_) => ErrorClass::DomainRecoverable,
+            Self::Backend(_) => ErrorClass::TransientRetriable,
+        }
+    }
+}
+
 /// A sink that receives [`ScrapedItem`]s after pipeline processing.
 ///
 /// Output stages are separate from [`PipelineStage`](crate::domain::pipeline_item::PipelineStage).
