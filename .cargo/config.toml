@@ -5,7 +5,7 @@
 # Usage: cargo console -- --url https://example.com
 # Injects tokio_unstable so console-subscriber compiles out of the box (#task 4.3).
 console = ["run", "-p", "webfang_cli", "--bin", "webfang", "--features", "console", "--config", 'env.RUSTFLAGS="--cfg tokio_unstable"']
-    
+
 # Build with tokio_unstable (for tokio-console)
 # Usage: cargo debug
 debug = ["build", "-p", "webfang_cli", "--bin", "webfang", "--features", "console", "--config", 'env.RUSTFLAGS="--cfg tokio_unstable"']

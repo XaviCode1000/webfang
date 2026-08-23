@@ -5,9 +5,9 @@
 //!
 //! What it proves, in order:
 //! 1. the `observability::init_console` path initializes under unstable cfg;
-//! 2. a max-budget saturation workload (exactly `GlobalConcurrency` tasks
-//!    holding tier permits simultaneously) keeps the runtime's alive-task
-//!    DELTA over baseline within the configurable ceiling;
+//! 2. a max-budget saturation workload (exactly the `Operation.crawl` ceiling
+//!    of REAL spawned tasks, each holding a tier permit) keeps the runtime's
+//!    alive-task DELTA over baseline within the configurable ceiling;
 //! 3. after shutdown, alive tasks return to baseline within the grace bound;
 //! 4. a JSON stats artifact (baseline / peak / delta / threshold / duration)
 //!    is persisted for the Gate 4 dossier.
@@ -86,26 +86,31 @@ async fn console_smoke_delta_stays_under_ceiling_and_returns_to_baseline() {
     }
     let baseline = current.load(Ordering::SeqCst);
 
-    // 2. Max-budget workload: EXACTLY the Operation.crawl ceiling of tasks
-    //    alive at once, each holding a permit through yields, soaked for the
-    //    configured smoke window. Spawned-but-queued tasks are deliberately
-    //    absent so the alive-task delta maps to real concurrent work units.
+    // 2. Max-budget workload: EXACTLY the Operation.crawl ceiling of REAL
+    //    spawned tasks alive at once, each holding its own permit and staying
+    //    alive for the configured smoke window. The sampler must observe an
+    //    alive-task delta that maps 1:1 to these work units and stay within
+    //    the ceiling.
     let permits = Arc::new(Semaphore::new(crawl_ceiling));
-    let deadline = Instant::now() + Duration::from_secs(smoke_secs());
-    while Instant::now() < deadline {
-        let mut held = Vec::with_capacity(crawl_ceiling);
-        for _ in 0..crawl_ceiling {
-            held.push(
-                permits
-                    .clone()
-                    .try_acquire_owned()
-                    .expect("budget permits available"),
-            );
-        }
-        // Hold one full scheduling quantum so the sampler observes the peak.
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        drop(held);
-        tokio::task::yield_now().await;
+    let soak_end = Instant::now() + Duration::from_secs(smoke_secs());
+    let mut workers = Vec::with_capacity(crawl_ceiling);
+    for _ in 0..crawl_ceiling {
+        let permits = Arc::clone(&permits);
+        workers.push(tokio::spawn(async move {
+            // Exactly one permit per spawned worker; #workers == #permits, so
+            // acquisition cannot fail.
+            let _permit = permits
+                .try_acquire_owned()
+                .expect("budget permits available");
+            while Instant::now() < soak_end {
+                // Hold one full scheduling quantum so the sampler observes
+                // the peak.
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            }
+        }));
+    }
+    for worker in workers {
+        worker.await.expect("budget workload task joins");
     }
 
     // 3. Shutdown: stop the sampler, assert return-to-baseline within grace.
