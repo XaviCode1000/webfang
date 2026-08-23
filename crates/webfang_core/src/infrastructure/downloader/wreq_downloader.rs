@@ -83,7 +83,9 @@ impl WreqDownloader {
         backoff_base_ms: u64,
         backoff_max_ms: u64,
     ) -> Result<Self, DownloadError> {
-        let pool_size = std::cmp::max(6, num_cpus::get() - 1);
+        // Canonical detector seam (Q2): same "auto" as every other subsystem.
+        let pool_size =
+            std::cmp::max(6, crate::domain::budget::detector::system_parallelism().get() - 1);
 
         // `.emulation(profile)` installs the profile-default headers (including
         // a browser UA) via `default_headers`; a pinned UA must be set AFTER
