@@ -47,7 +47,6 @@ use super::action::Action;
 use super::component::{AppMode, Component};
 use super::event::Event;
 use super::modal::centered_rect;
-use super::progress_types::ScrapeProgress;
 use super::tui_terminal::Tui;
 
 /// Result of running the App.
@@ -136,31 +135,6 @@ impl App {
         self
     }
 
-    /// Bridge a progress channel to the action system.
-    ///
-    /// Spawns a background task that polls the `mpsc::UnboundedReceiver<ScrapeProgress>`
-    /// and forwards each event as an `Action::Progress(ScrapeProgress)` action.
-    ///
-    /// When the channel closes (scraper finished, tx dropped), sends
-    /// `Action::Quit` to terminate the TUI.
-    #[must_use]
-    pub fn with_progress_bridge(
-        self,
-        mut progress_rx: tokio::sync::mpsc::UnboundedReceiver<ScrapeProgress>,
-    ) -> Self {
-        let action_tx = self.action_tx.clone();
-        tokio::spawn(async move {
-            while let Some(progress) = progress_rx.recv().await {
-                if action_tx.send(Action::Progress(progress)).is_err() {
-                    break;
-                }
-            }
-            // Channel closed — scraper finished, quit the TUI
-            let _ = action_tx.send(Action::Quit);
-        });
-        self
-    }
-
     /// Run the app: enter TUI, unify event loop, render components.
     ///
     /// The unified event loop uses `tokio::select!` with biased priority:
@@ -209,7 +183,7 @@ impl App {
                     self.on_event(crossterm_event, &mut tui)?;
                 }
 
-                // Priority 2: Actions from components or progress bridge
+                // Priority 2: Actions from components
                 action = self.action_rx.recv() => {
                     match action {
                         Some(a) => self.dispatch_action(a, &mut tui)?,

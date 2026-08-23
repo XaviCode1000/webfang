@@ -42,7 +42,6 @@ pub mod progress_types {
     //! Path-compat shim — canonical home is now `webfang_core::domain::entities::progress`.
     pub use webfang_core::domain::entities::progress::*;
 }
-mod progress_view;
 mod progress_widget;
 mod url_selector;
 
@@ -58,7 +57,6 @@ pub use config_form::ConfigFormState;
 pub use progress_types::{
     ErrorEntry, ErrorType, ProgressState, ScrapeError, ScrapeProgress, ScrapeStatus, UrlState,
 };
-pub use progress_view::run_progress_view;
 pub use progress_widget::{ProgressIcons, ProgressWidget};
 pub use url_selector::{run_selector, UrlSelector, UrlSelectorState};
 

@@ -170,11 +170,7 @@ fn args_with_all_fields_set() -> Args {
 
         ai: AiArgs::default(),
 
-        tui: TuiArgs {
-            interactive: true,
-            config_tui: true,
-            ..Default::default()
-        },
+        tui: TuiArgs::default(),
     }
 }
 
@@ -194,7 +190,7 @@ fn assert_full_parity_crawl_limits(opts: &webfang_core::application::crawl_optio
         vec!["/blog/**".to_owned(), "/docs/**".to_owned()]
     );
     assert_eq!(opts.crawl.exclude_patterns, vec!["/admin/**".to_owned()]);
-    assert!(opts.crawl.interactive);
+    assert!(!opts.crawl.interactive);
     assert!(opts.crawl.resume);
     assert_eq!(
         opts.crawl.state_dir,
@@ -631,8 +627,6 @@ proptest! {
         resume in proptest::bool::ANY,
         download_images in proptest::bool::ANY,
         download_documents in proptest::bool::ANY,
-        interactive in proptest::bool::ANY,
-        config_tui in proptest::bool::ANY,
         quiet in proptest::bool::ANY,
         dry_run in proptest::bool::ANY,
         use_sitemap in proptest::bool::ANY,
@@ -710,11 +704,7 @@ proptest! {
                 obsidian_rich_metadata: rich_metadata,
             },
             ai: AiArgs::default(),
-            tui: TuiArgs {
-                interactive,
-                config_tui,
-                ..Default::default()
-            },
+            tui: TuiArgs::default(),
         };
 
         let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
@@ -728,7 +718,7 @@ proptest! {
         prop_assert_eq!(opts.crawl.resume, resume);
         prop_assert_eq!(opts.network.download_images, download_images);
         prop_assert_eq!(opts.network.download_documents, download_documents);
-        prop_assert_eq!(opts.crawl.interactive, interactive);
+        prop_assert_eq!(opts.crawl.interactive, false); // no CLI flag sets it (#880)
         prop_assert_eq!(opts.quiet, quiet);
         prop_assert_eq!(opts.export.quiet, quiet);
         prop_assert_eq!(opts.export.dry_run, dry_run);
