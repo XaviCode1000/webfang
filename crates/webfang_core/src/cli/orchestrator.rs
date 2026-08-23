@@ -33,26 +33,6 @@ use crate::application::adaptive_engine::AdaptiveSelectorEngine;
 #[cfg(not(feature = "adaptive-selectors"))]
 type AdaptiveSelectorEngine = ();
 
-/// Create an unbounded channel and a `LiveProgressObserver` wired to it.
-///
-/// Returns `(observer, rx)` where:
-/// - `observer` wraps the `tx` side and can be passed to `scrape_urls`
-/// - `rx` is the receiving end for the TUI progress view
-///
-/// The caller must pass `rx` to `run_progress_view` on the main thread
-/// (crossterm TTY ownership requirement).
-pub fn prepare_progress_channel(
-    quiet: bool,
-) -> (
-    Box<dyn crate::domain::ports::ProgressObserver>,
-    tokio::sync::mpsc::UnboundedReceiver<crate::domain::entities::progress::ScrapeProgress>,
-) {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let observer =
-        Box::new(crate::application::progress_observer::LiveProgressObserver::new(Some(tx), quiet));
-    (observer, rx)
-}
-
 /// Pre-flight gate for `--output-vectors` (#703, #652).
 ///
 /// `--output-vectors` can only write embeddings when semantic cleaning is
@@ -187,9 +167,8 @@ pub async fn run(
         Err(e) => return e,
     };
 
-    // Create observer with stderr fallback (no channel) for non-TUI mode.
-    // For TUI mode, call `prepare_progress_channel()` from main.rs and pass
-    // the observer here instead.
+    // Create observer with stderr fallback (no channel) for non-TUI mode:
+    // scraping runs fully headless; there is no TUI progress screen.
     let observer = Box::new(
         crate::application::progress_observer::LiveProgressObserver::new(None, opts.export.quiet),
     );
