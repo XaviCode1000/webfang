@@ -104,9 +104,7 @@ pub struct Engine {
     /// to prevent the tokio runtime from hanging waiting for it.
     signal_handle: Option<tokio::task::JoinHandle<()>>,
     /// Immutable budget snapshot built once at entry; every derived tier
-    /// (burst + crawl today, domain in the remaining 2a rewiring) reads from
-    /// it.
-    #[allow(dead_code)] // session-pool Domain tier consumes this in 2.2c, next commit
+    /// (burst, crawl, domain) reads from it.
     budget: BudgetModel,
 }
 
@@ -249,8 +247,11 @@ impl Engine {
 
     /// Enable the domain session pool for per-domain rate limiting.
     pub fn with_session_pool(mut self, cooldown: Duration) -> Self {
+        // Slot count derives from the model's Domain tier, not a raw default
+        // (task 2.2c).
         let config = SessionPoolConfig {
             base_delay: cooldown,
+            pool_size: self.budget.domain(),
             ..SessionPoolConfig::default()
         };
         self.session_pool = Some(DomainSessionPool::new(config, Arc::new(SystemClock)));
