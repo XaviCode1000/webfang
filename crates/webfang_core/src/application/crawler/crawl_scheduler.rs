@@ -538,3 +538,45 @@ mod tests {
         assert!(paths.contains(&"/queued".into()));
     }
 }
+
+// ============================================================================
+// Task 5.1 memory probe — visited_urls string mirror growth (BEFORE numbers).
+// Writes one line to WEBFANG_MEMORY_REPORT_PATH; no byte assertions by design
+// (Q3 MEASURE FIRST — data decides, not preferences).
+// ============================================================================
+#[cfg(test)]
+mod memory_probe_tests {
+    use super::*;
+    use crate::infrastructure::observability::memory_probe;
+
+    #[test]
+    fn probe_visited_mirror_growth_200k_urls() {
+        const N: usize = 200_000;
+        let scheduler =
+            CrawlScheduler::new(crate::domain::budget::CrawlConcurrency::new(8).expect("8 > 0"));
+        let before = memory_probe::rss_bytes();
+
+        for i in 0..N {
+            let url = format!("https://probe.example.com/section-{}/page/{i}", i % 64);
+            assert!(scheduler.record_visit(&url), "probe URL must be new");
+        }
+
+        let after = memory_probe::rss_bytes();
+        let mirror_len = scheduler
+            .visited_urls
+            .read()
+            .map(|urls| urls.len())
+            .unwrap_or(usize::MAX);
+        assert_eq!(mirror_len, N, "mirror holds exactly one entry per URL");
+
+        memory_probe::append_report(
+            "BEFORE — visited_urls mirror",
+            &format!(
+                "entries={mirror_len} rss_before={} rss_after={} delta={}",
+                memory_probe::fmt_rss(before),
+                memory_probe::fmt_rss(after),
+                memory_probe::fmt_rss(after.and_then(|a| before.map(|b| a.saturating_sub(b)))),
+            ),
+        );
+    }
+}

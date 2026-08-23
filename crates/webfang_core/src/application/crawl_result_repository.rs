@@ -600,4 +600,58 @@ mod tests {
         assert!(found.is_some());
         assert_eq!(found.unwrap().title, "Valid");
     }
+
+    // ============================================================================
+    // Task 5.1 memory probe — repository index growth (BEFORE numbers).
+    // Reuses this module's make_content/wait helpers; no byte assertions by
+    // design (Q3 MEASURE FIRST).
+    // ============================================================================
+    #[tokio::test]
+    async fn memory_probe_repository_index_growth_20k_results() {
+        const N: usize = 20_000;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = CrawlResultRepositoryImpl::new(dir.path().join("probe-log.jsonl"), 1_024)
+            .expect("repository builds");
+        let before = crate::infrastructure::observability::memory_probe::rss_bytes();
+
+        for i in 0..N {
+            let content = make_content(
+                &format!("https://probe.example.com/doc-{i}"),
+                &format!("Probe document {i}"),
+            );
+            repo.save(&content).expect("save accepted");
+            // Yield periodically so the background writer drains the bounded
+            // channel — exercising its real backpressure, not bypassing it.
+            if i % 256 == 255 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }
+        wait_for_index(&repo, &format!("https://probe.example.com/doc-{}", N - 1)).await;
+        // Give the writer a final drain window for the tail of the channel.
+        for _ in 0..40 {
+            if repo
+                .find_by_url(&format!("https://probe.example.com/doc-{}", N - 1))
+                .unwrap()
+                .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert_eq!(repo.index.len(), N, "every save must land in the index");
+
+        let after = crate::infrastructure::observability::memory_probe::rss_bytes();
+        crate::infrastructure::observability::memory_probe::append_report(
+            "BEFORE - crawl_result_repository index",
+            &format!(
+                "entries={} rss_before={} rss_after={} delta={}",
+                repo.index.len(),
+                crate::infrastructure::observability::memory_probe::fmt_rss(before),
+                crate::infrastructure::observability::memory_probe::fmt_rss(after),
+                crate::infrastructure::observability::memory_probe::fmt_rss(
+                    after.and_then(|a| before.map(|b| a.saturating_sub(b)))
+                ),
+            ),
+        );
+    }
 }

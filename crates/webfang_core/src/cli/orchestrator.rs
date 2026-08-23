@@ -567,8 +567,14 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
     scraper_config = scraper_config.with_download_timeout(opts.network.download_timeout_secs);
 
     // Create shared Downloader once for connection pooling across all page scrapes.
+    // Q3 MEASURE FIRST: the dedup cache is the only structure whose measured
+    // growth crossed the 50 MB materiality line; its capacity derives from the
+    // Asset tier like every other budget-model bound.
     let shared_downloader = if scraper_config.has_downloads() {
-        match crate::adapters::downloader::Downloader::new(scraper_config.to_download_config()) {
+        match crate::adapters::downloader::Downloader::with_asset_cache_capacity(
+            scraper_config.to_download_config(),
+            crate::adapters::downloader::asset_cache_capacity(budget.asset().get()),
+        ) {
             Ok(dl) => Some(std::sync::Arc::new(dl)),
             Err(e) => {
                 return Err(CliExit::IoError(format!(
