@@ -395,6 +395,42 @@ fn test_ai_config_defaults_without_ai_feature() {
 }
 
 // ========================================================================
+// #827 — poisoned AI_MODEL_ID must not break unrelated CLI paths
+// ========================================================================
+
+/// A poisoned `AI_MODEL_ID` env var must not make every invocation fail
+/// with clap `InvalidValue`: model validation is deferred to the AI init
+/// path, which is the only place the value actually matters (#827).
+#[cfg(feature = "ai")]
+#[test]
+fn test_poisoned_ai_model_id_env_parses_valid_scrape_command() {
+    clean_env();
+    let _guard = webfang_test_utils::EnvGuard::with(&[("AI_MODEL_ID", "not-a-model")]);
+
+    let result = Args::try_parse_from(["webfang", "--url", "https://example.com"]);
+
+    assert!(
+        result.is_ok(),
+        "poisoned AI_MODEL_ID must not break arg parsing: {:?}",
+        result.err().map(|e| e.to_string())
+    );
+}
+
+/// An explicitly invalid `--ai-model` value must be accepted as a raw
+/// string by clap and rejected later, inside the AI initialization path,
+/// where the error surfaces as a Spanish usage message (#827).
+#[cfg(feature = "ai")]
+#[test]
+fn test_invalid_ai_model_value_defers_validation_to_ai_init_path() {
+    clean_env();
+
+    let args = Args::try_parse_from(["webfang", "--ai-model", "bogus"])
+        .expect("raw --ai-model must parse; validation belongs to the AI init path");
+
+    assert_eq!(args.ai.ai_model.as_deref(), Some("bogus"));
+}
+
+// ========================================================================
 // #791 — --dom-preprune flag tests
 // ========================================================================
 

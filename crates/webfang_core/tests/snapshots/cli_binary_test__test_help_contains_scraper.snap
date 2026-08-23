@@ -428,7 +428,6 @@ Options:
           AI model to use: granite-97m (default, fast) or granite-311m (higher quality)
           
           [env: AI_MODEL_ID=]
-          [possible values: granite-97m, granite-311m]
 
       --tui
           Unified TUI mode: config form (collapsible sections) → URL selector → scraping

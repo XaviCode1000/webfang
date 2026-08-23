@@ -308,7 +308,7 @@ impl BackgroundWriter {
         // H6 FIX: Create parent directory before opening log file
         if let Some(parent) = self.log_path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
-                tracing::error!("no se pudo crear directorio para log: {e}");
+                tracing::error!("failed to create log directory: {e}");
                 self.write_error.store(true, Ordering::Relaxed);
                 return Err(());
             }
@@ -321,7 +321,7 @@ impl BackgroundWriter {
         {
             Ok(f) => Ok(f),
             Err(e) => {
-                tracing::error!("no se pudo abrir log para escritura: {e}");
+                tracing::error!("failed to open log for writing: {e}");
                 self.write_error.store(true, Ordering::Relaxed);
                 Err(())
             },
@@ -339,17 +339,17 @@ impl BackgroundWriter {
         let offset = file.metadata().map(|m| m.len()).unwrap_or(0);
 
         if file.write_all(&len_bytes).is_err() {
-            tracing::error!("error escribiendo longitud al log");
+            tracing::error!("error writing length to log");
             self.write_error.store(true, Ordering::Relaxed);
             return;
         }
         if file.write_all(payload).is_err() {
-            tracing::error!("error escribiendo payload al log");
+            tracing::error!("error writing payload to log");
             self.write_error.store(true, Ordering::Relaxed);
             return;
         }
         if file.write_all(b"\n").is_err() {
-            tracing::error!("error escribiendo newline al log");
+            tracing::error!("error writing newline to log");
             self.write_error.store(true, Ordering::Relaxed);
             return;
         }
