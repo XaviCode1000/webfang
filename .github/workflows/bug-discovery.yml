@@ -42,7 +42,7 @@ jobs:
               echo ""
               echo "Tests that FAIL with poisoned env are NOT hermetic:"
               echo ""
-              sed -En 's/^[[:space:]]*FAIL[[:space:]]+\[[^]]*\][[:space:]]+(.*)$/- `\1`/p' "$LOG"
+              sed -En 's/^[[:space:]]*FAIL[[:space:]]+\[[^]]*\][[:space:]]+(.*)$/- \1/p' "$LOG"
             else
               echo ""
               echo "All tests hermetic under poisoned environment."
@@ -145,7 +145,7 @@ jobs:
               echo ""
               echo "Failures here = potential production bugs. Findings:"
               echo ""
-              sed -En 's/^[[:space:]]*FAIL[[:space:]]+\[[^]]*\][[:space:]]+(.*)$/- `\1`/p' "$LOG"
+              sed -En 's/^[[:space:]]*FAIL[[:space:]]+\[[^]]*\][[:space:]]+(.*)$/- \1/p' "$LOG"
             else
               echo ""
               echo "No findings: all ignored tests passed."
