@@ -2,7 +2,8 @@
 //!
 //! Every tier is a NonZero-guarded newtype: a zero-semaphore, zero-burst or
 //! zero-buffer configuration cannot be represented. Constructors are
-//! fallible and reject 0 with a [`BudgetValidationError`] — they never
+//! fallible and reject 0 with a
+//! [`BudgetValidationError`](tiers::BudgetValidationError) — they never
 //! silently substitute a default.
 //!
 //! Newtype → enforcement-mechanism map:

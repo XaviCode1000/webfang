@@ -132,7 +132,7 @@ pub struct CrawlerArgs {
     /// Overrides the hardware-derived budget-model default (Q1: burst is
     /// decoupled from crawl concurrency). Raw string here ON PURPOSE:
     /// validation/conversion happens once in preflight staging via
-    /// [`parse_rate_limit_burst`] so CLI, env, and programmatic input all
+    /// `parse_rate_limit_burst` so CLI, env, and programmatic input all
     /// share one accept / reject-0 / warn-and-default semantic.
     #[arg(long, env = "WEBFANG_RATE_LIMIT_BURST")]
     #[clap(next_help_heading = "Discovery")]

@@ -1,4 +1,5 @@
-//! Pure concurrency-derivation functions over plain [`DetectedHw`] data.
+//! Pure concurrency-derivation functions over plain
+//! [`DetectedHw`](detector::DetectedHw) data.
 //!
 //! Every function here is total, IO-free, and clock-free: it maps hardware
 //! snapshots (and explicit operator overrides) onto tier newtypes. Purity is
@@ -104,7 +105,7 @@ impl Default for RamThresholds {
 /// Explicit outcome of the RAM-based Chrome-instance derivation.
 ///
 /// Denial is a first-class variant — never a zero permit count — because
-/// [`MaxChromeInstances`](super::super::tiers::MaxChromeInstances) cannot
+/// [`MaxChromeInstances`] cannot
 /// represent 0 by construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaxChromeDecision {

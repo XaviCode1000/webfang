@@ -5,10 +5,11 @@
 //! cgroup-limited containers where `available_parallelism` and `num_cpus`
 //! disagree.
 //!
-//! Miri safety follows the `with_max_instances` pattern: [`SystemDetector`]
+//! Miri safety follows the `with_max_instances` pattern:
+//! [`SystemDetector`](detector::SystemDetector)
 //! bodies that touch `sysinfo`/`sysconf` are gated `#[cfg(not(miri))]`;
-//! [`FixedDetector`] provides explicit-value construction for tests and
-//! Miri runs. All *derivation* logic consumes plain [`DetectedHw`] data and
+//! [`FixedDetector`](detector::FixedDetector) provides explicit-value construction for tests and
+//! Miri runs. All *derivation* logic consumes plain [`DetectedHw`](detector::DetectedHw) data and
 //! is fully testable under Miri.
 
 use std::num::NonZeroUsize;
