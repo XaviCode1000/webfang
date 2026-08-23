@@ -80,7 +80,7 @@ In worktrees, BOTH tools need the **absolute worktree path** or they silently re
 
 ## 🏗️ Architecture & Code Rules
 
-### Workspace structure (5 crates)
+### Workspace structure (6 crates)
 
 ```text
 webfang/                          # virtual workspace root (no [package])
@@ -88,8 +88,9 @@ webfang/                          # virtual workspace root (no [package])
 │   ├── webfang_core/             # domain + application + infrastructure
 │   ├── webfang_ai/               # ONNX embeddings, semantic cleaning
 │   ├── webfang_tui/              # ratatui TUI selector
-│   ├── webfang_mcp/              # MCP server (35 tools)
-│   └── webfang_cli/              # CLI binary (webfang)
+│   ├── webfang_mcp/              # MCP server (36 tools)
+│   ├── webfang_cli/              # CLI binary (webfang)
+│   └── webfang_test_utils/       # shared test utilities (not shipped)
 ```
 
 ### Inter-crate dependency direction (ENFORCED POLICY)
@@ -159,7 +160,7 @@ Dual wrapping pattern: infra errors wrap into domain errors via `From` impls. Ne
 
 **`crates/webfang_mcp/src/mcp_server/`** is the ONLY canonical location. The root `src/` was deleted (PR #163 cleanup). Never create code in `src/`.
 
-MCP tools: 35 tools across 8 categories. Transport: Streamable HTTP (`rmcp`) at `127.0.0.1:8080/mcp`, also stdio via `mcp_server_stdio` example.
+MCP tools: 36 tools across 9 categories. Transport: Streamable HTTP (`rmcp`) at `127.0.0.1:8080/mcp`, also stdio via the `webfang-mcp-stdio` binary.
 
 ### Crate version conflicts (DO NOT unify)
 

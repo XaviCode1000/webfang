@@ -19,6 +19,33 @@ pub(crate) fn parse_download_concurrency(s: &str) -> Result<usize, String> {
     Ok(v)
 }
 
+/// Validate `--rate-limit-burst`: explicit rate-limiter burst override
+/// (`WEBFANG_RATE_LIMIT_BURST`, budget model decision Q1/D1).
+///
+/// - Numeric values >= 1 are accepted (the derived default never produces 0,
+///   so neither may the operator).
+/// - `0` is rejected with a Spanish usage error (same "Zero Silent Loss"
+///   philosophy as `--download-concurrency`).
+/// - Non-numeric input warns and falls back to the hardware-derived default
+///   (consistent with the `ConcurrencyConfig` "auto" parser behavior).
+#[allow(clippy::unnecessary_wraps)] // non-numeric deliberately warns instead of erroring
+pub(crate) fn parse_rate_limit_burst(s: &str) -> Result<Option<u32>, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Ok(None);
+    }
+    match s.parse::<u32>() {
+        Ok(0) => Err(
+            "--rate-limit-burst debe ser >= 1 (0 no permite ningún request en ráfaga)".to_string(),
+        ),
+        Ok(v) => Ok(Some(v)),
+        Err(_) => {
+            tracing::warn!(value = %s, "invalid rate-limit burst, using derived default");
+            Ok(None)
+        },
+    }
+}
+
 /// Validate `--timeout-secs`: must be >= 1. A value of 0 makes wreq apply
 /// `Duration::from_secs(0)` as the request timeout, so every request fails
 /// instantly with "operation timed out". Rejecting here gives a clear CLI
@@ -99,6 +126,17 @@ pub struct CrawlerArgs {
     #[arg(long, default_value_t = ConcurrencyConfig::default(), env = "WEBFANG_CONCURRENCY")]
     #[clap(next_help_heading = "Discovery")]
     pub concurrency: ConcurrencyConfig,
+
+    /// Explicit rate-limiter burst permits (token-bucket capacity).
+    ///
+    /// Overrides the hardware-derived budget-model default (Q1: burst is
+    /// decoupled from crawl concurrency). Raw string here ON PURPOSE:
+    /// validation/conversion happens once in preflight staging via
+    /// `parse_rate_limit_burst` so CLI, env, and programmatic input all
+    /// share one accept / reject-0 / warn-and-default semantic.
+    #[arg(long, env = "WEBFANG_RATE_LIMIT_BURST")]
+    #[clap(next_help_heading = "Discovery")]
+    pub rate_limit_burst: Option<String>,
 
     /// Use sitemap for URL discovery
     /// NOTE: HTTP redirects (301/302) are resolved at scrape-time, not parse-time.
@@ -429,6 +467,40 @@ mod tests {
     fn parse_timeout_secs_rejects_non_numeric() {
         let err = parse_timeout_secs("abc").unwrap_err();
         assert_eq!(err, "'abc' no es un número válido para --timeout-secs");
+    }
+
+    #[test]
+    fn parse_rate_limit_burst_accepts_positive_values() {
+        assert_eq!(parse_rate_limit_burst("1"), Ok(Some(1)));
+        assert_eq!(parse_rate_limit_burst("5"), Ok(Some(5)));
+        assert_eq!(parse_rate_limit_burst("64"), Ok(Some(64)));
+    }
+
+    #[test]
+    fn parse_rate_limit_burst_rejects_zero_with_spanish_error() {
+        // Same "Zero Silent Loss" boundary as --download-concurrency (D1).
+        let err = parse_rate_limit_burst("0").unwrap_err();
+        assert_eq!(
+            err,
+            "--rate-limit-burst debe ser >= 1 (0 no permite ningún request en ráfaga)"
+        );
+    }
+
+    #[test]
+    fn parse_rate_limit_burst_non_numeric_warns_and_defaults() {
+        // Consistent with the ConcurrencyConfig "auto" parser: invalid input
+        // degrades to the derived default instead of aborting the run.
+        assert_eq!(parse_rate_limit_burst("abc"), Ok(None));
+        assert_eq!(parse_rate_limit_burst("auto"), Ok(None));
+        assert_eq!(parse_rate_limit_burst(""), Ok(None));
+    }
+
+    #[test]
+    fn rate_limit_burst_flag_parses_through_clap() {
+        use clap::Parser as _;
+        let args = crate::Args::try_parse_from(["webfang", "--rate-limit-burst", "9"])
+            .expect("valid flag combination");
+        assert_eq!(args.crawler.rate_limit_burst.as_deref(), Some("9"));
     }
 
     #[test]
