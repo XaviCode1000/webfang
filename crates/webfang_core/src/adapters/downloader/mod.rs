@@ -12,8 +12,23 @@
 //! - **Cleanup**: Temp file removed on size limit exceeded
 //! - **Hash On-The-Fly**: SHA256 computed during streaming, no buffer needed
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// Entries retained per Asset-tier permit in the dedup cache (Q3 MEASURE
+/// FIRST: BEFORE data measured ~600 B/entry; default tier 3 x 8_192 =
+/// 24_576 entries ~= 15 MiB ceiling, far below the 50 MB materiality line).
+pub const ASSET_CACHE_ENTRIES_PER_PERMIT: usize = 8_192;
+
+/// Derive the bounded asset-cache capacity from the budget model's Asset
+/// tier. Single source of truth with every other derived bound.
+#[must_use]
+pub fn asset_cache_capacity(asset_tier_permits: usize) -> usize {
+    asset_tier_permits
+        .saturating_mul(ASSET_CACHE_ENTRIES_PER_PERMIT)
+        .max(ASSET_CACHE_ENTRIES_PER_PERMIT)
+}
 
 use crate::error::{ErrorClass, Result, ScraperError};
 use dashmap::DashMap;
@@ -129,6 +144,12 @@ pub struct Downloader {
     /// (typed, unmodified) and leave the cell uninitialized, so `run_download`'s
     /// retry policy is not bypassed and later pages are free to retry.
     downloaded_urls: DashMap<String, std::sync::Arc<OnceCell<DownloadedAsset>>>,
+    /// Insertion order for FIFO eviction once `asset_cache_capacity` is
+    /// exceeded. Tracked always (cheap); only enforced when bounded.
+    asset_cache_order: std::sync::Mutex<VecDeque<String>>,
+    /// Maximum cached entries. `usize::MAX` = unbounded (legacy behavior,
+    /// byte-identical to pre-cap releases).
+    asset_cache_capacity: usize,
 }
 
 impl std::fmt::Debug for Downloader {
@@ -164,11 +185,97 @@ impl Downloader {
             .build()
             .map_err(|e| ScraperError::Config(format!("failed to build http client: {e}")))?;
 
-        Ok(Self {
+        Ok(Self::from_parts(client, config, usize::MAX))
+    }
+
+    /// Bounded-cache constructor: the dedup cache evicts oldest entries past
+    /// `capacity` (Q3 materiality decision — downloaded_urls was the only
+    /// structure whose measured growth crossed 50 MB at realistic long-run
+    /// scale). Residual: an evicted URL may be re-downloaded if encountered
+    /// again later (documented trade-off, design D2 PARTIAL).
+    ///
+    /// # Errors
+    /// Propagates HTTP-client construction failures.
+    pub fn with_asset_cache_capacity(config: DownloadConfig, capacity: usize) -> Result<Self> {
+        let client = Client::builder()
+            .emulation(config.h2_profile)
+            .timeout(Duration::from_secs(config.timeout_secs))
+            .user_agent(&config.user_agent)
+            // SSRF guard (#703): identical policy to `new` — same client
+            // construction, only the cache bound differs.
+            .redirect(crate::infrastructure::ssrf::redirect_policy())
+            .build()
+            .map_err(|e| ScraperError::Config(format!("failed to build http client: {e}")))?;
+        Ok(Self::from_parts(client, config, capacity))
+    }
+
+    fn from_parts(
+        client: wreq::Client,
+        config: DownloadConfig,
+        asset_cache_capacity: usize,
+    ) -> Self {
+        Self {
             client,
             config,
             downloaded_urls: DashMap::new(),
-        })
+            asset_cache_order: std::sync::Mutex::new(VecDeque::new()),
+            asset_cache_capacity,
+        }
+    }
+
+    /// Insert into the dedup cache through the bounded-cache discipline:
+    /// records insertion order and enforces the capacity bound. Probe/test-only
+    /// writer; production writes flow through `download`, which performs the
+    /// same tracking inline.
+    #[cfg(test)]
+    pub(crate) fn insert_cached_cell(
+        &self,
+        url: String,
+        cell: std::sync::Arc<OnceCell<DownloadedAsset>>,
+    ) {
+        self.downloaded_urls.insert(url.clone(), cell);
+        if let Ok(mut order) = self.asset_cache_order.lock() {
+            if !order.contains(&url) {
+                order.push_back(url);
+            }
+        }
+        self.evict_over_capacity();
+    }
+
+    /// FIFO-evict oldest initialized cache entries while over capacity.
+    /// Uninitialized cells are skipped (a download is still in flight —
+    /// evicting them would allow a duplicate connection); they rotate to the
+    /// back of the order queue instead.
+    pub(crate) fn evict_over_capacity(&self) {
+        if self.downloaded_urls.len() <= self.asset_cache_capacity {
+            return;
+        }
+        let Ok(mut order) = self.asset_cache_order.lock() else {
+            return; // poisoned: keep serving, eviction is best-effort
+        };
+        let excess = self.downloaded_urls.len() - self.asset_cache_capacity;
+        let mut evicted = 0;
+        let mut deferred: VecDeque<String> = VecDeque::new();
+        while evicted < excess {
+            let Some(candidate) = order.pop_front() else {
+                break;
+            };
+            let in_flight = self
+                .downloaded_urls
+                .get(&candidate)
+                .map(|e| e.value().get().is_none())
+                .unwrap_or(false);
+            if in_flight {
+                // Still downloading: never evict; requeue at the back.
+                deferred.push_back(candidate);
+            } else {
+                self.downloaded_urls.remove(&candidate);
+                evicted += 1;
+            }
+        }
+        for url in deferred {
+            order.push_back(url);
+        }
     }
 
     /// Lazily create a download subdir only when a real asset is about to be
@@ -259,6 +366,14 @@ impl Downloader {
             .entry(url.to_string())
             .or_insert_with(|| std::sync::Arc::new(OnceCell::new()))
             .clone();
+        // Track insertion order for bounded-cache FIFO eviction.
+        if let Ok(mut order) = self.asset_cache_order.lock() {
+            let key = url.to_string();
+            if !order.contains(&key) {
+                order.push_back(key);
+            }
+        }
+        self.evict_over_capacity();
 
         // Slow path: exactly one caller for this URL runs the download (with
         // retries); concurrent arrivals wait on the same cell and never open
@@ -1286,5 +1401,190 @@ mod tests {
             Err(ScraperError::Http { status, .. }) => assert_eq!(status, 301),
             other => panic!("expected redirect to be stopped, got: {other:?}"),
         }
+    }
+}
+
+// ============================================================================
+// Task 5.1 memory probe — downloaded_urls dedup cache growth (BEFORE numbers).
+// ============================================================================
+#[cfg(test)]
+mod memory_probe_tests {
+    use super::*;
+    use crate::infrastructure::observability::memory_probe;
+    use std::sync::Arc;
+
+    #[test]
+    fn probe_downloaded_urls_growth_50k_assets() {
+        const N: usize = 50_000;
+        let downloader = Downloader::new(DownloadConfig::default()).expect("downloader builds");
+        let before = memory_probe::rss_bytes();
+
+        for i in 0..N {
+            let cell = tokio::sync::OnceCell::new();
+            cell.set(DownloadedAsset {
+                url: format!("https://probe.example.com/assets/img-{i}.png"),
+                local_path: format!("/tmp/probe-out/img-{i}.png").into(),
+                mime_type: Some("image/png".to_string()),
+                size: 12_345,
+                content_hash: format!("{i:012x}"),
+            })
+            .expect("fresh cell accepts first set");
+            downloader.downloaded_urls.insert(
+                format!("https://probe.example.com/assets/img-{i}.png"),
+                Arc::new(cell),
+            );
+        }
+
+        let after = memory_probe::rss_bytes();
+        assert_eq!(downloader.downloaded_urls.len(), N);
+        memory_probe::append_report(
+            "BEFORE — downloaded_urls dedup cache",
+            &format!(
+                "entries={} rss_before={} rss_after={} delta={}",
+                downloader.downloaded_urls.len(),
+                memory_probe::fmt_rss(before),
+                memory_probe::fmt_rss(after),
+                memory_probe::fmt_rss(after.and_then(|a| before.map(|b| a.saturating_sub(b)))),
+            ),
+        );
+    }
+}
+
+// ============================================================================
+// Task 5.3/5.4/5.5 probes — bounded asset cache (Q3: only measured-material
+// structure gets a cap; downloaded_urls crossed the 50 MB projection at
+// ~87k entries in the BEFORE data).
+// ============================================================================
+#[cfg(test)]
+mod bounded_cache_tests {
+    use super::*;
+    use crate::infrastructure::observability::memory_probe;
+    use std::sync::Arc;
+
+    fn sample_asset(i: usize) -> DownloadedAsset {
+        DownloadedAsset {
+            url: format!("https://probe.example.com/assets/img-{i}.png"),
+            local_path: format!("/tmp/probe-out/img-{i}.png").into(),
+            mime_type: Some("image/png".to_string()),
+            size: 12_345,
+            content_hash: format!("{i:012x}"),
+        }
+    }
+
+    /// Task 5.3 — RED→GREEN plateau proof: under a workload of N >> cap,
+    /// the bounded cache's entry count plateaus at the cap while the
+    /// unbounded baseline keeps growing linearly.
+    #[test]
+    fn bounded_asset_cache_plateaus_at_capacity() {
+        const CAP: usize = 10_000;
+        const WORKLOAD: usize = 50_000;
+
+        let bounded = Downloader::with_asset_cache_capacity(DownloadConfig::default(), CAP)
+            .expect("downloader builds");
+        let unbounded = Downloader::new(DownloadConfig::default()).expect("downloader builds");
+
+        for i in 0..WORKLOAD {
+            let key = format!("https://probe.example.com/assets/img-{i}.png");
+            let cell = tokio::sync::OnceCell::new();
+            cell.set(sample_asset(i)).expect("fresh cell");
+            bounded.insert_cached_cell(key.clone(), Arc::new(cell));
+            let cell = tokio::sync::OnceCell::new();
+            cell.set(sample_asset(i)).expect("fresh cell");
+            unbounded.downloaded_urls.insert(key, Arc::new(cell));
+        }
+
+        assert!(
+            bounded.downloaded_urls.len() <= CAP,
+            "bounded cache must plateau at {CAP}, got {}",
+            bounded.downloaded_urls.len()
+        );
+        assert_eq!(unbounded.downloaded_urls.len(), WORKLOAD);
+    }
+
+    /// Task 5.5 — byte-identity: a workload completing entirely WITHIN the
+    /// cap must produce dedup decisions and returned assets identical to the
+    /// unbounded baseline (the cap only changes behavior for entries that
+    /// would otherwise have been evicted anyway).
+    #[test]
+    fn bounded_cache_within_cap_is_byte_identical_to_unbounded() {
+        const CAP: usize = 100;
+        const WORKLOAD: usize = 60; // < CAP: no eviction ever fires
+
+        let bounded = Downloader::with_asset_cache_capacity(DownloadConfig::default(), CAP)
+            .expect("downloader builds");
+        let unbounded = Downloader::new(DownloadConfig::default()).expect("downloader builds");
+
+        for i in 0..WORKLOAD {
+            let key = format!("https://probe.example.com/assets/img-{i}.png");
+            let asset = sample_asset(i);
+            // Bounded path through the disciplined insert.
+            let cell = tokio::sync::OnceCell::new();
+            cell.set(asset.clone()).expect("fresh cell");
+            bounded.insert_cached_cell(key.clone(), std::sync::Arc::new(cell));
+            // Unbounded baseline.
+            let cell = tokio::sync::OnceCell::new();
+            cell.set(asset).expect("fresh cell");
+            unbounded
+                .downloaded_urls
+                .insert(key, std::sync::Arc::new(cell));
+        }
+
+        assert_eq!(
+            bounded.downloaded_urls.len(),
+            unbounded.downloaded_urls.len()
+        );
+        for i in 0..WORKLOAD {
+            let key = format!("https://probe.example.com/assets/img-{i}.png");
+            let b = bounded.downloaded_urls.get(&key).expect("bounded entry");
+            let u = unbounded
+                .downloaded_urls
+                .get(&key)
+                .expect("unbounded entry");
+            let b_asset = b.value().get().expect("initialized").clone();
+            let u_asset = u.value().get().expect("initialized").clone();
+            assert_eq!(b_asset.url, u_asset.url);
+            assert_eq!(b_asset.local_path, u_asset.local_path);
+            assert_eq!(b_asset.content_hash, u_asset.content_hash);
+            assert_eq!(b_asset.size, u_asset.size);
+        }
+    }
+
+    /// Task 5.4 — AFTER numbers: same 50k-entry fill as the BEFORE probe,
+    /// now under the production-derived cap; RSS delta must be bounded by
+    /// roughly cap * per-entry cost instead of linear in the workload.
+    #[test]
+    fn memory_probe_downloaded_urls_after_cap() {
+        const CAP: usize = 24_576; // asset tier 3 × 8_192 (production derivation)
+        let downloader = Downloader::with_asset_cache_capacity(
+            DownloadConfig::default(),
+            crate::adapters::downloader::ASSET_CACHE_ENTRIES_PER_PERMIT
+                * crate::domain::budget::tiers::DownloadConcurrency::new(3)
+                    .expect("3 > 0")
+                    .get(),
+        )
+        .expect("downloader builds");
+        let before = memory_probe::rss_bytes();
+
+        for i in 0..50_000 {
+            let cell = tokio::sync::OnceCell::new();
+            cell.set(sample_asset(i)).expect("fresh cell");
+            downloader.insert_cached_cell(
+                format!("https://probe.example.com/assets/img-{i}.png"),
+                Arc::new(cell),
+            );
+        }
+
+        let after = memory_probe::rss_bytes();
+        assert!(downloader.downloaded_urls.len() <= CAP);
+        memory_probe::append_report(
+            "AFTER - downloaded_urls dedup cache (bounded)",
+            &format!(
+                "entries={} (cap={CAP}) rss_before={} rss_after={} delta={} | BEFORE was 28.8 MiB at 50k entries",
+                downloader.downloaded_urls.len(),
+                memory_probe::fmt_rss(before),
+                memory_probe::fmt_rss(after),
+                memory_probe::fmt_rss(after.and_then(|a| before.map(|b| a.saturating_sub(b)))),
+            ),
+        );
     }
 }
