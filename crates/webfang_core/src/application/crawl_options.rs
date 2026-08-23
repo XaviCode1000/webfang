@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use url::Url;
 
+use crate::domain::budget::BudgetOverrides;
 use crate::domain::config::{ConcurrencyConfig, ExportFormat, OutputFormat, PipelineOutputFormat};
 use crate::domain::JsStrategy;
 use crate::infrastructure::autotuning::ElasticOverrides;
@@ -83,6 +84,10 @@ pub struct CrawlOptions {
     pub download_concurrency: usize,
     /// AI semantic-cleaning settings (from CLI AI flags).
     pub ai_config: AiConfig,
+    /// Operator-level budget overrides (design D4). Feeds
+    /// `BudgetModel::build` at engine/orchestrator entry; the default
+    /// (`rate_burst: None`) reproduces today's derived numbers exactly.
+    pub budget_overrides: BudgetOverrides,
 }
 
 /// Batch processing settings.
@@ -338,6 +343,7 @@ impl Default for CrawlOptions {
             asset_naming: "hash".to_string(),
             download_concurrency: 3,
             ai_config: AiConfig::default(),
+            budget_overrides: crate::domain::budget::BudgetOverrides::default(),
         }
     }
 }

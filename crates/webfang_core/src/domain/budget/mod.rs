@@ -22,10 +22,11 @@ use self::derivation::{
     derive_auto_crawl, derive_burst, derive_max_instances, MaxChromeDecision, RamThresholds,
 };
 use self::detector::HardwareDetector;
+/// Re-exported for adapter layers (preflight budget staging, CLI parsers).
+pub use self::tiers::BurstPermits;
 use self::tiers::{
-    BatchConcurrency, BudgetTiers, BurstPermits, CrawlConcurrency, DomainSlots,
-    DownloadConcurrency, ElasticPermits, GlobalConcurrency, InferenceWorkers, MaxChromeInstances,
-    OperationTier,
+    BatchConcurrency, BudgetTiers, CrawlConcurrency, DomainSlots, DownloadConcurrency,
+    ElasticPermits, GlobalConcurrency, InferenceWorkers, MaxChromeInstances, OperationTier,
 };
 
 /// Default per-domain session-pool slots; TODAY'S `SessionPoolConfig
