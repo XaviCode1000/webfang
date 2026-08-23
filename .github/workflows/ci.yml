@@ -285,12 +285,14 @@ jobs:
           echo "Downloading Granite-97M ONNX model (~372MB)..."
           mkdir -p "$MODEL_DIR/blobs"
           mkdir -p "$SNAPSHOT_DIR/onnx"
-          curl -L --fail -o "$BLOB_FILE" \
+          curl -L --fail --retry 5 --retry-all-errors \
+            --retry-delay 5 -o "$BLOB_FILE" \
             "https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/main/onnx/model.onnx"
           echo "Verifying model SHA256..."
           echo "$BLOB_SHA  $BLOB_FILE" | sha256sum --check --status
           echo "Downloading tokenizer.json..."
-          curl -L --fail -o "$TOKENIZER_BLOB_FILE" \
+          curl -L --fail --retry 5 --retry-all-errors \
+            --retry-delay 5 -o "$TOKENIZER_BLOB_FILE" \
             "https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/main/tokenizer.json"
           echo "Verifying tokenizer SHA256..."
           echo "$TOKENIZER_BLOB_SHA  $TOKENIZER_BLOB_FILE" | sha256sum --check --status
@@ -384,12 +386,14 @@ jobs:
           echo "Downloading Granite-97M ONNX model (~372MB)..."
           mkdir -p "$MODEL_DIR/blobs"
           mkdir -p "$SNAPSHOT_DIR/onnx"
-          curl -L --fail -o "$BLOB_FILE" \
+          curl -L --fail --retry 5 --retry-all-errors \
+            --retry-delay 5 -o "$BLOB_FILE" \
             "https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/main/onnx/model.onnx"
           echo "Verifying model SHA256..."
           echo "$BLOB_SHA  $BLOB_FILE" | sha256sum --check --status
           echo "Downloading tokenizer.json..."
-          curl -L --fail -o "$TOKENIZER_BLOB_FILE" \
+          curl -L --fail --retry 5 --retry-all-errors \
+            --retry-delay 5 -o "$TOKENIZER_BLOB_FILE" \
             "https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/main/tokenizer.json"
           echo "Verifying tokenizer SHA256..."
           echo "$TOKENIZER_BLOB_SHA  $TOKENIZER_BLOB_FILE" | sha256sum --check --status
