@@ -282,9 +282,8 @@ impl ScraperConfig {
 }
 
 // ============================================================================
-// Concurrency Config — single source of truth lives in domain::config
-// (issue #516); the budget model (domain/budget) owns all derived numbers.
-// The former dead re-export here was removed with the budget-model work.
+// Concurrency Config — single source of truth in domain::config (issue #516).
+pub use crate::domain::config::ConcurrencyConfig;
 
 // ============================================================================
 // Elastic Ingestion Autotuning Config (Issue #51)

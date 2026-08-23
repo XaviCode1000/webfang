@@ -45,7 +45,7 @@ pub fn derive_auto_crawl(detected: DetectedHw) -> CrawlConcurrency {
 ///
 /// * `explicit = Some(v)` → the operator's explicit value wins verbatim
 ///   (`--concurrency` / TOML / TUI when not "auto", mapped by preflight into
-///   [`BudgetOverrides::crawl`]).
+///   [`super::BudgetOverrides::crawl`]).
 /// * `explicit = None` → the auto-crawl table over the detector seam —
 ///   today's default, behavior-identical to `ConcurrencyConfig::default()`.
 #[must_use]
