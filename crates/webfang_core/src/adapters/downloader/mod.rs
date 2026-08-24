@@ -889,11 +889,36 @@ fn percent_decode_utf8(input: &str) -> String {
         .into_owned()
 }
 
-/// Sanitize a filename: remove path separators and null bytes.
+/// Maximum length for a sanitized filename (ext4 per-file limit).
+const MAX_FILENAME_LEN: usize = 255;
+
+/// Sanitize a filename: remove path separators and null bytes, and neutralize
+/// bare dot-segments.
+///
+/// The result is always joinable onto a trusted directory without escaping
+/// it: separators are stripped (so `../x` cannot traverse) and results that
+/// are exactly `.` or `..` — which would resolve to the target directory's
+/// parent when joined — come back empty so callers fall back to safe naming.
 fn sanitize_filename(name: &str) -> String {
-    name.chars()
+    let stripped: String = name
+        .chars()
         .filter(|c| *c != '/' && *c != '\\' && *c != '\0')
-        .collect()
+        .collect();
+
+    if stripped == "." || stripped == ".." {
+        tracing::warn!(
+            original_len = name.len(),
+            "hostile dot-segment filename neutralized to prevent path traversal"
+        );
+        return String::new();
+    }
+
+    // Enforce the filesystem length cap on char boundaries.
+    let mut capped = stripped;
+    while capped.len() > MAX_FILENAME_LEN {
+        capped.pop();
+    }
+    capped
 }
 
 /// Parse `filename=` from a Content-Disposition header value.
@@ -1232,6 +1257,63 @@ mod tests {
         assert_eq!(sanitize_filename("hello/world"), "helloworld");
         assert_eq!(sanitize_filename("file\0name"), "filename");
         assert_eq!(sanitize_filename("normal-file.pdf"), "normal-file.pdf");
+    }
+
+    // -------------------------------------------------------------
+    // sanitize_filename — traversal hardening (batch 1)
+    // -------------------------------------------------------------
+
+    #[test]
+    fn sanitize_filename_strips_traversal_separators() {
+        // Separators removed → the residue cannot traverse on join.
+        assert_eq!(sanitize_filename("../escape.bin"), "..escape.bin");
+        assert_eq!(sanitize_filename("a/../b"), "a..b");
+        assert_eq!(sanitize_filename("/abs/path.bin"), "abspath.bin");
+        assert_eq!(sanitize_filename(r"\\server\share"), "servershare");
+    }
+
+    #[test]
+    fn sanitize_filename_neutralizes_bare_dot_segments() {
+        // `.` / `..` joined onto a directory resolve outside it → empty
+        // result so generate_filename falls back to hash-based naming.
+        assert_eq!(sanitize_filename(".."), "");
+        assert_eq!(sanitize_filename("."), "");
+        assert_eq!(sanitize_filename("..\\"), "");
+    }
+
+    #[test]
+    fn sanitize_filename_removes_null_bytes() {
+        assert_eq!(sanitize_filename("nul\0byte.pdf"), "nulbyte.pdf");
+    }
+
+    #[test]
+    fn sanitize_filename_caps_length() {
+        let long = format!("{}.pdf", "a".repeat(300));
+        let sanitized = sanitize_filename(&long);
+        assert!(sanitized.len() <= MAX_FILENAME_LEN);
+        assert!(!sanitized.is_empty());
+    }
+
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[test]
+    fn generate_filename_cd_falls_back_to_hash_when_fully_hostile() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = DownloadConfig {
+            output_dir: temp_dir.path().to_path_buf(),
+            asset_naming: AssetNamingStrategy::ContentDisposition,
+            ..Default::default()
+        };
+        let downloader = Downloader::new(config).unwrap();
+
+        // Bare `..` sanitizes to empty → hash-based fallback.
+        let filename = downloader.generate_filename(
+            "https://example.com/download",
+            "abc123def456789",
+            Some("application/pdf"),
+            Some(".."),
+        );
+        assert!(filename.starts_with("abc123def456"));
+        assert!(filename.ends_with(".pdf"));
     }
 
     #[test]
