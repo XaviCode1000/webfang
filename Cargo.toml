@@ -7,6 +7,7 @@ members = [
     "crates/webfang_mcp",
     "crates/webfang_cli",
     "crates/webfang_test_utils",
+    "crates/webfang_benchmark",
 ]
 exclude = ["fuzz"]
 

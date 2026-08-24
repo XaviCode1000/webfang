@@ -1,0 +1,25 @@
+[package]
+name = "webfang_benchmark"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+webfang_core = { path = "../webfang_core" }
+webfang_test_utils = { path = "../webfang_test_utils" }
+wiremock = { workspace = true } # corpus server; same version as core dev-deps
+tempfile = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing.workspace = true
+tracing-subscriber = { workspace = true }
+
+# Slice 2 appends:
+# [[bin]]
+# name = "bench_live"
+# path = "src/bin/bench_live.rs"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+url = { workspace = true }
