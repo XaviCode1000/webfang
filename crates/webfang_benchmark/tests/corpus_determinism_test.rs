@@ -37,7 +37,10 @@ fn raw_get(base_url: &str, path: &str) -> (u16, String) {
 
 fn header_value<'a>(raw: &'a str, name: &str) -> Option<&'a str> {
     raw.lines()
-        .find(|l| l.to_ascii_lowercase().starts_with(&format!("{}:", name.to_ascii_lowercase())))
+        .find(|l| {
+            l.to_ascii_lowercase()
+                .starts_with(&format!("{}:", name.to_ascii_lowercase()))
+        })
         .and_then(|l| l.split_once(':'))
         .map(|(_, v)| v.trim())
 }

@@ -107,8 +107,11 @@ pub fn parse_file(path: &Path) -> Result<Vec<TraceRecord>> {
         if line.trim().is_empty() {
             continue;
         }
-        let parsed: TraceLine = serde_json::from_str(&line)
-            .map_err(|source| BenchmarkError::Jsonl { line: line_no, source })?;
+        let parsed: TraceLine =
+            serde_json::from_str(&line).map_err(|source| BenchmarkError::Jsonl {
+                line: line_no,
+                source,
+            })?;
         classify(parsed, line_no, &mut records)?;
     }
     Ok(records)
@@ -139,7 +142,7 @@ fn classify(line: TraceLine, line_no: usize, out: &mut Vec<TraceRecord>) -> Resu
                     line: line_no,
                     detail: "span_close record without span_duration_ms".to_string(),
                 });
-            }
+            },
         }
         return Ok(());
     }
@@ -184,20 +187,22 @@ fn lift_summary(
     }
 
     let get_u64 = |name: &str| -> Result<u64> {
-        fields.get(name).and_then(serde_json::Value::as_u64).ok_or_else(|| {
-            BenchmarkError::Shape {
+        fields
+            .get(name)
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| BenchmarkError::Shape {
                 line: line_no,
                 detail: format!("summary field `{name}` missing or not an integer"),
-            }
-        })
+            })
     };
     let get_f64 = |name: &str| -> Result<f64> {
-        fields.get(name).and_then(serde_json::Value::as_f64).ok_or_else(|| {
-            BenchmarkError::Shape {
+        fields
+            .get(name)
+            .and_then(serde_json::Value::as_f64)
+            .ok_or_else(|| BenchmarkError::Shape {
                 line: line_no,
                 detail: format!("summary field `{name}` missing or not a number"),
-            }
-        })
+            })
     };
 
     Ok(CrawlSummary {

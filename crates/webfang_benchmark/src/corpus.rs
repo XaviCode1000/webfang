@@ -78,7 +78,13 @@ pub async fn serve() -> Result<CorpusHandle> {
     let mut manifest_pages = Vec::new();
 
     // Static pages.
-    for p in ["/", "/about", "/articles/one", "/articles/two", "/articles/three"] {
+    for p in [
+        "/",
+        "/about",
+        "/articles/one",
+        "/articles/two",
+        "/articles/three",
+    ] {
         mount_static(&server, p).await;
         manifest_pages.push(CorpusPage {
             path: p.to_string(),

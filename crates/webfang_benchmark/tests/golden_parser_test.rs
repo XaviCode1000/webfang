@@ -57,9 +57,7 @@ fn parses_full_golden_exactly() {
         .count();
     assert_eq!(urls_failed, 1, "the ERROR event carries a urls-failed url");
     assert!(
-        records
-            .iter()
-            .any(|r| matches!(r, TraceRecord::WafEvent)),
+        records.iter().any(|r| matches!(r, TraceRecord::WafEvent)),
         "the WAF challenge event is classified"
     );
     // Progress/link-discovery lines are ignored, not classified as shapes.
@@ -68,10 +66,7 @@ fn parses_full_golden_exactly() {
 #[test]
 fn parses_summary_only_golden() {
     let records = aggregate::parse_file(&golden("golden_summary_only.jsonl")).expect("parses");
-    assert!(matches!(
-        records.as_slice(),
-        [TraceRecord::Summary(_)]
-    ));
+    assert!(matches!(records.as_slice(), [TraceRecord::Summary(_)]));
 }
 
 #[test]
@@ -90,12 +85,12 @@ fn parses_span_close_only_golden() {
 fn missing_summary_is_typed_error() {
     let path = golden("bad_missing_summary.jsonl");
     let records = aggregate::parse_file(&path).expect("lenient parse succeeds");
-    let err = aggregate::summary_of(&records, path.to_string_lossy().as_ref())
-        .expect_err("must fail");
+    let err =
+        aggregate::summary_of(&records, path.to_string_lossy().as_ref()).expect_err("must fail");
     match err {
         BenchmarkError::MissingSummary { path: p } => {
             assert!(p.ends_with("bad_missing_summary.jsonl"), "got: {p}");
-        }
+        },
         other => panic!("expected MissingSummary, got: {other:?}"),
     }
 }
@@ -103,7 +98,8 @@ fn missing_summary_is_typed_error() {
 /// AC-3.4 — invalid JSON mid-file fails with the exact line number.
 #[test]
 fn invalid_json_reports_line_number() {
-    let err = aggregate::parse_file(&golden("bad_invalid_json_midfile.jsonl")).expect_err("must fail");
+    let err =
+        aggregate::parse_file(&golden("bad_invalid_json_midfile.jsonl")).expect_err("must fail");
     match err {
         BenchmarkError::Jsonl { line, .. } => assert_eq!(line, 2, "error must point at line 2"),
         other => panic!("expected Jsonl, got: {other:?}"),
@@ -118,7 +114,7 @@ fn unknown_bucket_reports_shape_error_with_line() {
         BenchmarkError::Shape { line, detail } => {
             assert_eq!(line, 1);
             assert!(detail.contains("errors_banana"), "detail: {detail}");
-        }
+        },
         other => panic!("expected Shape, got: {other:?}"),
     }
 }
