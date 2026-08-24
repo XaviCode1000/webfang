@@ -221,6 +221,11 @@ fn ram_proxy(strategy: JsStrategy) -> Result<usize> {
         cookie_bridge,
         false,
         None,
+        // #890: operator headers/cookies are wired on the scrape path only;
+        // the benchmark mirror keeps profile defaults.
+        Vec::new(),
+        None,
+        None,
         CancellationToken::new(),
         3,
         1000,
