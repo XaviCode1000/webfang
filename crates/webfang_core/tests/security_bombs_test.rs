@@ -55,35 +55,91 @@ fn urlset_with(locs: &[String]) -> String {
 /// streamed raw-response cap, so only the decompression limit can fire.
 const BOMB_EXPANDED_BYTES: usize = 120 * 1024 * 1024;
 
-fn zeros() -> Vec<u8> {
-    vec![0u8; BOMB_EXPANDED_BYTES]
+/// Zero-allocation stand-in for `vec![0u8; BOMB_EXPANDED_BYTES]`.
+///
+/// Emits `remaining` zero bytes as an [`tokio::io::AsyncRead`], so the
+/// 120 MiB expanded payload is never materialized in memory — the encoder
+/// consumes it incrementally through a `BufReader`. Zero bytes compress
+/// identically to the old `Vec` approach, so wire-size assertions hold.
+struct ZerosReader {
+    remaining: usize,
 }
 
-async fn gzip_compress(data: &[u8]) -> Vec<u8> {
+impl ZerosReader {
+    fn new(total: usize) -> Self {
+        Self { remaining: total }
+    }
+}
+
+impl tokio::io::AsyncRead for ZerosReader {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let n = buf.remaining().min(self.remaining);
+        if n > 0 {
+            buf.initialize_unfilled()[..n].fill(0);
+            buf.advance(n);
+            self.remaining -= n;
+        }
+        // EOF (Ok with no fill) once the logical payload is exhausted.
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// Async reader over an in-memory slice (small payloads: XML sitemaps,
+/// intermediate compression layers). tokio has no `AsyncRead for &[u8]`.
+struct SliceReader<'a> {
+    data: &'a [u8],
+}
+
+impl<'a> SliceReader<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data }
+    }
+}
+
+impl tokio::io::AsyncRead for SliceReader<'_> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let n = buf.remaining().min(self.data.len());
+        if n > 0 {
+            buf.put_slice(&self.data[..n]);
+            self.data = &self.data[n..];
+        }
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+async fn gzip_compress(data: impl tokio::io::AsyncRead + Unpin) -> Vec<u8> {
     use async_compression::tokio::bufread::GzipEncoder;
     use tokio::io::{AsyncReadExt, BufReader};
 
-    let mut encoder = GzipEncoder::new(BufReader::new(std::io::Cursor::new(data)));
+    let mut encoder = GzipEncoder::new(BufReader::new(data));
     let mut out = Vec::new();
     encoder.read_to_end(&mut out).await.unwrap();
     out
 }
 
-async fn zstd_compress(data: &[u8]) -> Vec<u8> {
+async fn zstd_compress(data: impl tokio::io::AsyncRead + Unpin) -> Vec<u8> {
     use async_compression::tokio::bufread::ZstdEncoder;
     use tokio::io::{AsyncReadExt, BufReader};
 
-    let mut encoder = ZstdEncoder::new(BufReader::new(std::io::Cursor::new(data)));
+    let mut encoder = ZstdEncoder::new(BufReader::new(data));
     let mut out = Vec::new();
     encoder.read_to_end(&mut out).await.unwrap();
     out
 }
 
-async fn brotli_compress(data: &[u8]) -> Vec<u8> {
+async fn brotli_compress(data: impl tokio::io::AsyncRead + Unpin) -> Vec<u8> {
     use async_compression::tokio::bufread::BrotliEncoder;
     use tokio::io::{AsyncReadExt, BufReader};
 
-    let mut encoder = BrotliEncoder::new(BufReader::new(std::io::Cursor::new(data)));
+    let mut encoder = BrotliEncoder::new(BufReader::new(data));
     let mut out = Vec::new();
     encoder.read_to_end(&mut out).await.unwrap();
     out
@@ -128,8 +184,9 @@ async fn gzip_bomb_via_sitemap_fails_typed_not_crash() {
 
     // Double-gzip so whichever single layer the HTTP transport strips, the
     // handler still sees a gzip layer whose expansion is capped at 100 MiB.
-    let inner = gzip_compress(&zeros()).await;
-    let bomb = gzip_compress(&inner).await;
+    // Streamed zeros: no 120 MiB intermediate allocation.
+    let inner = gzip_compress(ZerosReader::new(BOMB_EXPANDED_BYTES)).await;
+    let bomb = gzip_compress(SliceReader::new(&inner)).await;
     assert!(
         bomb.len() < 50 * 1024 * 1024,
         "wire body must stay under the raw-response cap"
@@ -170,7 +227,7 @@ async fn zstd_bomb_via_sitemap_fails_typed_not_crash() {
     let server = &harness.server;
 
     // wreq has no zstd transport decoding: this layer reaches the handler.
-    let bomb = zstd_compress(&zeros()).await;
+    let bomb = zstd_compress(ZerosReader::new(BOMB_EXPANDED_BYTES)).await;
     assert!(bomb.first() == Some(&0x28), "zstd magic bytes expected");
     mock_sitemap_bytes(server, "/sitemap.xml.zst", bomb).await;
 
@@ -200,7 +257,7 @@ async fn brotli_bomb_via_sitemap_fails_typed_not_crash() {
 
     // Brotli is not sniffable: the .br extension hint drives detection, and
     // that decoder path must be size-capped too.
-    let bomb = brotli_compress(&zeros()).await;
+    let bomb = brotli_compress(ZerosReader::new(BOMB_EXPANDED_BYTES)).await;
     mock_sitemap_bytes(server, "/sitemap.xml.br", bomb).await;
 
     let result = cmd()
@@ -236,9 +293,9 @@ async fn triple_layer_gzip_terminates_without_loop_decompression() {
 
     let page_url = format!("{}/article", server.uri());
     let xml = urlset_with(&[page_url]);
-    let l1 = gzip_compress(xml.as_bytes()).await;
-    let l2 = gzip_compress(&l1).await;
-    let l3 = gzip_compress(&l2).await;
+    let l1 = gzip_compress(SliceReader::new(xml.as_bytes())).await;
+    let l2 = gzip_compress(SliceReader::new(&l1)).await;
+    let l3 = gzip_compress(SliceReader::new(&l2)).await;
 
     mock_sitemap_bytes(server, "/sitemap.xml.gz", l3).await;
 
