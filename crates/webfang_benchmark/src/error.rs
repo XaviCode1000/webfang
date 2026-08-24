@@ -46,11 +46,24 @@ pub enum BenchmarkError {
     /// run requires BOTH a non-empty provider API key in the environment
     /// AND an explicit CLI opt-in flag. Nothing was executed.
     #[error(
-"live competitor run not enabled in this build/session; provide {env_var} and pass --i-understand-costs to explicitly opt in ({provider})"
-    )]
+    "live competitor run not enabled in this build/session; provide {env_var} and pass --i-understand-costs to explicitly opt in ({provider})"
+        )]
     LiveDisabled {
         provider: &'static str,
         env_var: &'static str,
+    },
+
+    /// Projected credit spend exceeds the configured budget guard. The
+    /// refusal happens during PLANNING — before any request is prepared or
+    /// sent.
+    #[error(
+            "projected credit spend {projected_credits:.0} exceeds the budget guard of {budget} credits ({provider}); \
+             refused before any request was prepared or sent"
+        )]
+    BudgetExceeded {
+        provider: &'static str,
+        projected_credits: f64,
+        budget: u32,
     },
 }
 
