@@ -57,6 +57,9 @@ pub mod embedding_port;
 pub(crate) mod excerpt_repair;
 pub mod llm_port;
 pub mod note_repository;
+/// Single source of truth for user-facing options (ADR-002): declarative
+/// specs that generate clap args, JSON Schema, and shared validators.
+pub mod options_spec;
 pub mod semantic_cleaner;
 pub mod semantic_inspector;
 pub mod text_chunker;
