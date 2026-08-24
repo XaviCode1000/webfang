@@ -78,7 +78,7 @@ fn build_obscura_layer(timeout_secs: u64, obscura_binary: &str) -> ObscuraDownlo
 /// * `accept_language` - optional Accept-Language override (`--accept-language`, #890)
 /// * `initial_cookie_jar` - pre-seeded wreq cookie store (`--cookie`, #890) shared
 ///   by the Static and Hybrid-L1 layers; the Chromiumoxide L3 layer keeps using
-///   [`CookieBridge`]
+///   [`crate::infrastructure::downloader::cookie_bridge::CookieBridge`]
 ///
 /// Returns [`DownloadError::Internal`] if the wreq client cannot be built.
 #[allow(clippy::too_many_arguments)]

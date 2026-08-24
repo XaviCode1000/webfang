@@ -82,7 +82,7 @@ impl WreqDownloader {
     /// * `initial_cookie_jar` - Pre-seeded wreq cookie store (`--cookie`,
     ///   #890). When provided it replaces the default empty jar, so Static
     ///   and Hybrid-L1 requests carry the operator's cookies from the first
-    ///   fetch. The Chromiumoxide L3 path keeps using [`CookieBridge`].
+    ///   fetch. The Chromiumoxide L3 path keeps using [`crate::infrastructure::downloader::cookie_bridge::CookieBridge`].
     ///
     /// # Errors
     ///
@@ -140,6 +140,15 @@ impl WreqDownloader {
         let builder = if extra_headers.is_empty() {
             builder
         } else {
+            // #890 observability: WHICH overrides are active (names +
+            // count only — never values; cookies and fingerprint headers
+            // are credentials/sensitive surface).
+            debug!(
+                header_names = %extra_headers.keys().map(|k| k.as_str()).collect::<Vec<_>>().join(","),
+                custom_header_count = custom_headers.len(),
+                accept_language_override = accept_language.is_some(),
+                "operator header overrides applied to scrape client"
+            );
             builder.default_headers(extra_headers)
         };
         // #890: a pre-seeded jar (`--cookie`) replaces the default empty one
@@ -147,7 +156,13 @@ impl WreqDownloader {
         // first fetch. `cookie_store(true)` must NOT run afterwards — it
         // would swap in a fresh empty jar.
         let builder = match initial_cookie_jar {
-            Some(jar) => builder.cookie_provider(jar),
+            Some(jar) => {
+                // #890 observability: attachment event only — cookie
+                // values AND counts live where the jar is seeded
+                // (cli/scrape_flow.rs); cookies are credentials.
+                debug!("pre-seeded operator cookie jar attached to scrape client");
+                builder.cookie_provider(jar)
+            },
             None => builder.cookie_store(true),
         };
         let client = builder
@@ -1005,6 +1020,77 @@ mod wiremock_tests {
             .await
             .expect("fetch succeeds only if the configured language matched on the wire");
         assert_eq!(page.status, 200);
+    }
+
+    /// Malformed operator input (#890, review M1): an invalid header NAME must
+    /// fail LOUDLY at client build time with a typed internal error naming the
+    /// offending header — never a silent drop (the same silent-drop class #890
+    /// exists to eliminate).
+    #[tokio::test]
+    async fn invalid_custom_header_name_fails_loudly_at_build() {
+        let error = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            None,
+            vec![("bad header name\n".to_string(), "v".to_string())],
+            None,
+            None,
+            3,
+            1000,
+            10000,
+        )
+        .err()
+        .expect("newline is not a valid HTTP header name");
+        match error {
+            DownloadError::Internal(msg) => {
+                assert!(msg.contains("invalid --header name"), "got: {msg}");
+            },
+            other => panic!("expected DownloadError::Internal, got: {other:?}"),
+        }
+    }
+
+    /// Malformed operator input (#890, review M1): an invalid header VALUE and
+    /// an invalid Accept-Language must both fail loudly at client build time.
+    #[tokio::test]
+    async fn invalid_header_value_and_language_fail_loudly_at_build() {
+        let value_error = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            None,
+            vec![("X-Ok".to_string(), "bad\nvalue".to_string())],
+            None,
+            None,
+            3,
+            1000,
+            10000,
+        )
+        .err()
+        .expect("newline is not a valid HTTP header value");
+        assert!(
+            matches!(value_error, DownloadError::Internal(ref m) if m.contains("invalid --header value")),
+            "got: {value_error:?}"
+        );
+
+        let lang_error = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            None,
+            Vec::new(),
+            Some("es\u{0}-AR".to_string()),
+            None,
+            3,
+            1000,
+            10000,
+        )
+        .err()
+        .expect("NUL is not a valid Accept-Language value");
+        assert!(
+            matches!(lang_error, DownloadError::Internal(ref m) if m.contains("invalid --accept-language")),
+            "got: {lang_error:?}"
+        );
     }
 
     /// Wire-level proof that a pre-seeded cookie jar (`--cookie`, #890) is
