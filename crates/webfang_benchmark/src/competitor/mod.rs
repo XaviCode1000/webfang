@@ -167,7 +167,11 @@ pub(crate) fn env_key_present(env_var: &str) -> bool {
 ///
 /// Building this value performs NO I/O: it is pure data the future Tier B
 /// execution layer will hand to a wreq client (C-3; never reqwest).
-#[derive(Debug, Clone)]
+///
+/// The manual [`Debug`] impl REDACTS [`Self::bearer_token`] as
+/// `[REDACTED]`: prepared requests flow through logs and error paths, and
+/// a provider API key must never appear in any rendered output.
+#[derive(Clone)]
 pub struct PreparedRequest {
     /// HTTP method of the deferred call.
     pub method: &'static str,
@@ -177,6 +181,17 @@ pub struct PreparedRequest {
     pub bearer_token: String,
     /// JSON request body, already validated/normalized.
     pub body_json: serde_json::Value,
+}
+
+impl std::fmt::Debug for PreparedRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+f.debug_struct("PreparedRequest")
+.field("method", &self.method)
+.field("url", &self.url)
+.field("bearer_token", &"[REDACTED]")
+.field("body_json", &self.body_json)
+.finish()
+    }
 }
 
 /// Shared crawl-start parameters accepted by every adapter.
