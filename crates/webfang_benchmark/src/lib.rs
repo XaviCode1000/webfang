@@ -10,5 +10,6 @@ pub mod aggregate;
 pub mod corpus;
 pub mod cost;
 pub mod error;
+pub mod report;
 
 pub use error::{BenchmarkError, Result};
