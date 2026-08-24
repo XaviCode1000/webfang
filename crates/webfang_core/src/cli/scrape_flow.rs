@@ -152,6 +152,22 @@ pub async fn scrape_urls(
         }
     }
     let cookie_bridge = std::sync::Arc::new(std::sync::RwLock::new(cookie_bridge));
+    // #890: seed operator `--cookie` values into a shared wreq jar so the
+    // Static and Hybrid-L1 layers carry them from the first fetch. The
+    // Chromiumoxide L3 layer keeps consuming the CookieBridge above.
+    let initial_cookie_jar = if opts.network.initial_cookies.is_empty() {
+        None
+    } else {
+        urls.first().map(|first_url| {
+            let jar = wreq::cookie::Jar::default();
+            for (name, value) in &opts.network.initial_cookies {
+                // RFC 6265 host-scoped cookie: no Domain attribute, so it
+                // matches only the target host.
+                jar.add(format!("{name}={value}").as_str(), first_url.as_str());
+            }
+            std::sync::Arc::new(jar)
+        })
+    };
     let router = build_fetch_router(
         &opts.network.js_strategy,
         http_config.timeout_secs,
@@ -162,6 +178,14 @@ pub async fn scrape_urls(
         // of dropping it on the floor. `http_config` stays usable below —
         // only this field moves out.
         http_config.user_agent,
+        // #890: operator headers, Accept-Language, and seeded cookies reach
+        // the wreq layer instead of being silently dropped. Accept-Language
+        // mirrors the retry-client semantics: the configured value applies
+        // unconditionally (NetworkOptions carries the profile-matching
+        // default when the operator did not override it).
+        opts.network.custom_headers.clone(),
+        Some(opts.network.accept_language.clone()),
+        initial_cookie_jar,
         // #653: the run's shutdown token, so Full-strategy governor waits abort
         // on SIGINT/SIGTERM instead of hanging until their own timeout.
         cancel.clone(),
