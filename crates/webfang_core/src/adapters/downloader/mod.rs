@@ -890,36 +890,17 @@ fn percent_decode_utf8(input: &str) -> String {
         .into_owned()
 }
 
-/// Maximum length for a sanitized filename (ext4 per-file limit).
-const MAX_FILENAME_LEN: usize = 255;
-
-/// Sanitize a filename: remove path separators and null bytes, and neutralize
-/// bare dot-segments.
+/// Sanitize an untrusted filename into a safe single path component.
 ///
-/// The result is always joinable onto a trusted directory without escaping
-/// it: separators are stripped (so `../x` cannot traverse) and results that
-/// are exactly `.` or `..` — which would resolve to the target directory's
-/// parent when joined — come back empty so callers fall back to safe naming.
+/// Thin delegate over
+/// [`crate::infrastructure::crawler::binary_utils::sanitize_filename_component`]
+/// — the single source of truth for filename sanitization. Returns an
+/// empty string when nothing safe remains (fully hostile input such as
+/// `.` / `..`), so callers like [`Self::generate_filename`] fall back to
+/// hash-based naming.
 fn sanitize_filename(name: &str) -> String {
-    let stripped: String = name
-        .chars()
-        .filter(|c| *c != '/' && *c != '\\' && *c != '\0')
-        .collect();
-
-    if stripped == "." || stripped == ".." {
-        tracing::warn!(
-            original_len = name.len(),
-            "hostile dot-segment filename neutralized to prevent path traversal"
-        );
-        return String::new();
-    }
-
-    // Enforce the filesystem length cap on char boundaries.
-    let mut capped = stripped;
-    while capped.len() > MAX_FILENAME_LEN {
-        capped.pop();
-    }
-    capped
+    crate::infrastructure::crawler::binary_utils::sanitize_filename_component(name)
+        .unwrap_or_default()
 }
 
 /// Parse `filename=` from a Content-Disposition header value.
@@ -1255,22 +1236,26 @@ mod tests {
 
     #[test]
     fn test_sanitize_filename() {
-        assert_eq!(sanitize_filename("hello/world"), "helloworld");
+        // Delegates to `binary_utils::sanitize_filename_component`: only
+        // the last valid segment survives.
+        assert_eq!(sanitize_filename("hello/world"), "world");
         assert_eq!(sanitize_filename("file\0name"), "filename");
         assert_eq!(sanitize_filename("normal-file.pdf"), "normal-file.pdf");
     }
 
     // -------------------------------------------------------------
-    // sanitize_filename — traversal hardening (batch 1)
+    // sanitize_filename — traversal hardening (batch 1, unified in
+    // binary_utils::sanitize_filename_component since batch 3)
     // -------------------------------------------------------------
 
     #[test]
     fn sanitize_filename_strips_traversal_separators() {
-        // Separators removed → the residue cannot traverse on join.
-        assert_eq!(sanitize_filename("../escape.bin"), "..escape.bin");
-        assert_eq!(sanitize_filename("a/../b"), "a..b");
-        assert_eq!(sanitize_filename("/abs/path.bin"), "abspath.bin");
-        assert_eq!(sanitize_filename(r"\\server\share"), "servershare");
+        // Directory components are dropped entirely; the last valid
+        // segment cannot traverse on join.
+        assert_eq!(sanitize_filename("../escape.bin"), "escape.bin");
+        assert_eq!(sanitize_filename("a/../b"), "b");
+        assert_eq!(sanitize_filename("/abs/path.bin"), "path.bin");
+        assert_eq!(sanitize_filename(r"\\server\share"), "share");
     }
 
     #[test]
@@ -1291,7 +1276,8 @@ mod tests {
     fn sanitize_filename_caps_length() {
         let long = format!("{}.pdf", "a".repeat(300));
         let sanitized = sanitize_filename(&long);
-        assert!(sanitized.len() <= MAX_FILENAME_LEN);
+        // ext4 per-component cap; matches binary_utils::MAX_FILENAME_LEN.
+        assert!(sanitized.len() <= 255);
         assert!(!sanitized.is_empty());
     }
 
