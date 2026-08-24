@@ -171,12 +171,12 @@ pub struct ForbiddenResolutionError {
 /// hostname redirect targets and DNS-rebinding TOCTOU between entry
 /// validation and connect.
 ///
-/// The port in each resolved [`SocketAddr`] is `0`: per the `wreq::dns::Resolve`
+/// The port in each resolved `SocketAddr` is `0`: per the `wreq::dns::Resolve`
 /// contract, an explicit port in the request URI overrides it, and port 0 is
 /// replaced with the scheme's conventional port otherwise. This mirrors
 /// wreq's own `GaiResolver`, which resolves `(name, 0)`.
 ///
-/// The escape hatch [`DISABLE_VALIDATING_RESOLVER_ENV`] is read **once, at
+/// The escape hatch `DISABLE_VALIDATING_RESOLVER_ENV` is read **once, at
 /// construction time** (stored as a plain `bool`): long-lived clients keep a
 /// consistent policy for their whole lifetime (no half-disarmed states where
 /// some pooled connections validate and others don't), and there is no
@@ -192,7 +192,7 @@ pub struct ValidatingResolver {
 
 impl ValidatingResolver {
     /// Builds a resolver; validation state is captured from
-    /// [`DISABLE_VALIDATING_RESOLVER_ENV`] at this moment.
+    /// `DISABLE_VALIDATING_RESOLVER_ENV` at this moment.
     #[must_use]
     pub fn new() -> Self {
         Self {
