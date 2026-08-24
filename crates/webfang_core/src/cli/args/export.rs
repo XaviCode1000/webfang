@@ -1,98 +1,95 @@
 use crate::domain::config::{ExportFormat, OutputFormat, PipelineOutputFormat};
 use crate::domain::options_spec::export as export_specs;
-use clap::Args;
 
 /// Export format and output configuration arguments.
-#[derive(Args, Debug, Default)]
+///
+/// Parsing stays derive-driven (`FromArgMatches`); command assembly is
+/// spec-built (ADR-002 slice 3); see `cli::spec_command`.
+#[derive(Debug, Default)]
 pub struct ExportArgs {
     // ========== Output ==========
     /// Output directory for scraped content
-    #[arg(short, long, default_value = "output", env = "WEBFANG_OUTPUT")]
-    #[clap(next_help_heading = "Output")]
     pub output: std::path::PathBuf,
 
     /// Output format for individual files (markdown, text, json)
     /// NOTE: For RAG pipeline export, use --export-format instead
-    #[arg(
-        short = 'f',
-        long,
-        default_value = "markdown",
-        value_enum,
-        env = "WEBFANG_FORMAT"
-    )]
-    #[clap(next_help_heading = "Output")]
     pub format: OutputFormat,
 
     /// Export format for RAG pipeline (jsonl, vector, auto)
     /// NOTE: Use --format for output file format (markdown, text, json)
-    #[arg(
-        long = "export-format",
-        alias = "export",
-        default_value = "jsonl",
-        value_enum,
-        env = "WEBFANG_EXPORT_FORMAT"
-    )]
-    #[clap(next_help_heading = "Output")]
     pub export_format: ExportFormat,
 
     // ========== Elastic Ingestion (Issue #51, PR5) ==========
     /// CPU core override for the elastic ingestion Rayon pool (else auto-detect)
-    #[arg(long, env = "WEBFANG_CPU_CORES", value_parser = parse_cpu_cores)]
-    #[clap(next_help_heading = "Elastic Ingestion")]
     pub cpu_cores: Option<usize>,
 
     /// RAM budget override for the byte-weighted semaphore (`8GB`, `2048MB`, or bytes)
-    #[arg(long, env = "WEBFANG_RAM_BUDGET", value_parser = parse_ram_budget)]
-    #[clap(next_help_heading = "Elastic Ingestion")]
     pub ram_budget: Option<u64>,
 
     /// SQLite database path override for persisted resources/chunks
-    #[arg(long, env = "WEBFANG_DB_PATH")]
-    #[clap(next_help_heading = "Elastic Ingestion")]
     pub db_path: Option<std::path::PathBuf>,
 
     /// Enable elastic ingestion pipeline (streaming, SQLite dedup, Rayon CPU bridge)
-    #[arg(long, default_value = "false", env = "WEBFANG_ELASTIC")]
-    #[clap(next_help_heading = "Elastic Ingestion")]
     pub elastic: bool,
 
     /// Write extracted vectors to a JSONL file for RAG pipelines. Use `-` for
     /// stdout. No SQLite dependency — available in every build (core binary too).
-    #[arg(long, env = "WEBFANG_OUTPUT_VECTORS")]
-    #[clap(next_help_heading = "Elastic Ingestion")]
     pub output_vectors: Option<String>,
 
     // ========== Batch Processing ==========
     /// Enable batch mode — read URLs from stdin (one per line)
-    #[arg(long, default_value = "false", env = "WEBFANG_BATCH")]
-    #[clap(next_help_heading = "Batch Processing")]
     pub batch: bool,
 
     /// Path to a file containing URLs to crawl (one per line)
-    #[arg(long, env = "WEBFANG_BATCH_FILE")]
-    #[clap(next_help_heading = "Batch Processing")]
     pub batch_file: Option<std::path::PathBuf>,
 
     /// Maximum concurrent URLs in batch mode (omit = auto from budget model)
-    #[arg(long, env = "WEBFANG_BATCH_CONCURRENCY", value_parser = parse_batch_concurrency)]
-    #[clap(next_help_heading = "Batch Processing")]
     pub batch_concurrency: Option<usize>,
 
     // ========== Item Pipeline ==========
     /// Enable item pipeline processing (validate → clean → output)
-    #[arg(long, default_value = "false", env = "WEBFANG_PIPELINE")]
-    #[clap(next_help_heading = "Item Pipeline")]
     pub pipeline: bool,
 
     /// Pipeline output format: jsonl (default), none
-    #[arg(
-        long,
-        default_value = "jsonl",
-        value_enum,
-        env = "WEBFANG_PIPELINE_OUTPUT"
-    )]
-    #[clap(next_help_heading = "Item Pipeline")]
     pub pipeline_output: PipelineOutputFormat,
+}
+
+impl clap::FromArgMatches for ExportArgs {
+    fn from_arg_matches(m: &clap::ArgMatches) -> Result<Self, clap::Error> {
+        use crate::cli::spec_command::extract;
+        Ok(Self {
+            output: extract::value(m, "output")?,
+            format: extract::value(m, "format")?,
+            export_format: extract::value(m, "export_format")?,
+            cpu_cores: extract::opt(m, "cpu_cores"),
+            ram_budget: extract::opt(m, "ram_budget"),
+            db_path: extract::opt(m, "db_path"),
+            elastic: m.get_flag("elastic"),
+            output_vectors: extract::opt(m, "output_vectors"),
+            batch: m.get_flag("batch"),
+            batch_file: extract::opt(m, "batch_file"),
+            batch_concurrency: extract::opt(m, "batch_concurrency"),
+            pipeline: m.get_flag("pipeline"),
+            pipeline_output: extract::value(m, "pipeline_output")?,
+        })
+    }
+
+    fn update_from_arg_matches(&mut self, m: &clap::ArgMatches) -> Result<(), clap::Error> {
+        *self = Self::from_arg_matches(m)?;
+        Ok(())
+    }
+}
+
+impl clap::Args for ExportArgs {
+    fn augment_args(cmd: clap::Command) -> clap::Command {
+        cmd.args(crate::cli::spec_command::export_args(
+            crate::cli::spec_command::Headings::Omitted,
+        ))
+    }
+
+    fn augment_args_for_update(cmd: clap::Command) -> clap::Command {
+        Self::augment_args(cmd)
+    }
 }
 
 /// Validate `--cpu-cores` is a positive integer.
@@ -101,7 +98,7 @@ pub struct ExportArgs {
 /// system boundary keeps the invalid value out of the autotuning resolver
 /// (#653). Bounds and messages come from the OptionsSpec (ADR-002) — the
 /// single validation source.
-fn parse_cpu_cores(s: &str) -> Result<usize, String> {
+pub(crate) fn parse_cpu_cores(s: &str) -> Result<usize, String> {
     let value = export_specs::CPU_CORES
         .parse_uint(s)
         .map_err(|e| e.to_string())?;
@@ -115,7 +112,7 @@ fn parse_cpu_cores(s: &str) -> Result<usize, String> {
 /// `Option::and_then` further down the pipeline (#653). Suffix parsing stays
 /// in `infrastructure::autotuning` (layering); the bound and messages come
 /// from the OptionsSpec (ADR-002).
-fn parse_ram_budget(s: &str) -> Result<u64, String> {
+pub(crate) fn parse_ram_budget(s: &str) -> Result<u64, String> {
     let value = crate::infrastructure::autotuning::parse_ram_bytes(s)
         .ok_or_else(|| export_specs::RAM_BUDGET.parse_error(s).to_string())?;
     export_specs::RAM_BUDGET
@@ -128,7 +125,7 @@ fn parse_ram_budget(s: &str) -> Result<u64, String> {
 /// Clap's `value_parser!(usize)` does not expose `.range()` in the derive API,
 /// so a spec-driven validator enforces the invariant at the system boundary
 /// (#640, ADR-002).
-fn parse_batch_concurrency(s: &str) -> Result<usize, String> {
+pub(crate) fn parse_batch_concurrency(s: &str) -> Result<usize, String> {
     let value = export_specs::BATCH_CONCURRENCY
         .parse_uint(s)
         .map_err(|e| e.to_string())?;
@@ -144,6 +141,7 @@ mod spec_parity_tests {
 
     use super::*;
     use crate::domain::options_spec as spec;
+    use clap::Args as _;
 
     /// All clap args generated for `ExportArgs`, keyed by arg id.
     fn command_args() -> Vec<clap::Arg> {

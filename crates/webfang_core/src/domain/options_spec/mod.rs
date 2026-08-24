@@ -39,6 +39,11 @@ pub struct OptionSpec {
     /// Alternative long names accepted by clap AND rendered in help
     /// output (clap's `visible_alias`).
     pub visible_aliases: &'static [&'static str],
+    /// Placeholder shown for the option's value (`<VALUE_NAME>`); today
+    /// always the SCREAMING_SNAKE id (clap derive's rendering). A static
+    /// string because clap's owned-`Str` support sits behind its `string`
+    /// feature, which this crate does not enable.
+    pub value_name: &'static str,
     /// Environment variable consulted when the flag is absent.
     pub env: Option<&'static str>,
     /// Canonical default value as rendered in help and schema.
