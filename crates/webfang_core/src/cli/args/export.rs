@@ -310,6 +310,69 @@ mod spec_parity_tests {
         );
     }
 
+    /// Slice 3 (ADR-002) pin: the structural clap surface that the
+    /// spec-driven builder must reproduce byte-for-byte. Written against
+    /// the derive BEFORE the migration so any builder divergence fails
+    /// here first.
+    #[test]
+    fn structural_actions_value_names_and_possible_values_match_the_spec() {
+        let args = command_args();
+        for s in spec::export::GROUP {
+            let arg = arg_by_id(&args, s.id);
+            match s.kind {
+                spec::ValueKind::Bool => {
+                    assert!(
+                        matches!(arg.get_action(), clap::ArgAction::SetTrue),
+                        "bool `{}` must use SetTrue",
+                        s.id
+                    );
+                },
+                _ => {
+                    assert!(
+                        matches!(arg.get_action(), clap::ArgAction::Set),
+                        "value option `{}` must use Set",
+                        s.id
+                    );
+                },
+            }
+            let names: Vec<String> = arg
+                .get_value_names()
+                .unwrap_or_default()
+                .iter()
+                .map(|id| id.to_string())
+                .collect();
+            assert_eq!(
+                names,
+                vec![s.id.to_ascii_uppercase()],
+                "value name mismatch for `{}`",
+                s.id
+            );
+            let possible: Vec<String> = arg
+                .get_possible_values()
+                .into_iter()
+                .map(|v| v.get_name().to_string())
+                .collect();
+            if let spec::ValueKind::Enum { variants } = s.kind {
+                assert_eq!(possible, variants, "possible values for `{}`", s.id);
+            } else if !matches!(s.kind, spec::ValueKind::Bool) {
+                // Bools carry clap's implicit boolish parser (possible
+                // values `true,false`) — pinned in the crawler suite.
+                assert!(
+                    possible.is_empty(),
+                    "`{}` must have no possible values",
+                    s.id
+                );
+            }
+            // Single-form help only: no separate long help exists today,
+            // so `--help` and `-h` render the same text per option.
+            assert!(
+                arg.get_long_help().is_none(),
+                "`{}` must not carry long help",
+                s.id
+            );
+        }
+    }
+
     #[test]
     fn out_of_bounds_and_malformed_inputs_error_exactly_as_before() {
         let err = parse_args(&["--cpu-cores", "0"]).expect_err("zero cores rejected");
