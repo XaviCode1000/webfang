@@ -32,8 +32,18 @@ pub struct OptionSpec {
     pub long: &'static str,
     /// Single-dash flag, if any.
     pub short: Option<char>,
-    /// Alternative long names accepted by clap.
+    /// Alternative long names accepted by clap but NOT rendered in help
+    /// output (clap's `alias`). Visible aliases live in
+    /// [`OptionSpec::visible_aliases`].
     pub aliases: &'static [&'static str],
+    /// Alternative long names accepted by clap AND rendered in help
+    /// output (clap's `visible_alias`).
+    pub visible_aliases: &'static [&'static str],
+    /// Placeholder shown for the option's value (`<VALUE_NAME>`); today
+    /// always the SCREAMING_SNAKE id (clap derive's rendering). A static
+    /// string because clap's owned-`Str` support sits behind its `string`
+    /// feature, which this crate does not enable.
+    pub value_name: &'static str,
     /// Environment variable consulted when the flag is absent.
     pub env: Option<&'static str>,
     /// Canonical default value as rendered in help and schema.
@@ -207,10 +217,43 @@ pub struct OwnedParseMessage {
 
 impl OptionSpec {
     /// Whether this option participates in the current build given its
-    /// feature gate. Slice 1 has no gated options.
+    /// feature gate. A gate of `None` is always active; known gates map
+    /// to this crate's cargo features so the spec mirrors the `cfg`
+    /// duplication of the pre-slice-3 derives. Unknown gates fail closed
+    /// (inactive) until they are wired here.
     #[must_use]
     pub const fn active(&self) -> bool {
-        self.feature_gate.is_none()
+        match self.feature_gate {
+            None => true,
+            Some(gate) => Self::gate_active(gate.as_bytes()),
+        }
+    }
+
+    /// Byte-wise gate comparison: `&str` patterns are not allowed in
+    /// `const fn` on Rust 1.88, so known gates are matched manually.
+    /// Unknown gates fail closed (inactive) until wired here.
+    const fn gate_active(gate: &[u8]) -> bool {
+        if Self::bytes_eq(gate, b"ai") {
+            return cfg!(feature = "ai");
+        }
+        if Self::bytes_eq(gate, b"adaptive-selectors") {
+            return cfg!(feature = "adaptive-selectors");
+        }
+        false
+    }
+
+    const fn bytes_eq(a: &[u8], b: &[u8]) -> bool {
+        if a.len() != b.len() {
+            return false;
+        }
+        let mut i = 0;
+        while i < a.len() {
+            if a[i] != b[i] {
+                return false;
+            }
+            i += 1;
+        }
+        true
     }
 
     /// Validate and parse a raw textual value as an unsigned integer.
@@ -444,7 +487,7 @@ mod tests {
 
     #[test]
     fn crawler_group_covers_every_non_deferred_crawler_args_field() {
-        assert_eq!(crawler::GROUP.len(), 39);
+        assert_eq!(crawler::GROUP.len(), 41);
         for opt in crawler::GROUP {
             assert!(
                 opt.id
@@ -454,6 +497,38 @@ mod tests {
                 opt.id
             );
         }
+    }
+
+    #[test]
+    fn feature_gated_entries_mirror_the_compile_time_cfg() {
+        // The spec's gate must name a known cargo feature and `active()`
+        // must agree with the actual compilation configuration.
+        for (opt, gate) in [
+            (crawler::CLEAN_AI, "ai"),
+            (crawler::ADAPTIVE_SELECTORS, "adaptive-selectors"),
+        ] {
+            assert_eq!(opt.feature_gate, Some(gate));
+            assert_eq!(
+                opt.active(),
+                match gate {
+                    "ai" => cfg!(feature = "ai"),
+                    "adaptive-selectors" => cfg!(feature = "adaptive-selectors"),
+                    _ => unreachable!(),
+                },
+                "active() must mirror cfg for gate `{gate}`"
+            );
+        }
+        // Ungated entries are always active.
+        assert!(export::OUTPUT.active());
+    }
+
+    #[test]
+    fn unknown_feature_gates_fail_closed() {
+        let gated = super::OptionSpec {
+            feature_gate: Some("not-a-real-feature"),
+            ..export::OUTPUT
+        };
+        assert!(!gated.active());
     }
 
     #[test]

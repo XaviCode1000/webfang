@@ -12,6 +12,8 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use tracing::{debug, instrument, warn};
 use url::Url;
+use wreq::cookie::Jar;
+use wreq::header::{HeaderMap, HeaderName, HeaderValue};
 use wreq::Client;
 use wreq_util::Profile;
 
@@ -36,7 +38,7 @@ const WREQ_MEMORY_COST: usize = 1_024 * 1_024; // ~1 MB
 /// use webfang_core::infrastructure::downloader::wreq_downloader::WreqDownloader;
 /// use webfang_core::infrastructure::downloader::Downloader;
 ///
-/// let downloader = WreqDownloader::new(30, 10, wreq_util::Profile::Chrome145, None, 3, 1000, 10000).unwrap();
+/// let downloader = WreqDownloader::new(30, 10, wreq_util::Profile::Chrome145, None, Vec::new(), None, None, 3, 1000, 10000).unwrap();
 /// let page = downloader.fetch(&"https://example.com".parse().unwrap()).await.unwrap();
 /// assert_eq!(page.status, 200);
 /// ```
@@ -70,15 +72,33 @@ impl WreqDownloader {
     ///   build time via the builder's `user_agent` API, AFTER the emulation
     ///   profile, so it wins over the profile-default UA on the wire. When
     ///   set, the 403 pool-rotation retry is disabled.
+    /// * `custom_headers` - Operator headers (`--header`, #890). Applied at
+    ///   client build time via `default_headers`, AFTER the emulation
+    ///   profile and any pinned UA, so they replace same-named profile
+    ///   defaults (case-insensitive per HTTP semantics).
+    /// * `accept_language` - Optional Accept-Language value (`--accept-language`,
+    ///   #890). Applied AFTER the emulation profile so it wins over the
+    ///   profile-default language.
+    /// * `initial_cookie_jar` - Pre-seeded wreq cookie store (`--cookie`,
+    ///   #890). When provided it replaces the default empty jar, so Static
+    ///   and Hybrid-L1 requests carry the operator's cookies from the first
+    ///   fetch. The Chromiumoxide L3 path keeps using [`crate::infrastructure::downloader::cookie_bridge::CookieBridge`].
     ///
     /// # Errors
     ///
-    /// Returns [`DownloadError::Internal`] if the wreq client cannot be built.
+    /// Returns [`DownloadError::Internal`] if the wreq client cannot be built
+    /// or if a custom header name/value is not valid for HTTP.
+    // 10 params: the wreq layer's full dependency set (profile, UA, operator
+    // headers/cookies, retry backoff) — same pattern as build_fetch_router.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         timeout_secs: u64,
         connect_timeout_secs: u64,
         tls_emulation: Profile,
         user_agent: Option<String>,
+        custom_headers: Vec<(String, String)>,
+        accept_language: Option<String>,
+        initial_cookie_jar: Option<Arc<Jar>>,
         max_retries: u32,
         backoff_base_ms: u64,
         backoff_max_ms: u64,
@@ -97,6 +117,54 @@ impl WreqDownloader {
             Some(ua) => builder.user_agent(ua),
             None => builder,
         };
+        // #890: operator values are applied as client default headers AFTER
+        // the emulation profile. `default_headers` replaces per header name
+        // (case-insensitive — HTTP/2 names are lowercase-canonical), so user
+        // supplied values win over profile defaults on the wire.
+        let mut extra_headers = HeaderMap::new();
+        if let Some(lang) = accept_language.as_deref() {
+            let value = HeaderValue::from_str(lang).map_err(|e| {
+                DownloadError::Internal(format!("invalid --accept-language value {lang:?}: {e}"))
+            })?;
+            extra_headers.insert(wreq::header::ACCEPT_LANGUAGE, value);
+        }
+        for (name, value) in &custom_headers {
+            let name = HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
+                DownloadError::Internal(format!("invalid --header name {name:?}: {e}"))
+            })?;
+            let value = HeaderValue::from_str(value).map_err(|e| {
+                DownloadError::Internal(format!("invalid --header value for {name}: {e}"))
+            })?;
+            extra_headers.insert(name, value);
+        }
+        let builder = if extra_headers.is_empty() {
+            builder
+        } else {
+            // #890 observability: WHICH overrides are active (names +
+            // count only — never values; cookies and fingerprint headers
+            // are credentials/sensitive surface).
+            debug!(
+                header_names = %extra_headers.keys().map(|k| k.as_str()).collect::<Vec<_>>().join(","),
+                custom_header_count = custom_headers.len(),
+                accept_language_override = accept_language.is_some(),
+                "operator header overrides applied to scrape client"
+            );
+            builder.default_headers(extra_headers)
+        };
+        // #890: a pre-seeded jar (`--cookie`) replaces the default empty one
+        // so Static/Hybrid-L1 requests carry the operator cookies from the
+        // first fetch. `cookie_store(true)` must NOT run afterwards — it
+        // would swap in a fresh empty jar.
+        let builder = match initial_cookie_jar {
+            Some(jar) => {
+                // #890 observability: attachment event only — cookie
+                // values AND counts live where the jar is seeded
+                // (cli/scrape_flow.rs); cookies are credentials.
+                debug!("pre-seeded operator cookie jar attached to scrape client");
+                builder.cookie_provider(jar)
+            },
+            None => builder.cookie_store(true),
+        };
         let client = builder
             .timeout(Duration::from_secs(timeout_secs))
             .connect_timeout(Duration::from_secs(connect_timeout_secs))
@@ -104,7 +172,6 @@ impl WreqDownloader {
             .pool_idle_timeout(Duration::from_secs(60))
             .gzip(true)
             .brotli(true)
-            .cookie_store(true)
             // SSRF guard (#703): default 10-hop limit + stops redirects that
             // target a literal forbidden IP (belt-and-suspenders). Hostname
             // targets — including every redirect hop — are enforced at connect
@@ -490,8 +557,19 @@ mod test_support {
             .mount(&mock_server)
             .await;
 
-        let downloader =
-            WreqDownloader::new(10, 5, Profile::Chrome145, None, 3, 1000, 10000).unwrap();
+        let downloader = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            None,
+            Vec::new(),
+            None,
+            None,
+            3,
+            1000,
+            10000,
+        )
+        .unwrap();
         let url: Url = mock_server.uri().parse().unwrap();
 
         let result = downloader.fetch(&url).await;
@@ -510,8 +588,19 @@ mod tests {
 
     #[test]
     fn test_wreq_downloader_creation() {
-        let downloader =
-            WreqDownloader::new(30, 10, Profile::Chrome145, None, 3, 1000, 10000).unwrap();
+        let downloader = WreqDownloader::new(
+            30,
+            10,
+            Profile::Chrome145,
+            None,
+            Vec::new(),
+            None,
+            None,
+            3,
+            1000,
+            10000,
+        )
+        .unwrap();
         assert!(!downloader.supports_interactions());
         assert_eq!(downloader.memory_cost(), WREQ_MEMORY_COST);
     }
@@ -522,8 +611,19 @@ mod tests {
         // with it (triangulation: the parameter reaches the builder instead of
         // a hardcoded default).
         for profile in [Profile::Chrome145, Profile::Chrome131, Profile::Firefox135] {
-            let downloader = WreqDownloader::new(30, 10, profile, None, 3, 1000, 10000)
-                .unwrap_or_else(|e| panic!("client must build for profile {profile:?}: {e}"));
+            let downloader = WreqDownloader::new(
+                30,
+                10,
+                profile,
+                None,
+                Vec::new(),
+                None,
+                None,
+                3,
+                1000,
+                10000,
+            )
+            .unwrap_or_else(|e| panic!("client must build for profile {profile:?}: {e}"));
             assert!(!downloader.supports_interactions());
         }
     }
@@ -617,8 +717,19 @@ mod wiremock_tests {
             .mount(&mock_server)
             .await;
 
-        let downloader =
-            WreqDownloader::new(10, 5, Profile::Chrome145, None, 3, 1000, 10000).unwrap();
+        let downloader = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            None,
+            Vec::new(),
+            None,
+            None,
+            3,
+            1000,
+            10000,
+        )
+        .unwrap();
         let url: Url = format!("{}/notfound", mock_server.uri()).parse().unwrap();
 
         let result = downloader.fetch(&url).await;
@@ -643,8 +754,19 @@ mod wiremock_tests {
             .mount(&mock_server)
             .await;
 
-        let downloader =
-            WreqDownloader::new(10, 5, Profile::Chrome145, None, 3, 1000, 10000).unwrap();
+        let downloader = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            None,
+            Vec::new(),
+            None,
+            None,
+            3,
+            1000,
+            10000,
+        )
+        .unwrap();
         let url: Url = mock_server.uri().parse().unwrap();
 
         let result = downloader.fetch(&url).await;
@@ -680,8 +802,19 @@ mod wiremock_tests {
             .mount(&mock_server)
             .await;
 
-        let downloader =
-            WreqDownloader::new(10, 5, Profile::Chrome145, None, 3, 1000, 10000).unwrap();
+        let downloader = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            None,
+            Vec::new(),
+            None,
+            None,
+            3,
+            1000,
+            10000,
+        )
+        .unwrap();
         let url: Url = format!("{}/redirect", mock_server.uri()).parse().unwrap();
 
         let result = downloader.fetch(&url).await;
@@ -721,8 +854,19 @@ mod wiremock_tests {
             .await;
 
         // Fresh client built in this process: the guard env hatch stays unset.
-        let downloader =
-            WreqDownloader::new(10, 5, Profile::Chrome145, None, 3, 1000, 10000).unwrap();
+        let downloader = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            None,
+            Vec::new(),
+            None,
+            None,
+            3,
+            1000,
+            10000,
+        )
+        .unwrap();
         let url: Url = format!("{}/redirect", mock_server.uri()).parse().unwrap();
 
         let result = downloader.fetch(&url).await;
@@ -759,6 +903,9 @@ mod wiremock_tests {
             5,
             Profile::Chrome145,
             Some(PINNED_UA.to_string()),
+            Vec::new(),
+            None,
+            None,
             3,
             1000,
             10000,
@@ -787,6 +934,201 @@ mod wiremock_tests {
             ua.to_str().expect("User-Agent must be valid ASCII"),
             PINNED_UA
         );
+    }
+
+    // ------------------------------------------------------------------
+    // #890 — operator headers, Accept-Language, and seeded cookies
+    // ------------------------------------------------------------------
+
+    /// Wire-level proof that an operator custom header (`--header`, #890)
+    /// reaches the outgoing scrape request even though the Chrome145
+    /// emulation profile does not send it by default.
+    #[tokio::test]
+    async fn custom_header_reaches_the_wire() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .and(RawHeaderEquals {
+                name: "x-wftest",
+                value: "hola".to_string(),
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html></html>"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let downloader = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            None,
+            vec![("X-WFTest".to_string(), "hola".to_string())],
+            None,
+            None,
+            3,
+            1000,
+            10000,
+        )
+        .unwrap();
+        let url: Url = mock_server.uri().parse().unwrap();
+
+        let page = downloader
+            .fetch(&url)
+            .await
+            .expect("fetch succeeds only if the custom header matched on the wire");
+        assert_eq!(page.status, 200);
+    }
+
+    /// Wire-level proof that the configured Accept-Language (`
+    /// --accept-language`, #890) replaces the emulation-profile default on
+    /// the wire instead of being silently dropped (#890 reproduction showed
+    /// `es-AR` arriving as the profile's `en-US,en;q=0.9`).
+    #[tokio::test]
+    async fn accept_language_replaces_profile_default_on_the_wire() {
+        const LANG: &str = "es-AR,es;q=0.9";
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .and(RawHeaderEquals {
+                name: "accept-language",
+                value: LANG.to_string(),
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html></html>"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let downloader = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            None,
+            Vec::new(),
+            Some(LANG.to_string()),
+            None,
+            3,
+            1000,
+            10000,
+        )
+        .unwrap();
+        let url: Url = mock_server.uri().parse().unwrap();
+
+        let page = downloader
+            .fetch(&url)
+            .await
+            .expect("fetch succeeds only if the configured language matched on the wire");
+        assert_eq!(page.status, 200);
+    }
+
+    /// Malformed operator input (#890, review M1): an invalid header NAME must
+    /// fail LOUDLY at client build time with a typed internal error naming the
+    /// offending header — never a silent drop (the same silent-drop class #890
+    /// exists to eliminate).
+    #[tokio::test]
+    async fn invalid_custom_header_name_fails_loudly_at_build() {
+        let error = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            None,
+            vec![("bad header name\n".to_string(), "v".to_string())],
+            None,
+            None,
+            3,
+            1000,
+            10000,
+        )
+        .err()
+        .expect("newline is not a valid HTTP header name");
+        match error {
+            DownloadError::Internal(msg) => {
+                assert!(msg.contains("invalid --header name"), "got: {msg}");
+            },
+            other => panic!("expected DownloadError::Internal, got: {other:?}"),
+        }
+    }
+
+    /// Malformed operator input (#890, review M1): an invalid header VALUE and
+    /// an invalid Accept-Language must both fail loudly at client build time.
+    #[tokio::test]
+    async fn invalid_header_value_and_language_fail_loudly_at_build() {
+        let value_error = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            None,
+            vec![("X-Ok".to_string(), "bad\nvalue".to_string())],
+            None,
+            None,
+            3,
+            1000,
+            10000,
+        )
+        .err()
+        .expect("newline is not a valid HTTP header value");
+        assert!(
+            matches!(value_error, DownloadError::Internal(ref m) if m.contains("invalid --header value")),
+            "got: {value_error:?}"
+        );
+
+        let lang_error = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            None,
+            Vec::new(),
+            Some("es\u{0}-AR".to_string()),
+            None,
+            3,
+            1000,
+            10000,
+        )
+        .err()
+        .expect("NUL is not a valid Accept-Language value");
+        assert!(
+            matches!(lang_error, DownloadError::Internal(ref m) if m.contains("invalid --accept-language")),
+            "got: {lang_error:?}"
+        );
+    }
+
+    /// Wire-level proof that a pre-seeded cookie jar (`--cookie`, #890) is
+    /// carried by Static/Hybrid-L1 wreq requests from the very first fetch.
+    #[tokio::test]
+    async fn seeded_cookie_jar_carries_operator_cookies_on_the_wire() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .and(header("cookie", "k=v"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html></html>"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let jar = Jar::default();
+        jar.add("k=v", mock_server.uri().as_str());
+        let downloader = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            None,
+            Vec::new(),
+            None,
+            Some(std::sync::Arc::new(jar)),
+            3,
+            1000,
+            10000,
+        )
+        .unwrap();
+        let url: Url = mock_server.uri().parse().unwrap();
+
+        let page = downloader
+            .fetch(&url)
+            .await
+            .expect("fetch succeeds only if the seeded cookie reached the wire");
+        assert_eq!(page.status, 200);
     }
 
     /// Exact-match matcher for a single raw header value.
@@ -854,6 +1196,9 @@ mod wiremock_tests {
             5,
             Profile::Chrome145,
             Some(PINNED_UA.to_string()),
+            Vec::new(),
+            None,
+            None,
             3,
             1000,
             10000,
@@ -909,8 +1254,19 @@ mod wiremock_tests {
             .mount(&server)
             .await;
 
-        let downloader =
-            WreqDownloader::new(10, 5, Profile::Chrome145, None, 3, 1, 5).expect("client builds");
+        let downloader = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            None,
+            Vec::new(),
+            None,
+            None,
+            3,
+            1,
+            5,
+        )
+        .expect("client builds");
         let url: Url = format!("{}/", server.uri()).parse().expect("valid url");
 
         // 2×429 + 2×500 = 4 requests; the 5xx half proves Bug 2, the final
@@ -953,8 +1309,19 @@ mod wiremock_tests {
             .mount(&mock_server)
             .await;
 
-        let downloader =
-            WreqDownloader::new(10, 5, Profile::Chrome145, None, 3, 1000, 10000).unwrap();
+        let downloader = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            None,
+            Vec::new(),
+            None,
+            None,
+            3,
+            1000,
+            10000,
+        )
+        .unwrap();
         let url: Url = mock_server.uri().parse().unwrap();
 
         let page = downloader

@@ -8,6 +8,7 @@
 use std::sync::{Arc, RwLock};
 
 use url::Url;
+use wreq::cookie::Jar;
 use wreq_util::Profile;
 
 use futures::future::BoxFuture;
@@ -71,6 +72,14 @@ fn build_obscura_layer(timeout_secs: u64, obscura_binary: &str) -> ObscuraDownlo
 ///
 /// # Errors
 ///
+/// * `user_agent` - optional pinned User-Agent (#503)
+/// * `custom_headers` - operator headers (`--header`, #890) applied to the wreq
+///   layer after the emulation profile so user values win
+/// * `accept_language` - optional Accept-Language override (`--accept-language`, #890)
+/// * `initial_cookie_jar` - pre-seeded wreq cookie store (`--cookie`, #890) shared
+///   by the Static and Hybrid-L1 layers; the Chromiumoxide L3 layer keeps using
+///   [`crate::infrastructure::downloader::cookie_bridge::CookieBridge`]
+///
 /// Returns [`DownloadError::Internal`] if the wreq client cannot be built.
 #[allow(clippy::too_many_arguments)]
 pub fn build_fetch_router(
@@ -80,6 +89,9 @@ pub fn build_fetch_router(
     cookie_bridge: Arc<RwLock<CookieBridge>>,
     ignore_waf: bool,
     user_agent: Option<String>,
+    custom_headers: Vec<(String, String)>,
+    accept_language: Option<String>,
+    initial_cookie_jar: Option<Arc<Jar>>,
     cancel_token: CancellationToken,
     max_retries: u32,
     backoff_base_ms: u64,
@@ -93,6 +105,9 @@ pub fn build_fetch_router(
             connect_timeout,
             tls_emulation,
             user_agent,
+            custom_headers,
+            accept_language,
+            initial_cookie_jar,
             max_retries,
             backoff_base_ms,
             backoff_max_ms,
@@ -103,6 +118,9 @@ pub fn build_fetch_router(
                 connect_timeout,
                 tls_emulation,
                 user_agent,
+                custom_headers,
+                accept_language,
+                initial_cookie_jar,
                 max_retries,
                 backoff_base_ms,
                 backoff_max_ms,
@@ -175,6 +193,9 @@ mod router_tests {
             test_cookie_bridge(),
             false,
             None,
+            Vec::new(),
+            None,
+            None,
             CancellationToken::new(),
             3,
             1000,
@@ -197,6 +218,9 @@ mod router_tests {
             test_cookie_bridge(),
             false,
             None,
+            Vec::new(),
+            None,
+            None,
             CancellationToken::new(),
             3,
             1000,
@@ -218,6 +242,9 @@ mod router_tests {
             Profile::Chrome145,
             test_cookie_bridge(),
             false,
+            None,
+            Vec::new(),
+            None,
             None,
             CancellationToken::new(),
             3,
