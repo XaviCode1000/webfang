@@ -3,6 +3,7 @@ name = "webfang_benchmark"
 version.workspace = true
 edition.workspace = true
 publish = false
+license.workspace = true
 
 [dependencies]
 webfang_core = { path = "../webfang_core", features = ["chromium"] }
