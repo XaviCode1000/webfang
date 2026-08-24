@@ -275,6 +275,7 @@ impl Downloader {
             // SSRF guard (#703): identical policy to `new` — same client
             // construction, only the cache bound differs.
             .redirect(crate::infrastructure::ssrf::redirect_policy())
+            .dns_resolver(crate::infrastructure::ssrf::ValidatingResolver::new())
             .build()
             .map_err(|e| ScraperError::Config(format!("failed to build http client: {e}")))?;
         Ok(Self::from_parts(client, config, capacity))

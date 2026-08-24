@@ -26,6 +26,13 @@ fn is_ssrf_enabled() -> bool {
 /// IPv6 unique-local and unspecified ranges, plus IPv4-mapped/compatible
 /// IPv6 addresses (re-validated against the IPv4 deny list).
 ///
+/// Layered contract: this entry-level check is fast-fail typed UX; it is NOT
+/// the enforcement point. Every scrape client also installs
+/// `webfang_core::infrastructure::ssrf::ValidatingResolver` via
+/// `dns_resolver`, which re-validates every DNS answer at connect time —
+/// covering hostname redirect hops and DNS-rebinding TOCTOU that this
+/// entry check cannot see.
+///
 /// # Errors
 /// Returns `McpError::invalid_params` if the URL has no host, DNS resolution
 /// fails, or any resolved IP falls within a forbidden range.

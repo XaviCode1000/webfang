@@ -129,6 +129,11 @@ impl UserAgentCache {
         let client = Client::builder()
             .emulation(profile)
             .timeout(Duration::from_secs(5))
+            // Same layered SSRF contract as every other production client:
+            // literal-IP redirect guard + connect-time validating resolver
+            // (see `infrastructure::ssrf` module docs).
+            .redirect(crate::infrastructure::ssrf::redirect_policy())
+            .dns_resolver(crate::infrastructure::ssrf::ValidatingResolver::new())
             .build()?;
 
         // Fetch from API

@@ -78,6 +78,10 @@ impl OpenAiLlmClient {
             .timeout(Duration::from_secs(60))
             .connect_timeout(Duration::from_secs(10))
             .redirect(crate::infrastructure::ssrf::redirect_policy())
+            // Connect-time enforcement: every DNS answer is re-validated
+            // (see ssrf::ValidatingResolver); entry-level `ssrf_gate` stays
+            // as fast-fail typed UX, this resolver is defense in depth.
+            .dns_resolver(crate::infrastructure::ssrf::ValidatingResolver::new())
             .build()
             .map_err(|e| ScraperError::Config(format!("no se pudo crear el cliente LLM: {e}")))?;
         Ok(Self {

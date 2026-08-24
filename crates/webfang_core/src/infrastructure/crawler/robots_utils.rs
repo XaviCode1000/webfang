@@ -203,9 +203,11 @@ impl RobotsFetcher {
             .gzip(true)
             .brotli(true)
             // SSRF guard (#703): default 10-hop limit + stops redirects that
-            // target a literal forbidden IP. Hostname targets are validated
-            // at entry by the async SSRF guard.
+            // target a literal forbidden IP (belt-and-suspenders). Hostname
+            // targets — including every redirect hop — are enforced at connect
+            // time by the validating DNS resolver below.
             .redirect(crate::infrastructure::ssrf::redirect_policy())
+            .dns_resolver(crate::infrastructure::ssrf::ValidatingResolver::new())
             .build()
             .map_err(|e| InfraError::Network(Box::new(e)))?;
 

@@ -100,9 +100,11 @@ pub(super) fn build_wreq_client(
         .brotli(true)
         .cookie_store(true)
         // SSRF guard (#703): default 10-hop limit + stops redirects that
-        // target a literal forbidden IP. Hostname targets are validated at
-        // entry by the async SSRF guard.
-        .redirect(crate::infrastructure::ssrf::redirect_policy());
+        // target a literal forbidden IP (belt-and-suspenders). Hostname
+        // targets — including every redirect hop — are enforced at connect
+        // time by the validating DNS resolver below.
+        .redirect(crate::infrastructure::ssrf::redirect_policy())
+        .dns_resolver(crate::infrastructure::ssrf::ValidatingResolver::new());
 
     if let Some(ua) = user_agent {
         builder = builder.user_agent(ua);
