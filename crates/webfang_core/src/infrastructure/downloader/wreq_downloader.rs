@@ -106,9 +106,11 @@ impl WreqDownloader {
             .brotli(true)
             .cookie_store(true)
             // SSRF guard (#703): default 10-hop limit + stops redirects that
-            // target a literal forbidden IP. Hostname targets are validated
-            // at entry by the async SSRF guard.
+            // target a literal forbidden IP (belt-and-suspenders). Hostname
+            // targets — including every redirect hop — are enforced at connect
+            // time by the validating DNS resolver below.
             .redirect(crate::infrastructure::ssrf::redirect_policy())
+            .dns_resolver(crate::infrastructure::ssrf::ValidatingResolver::new())
             .build()
             // LCOV_EXCL_LINE defensive: wreq-client-build — client construction fails only on invalid TLS profile, an invariant
             .map_err(|e| DownloadError::Internal(format!("failed to build wreq client: {e}")))?;

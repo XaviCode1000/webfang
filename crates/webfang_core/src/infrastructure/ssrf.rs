@@ -17,6 +17,12 @@
 //!    redirects whose target is a *literal* forbidden IP synchronously,
 //!    before any resolution happens.
 //!
+//! Layer boundaries verified against wreq 6.0.0-rc.29: its HTTP connector
+//! parses IP-literal hosts directly (`dns::SocketAddrs::try_parse`) and never
+//! invokes a custom resolver for them (`src/conn/http.rs`, `HttpConnector::call`),
+//! so [`ValidatingResolver`] only sees *hostname* connections — precisely the
+//! gap left open by layers 1 and 3, with no overlap and no hole.
+//!
 //! All layers share [`is_forbidden_ip`] as the single deny list.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -175,6 +181,10 @@ pub struct ForbiddenResolutionError {
 /// consistent policy for their whole lifetime (no half-disarmed states where
 /// some pooled connections validate and others don't), and there is no
 /// per-request env syscall on the resolve hot path.
+///
+/// Note: wreq short-circuits IP-literal hosts before calling any custom
+/// resolver, so this type only ever sees hostname connections; literal-IP
+/// targets are covered by entry validation and [`redirect_policy`].
 #[derive(Debug, Clone)]
 pub struct ValidatingResolver {
     validation_enabled: bool,
@@ -381,6 +391,55 @@ mod tests {
             assert!(
                 outcome.is_err(),
                 "flag captured at construction must keep validation active"
+            );
+        }
+
+        // Wiring proofs: a client built exactly like the production sites
+        // (`redirect_policy()` + `dns_resolver(ValidatingResolver)`) must
+        // enforce at connect time for *hostname* targets. `localhost`
+        // resolves through getaddrinfo (/etc/hosts → 127.0.0.1, ::1) without
+        // any network dependency, so this stays deterministic in CI.
+        #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+        #[tokio::test]
+        async fn wired_client_rejects_hostname_resolving_to_loopback() {
+            std::env::remove_var(DISABLE_VALIDATING_RESOLVER_ENV);
+            let client = wreq::Client::builder()
+                .redirect(redirect_policy())
+                .dns_resolver(ValidatingResolver::new())
+                .build()
+                .expect("test client must build");
+
+            let err = client
+                .get("http://localhost:9/")
+                .send()
+                .await
+                .expect_err("hostname resolving to loopback must fail at connect");
+            assert!(
+                format!("{err:?}").contains("ForbiddenResolutionError"),
+                "failure must come from the SSRF resolver, not the network: {err:?}"
+            );
+        }
+
+        #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+        #[tokio::test]
+        async fn wired_client_reaches_connect_when_validation_disabled() {
+            std::env::set_var(DISABLE_VALIDATING_RESOLVER_ENV, "1");
+            let client = wreq::Client::builder()
+                .redirect(redirect_policy())
+                .dns_resolver(ValidatingResolver::new())
+                .build()
+                .expect("test client must build");
+
+            // Port 9 (discard): nothing listens; resolution succeeds and the
+            // failure must be a CONNECT error, never an SSRF rejection.
+            let err = client
+                .get("http://localhost:9/")
+                .send()
+                .await
+                .expect_err("nothing listens on port 9");
+            assert!(
+                !format!("{err:?}").contains("forbidden address"),
+                "bypassed resolver must not reject: {err:?}"
             );
         }
     }
