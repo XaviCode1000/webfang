@@ -1,4 +1,5 @@
 use crate::domain::config::ConcurrencyConfig;
+use crate::domain::options_spec::crawler as crawler_specs;
 use crate::domain::JsStrategy;
 use clap::Args;
 use scraper::Selector;
@@ -6,17 +7,17 @@ use scraper::Selector;
 /// Validate `--download-concurrency`: must be >= 1. A value of 0 would make
 /// `buffer_unordered(0)` hang forever (deadlock, D1). Rejecting here satisfies
 /// the "Zero Silent Loss" philosophy with a clear CLI error instead of a hang.
+/// Bounds and messages come from the OptionsSpec (ADR-002) — the single
+/// validation source.
 pub(crate) fn parse_download_concurrency(s: &str) -> Result<usize, String> {
-    let v: usize = s
-        .parse()
-        .map_err(|_| format!("'{s}' no es un número válido para --download-concurrency"))?;
-    if v == 0 {
-        return Err(
-            "--download-concurrency debe ser >= 1 (0 causa un deadlock / hang infinito)"
-                .to_string(),
-        );
-    }
-    Ok(v)
+    let value = crawler_specs::DOWNLOAD_CONCURRENCY
+        .parse_uint(s)
+        .map_err(|e| e.to_string())?;
+    usize::try_from(value).map_err(|_| {
+        crawler_specs::DOWNLOAD_CONCURRENCY
+            .parse_error(s)
+            .to_string()
+    })
 }
 
 /// Validate `--rate-limit-burst`: explicit rate-limiter burst override
@@ -49,7 +50,8 @@ pub(crate) fn parse_rate_limit_burst(s: &str) -> Result<Option<u32>, String> {
 /// Validate `--timeout-secs`: must be >= 1. A value of 0 makes wreq apply
 /// `Duration::from_secs(0)` as the request timeout, so every request fails
 /// instantly with "operation timed out". Rejecting here gives a clear CLI
-/// error instead of a crawl where every page fails.
+/// error instead of a crawl where every page fails. Bounds and messages come
+/// from the OptionsSpec (ADR-002).
 /// Validate `--selector`: must parse as a CSS selector via `scraper`. Invalid
 /// selectors currently surface only at scrape time (sometimes as a 30s network
 /// timeout), so reject them up front with a clear Spanish usage error (exit 64
@@ -60,30 +62,22 @@ pub(crate) fn parse_selector(s: &str) -> Result<String, String> {
 }
 
 pub(crate) fn parse_timeout_secs(s: &str) -> Result<u64, String> {
-    let v: u64 = s
-        .parse()
-        .map_err(|_| format!("'{s}' no es un número válido para --timeout-secs"))?;
-    if v == 0 {
-        return Err(
-            "--timeout-secs debe ser >= 1 (0 hace que cada request falle al instante)".to_string(),
-        );
-    }
-    Ok(v)
+    crawler_specs::TIMEOUT_SECS
+        .parse_uint(s)
+        .map_err(|e| e.to_string())
 }
 
 /// Validate `--max-pages`: must be >= 1. A value of 0 would panic
 /// `tokio::sync::mpsc::channel(0)` inside `ResultsCollector::new`
 /// (SIGABRT, #780 — the MCP path already rejects this; #598/#611 only
 /// covered MCP). Rejecting here gives a clear usage error (exit 64)
-/// instead of a runtime panic (exit 134).
+/// instead of a runtime panic (exit 134). Bounds and messages come from the
+/// OptionsSpec (ADR-002).
 pub(crate) fn parse_max_pages(s: &str) -> Result<usize, String> {
-    let v: usize = s
-        .parse()
-        .map_err(|_| format!("'{s}' no es un número válido para --max-pages"))?;
-    if v == 0 {
-        return Err("--max-pages debe ser >= 1 (0 no deja páginas para scrapear)".to_string());
-    }
-    Ok(v)
+    let value = crawler_specs::MAX_PAGES
+        .parse_uint(s)
+        .map_err(|e| e.to_string())?;
+    usize::try_from(value).map_err(|_| crawler_specs::MAX_PAGES.parse_error(s).to_string())
 }
 
 /// Crawler and discovery configuration arguments.
@@ -695,10 +689,18 @@ mod spec_parity_tests {
         assert_eq!(defaults.crawler.delay_ms, 1000);
         assert_eq!(defaults.crawler.max_pages, 10);
         assert_eq!(defaults.crawler.max_depth, 2);
-        assert!(!defaults.crawler.use_sitemap && !defaults.crawler.resume);
+        assert!(!defaults.crawler.use_sitemap);
+        assert!(!defaults.crawler.resume);
 
-        // Explicit values across every migrated group member that accepts a
-        // value in one shot (flags toggled once each).
+        // Short forms in isolation (`--url` may only appear once per parse).
+        let shorts =
+            parse_args(&["-u", "https://example.org", "-s", "main"]).expect("shorts must parse");
+        assert_eq!(shorts.crawler.url.as_deref(), Some("https://example.org"));
+        assert_eq!(shorts.crawler.selector, "main");
+    }
+
+    #[test]
+    fn target_discovery_behavior_and_display_flags_parse_identically() {
         let parsed = parse_args(&[
             "--url",
             "https://example.com",
@@ -722,6 +724,35 @@ mod spec_parity_tests {
             "-n",
             "--trace-file",
             "trace.jsonl",
+        ])
+        .expect("representative crawler flags must parse");
+
+        let c = &parsed.crawler;
+        assert_eq!(c.url.as_deref(), Some("https://example.com"));
+        assert_eq!(c.selector, "article p");
+        assert_eq!(c.delay_ms, 250);
+        assert_eq!(c.max_pages, 5);
+        assert!(c.use_sitemap);
+        assert_eq!(
+            c.sitemap_url.as_deref(),
+            Some("https://example.com/sitemap.xml")
+        );
+        assert!(c.single_page);
+        assert!(c.resume);
+        assert_eq!(c.state_dir, Some(std::path::PathBuf::from("/tmp/wf-state")));
+        assert!(c.download_assets);
+        assert!(!c.download_images);
+        assert!(!c.download_documents);
+        assert!(c.extraction_fingerprint);
+        assert_eq!(c.verbose, 3);
+        assert!(c.quiet);
+        assert!(c.dry_run);
+        assert_eq!(c.trace_file, Some(std::path::PathBuf::from("trace.jsonl")));
+    }
+
+    #[test]
+    fn crawler_http_download_and_feature_flags_parse_identically() {
+        let parsed = parse_args(&[
             "--max-depth",
             "4",
             "--timeout-secs",
@@ -764,22 +795,6 @@ mod spec_parity_tests {
         .expect("representative crawler flags must parse");
 
         let c = &parsed.crawler;
-        assert_eq!(c.url.as_deref(), Some("https://example.com"));
-        assert_eq!(c.selector, "article p");
-        assert_eq!(c.delay_ms, 250);
-        assert_eq!(c.max_pages, 5);
-        assert!(c.use_sitemap);
-        assert_eq!(
-            c.sitemap_url.as_deref(),
-            Some("https://example.com/sitemap.xml")
-        );
-        assert!(c.single_page && c.resume);
-        assert_eq!(c.state_dir, Some(std::path::PathBuf::from("/tmp/wf-state")));
-        assert!(c.download_assets && !c.download_images && !c.download_documents);
-        assert!(c.extraction_fingerprint);
-        assert_eq!(c.verbose, 3);
-        assert!(c.quiet && c.dry_run);
-        assert_eq!(c.trace_file, Some(std::path::PathBuf::from("trace.jsonl")));
         assert_eq!(c.max_depth, 4);
         assert_eq!(c.timeout_secs, 60);
         assert_eq!(c.asset_naming, "slug");
@@ -793,18 +808,15 @@ mod spec_parity_tests {
         assert_eq!(c.download_timeout, 45);
         assert_eq!(c.sitemap_depth, 1);
         assert_eq!(c.checkpoint_interval, 50);
-        assert!(c.no_checkpoint && c.ignore_robots && c.ignore_waf);
-        assert!(c.autoscale && c.no_session_health);
+        assert!(c.no_checkpoint);
+        assert!(c.ignore_robots);
+        assert!(c.ignore_waf);
+        assert!(c.autoscale);
+        assert!(c.no_session_health);
         assert_eq!(c.h2_profile, "Chrome131");
         assert_eq!(c.js_strategy, crate::domain::JsStrategy::Hybrid);
         assert_eq!(c.obscura_binary, "/usr/local/bin/obscura");
         assert!(!c.dom_preprune);
-
-        // Short forms in isolation (`--url` may only appear once per parse).
-        let shorts =
-            parse_args(&["-u", "https://example.org", "-s", "main"]).expect("shorts must parse");
-        assert_eq!(shorts.crawler.url.as_deref(), Some("https://example.org"));
-        assert_eq!(shorts.crawler.selector, "main");
     }
 
     #[test]
