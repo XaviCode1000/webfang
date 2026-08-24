@@ -41,6 +41,17 @@ pub enum BenchmarkError {
 
     #[error("report render failed: {0}")]
     Render(String),
+
+    /// Tier B live-run gate refusal (NFR-4, fail-closed): a live competitor
+    /// run requires BOTH a non-empty provider API key in the environment
+    /// AND an explicit CLI opt-in flag. Nothing was executed.
+    #[error(
+"live competitor run not enabled in this build/session; provide {env_var} and pass --i-understand-costs to explicitly opt in ({provider})"
+    )]
+    LiveDisabled {
+provider: &'static str,
+env_var: &'static str,
+    },
 }
 
 /// Crate-wide result alias over [`BenchmarkError`].

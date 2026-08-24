@@ -9,6 +9,7 @@
 pub mod aggregate;
 pub mod corpus;
 pub mod cost;
+pub mod competitor;
 pub mod error;
 pub mod report;
 pub mod runner;
