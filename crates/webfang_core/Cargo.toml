@@ -236,3 +236,7 @@ path = "tests/pipeline_cross_layer_consistency.rs"
 [[test]]
 name = "security_traversal_test"
 path = "tests/security_traversal_test.rs"
+
+[[test]]
+name = "security_bombs_test"
+path = "tests/security_bombs_test.rs"
