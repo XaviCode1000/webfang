@@ -7,6 +7,9 @@
 //!
 //! Extracted from discovery.rs to keep it orchestration-only.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use url::Url;
 
 /// Maximum length for a derived filename component (ext4 per-file limit).
@@ -167,7 +170,28 @@ fn sanitize_disposition_filename(name: String) -> Option<String> {
 /// - drops `.` / `..` segments entirely (they resolve outside the target);
 /// - removes control characters (including NUL bytes smuggled via RFC 5987
 ///   percent-decoding), which Unix filesystems reject;
-/// - caps the length at `MAX_FILENAME_LEN` (255) characters.
+/// - caps the length at `MAX_FILENAME_LEN` (255) bytes.
+///
+/// # Length capping and collision avoidance
+///
+/// When the length cap actually fires, a deterministic disambiguation suffix
+/// (`-` + 8 hex chars of a `DefaultHasher` digest of the original candidate)
+/// is appended so that two distinct over-long names sharing a long common
+/// prefix do NOT truncate to the same filename (which would silently
+/// overwrite one with the other). Inputs that fit under the cap are returned
+/// unchanged — byte-identical to the pre-suffix behavior.
+///
+/// Note: `DefaultHasher` is deterministic within and across runs for the same
+/// input on the same standard-library build, but its exact digest is not
+/// guaranteed stable across Rust releases. A cross-version collision would
+/// only degrade back to the old truncation behavior, never to an unsafe name.
+///
+/// # Platform scope
+///
+/// This function targets Linux filesystems (ext4 semantics: 255-byte limit,
+/// no reserved device names). Windows reserved device names (`CON`, `PRN`,
+/// `AUX`, `NUL`, `COM1-9`, `LPT1-9`) are intentionally out of scope. Control
+/// characters and both path separator flavors are neutralized.
 ///
 /// Returns `None` when nothing safe remains — callers apply their own
 /// fallback naming (URL-derived or hash-based).
@@ -195,13 +219,35 @@ pub fn sanitize_filename_component(name: &str) -> Option<String> {
         .next_back()
         .map(str::to_string)?;
 
-    // Enforce the filesystem length cap on char boundaries.
-    let mut capped = candidate;
-    while capped.len() > MAX_FILENAME_LEN {
-        capped.pop();
+    if candidate.len() <= MAX_FILENAME_LEN {
+        return (!candidate.is_empty()).then_some(candidate);
     }
 
-    (!capped.is_empty()).then_some(capped)
+    // Capping fires: append a deterministic suffix derived from the ORIGINAL
+    // candidate ("-" + 8 lowercase hex chars = 9 bytes) so distinct long names
+    // sharing a common prefix stay distinct after truncation (#914).
+    let mut hasher = DefaultHasher::new();
+    candidate.hash(&mut hasher);
+    let hash8 = format!("{:08x}", hasher.finish());
+
+    // Reserve room for "-<hash8>" and truncate the prefix on a CHAR boundary.
+    let max_prefix_bytes = MAX_FILENAME_LEN - 1 - hash8.len();
+    let mut truncated = String::with_capacity(MAX_FILENAME_LEN);
+    let mut used = 0usize;
+    for c in candidate.chars() {
+        let char_len = c.len_utf8();
+        if used + char_len > max_prefix_bytes {
+            break;
+        }
+        truncated.push(c);
+        used += char_len;
+    }
+    truncated.push('-');
+    truncated.push_str(&hash8);
+
+    debug_assert!(truncated.len() <= MAX_FILENAME_LEN);
+
+    (!truncated.is_empty()).then_some(truncated)
 }
 
 /// Parse Content-Disposition header value to extract filename.
@@ -401,6 +447,69 @@ mod tests {
             sanitize_filename_component("nul\0byte"),
             Some("nulbyte".to_string())
         );
+    }
+
+    /// #914 review finding #4: two distinct over-long names sharing a long
+    /// common prefix must NOT collapse into the same truncated filename —
+    /// that was a silent-overwrite vector.
+    #[test]
+    fn sanitize_disambiguates_distinct_names_with_long_common_prefix() {
+        let prefix = "a".repeat(290);
+        let first = format!("{prefix}tail1!.pdf");
+        let second = format!("{prefix}tail2!.pdf");
+        assert_eq!(first.len(), 300);
+        assert_eq!(second.len(), 300);
+
+        let sanitized_first = sanitize_filename_component(&first).expect("non-empty result");
+        let sanitized_second = sanitize_filename_component(&second).expect("non-empty result");
+
+        assert_ne!(
+            sanitized_first, sanitized_second,
+            "distinct inputs must produce distinct sanitized outputs"
+        );
+        assert!(sanitized_first.len() <= MAX_FILENAME_LEN);
+        assert!(sanitized_second.len() <= MAX_FILENAME_LEN);
+    }
+
+    /// The disambiguation suffix must be deterministic: same input twice →
+    /// identical output (stable filenames across crawl retries/resumes).
+    #[test]
+    fn sanitize_truncation_is_deterministic() {
+        let long = format!("{}.pdf", "b".repeat(300));
+        let once = sanitize_filename_component(&long).expect("non-empty result");
+        let twice = sanitize_filename_component(&long).expect("non-empty result");
+        assert_eq!(once, twice);
+    }
+
+    /// Short names (< cap) must be byte-identical to the pre-hash behavior.
+    #[test]
+    fn sanitize_short_names_unchanged_without_suffix() {
+        assert_eq!(
+            sanitize_filename_component("report.pdf"),
+            Some("report.pdf".to_string())
+        );
+        assert_eq!(
+            sanitize_filename_component("../../escape.bin"),
+            Some("escape.bin".to_string())
+        );
+        assert_eq!(
+            sanitize_filename_component("/abs/path.bin"),
+            Some("path.bin".to_string())
+        );
+    }
+
+    /// Multi-byte boundary safety: a name built from 4-byte emojis exceeding
+    /// the cap must not panic mid-char and must respect the byte cap.
+    #[test]
+    fn sanitize_multibyte_truncation_respects_char_boundaries() {
+        let emoji_name: String = "🦀".repeat(300); // 4 bytes each → 1200 bytes
+        let sanitized = sanitize_filename_component(&emoji_name).expect("non-empty result");
+        assert!(sanitized.len() <= MAX_FILENAME_LEN);
+        // Whole chars only: no partial 4-byte sequence may survive.
+        for (idx, _) in sanitized.char_indices() {
+            assert!(sanitized.is_char_boundary(idx));
+        }
+        assert!(sanitized.is_char_boundary(sanitized.len()));
     }
 
     #[test]

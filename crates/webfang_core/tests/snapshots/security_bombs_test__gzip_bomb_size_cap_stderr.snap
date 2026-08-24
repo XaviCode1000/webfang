@@ -1,0 +1,9 @@
+---
+source: crates/webfang_core/tests/security_bombs_test.rs
+assertion_line: 181
+expression: redacted
+---
+  <TIMESTAMP> ERROR <MODULE>: Failed to parse sitemap http://127.0.0.1:<PORT>/sitemap.xml.gz: decompression failed: size limit exceeded: 104857600 bytes
+    at <FILE>.rs:<LINE>
+
+Error: URL discovery failed: error interno: parse: decompression failed: size limit exceeded: 104857600 bytes
