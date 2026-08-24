@@ -1,0 +1,2 @@
+{"timestamp":"1970-01-01T00:00:00.000Z","level":"DEBUG","target":"webfang_core::application::crawler::engine","trace_id":"0000000000000004","message":"crawl progress","fields":{"pages_crawled":3}}
+{"timestamp":"1970-01-01T00:00:00.001Z","record":"span_close","level":"INFO","target":"x","span":"fetch_page","span_id":"0000000000000010","span_duration_ms":9,"trace_id":"0000000000000004"}

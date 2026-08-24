@@ -27,6 +27,14 @@ ignore = [
     # RUSTSEC-2024-0320 (yaml-rust 0.4.5, severity: medium)
     # Unmaintained. Transitivo via toml_edit→toml (config parsing). No runtime impact.
     "RUSTSEC-2024-0320",
+
+    # RUSTSEC-2025-0052 (async-std 1.13.x, severity: unmaintained)
+    # Discontinued upstream. Transitivo vía chromiumoxide 0.7 (feature
+    # opcional `chromium` de webfang_core, activada por el harness de
+    # benchmark para la estrategia Full). Sin alternativa mantenida a
+    # chromiumoxide 0.7 al cierre de este cambio; seguimiento upstream en
+    # chromiumoxide (issue tracker) — re-evaluar al actualizar.
+    "RUSTSEC-2025-0052",
 ]
 
 [licenses]

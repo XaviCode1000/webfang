@@ -1,0 +1,3 @@
+{"timestamp":"1970-01-01T00:00:00.000Z","level":"DEBUG","target":"x","trace_id":"t","message":"crawl progress","fields":{"pages_crawled":1}}
+{not valid json at all}
+{"timestamp":"1970-01-01T00:00:00.002Z","level":"INFO","target":"x","message":"crawl completed","fields":{"total_pages":1,"succeeded":1,"errors":0,"duration_secs":1,"pages_per_sec":1.0}}
