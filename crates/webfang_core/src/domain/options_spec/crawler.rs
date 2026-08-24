@@ -2,14 +2,17 @@
 //! field-by-field for every option whose surface is spec-compatible. The
 //! parity tests in that module enforce lockstep.
 //!
-//! Deferred this slice (structurally unsuitable or out of scope, recorded in
-//! the PR): `concurrency` (custom `ConcurrencyConfig` FromStr with auto
-//! detection), `rate_limit_burst` (raw-string staging validated in preflight,
-//! warn-and-default semantics — not a clap bound), `include_patterns`,
+//! Slice 3 (#924) unlocked the previously deferred feature-gated pair
+//! `clean_ai` / `adaptive_selectors` via [`OptionSpec::feature_gate`] +
+//! [`OptionSpec::active`], mirroring the derive's `cfg` duplication in the
+//! SSOT.
+//!
+//! Still deferred (structurally unsuitable, recorded in the PR):
+//! `concurrency` (custom `ConcurrencyConfig` FromStr with auto detection),
+//! `rate_limit_burst` (raw-string staging validated in preflight,
+//! warn-and-default semantics — not a clap bound), and `include_patterns`,
 //! `exclude_patterns`, `headers`, `cookies` (`Vec` args with value
-//! delimiters), and the feature-gated pair `clean_ai` / `adaptive_selectors`
-//! (cfg duplication must be mirrored in the spec before lockstep assertions
-//! are meaningful across feature combinations).
+//! delimiters).
 use super::{NumericPolicy, OptionSpec, ValueKind};
 
 /// `--url <URL>` (short `-u`)
@@ -23,6 +26,7 @@ pub const URL: OptionSpec = OptionSpec {
     help: "URL to scrape (required unless using a subcommand)",
     heading: Some("Target"),
     kind: ValueKind::Text,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -37,6 +41,7 @@ pub const SELECTOR: OptionSpec = OptionSpec {
     help: "CSS selector for content extraction",
     heading: Some("Target"),
     kind: ValueKind::Text,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -53,6 +58,7 @@ pub const DELAY_MS: OptionSpec = OptionSpec {
     help: "Delay between requests in milliseconds",
     heading: Some("Discovery"),
     kind: ValueKind::uint_unbounded(),
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -72,6 +78,7 @@ pub const MAX_PAGES: OptionSpec = OptionSpec {
         "--max-pages debe ser >= 1 (0 no deja páginas para scrapear)",
         "'{value}' no es un número válido para --max-pages",
     )),
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -88,6 +95,7 @@ pub const USE_SITEMAP: OptionSpec = OptionSpec {
         help: "Use sitemap for URL discovery NOTE: HTTP redirects (301/302) are resolved at scrape-time, not parse-time. This avoids redundant HEAD requests during sitemap parsing for better performance",
         heading: Some("Discovery"),
         kind: ValueKind::Bool,
+        visible_aliases: &[],
         feature_gate: None,
     };
 
@@ -102,6 +110,7 @@ pub const SITEMAP_URL: OptionSpec = OptionSpec {
     help: "Explicit sitemap URL",
     heading: Some("Discovery"),
     kind: ValueKind::Text,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -116,6 +125,7 @@ pub const SINGLE_PAGE: OptionSpec = OptionSpec {
     help: "Scrape only the seed URL without discovery or crawling",
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -132,6 +142,7 @@ pub const RESUME: OptionSpec = OptionSpec {
     help: "Resume mode - skip URLs already processed",
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -146,6 +157,7 @@ pub const STATE_DIR: OptionSpec = OptionSpec {
     help: "Custom state directory for resume mode",
     heading: Some("Behavior"),
     kind: ValueKind::Path,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -160,6 +172,7 @@ pub const DOWNLOAD_IMAGES: OptionSpec = OptionSpec {
     help: "Download images from the page",
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -174,6 +187,7 @@ pub const DOWNLOAD_DOCUMENTS: OptionSpec = OptionSpec {
     help: "Download documents from the page",
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -188,6 +202,7 @@ pub const DOWNLOAD_ASSETS: OptionSpec = OptionSpec {
     help: "Download all assets (images + documents) from the page",
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -205,6 +220,7 @@ pub const EXTRACTION_FINGERPRINT: OptionSpec = OptionSpec {
         help: "Record extraction failure fingerprints in SQLite and attach them to low-quality extraction hints (#792). Repeated low-score extractions on the same site/selector pair accumulate a failure count surfaced in the hint, instead of degrading silently",
         heading: Some("Behavior"),
         kind: ValueKind::Bool,
+        visible_aliases: &[],
         feature_gate: None,
     };
 
@@ -220,6 +236,7 @@ pub const VERBOSE: OptionSpec = OptionSpec {
     help: "Verbosity level: -v (INFO), -vv (DEBUG), -vvv (TRACE)",
     heading: Some("Display"),
     kind: ValueKind::uint_unbounded(),
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -234,6 +251,7 @@ pub const QUIET: OptionSpec = OptionSpec {
     help: "Quiet mode — suppress info/debug output",
     heading: Some("Display"),
     kind: ValueKind::Bool,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -248,6 +266,7 @@ pub const DRY_RUN: OptionSpec = OptionSpec {
     help: "Dry-run mode — discover URLs and print without scraping",
     heading: Some("Display"),
     kind: ValueKind::Bool,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -262,6 +281,7 @@ pub const TRACE_FILE: OptionSpec = OptionSpec {
     help: "Path to write OTel spans as JSONL for offline debugging",
     heading: Some("Display"),
     kind: ValueKind::Path,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -277,6 +297,7 @@ pub const MAX_DEPTH: OptionSpec = OptionSpec {
     help: "Maximum depth to crawl (0 = only seed URL)",
     heading: Some("Crawler Settings"),
     kind: ValueKind::uint_unbounded(),
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -296,6 +317,7 @@ pub const TIMEOUT_SECS: OptionSpec = OptionSpec {
         "--timeout-secs debe ser >= 1 (0 hace que cada request falle al instante)",
         "'{value}' no es un número válido para --timeout-secs",
     )),
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -312,6 +334,7 @@ pub const ASSET_NAMING: OptionSpec = OptionSpec {
         kind: ValueKind::Enum {
             variants: &["hash", "slug", "content-disposition"],
         },
+        visible_aliases: &[],
         feature_gate: None,
     };
 
@@ -333,6 +356,7 @@ pub const DOWNLOAD_CONCURRENCY: OptionSpec = OptionSpec {
         "--download-concurrency debe ser >= 1 (0 causa un deadlock / hang infinito)",
         "'{value}' no es un número válido para --download-concurrency",
     )),
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -347,6 +371,7 @@ pub const MAX_RETRIES: OptionSpec = OptionSpec {
     help: "Maximum number of retry attempts",
     heading: Some("HTTP Client Settings"),
     kind: ValueKind::uint_unbounded(),
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -362,6 +387,7 @@ pub const BACKOFF_BASE_MS: OptionSpec = OptionSpec {
     help: "Base delay for exponential backoff (ms)",
     heading: Some("HTTP Client Settings"),
     kind: ValueKind::uint_unbounded(),
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -376,6 +402,7 @@ pub const BACKOFF_MAX_MS: OptionSpec = OptionSpec {
     help: "Maximum delay for exponential backoff (ms)",
     heading: Some("HTTP Client Settings"),
     kind: ValueKind::uint_unbounded(),
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -390,6 +417,7 @@ pub const ACCEPT_LANGUAGE: OptionSpec = OptionSpec {
     help: "Accept-Language header value",
     heading: Some("HTTP Client Settings"),
     kind: ValueKind::Text,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -404,6 +432,7 @@ pub const USER_AGENT: OptionSpec = OptionSpec {
     help: "Custom User-Agent header value (overrides Chrome 145 default)",
     heading: Some("HTTP Client Settings"),
     kind: ValueKind::Text,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -418,6 +447,7 @@ pub const MAX_FILE_SIZE: OptionSpec = OptionSpec {
     help: "Maximum file size to download in bytes (default: 50MB)",
     heading: Some("Download Settings"),
     kind: ValueKind::uint_unbounded(),
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -433,6 +463,7 @@ pub const DOWNLOAD_TIMEOUT: OptionSpec = OptionSpec {
     help: "Timeout for individual asset downloads in seconds",
     heading: Some("Download Settings"),
     kind: ValueKind::uint_unbounded(),
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -447,6 +478,7 @@ pub const SITEMAP_DEPTH: OptionSpec = OptionSpec {
     help: "Maximum recursion depth for sitemap indexes",
     heading: Some("Sitemap Settings"),
     kind: ValueKind::uint_unbounded(),
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -462,6 +494,7 @@ pub const CHECKPOINT_INTERVAL: OptionSpec = OptionSpec {
         help: "Pages between automatic checkpoint saves (0 = disabled) NOTE: Checkpoint is for programmatic use (Engine API) only. CLI --resume uses StateStore instead of checkpoints",
         heading: Some("Competitive Features"),
         kind: ValueKind::uint_unbounded(),
+        visible_aliases: &[],
         feature_gate: None,
     };
 
@@ -476,6 +509,7 @@ pub const NO_CHECKPOINT: OptionSpec = OptionSpec {
         help: "Disable checkpoint persistence entirely NOTE: Checkpoint is for programmatic use (Engine API) only. CLI --resume uses StateStore instead of checkpoints",
         heading: Some("Competitive Features"),
         kind: ValueKind::Bool,
+        visible_aliases: &[],
         feature_gate: None,
     };
 
@@ -490,6 +524,7 @@ pub const IGNORE_ROBOTS: OptionSpec = OptionSpec {
     help: "Skip robots.txt enforcement",
     heading: Some("Competitive Features"),
     kind: ValueKind::Bool,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -504,6 +539,7 @@ pub const IGNORE_WAF: OptionSpec = OptionSpec {
     help: "Bypass WAF/CAPTCHA detection entirely (never block on challenge markers)",
     heading: Some("Competitive Features"),
     kind: ValueKind::Bool,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -518,6 +554,7 @@ pub const AUTOSCALE: OptionSpec = OptionSpec {
     help: "Enable autoscaled concurrency — dynamically adjusts task concurrency based on RAM usage",
     heading: Some("Competitive Features"),
     kind: ValueKind::Bool,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -532,6 +569,7 @@ pub const NO_SESSION_HEALTH: OptionSpec = OptionSpec {
     help: "Disable session pool health checks",
     heading: Some("Competitive Features"),
     kind: ValueKind::Bool,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -546,6 +584,7 @@ pub const H2_PROFILE: OptionSpec = OptionSpec {
     help: "TLS/HTTP2 profile name (default: Chrome145)",
     heading: Some("Competitive Features"),
     kind: ValueKind::Text,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -562,6 +601,7 @@ pub const JS_STRATEGY: OptionSpec = OptionSpec {
         kind: ValueKind::Enum {
             variants: &["static", "hybrid", "full"],
         },
+        visible_aliases: &[],
         feature_gate: None,
     };
 
@@ -576,6 +616,7 @@ pub const OBSCURA_BINARY: OptionSpec = OptionSpec {
     help: "Path to the obscura binary (default: \"obscura\")",
     heading: Some("JS Rendering"),
     kind: ValueKind::Text,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -591,11 +632,46 @@ pub const DOM_PREPRUNE: OptionSpec = OptionSpec {
         help: "Enable DOM pre-pruning before Readability (removes invisible/empty wrappers). Default: enabled (true). Set to false via --dom-preprune=false or WEBFANG_DOM_PREPRUNE=false",
         heading: Some("Cleanup"),
         kind: ValueKind::Bool,
+        visible_aliases: &[],
         feature_gate: None,
     };
 
+/// `--clean-ai` (alias `--ai`) — feature-gated: materializes only under
+/// the `ai` cargo feature; without it the runtime command keeps the hidden
+/// compatibility placeholder (builder concern, see slice 3).
+pub const CLEAN_AI: OptionSpec = OptionSpec {
+    id: "clean_ai",
+    long: "clean-ai",
+    short: None,
+    aliases: &[],
+    visible_aliases: &["ai"],
+    env: Some("WEBFANG_CLEAN_AI"),
+    default: Some("false"),
+    help: "Use AI-powered semantic cleaning for better RAG output",
+    heading: Some("Behavior"),
+    kind: ValueKind::Bool,
+    feature_gate: Some("ai"),
+};
+
+/// `--adaptive-selectors` — feature-gated under `adaptive-selectors`.
+pub const ADAPTIVE_SELECTORS: OptionSpec = OptionSpec {
+    id: "adaptive_selectors",
+    long: "adaptive-selectors",
+    short: None,
+    aliases: &[],
+    visible_aliases: &[],
+    env: Some("WEBFANG_ADAPTIVE_SELECTORS"),
+    default: Some("false"),
+    help: "Enable adaptive CSS selector repair (2-tier cascade)",
+    heading: Some("Behavior"),
+    kind: ValueKind::Bool,
+    feature_gate: Some("adaptive-selectors"),
+};
+
 /// All crawler-group options, in `CrawlerArgs` field-declaration order
-/// (deferred fields omitted; see the module documentation).
+/// (structurally-deferred fields omitted; see the module documentation).
+/// Feature-gated entries stay listed: consumers filter with
+/// [`OptionSpec::active`].
 pub const GROUP: &[OptionSpec] = &[
     URL,
     SELECTOR,
@@ -610,6 +686,8 @@ pub const GROUP: &[OptionSpec] = &[
     DOWNLOAD_DOCUMENTS,
     DOWNLOAD_ASSETS,
     EXTRACTION_FINGERPRINT,
+    CLEAN_AI,
+    ADAPTIVE_SELECTORS,
     VERBOSE,
     QUIET,
     DRY_RUN,

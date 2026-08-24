@@ -578,8 +578,6 @@ mod spec_parity_tests {
         ("exclude_patterns", "Vec arg with ',' delimiter"),
         ("headers", "repeatable Vec arg with ';' delimiter"),
         ("cookies", "repeatable Vec arg with ';' delimiter"),
-        ("clean_ai", "feature-gated cfg duplication"),
-        ("adaptive_selectors", "feature-gated cfg duplication"),
     ];
 
     /// All clap args generated for `CrawlerArgs`, keyed by arg id.
@@ -634,6 +632,9 @@ mod spec_parity_tests {
     fn long_short_aliases_env_and_heading_match_the_spec() {
         let args = command_args();
         for s in spec::crawler::GROUP {
+            if !s.active() {
+                continue; // gated off in this build: placeholder pinned separately
+            }
             let arg = arg_by_id(&args, s.id);
             assert_eq!(arg.get_long(), Some(s.long), "long mismatch for `{}`", s.id);
             assert_eq!(arg.get_short(), s.short, "short mismatch for `{}`", s.id);
@@ -651,6 +652,9 @@ mod spec_parity_tests {
     fn defaults_match_the_spec() {
         let args = command_args();
         for s in spec::crawler::GROUP {
+            if !s.active() {
+                continue; // gated off in this build: placeholder pinned separately
+            }
             let arg = arg_by_id(&args, s.id);
             let defaults: Vec<String> = arg
                 .get_default_values()
@@ -666,6 +670,9 @@ mod spec_parity_tests {
     fn help_text_matches_the_spec() {
         let args = command_args();
         for s in spec::crawler::GROUP {
+            if !s.active() {
+                continue; // gated off in this build: placeholder pinned separately
+            }
             let arg = arg_by_id(&args, s.id);
             let help = arg
                 .get_long_help()
@@ -827,6 +834,9 @@ mod spec_parity_tests {
     fn structural_actions_value_names_and_possible_values_match_the_spec() {
         let args = command_args();
         for s in spec::crawler::GROUP {
+            if !s.active() {
+                continue; // gated off in this build: placeholder pinned separately
+            }
             let arg = arg_by_id(&args, s.id);
             match s.kind {
                 spec::ValueKind::Bool => {

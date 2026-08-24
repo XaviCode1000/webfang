@@ -13,6 +13,7 @@ pub const OUTPUT: OptionSpec = OptionSpec {
     help: "Output directory for scraped content",
     heading: Some("Output"),
     kind: ValueKind::Path,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -31,6 +32,7 @@ pub const FORMAT: OptionSpec = OptionSpec {
         kind: ValueKind::Enum {
             variants: &["markdown", "json", "text"],
         },
+        visible_aliases: &[],
         feature_gate: None,
     };
 
@@ -47,6 +49,7 @@ pub const EXPORT_FORMAT: OptionSpec = OptionSpec {
         kind: ValueKind::Enum {
             variants: &["jsonl", "vector", "auto"],
         },
+        visible_aliases: &[],
         feature_gate: None,
     };
 
@@ -61,6 +64,7 @@ pub const CPU_CORES: OptionSpec = OptionSpec {
     help: "CPU core override for the elastic ingestion Rayon pool (else auto-detect)",
     heading: Some("Elastic Ingestion"),
     kind: ValueKind::uint(NumericPolicy::positive("cpu-cores debe ser > 0")),
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -82,6 +86,7 @@ pub const RAM_BUDGET: OptionSpec = OptionSpec {
             parse_failure_template: None,
         }),
     },
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -96,6 +101,7 @@ pub const DB_PATH: OptionSpec = OptionSpec {
     help: "SQLite database path override for persisted resources/chunks",
     heading: Some("Elastic Ingestion"),
     kind: ValueKind::Path,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -110,6 +116,7 @@ pub const ELASTIC: OptionSpec = OptionSpec {
     help: "Enable elastic ingestion pipeline (streaming, SQLite dedup, Rayon CPU bridge)",
     heading: Some("Elastic Ingestion"),
     kind: ValueKind::Bool,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -125,6 +132,7 @@ pub const OUTPUT_VECTORS: OptionSpec = OptionSpec {
         help: "Write extracted vectors to a JSONL file for RAG pipelines. Use `-` for stdout. No SQLite dependency — available in every build (core binary too)",
         heading: Some("Elastic Ingestion"),
         kind: ValueKind::Text,
+        visible_aliases: &[],
         feature_gate: None,
     };
 
@@ -139,6 +147,7 @@ pub const BATCH: OptionSpec = OptionSpec {
     help: "Enable batch mode — read URLs from stdin (one per line)",
     heading: Some("Batch Processing"),
     kind: ValueKind::Bool,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -153,6 +162,7 @@ pub const BATCH_FILE: OptionSpec = OptionSpec {
     help: "Path to a file containing URLs to crawl (one per line)",
     heading: Some("Batch Processing"),
     kind: ValueKind::Path,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -167,6 +177,7 @@ pub const BATCH_CONCURRENCY: OptionSpec = OptionSpec {
     help: "Maximum concurrent URLs in batch mode (omit = auto from budget model)",
     heading: Some("Batch Processing"),
     kind: ValueKind::uint(NumericPolicy::positive("batch-concurrency debe ser > 0")),
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -181,6 +192,7 @@ pub const PIPELINE: OptionSpec = OptionSpec {
     help: "Enable item pipeline processing (validate → clean → output)",
     heading: Some("Item Pipeline"),
     kind: ValueKind::Bool,
+    visible_aliases: &[],
     feature_gate: None,
 };
 
@@ -197,6 +209,7 @@ pub const PIPELINE_OUTPUT: OptionSpec = OptionSpec {
     kind: ValueKind::Enum {
         variants: &["jsonl", "none"],
     },
+    visible_aliases: &[],
     feature_gate: None,
 };
 
