@@ -61,20 +61,16 @@ pub fn estimate(metrics: &StrategyMetrics, config: &CostConfig) -> Result<CostEs
 /// configured divisor is non-positive (fail loudly instead of dividing by
 /// zero).
 pub fn firecrawl_usd_per_1k(tier_index: usize, config: &CostConfig) -> Result<f64> {
-    let tier_usd = *config
-        .firecrawl
-        .tier_usd
-        .get(tier_index)
-        .ok_or_else(|| {
-BenchmarkError::CostConfig(format!(
-"firecrawl tier index {tier_index} out of range (0..={})",
-config.firecrawl.tier_usd.len() - 1
-))
-        })?;
+    let tier_usd = *config.firecrawl.tier_usd.get(tier_index).ok_or_else(|| {
+        BenchmarkError::CostConfig(format!(
+            "firecrawl tier index {tier_index} out of range (0..={})",
+            config.firecrawl.tier_usd.len() - 1
+        ))
+    })?;
     let tier_credits = config.firecrawl.tier_credits[tier_index];
     if tier_credits <= 0.0 || config.firecrawl.credits_per_page_assumption <= 0.0 {
         return Err(BenchmarkError::CostConfig(
-"firecrawl tier credits and pages-per-credit must be positive".to_string(),
+            "firecrawl tier credits and pages-per-credit must be positive".to_string(),
         ));
     }
     let pages_yielded = tier_credits * config.firecrawl.credits_per_page_assumption;
@@ -96,7 +92,7 @@ pub fn crawl4ai_usd_per_1k(
 ) -> Result<f64> {
     if pages_per_sec <= 0.0 {
         return Err(BenchmarkError::CostConfig(format!(
-"non-positive throughput ({pages_per_sec}) cannot price a run"
+            "non-positive throughput ({pages_per_sec}) cannot price a run"
         )));
     }
     let hourly = config.crawl4ai.instance_hourly_usd;

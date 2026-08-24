@@ -49,8 +49,8 @@ pub enum BenchmarkError {
 "live competitor run not enabled in this build/session; provide {env_var} and pass --i-understand-costs to explicitly opt in ({provider})"
     )]
     LiveDisabled {
-provider: &'static str,
-env_var: &'static str,
+        provider: &'static str,
+        env_var: &'static str,
     },
 }
 

@@ -58,7 +58,10 @@ fn firecrawl_yield_assumption_scales_price() {
 #[test]
 fn firecrawl_unknown_tier_is_typed_error() {
     let err = cost::firecrawl_usd_per_1k(3, &fixed_config()).expect_err("must fail");
-    assert!(matches!(err, webfang_benchmark::BenchmarkError::CostConfig(_)));
+    assert!(matches!(
+        err,
+        webfang_benchmark::BenchmarkError::CostConfig(_)
+    ));
 }
 
 /// Crawl4AI applies the same infra formula over its own sizing:
@@ -69,14 +72,20 @@ fn crawl4ai_infra_formula_matches_hand_computation() {
     let ram_bytes: usize = 1 << 27;
     let usd = cost::crawl4ai_usd_per_1k(pages_per_sec, ram_bytes, &fixed_config())
         .expect("crawl4ai prices");
-    let expected =
-        0.02 * (1000.0 / pages_per_sec / 3600.0) + 0.02 * ((ram_bytes as f64) / (4.0 * 1024.0 * 1024.0 * 1024.0));
-    assert!((usd - expected).abs() < 1e-12, "expected {expected}, got {usd}");
+    let expected = 0.02 * (1000.0 / pages_per_sec / 3600.0)
+        + 0.02 * ((ram_bytes as f64) / (4.0 * 1024.0 * 1024.0 * 1024.0));
+    assert!(
+        (usd - expected).abs() < 1e-12,
+        "expected {expected}, got {usd}"
+    );
 }
 
 /// Non-positive throughput cannot price a self-hosted run either.
 #[test]
 fn crawl4ai_non_positive_throughput_is_typed_error() {
     let err = cost::crawl4ai_usd_per_1k(0.0, 0, &fixed_config()).expect_err("must fail");
-    assert!(matches!(err, webfang_benchmark::BenchmarkError::CostConfig(_)));
+    assert!(matches!(
+        err,
+        webfang_benchmark::BenchmarkError::CostConfig(_)
+    ));
 }

@@ -7,9 +7,9 @@
 //! API; this crate is a workspace leaf.
 
 pub mod aggregate;
+pub mod competitor;
 pub mod corpus;
 pub mod cost;
-pub mod competitor;
 pub mod error;
 pub mod report;
 pub mod runner;

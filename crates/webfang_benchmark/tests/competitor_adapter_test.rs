@@ -5,8 +5,8 @@
 //!
 //! Run: cargo nextest run -p webfang_benchmark --test competitor_adapter_test
 
-use webfang_benchmark::BenchmarkError;
 use webfang_benchmark::competitor::{self, Crawl4AiConfig, FirecrawlConfig, StartCrawlParams};
+use webfang_benchmark::BenchmarkError;
 
 fn params(url: &str, limit: u32) -> StartCrawlParams {
     StartCrawlParams {
