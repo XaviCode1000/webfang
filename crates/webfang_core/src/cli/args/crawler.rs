@@ -1,4 +1,5 @@
 use crate::domain::config::ConcurrencyConfig;
+use crate::domain::options_spec::crawler as crawler_specs;
 use crate::domain::JsStrategy;
 use clap::Args;
 use scraper::Selector;
@@ -6,17 +7,17 @@ use scraper::Selector;
 /// Validate `--download-concurrency`: must be >= 1. A value of 0 would make
 /// `buffer_unordered(0)` hang forever (deadlock, D1). Rejecting here satisfies
 /// the "Zero Silent Loss" philosophy with a clear CLI error instead of a hang.
+/// Bounds and messages come from the OptionsSpec (ADR-002) — the single
+/// validation source.
 pub(crate) fn parse_download_concurrency(s: &str) -> Result<usize, String> {
-    let v: usize = s
-        .parse()
-        .map_err(|_| format!("'{s}' no es un número válido para --download-concurrency"))?;
-    if v == 0 {
-        return Err(
-            "--download-concurrency debe ser >= 1 (0 causa un deadlock / hang infinito)"
-                .to_string(),
-        );
-    }
-    Ok(v)
+    let value = crawler_specs::DOWNLOAD_CONCURRENCY
+        .parse_uint(s)
+        .map_err(|e| e.to_string())?;
+    usize::try_from(value).map_err(|_| {
+        crawler_specs::DOWNLOAD_CONCURRENCY
+            .parse_error(s)
+            .to_string()
+    })
 }
 
 /// Validate `--rate-limit-burst`: explicit rate-limiter burst override
@@ -49,7 +50,8 @@ pub(crate) fn parse_rate_limit_burst(s: &str) -> Result<Option<u32>, String> {
 /// Validate `--timeout-secs`: must be >= 1. A value of 0 makes wreq apply
 /// `Duration::from_secs(0)` as the request timeout, so every request fails
 /// instantly with "operation timed out". Rejecting here gives a clear CLI
-/// error instead of a crawl where every page fails.
+/// error instead of a crawl where every page fails. Bounds and messages come
+/// from the OptionsSpec (ADR-002).
 /// Validate `--selector`: must parse as a CSS selector via `scraper`. Invalid
 /// selectors currently surface only at scrape time (sometimes as a 30s network
 /// timeout), so reject them up front with a clear Spanish usage error (exit 64
@@ -60,30 +62,22 @@ pub(crate) fn parse_selector(s: &str) -> Result<String, String> {
 }
 
 pub(crate) fn parse_timeout_secs(s: &str) -> Result<u64, String> {
-    let v: u64 = s
-        .parse()
-        .map_err(|_| format!("'{s}' no es un número válido para --timeout-secs"))?;
-    if v == 0 {
-        return Err(
-            "--timeout-secs debe ser >= 1 (0 hace que cada request falle al instante)".to_string(),
-        );
-    }
-    Ok(v)
+    crawler_specs::TIMEOUT_SECS
+        .parse_uint(s)
+        .map_err(|e| e.to_string())
 }
 
 /// Validate `--max-pages`: must be >= 1. A value of 0 would panic
 /// `tokio::sync::mpsc::channel(0)` inside `ResultsCollector::new`
 /// (SIGABRT, #780 — the MCP path already rejects this; #598/#611 only
 /// covered MCP). Rejecting here gives a clear usage error (exit 64)
-/// instead of a runtime panic (exit 134).
+/// instead of a runtime panic (exit 134). Bounds and messages come from the
+/// OptionsSpec (ADR-002).
 pub(crate) fn parse_max_pages(s: &str) -> Result<usize, String> {
-    let v: usize = s
-        .parse()
-        .map_err(|_| format!("'{s}' no es un número válido para --max-pages"))?;
-    if v == 0 {
-        return Err("--max-pages debe ser >= 1 (0 no deja páginas para scrapear)".to_string());
-    }
-    Ok(v)
+    let value = crawler_specs::MAX_PAGES
+        .parse_uint(s)
+        .map_err(|e| e.to_string())?;
+    usize::try_from(value).map_err(|_| crawler_specs::MAX_PAGES.parse_error(s).to_string())
 }
 
 /// Crawler and discovery configuration arguments.
@@ -549,6 +543,324 @@ mod tests {
         assert!(
             err.contains("selector CSS inválido"),
             "expected Spanish invalid-selector message, got: {err}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod spec_parity_tests {
+    //! ADR-002 equivalence proof (slice 2): the hand-derived clap surface of
+    //! [`CrawlerArgs`] must stay in lockstep with the OptionsSpec crawler
+    //! group. Written FIRST against the UNMIGRATED parsers (pin); the
+    //! migration then routes validation through the spec and must keep them
+    //! green.
+    //!
+    //! Deferred from the spec this slice (asserted here so the list stays
+    //! honest): `concurrency`, `rate_limit_burst`, `include_patterns`,
+    //! `exclude_patterns`, `headers`, `cookies`, and the feature-gated
+    //! `clean_ai` / `adaptive_selectors`.
+
+    use super::*;
+    use crate::domain::options_spec as spec;
+
+    /// CrawlerArgs fields intentionally OUTSIDE the spec this slice, with the
+    /// reason each was deferred.
+    const DEFERRED_FROM_SPEC: &[(&str, &str)] = &[
+        (
+            "concurrency",
+            "custom ConcurrencyConfig FromStr with auto detection",
+        ),
+        (
+            "rate_limit_burst",
+            "raw-string preflight staging with warn-and-default semantics",
+        ),
+        ("include_patterns", "Vec arg with ',' delimiter"),
+        ("exclude_patterns", "Vec arg with ',' delimiter"),
+        ("headers", "repeatable Vec arg with ';' delimiter"),
+        ("cookies", "repeatable Vec arg with ';' delimiter"),
+        ("clean_ai", "feature-gated cfg duplication"),
+        ("adaptive_selectors", "feature-gated cfg duplication"),
+    ];
+
+    /// All clap args generated for `CrawlerArgs`, keyed by arg id.
+    fn command_args() -> Vec<clap::Arg> {
+        CrawlerArgs::augment_args(clap::Command::new("webfang-crawler"))
+            .get_arguments()
+            .cloned()
+            .collect()
+    }
+
+    fn arg_by_id<'a>(args: &'a [clap::Arg], id: &str) -> &'a clap::Arg {
+        args.iter()
+            .find(|a| a.get_id() == id)
+            .unwrap_or_else(|| panic!("arg `{id}` missing from CrawlerArgs command"))
+    }
+
+    fn parse_args(extra: &[&str]) -> Result<crate::Args, String> {
+        let mut argv = vec!["webfang"];
+        argv.extend_from_slice(extra);
+        clap::Parser::try_parse_from(argv).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn deferred_list_is_honest_about_its_reasons() {
+        assert_eq!(spec::crawler::GROUP.len() + DEFERRED_FROM_SPEC.len(), 47);
+        let args = command_args();
+        for (id, _) in DEFERRED_FROM_SPEC {
+            assert!(
+                args.iter().any(|a| a.get_id() == *id),
+                "deferred id `{id}` no longer exists in CrawlerArgs — update the list"
+            );
+        }
+    }
+
+    #[test]
+    fn clap_surface_is_fully_covered_by_the_spec() {
+        let args = command_args();
+        let deferred_ids: Vec<&str> = DEFERRED_FROM_SPEC.iter().map(|(id, _)| *id).collect();
+        for arg in &args {
+            let id = arg.get_id().as_str();
+            if matches!(id, "help" | "version") || deferred_ids.contains(&id) {
+                continue;
+            }
+            assert!(
+                spec::crawler::GROUP.iter().any(|s| s.id == id),
+                "clap arg `{id}` has no OptionsSpec entry — spec is out of sync"
+            );
+        }
+    }
+
+    #[test]
+    fn long_short_aliases_env_and_heading_match_the_spec() {
+        let args = command_args();
+        for s in spec::crawler::GROUP {
+            let arg = arg_by_id(&args, s.id);
+            assert_eq!(arg.get_long(), Some(s.long), "long mismatch for `{}`", s.id);
+            assert_eq!(arg.get_short(), s.short, "short mismatch for `{}`", s.id);
+            let aliases = arg.get_aliases().unwrap_or_default();
+            assert_eq!(aliases, s.aliases, "alias mismatch for `{}`", s.id);
+            let env = arg.get_env().map(|e| e.to_string_lossy().into_owned());
+            assert_eq!(env.as_deref(), s.env, "env var mismatch for `{}`", s.id);
+            // NOTE: clap's `next_help_heading` is stateful during command
+            // construction and is NOT stored per-Arg, so it cannot be
+            // introspected here. `spec.heading` is generator-facing data.
+        }
+    }
+
+    #[test]
+    fn defaults_match_the_spec() {
+        let args = command_args();
+        for s in spec::crawler::GROUP {
+            let arg = arg_by_id(&args, s.id);
+            let defaults: Vec<String> = arg
+                .get_default_values()
+                .iter()
+                .map(|v| v.to_string_lossy().into_owned())
+                .collect();
+            let expected: Vec<String> = s.default.map(|d| vec![d.to_owned()]).unwrap_or_default();
+            assert_eq!(defaults, expected, "default mismatch for `{}`", s.id);
+        }
+    }
+
+    #[test]
+    fn help_text_matches_the_spec() {
+        let args = command_args();
+        for s in spec::crawler::GROUP {
+            let arg = arg_by_id(&args, s.id);
+            let help = arg
+                .get_long_help()
+                .or_else(|| arg.get_help())
+                .unwrap_or_else(|| panic!("arg `{}` has no help text", s.id))
+                .to_string();
+            assert_eq!(
+                help.trim(),
+                s.help.trim(),
+                "help text mismatch for `{}`",
+                s.id
+            );
+        }
+    }
+
+    #[test]
+    fn representative_values_parse_identically_through_clap() {
+        // Defaults.
+        let defaults = parse_args(&[]).expect("bare invocation must parse");
+        assert_eq!(defaults.crawler.selector, "body");
+        assert_eq!(defaults.crawler.delay_ms, 1000);
+        assert_eq!(defaults.crawler.max_pages, 10);
+        assert_eq!(defaults.crawler.max_depth, 2);
+        assert!(!defaults.crawler.use_sitemap);
+        assert!(!defaults.crawler.resume);
+
+        // Short forms in isolation (`--url` may only appear once per parse).
+        let shorts =
+            parse_args(&["-u", "https://example.org", "-s", "main"]).expect("shorts must parse");
+        assert_eq!(shorts.crawler.url.as_deref(), Some("https://example.org"));
+        assert_eq!(shorts.crawler.selector, "main");
+    }
+
+    #[test]
+    fn target_discovery_behavior_and_display_flags_parse_identically() {
+        let parsed = parse_args(&[
+            "--url",
+            "https://example.com",
+            "--selector",
+            "article p",
+            "--delay-ms",
+            "250",
+            "--max-pages",
+            "5",
+            "--use-sitemap",
+            "--sitemap-url",
+            "https://example.com/sitemap.xml",
+            "--single-page",
+            "--resume",
+            "--state-dir",
+            "/tmp/wf-state",
+            "--download-assets",
+            "--extraction-fingerprint",
+            "-vvv",
+            "-q",
+            "-n",
+            "--trace-file",
+            "trace.jsonl",
+        ])
+        .expect("representative crawler flags must parse");
+
+        let c = &parsed.crawler;
+        assert_eq!(c.url.as_deref(), Some("https://example.com"));
+        assert_eq!(c.selector, "article p");
+        assert_eq!(c.delay_ms, 250);
+        assert_eq!(c.max_pages, 5);
+        assert!(c.use_sitemap);
+        assert_eq!(
+            c.sitemap_url.as_deref(),
+            Some("https://example.com/sitemap.xml")
+        );
+        assert!(c.single_page);
+        assert!(c.resume);
+        assert_eq!(c.state_dir, Some(std::path::PathBuf::from("/tmp/wf-state")));
+        assert!(c.download_assets);
+        assert!(!c.download_images);
+        assert!(!c.download_documents);
+        assert!(c.extraction_fingerprint);
+        assert_eq!(c.verbose, 3);
+        assert!(c.quiet);
+        assert!(c.dry_run);
+        assert_eq!(c.trace_file, Some(std::path::PathBuf::from("trace.jsonl")));
+    }
+
+    #[test]
+    fn crawler_http_download_and_feature_flags_parse_identically() {
+        let parsed = parse_args(&[
+            "--max-depth",
+            "4",
+            "--timeout-secs",
+            "60",
+            "--asset-naming",
+            "slug",
+            "--download-concurrency",
+            "8",
+            "--max-retries",
+            "2",
+            "--backoff-base-ms",
+            "500",
+            "--backoff-max-ms",
+            "8000",
+            "--accept-language",
+            "es-AR,es;q=0.9",
+            "--user-agent",
+            "webfang-parity/1.0",
+            "--max-file-size",
+            "1048576",
+            "--download-timeout",
+            "45",
+            "--sitemap-depth",
+            "1",
+            "--checkpoint-interval",
+            "50",
+            "--no-checkpoint",
+            "--ignore-robots",
+            "--ignore-waf",
+            "--autoscale",
+            "--no-session-health",
+            "--h2-profile",
+            "Chrome131",
+            "--js-strategy",
+            "hybrid",
+            "--obscura-binary",
+            "/usr/local/bin/obscura",
+            "--dom-preprune=false",
+        ])
+        .expect("representative crawler flags must parse");
+
+        let c = &parsed.crawler;
+        assert_eq!(c.max_depth, 4);
+        assert_eq!(c.timeout_secs, 60);
+        assert_eq!(c.asset_naming, "slug");
+        assert_eq!(c.download_concurrency, Some(8));
+        assert_eq!(c.max_retries, 2);
+        assert_eq!(c.backoff_base_ms, 500);
+        assert_eq!(c.backoff_max_ms, 8000);
+        assert_eq!(c.accept_language, "es-AR,es;q=0.9");
+        assert_eq!(c.user_agent.as_deref(), Some("webfang-parity/1.0"));
+        assert_eq!(c.max_file_size, 1048576);
+        assert_eq!(c.download_timeout, 45);
+        assert_eq!(c.sitemap_depth, 1);
+        assert_eq!(c.checkpoint_interval, 50);
+        assert!(c.no_checkpoint);
+        assert!(c.ignore_robots);
+        assert!(c.ignore_waf);
+        assert!(c.autoscale);
+        assert!(c.no_session_health);
+        assert_eq!(c.h2_profile, "Chrome131");
+        assert_eq!(c.js_strategy, crate::domain::JsStrategy::Hybrid);
+        assert_eq!(c.obscura_binary, "/usr/local/bin/obscura");
+        assert!(!c.dom_preprune);
+    }
+
+    #[test]
+    fn out_of_bounds_and_malformed_inputs_error_exactly_as_before() {
+        let err = parse_args(&["--max-pages", "0"]).expect_err("zero pages rejected");
+        assert!(
+            err.contains("--max-pages debe ser >= 1 (0 no deja páginas para scrapear)"),
+            "got: {err}"
+        );
+
+        let err = parse_args(&["--max-pages", "abc"]).expect_err("text rejected");
+        assert!(
+            err.contains("'abc' no es un número válido para --max-pages"),
+            "got: {err}"
+        );
+
+        let err = parse_args(&["--timeout-secs", "0"]).expect_err("zero timeout rejected");
+        assert!(
+            err.contains(
+                "--timeout-secs debe ser >= 1 (0 hace que cada request falle al instante)"
+            ),
+            "got: {err}"
+        );
+
+        let err = parse_args(&["--timeout-secs", "9x"]).expect_err("malformed timeout rejected");
+        assert!(
+            err.contains("'9x' no es un número válido para --timeout-secs"),
+            "got: {err}"
+        );
+
+        let err =
+            parse_args(&["--download-concurrency", "0"]).expect_err("zero concurrency rejected");
+        assert!(
+            err.contains(
+                "--download-concurrency debe ser >= 1 (0 causa un deadlock / hang infinito)"
+            ),
+            "got: {err}"
+        );
+
+        let err = parse_args(&["--download-concurrency", "muchas"])
+            .expect_err("malformed concurrency rejected");
+        assert!(
+            err.contains("'muchas' no es un número válido para --download-concurrency"),
+            "got: {err}"
         );
     }
 }
