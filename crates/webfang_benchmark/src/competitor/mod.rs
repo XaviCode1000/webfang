@@ -15,6 +15,12 @@
 
 use crate::error::{BenchmarkError, Result};
 
+pub mod crawl4ai;
+pub mod firecrawl;
+
+pub use crawl4ai::Crawl4AiConfig;
+pub use firecrawl::FirecrawlConfig;
+
 /// Which live competitor target a `bench_live` invocation addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompetitorTarget {
@@ -94,4 +100,57 @@ pub fn evaluate_live_gate(target: CompetitorTarget, opt_in_flag: bool) -> Result
 pub(crate) fn env_key_present(env_var: &str) -> bool {
     std::env::var_os(env_var)
         .is_some_and(|value| !value.to_string_lossy().trim().is_empty())
+}
+
+/// A fully-built HTTP request description.
+///
+/// Building this value performs NO I/O: it is pure data the future Tier B
+/// execution layer will hand to a wreq client (C-3; never reqwest).
+#[derive(Debug, Clone)]
+pub struct PreparedRequest {
+    /// HTTP method of the deferred call.
+    pub method: &'static str,
+    /// Absolute endpoint URL, validated at construction time.
+    pub url: ::url::Url,
+    /// Provider API key (sent as `Authorization: Bearer <token>` on execute).
+    pub bearer_token: String,
+    /// JSON request body, already validated/normalized.
+    pub body_json: serde_json::Value,
+}
+
+/// Shared crawl-start parameters accepted by every adapter.
+#[derive(Debug, Clone)]
+pub struct StartCrawlParams {
+    /// Absolute URL of the site to crawl.
+    pub target_url: String,
+    /// Maximum pages the remote run may fetch.
+    pub page_limit: u32,
+}
+
+/// The canonical [`BenchmarkError::LiveDisabled`] refusal for a target.
+pub(crate) fn live_disabled(target: CompetitorTarget) -> BenchmarkError {
+    BenchmarkError::LiveDisabled {
+        provider: target.provider_name(),
+        env_var: target.env_var(),
+    }
+}
+
+/// Shared adapter preflight: normalize the API key, enforce the fail-closed
+/// gate, and return the trimmed key ready for header construction.
+///
+/// # Errors
+///
+/// [`BenchmarkError::LiveDisabled`] for a missing/blank key or a missing
+/// explicit opt-in flag.
+pub(crate) fn resolve_key_and_gate(
+    target: CompetitorTarget,
+    api_key: Option<&str>,
+    opt_in_flag: bool,
+) -> Result<String> {
+    let key = match api_key.map(str::trim).filter(|key| !key.is_empty()) {
+        Some(key) => key.to_string(),
+        None => return Err(live_disabled(target)),
+    };
+    check_live_gate(target, true, opt_in_flag)?;
+    Ok(key)
 }
