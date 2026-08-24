@@ -50,18 +50,33 @@ pub(crate) const DISABLE_VALIDATING_RESOLVER_ENV: &str = "WEBFANG_DISABLE_SSRF_R
 ///
 /// Covers:
 /// - IPv4: loopback (127.0.0.0/8), private (10/8, 172.16/12, 192.168/16),
-///   link-local (169.254/16), CGNAT (100.64.0.0/10).
+///   link-local (169.254/16), unspecified (0.0.0.0), broadcast
+///   (255.255.255.255), reserved (240.0.0.0/4), CGNAT (100.64.0.0/10).
 /// - IPv6: loopback (::1), unspecified (::), unique-local (fc00::/7),
-///   IPv4-mapped and IPv4-compatible (re-validated as IPv4).
+///   unicast link-local (fe80::/10), IPv4-mapped and IPv4-compatible
+///   (re-validated as IPv4).
 #[must_use]
 pub fn is_forbidden_ip(ip: &IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local() || is_cgnat(v4),
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                // 0.0.0.0: `connect()` routes it to loopback on Linux/macOS.
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || is_reserved_v4(v4)
+                || is_cgnat(v4)
+        },
         IpAddr::V6(v6) => {
             // Native IPv6 special ranges first: `::1` and `::` also carry
             // IPv4-compatible representations (`::0.0.0.1` / `::0.0.0.0`) that
             // would otherwise re-validate as non-forbidden IPv4 addresses.
-            if v6.is_loopback() || v6.is_unspecified() || is_ipv6_unique_local(v6) {
+            if v6.is_loopback()
+                || v6.is_unspecified()
+                || is_ipv6_unique_local(v6)
+                || is_ipv6_link_local(v6)
+            {
                 return true;
             }
             // RFC 4291 §2.5.5.2: IPv4-mapped (`::ffff:a.b.c.d`) and the deprecated
@@ -84,11 +99,27 @@ pub fn is_cgnat(v4: &Ipv4Addr) -> bool {
     octets[0] == 100 && (octets[1] & 0b1100_0000) == 0b0100_0000
 }
 
+/// Returns `true` if `v4` is within the reserved range 240.0.0.0/4,
+/// excluding broadcast (255.255.255.255). Mirrors std's still-unstable
+/// `Ipv4Addr::is_reserved` (#27709) with the same semantics.
+#[must_use]
+pub fn is_reserved_v4(v4: &Ipv4Addr) -> bool {
+    v4.octets()[0] & 0b1111_0000 == 0b1111_0000 && !v4.is_broadcast()
+}
+
 /// Returns `true` if `v6` is within the unique-local range fc00::/7
 /// (fc00:: – fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff).
 #[must_use]
 pub fn is_ipv6_unique_local(v6: &Ipv6Addr) -> bool {
     v6.segments()[0] & 0xfe00 == 0xfc00
+}
+
+/// Returns `true` if `v6` is within the unicast link-local range fe80::/10
+/// (fe80:: – febf:ffff:...), symmetric with the IPv4 link-local denial
+/// (169.254/16, which covers the cloud-metadata endpoint 169.254.169.254).
+#[must_use]
+pub fn is_ipv6_link_local(v6: &Ipv6Addr) -> bool {
+    v6.segments()[0] & 0xffc0 == 0xfe80
 }
 
 /// Returns `true` if `host` is a literal IP address within a forbidden range.
@@ -192,11 +223,14 @@ pub struct ValidatingResolver {
 
 impl ValidatingResolver {
     /// Builds a resolver; validation state is captured from
-    /// `DISABLE_VALIDATING_RESOLVER_ENV` at this moment.
+    /// `DISABLE_VALIDATING_RESOLVER_ENV` at this moment. Only the exact
+    /// value `"1"` disarms the guard — any other value (including `"0"`,
+    /// `"true"`, `"yes"`) keeps validation active.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            validation_enabled: std::env::var(DISABLE_VALIDATING_RESOLVER_ENV).is_err(),
+            validation_enabled: std::env::var(DISABLE_VALIDATING_RESOLVER_ENV).as_deref()
+                != Ok("1"),
         }
     }
 
@@ -216,19 +250,42 @@ impl ValidatingResolver {
             tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
 
         if validate {
-            // Fail-closed scan: any forbidden record rejects the whole answer.
-            if let Some(offending) = addrs.iter().find(|addr| is_forbidden_ip(&addr.ip())) {
-                let ip = offending.ip();
-                tracing::warn!(
-                    host = %host,
-                    ip = %ip,
-                    "Forbidden address in DNS answer rejected (SSRF validating resolver)"
-                );
-                return Err(Box::new(ForbiddenResolutionError { host, ip }));
-            }
+            Self::fail_closed_scan(&host, &addrs)?;
         }
 
         Ok(Box::new(addrs.into_iter()) as Addrs)
+    }
+
+    /// Fail-closed answer-set scan: ANY forbidden record rejects the whole
+    /// resolution (no safe-subset filtering), and an EMPTY answer set is an
+    /// error too — an empty set can never yield a connectable address, so it
+    /// must not masquerade as success.
+    ///
+    /// Pure function over the answer slice so the empty-set edge is unit-
+    /// testable without depending on nondeterministic `getaddrinfo` behavior.
+    fn fail_closed_scan(
+        host: &str,
+        addrs: &[std::net::SocketAddr],
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let Some(offending) = addrs.iter().find(|addr| is_forbidden_ip(&addr.ip())) else {
+            if addrs.is_empty() {
+                tracing::warn!(host = %host, "Empty DNS answer rejected (SSRF validating resolver)");
+                return Err(Box::new(std::io::Error::other(format!(
+                    "empty DNS answer for '{host}'"
+                ))));
+            }
+            return Ok(());
+        };
+        let ip = offending.ip();
+        tracing::warn!(
+            host = %host,
+            ip = %ip,
+            "Forbidden address in DNS answer rejected (SSRF validating resolver)"
+        );
+        Err(Box::new(ForbiddenResolutionError {
+            host: host.to_owned(),
+            ip,
+        }))
     }
 }
 
@@ -278,6 +335,30 @@ mod tests {
     }
 
     #[test]
+    fn unspecified_broadcast_reserved_v4_is_forbidden() {
+        // 0.0.0.0 routes to loopback on Linux/macOS — must never be allowed.
+        assert!(is_forbidden_ip(&addr("0.0.0.0")));
+        // The IPv4-mapped form falls into the recursive IPv4 arm: it MUST be
+        // forbidden too, otherwise it bypasses the guard as a "public" v6.
+        assert!(is_forbidden_ip(&addr("::ffff:0.0.0.0")));
+        assert!(is_forbidden_literal_host("[::ffff:0.0.0.0]"));
+        assert!(is_forbidden_literal_host("0.0.0.0"));
+        // Reserved 240.0.0.0/4 and broadcast.
+        assert!(is_forbidden_ip(&addr("240.0.0.1")));
+        assert!(is_forbidden_ip(&addr("255.255.255.255")));
+    }
+
+    #[test]
+    fn ipv6_unicast_link_local_is_forbidden() {
+        // fe80::/10 spans fe80:: .. febf:ffff:... — symmetric with the
+        // IPv4 link-local denial (169.254/16).
+        assert!(is_forbidden_ip(&addr("fe80::1")));
+        assert!(is_forbidden_ip(&addr("febf::ffff")));
+        // fec0::/10 (deprecated site-local) is NOT link-local; outside scope.
+        assert!(!is_forbidden_ip(&addr("fec0::1")));
+    }
+
+    #[test]
     fn literal_host_classification() {
         assert!(is_forbidden_literal_host("127.0.0.1"));
         assert!(is_forbidden_literal_host("169.254.169.254"));
@@ -321,13 +402,21 @@ mod tests {
         async fn forbidden_ipv4_literal_hostname_is_rejected() {
             let resolver = validation_on();
 
-            for host in ["127.0.0.1", "169.254.169.254"] {
+            for host in ["127.0.0.1", "169.254.169.254", "0.0.0.0"] {
                 let outcome = resolver.resolve(Name::from(host)).await;
                 assert!(
                     outcome.is_err(),
-                    "loopback literal must be rejected at connect time: {host}"
+                    "forbidden literal must be rejected at connect time: {host}"
                 );
             }
+        }
+
+        #[test]
+        fn fail_closed_scan_rejects_empty_answer_set() {
+            // An empty DNS answer can never yield a connectable address:
+            // fail closed regardless of which (if any) record was expected.
+            let outcome = ValidatingResolver::fail_closed_scan("empty.test", &[]);
+            assert!(outcome.is_err(), "empty answer set must fail closed");
         }
 
         #[tokio::test]
@@ -376,6 +465,20 @@ mod tests {
 
             let addrs = resolved_addrs(&resolver, "127.0.0.1").await;
             assert_eq!(addrs[0].ip().to_string(), "127.0.0.1");
+        }
+
+        #[tokio::test]
+        async fn bypass_requires_exact_value_one() {
+            // Any value other than the literal "1" (including "0", "true",
+            // "yes") must NOT disarm the guard.
+            std::env::set_var(DISABLE_VALIDATING_RESOLVER_ENV, "0");
+            let resolver = ValidatingResolver::new();
+
+            let outcome = resolver.resolve(Name::from("127.0.0.1")).await;
+            assert!(
+                outcome.is_err(),
+                r#"WEBFANG_DISABLE_SSRF_RESOLVER=0 must keep validation active"#
+            );
         }
 
         #[tokio::test]
