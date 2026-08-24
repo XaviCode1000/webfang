@@ -169,6 +169,15 @@ fn sanitize_disposition_filename(name: String) -> Option<String> {
 ///   percent-decoding), which Unix filesystems reject;
 /// - caps the length at `MAX_FILENAME_LEN` (255) characters.
 ///
+/// Scope note: the cap models Linux/ext4 (`NAME_MAX` 255 bytes) — WebFang
+/// targets Linux servers. Windows reserved device names (`CON`, `PRN`,
+/// `AUX`, …) are out of scope.
+///
+/// When capping actually TRUNCATES, a deterministic suffix derived from the
+/// untruncated input is appended within the byte budget, so two distinct
+/// long names sharing a long common prefix cannot silently collide into the
+/// same filename after truncation. Names that fit are returned untouched.
+///
 /// Returns `None` when nothing safe remains — callers apply their own
 /// fallback naming (URL-derived or hash-based).
 ///
@@ -195,13 +204,33 @@ pub fn sanitize_filename_component(name: &str) -> Option<String> {
         .next_back()
         .map(str::to_string)?;
 
-    // Enforce the filesystem length cap on char boundaries.
+    // Enforce the filesystem length cap on char boundaries. When the input is
+    // truncated, append a deterministic disambiguation suffix (hash of the
+    // untruncated candidate) so distinct long inputs sharing their leading
+    // bytes cannot collapse into one filename.
     let mut capped = candidate;
-    while capped.len() > MAX_FILENAME_LEN {
-        capped.pop();
+    if capped.len() > MAX_FILENAME_LEN {
+        let suffix = truncation_disambiguator(&capped);
+        let budget = MAX_FILENAME_LEN - suffix.len();
+        while capped.len() > budget {
+            capped.pop();
+        }
+        capped.push_str(&suffix);
     }
 
     (!capped.is_empty()).then_some(capped)
+}
+
+/// Deterministic suffix appended to truncated filenames: `-` plus the 16-hex
+/// digit FNV-style hash (`std` DefaultHasher, stable within a process run)
+/// of the untruncated candidate. Always shorter than the byte budget it is
+/// subtracted from.
+fn truncation_disambiguator(candidate: &str) -> String {
+    use std::hash::Hasher;
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&candidate, &mut hasher);
+    format!("-{:016x}", hasher.finish())
 }
 
 /// Parse Content-Disposition header value to extract filename.
@@ -408,9 +437,38 @@ mod tests {
         let long = format!("{}.pdf", "a".repeat(300));
         let sanitized = sanitize_filename_component(&long).expect("non-empty result");
         assert!(sanitized.len() <= MAX_FILENAME_LEN);
-        // Head-truncation: the hostile prefix is kept bounded, extension may
-        // be cut — the join-safety guarantee is what matters.
+        // Truncation appends the deterministic disambiguator: the hostile
+        // prefix is kept bounded and the extension may be cut — the
+        // join-safety guarantee is what matters.
         assert!(!sanitized.is_empty());
+    }
+
+    #[test]
+    fn sanitize_truncation_disambiguates_long_names_with_shared_prefix() {
+        // Two DISTINCT names that agree on their first 260 bytes must NOT
+        // truncate to the same filename (silent overwrite). The deterministic
+        // suffix derived from the ORIGINAL input keeps them apart.
+        let prefix = "a".repeat(260);
+        let first = format!("{prefix}first-report.pdf");
+        let second = format!("{prefix}second-report.pdf");
+        let s1 = sanitize_filename_component(&first).expect("non-empty result");
+        let s2 = sanitize_filename_component(&second).expect("non-empty result");
+
+        assert!(s1.len() <= MAX_FILENAME_LEN);
+        assert!(s2.len() <= MAX_FILENAME_LEN);
+        assert_ne!(
+            s1, s2,
+            "distinct long names must not collide after truncation"
+        );
+
+        // Deterministic: same input, same output (no per-process randomness).
+        assert_eq!(s1, sanitize_filename_component(&first).unwrap());
+
+        // Short names are untouched: no suffix when no truncation happened.
+        assert_eq!(
+            sanitize_filename_component("report.pdf").expect("non-empty result"),
+            "report.pdf"
+        );
     }
 
     #[test]
