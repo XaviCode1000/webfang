@@ -438,6 +438,11 @@ mod tests {
 /// impls of [`ExportArgs`](super::args::ExportArgs) and
 /// [`CrawlerArgs`](super::args::CrawlerArgs). Field ids MUST equal the spec
 /// ids — the parity suite enforces lockstep.
+///
+/// NOTE: both `update_from_arg_matches` impls replace the struct wholesale
+/// (`*self = from_arg_matches(..)`), unlike clap derive's field-by-field
+/// updates. Equivalent for this CLI's single-parse flow; a future partial-
+/// update consumer must switch to per-field extraction first.
 pub(crate) mod extract {
     use clap::{error::ErrorKind, ArgMatches, Error};
 

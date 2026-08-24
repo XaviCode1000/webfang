@@ -5,7 +5,6 @@ use super::{NumericPolicy, OptionSpec, ValueKind};
 /// `--output <OUTPUT>` (short `-o`)
 pub const OUTPUT: OptionSpec = OptionSpec {
     id: "output",
-
     value_name: "OUTPUT",
     long: "output",
     short: Some('o'),
@@ -22,7 +21,6 @@ pub const OUTPUT: OptionSpec = OptionSpec {
 /// `-f, --format <FORMAT>`
 pub const FORMAT: OptionSpec = OptionSpec {
         id: "format",
-
         value_name: "FORMAT",
         long: "format",
         short: Some('f'),
@@ -43,7 +41,6 @@ pub const FORMAT: OptionSpec = OptionSpec {
 /// `--export-format <EXPORT_FORMAT>` (alias `--export`)
 pub const EXPORT_FORMAT: OptionSpec = OptionSpec {
         id: "export_format",
-
         value_name: "EXPORT_FORMAT",
         long: "export-format",
         short: None,
@@ -62,7 +59,6 @@ pub const EXPORT_FORMAT: OptionSpec = OptionSpec {
 /// `--cpu-cores <CPU_CORES>`
 pub const CPU_CORES: OptionSpec = OptionSpec {
     id: "cpu_cores",
-
     value_name: "CPU_CORES",
     long: "cpu-cores",
     short: None,
@@ -79,7 +75,6 @@ pub const CPU_CORES: OptionSpec = OptionSpec {
 /// `--ram-budget <RAM_BUDGET>`
 pub const RAM_BUDGET: OptionSpec = OptionSpec {
     id: "ram_budget",
-
     value_name: "RAM_BUDGET",
     long: "ram-budget",
     short: None,
@@ -103,7 +98,6 @@ pub const RAM_BUDGET: OptionSpec = OptionSpec {
 /// `--db-path <DB_PATH>`
 pub const DB_PATH: OptionSpec = OptionSpec {
     id: "db_path",
-
     value_name: "DB_PATH",
     long: "db-path",
     short: None,
@@ -120,7 +114,6 @@ pub const DB_PATH: OptionSpec = OptionSpec {
 /// `--elastic`
 pub const ELASTIC: OptionSpec = OptionSpec {
     id: "elastic",
-
     value_name: "ELASTIC",
     long: "elastic",
     short: None,
@@ -137,7 +130,6 @@ pub const ELASTIC: OptionSpec = OptionSpec {
 /// `--output-vectors <OUTPUT_VECTORS>`
 pub const OUTPUT_VECTORS: OptionSpec = OptionSpec {
         id: "output_vectors",
-
         value_name: "OUTPUT_VECTORS",
         long: "output-vectors",
         short: None,
@@ -155,7 +147,6 @@ pub const OUTPUT_VECTORS: OptionSpec = OptionSpec {
 /// `--batch`
 pub const BATCH: OptionSpec = OptionSpec {
     id: "batch",
-
     value_name: "BATCH",
     long: "batch",
     short: None,
@@ -172,7 +163,6 @@ pub const BATCH: OptionSpec = OptionSpec {
 /// `--batch-file <BATCH_FILE>`
 pub const BATCH_FILE: OptionSpec = OptionSpec {
     id: "batch_file",
-
     value_name: "BATCH_FILE",
     long: "batch-file",
     short: None,
@@ -189,7 +179,6 @@ pub const BATCH_FILE: OptionSpec = OptionSpec {
 /// `--batch-concurrency <BATCH_CONCURRENCY>`
 pub const BATCH_CONCURRENCY: OptionSpec = OptionSpec {
     id: "batch_concurrency",
-
     value_name: "BATCH_CONCURRENCY",
     long: "batch-concurrency",
     short: None,
@@ -206,7 +195,6 @@ pub const BATCH_CONCURRENCY: OptionSpec = OptionSpec {
 /// `--pipeline`
 pub const PIPELINE: OptionSpec = OptionSpec {
     id: "pipeline",
-
     value_name: "PIPELINE",
     long: "pipeline",
     short: None,
@@ -223,7 +211,6 @@ pub const PIPELINE: OptionSpec = OptionSpec {
 /// `--pipeline-output <PIPELINE_OUTPUT>`
 pub const PIPELINE_OUTPUT: OptionSpec = OptionSpec {
     id: "pipeline_output",
-
     value_name: "PIPELINE_OUTPUT",
     long: "pipeline-output",
     short: None,

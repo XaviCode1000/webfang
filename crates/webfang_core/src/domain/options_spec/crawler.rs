@@ -18,7 +18,6 @@ use super::{NumericPolicy, OptionSpec, ValueKind};
 /// `--url <URL>` (short `-u`)
 pub const URL: OptionSpec = OptionSpec {
     id: "url",
-
     value_name: "URL",
     long: "url",
     short: Some('u'),
@@ -35,7 +34,6 @@ pub const URL: OptionSpec = OptionSpec {
 /// `-s, --selector <SELECTOR>`
 pub const SELECTOR: OptionSpec = OptionSpec {
     id: "selector",
-
     value_name: "SELECTOR",
     long: "selector",
     short: Some('s'),
@@ -54,7 +52,6 @@ pub const SELECTOR: OptionSpec = OptionSpec {
 /// must not change); `policy: None` records that no bound exists today.
 pub const DELAY_MS: OptionSpec = OptionSpec {
     id: "delay_ms",
-
     value_name: "DELAY_MS",
     long: "delay-ms",
     short: None,
@@ -72,7 +69,6 @@ pub const DELAY_MS: OptionSpec = OptionSpec {
 /// [`OptionSpec::parse_uint`] with verbatim legacy messages (#780).
 pub const MAX_PAGES: OptionSpec = OptionSpec {
     id: "max_pages",
-
     value_name: "MAX_PAGES",
     long: "max-pages",
     short: None,
@@ -93,7 +89,6 @@ pub const MAX_PAGES: OptionSpec = OptionSpec {
 /// `--use-sitemap`
 pub const USE_SITEMAP: OptionSpec = OptionSpec {
         id: "use_sitemap",
-
         value_name: "USE_SITEMAP",
         long: "use-sitemap",
         short: None,
@@ -112,7 +107,6 @@ pub const USE_SITEMAP: OptionSpec = OptionSpec {
 /// `--sitemap-url <SITEMAP_URL>`
 pub const SITEMAP_URL: OptionSpec = OptionSpec {
     id: "sitemap_url",
-
     value_name: "SITEMAP_URL",
     long: "sitemap-url",
     short: None,
@@ -129,7 +123,6 @@ pub const SITEMAP_URL: OptionSpec = OptionSpec {
 /// `--single-page`
 pub const SINGLE_PAGE: OptionSpec = OptionSpec {
     id: "single_page",
-
     value_name: "SINGLE_PAGE",
     long: "single-page",
     short: None,
@@ -146,7 +139,6 @@ pub const SINGLE_PAGE: OptionSpec = OptionSpec {
 /// `--resume`
 pub const RESUME: OptionSpec = OptionSpec {
     id: "resume",
-
     value_name: "RESUME",
     long: "resume",
     short: None,
@@ -165,7 +157,6 @@ pub const RESUME: OptionSpec = OptionSpec {
 /// `--state-dir <STATE_DIR>`
 pub const STATE_DIR: OptionSpec = OptionSpec {
     id: "state_dir",
-
     value_name: "STATE_DIR",
     long: "state-dir",
     short: None,
@@ -182,7 +173,6 @@ pub const STATE_DIR: OptionSpec = OptionSpec {
 /// `--download-images`
 pub const DOWNLOAD_IMAGES: OptionSpec = OptionSpec {
     id: "download_images",
-
     value_name: "DOWNLOAD_IMAGES",
     long: "download-images",
     short: None,
@@ -199,7 +189,6 @@ pub const DOWNLOAD_IMAGES: OptionSpec = OptionSpec {
 /// `--download-documents`
 pub const DOWNLOAD_DOCUMENTS: OptionSpec = OptionSpec {
     id: "download_documents",
-
     value_name: "DOWNLOAD_DOCUMENTS",
     long: "download-documents",
     short: None,
@@ -216,7 +205,6 @@ pub const DOWNLOAD_DOCUMENTS: OptionSpec = OptionSpec {
 /// `--download-assets`
 pub const DOWNLOAD_ASSETS: OptionSpec = OptionSpec {
     id: "download_assets",
-
     value_name: "DOWNLOAD_ASSETS",
     long: "download-assets",
     short: None,
@@ -233,7 +221,6 @@ pub const DOWNLOAD_ASSETS: OptionSpec = OptionSpec {
 /// `--extraction-fingerprint`
 pub const EXTRACTION_FINGERPRINT: OptionSpec = OptionSpec {
         id: "extraction_fingerprint",
-
         value_name: "EXTRACTION_FINGERPRINT",
         long: "extraction-fingerprint",
         short: None,
@@ -254,7 +241,6 @@ pub const EXTRACTION_FINGERPRINT: OptionSpec = OptionSpec {
 /// bound).
 pub const VERBOSE: OptionSpec = OptionSpec {
     id: "verbose",
-
     value_name: "VERBOSE",
     long: "verbose",
     short: Some('v'),
@@ -271,7 +257,6 @@ pub const VERBOSE: OptionSpec = OptionSpec {
 /// `-q, --quiet`
 pub const QUIET: OptionSpec = OptionSpec {
     id: "quiet",
-
     value_name: "QUIET",
     long: "quiet",
     short: Some('q'),
@@ -288,7 +273,6 @@ pub const QUIET: OptionSpec = OptionSpec {
 /// `-n, --dry-run`
 pub const DRY_RUN: OptionSpec = OptionSpec {
     id: "dry_run",
-
     value_name: "DRY_RUN",
     long: "dry-run",
     short: Some('n'),
@@ -305,7 +289,6 @@ pub const DRY_RUN: OptionSpec = OptionSpec {
 /// `--trace-file <TRACE_FILE>`
 pub const TRACE_FILE: OptionSpec = OptionSpec {
     id: "trace_file",
-
     value_name: "TRACE_FILE",
     long: "trace-file",
     short: None,
@@ -323,7 +306,6 @@ pub const TRACE_FILE: OptionSpec = OptionSpec {
 /// URL"), so no bound exists today.
 pub const MAX_DEPTH: OptionSpec = OptionSpec {
     id: "max_depth",
-
     value_name: "MAX_DEPTH",
     long: "max-depth",
     short: None,
@@ -341,7 +323,6 @@ pub const MAX_DEPTH: OptionSpec = OptionSpec {
 /// through [`OptionSpec::parse_uint`] with verbatim legacy messages.
 pub const TIMEOUT_SECS: OptionSpec = OptionSpec {
     id: "timeout_secs",
-
     value_name: "TIMEOUT_SECS",
     long: "timeout-secs",
     short: None,
@@ -362,7 +343,6 @@ pub const TIMEOUT_SECS: OptionSpec = OptionSpec {
 /// `--asset-naming <ASSET_NAMING>`
 pub const ASSET_NAMING: OptionSpec = OptionSpec {
         id: "asset_naming",
-
         value_name: "ASSET_NAMING",
         long: "asset-naming",
         short: None,
@@ -383,7 +363,6 @@ pub const ASSET_NAMING: OptionSpec = OptionSpec {
 /// messages (D1 deadlock guard).
 pub const DOWNLOAD_CONCURRENCY: OptionSpec = OptionSpec {
     id: "download_concurrency",
-
     value_name: "DOWNLOAD_CONCURRENCY",
     long: "download-concurrency",
     short: None,
@@ -405,7 +384,6 @@ pub const DOWNLOAD_CONCURRENCY: OptionSpec = OptionSpec {
 /// `--max-retries <MAX_RETRIES>` — metadata-only (no bound today).
 pub const MAX_RETRIES: OptionSpec = OptionSpec {
     id: "max_retries",
-
     value_name: "MAX_RETRIES",
     long: "max-retries",
     short: None,
@@ -423,7 +401,6 @@ pub const MAX_RETRIES: OptionSpec = OptionSpec {
 /// today).
 pub const BACKOFF_BASE_MS: OptionSpec = OptionSpec {
     id: "backoff_base_ms",
-
     value_name: "BACKOFF_BASE_MS",
     long: "backoff-base-ms",
     short: None,
@@ -440,7 +417,6 @@ pub const BACKOFF_BASE_MS: OptionSpec = OptionSpec {
 /// `--backoff-max-ms <BACKOFF_MAX_MS>` — metadata-only (no bound today).
 pub const BACKOFF_MAX_MS: OptionSpec = OptionSpec {
     id: "backoff_max_ms",
-
     value_name: "BACKOFF_MAX_MS",
     long: "backoff-max-ms",
     short: None,
@@ -457,7 +433,6 @@ pub const BACKOFF_MAX_MS: OptionSpec = OptionSpec {
 /// `--accept-language <ACCEPT_LANGUAGE>`
 pub const ACCEPT_LANGUAGE: OptionSpec = OptionSpec {
     id: "accept_language",
-
     value_name: "ACCEPT_LANGUAGE",
     long: "accept-language",
     short: None,
@@ -474,7 +449,6 @@ pub const ACCEPT_LANGUAGE: OptionSpec = OptionSpec {
 /// `--user-agent <USER_AGENT>`
 pub const USER_AGENT: OptionSpec = OptionSpec {
     id: "user_agent",
-
     value_name: "USER_AGENT",
     long: "user-agent",
     short: None,
@@ -491,7 +465,6 @@ pub const USER_AGENT: OptionSpec = OptionSpec {
 /// `--max-file-size <MAX_FILE_SIZE>` — metadata-only (no bound today).
 pub const MAX_FILE_SIZE: OptionSpec = OptionSpec {
     id: "max_file_size",
-
     value_name: "MAX_FILE_SIZE",
     long: "max-file-size",
     short: None,
@@ -509,7 +482,6 @@ pub const MAX_FILE_SIZE: OptionSpec = OptionSpec {
 /// today).
 pub const DOWNLOAD_TIMEOUT: OptionSpec = OptionSpec {
     id: "download_timeout",
-
     value_name: "DOWNLOAD_TIMEOUT",
     long: "download-timeout",
     short: None,
@@ -526,7 +498,6 @@ pub const DOWNLOAD_TIMEOUT: OptionSpec = OptionSpec {
 /// `--sitemap-depth <SITEMAP_DEPTH>` — metadata-only (no bound today).
 pub const SITEMAP_DEPTH: OptionSpec = OptionSpec {
     id: "sitemap_depth",
-
     value_name: "SITEMAP_DEPTH",
     long: "sitemap-depth",
     short: None,
@@ -544,7 +515,6 @@ pub const SITEMAP_DEPTH: OptionSpec = OptionSpec {
 /// disabled by design, no bound today).
 pub const CHECKPOINT_INTERVAL: OptionSpec = OptionSpec {
         id: "checkpoint_interval",
-
         value_name: "CHECKPOINT_INTERVAL",
         long: "checkpoint-interval",
         short: None,
@@ -561,7 +531,6 @@ pub const CHECKPOINT_INTERVAL: OptionSpec = OptionSpec {
 /// `--no-checkpoint`
 pub const NO_CHECKPOINT: OptionSpec = OptionSpec {
         id: "no_checkpoint",
-
         value_name: "NO_CHECKPOINT",
         long: "no-checkpoint",
         short: None,
@@ -578,7 +547,6 @@ pub const NO_CHECKPOINT: OptionSpec = OptionSpec {
 /// `--ignore-robots`
 pub const IGNORE_ROBOTS: OptionSpec = OptionSpec {
     id: "ignore_robots",
-
     value_name: "IGNORE_ROBOTS",
     long: "ignore-robots",
     short: None,
@@ -595,7 +563,6 @@ pub const IGNORE_ROBOTS: OptionSpec = OptionSpec {
 /// `--ignore-waf`
 pub const IGNORE_WAF: OptionSpec = OptionSpec {
     id: "ignore_waf",
-
     value_name: "IGNORE_WAF",
     long: "ignore-waf",
     short: None,
@@ -612,7 +579,6 @@ pub const IGNORE_WAF: OptionSpec = OptionSpec {
 /// `--autoscale`
 pub const AUTOSCALE: OptionSpec = OptionSpec {
     id: "autoscale",
-
     value_name: "AUTOSCALE",
     long: "autoscale",
     short: None,
@@ -629,7 +595,6 @@ pub const AUTOSCALE: OptionSpec = OptionSpec {
 /// `--no-session-health`
 pub const NO_SESSION_HEALTH: OptionSpec = OptionSpec {
     id: "no_session_health",
-
     value_name: "NO_SESSION_HEALTH",
     long: "no-session-health",
     short: None,
@@ -646,7 +611,6 @@ pub const NO_SESSION_HEALTH: OptionSpec = OptionSpec {
 /// `--h2-profile <H2_PROFILE>`
 pub const H2_PROFILE: OptionSpec = OptionSpec {
     id: "h2_profile",
-
     value_name: "H2_PROFILE",
     long: "h2-profile",
     short: None,
@@ -663,7 +627,6 @@ pub const H2_PROFILE: OptionSpec = OptionSpec {
 /// `--js-strategy <JS_STRATEGY>`
 pub const JS_STRATEGY: OptionSpec = OptionSpec {
         id: "js_strategy",
-
         value_name: "JS_STRATEGY",
         long: "js-strategy",
         short: None,
@@ -682,7 +645,6 @@ pub const JS_STRATEGY: OptionSpec = OptionSpec {
 /// `--obscura-binary <OBSCURA_BINARY>`
 pub const OBSCURA_BINARY: OptionSpec = OptionSpec {
     id: "obscura_binary",
-
     value_name: "OBSCURA_BINARY",
     long: "obscura-binary",
     short: None,
@@ -700,7 +662,6 @@ pub const OBSCURA_BINARY: OptionSpec = OptionSpec {
 /// nuance stays in the derive, the spec carries identity/metadata.
 pub const DOM_PREPRUNE: OptionSpec = OptionSpec {
         id: "dom_preprune",
-
         value_name: "DOM_PREPRUNE",
         long: "dom-preprune",
         short: None,
@@ -719,7 +680,6 @@ pub const DOM_PREPRUNE: OptionSpec = OptionSpec {
 /// compatibility placeholder (builder concern, see slice 3).
 pub const CLEAN_AI: OptionSpec = OptionSpec {
     id: "clean_ai",
-
     value_name: "CLEAN_AI",
     long: "clean-ai",
     short: None,
@@ -736,7 +696,6 @@ pub const CLEAN_AI: OptionSpec = OptionSpec {
 /// `--adaptive-selectors` — feature-gated under `adaptive-selectors`.
 pub const ADAPTIVE_SELECTORS: OptionSpec = OptionSpec {
     id: "adaptive_selectors",
-
     value_name: "ADAPTIVE_SELECTORS",
     long: "adaptive-selectors",
     short: None,
