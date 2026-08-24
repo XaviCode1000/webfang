@@ -601,8 +601,10 @@ mod spec_parity_tests {
 
     #[test]
     fn representative_values_parse_identically_through_clap() {
-        // Defaults.
-        let defaults = parse_args(&[]).expect("bare invocation must parse");
+        // Defaults (hermetic: ambient WEBFANG_* must not leak into the
+        // bare parse — issue #926).
+        let defaults = crate::cli::args::test_support::with_clap_env_cleared(|| parse_args(&[]))
+            .expect("bare invocation must parse");
         assert_eq!(defaults.crawler.selector, "body");
         assert_eq!(defaults.crawler.delay_ms, 1000);
         assert_eq!(defaults.crawler.max_pages, 10);

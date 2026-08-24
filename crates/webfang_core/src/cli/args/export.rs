@@ -165,6 +165,12 @@ mod spec_parity_tests {
         clap::Parser::try_parse_from(argv).map_err(|e| e.to_string())
     }
 
+    /// Bare parse with clap `env` fallbacks neutralized — see
+    /// [`crate::cli::args::test_support::with_clap_env_cleared`] (issue #926).
+    fn parse_args_hermetic(extra: &[&str]) -> Result<crate::Args, String> {
+        crate::cli::args::test_support::with_clap_env_cleared(|| parse_args(extra))
+    }
+
     #[test]
     fn clap_surface_is_fully_covered_by_the_spec() {
         let args = command_args();
@@ -235,7 +241,7 @@ mod spec_parity_tests {
     #[test]
     fn representative_values_parse_identically_through_clap() {
         // Defaults.
-        let defaults = parse_args(&[]).expect("bare invocation must parse");
+        let defaults = parse_args_hermetic(&[]).expect("bare invocation must parse");
         assert_eq!(defaults.export.output, std::path::PathBuf::from("output"));
         assert_eq!(
             defaults.export.format,

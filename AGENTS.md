@@ -91,6 +91,7 @@ webfang/                          # virtual workspace root (no [package])
 │   ├── webfang_mcp/              # MCP server (36 tools)
 │   ├── webfang_cli/              # CLI binary (webfang)
 │   └── webfang_test_utils/       # shared test utilities (not shipped)
+│   └── webfang_benchmark/        # public benchmark harness (tooling leaf)
 ```
 
 ### Inter-crate dependency direction (ENFORCED POLICY)
@@ -112,6 +113,7 @@ Full allow-matrix (effective build graph):
 | `webfang_tui` | `webfang_core` |
 | `webfang_mcp` | `webfang_core`, `webfang_ai` |
 | `webfang_cli` | `webfang_core`, `webfang_tui`, `webfang_ai`, `webfang_mcp` |
+| `webfang_benchmark` | `webfang_core`, `webfang_test_utils` (leaf; benchmark tooling, no production dependents) |
 
 This is an architectural POLICY, not just what the code happens to do. New code must respect this direction. Verify cross-crate usage with `codedb_deps` or CodeGraph `explore` before adding any inter-crate import.
 
