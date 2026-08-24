@@ -625,7 +625,9 @@ pub mod crawler {
         short: None,
         aliases: &[],
         env: Some("WEBFANG_USE_SITEMAP"),
-        default: Some("false"),
+        // No explicit `default_value` attr: clap's implicit SetTrue default
+        // is not introspectable via `get_default_values()`.
+        default: None,
         help: "Use sitemap for URL discovery NOTE: HTTP redirects (301/302) are resolved at scrape-time, not parse-time. This avoids redundant HEAD requests during sitemap parsing for better performance",
         heading: Some("Discovery"),
         kind: ValueKind::Bool,
@@ -667,7 +669,9 @@ pub mod crawler {
         short: None,
         aliases: &[],
         env: Some("WEBFANG_RESUME"),
-        default: Some("false"),
+        // No explicit `default_value` attr: clap's implicit SetTrue default
+        // is not introspectable via `get_default_values()`.
+        default: None,
         help: "Resume mode - skip URLs already processed",
         heading: Some("Behavior"),
         kind: ValueKind::Bool,
@@ -739,8 +743,9 @@ pub mod crawler {
         env: Some("WEBFANG_EXTRACTION_FINGERPRINT"),
         default: Some("false"),
         // Byte-exact transcription of clap's rendering of the multi-line doc
-        // comment (lines joined with spaces, trailing period stripped).
-        help: "Record extraction failure fingerprints in SQLite and attach them to low-quality extraction hints (#792) Repeated low-score extractions on the same site/selector pair accumulate a failure count surfaced in the hint, instead of degrading silently",
+        // comment (lines joined with spaces; only the FINAL period stripped,
+        // interior sentence periods retained).
+        help: "Record extraction failure fingerprints in SQLite and attach them to low-quality extraction hints (#792). Repeated low-score extractions on the same site/selector pair accumulate a failure count surfaced in the hint, instead of degrading silently",
         heading: Some("Behavior"),
         kind: ValueKind::Bool,
         feature_gate: None,
