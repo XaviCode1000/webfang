@@ -6199,7 +6199,6 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "webfang_core",
- "webfang_test_utils",
  "wiremock",
 ]
 

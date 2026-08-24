@@ -83,3 +83,18 @@ fn zero_attempted_pages_is_empty_crawl() {
         compute(&records, webfang_core::domain::JsStrategy::Static, 0).expect_err("empty crawl");
     assert!(matches!(err, webfang_benchmark::BenchmarkError::EmptyCrawl));
 }
+
+/// Review M2 — a summary claiming crawled pages but zero `span_close` samples
+/// means the trace is inconsistent (e.g. off-thread span emission swallowed
+/// the per-page spans). Computing percentiles over an empty set would silently
+/// report p50/p95 = 0.0: fail loudly instead.
+#[test]
+fn crawled_pages_without_span_samples_is_typed_error() {
+    let records = records_with(summary(5, 5), &[]);
+    let err = compute(&records, webfang_core::domain::JsStrategy::Static, 0)
+        .expect_err("inconsistent trace must not compute");
+    assert!(matches!(
+        err,
+        webfang_benchmark::BenchmarkError::MissingSpans { .. }
+    ));
+}

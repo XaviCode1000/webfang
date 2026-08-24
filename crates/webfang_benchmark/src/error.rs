@@ -25,6 +25,11 @@ pub enum BenchmarkError {
     #[error("summary reports zero attempted pages")]
     EmptyCrawl,
 
+    /// Summary claims crawled pages but no `span_close` samples exist —
+    /// inconsistent trace (e.g. off-thread span emission swallowed spans).
+    #[error("summary reports {total_pages} crawled pages but no span_close samples in {path}")]
+    MissingSpans { total_pages: u64, path: String },
+
     #[error("corpus server failed: {0}")]
     Corpus(String),
 

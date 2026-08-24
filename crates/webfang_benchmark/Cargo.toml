@@ -7,7 +7,6 @@ license.workspace = true
 
 [dependencies]
 webfang_core = { path = "../webfang_core", features = ["chromium"] }
-webfang_test_utils = { path = "../webfang_test_utils" }
 wiremock = { workspace = true } # corpus server; same version as core dev-deps
 tempfile = { workspace = true }
 serde = { workspace = true }

@@ -300,6 +300,16 @@ pub fn compute(
         .collect();
     durations.sort_by(f64::total_cmp);
 
+    // Review M2: a crawled-pages summary without span samples means the
+    // trace lost its per-page spans (e.g. off-thread emission). Silent
+    // p50/p95 = 0.0 would corrupt the report; fail loudly instead.
+    if durations.is_empty() {
+        return Err(BenchmarkError::MissingSpans {
+            total_pages: summary.total_pages,
+            path: "<records>".to_string(),
+        });
+    }
+
     Ok(StrategyMetrics {
         strategy,
         success_rate: summary.succeeded as f64 / summary.total_pages as f64,

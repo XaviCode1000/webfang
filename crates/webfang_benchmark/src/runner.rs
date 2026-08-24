@@ -98,13 +98,6 @@ fn run_strategy(
         .enable_all()
         .build()?;
 
-    // Fresh corpus per run: fresh WAF sequence, ephemeral port that never
-    // reaches compared output.
-    let handle = rt.block_on(corpus::serve())?;
-
-    let seed = Url::parse(&format!("{}/", handle.base_url))
-        .map_err(|source| BenchmarkError::Corpus(format!("invalid corpus base url: {source}")))?;
-
     let tmp = tempfile::TempDir::new()?;
     let trace_path = tmp.path().join("trace.jsonl");
 
@@ -114,12 +107,7 @@ fn run_strategy(
     let dispatch = tracing::Dispatch::new(subscriber);
 
     // Small page budget: the corpus has `manifest.pages.len()` distinct paths.
-    let config = CrawlerConfig::builder(seed)
-        .max_pages(manifest.pages.len())
-        .max_depth(1)
-        .concurrency(2)
-        .delay_ms(0)
-        .build();
+    let max_pages = manifest.pages.len();
 
     let options = EngineOptions {
         js_strategy: strategy,
@@ -150,6 +138,21 @@ fn run_strategy(
         } else {
             None
         };
+        // FRESH CORPUS PER ATTEMPT (NFR-1): the simulated-WAF sequence is
+        // stateful (403→429→200 atomic counter). A retry against an already
+        // consumed sequence would observe different responses than any
+        // first attempt, breaking byte-identical Tier A reproducibility.
+        // Each measurement therefore serves its own corpus instance.
+        let handle = rt.block_on(corpus::serve())?;
+        let seed = Url::parse(&format!("{}/", handle.base_url)).map_err(|source| {
+            BenchmarkError::Corpus(format!("invalid corpus base url: {source}"))
+        })?;
+        let config = CrawlerConfig::builder(seed)
+            .max_pages(max_pages)
+            .max_depth(1)
+            .concurrency(2)
+            .delay_ms(0)
+            .build();
         let _crawl_result = tracing::dispatcher::with_default(&dispatch, || {
             rt.block_on(crawl_site_with_options(config.clone(), options))
         })
