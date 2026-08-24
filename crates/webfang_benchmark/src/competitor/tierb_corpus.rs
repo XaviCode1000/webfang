@@ -67,29 +67,81 @@ pub struct TierBSite {
 /// cheapest-to-rerun prefix.
 pub const TIER_B_CORPUS: &[TierBSite] = &[
     // Category A — sandboxes (ethical scraping grounds)
-    TierBSite { host: "scrapeme.dev", category: SiteCategory::Sandboxed, page_cap: 20 },
-    TierBSite { host: "web-scraping.dev", category: SiteCategory::Sandboxed, page_cap: 15 },
-    TierBSite { host: "qscrape.dev", category: SiteCategory::Sandboxed, page_cap: 12 },
+    TierBSite {
+        host: "scrapeme.dev",
+        category: SiteCategory::Sandboxed,
+        page_cap: 20,
+    },
+    TierBSite {
+        host: "web-scraping.dev",
+        category: SiteCategory::Sandboxed,
+        page_cap: 15,
+    },
+    TierBSite {
+        host: "qscrape.dev",
+        category: SiteCategory::Sandboxed,
+        page_cap: 12,
+    },
     // Category B — static real sites (no WAF controls)
-    TierBSite { host: "rust-lang.org", category: SiteCategory::StaticReal, page_cap: 10 },
-    TierBSite { host: "news.ycombinator.com", category: SiteCategory::StaticReal, page_cap: 10 },
+    TierBSite {
+        host: "rust-lang.org",
+        category: SiteCategory::StaticReal,
+        page_cap: 10,
+    },
+    TierBSite {
+        host: "news.ycombinator.com",
+        category: SiteCategory::StaticReal,
+        page_cap: 10,
+    },
     // Category C — WAF/Cloudflare-protected
-    TierBSite { host: "blog.cloudflare.com", category: SiteCategory::WafProtected, page_cap: 15 },
+    TierBSite {
+        host: "blog.cloudflare.com",
+        category: SiteCategory::WafProtected,
+        page_cap: 15,
+    },
     TierBSite {
         host: "developers.cloudflare.com",
         category: SiteCategory::WafProtected,
         page_cap: 15,
     },
-    TierBSite { host: "web.dev", category: SiteCategory::WafProtected, page_cap: 15 },
+    TierBSite {
+        host: "web.dev",
+        category: SiteCategory::WafProtected,
+        page_cap: 15,
+    },
     // Category D — heavy dynamic/auth-walled
-    TierBSite { host: "medium.com", category: SiteCategory::HeavyDynamic, page_cap: 20 },
-    TierBSite { host: "gitlab.com", category: SiteCategory::HeavyDynamic, page_cap: 15 },
+    TierBSite {
+        host: "medium.com",
+        category: SiteCategory::HeavyDynamic,
+        page_cap: 20,
+    },
+    TierBSite {
+        host: "gitlab.com",
+        category: SiteCategory::HeavyDynamic,
+        page_cap: 15,
+    },
     // Category E — four RESERVED owner slots (OPEN-2): fill host + cap later;
     // zero caps keep them inert until assigned.
-    TierBSite { host: "", category: SiteCategory::OwnerPick, page_cap: 0 },
-    TierBSite { host: "", category: SiteCategory::OwnerPick, page_cap: 0 },
-    TierBSite { host: "", category: SiteCategory::OwnerPick, page_cap: 0 },
-    TierBSite { host: "", category: SiteCategory::OwnerPick, page_cap: 0 },
+    TierBSite {
+        host: "",
+        category: SiteCategory::OwnerPick,
+        page_cap: 0,
+    },
+    TierBSite {
+        host: "",
+        category: SiteCategory::OwnerPick,
+        page_cap: 0,
+    },
+    TierBSite {
+        host: "",
+        category: SiteCategory::OwnerPick,
+        page_cap: 0,
+    },
+    TierBSite {
+        host: "",
+        category: SiteCategory::OwnerPick,
+        page_cap: 0,
+    },
 ];
 
 /// Total pages a full pass attempts over `corpus`.

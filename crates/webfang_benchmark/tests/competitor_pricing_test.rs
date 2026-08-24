@@ -36,7 +36,10 @@ fn free_tier_plan_pins_documented_limits() {
 fn free_tier_plan_shadow_price_pins_hobby_rate() {
     let plan = FreeTierPlan::default();
     let price = plan.shadow_price_usd_per_credit();
-    assert!((price - 0.0032).abs() < 1e-12, "expected 0.0032, got {price}");
+    assert!(
+        (price - 0.0032).abs() < 1e-12,
+        "expected 0.0032, got {price}"
+    );
 }
 
 /// Fixed config for arithmetic proofs (NOT the shipped default).

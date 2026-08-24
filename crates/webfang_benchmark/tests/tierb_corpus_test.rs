@@ -3,9 +3,7 @@
 //!
 //! Run: cargo nextest run -p webfang_benchmark --test tierb_corpus_test
 
-use webfang_benchmark::competitor::tierb_corpus::{
-    self, SiteCategory, EGRESS_TYPE_ENV_VAR,
-};
+use webfang_benchmark::competitor::tierb_corpus::{self, SiteCategory, EGRESS_TYPE_ENV_VAR};
 
 /// The manifest totals ~147 pages/pass: 147 from real sites plus four
 /// reserved owner slots contributing 0 pages until the owner fills them
