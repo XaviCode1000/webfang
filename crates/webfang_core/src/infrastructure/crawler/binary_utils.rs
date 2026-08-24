@@ -167,7 +167,7 @@ fn sanitize_disposition_filename(name: String) -> Option<String> {
 /// - drops `.` / `..` segments entirely (they resolve outside the target);
 /// - removes control characters (including NUL bytes smuggled via RFC 5987
 ///   percent-decoding), which Unix filesystems reject;
-/// - caps the length at [`MAX_FILENAME_LEN`] characters.
+/// - caps the length at `MAX_FILENAME_LEN` (255) characters.
 ///
 /// Returns `None` when nothing safe remains — callers apply their own
 /// fallback naming (URL-derived or hash-based).
