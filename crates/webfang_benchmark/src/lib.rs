@@ -11,5 +11,6 @@ pub mod corpus;
 pub mod cost;
 pub mod error;
 pub mod report;
+pub mod runner;
 
 pub use error::{BenchmarkError, Result};

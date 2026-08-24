@@ -28,6 +28,9 @@ pub enum BenchmarkError {
     #[error("corpus server failed: {0}")]
     Corpus(String),
 
+    #[error("engine or fetch-router failure: {0}")]
+    Engine(String),
+
     #[error("cost config invalid: {0}")]
     CostConfig(String),
 

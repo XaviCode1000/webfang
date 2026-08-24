@@ -14,6 +14,9 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing.workspace = true
 tracing-subscriber = { workspace = true }
+tokio-util = { workspace = true }
+url = { workspace = true }
+tokio = { workspace = true }
 
 # Slice 2 appends:
 # [[bin]]
