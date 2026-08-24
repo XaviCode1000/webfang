@@ -17,6 +17,7 @@ use crate::error::{BenchmarkError, Result};
 
 pub mod crawl4ai;
 pub mod firecrawl;
+pub mod tierb_corpus;
 
 pub use crawl4ai::Crawl4AiConfig;
 pub use firecrawl::FirecrawlConfig;
