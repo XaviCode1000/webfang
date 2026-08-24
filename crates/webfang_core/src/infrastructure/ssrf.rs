@@ -1,12 +1,26 @@
-//! Pure SSRF IP validation logic (no async, no DNS).
+//! Pure SSRF IP validation logic plus connect-time enforcement.
 //!
-//! The MCP entry-point validator (`validate_url_no_ssrf`) resolves hostnames and
-//! checks every resolved address with [`is_forbidden_ip`]. Redirect policies,
-//! however, run in a synchronous `wreq` callback where DNS resolution is
-//! impossible, so they reuse [`redirect_policy`] to block redirects whose target
-//! is a *literal* forbidden IP; hostname targets are only validated at entry.
+//! Defense is layered:
+//!
+//! 1. **Entry validation** — the MCP entry-point validator
+//!    (`validate_url_no_ssrf`) resolves hostnames and checks every resolved
+//!    address with [`is_forbidden_ip`] before any request leaves. This stays
+//!    as fast-fail typed UX.
+//! 2. **Connect-time enforcement** — [`ValidatingResolver`] is installed via
+//!    `wreq::ClientBuilder::dns_resolver` on every scrape client and re-checks
+//!    every DNS answer against [`is_forbidden_ip`]. Because redirects are
+//!    followed inside the same client stack, each redirect hop's connection
+//!    also resolves through this resolver, closing the gap where a hostname
+//!    redirect target could reach an address that was never validated at
+//!    entry (DNS rebinding / TOCTOU included).
+//! 3. **Belt-and-suspenders literal guard** — [`redirect_policy`] still stops
+//!    redirects whose target is a *literal* forbidden IP synchronously,
+//!    before any resolution happens.
+//!
+//! All layers share [`is_forbidden_ip`] as the single deny list.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use wreq::dns::{Addrs, Name, Resolve, Resolving};
 use wreq::redirect::Policy;
 
 /// Test-only escape hatch for the literal-IP redirect guard.
@@ -17,6 +31,14 @@ use wreq::redirect::Policy;
 /// validator still blocks forbidden targets even when this is set, only the
 /// synchronous redirect guard is lifted.
 pub(crate) const DISABLE_REDIRECT_GUARD_ENV: &str = "WEBFANG_DISABLE_SSRF_REDIRECT_GUARD";
+
+/// Test-only escape hatch for the connect-time validating DNS resolver.
+///
+/// Same rationale as [`DISABLE_REDIRECT_GUARD_ENV`]: wiremock binds 127.0.0.1,
+/// which [`is_forbidden_ip`] rejects, so any harness driving real connections
+/// through the production clients must set `WEBFANG_DISABLE_SSRF_RESOLVER=1`
+/// before clients are built. Production never sets it.
+pub(crate) const DISABLE_VALIDATING_RESOLVER_ENV: &str = "WEBFANG_DISABLE_SSRF_RESOLVER";
 
 /// Returns `true` if `ip` falls within a forbidden range.
 ///
@@ -84,8 +106,11 @@ pub fn is_forbidden_literal_host(host: &str) -> bool {
 /// Redirect policy for all scrape clients: the default 10-hop limit with an
 /// added SSRF guard that stops redirects targeting a literal forbidden IP.
 ///
-/// Hostname targets are **not** blocked here (no DNS in a sync callback); they
-/// are validated at entry by the async SSRF guard. Non-forbidden attempts are
+/// This is now **belt-and-suspenders**, not the primary hostname defense:
+/// redirect targets given as hostnames are enforced by [`ValidatingResolver`]
+/// at connect time (every hop of a followed redirect resolves through the
+/// same client stack), so this sync guard only short-circuits *literal* IP
+/// targets before any resolution happens. Non-forbidden attempts are
 /// delegated to [`Policy::default`] (which is `Policy::limited(10)`), so the
 /// hop cap and loop protection of the previous `Policy::limited(10)` are
 /// preserved.
@@ -108,6 +133,109 @@ pub fn redirect_policy() -> Policy {
             base.redirect(attempt)
         }
     })
+}
+
+/// Error produced when a DNS answer violates SSRF policy.
+///
+/// The whole answer set is rejected fail-closed: a single forbidden address
+/// among the returned records poisons the resolution, mirroring the
+/// entry-level validator's semantics (never hand wreq a "safe subset" that an
+/// attacker could pin connections to).
+#[derive(Debug, thiserror::Error)]
+#[error("DNS resolution of '{host}' returned forbidden address {ip} (SSRF)")]
+pub struct ForbiddenResolutionError {
+    /// Host whose answer set contained the forbidden address.
+    pub host: String,
+    /// The first forbidden address found in the answer set.
+    pub ip: IpAddr,
+}
+
+/// Connect-time SSRF-enforcing DNS resolver installed on every scrape client.
+///
+/// Implements [`wreq::dns::Resolve`] using the same mechanism wreq uses by
+/// default when hickory-dns is disabled — the GAI path: blocking
+/// `getaddrinfo` through [`tokio::net::lookup_host`]. Every address in the
+/// answer set is validated with [`is_forbidden_ip`]; if ANY address is
+/// forbidden, the entire resolution fails (fail-closed, no safe-subset
+/// filtering).
+///
+/// Because wreq follows redirects inside the same client stack
+/// (`FollowRedirectLayer`), every redirect hop's connection resolves through
+/// this resolver too — one choke point closes both owner-approved gaps:
+/// hostname redirect targets and DNS-rebinding TOCTOU between entry
+/// validation and connect.
+///
+/// The port in each resolved [`SocketAddr`] is `0`: per the `wreq::dns::Resolve`
+/// contract, an explicit port in the request URI overrides it, and port 0 is
+/// replaced with the scheme's conventional port otherwise. This mirrors
+/// wreq's own `GaiResolver`, which resolves `(name, 0)`.
+///
+/// The escape hatch [`DISABLE_VALIDATING_RESOLVER_ENV`] is read **once, at
+/// construction time** (stored as a plain `bool`): long-lived clients keep a
+/// consistent policy for their whole lifetime (no half-disarmed states where
+/// some pooled connections validate and others don't), and there is no
+/// per-request env syscall on the resolve hot path.
+#[derive(Debug, Clone)]
+pub struct ValidatingResolver {
+    validation_enabled: bool,
+}
+
+impl ValidatingResolver {
+    /// Builds a resolver; validation state is captured from
+    /// [`DISABLE_VALIDATING_RESOLVER_ENV`] at this moment.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            validation_enabled: std::env::var(DISABLE_VALIDATING_RESOLVER_ENV).is_err(),
+        }
+    }
+
+    /// Resolves `host` through the GAI path (`getaddrinfo`), optionally
+    /// validating every address in the answer set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ForbiddenResolutionError`] when validating and any address
+    /// in the answer set is forbidden, or the underlying `io::Error` if
+    /// resolution itself fails.
+    async fn gai_lookup(
+        host: String,
+        validate: bool,
+    ) -> Result<Addrs, Box<dyn std::error::Error + Send + Sync>> {
+        let addrs: Vec<std::net::SocketAddr> =
+            tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
+
+        if validate {
+            // Fail-closed scan: any forbidden record rejects the whole answer.
+            if let Some(offending) = addrs.iter().find(|addr| is_forbidden_ip(&addr.ip())) {
+                let ip = offending.ip();
+                tracing::warn!(
+                    host = %host,
+                    ip = %ip,
+                    "Forbidden address in DNS answer rejected (SSRF validating resolver)"
+                );
+                return Err(Box::new(ForbiddenResolutionError { host, ip }));
+            }
+        }
+
+        Ok(Box::new(addrs.into_iter()) as Addrs)
+    }
+}
+
+impl Default for ValidatingResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Resolve for ValidatingResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        // `Name` carries only the hostname (`Name::as_str`); the request URI's
+        // explicit port overrides whatever we return, and port 0 falls back to
+        // the scheme default — see trait docs in wreq.
+        let fut = Self::gai_lookup(name.as_str().to_owned(), self.validation_enabled);
+        Box::pin(fut)
+    }
 }
 
 #[cfg(test)]
@@ -149,5 +277,111 @@ mod tests {
         assert!(!is_forbidden_literal_host("[2606:4700::1111]"));
         assert!(!is_forbidden_literal_host("example.com"));
         assert!(!is_forbidden_literal_host("127.0.0.1.nip.io"));
+    }
+
+    /// Resolver tests. Determinism note: `tokio::net::lookup_host` resolves
+    /// IP literals locally (no network, no resolver daemon), so every case
+    /// here uses literal hosts only. A real-hostname DNS-failure case is
+    /// deliberately omitted: `getaddrinfo` behavior for unresolvable names
+    /// depends on the machine's resolver configuration and can block on
+    /// unreachable DNS servers — not deterministic enough for CI.
+    ///
+    /// Env-var mutation is safe under nextest: each test runs in its own
+    /// process, mirroring how `test_redirect_to_forbidden_literal_ip_is_stopped`
+    /// already manipulates `DISABLE_REDIRECT_GUARD_ENV`.
+    mod validating_resolver_tests {
+        use super::*;
+        use std::net::SocketAddr;
+        use wreq::dns::{Name, Resolve};
+
+        fn validation_on() -> ValidatingResolver {
+            std::env::remove_var(DISABLE_VALIDATING_RESOLVER_ENV);
+            ValidatingResolver::new()
+        }
+
+        async fn resolved_addrs(resolver: &ValidatingResolver, host: &str) -> Vec<SocketAddr> {
+            resolver
+                .resolve(Name::from(host))
+                .await
+                .expect("resolution succeeds")
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn forbidden_ipv4_literal_hostname_is_rejected() {
+            let resolver = validation_on();
+
+            for host in ["127.0.0.1", "169.254.169.254"] {
+                let outcome = resolver.resolve(Name::from(host)).await;
+                assert!(
+                    outcome.is_err(),
+                    "loopback literal must be rejected at connect time: {host}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn forbidden_ipv4_mapped_ipv6_is_rejected() {
+            let resolver = validation_on();
+
+            let outcome = resolver.resolve(Name::from("::ffff:127.0.0.1")).await;
+            assert!(
+                outcome.is_err(),
+                "IPv4-mapped loopback must not bypass the validating resolver"
+            );
+        }
+
+        #[tokio::test]
+        async fn public_ip_literals_pass_through() {
+            let resolver = validation_on();
+
+            let v4 = resolved_addrs(&resolver, "8.8.8.8").await;
+            assert_eq!(v4.len(), 1, "literal resolution yields one address");
+            assert_eq!(v4[0].ip().to_string(), "8.8.8.8");
+
+            let v6 = resolved_addrs(&resolver, "2606:4700::1111").await;
+            assert_eq!(v6.len(), 1);
+            assert_eq!(v6[0].ip().to_string(), "2606:4700::1111");
+        }
+
+        #[tokio::test]
+        async fn rejection_error_names_the_offending_host_and_ip() {
+            let resolver = validation_on();
+
+            let err = match resolver.resolve(Name::from("127.0.0.1")).await {
+                Err(err) => err,
+                Ok(_) => panic!("loopback must be rejected"),
+            };
+            let rendered = err.to_string();
+            assert!(
+                rendered.contains("127.0.0.1"),
+                "error must identify both host and forbidden ip: {rendered}"
+            );
+        }
+
+        #[tokio::test]
+        async fn env_bypass_allows_loopback_resolution() {
+            std::env::set_var(DISABLE_VALIDATING_RESOLVER_ENV, "1");
+            let resolver = ValidatingResolver::new();
+
+            let addrs = resolved_addrs(&resolver, "127.0.0.1").await;
+            assert_eq!(addrs[0].ip().to_string(), "127.0.0.1");
+        }
+
+        #[tokio::test]
+        async fn disable_flag_is_read_once_at_construction() {
+            // Construct with validation ON, then flip the escape hatch: the
+            // already-built resolver must keep enforcing (the flag is read
+            // once, at construction time, so long-lived clients cannot be
+            // disarmed mid-flight by an env mutation).
+            let resolver = validation_on();
+            std::env::set_var(DISABLE_VALIDATING_RESOLVER_ENV, "1");
+
+            let outcome = resolver.resolve(Name::from("127.0.0.1")).await;
+            assert!(
+                outcome.is_err(),
+                "flag captured at construction must keep validation active"
+            );
+        }
     }
 }
