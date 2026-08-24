@@ -16,13 +16,13 @@
 //! internal `[[bin]] bench_run --strategy <s>` executed via
 //! `std::process::Command` — never weaken the test.
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::layer::SubscriberExt;
 use url::Url;
 
-use crate::aggregate::{self, StrategyMetrics};
+use crate::aggregate::{self, CrawlSummary, StrategyMetrics};
 use crate::corpus::{self, CorpusManifest};
 use crate::error::{BenchmarkError, Result};
 use webfang_core::application::crawl_site_with_options;
@@ -37,11 +37,29 @@ use webfang_core::infrastructure::observability::FileTraceLayer;
 /// Deterministic strategy order for every benchmark invocation.
 const STRATEGIES: [JsStrategy; 3] = [JsStrategy::Static, JsStrategy::Hybrid, JsStrategy::Full];
 
+/// Process-wide exclusion around every crawl whose strategy can launch the
+/// headless browser (`Hybrid` escalates via the SPA detector; `Full` always).
+///
+/// `ChromiumoxideDownloader` launches Chrome against the fixed profile dir
+/// `/tmp/chromiumoxide-runner`; a concurrent launch hits Chrome's
+/// `ProcessSingleton` lock (`Failed to create SingletonLock: File exists`) and
+/// aborts, which surfaces downstream as an all-failures crawl (`total_pages=0`
+/// → [`BenchmarkError::EmptyCrawl`]). Serializing browser-capable runs inside
+/// this process removes the race WITHOUT touching core (NFR-2); benchmark
+/// runs are sequential by design anyway (ADR-B2).
+fn chrome_profile_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 /// One completed strategy run: computed metrics ready for aggregation.
 #[derive(Debug)]
 pub struct RunOutcome {
     pub strategy: JsStrategy,
     pub metrics: StrategyMetrics,
+    /// Engine summary lifted from this run's own JSONL trace — its presence
+    /// proves the `crawl completed` line reached the file (ADR-B2/R2 tripwire).
+    pub summary: CrawlSummary,
 }
 
 /// Run all strategies sequentially over the corpus and return their metrics.
@@ -72,17 +90,17 @@ fn run_strategy(
     manifest: &CorpusManifest,
     correlation_id: CorrelationId,
 ) -> Result<RunOutcome> {
-    let correlation_id = CorrelationId::new();
     tracing::debug!(correlation_id = %correlation_id, "strategy run starting");
+
+    // ONE current_thread runtime per run: it must outlive the corpus server
+    // (wiremock tasks die with their runtime) and drive the whole crawl.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
 
     // Fresh corpus per run: fresh WAF sequence, ephemeral port that never
     // reaches compared output.
-    let handle = {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        rt.block_on(corpus::serve())?
-    };
+    let handle = rt.block_on(corpus::serve())?;
 
     let seed = Url::parse(&format!("{}/", handle.base_url))
         .map_err(|source| BenchmarkError::Corpus(format!("invalid corpus base url: {source}")))?;
@@ -111,25 +129,79 @@ fn run_strategy(
 
     let ram_cost_bytes = ram_proxy(strategy)?;
 
-    // Scoped dispatcher on a current_thread runtime: every future polled inside
-    // sees this subscriber; nothing global leaks between runs.
-    {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
+    // Browser-capable strategies (Hybrid escalates via SPA detection; Full
+    // always) hold the process-wide Chrome profile lock for the whole crawl
+    // AND get one EmptyCrawl retry: chromiumoxide 0.7 pins every launch to
+    // the fixed profile dir `/tmp/chromiumoxide-runner`, so a launch that
+    // overlaps another process's Chrome shutdown loses Chrome's
+    // ProcessSingleton race and aborts, yielding a `total_pages=0` crawl.
+    // One measured retry after a short backoff makes the benchmark robust
+    // to that environment contention without touching core (NFR-2) and
+    // without altering any successful run's numbers (NFR-1).
+    let browser_capable = matches!(strategy, JsStrategy::Hybrid | JsStrategy::Full);
+    let measure = |options: EngineOptions| -> Result<RunOutcome> {
+        // Fresh trace per attempt: FileTraceLayer truncates on open, so a
+        // retry cannot observe the failed attempt's records.
+        let _guard = if browser_capable {
+            let guard = chrome_profile_lock().lock().map_err(|poisoned| {
+                BenchmarkError::Engine(format!("chrome profile lock poisoned: {poisoned}"))
+            })?;
+            Some(guard)
+        } else {
+            None
+        };
         let _crawl_result = tracing::dispatcher::with_default(&dispatch, || {
-            rt.block_on(crawl_site_with_options(config, options))
+            rt.block_on(crawl_site_with_options(config.clone(), options))
         })
         .map_err(|error| BenchmarkError::Engine(error.to_string()))?;
-    }
-    // `dispatch` dropped above ⇒ FileTraceLayer flushed its buffer to disk
-    // before parsing reads the file.
+        // Post-crawl grace INSIDE the lock: give the previous Chrome
+        // process time to fully exit (and release its ProcessSingleton
+        // lock on the fixed profile dir) before the next browser launch.
+        if browser_capable {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        // `dispatch` dropped above ⇒ FileTraceLayer flushed its buffer to
+        // disk before parsing reads the file.
+        let records = aggregate::parse_file(&trace_path)?;
+        let summary = aggregate::summary_of(&records, "<run trace>")?.clone();
+        let metrics = aggregate::compute(&records, strategy, ram_cost_bytes)?;
+        Ok(RunOutcome {
+            strategy,
+            metrics,
+            summary,
+        })
+    };
 
-    let records = aggregate::parse_file(&trace_path)?;
-    let metrics = aggregate::compute(&records, strategy, ram_cost_bytes)?;
+    let outcome = match measure(options.clone()) {
+        Ok(outcome) => outcome,
+        Err(BenchmarkError::EmptyCrawl) if browser_capable => {
+            let mut outcome = None;
+            for attempt in 1..=2 {
+                tracing::warn!(
+                    strategy = %strategy,
+                    attempt = attempt,
+                    "zero-page crawl on browser strategy (Chrome ProcessSingleton contention on fixed profile dir); retrying after backoff"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                match measure(options.clone()) {
+                    Ok(o) => {
+                        outcome = Some(o);
+                        break;
+                    },
+                    Err(BenchmarkError::EmptyCrawl) => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+            match outcome {
+                Some(o) => o,
+                None => return Err(BenchmarkError::EmptyCrawl),
+            }
+        },
+        Err(error) => return Err(error),
+    };
     drop(tmp); // aggregation done; absolute path dies here
 
-    Ok(RunOutcome { strategy, metrics })
+    Ok(outcome)
 }
 
 /// Capture the static RAM proxy for a strategy by building a mirror

@@ -16,7 +16,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use crate::error::Result;
 
 /// Minimal article body with enough substantive text to clear content guards.
-const ARTICLE_HTML: &str = r#"<html><body><article><h1>Benchmark Page</h1><p>Deterministic corpus content for the benchmark harness. This paragraph carries enough substantive text to clear the minimum content guard on every run.</p></article></body></html>"#;
+const ARTICLE_HTML: &str = r#"<html><body><nav><a href="/about">About</a> <a href="/articles/one">One</a> <a href="/articles/two">Two</a> <a href="/articles/three">Three</a> <a href="/app">App</a> <a href="/dashboard">Dashboard</a> <a href="/protected/gate">Gate</a></nav><article><h1>Benchmark Page</h1><p>Deterministic corpus content for the benchmark harness. This paragraph carries enough substantive text to clear the minimum content guard on every run.</p></article></body></html>"#;
 
 /// Static HTML shell representing a JS-rendered page (SPA marker fixture).
 const SPA_SHELL_HTML: &str = r#"<html><head><title>SPA Shell</title></head><body><div id="root" data-spa-shell="true"></div><noscript>JavaScript required</noscript></body></html>"#;

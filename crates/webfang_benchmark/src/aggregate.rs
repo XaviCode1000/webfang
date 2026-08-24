@@ -186,6 +186,11 @@ fn lift_summary(
         }
     }
 
+    let shape_err = |name: &str| BenchmarkError::Shape {
+        line: line_no,
+        detail: format!("summary field `{name}` missing or not a number"),
+    };
+
     let get_u64 = |name: &str| -> Result<u64> {
         fields
             .get(name)
@@ -196,13 +201,16 @@ fn lift_summary(
             })
     };
     let get_f64 = |name: &str| -> Result<f64> {
-        fields
-            .get(name)
-            .and_then(serde_json::Value::as_f64)
-            .ok_or_else(|| BenchmarkError::Shape {
-                line: line_no,
-                detail: format!("summary field `{name}` missing or not a number"),
-            })
+        match fields.get(name) {
+            Some(serde_json::Value::Number(n)) => n.as_f64().ok_or_else(|| shape_err(name)),
+            // FileTraceLayer has no record_f64: engine float fields (e.g.
+            // `pages_per_sec`) reach JSONL as Debug strings via
+            // record_debug. Accept both encodings; never touch core.
+            Some(serde_json::Value::String(s)) => {
+                s.trim().parse::<f64>().map_err(|_| shape_err(name))
+            },
+            _ => Err(shape_err(name)),
+        }
     };
 
     Ok(CrawlSummary {
