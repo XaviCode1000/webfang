@@ -106,18 +106,15 @@ fn full_pipeline_produces_report_and_engine_summaries() {
     // Verbatim assumptions survive the full pipeline (AC-4.1).
     assert!(md.contains(config.infra.source_url));
     assert!(md.contains(config.crawl4ai.source_url));
-}
-
-/// Real-run traces satisfy the same parser contract as the committed goldens
-/// (cross-check per T9; regeneration of goldens only with PR-body rationale).
-#[test]
-fn real_run_summary_matches_golden_shape() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    let handle = rt.block_on(corpus::serve()).expect("corpus server");
-    let outcomes = runner::run_all(&handle.manifest).expect("pipeline succeeds");
+    // Real-run traces satisfy the same parser contract as the committed goldens
+    // (cross-check per T9; regeneration of goldens only with PR-body rationale).
+    //
+    // DELIBERATELY part of the same #[test] as the pipeline smoke: nextest runs
+    // every test in its OWN process, so two browser-capable tests would race
+    // Chrome's ProcessSingleton lock on chromiumoxide's fixed profile dir
+    // (`/tmp/chromiumoxide-runner`) across process boundaries — invisible to
+    // any in-process mutex. Merging them makes this file launch exactly ONE
+    // browser-capable pipeline, eliminating the race by construction.
     let static_run = &outcomes[0];
     // Golden contract fields (ADR-B6): all 8 buckets + duration + throughput.
     let s = &static_run.summary;
