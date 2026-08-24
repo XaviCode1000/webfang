@@ -351,8 +351,8 @@ async fn triple_layer_gzip_terminates_without_loop_decompression() {
     let normalized = stderr
         .lines()
         .map(|line| match line.find("XML parsing failed:") {
-        Some(i) => format!("{}XML parsing failed: <PARSE_DETAIL>", &line[..i]),
-        None => line.to_string(),
+            Some(i) => format!("{}XML parsing failed: <PARSE_DETAIL>", &line[..i]),
+            None => line.to_string(),
         })
         .collect::<Vec<_>>()
         .join("\n");
