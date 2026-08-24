@@ -6,6 +6,7 @@
 //! corpus (Tier A). Zero production-code dependencies beyond the public core
 //! API; this crate is a workspace leaf.
 
+pub mod aggregate;
 pub mod corpus;
 pub mod error;
 
