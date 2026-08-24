@@ -82,19 +82,22 @@ fn write_header(out: &mut String, config: &CostConfig) -> Result<()> {
     .map_err(|e| crate::error::BenchmarkError::Render(e.to_string()))?;
     writeln!(
         out,
-        "- Firecrawl pricing: {} (retrieved {}) — credit tiers ${:.0}/${:.0}/${:.0}, assumption {:.2} pages/credit",
+        "- Firecrawl pricing: {} (retrieved {}) — credit tiers ${:.0}/${:.0}/${:.0} for {:.0}/{:.0}/{:.0} credits, assumption {:.2} pages/credit",
         config.firecrawl.source_url, config.firecrawl.retrieved,
         config.firecrawl.tier_usd[0], config.firecrawl.tier_usd[1],
-        config.firecrawl.tier_usd[2], config.firecrawl.credits_per_page_assumption
+        config.firecrawl.tier_usd[2], config.firecrawl.tier_credits[0],
+        config.firecrawl.tier_credits[1], config.firecrawl.tier_credits[2],
+        config.firecrawl.credits_per_page_assumption
     )
     .map_err(|e| crate::error::BenchmarkError::Render(e.to_string()))?;
     writeln!(
         out,
-        "- Crawl4AI sizing: {} (retrieved {}) — ${:.2}/h, {:.1} GiB RAM",
+        "- Crawl4AI sizing: {} (retrieved {}) — ${:.2}/h, {:.1} GiB RAM ({})",
         config.crawl4ai.source_url,
         config.crawl4ai.retrieved,
         config.crawl4ai.instance_hourly_usd,
-        config.crawl4ai.instance_ram_gb
+        config.crawl4ai.instance_ram_gb,
+        config.crawl4ai.sizing_note
     )
     .map_err(|e| crate::error::BenchmarkError::Render(e.to_string()))?;
     Ok(())
