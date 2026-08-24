@@ -10,7 +10,6 @@
 
 use super::{resolve_key_and_gate, CompetitorTarget, PreparedRequest, StartCrawlParams};
 use crate::error::{BenchmarkError, Result};
-use ::url::Url;
 
 /// Documented default port of the local Crawl4AI docker server.
 pub const DEFAULT_SERVER_BASE_URL: &str = "http://127.0.0.1:11235";

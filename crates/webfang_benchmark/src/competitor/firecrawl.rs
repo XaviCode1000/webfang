@@ -10,7 +10,6 @@
 
 use super::{resolve_key_and_gate, CompetitorTarget, PreparedRequest, StartCrawlParams};
 use crate::error::{BenchmarkError, Result};
-use ::url::Url;
 
 /// Documented public API origin.
 pub const DEFAULT_API_BASE_URL: &str = "https://api.firecrawl.dev";
@@ -55,10 +54,7 @@ impl FirecrawlConfig {
                 base.scheme()
             )));
         }
-        let path = format!(
-            "/{}/crawl",
-            self.api_version_prefix.trim_matches('/')
-        );
+        let path = format!("/{}/crawl", self.api_version_prefix.trim_matches('/'));
         let mut url = base;
         url.set_path(&path);
         Ok(url)

@@ -22,10 +22,9 @@ tokio = { workspace = true }
 name = "bench_tier_a"
 path = "src/bin/bench_tier_a.rs"
 
-# Slice 2 appends:
-# [[bin]]
-# name = "bench_live"
-# path = "src/bin/bench_live.rs"
+[[bin]]
+name = "bench_live"
+path = "src/bin/bench_live.rs"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

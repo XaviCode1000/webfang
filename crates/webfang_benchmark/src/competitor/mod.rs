@@ -96,10 +96,71 @@ pub fn evaluate_live_gate(target: CompetitorTarget, opt_in_flag: bool) -> Result
     check_live_gate(target, env_key_present(target.env_var()), opt_in_flag)
 }
 
+/// Parsed `bench_live` invocation (validated, gate-ready).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BenchLiveArgs {
+    /// Selected live competitor.
+    pub target: CompetitorTarget,
+    /// Explicit cost opt-in (`--i-understand-costs`).
+    pub opt_in: bool,
+}
+
+/// Usage line for the `bench_live` binary.
+pub const BENCH_LIVE_USAGE: &str =
+    "usage: bench_live --target <firecrawl|crawl4ai> [--i-understand-costs]";
+
+/// Minimal arg parsing for `bench_live`, kept library-level so it is unit
+/// testable (mirrors the hand-rolled `bench_tier_a` style; no clap dep).
+///
+/// Accepts exactly one `--target <firecrawl|crawl4ai>` and at most one
+/// `--i-understand-costs`; anything else is a typed usage error.
+///
+/// # Errors
+///
+/// [`BenchmarkError::Render`] describing the usage violation.
+pub fn parse_bench_live_args(cli_args: impl Iterator<Item = String>) -> Result<BenchLiveArgs> {
+    let mut iter = cli_args.peekable();
+    let mut target = None;
+    let mut opt_in = false;
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--target" => {
+                if target.is_some() {
+                    return Err(BenchmarkError::Render(format!(
+                        "{BENCH_LIVE_USAGE}: --target given more than once"
+                    )));
+                }
+                let value = iter.next().ok_or_else(|| {
+                    BenchmarkError::Render(format!("{BENCH_LIVE_USAGE}: --target needs a value"))
+                })?;
+                target = Some(CompetitorTarget::parse_name(&value)?);
+            },
+            "--i-understand-costs" => {
+                if opt_in {
+                    return Err(BenchmarkError::Render(format!(
+                        "{BENCH_LIVE_USAGE}: --i-understand-costs given more than once"
+                    )));
+                }
+                opt_in = true;
+            },
+            other => {
+                return Err(BenchmarkError::Render(format!(
+                    "{BENCH_LIVE_USAGE}: unexpected argument `{other}`"
+                )))
+            },
+        }
+    }
+    let target = target.ok_or_else(|| {
+        BenchmarkError::Render(format!(
+            "{BENCH_LIVE_USAGE}: --target <firecrawl|crawl4ai> is required"
+        ))
+    })?;
+    Ok(BenchLiveArgs { target, opt_in })
+}
+
 /// True iff `env_var` is set to a non-empty, non-whitespace value.
 pub(crate) fn env_key_present(env_var: &str) -> bool {
-    std::env::var_os(env_var)
-        .is_some_and(|value| !value.to_string_lossy().trim().is_empty())
+    std::env::var_os(env_var).is_some_and(|value| !value.to_string_lossy().trim().is_empty())
 }
 
 /// A fully-built HTTP request description.
