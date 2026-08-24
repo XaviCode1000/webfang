@@ -60,14 +60,7 @@ pub const CPU_CORES: OptionSpec = OptionSpec {
     default: None,
     help: "CPU core override for the elastic ingestion Rayon pool (else auto-detect)",
     heading: Some("Elastic Ingestion"),
-    kind: ValueKind::Uint {
-        policy: NumericPolicy {
-            min: 1,
-            parse_failure_detail: "un número entero válido",
-            below_min_message: "cpu-cores debe ser > 0",
-            parse_failure_template: None,
-        },
-    },
+    kind: ValueKind::uint(NumericPolicy::positive("cpu-cores debe ser > 0")),
     feature_gate: None,
 };
 
@@ -82,12 +75,12 @@ pub const RAM_BUDGET: OptionSpec = OptionSpec {
     help: "RAM budget override for the byte-weighted semaphore (`8GB`, `2048MB`, or bytes)",
     heading: Some("Elastic Ingestion"),
     kind: ValueKind::MemorySize {
-        policy: NumericPolicy {
+        policy: Some(NumericPolicy {
             min: 1,
             parse_failure_detail: "un tamaño de memoria válido",
             below_min_message: "ram-budget debe ser > 0",
             parse_failure_template: None,
-        },
+        }),
     },
     feature_gate: None,
 };
@@ -173,14 +166,7 @@ pub const BATCH_CONCURRENCY: OptionSpec = OptionSpec {
     default: None,
     help: "Maximum concurrent URLs in batch mode (omit = auto from budget model)",
     heading: Some("Batch Processing"),
-    kind: ValueKind::Uint {
-        policy: NumericPolicy {
-            min: 1,
-            parse_failure_detail: "un número entero válido",
-            below_min_message: "batch-concurrency debe ser > 0",
-            parse_failure_template: None,
-        },
-    },
+    kind: ValueKind::uint(NumericPolicy::positive("batch-concurrency debe ser > 0")),
     feature_gate: None,
 };
 

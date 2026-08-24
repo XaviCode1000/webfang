@@ -42,7 +42,7 @@ pub const SELECTOR: OptionSpec = OptionSpec {
 
 /// `--delay-ms <DELAY_MS>` — metadata-only entry: parsing stays with
 /// clap's built-in `u64` parser (its exact error strings are English and
-/// must not change); `min: 0` records that no bound exists today.
+/// must not change); `policy: None` records that no bound exists today.
 pub const DELAY_MS: OptionSpec = OptionSpec {
     id: "delay_ms",
     long: "delay-ms",
@@ -52,14 +52,7 @@ pub const DELAY_MS: OptionSpec = OptionSpec {
     default: Some("1000"),
     help: "Delay between requests in milliseconds",
     heading: Some("Discovery"),
-    kind: ValueKind::Uint {
-        policy: NumericPolicy {
-            min: 0,
-            parse_failure_detail: "un número entero válido",
-            below_min_message: "delay-ms debe ser >= 0",
-            parse_failure_template: None,
-        },
-    },
+    kind: ValueKind::uint_unbounded(),
     feature_gate: None,
 };
 
@@ -74,14 +67,11 @@ pub const MAX_PAGES: OptionSpec = OptionSpec {
     default: Some("10"),
     help: "Maximum pages to scrape",
     heading: Some("Discovery"),
-    kind: ValueKind::Uint {
-        policy: NumericPolicy {
-            min: 1,
-            parse_failure_detail: "un número entero válido",
-            below_min_message: "--max-pages debe ser >= 1 (0 no deja páginas para scrapear)",
-            parse_failure_template: Some("'{value}' no es un número válido para --max-pages"),
-        },
-    },
+    kind: ValueKind::uint(NumericPolicy::legacy_verbatim(
+        1,
+        "--max-pages debe ser >= 1 (0 no deja páginas para scrapear)",
+        "'{value}' no es un número válido para --max-pages",
+    )),
     feature_gate: None,
 };
 
@@ -229,14 +219,7 @@ pub const VERBOSE: OptionSpec = OptionSpec {
     default: None,
     help: "Verbosity level: -v (INFO), -vv (DEBUG), -vvv (TRACE)",
     heading: Some("Display"),
-    kind: ValueKind::Uint {
-        policy: NumericPolicy {
-            min: 0,
-            parse_failure_detail: "un número entero válido",
-            below_min_message: "verbose debe ser >= 0",
-            parse_failure_template: None,
-        },
-    },
+    kind: ValueKind::uint_unbounded(),
     feature_gate: None,
 };
 
@@ -293,14 +276,7 @@ pub const MAX_DEPTH: OptionSpec = OptionSpec {
     default: Some("2"),
     help: "Maximum depth to crawl (0 = only seed URL)",
     heading: Some("Crawler Settings"),
-    kind: ValueKind::Uint {
-        policy: NumericPolicy {
-            min: 0,
-            parse_failure_detail: "un número entero válido",
-            below_min_message: "max-depth debe ser >= 0",
-            parse_failure_template: None,
-        },
-    },
+    kind: ValueKind::uint_unbounded(),
     feature_gate: None,
 };
 
@@ -315,15 +291,11 @@ pub const TIMEOUT_SECS: OptionSpec = OptionSpec {
     default: Some("30"),
     help: "Request timeout in seconds",
     heading: Some("Crawler Settings"),
-    kind: ValueKind::Uint {
-        policy: NumericPolicy {
-            min: 1,
-            parse_failure_detail: "un número entero válido",
-            below_min_message:
-                "--timeout-secs debe ser >= 1 (0 hace que cada request falle al instante)",
-            parse_failure_template: Some("'{value}' no es un número válido para --timeout-secs"),
-        },
-    },
+    kind: ValueKind::uint(NumericPolicy::legacy_verbatim(
+        1,
+        "--timeout-secs debe ser >= 1 (0 hace que cada request falle al instante)",
+        "'{value}' no es un número válido para --timeout-secs",
+    )),
     feature_gate: None,
 };
 
@@ -356,17 +328,11 @@ pub const DOWNLOAD_CONCURRENCY: OptionSpec = OptionSpec {
     // Explicit `help = ...` attribute overrides the doc comment.
     help: "Máximo de descargas de assets concurrentes por página (mínimo 1)",
     heading: None,
-    kind: ValueKind::Uint {
-        policy: NumericPolicy {
-            min: 1,
-            parse_failure_detail: "un número entero válido",
-            below_min_message:
-                "--download-concurrency debe ser >= 1 (0 causa un deadlock / hang infinito)",
-            parse_failure_template: Some(
-                "'{value}' no es un número válido para --download-concurrency",
-            ),
-        },
-    },
+    kind: ValueKind::uint(NumericPolicy::legacy_verbatim(
+        1,
+        "--download-concurrency debe ser >= 1 (0 causa un deadlock / hang infinito)",
+        "'{value}' no es un número válido para --download-concurrency",
+    )),
     feature_gate: None,
 };
 
@@ -380,14 +346,7 @@ pub const MAX_RETRIES: OptionSpec = OptionSpec {
     default: Some("3"),
     help: "Maximum number of retry attempts",
     heading: Some("HTTP Client Settings"),
-    kind: ValueKind::Uint {
-        policy: NumericPolicy {
-            min: 0,
-            parse_failure_detail: "un número entero válido",
-            below_min_message: "max-retries debe ser >= 0",
-            parse_failure_template: None,
-        },
-    },
+    kind: ValueKind::uint_unbounded(),
     feature_gate: None,
 };
 
@@ -402,14 +361,7 @@ pub const BACKOFF_BASE_MS: OptionSpec = OptionSpec {
     default: Some("1000"),
     help: "Base delay for exponential backoff (ms)",
     heading: Some("HTTP Client Settings"),
-    kind: ValueKind::Uint {
-        policy: NumericPolicy {
-            min: 0,
-            parse_failure_detail: "un número entero válido",
-            below_min_message: "backoff-base-ms debe ser >= 0",
-            parse_failure_template: None,
-        },
-    },
+    kind: ValueKind::uint_unbounded(),
     feature_gate: None,
 };
 
@@ -423,14 +375,7 @@ pub const BACKOFF_MAX_MS: OptionSpec = OptionSpec {
     default: Some("10000"),
     help: "Maximum delay for exponential backoff (ms)",
     heading: Some("HTTP Client Settings"),
-    kind: ValueKind::Uint {
-        policy: NumericPolicy {
-            min: 0,
-            parse_failure_detail: "un número entero válido",
-            below_min_message: "backoff-max-ms debe ser >= 0",
-            parse_failure_template: None,
-        },
-    },
+    kind: ValueKind::uint_unbounded(),
     feature_gate: None,
 };
 
@@ -472,14 +417,7 @@ pub const MAX_FILE_SIZE: OptionSpec = OptionSpec {
     default: Some("52428800"),
     help: "Maximum file size to download in bytes (default: 50MB)",
     heading: Some("Download Settings"),
-    kind: ValueKind::Uint {
-        policy: NumericPolicy {
-            min: 0,
-            parse_failure_detail: "un número entero válido",
-            below_min_message: "max-file-size debe ser >= 0",
-            parse_failure_template: None,
-        },
-    },
+    kind: ValueKind::uint_unbounded(),
     feature_gate: None,
 };
 
@@ -494,14 +432,7 @@ pub const DOWNLOAD_TIMEOUT: OptionSpec = OptionSpec {
     default: Some("30"),
     help: "Timeout for individual asset downloads in seconds",
     heading: Some("Download Settings"),
-    kind: ValueKind::Uint {
-        policy: NumericPolicy {
-            min: 0,
-            parse_failure_detail: "un número entero válido",
-            below_min_message: "download-timeout debe ser >= 0",
-            parse_failure_template: None,
-        },
-    },
+    kind: ValueKind::uint_unbounded(),
     feature_gate: None,
 };
 
@@ -515,14 +446,7 @@ pub const SITEMAP_DEPTH: OptionSpec = OptionSpec {
     default: Some("3"),
     help: "Maximum recursion depth for sitemap indexes",
     heading: Some("Sitemap Settings"),
-    kind: ValueKind::Uint {
-        policy: NumericPolicy {
-            min: 0,
-            parse_failure_detail: "un número entero válido",
-            below_min_message: "sitemap-depth debe ser >= 0",
-            parse_failure_template: None,
-        },
-    },
+    kind: ValueKind::uint_unbounded(),
     feature_gate: None,
 };
 
@@ -537,14 +461,7 @@ pub const CHECKPOINT_INTERVAL: OptionSpec = OptionSpec {
         default: Some("100"),
         help: "Pages between automatic checkpoint saves (0 = disabled) NOTE: Checkpoint is for programmatic use (Engine API) only. CLI --resume uses StateStore instead of checkpoints",
         heading: Some("Competitive Features"),
-        kind: ValueKind::Uint {
-            policy: NumericPolicy {
-                min: 0,
-                parse_failure_detail: "un número entero válido",
-                below_min_message: "checkpoint-interval debe ser >= 0",
-                parse_failure_template: None,
-            },
-        },
+        kind: ValueKind::uint_unbounded(),
         feature_gate: None,
     };
 

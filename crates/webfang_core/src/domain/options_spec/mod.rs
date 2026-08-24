@@ -68,6 +68,42 @@ pub struct NumericPolicy {
     pub parse_failure_template: Option<&'static str>,
 }
 
+impl NumericPolicy {
+    /// Canonical detail completing "`{raw}` no es …" for integer options
+    /// whose kind carries no explicit policy (unbounded metadata entries).
+    const INTEGER_PARSE_DETAIL: &'static str = "un número entero válido";
+
+    /// Canonical positive-integer policy (`min = 1`) with the standard
+    /// integer parse-failure message and no verbatim template.
+    #[must_use]
+    pub const fn positive(below_min_message: &'static str) -> Self {
+        Self {
+            min: 1,
+            parse_failure_detail: Self::INTEGER_PARSE_DETAIL,
+            below_min_message,
+            parse_failure_template: None,
+        }
+    }
+
+    /// Policy for fully migrated flags that keep pre-migration legacy
+    /// wording: canonical integer detail, an enforced inclusive minimum, and
+    /// a verbatim parse-failure template with `{value}` substitution
+    /// (#780 byte-exactness outranks uniformity).
+    #[must_use]
+    pub const fn legacy_verbatim(
+        min: u64,
+        below_min_message: &'static str,
+        parse_failure_template: &'static str,
+    ) -> Self {
+        Self {
+            min,
+            parse_failure_detail: Self::INTEGER_PARSE_DETAIL,
+            below_min_message,
+            parse_failure_template: Some(parse_failure_template),
+        }
+    }
+}
+
 /// Value domain of an option.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueKind {
@@ -82,18 +118,41 @@ pub enum ValueKind {
         /// Accepted values in declaration order.
         variants: &'static [&'static str],
     },
-    /// Unsigned integer with a [`NumericPolicy`] bound.
+    /// Unsigned integer. `Some(policy)` enforces the policy's inclusive
+    /// lower bound with its exact messages; `None` records a metadata-only
+    /// entry with NO bound today — parse failures render the canonical
+    /// `` `{raw}` no es un número entero válido `` message.
     Uint {
-        /// Shared parse + bound policy.
-        policy: NumericPolicy,
+        /// Shared parse + bound policy, absent when unbounded.
+        policy: Option<NumericPolicy>,
     },
     /// Memory size with binary-suffix support (`8GB`, `2048MB`, plain bytes).
-    /// Suffix parsing lives in `infrastructure::autotuning`; the bound lives
-    /// here via [`NumericPolicy`].
+    /// Suffix parsing lives in `infrastructure::autotuning`; the byte floor,
+    /// when one exists, lives here via [`NumericPolicy`].
     MemorySize {
-        /// Shared bound policy for externally-parsed byte counts.
-        policy: NumericPolicy,
+        /// Shared bound policy for externally-parsed byte counts, absent
+        /// when unbounded.
+        policy: Option<NumericPolicy>,
     },
+}
+
+impl ValueKind {
+    /// Metadata-only unsigned integer: parsing stays with the external
+    /// engine (clap's built-in integer parser) and the spec invents no
+    /// bound.
+    #[must_use]
+    pub const fn uint_unbounded() -> Self {
+        Self::Uint { policy: None }
+    }
+
+    /// Unsigned integer whose inclusive lower bound is enforced through the
+    /// spec ([`OptionSpec::parse_uint`] / [`OptionSpec::check_bound`]).
+    #[must_use]
+    pub const fn uint(policy: NumericPolicy) -> Self {
+        Self::Uint {
+            policy: Some(policy),
+        }
+    }
 }
 
 /// Error raised by spec-driven validators.
@@ -170,11 +229,13 @@ impl OptionSpec {
             ValueKind::Uint { policy } => {
                 let value: u64 = raw
                     .parse()
-                    .map_err(|_| self.parse_failure_error(raw, policy))?;
-                if value < policy.min {
-                    return Err(OptionSpecError::Bound(BoxedBoundMessage {
-                        message: policy.below_min_message,
-                    }));
+                    .map_err(|_| self.parse_failure_error(raw, policy.as_ref()))?;
+                if let Some(policy) = policy {
+                    if value < policy.min {
+                        return Err(OptionSpecError::Bound(BoxedBoundMessage {
+                            message: policy.below_min_message,
+                        }));
+                    }
                 }
                 Ok(value)
             },
@@ -192,14 +253,14 @@ impl OptionSpec {
     /// [`OptionSpecError::UnsupportedKind`] for kinds without bounds.
     pub fn check_bound(&self, value: u64) -> Result<u64, OptionSpecError> {
         match self.kind {
-            ValueKind::Uint { policy } | ValueKind::MemorySize { policy } => {
-                if value < policy.min {
+            ValueKind::Uint { policy } | ValueKind::MemorySize { policy } => match policy {
+                Some(policy) if value < policy.min => {
                     Err(OptionSpecError::Bound(BoxedBoundMessage {
                         message: policy.below_min_message,
                     }))
-                } else {
-                    Ok(value)
-                }
+                },
+                // `None` = the spec records no bound: nothing to enforce.
+                _ => Ok(value),
             },
             _ => Err(self.unsupported_kind()),
         }
@@ -212,7 +273,7 @@ impl OptionSpec {
     pub fn parse_error(&self, raw: &str) -> OptionSpecError {
         match self.kind {
             ValueKind::Uint { policy } | ValueKind::MemorySize { policy } => {
-                self.parse_failure_error(raw, policy)
+                self.parse_failure_error(raw, policy.as_ref())
             },
             _ => OptionSpecError::Parse {
                 raw: raw.to_string(),
@@ -223,15 +284,20 @@ impl OptionSpec {
 
     /// Render the parse-failure error per the policy: verbatim template with
     /// `{value}` substitution when present, default `` `{raw}` no es … ``
-    /// shape otherwise.
-    fn parse_failure_error(&self, raw: &str, policy: NumericPolicy) -> OptionSpecError {
-        match policy.parse_failure_template {
+    /// shape otherwise. Unbounded entries (`None`) render the canonical
+    /// integer message.
+    fn parse_failure_error(&self, raw: &str, policy: Option<&NumericPolicy>) -> OptionSpecError {
+        let (template, detail) = match policy {
+            Some(policy) => (policy.parse_failure_template, policy.parse_failure_detail),
+            None => (None, NumericPolicy::INTEGER_PARSE_DETAIL),
+        };
+        match template {
             Some(template) => OptionSpecError::ParseVerbatim(OwnedParseMessage {
                 message: template.replace("{value}", raw),
             }),
             None => OptionSpecError::Parse {
                 raw: raw.to_string(),
-                detail: policy.parse_failure_detail,
+                detail,
             },
         }
     }
@@ -261,14 +327,18 @@ impl OptionSpec {
             },
             ValueKind::Uint { policy } => {
                 schema.insert("type".into(), json!("integer"));
-                schema.insert("minimum".into(), json!(policy.min));
+                if let Some(policy) = policy {
+                    schema.insert("minimum".into(), json!(policy.min));
+                }
             },
             ValueKind::MemorySize { policy } => {
                 // CLI/env input is textual (suffixes allowed); the byte floor
                 // travels alongside until the MCP slice picks a final shape.
                 schema.insert("type".into(), json!("string"));
                 schema.insert("format".into(), json!("byte-size"));
-                schema.insert("minimumBytes".into(), json!(policy.min));
+                if let Some(policy) = policy {
+                    schema.insert("minimumBytes".into(), json!(policy.min));
+                }
             },
         }
         if let Some(default) = self.default {
@@ -413,12 +483,24 @@ mod tests {
 
     #[test]
     fn metadata_only_numeric_entries_accept_zero_and_any_value() {
-        // min: 0 entries record "no bound today"; the spec must not invent one.
+        // `policy: None` records "no bound today"; the spec must not invent
+        // one, and the schema must not advertise a fabricated minimum.
         assert_eq!(crawler::DELAY_MS.parse_uint("0").expect("unbounded"), 0);
         assert_eq!(
             crawler::MAX_DEPTH.parse_uint("255").expect("u8 domain"),
             255
         );
+        let schema = crawler::DELAY_MS.json_schema();
+        assert_eq!(schema["type"], "integer");
+        assert!(
+            schema.get("minimum").is_none(),
+            "unbounded entries must not fabricate a minimum"
+        );
+        // Parse failures keep the canonical integer message.
+        let err = crawler::DELAY_MS
+            .parse_uint("abc")
+            .expect_err("must reject text");
+        assert_eq!(err.to_string(), "`abc` no es un número entero válido");
     }
 
     #[test]
