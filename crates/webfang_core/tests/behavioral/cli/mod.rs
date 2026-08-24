@@ -1,5 +1,6 @@
 mod ai_integration_test;
 mod batch_test;
+mod budget_override_test;
 mod core_test;
 mod crawl_test;
 mod dom_pruning_test;
