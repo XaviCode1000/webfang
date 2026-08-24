@@ -6,5 +6,6 @@
 //! corpus (Tier A). Zero production-code dependencies beyond the public core
 //! API; this crate is a workspace leaf.
 
-// Module declarations land with their tasks so every work-unit commit keeps
-// `cargo check --workspace` green.
+pub mod error;
+
+pub use error::{BenchmarkError, Result};
