@@ -264,3 +264,67 @@ async fn toml_crawl_and_cli_download_survive_same_merge() {
         "CLI --download-concurrency must survive the same merge; stderr:\n{stderr}"
     );
 }
+
+/// #897 item 2 — Zero Silent Loss: an explicit `--rate-limit-burst 0` on
+/// the CLI flag path must hard-error with the Spanish boundary message and
+/// exit 78 (ConfigError), never silently degrade to the derived default.
+/// Fails before any network I/O, so no mock server is needed.
+#[test]
+fn cli_rate_limit_burst_zero_hard_errors() {
+    let output = TempDir::new().expect("temp output dir");
+
+    let assert = cmd()
+        .args([
+            "--url",
+            "https://example.com",
+            "--output",
+            output.path().to_string_lossy().as_ref(),
+            "--rate-limit-burst",
+            "0",
+        ])
+        .timeout(Duration::from_secs(60))
+        .assert()
+        .failure();
+
+    assert_eq!(
+        assert.get_output().status.code(),
+        Some(78),
+        "rejected burst 0 must exit 78 (ConfigError)"
+    );
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("--rate-limit-burst debe ser >= 1"),
+        "Spanish reject-0 boundary message expected on stderr; stderr:\n{stderr}"
+    );
+}
+
+/// #897 item 2 — Zero Silent Loss: the TOML config path (`rate_limit_burst = 0`)
+/// must hard-error identically to the CLI flag path.
+#[test]
+fn toml_rate_limit_burst_zero_hard_errors() {
+    let output = TempDir::new().expect("temp output dir");
+    let _xdg = write_toml_config("rate_limit_burst = 0\n");
+
+    let assert = cmd()
+        .env("XDG_CONFIG_HOME", _xdg.path())
+        .args([
+            "--url",
+            "https://example.com",
+            "--output",
+            output.path().to_string_lossy().as_ref(),
+        ])
+        .timeout(Duration::from_secs(60))
+        .assert()
+        .failure();
+
+    assert_eq!(
+        assert.get_output().status.code(),
+        Some(78),
+        "TOML-sourced burst 0 must exit 78 (ConfigError)"
+    );
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("--rate-limit-burst debe ser >= 1"),
+        "Spanish reject-0 boundary message expected on stderr; stderr:\n{stderr}"
+    );
+}
