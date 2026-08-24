@@ -342,17 +342,26 @@ async fn triple_layer_gzip_terminates_without_loop_decompression() {
     );
 
     // Pin the typed parse-failure envelope via snapshot (redacted). The
-    // quick-xml error DETAIL depends on where the leftover compressed
-    // stream happens to be cut ("tag not closed", "entity ... not closed",
-    // ...) and is not reproducible byte-for-byte, so only the detail suffix
-    // is normalized to a placeholder — the failure family, source location,
-    // and Spanish user-facing wrapper stay pinned.
+    // leftover compressed stream can terminate through EITHER typed error
+    // family depending on the garbage bytes that reach the XML parser —
+    // and those bytes embed the wiremock URL (per-run port), so the cut
+    // point is not reproducible across runs (issue #926):
+    //   - quick-xml syntax failure: "XML parsing failed: <detail>"
+    //   - structural rejection:      "invalid sitemap structure"
+    // Both families normalize to the same <PARSE_FAILURE> placeholder so
+    // one snapshot covers both; the exit code, source location, and
+    // Spanish user-facing wrapper stay pinned above.
     let stderr = String::from_utf8_lossy(&result.stderr);
     let normalized = stderr
         .lines()
-        .map(|line| match line.find("XML parsing failed:") {
-            Some(i) => format!("{}XML parsing failed: <PARSE_DETAIL>", &line[..i]),
-            None => line.to_string(),
+        .map(|line| {
+            if let Some(i) = line.find("XML parsing failed:") {
+                format!("{}<PARSE_FAILURE>", &line[..i])
+            } else if let Some(i) = line.find("invalid sitemap structure") {
+                format!("{}<PARSE_FAILURE>", &line[..i])
+            } else {
+                line.to_string()
+            }
         })
         .collect::<Vec<_>>()
         .join("\n");
