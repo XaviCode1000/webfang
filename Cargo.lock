@@ -6186,6 +6186,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "webfang_benchmark"
+version = "2.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "webfang_core",
+ "wiremock",
+]
+
+[[package]]
 name = "webfang_cli"
 version = "2.0.0"
 dependencies = [

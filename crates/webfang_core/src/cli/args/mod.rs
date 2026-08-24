@@ -15,6 +15,33 @@ pub use export::ExportArgs;
 pub use obsidian::ObsidianArgs;
 pub use tui::TuiArgs;
 
+/// Test-only helpers shared by the per-group arg modules.
+#[cfg(test)]
+pub(crate) mod test_support {
+    /// Runs `f` with every ambient environment variable that could leak into
+    /// clap's `env` fallbacks (`WEBFANG_*`, `AI_MODEL_ID`) temporarily
+    /// removed, restoring them afterwards.
+    ///
+    /// Hermeticity: several args declare `env = "WEBFANG_..."` fallbacks, so a
+    /// bare parse absorbs ambient variables and default assertions fail in
+    /// environments that export them (the scheduled bug-discovery job poisons
+    /// exactly these names — issue #926). Tests must observe the declared
+    /// defaults, not the ambient shell.
+    pub(crate) fn with_clap_env_cleared<T>(f: impl FnOnce() -> T) -> T {
+        let saved: Vec<(String, String)> = std::env::vars()
+            .filter(|(name, _)| name.starts_with("WEBFANG_") || name == "AI_MODEL_ID")
+            .collect();
+        for (name, _) in &saved {
+            std::env::remove_var(name);
+        }
+        let result = f();
+        for (name, value) in saved {
+            std::env::set_var(&name, value);
+        }
+        result
+    }
+}
+
 use clap::Parser;
 
 /// CLI Arguments for the webfang binary.
