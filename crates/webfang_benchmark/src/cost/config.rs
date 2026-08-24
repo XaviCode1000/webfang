@@ -49,6 +49,66 @@ pub struct Crawl4AiSizing {
     pub retrieved: &'static str,
 }
 
+/// Firecrawl FREE-tier plan limits and economics (single-source, AC-4.2).
+///
+/// Captures the documented free-plan constraints that gate Tier B live runs:
+/// monthly credit allowance, hard concurrency ceiling, per-action credit
+/// costs, and the no-rollover / no-charge-for-failures rules. The Hobby tier
+/// price/credit pair provides a shadow price translating free-plan usage into
+/// paid-equivalent dollars.
+#[derive(Debug, Clone)]
+pub struct FreeTierPlan {
+    /// Monthly free credits granted by the plan.
+    pub credits_monthly: f64,
+    /// Hard maximum concurrent requests allowed by the plan.
+    pub max_concurrent: u32,
+    /// Whether unused credits roll over to the next month.
+    pub rollover: bool,
+    /// Credit cost per page for scrape/crawl/map actions.
+    pub scrape_crawl_map_cost_per_page: f64,
+    /// Credit cost per 10 search results.
+    pub search_cost_per_10_results: f64,
+    /// Credit cost per minute of browser interact time.
+    pub interact_cost_per_minute: f64,
+    /// Whether failed requests are still charged credits.
+    pub failed_requests_charged: bool,
+    /// Hobby-tier monthly price used as the shadow-price numerator (USD).
+    pub shadow_tier_usd: f64,
+    /// Hobby-tier credit allotment used as the shadow-price denominator.
+    pub shadow_tier_credits: f64,
+    /// Source URL + retrieval date (verbatim into report headers).
+    pub source_url: &'static str,
+    pub retrieved: &'static str,
+}
+
+impl Default for FreeTierPlan {
+    fn default() -> Self {
+        Self {
+            credits_monthly: 1000.0,
+            max_concurrent: 2,
+            rollover: false,
+            scrape_crawl_map_cost_per_page: 1.0,
+            search_cost_per_10_results: 2.0,
+            interact_cost_per_minute: 2.0,
+            failed_requests_charged: false,
+            // Shadow-price basis: Hobby tier $16 / 5000 credits = $0.0032 per
+            // credit; lets free-plan results be read as paid economics.
+            shadow_tier_usd: 16.0,
+            shadow_tier_credits: 5000.0,
+            source_url: "https://www.firecrawl.dev/pricing",
+            retrieved: "2026-08-24",
+        }
+    }
+}
+
+impl FreeTierPlan {
+    /// Paid-equivalent price per credit derived from the Hobby tier basis.
+    #[must_use]
+    pub fn shadow_price_usd_per_credit(&self) -> f64 {
+        self.shadow_tier_usd / self.shadow_tier_credits
+    }
+}
+
 /// The one configuration object every cost figure dereferences.
 ///
 /// Slice-1 defaults are declared assumptions, challengeable by construction:

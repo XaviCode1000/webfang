@@ -10,7 +10,34 @@
 //! Run: cargo nextest run -p webfang_benchmark --test competitor_pricing_test
 
 use webfang_benchmark::cost;
-use webfang_benchmark::cost::config::CostConfig;
+use webfang_benchmark::cost::config::{CostConfig, FreeTierPlan};
+
+/// Free-tier plan limits are pinned single-source values (strategy/
+/// tier-b-live-plan): 1000 credits/month, concurrency 2, no rollover,
+/// 1 credit per scrape/crawl/map page, 2 per search-10, 2 per interact
+/// minute, failed requests not charged.
+#[test]
+fn free_tier_plan_pins_documented_limits() {
+    let plan = FreeTierPlan::default();
+    assert_eq!(plan.credits_monthly, 1000.0);
+    assert_eq!(plan.max_concurrent, 2);
+    assert!(!plan.rollover);
+    assert_eq!(plan.scrape_crawl_map_cost_per_page, 1.0);
+    assert_eq!(plan.search_cost_per_10_results, 2.0);
+    assert_eq!(plan.interact_cost_per_minute, 2.0);
+    assert!(!plan.failed_requests_charged);
+    assert_eq!(plan.source_url, "https://www.firecrawl.dev/pricing");
+    assert_eq!(plan.retrieved, "2026-08-24");
+}
+
+/// Shadow price translates free-plan usage into paid economics via the
+/// Hobby tier: $16 / 5000 credits = $0.0032 per credit.
+#[test]
+fn free_tier_plan_shadow_price_pins_hobby_rate() {
+    let plan = FreeTierPlan::default();
+    let price = plan.shadow_price_usd_per_credit();
+    assert!((price - 0.0032).abs() < 1e-12, "expected 0.0032, got {price}");
+}
 
 /// Fixed config for arithmetic proofs (NOT the shipped default).
 fn fixed_config() -> CostConfig {
