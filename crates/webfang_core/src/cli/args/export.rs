@@ -1,4 +1,5 @@
 use crate::domain::config::{ExportFormat, OutputFormat, PipelineOutputFormat};
+use crate::domain::options_spec::export as export_specs;
 use clap::Args;
 
 /// Export format and output configuration arguments.
@@ -98,46 +99,40 @@ pub struct ExportArgs {
 ///
 /// A zero core count would size the Rayon pool to nothing; rejecting it at the
 /// system boundary keeps the invalid value out of the autotuning resolver
-/// (#653).
+/// (#653). Bounds and messages come from the OptionsSpec (ADR-002) — the
+/// single validation source.
 fn parse_cpu_cores(s: &str) -> Result<usize, String> {
-    let value: usize = s
-        .parse()
-        .map_err(|_| format!("`{s}` no es un número entero válido"))?;
-    if value == 0 {
-        Err("cpu-cores debe ser > 0".to_string())
-    } else {
-        Ok(value)
-    }
+    let value = export_specs::CPU_CORES
+        .parse_uint(s)
+        .map_err(|e| e.to_string())?;
+    usize::try_from(value).map_err(|_| export_specs::CPU_CORES.parse_error(s).to_string())
 }
 
 /// Parse and validate `--ram-budget` into bytes.
 ///
 /// Accepts plain bytes or a binary suffix (`8GB`, `2048MB`). An unparseable or
 /// zero budget is rejected here instead of being silently dropped by
-/// `Option::and_then` further down the pipeline (#653).
+/// `Option::and_then` further down the pipeline (#653). Suffix parsing stays
+/// in `infrastructure::autotuning` (layering); the bound and messages come
+/// from the OptionsSpec (ADR-002).
 fn parse_ram_budget(s: &str) -> Result<u64, String> {
     let value = crate::infrastructure::autotuning::parse_ram_bytes(s)
-        .ok_or_else(|| format!("`{s}` no es un tamaño de memoria válido"))?;
-    if value == 0 {
-        Err("ram-budget debe ser > 0".to_string())
-    } else {
-        Ok(value)
-    }
+        .ok_or_else(|| export_specs::RAM_BUDGET.parse_error(s).to_string())?;
+    export_specs::RAM_BUDGET
+        .check_bound(value)
+        .map_err(|e| e.to_string())
 }
 
 /// Validate `--batch-concurrency` is greater than zero.
 ///
 /// Clap's `value_parser!(usize)` does not expose `.range()` in the derive API,
-/// so a custom parser enforces the invariant at the system boundary (#640).
+/// so a spec-driven validator enforces the invariant at the system boundary
+/// (#640, ADR-002).
 fn parse_batch_concurrency(s: &str) -> Result<usize, String> {
-    let value: usize = s
-        .parse()
-        .map_err(|_| format!("`{s}` no es un número entero válido"))?;
-    if value == 0 {
-        Err("batch-concurrency debe ser > 0".to_string())
-    } else {
-        Ok(value)
-    }
+    let value = export_specs::BATCH_CONCURRENCY
+        .parse_uint(s)
+        .map_err(|e| e.to_string())?;
+    usize::try_from(value).map_err(|_| export_specs::BATCH_CONCURRENCY.parse_error(s).to_string())
 }
 
 #[cfg(test)]
@@ -149,7 +144,6 @@ mod spec_parity_tests {
 
     use super::*;
     use crate::domain::options_spec as spec;
-    use clap::CommandFactory;
 
     /// All clap args generated for `ExportArgs`, keyed by arg id.
     fn command_args() -> Vec<clap::Arg> {
