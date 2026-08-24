@@ -139,3 +139,204 @@ fn parse_batch_concurrency(s: &str) -> Result<usize, String> {
         Ok(value)
     }
 }
+
+#[cfg(test)]
+mod spec_parity_tests {
+    //! ADR-002 equivalence proof (slice 1): the hand-derived clap surface of
+    //! [`ExportArgs`] must stay in lockstep with the OptionsSpec export
+    //! group. These tests pin the CURRENT behavior first; the migration then
+    //! routes validation through the spec and must keep them green.
+
+    use super::*;
+    use crate::domain::options_spec as spec;
+    use clap::CommandFactory;
+
+    /// All clap args generated for `ExportArgs`, keyed by arg id.
+    fn command_args() -> Vec<clap::Arg> {
+        // `#[derive(Args)]` augments a parent command; wrap it to inspect the
+        // exact arg set the flatten produces inside `crate::Args`.
+        ExportArgs::augment_args(clap::Command::new("webfang-export"))
+            .get_arguments()
+            .cloned()
+            .collect()
+    }
+
+    fn arg_by_id<'a>(args: &'a [clap::Arg], id: &str) -> &'a clap::Arg {
+        args.iter()
+            .find(|a| a.get_id() == id)
+            .unwrap_or_else(|| panic!("arg `{id}` missing from ExportArgs command"))
+    }
+
+    fn parse_args(extra: &[&str]) -> Result<crate::Args, String> {
+        let mut argv = vec!["webfang"];
+        argv.extend_from_slice(extra);
+        clap::Parser::try_parse_from(argv).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn clap_surface_is_fully_covered_by_the_spec() {
+        let args = command_args();
+        for arg in &args {
+            if matches!(arg.get_id().as_str(), "help" | "version") {
+                continue;
+            }
+            assert!(
+                spec::export::GROUP.iter().any(|s| s.id == arg.get_id()),
+                "clap arg `{}` has no OptionsSpec entry — spec is out of sync",
+                arg.get_id()
+            );
+        }
+    }
+
+    #[test]
+    fn long_short_aliases_env_and_heading_match_the_spec() {
+        let args = command_args();
+        for s in spec::export::GROUP {
+            let arg = arg_by_id(&args, s.id);
+            assert_eq!(arg.get_long(), Some(s.long), "long mismatch for `{}`", s.id);
+            assert_eq!(arg.get_short(), s.short, "short mismatch for `{}`", s.id);
+            let aliases = arg.get_aliases().unwrap_or_default();
+            assert_eq!(aliases, s.aliases, "alias mismatch for `{}`", s.id);
+            let env = arg.get_env().map(|e| e.to_string_lossy().into_owned());
+            assert_eq!(env.as_deref(), s.env, "env var mismatch for `{}`", s.id);
+            // NOTE: clap's `next_help_heading` is stateful during command
+            // construction and is NOT stored per-Arg, so it cannot be
+            // introspected here. `spec.heading` is generator-facing data —
+            // exercised when a later slice BUILDS commands from specs.
+        }
+    }
+
+    #[test]
+    fn defaults_match_the_spec() {
+        let args = command_args();
+        for s in spec::export::GROUP {
+            let arg = arg_by_id(&args, s.id);
+            let defaults: Vec<String> = arg
+                .get_default_values()
+                .iter()
+                .map(|v| v.to_string_lossy().into_owned())
+                .collect();
+            let expected: Vec<String> = s.default.map(|d| vec![d.to_owned()]).unwrap_or_default();
+            assert_eq!(defaults, expected, "default mismatch for `{}`", s.id);
+        }
+    }
+
+    #[test]
+    fn help_text_matches_the_spec() {
+        let args = command_args();
+        for s in spec::export::GROUP {
+            let arg = arg_by_id(&args, s.id);
+            let help = arg
+                .get_long_help()
+                .or_else(|| arg.get_help())
+                .unwrap_or_else(|| panic!("arg `{}` has no help text", s.id))
+                .to_string();
+            assert_eq!(
+                help.trim(),
+                s.help.trim(),
+                "help text mismatch for `{}`",
+                s.id
+            );
+        }
+    }
+
+    #[test]
+    fn representative_values_parse_identically_through_clap() {
+        // Defaults.
+        let defaults = parse_args(&[]).expect("bare invocation must parse");
+        assert_eq!(defaults.export.output, std::path::PathBuf::from("output"));
+        assert_eq!(
+            defaults.export.format,
+            crate::domain::config::OutputFormat::Markdown
+        );
+        assert_eq!(
+            defaults.export.export_format,
+            crate::domain::config::ExportFormat::Jsonl
+        );
+        assert!(!defaults.export.elastic && !defaults.export.batch && !defaults.export.pipeline);
+
+        // Explicit values, short forms, and the `--export` alias. `--output`
+        // and its `-o` short form are exercised in separate invocations (an
+        // option may only be used once per parse).
+        let parsed = parse_args(&[
+            "--output",
+            "custom-dir",
+            "-f",
+            "text",
+            "--export-format",
+            "vector",
+            "--cpu-cores",
+            "4",
+            "--ram-budget",
+            "8GB",
+            "--db-path",
+            "/tmp/wf.db",
+            "--elastic",
+            "--output-vectors",
+            "-",
+            "--batch-file",
+            "urls.txt",
+            "--pipeline-output",
+            "none",
+        ])
+        .expect("representative export flags must parse");
+        assert_eq!(parsed.export.output, std::path::PathBuf::from("custom-dir"));
+        assert_eq!(
+            parsed.export.format,
+            crate::domain::config::OutputFormat::Text
+        );
+        assert_eq!(
+            parsed.export.export_format,
+            crate::domain::config::ExportFormat::Vector
+        );
+        assert_eq!(parsed.export.cpu_cores, Some(4));
+        assert_eq!(parsed.export.ram_budget, Some(8 * 1024 * 1024 * 1024));
+        assert_eq!(
+            parsed.export.db_path,
+            Some(std::path::PathBuf::from("/tmp/wf.db"))
+        );
+        assert!(parsed.export.elastic);
+        assert_eq!(parsed.export.output_vectors.as_deref(), Some("-"));
+        assert_eq!(
+            parsed.export.batch_file,
+            Some(std::path::PathBuf::from("urls.txt"))
+        );
+        assert_eq!(
+            parsed.export.pipeline_output,
+            crate::domain::config::PipelineOutputFormat::None
+        );
+
+        let shorts = parse_args(&["-o", "short-dir"]).expect("short forms must parse");
+        assert_eq!(shorts.export.output, std::path::PathBuf::from("short-dir"));
+
+        let alias = parse_args(&["--export", "auto"]).expect("`--export` alias must parse");
+        assert_eq!(
+            alias.export.export_format,
+            crate::domain::config::ExportFormat::Auto
+        );
+    }
+
+    #[test]
+    fn out_of_bounds_and_malformed_inputs_error_exactly_as_before() {
+        let err = parse_args(&["--cpu-cores", "0"]).expect_err("zero cores rejected");
+        assert!(err.contains("cpu-cores debe ser > 0"), "got: {err}");
+
+        let err = parse_args(&["--cpu-cores", "abc"]).expect_err("text rejected");
+        assert!(
+            err.contains("`abc` no es un número entero válido"),
+            "got: {err}"
+        );
+
+        let err = parse_args(&["--ram-budget", "nope"]).expect_err("bad size rejected");
+        assert!(
+            err.contains("`nope` no es un tamaño de memoria válido"),
+            "got: {err}"
+        );
+
+        let err = parse_args(&["--ram-budget", "0"]).expect_err("zero budget rejected");
+        assert!(err.contains("ram-budget debe ser > 0"), "got: {err}");
+
+        let err = parse_args(&["--batch-concurrency", "0"]).expect_err("zero concurrency rejected");
+        assert!(err.contains("batch-concurrency debe ser > 0"), "got: {err}");
+    }
+}
