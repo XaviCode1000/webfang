@@ -26,9 +26,13 @@ declare -A ALLOWED=(
   [webfang_tui]="webfang_core"
   [webfang_mcp]="webfang_core webfang_ai"
   [webfang_cli]="webfang_core webfang_tui webfang_ai webfang_mcp"
+  # webfang_benchmark: leaf harness crate (benchmark tooling, no production
+  # dependents). Depends on webfang_core + webfang_test_utils (the latter is
+  # outside this policy and never extracted).
+  [webfang_benchmark]="webfang_core"
 )
 
-CRATES=(webfang_core webfang_ai webfang_tui webfang_mcp webfang_cli)
+CRATES=(webfang_core webfang_ai webfang_tui webfang_mcp webfang_cli webfang_benchmark)
 status=0
 
 # Extract internal webfang_* dependency names from a crate manifest.
