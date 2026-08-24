@@ -295,8 +295,22 @@ pub fn ssrf_gate(url: &Url) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// Serializes process-global env mutation across parallel test
+    /// threads: plain `cargo test` shares one process env, so any test
+    /// touching `WEBFANG_DISABLE_SSRF` must hold this lock for its whole
+    /// body or siblings observe the bypass mid-flight (issue #926).
+    static SSRF_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn ssrf_env_guard() -> std::sync::MutexGuard<'static, ()> {
+        match SSRF_ENV_LOCK.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
     #[test]
     fn ssrf_gate_blocks_forbidden_internal_ips() {
+        let _guard = ssrf_env_guard();
         for host in [
             "127.0.0.1",
             "169.254.169.254",
@@ -315,12 +329,14 @@ mod tests {
 
     #[test]
     fn ssrf_gate_allows_public_ip() {
+        let _guard = ssrf_env_guard();
         let url = Url::parse("https://8.8.8.8/v1").expect("literal parses");
         ssrf_gate(&url).expect("public host must pass");
     }
 
     #[test]
     fn ssrf_gate_rejects_non_http_scheme() {
+        let _guard = ssrf_env_guard();
         let url = Url::parse("ftp://8.8.8.8/v1").expect("parses");
         assert!(matches!(
             ssrf_gate(&url).expect_err("ftp must fail"),
@@ -330,10 +346,12 @@ mod tests {
 
     #[test]
     fn ssrf_gate_bypass_env_for_tests() {
+        let guard = ssrf_env_guard();
         std::env::set_var("WEBFANG_DISABLE_SSRF", "1");
         let url = Url::parse("http://127.0.0.1:9/v1").expect("parses");
         let ok = ssrf_gate(&url).is_ok();
         std::env::remove_var("WEBFANG_DISABLE_SSRF");
+        drop(guard);
         assert!(ok);
     }
 
