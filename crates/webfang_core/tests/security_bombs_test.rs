@@ -173,6 +173,14 @@ fn assert_typed_bomb_failure(result: &std::process::Output) {
     );
 }
 
+/// Snapshot stderr with nondeterministic content redacted (wiremock port,
+/// temp-dir path, timestamps) so the snapshot is stable across runs and
+/// machines while still pinning the exact typed failure message.
+fn assert_snapshot_redacted(name: &str, dir: &std::path::Path, value: impl Into<String>) {
+    let redacted = common::redact_nondeterministic(dir, &value.into());
+    insta::assert_snapshot!(name, redacted);
+}
+
 // ---------------------------------------------------------------------------
 // 1. gzip bomb via the sitemap flow → typed failure, no crash
 // ---------------------------------------------------------------------------
@@ -207,13 +215,15 @@ async fn gzip_bomb_via_sitemap_fails_typed_not_crash() {
 
     assert_typed_bomb_failure(&result);
 
-    // The failure must come from the decompression cap itself (the handler's
-    // `take(max)` + post-check), not from a downstream XML-parse error on an
-    // already-expanded payload.
-    let stderr = String::from_utf8_lossy(&result.stderr);
-    assert!(
-        stderr.contains("decompression failed") || stderr.contains("size limit exceeded"),
-        "expected the size-cap signature in stderr, got:\n{stderr}"
+    // The exact typed size-cap failure message is pinned via snapshot
+    // (ports/temp paths redacted) instead of brittle substring matching;
+    // this proves the failure comes from the decompression cap itself (the
+    // handler's `take(max)` + post-check), not from a downstream XML-parse
+    // error on an already-expanded payload.
+    assert_snapshot_redacted(
+        "gzip_bomb_size_cap_stderr",
+        harness.out.path(),
+        String::from_utf8_lossy(&result.stderr),
     );
 }
 
@@ -329,6 +339,27 @@ async fn triple_layer_gzip_terminates_without_loop_decompression() {
         Some(69),
         "expected the typed parse-failure exit code, got {:?}; stderr:\n{stderr}",
         result.status.code()
+    );
+
+    // Pin the typed parse-failure envelope via snapshot (redacted). The
+    // quick-xml error DETAIL depends on where the leftover compressed
+    // stream happens to be cut ("tag not closed", "entity ... not closed",
+    // ...) and is not reproducible byte-for-byte, so only the detail suffix
+    // is normalized to a placeholder — the failure family, source location,
+    // and Spanish user-facing wrapper stay pinned.
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    let normalized = stderr
+        .lines()
+        .map(|line| match line.find("XML parsing failed:") {
+            Some(i) => format!("{}XML parsing failed: <PARSE_DETAIL>", &line[..i]),
+            None => line.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_snapshot_redacted(
+        "triple_layer_gzip_parse_failure_stderr",
+        harness.out.path(),
+        normalized,
     );
 }
 
