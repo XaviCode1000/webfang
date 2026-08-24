@@ -9,7 +9,7 @@
 //! 2. JSON Schema for MCP tool input validation,
 //! 3. shared validators with identical bounds.
 //!
-//! Slice 1 migrates ONLY the export flag group ([`export`], mirroring
+//! Slice 1 migrates ONLY the export flag group (`export`, mirroring
 //! `cli::args::ExportArgs`); every other option group keeps its hand-written
 //! definitions until later slices. The clap derive stays in place as the
 //! parsing engine — byte-identical help/error output is the acceptance bar —
