@@ -13,6 +13,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{BenchmarkError, Result};
+use webfang_core::domain::JsStrategy;
 
 /// Lenient stage-1 model: every FileTraceLayer line deserializes into this.
 #[derive(Debug, Deserialize)]
@@ -220,4 +221,102 @@ fn lift_summary(
     })
 }
 
-/// Extract the engine summary from classified records.
+/// The 8-bucket error breakdown, passed through from the summary (design §3).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct ErrorBuckets {
+    pub waf: u64,
+    pub http: u64,
+    pub timeout: u64,
+    pub network: u64,
+    pub rate_limit: u64,
+    pub extraction: u64,
+    pub internal: u64,
+    pub panic: u64,
+}
+
+/// Computed metrics for one strategy run over the Tier A corpus.
+///
+/// Volatile quantities ([`Self::p50_ms`], [`Self::p95_ms`],
+/// [`Self::pages_per_sec`], [`Self::wall_clock_secs`]) are rendered under
+/// `<!-- volatile -->` sentinels in reports (ADR-B4) — they are NOT part of
+/// the byte-compared Block A.
+#[derive(Debug, Clone)]
+pub struct StrategyMetrics {
+    pub strategy: JsStrategy,
+    /// succeeded / total attempted.
+    pub success_rate: f64,
+    /// Nearest-rank median of span durations, ms (volatile).
+    pub p50_ms: f64,
+    /// Nearest-rank 95th percentile of span durations, ms (volatile).
+    pub p95_ms: f64,
+    /// From the engine summary (volatile).
+    pub pages_per_sec: f64,
+    /// From the engine summary duration_secs (volatile).
+    pub wall_clock_secs: f64,
+    pub error_buckets: ErrorBuckets,
+    /// `Downloader::memory_cost()` captured by the runner.
+    pub ram_cost_bytes: usize,
+}
+
+/// Compute metrics from classified records for one strategy run.
+///
+/// Percentile convention (ADR-B3): nearest-rank on sorted-ascending durations,
+/// `idx = ceil(p / 100 * n)` (1-based), NO interpolation.
+///
+/// # Errors
+///
+/// - [`BenchmarkError::MissingSummary`] when records lack a summary.
+/// - [`BenchmarkError::EmptyCrawl`] when the summary reports zero attempts.
+pub fn compute(
+    records: &[TraceRecord],
+    strategy: JsStrategy,
+    ram_cost_bytes: usize,
+) -> Result<StrategyMetrics> {
+    let summary = summary_of(records, "<records>")?;
+
+    if summary.total_pages == 0 {
+        return Err(BenchmarkError::EmptyCrawl);
+    }
+
+    let mut durations: Vec<f64> = records
+        .iter()
+        .filter_map(|r| match r {
+            TraceRecord::SpanClose { duration_ms } => Some(*duration_ms),
+            _ => None,
+        })
+        .collect();
+    durations.sort_by(f64::total_cmp);
+
+    Ok(StrategyMetrics {
+        strategy,
+        success_rate: summary.succeeded as f64 / summary.total_pages as f64,
+        p50_ms: nearest_rank(&durations, 50),
+        p95_ms: nearest_rank(&durations, 95),
+        pages_per_sec: summary.pages_per_sec,
+        wall_clock_secs: summary.duration_secs,
+        error_buckets: ErrorBuckets {
+            waf: summary.errors_waf,
+            http: summary.errors_http,
+            timeout: summary.errors_timeout,
+            network: summary.errors_network,
+            rate_limit: summary.errors_rate_limit,
+            extraction: summary.errors_extraction,
+            internal: summary.errors_internal,
+            panic: summary.errors_panic,
+        },
+        ram_cost_bytes,
+    })
+}
+
+/// Nearest-rank percentile over ascending-sorted values (ADR-B3):
+/// 1-based `idx = ceil(p / 100 * n)`, no interpolation. Empty input yields 0.0
+/// (no samples ⇒ no percentile); callers gate meaningful runs via EmptyCrawl.
+fn nearest_rank(sorted: &[f64], pct: u32) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let n = sorted.len();
+    let rank = (f64::from(pct) / 100.0) * n as f64;
+    let rank = rank.ceil().clamp(1.0, n as f64);
+    sorted[rank as usize - 1]
+}
