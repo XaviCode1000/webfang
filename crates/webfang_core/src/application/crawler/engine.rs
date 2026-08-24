@@ -307,6 +307,12 @@ impl Engine {
             // #503: the Engine path keeps today's rotating default behavior —
             // `CrawlerConfig.user_agent` is a separate dead field, out of scope.
             None,
+            // #890: operator headers/cookies are wired on the scrape path
+            // (cli/scrape_flow.rs). The Engine path keeps profile-default
+            // behavior — same out-of-scope precedent as the UA above.
+            Vec::new(),
+            None,
+            None,
             // #509: the Full strategy's governor shares the engine token so
             // permit waits abort on shutdown.
             self.cancel_token.clone(),
