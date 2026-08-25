@@ -2,11 +2,13 @@
 //!
 //! Proves that EVERY MCP parameter overlapping an OptionsSpec entry advertises
 //! exactly the SSOT rendering ([`OptionSpec::json_schema`]) in its tool's
-//! bridged input schema — identical type, bounds, and description — and that
-//! the schema-bridge tables stay anchored to their declared GROUPs
-//! (`crawler::GROUP`, `export::GROUP`). Adding, removing, or renaming a GROUP
-//! member forces this table to be reviewed; adding an overlapping MCP param
-//! without bridging it fails the completeness check.
+//! bridged input schema — identical type, bounds, and description — EXCEPT
+//! where a runtime-effective advertised-default override applies (#940 F1/F2:
+//! schema truth over spec-default propagation). It also proves the bridge
+//! tables stay anchored to their declared GROUPs (`crawler::GROUP`,
+//! `export::GROUP`). Adding, removing, or renaming a GROUP member forces this
+//! table to be reviewed; adding an overlapping MCP param without bridging it
+//! fails the completeness check.
 //!
 //! Modeled on `webfang_core/tests/gate3_config_equivalence_test.rs`: one
 //! declarative case table iterated by focused assertions.
@@ -19,8 +21,9 @@ use webfang_mcp::mcp_server::params::{
     CrawlSiteParams, ExportFileParams, ProcessExportPipelineParams, ScrapeWithOptionsParams,
 };
 use webfang_mcp::mcp_server::schema_bridge::{
-    merged_input_schema, SpecProperty, CRAWL_SITE_PROPERTIES, EXPORT_FILE_PROPERTIES,
-    PROCESS_EXPORT_PIPELINE_PROPERTIES, SCRAPE_WITH_OPTIONS_PROPERTIES,
+    apply_default_overrides, default_overrides_for_tool, merged_input_schema, SpecProperty,
+    CRAWL_SITE_PROPERTIES, EXPORT_FILE_PROPERTIES, PROCESS_EXPORT_PIPELINE_PROPERTIES,
+    SCRAPE_WITH_OPTIONS_PROPERTIES,
 };
 
 const CRAWLER_GROUP: &[OptionSpec] = options_spec::crawler::GROUP;
@@ -43,7 +46,10 @@ struct ParityCase {
 ///
 /// 1. `spec_id` resolves inside the declared `group`,
 /// 2. the resolved entry equals (full value) what the bridge table references,
-/// 3. the advertised schema property equals `entry.json_schema()` verbatim.
+/// 3. the advertised schema property equals `entry.json_schema()` verbatim,
+///    except where [`default_overrides_for_tool`] adjusts the advertised
+///    default (expectations are derived through the SAME override code path
+///    as production).
 const PARITY_CASES: &[ParityCase] = &[
     // -- crawl_site ---------------------------------------------------------
     ParityCase {
@@ -140,7 +146,7 @@ const TOOL_TABLES: &[ToolTablesErased] = &[
 struct ToolTablesErased {
     tool: &'static str,
     properties: &'static [SpecProperty],
-    merged: fn(&'static [SpecProperty]) -> Map<String, Value>,
+    merged: fn(&'static [SpecProperty], &'static str) -> Map<String, Value>,
     derived_properties: fn() -> Vec<String>,
 }
 
@@ -149,14 +155,26 @@ impl ToolTablesErased {
         Self {
             tool,
             properties,
-            merged: |props| merged_input_schema::<P>(props).as_ref().clone(),
+            merged: |props, tool| merged_with_overrides::<P>(props, tool),
             derived_properties: || derived_property_names::<P>(),
         }
     }
 
     fn merged_schema(&self) -> Map<String, Value> {
-        (self.merged)(self.properties)
+        (self.merged)(self.properties, self.tool)
     }
+}
+
+/// Production-equivalent merge: spec rendering PLUS the tool's
+/// advertised-default overrides, via one shared code path.
+fn merged_with_overrides<P: JsonSchema>(
+    properties: &'static [SpecProperty],
+    tool: &'static str,
+) -> Map<String, Value> {
+    let overrides = default_overrides_for_tool(tool);
+    merged_input_schema::<P>(properties, &overrides)
+        .as_ref()
+        .clone()
 }
 
 /// Raw schemars-derived property names of `P`, mirroring what rmcp would
@@ -215,7 +233,9 @@ fn parity_rows_are_anchored_to_declared_groups() {
 
 /// The advertised schema property equals the SSOT rendering verbatim —
 /// type, bounds, and description all travel from OptionsSpec, never from a
-/// duplicated literal in MCP code.
+/// duplicated literal in MCP code — except where a runtime-effective
+/// default override applies; overridden expectations flow through the
+/// same [`apply_default_overrides`] path as production.
 #[test]
 fn every_overlapping_mcp_param_matches_spec_json_schema() {
     for table in TOOL_TABLES {
@@ -225,11 +245,19 @@ fn every_overlapping_mcp_param_matches_spec_json_schema() {
             panic!("[{}] merged schema has no properties object", table.tool);
         };
         for property in table.properties {
-            let expected = property.spec.json_schema();
+            // Expected fragment = SSOT rendering + the tool's overrides,
+            // applied through the production code path (not re-derived).
+            let mut expected_holder = Map::new();
+            expected_holder.insert(property.name.to_owned(), property.spec.json_schema());
+            let overrides = default_overrides_for_tool(table.tool);
+            apply_default_overrides(&mut expected_holder, &overrides);
+            let expected = expected_holder
+                .remove(property.name)
+                .expect("override target must be the property itself");
             assert_eq!(
                 props.get(property.name),
                 Some(&expected),
-                "[{}/{}] advertised schema must be the SSOT rendering",
+                "[{}/{}] advertised schema must be the SSOT rendering (+ overrides)",
                 table.tool,
                 property.name
             );
@@ -285,4 +313,47 @@ fn no_group_overlapping_param_escapes_the_parity_table() {
             );
         }
     }
+}
+
+/// Runtime-effective advertised defaults (#940 F1/F2): `crawl_site`
+/// advertises EXACTLY the handler's `unwrap_or` constants (3/100), and
+/// `scrape_with_options` advertises NO default for `max_pages` (engine
+/// decides). Both expectations are derived from the handler constants, so a
+/// future runtime change without a matching bridge change fails here.
+#[test]
+fn overridden_defaults_advertise_runtime_effective_values() {
+    use webfang_mcp::mcp_server::handlers::scraping::{
+        CRAWL_SITE_DEFAULT_MAX_DEPTH, CRAWL_SITE_DEFAULT_MAX_PAGES,
+    };
+
+    let crawl = merged_with_overrides::<CrawlSiteParams>(CRAWL_SITE_PROPERTIES, "crawl_site");
+    assert_eq!(
+        crawl["properties"]["max_depth"]["default"],
+        Value::from(CRAWL_SITE_DEFAULT_MAX_DEPTH),
+        "crawl_site max_depth must advertise the handler's unwrap_or constant"
+    );
+    assert_eq!(
+        crawl["properties"]["max_pages"]["default"],
+        Value::from(CRAWL_SITE_DEFAULT_MAX_PAGES),
+        "crawl_site max_pages must advertise the handler's unwrap_or constant"
+    );
+
+    let scrape = merged_with_overrides::<ScrapeWithOptionsParams>(
+        SCRAPE_WITH_OPTIONS_PROPERTIES,
+        "scrape_with_options",
+    );
+    assert!(
+        scrape["properties"]["max_pages"].get("default").is_none(),
+        "engine-decided max_pages must not advertise any default"
+    );
+
+    // Every other crawl_site property keeps its spec rendering untouched.
+    let mut expected_url = Map::new();
+    expected_url.insert("url".to_owned(), options_spec::crawler::URL.json_schema());
+    apply_default_overrides(&mut expected_url, &default_overrides_for_tool("crawl_site"));
+    assert_eq!(
+        crawl.get("properties").and_then(|p| p.get("url")),
+        expected_url.get("url"),
+        "non-overridden properties stay verbatim SSOT renderings"
+    );
 }

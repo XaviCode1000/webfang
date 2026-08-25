@@ -7,7 +7,11 @@
 //! [`webfang_core::domain::options_spec`]. This module overrides the emitted
 //! schema for tools whose parameters overlap a spec group: spec-backed
 //! properties are rendered through [`OptionSpec::json_schema`] while MCP-only
-//! properties keep their schemars-derived shape untouched.
+//! properties keep their schemars-derived shape untouched. On top of the spec
+//! rendering, per-tool *advertised-default overrides* ([`DefaultOverride`])
+//! keep the schema TRUTHFUL about runtime: where a handler applies a different
+//! default than the CLI/spec one, the bridge advertises the runtime-effective
+//! value (or no default at all when the engine decides) (#940 F1/F2).
 //!
 //! Layering: this is a one-way seam. The bridge imports
 //! `webfang_core::domain::options_spec` only; the core never learns about
@@ -17,7 +21,7 @@ use std::sync::Arc;
 
 use rmcp::handler::server::tool::ToolRouter;
 use schemars::JsonSchema;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use webfang_core::domain::options_spec::{crawler, export, OptionSpec};
 
 use crate::mcp_server::{
@@ -69,14 +73,89 @@ pub const PROCESS_EXPORT_PIPELINE_PROPERTIES: &[SpecProperty] = &[
     prop("format", &export::EXPORT_FORMAT),
 ];
 
+/// One advertised-default override, applied AFTER spec derivation (#940 F1/F2).
+///
+/// The OptionsSpec records CLI defaults; a few MCP handlers apply different
+/// runtime defaults. Schema truth outranks spec-default propagation: these
+/// overrides adjust what the bridged schema advertises so it matches what the
+/// tool actually does.
+#[derive(Debug, Clone)]
+pub enum DefaultOverride {
+    /// Advertise this JSON value as the property's `"default"`, replacing the
+    /// spec-derived default. Used to advertise the RUNTIME-effective default.
+    Set(Value),
+    /// Advertise NO default: the tool forwards the parameter's absence and the
+    /// engine decides at runtime — absence is the honest advertisement.
+    Unset,
+}
+
+/// Per-tool advertised-default overrides: `(property name, override)` pairs.
+pub type DefaultOverrides = [(&'static str, DefaultOverride)];
+
+/// Runtime-effective advertised-default overrides for one tool's bridged
+/// schema, keyed by registered tool name; unknown tools yield an empty set.
+/// THE single source of truth for this mapping — both the schema wrappers and
+/// the parity tests derive their expectations from here.
+#[must_use]
+pub fn default_overrides_for_tool(tool: &str) -> Vec<(&'static str, DefaultOverride)> {
+    match tool {
+        // `crawl_site`: the handler applies `unwrap_or(3)` / `unwrap_or(100)`
+        // (handlers/scraping.rs), which differ from the CLI/spec defaults
+        // (2/10). Advertise the values the tool actually applies.
+        "crawl_site" => vec![
+            (
+                "max_depth",
+                DefaultOverride::Set(json!(handlers::scraping::CRAWL_SITE_DEFAULT_MAX_DEPTH)),
+            ),
+            (
+                "max_pages",
+                DefaultOverride::Set(json!(handlers::scraping::CRAWL_SITE_DEFAULT_MAX_PAGES)),
+            ),
+        ],
+        // `scrape_with_options`: an absent `max_pages` is forwarded as `None`,
+        // leaving the decision to the engine — advertise no default at all.
+        "scrape_with_options" => vec![("max_pages", DefaultOverride::Unset)],
+        _ => Vec::new(),
+    }
+}
+
+/// Apply advertised-default overrides to a rendered-properties map.
+///
+/// Public so tests derive expected fragments through the same code path as
+/// production. An override naming an unknown property is ignored (with a
+/// warning) rather than fabricating a property.
+pub fn apply_default_overrides(props: &mut Map<String, Value>, overrides: &DefaultOverrides) {
+    for (name, override_) in overrides {
+        let Some(Value::Object(prop)) = props.get_mut(*name) else {
+            tracing::warn!(
+                property = *name,
+                "default override targets unknown property"
+            );
+            continue;
+        };
+        match override_ {
+            DefaultOverride::Set(value) => {
+                prop.insert("default".into(), value.clone());
+            },
+            DefaultOverride::Unset => {
+                prop.remove("default");
+            },
+        }
+    }
+}
+
 /// Build the merged input schema for one tool.
 ///
 /// Starts from the schemars-derived schema of the parameter struct `P`
 /// (preserving `required`, `additionalProperties`, and every MCP-only
 /// property exactly as rmcp would emit it today), then replaces each
-/// spec-covered property with its [`OptionSpec::json_schema`] rendering.
+/// spec-covered property with its [`OptionSpec::json_schema`] rendering,
+/// finally applying `default_overrides` on top.
 #[must_use]
-pub fn merged_input_schema<P: JsonSchema>(properties: &[SpecProperty]) -> Arc<Map<String, Value>> {
+pub fn merged_input_schema<P: JsonSchema>(
+    properties: &[SpecProperty],
+    default_overrides: &DefaultOverrides,
+) -> Arc<Map<String, Value>> {
     let mut merged = derived_root::<P>();
     let mut props = match merged.remove("properties") {
         Some(Value::Object(map)) => map,
@@ -85,6 +164,7 @@ pub fn merged_input_schema<P: JsonSchema>(properties: &[SpecProperty]) -> Arc<Ma
     for property in properties {
         props.insert(property.name.to_owned(), property.spec.json_schema());
     }
+    apply_default_overrides(&mut props, default_overrides);
     merged.insert("properties".into(), Value::Object(props));
     Arc::new(merged)
 }
@@ -109,19 +189,21 @@ fn derived_root<P: JsonSchema>() -> Map<String, Value> {
 }
 
 fn crawl_site_input_schema() -> Arc<Map<String, Value>> {
-    merged_input_schema::<CrawlSiteParams>(CRAWL_SITE_PROPERTIES)
+    let overrides = default_overrides_for_tool("crawl_site");
+    merged_input_schema::<CrawlSiteParams>(CRAWL_SITE_PROPERTIES, &overrides)
 }
 
 fn scrape_with_options_input_schema() -> Arc<Map<String, Value>> {
-    merged_input_schema::<ScrapeWithOptionsParams>(SCRAPE_WITH_OPTIONS_PROPERTIES)
+    let overrides = default_overrides_for_tool("scrape_with_options");
+    merged_input_schema::<ScrapeWithOptionsParams>(SCRAPE_WITH_OPTIONS_PROPERTIES, &overrides)
 }
 
 fn export_file_input_schema() -> Arc<Map<String, Value>> {
-    merged_input_schema::<ExportFileParams>(EXPORT_FILE_PROPERTIES)
+    merged_input_schema::<ExportFileParams>(EXPORT_FILE_PROPERTIES, &[])
 }
 
 fn process_export_pipeline_input_schema() -> Arc<Map<String, Value>> {
-    merged_input_schema::<ProcessExportPipelineParams>(PROCESS_EXPORT_PIPELINE_PROPERTIES)
+    merged_input_schema::<ProcessExportPipelineParams>(PROCESS_EXPORT_PIPELINE_PROPERTIES, &[])
 }
 
 type InputSchemaFn = fn() -> Arc<Map<String, Value>>;
@@ -199,6 +281,58 @@ mod tests {
         assert_ne!(
             derived["properties"]["format"],
             schema["properties"]["format"]
+        );
+    }
+
+    /// Proof (#940 F1): `crawl_site` advertises the RUNTIME-effective
+    /// defaults — exactly the handler's `unwrap_or` constants — not the
+    /// CLI/spec defaults (2/10), so advertised schema and runtime cannot
+    /// drift apart.
+    #[test]
+    fn crawl_site_advertises_runtime_effective_defaults() {
+        let schema = crawl_site_input_schema();
+        assert_eq!(
+            schema["properties"]["max_depth"]["default"],
+            json!(handlers::scraping::CRAWL_SITE_DEFAULT_MAX_DEPTH)
+        );
+        assert_eq!(
+            schema["properties"]["max_pages"]["default"],
+            json!(handlers::scraping::CRAWL_SITE_DEFAULT_MAX_PAGES)
+        );
+        // The override path actually fired: the fragments differ from the
+        // raw spec renderings (which carry the CLI defaults "2"/"10").
+        assert_ne!(
+            schema["properties"]["max_depth"],
+            crawler::MAX_DEPTH.json_schema()
+        );
+        assert_ne!(
+            schema["properties"]["max_pages"],
+            crawler::MAX_PAGES.json_schema()
+        );
+    }
+
+    /// Proof (#940 F2): `scrape_with_options` advertises NO default for
+    /// `max_pages` — the handler forwards absence as `None` and the engine
+    /// decides, so silence is the honest advertisement.
+    #[test]
+    fn scrape_with_options_advertises_no_max_pages_default() {
+        // Precondition: the spec entry DOES carry a CLI default ("10")
+        // that must be stripped for this tool.
+        assert_eq!(crawler::MAX_PAGES.json_schema()["default"], json!("10"));
+
+        let schema = scrape_with_options_input_schema();
+        assert_eq!(
+            crawler::MAX_PAGES.json_schema()["maximum"],
+            json!(100_000u64)
+        );
+        assert_eq!(
+            schema["properties"]["max_pages"]["maximum"],
+            json!(100_000u64),
+            "bounds still travel from the spec"
+        );
+        assert!(
+            schema["properties"]["max_pages"].get("default").is_none(),
+            "engine-decided max_pages must not advertise a default"
         );
     }
 
