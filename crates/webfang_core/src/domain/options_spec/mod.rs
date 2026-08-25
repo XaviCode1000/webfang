@@ -59,16 +59,24 @@ pub struct OptionSpec {
     pub feature_gate: Option<&'static str>,
 }
 
-/// Validation policy for numeric options: the inclusive lower bound and the
-/// exact user-facing messages raised when it is violated.
+/// Validation policy for numeric options: the inclusive bounds and the
+/// exact user-facing messages raised when they are violated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NumericPolicy {
-    /// Inclusive lower bound (`1` ⇒ zero is rejected).
+    /// Inclusive lower bound (`1` ⇒ zero is rejected; `0` keeps zero valid,
+    /// e.g. seed-only crawl semantics).
     pub min: u64,
+    /// Inclusive upper bound (`None` = unbounded above). Caps shared by
+    /// every surface live HERE only (ADR-002 slice 4).
+    pub max: Option<u64>,
     /// Completes "`{raw}` no es …" when parsing fails.
     pub parse_failure_detail: &'static str,
     /// Complete message raised when the value is below [`NumericPolicy::min`].
     pub below_min_message: &'static str,
+    /// Complete message raised when the value is above
+    /// [`NumericPolicy::max`]. Unreachable (and empty) when `max` is
+    /// `None` or when `min = 0` already accepts every valid value below it.
+    pub above_max_message: &'static str,
     /// Verbatim parse-failure message overriding the default
     /// `` `{raw}` no es {parse_failure_detail} `` rendering, with `{value}`
     /// substituted by the raw input. Present ONLY where pre-migration legacy
@@ -89,10 +97,38 @@ impl NumericPolicy {
     pub const fn positive(below_min_message: &'static str) -> Self {
         Self {
             min: 1,
+            max: None,
             parse_failure_detail: Self::INTEGER_PARSE_DETAIL,
             below_min_message,
+            above_max_message: "",
             parse_failure_template: None,
         }
+    }
+
+    /// Policy that keeps zero valid (e.g. seed-only crawl depth semantics)
+    /// and enforces an inclusive upper bound with the canonical integer
+    /// parse-failure message. The below-min branch is unreachable because
+    /// `min = 0`.
+    #[must_use]
+    pub const fn zero_valid_capped(max: u64, above_max_message: &'static str) -> Self {
+        Self {
+            min: 0,
+            max: Some(max),
+            parse_failure_detail: Self::INTEGER_PARSE_DETAIL,
+            below_min_message: "",
+            above_max_message,
+            parse_failure_template: None,
+        }
+    }
+
+    /// Attach an inclusive upper bound to an existing policy without
+    /// touching its user-facing messages. Used when a fully migrated flag
+    /// gains a shared cap while keeping its legacy wording (#940).
+    #[must_use]
+    pub const fn capped(mut self, max: u64, above_max_message: &'static str) -> Self {
+        self.max = Some(max);
+        self.above_max_message = above_max_message;
+        self
     }
 
     /// Policy for fully migrated flags that keep pre-migration legacy
@@ -107,8 +143,10 @@ impl NumericPolicy {
     ) -> Self {
         Self {
             min,
+            max: None,
             parse_failure_detail: Self::INTEGER_PARSE_DETAIL,
             below_min_message,
+            above_max_message: "",
             parse_failure_template: Some(parse_failure_template),
         }
     }
@@ -265,7 +303,8 @@ impl OptionSpec {
     /// # Errors
     ///
     /// [`OptionSpecError::Parse`] on malformed input;
-    /// [`OptionSpecError::Bound`] below the inclusive minimum;
+    /// [`OptionSpecError::Bound`] below the inclusive minimum or above the
+    /// inclusive maximum;
     /// [`OptionSpecError::UnsupportedKind`] for non-integer kinds.
     pub fn parse_uint(&self, raw: &str) -> Result<u64, OptionSpecError> {
         match self.kind {
@@ -273,13 +312,7 @@ impl OptionSpec {
                 let value: u64 = raw
                     .parse()
                     .map_err(|_| self.parse_failure_error(raw, policy.as_ref()))?;
-                if let Some(policy) = policy {
-                    if value < policy.min {
-                        return Err(OptionSpecError::Bound(BoxedBoundMessage {
-                            message: policy.below_min_message,
-                        }));
-                    }
-                }
+                Self::enforce_policy(value, policy.as_ref())?;
                 Ok(value)
             },
             _ => Err(self.unsupported_kind()),
@@ -292,21 +325,40 @@ impl OptionSpec {
     ///
     /// # Errors
     ///
-    /// [`OptionSpecError::Bound`] when below the inclusive minimum;
-    /// [`OptionSpecError::UnsupportedKind`] for kinds without bounds.
+    /// [`OptionSpecError::Bound`] when below the inclusive minimum or above
+    /// the inclusive maximum; [`OptionSpecError::UnsupportedKind`] for kinds
+    /// without bounds.
     pub fn check_bound(&self, value: u64) -> Result<u64, OptionSpecError> {
         match self.kind {
-            ValueKind::Uint { policy } | ValueKind::MemorySize { policy } => match policy {
-                Some(policy) if value < policy.min => {
-                    Err(OptionSpecError::Bound(BoxedBoundMessage {
-                        message: policy.below_min_message,
-                    }))
-                },
-                // `None` = the spec records no bound: nothing to enforce.
-                _ => Ok(value),
+            ValueKind::Uint { policy } | ValueKind::MemorySize { policy } => {
+                Self::enforce_policy(value, policy.as_ref())?;
+                Ok(value)
             },
             _ => Err(self.unsupported_kind()),
         }
+    }
+
+    /// Shared bound enforcement behind [`Self::parse_uint`] and
+    /// [`Self::check_bound`]: THE single place where spec bounds reject a
+    /// value, using each policy's exact stored user-facing message.
+    fn enforce_policy(value: u64, policy: Option<&NumericPolicy>) -> Result<(), OptionSpecError> {
+        let Some(policy) = policy else {
+            // `None` = the spec records no bound: nothing to enforce.
+            return Ok(());
+        };
+        if value < policy.min {
+            return Err(OptionSpecError::Bound(BoxedBoundMessage {
+                message: policy.below_min_message,
+            }));
+        }
+        if let Some(max) = policy.max {
+            if value > max {
+                return Err(OptionSpecError::Bound(BoxedBoundMessage {
+                    message: policy.above_max_message,
+                }));
+            }
+        }
+        Ok(())
     }
 
     /// Build the parse-failure error for this option's kind with the exact
@@ -349,10 +401,22 @@ impl OptionSpec {
         OptionSpecError::UnsupportedKind { id: self.id }
     }
 
+    /// Accepted variants when this option is [`ValueKind::Enum`] (in
+    /// declaration order); `None` for every other kind. Lets downstream
+    /// surfaces (MCP validation, schema bridge) derive closed value sets
+    /// from the SSOT instead of duplicating string literals.
+    #[must_use]
+    pub const fn enum_variants(&self) -> Option<&'static [&'static str]> {
+        match self.kind {
+            ValueKind::Enum { variants } => Some(variants),
+            _ => None,
+        }
+    }
+
     /// JSON Schema fragment describing this option (ADR-002 seam #2).
     ///
-    /// Not wired into MCP yet — consumed by tests in slice 1; the MCP tool
-    /// schema generation is a later slice.
+    /// Consumed by the MCP schema bridge (slice 4) and pinned by tests in
+    /// slice 1.
     #[must_use]
     pub fn json_schema(&self) -> Value {
         let mut schema = Map::new();
@@ -372,6 +436,9 @@ impl OptionSpec {
                 schema.insert("type".into(), json!("integer"));
                 if let Some(policy) = policy {
                     schema.insert("minimum".into(), json!(policy.min));
+                    if let Some(max) = policy.max {
+                        schema.insert("maximum".into(), json!(max));
+                    }
                 }
             },
             ValueKind::MemorySize { policy } => {
@@ -561,10 +628,6 @@ mod tests {
         // `policy: None` records "no bound today"; the spec must not invent
         // one, and the schema must not advertise a fabricated minimum.
         assert_eq!(crawler::DELAY_MS.parse_uint("0").expect("unbounded"), 0);
-        assert_eq!(
-            crawler::MAX_DEPTH.parse_uint("255").expect("u8 domain"),
-            255
-        );
         let schema = crawler::DELAY_MS.json_schema();
         assert_eq!(schema["type"], "integer");
         assert!(
@@ -576,6 +639,38 @@ mod tests {
             .parse_uint("abc")
             .expect_err("must reject text");
         assert_eq!(err.to_string(), "`abc` no es un número entero válido");
+    }
+
+    #[test]
+    fn crawler_max_depth_keeps_zero_valid_and_enforces_the_shared_cap() {
+        // 0 = seed-only semantics stay valid; 10 is the inclusive cap
+        // shared with the MCP tool schema (#940).
+        assert_eq!(crawler::MAX_DEPTH.parse_uint("0").expect("seed-only"), 0);
+        assert_eq!(crawler::MAX_DEPTH.parse_uint("10").expect("cap"), 10);
+        let err = crawler::MAX_DEPTH
+            .parse_uint("11")
+            .expect_err("above the shared cap");
+        assert_eq!(err.to_string(), "--max-depth debe ser <= 10");
+        // Parse failures keep the canonical integer message.
+        let err = crawler::MAX_DEPTH
+            .parse_uint("abc")
+            .expect_err("must reject text");
+        assert_eq!(err.to_string(), "`abc` no es un número entero válido");
+    }
+
+    #[test]
+    fn crawler_max_pages_enforces_the_shared_upper_cap() {
+        assert_eq!(crawler::MAX_PAGES.parse_uint("1").expect("min"), 1);
+        assert_eq!(
+            crawler::MAX_PAGES
+                .parse_uint("100000")
+                .expect("inclusive cap"),
+            100_000
+        );
+        let err = crawler::MAX_PAGES
+            .parse_uint("100001")
+            .expect_err("above the shared cap");
+        assert_eq!(err.to_string(), "--max-pages debe ser <= 100000");
     }
 
     #[test]
@@ -592,10 +687,19 @@ mod tests {
         let schema = export::CPU_CORES.json_schema();
         assert_eq!(schema["type"], "integer");
         assert_eq!(schema["minimum"], 1);
+        assert!(schema.get("maximum").is_none());
 
         let ram = export::RAM_BUDGET.json_schema();
         assert_eq!(ram["format"], "byte-size");
         assert_eq!(ram["minimumBytes"], 1);
+
+        // Capped entries advertise both bounds (shared CLI↔MCP caps).
+        let depth = crawler::MAX_DEPTH.json_schema();
+        assert_eq!(depth["minimum"], 0);
+        assert_eq!(depth["maximum"], 10);
+        let pages = crawler::MAX_PAGES.json_schema();
+        assert_eq!(pages["minimum"], 1);
+        assert_eq!(pages["maximum"], 100_000);
     }
 
     #[test]
