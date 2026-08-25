@@ -172,7 +172,10 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
     /// This is an owned, lossless conversion — every field in `Args` maps
     /// to exactly one field in `CrawlOptions`. The `url` field is parsed
     /// from `Option<String>` into `Url` (panics if invalid; CLI validation
-    /// guarantees validity before this point).
+    /// guarantees validity before this point). An explicit
+    /// `--rate-limit-burst 0` likewise panics with the Spanish boundary
+    /// error (#897 item 2): the preflight pipeline rejects it first, so
+    /// reaching this conversion with 0 means validation was bypassed.
     #[allow(clippy::too_many_lines)]
     fn from(args: Args) -> Self {
         // Capture BEFORE the move into NetworkOptions: explicit operator
@@ -288,14 +291,21 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
             download_concurrency: args.crawler.download_concurrency,
             ai_config,
             budget_overrides: crate::domain::budget::BudgetOverrides {
-                // Same validation as the preflight pipeline; the legacy
-                // `From<Args>` path cannot return Result, so a rejected
-                // value (0) degrades to the derived default here.
+                // #897 item 2 ("Zero Silent Loss"): an explicit `0` is
+                // rejected by `parse_rate_limit_burst`, and that rejection
+                // must mirror the preflight pipeline's hard error — never
+                // a silent degrade to the derived default. The legacy
+                // `From<Args>` path cannot return `Result`, so — like the
+                // `url` field above — a rejected value panics; the binary
+                // validates via `normalize()` before this conversion.
                 rate_burst: args.crawler.rate_limit_burst.as_deref().and_then(|raw| {
-                    crate::cli::args::crawler::parse_rate_limit_burst(raw)
-                        .ok()
-                        .flatten()
-                        .and_then(|v| crate::domain::budget::BurstPermits::new(v).ok())
+                    let parsed = crate::cli::args::crawler::parse_rate_limit_burst(raw)
+                        .unwrap_or_else(|err| panic!("{err}"));
+                    parsed.map(|v| {
+                        crate::domain::budget::BurstPermits::new(v).unwrap_or_else(|_| {
+                            panic!("--rate-limit-burst debe ser >= 1 (recibido {v})")
+                        })
+                    })
                 }),
                 // Explicit `--concurrency` (when not "auto") feeds the
                 // model as a crawl override — same explicit-wins rule as
@@ -389,6 +399,27 @@ mod tests {
             opts.crawl.ignore_waf,
             "ignore_waf must propagate Args -> CrawlOptions"
         );
+    }
+
+    // ========================================================================
+    // #897 item 2 — Zero Silent Loss: an explicit `--rate-limit-burst 0`
+    // must NEVER silently degrade to the derived default in `From<Args>`;
+    // it must be rejected as loudly as the preflight pipeline rejects it.
+    // ========================================================================
+
+    #[test]
+    #[should_panic(expected = "--rate-limit-burst debe ser >= 1")]
+    fn from_args_rate_limit_burst_zero_is_rejected_not_silently_defaulted() {
+        clean_env();
+        let args = Args::try_parse_from([
+            "webfang",
+            "-u",
+            "https://example.com",
+            "--rate-limit-burst",
+            "0",
+        ])
+        .expect("clap accepts the raw string; rejection happens at conversion");
+        let _ = crate::application::crawl_options::CrawlOptions::from(args);
     }
 
     // ========================================================================
