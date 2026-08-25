@@ -37,7 +37,8 @@ Adopt a **remote inference adapter speaking the OpenAI-compatible protocol as th
 3. **HTTP client is `wreq`, never `reqwest`.** Non-negotiable repository policy: TLS fingerprint impersonation and the existing `ValidatingResolver` integration come with `wreq`.
 4. **Wiring closes the actual gap.** Extend `VaultAiPorts` (or its builder path) so the binary layer can inject the LLM port alongside the other AI ports. Until wired, the service keeps returning the honest Spanish config error — no silent fallbacks, no panics.
 5. **Local ONNX goes dormant, not deleted.** Granite via `ort` + `hf-hub` remains intact behind `--features ai` as the offline fallback. No rewrite of `webfang_ai`; the remote path does not touch it.
-6. **Failure semantics reuse the existing taxonomy.** Transport failures classify as `ErrorClass::TransientRetriable` (`crates/webfang_core/src/domain/error/error_class.rs:16-18`; LLM client classification at `client.rs:6`), so retry/backoff policy composes with the rest of the system instead of inventing a parallel one.
+6. **Failure semantics reuse the existing taxonomy.** Transport failures classify as `ErrorClass::TransientRetriable` (`crates/webfang_core/src/domain/error/error_class.rs:16-18`; classification implemented in `error.rs:399-419`), so retry/backoff policy composes with the rest of the system instead of inventing a parallel one.
+7. **Streaming is out of scope for the port.** `LlmPort::send_completion` is request/response; if streaming completions become a requirement, they extend the port contract explicitly rather than arriving as an adapter-side surprise.
 
 Implementation lands in a follow-up change (Sprint 12+, after Gate 5 per the stabilization roadmap).
 
@@ -55,7 +56,7 @@ Implementation lands in a follow-up change (Sprint 12+, after Gate 5 per the sta
 ## Consequences
 
 **Positive**
-- Builds get faster and lighter by default: `webfang_ai` stops compiling in the default path once binaries wire the remote adapter, dropping the BoringSSL+ONNX burden from routine builds.
+- Builds get faster and lighter by default — with a caveat already true today: both binaries gate `webfang_ai` as an optional dependency behind their `ai` features (`webfang_cli/Cargo.toml`, `webfang_mcp/Cargo.toml`), so default binary builds already exclude the BoringSSL+ONNX tree. What wiring the remote adapter removes is the remaining workspace-member compilation pull and, eventually, the ungated `hf-hub` wart.
 - Small-VPS deployments become viable: no resident model RAM, no model downloads.
 - Provider-agnostic: any OpenAI-compatible endpoint works without touching domain code — the port boundary absorbs vendor churn.
 - Operational failures compose with the existing error strategy: `TransientRetriable` classification gives retry/backoff and exit-code behavior for free.
@@ -64,6 +65,7 @@ Implementation lands in a follow-up change (Sprint 12+, after Gate 5 per the sta
 - Network latency enters the hot path. Mitigation: batch chunks per request where schemas allow, and respect the concurrency budget established by the Sprint 7–8 stabilization work rather than issuing unbounded parallel completions.
 - Variable per-use token cost replaces fixed compute cost; budget-conscious usage needs chunk-budget discipline (already enforced by `CHARS_PER_TOKEN` sizing in the extraction pipeline).
 - New operational dependency: endpoint availability and credential rotation (`WEBFANG_AI_API_KEY`) become part of running WebFang.
+- **Data egress is inherent to the chosen path**: scraped third-party content (chunks) leaves the process boundary toward the inference endpoint, even when self-hosted. Operators own the retention policy of that server and must treat chunk content sensitivity accordingly; the local ONNX fallback remains the zero-egress option.
 - The `hf-hub` non-optional wart remains until a separate cleanup gates it under `ai`.
 
 **Neutral**
