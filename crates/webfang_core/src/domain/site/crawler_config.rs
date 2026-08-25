@@ -5,6 +5,7 @@
 use url::Url;
 use wreq_util::Profile;
 
+use crate::domain::budget::BudgetOverrides;
 use crate::domain::pattern_matching::matches_pattern;
 
 /// Crawler configuration with builder pattern
@@ -43,6 +44,12 @@ pub struct CrawlerConfig {
     /// Threaded from the CLI `--h2-profile` value. Defaults to
     /// [`Profile::Chrome145`], preserving the historical crawl fingerprint.
     pub tls_emulation: Profile,
+    /// Operator-level budget overrides (design D4) forwarded into the crawl
+    /// Engine. `Engine::new` feeds them to `BudgetModel::build`, so an explicit
+    /// `--concurrency` / `--rate-limit-burst` reaches the scheduler spawn bound
+    /// and rate-limiter burst instead of being silently dropped (bug R2-1).
+    /// The default reproduces the auto-derived numbers exactly.
+    pub budget_overrides: BudgetOverrides,
 }
 
 impl CrawlerConfig {
@@ -69,6 +76,7 @@ impl CrawlerConfig {
             sitemap_url: None,
             ignore_robots: false,
             tls_emulation: Profile::Chrome145,
+            budget_overrides: BudgetOverrides::default(),
         }
     }
 
@@ -113,6 +121,7 @@ pub struct CrawlerConfigBuilder {
     sitemap_url: Option<String>,
     ignore_robots: bool,
     tls_emulation: Profile,
+    budget_overrides: BudgetOverrides,
 }
 
 impl CrawlerConfigBuilder {
@@ -132,6 +141,7 @@ impl CrawlerConfigBuilder {
             sitemap_url: None,
             ignore_robots: false,
             tls_emulation: Profile::Chrome145,
+            budget_overrides: BudgetOverrides::default(),
         }
     }
 
@@ -219,6 +229,12 @@ impl CrawlerConfigBuilder {
         self
     }
 
+    /// Set the operator-level budget overrides forwarded into the Engine.
+    pub fn budget_overrides(mut self, overrides: BudgetOverrides) -> Self {
+        self.budget_overrides = overrides;
+        self
+    }
+
     /// Build the final [`CrawlerConfig`], consuming this builder.
     #[must_use]
     pub fn build(self) -> CrawlerConfig {
@@ -236,6 +252,7 @@ impl CrawlerConfigBuilder {
             sitemap_url: self.sitemap_url,
             ignore_robots: self.ignore_robots,
             tls_emulation: self.tls_emulation,
+            budget_overrides: self.budget_overrides,
         }
     }
 }

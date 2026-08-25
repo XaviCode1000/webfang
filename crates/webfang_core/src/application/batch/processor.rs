@@ -249,6 +249,34 @@ impl BatchProcessor {
     }
 }
 
+/// Build the per-URL [`CrawlerConfig`] used by [`process_single_url`].
+///
+/// Copies the crawl-relevant settings from the base config but uses the given
+/// URL as the seed.
+fn build_per_url_config(
+    url: &str,
+    base_config: &CrawlerConfig,
+) -> Result<CrawlerConfig, CrawlError> {
+    let parsed_url =
+        url::Url::parse(url).map_err(|e| CrawlError::InvalidUrl(format!("{url}: {e}")))?;
+
+    Ok(CrawlerConfig::builder(parsed_url)
+        .max_depth(base_config.max_depth)
+        .max_pages(base_config.max_pages)
+        .concurrency(base_config.concurrency)
+        .delay_ms(base_config.delay_ms)
+        .timeout_secs(base_config.timeout_secs)
+        .ignore_robots(base_config.ignore_robots)
+        .tls_emulation(base_config.tls_emulation)
+        .exclude_patterns(base_config.exclude_patterns.clone())
+        .include_patterns(base_config.include_patterns.clone())
+        // Bug R2-1: operator budget overrides staged on the base config
+        // must survive the per-URL rebuild or the Engine re-derives auto
+        // tiers, silently ignoring --concurrency / --rate-limit-burst.
+        .budget_overrides(base_config.budget_overrides)
+        .build())
+}
+
 /// Process a single URL by creating a CrawlerConfig and calling crawl_site
 ///
 /// Creates a new `CrawlerConfig` for the given URL, copying settings from
@@ -261,20 +289,7 @@ async fn process_single_url(
     base_config: CrawlerConfig,
     content_sink: Option<Arc<dyn CrawlContentSink>>,
 ) -> Result<crate::domain::CrawlResult, CrawlError> {
-    let parsed_url =
-        url::Url::parse(url).map_err(|e| CrawlError::InvalidUrl(format!("{url}: {e}")))?;
-
-    let config = CrawlerConfig::builder(parsed_url)
-        .max_depth(base_config.max_depth)
-        .max_pages(base_config.max_pages)
-        .concurrency(base_config.concurrency)
-        .delay_ms(base_config.delay_ms)
-        .timeout_secs(base_config.timeout_secs)
-        .ignore_robots(base_config.ignore_robots)
-        .tls_emulation(base_config.tls_emulation)
-        .exclude_patterns(base_config.exclude_patterns.clone())
-        .include_patterns(base_config.include_patterns.clone())
-        .build();
+    let config = build_per_url_config(url, &base_config)?;
 
     let result = match content_sink {
         Some(sink) => {
@@ -370,6 +385,7 @@ mod tests {
     use super::*;
     use crate::application::batch::{BatchJob, BatchJobStatus, BatchProgress};
     use crate::domain::CrawlerConfig;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use url::Url;
 
     #[test]
@@ -683,5 +699,149 @@ mod tests {
     fn test_batch_error_semaphore_closed_display() {
         let err = BatchError::SemaphoreClosed;
         assert!(err.to_string().contains("semaphore"));
+    }
+
+    // =====================================================================
+    // Bug R2-1: BudgetOverrides must survive the per-URL config rebuild
+    // =====================================================================
+
+    #[test]
+    fn per_url_config_carries_budget_overrides() {
+        // The batch path rebuilds a fresh CrawlerConfig for every URL; the
+        // operator overrides staged on the base config must ride along or the
+        // Engine silently re-derives the auto tiers.
+        let overrides = crate::domain::budget::BudgetOverrides {
+            crawl: crate::domain::budget::tiers::CrawlConcurrency::new(3).ok(),
+            rate_burst: crate::domain::budget::tiers::BurstPermits::new(7).ok(),
+            ..crate::domain::budget::BudgetOverrides::default()
+        };
+        let base = CrawlerConfig::builder(Url::parse("https://example.com").unwrap())
+            .budget_overrides(overrides)
+            .build();
+
+        let per_url =
+            build_per_url_config("https://example.org/seed", &base).expect("valid per-URL seed");
+
+        assert_eq!(
+            per_url.budget_overrides.crawl.map(|c| c.get()),
+            Some(3),
+            "explicit --concurrency must survive the per-URL rebuild"
+        );
+        assert_eq!(
+            per_url.budget_overrides.rate_burst.map(|b| b.get()),
+            Some(7),
+            "explicit --rate-limit-burst must survive the per-URL rebuild"
+        );
+    }
+
+    #[test]
+    fn per_url_config_rejects_invalid_url() {
+        let base = CrawlerConfig::new(Url::parse("https://example.com").unwrap());
+        let err = build_per_url_config("not a url", &base);
+        assert!(matches!(err, Err(CrawlError::InvalidUrl(_))));
+    }
+
+    /// Shared in-flight gauge + six-node star topology (seed + 5 leaves) for
+    /// the R2-1 diagnostics: counts every request and the high-water mark of
+    /// concurrent responses so the scheduler bound derived from the operator
+    /// override is observable end to end.
+    struct SixNodeGauge {
+        inflight: Arc<AtomicUsize>,
+        max_inflight: Arc<AtomicUsize>,
+        total_requests: Arc<AtomicUsize>,
+        seed_uri: String,
+    }
+
+    impl Clone for SixNodeGauge {
+        fn clone(&self) -> Self {
+            Self {
+                inflight: Arc::clone(&self.inflight),
+                max_inflight: Arc::clone(&self.max_inflight),
+                total_requests: Arc::clone(&self.total_requests),
+                seed_uri: self.seed_uri.clone(),
+            }
+        }
+    }
+
+    impl wiremock::Respond for SixNodeGauge {
+        fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+            let current = self.inflight.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+            self.max_inflight.fetch_max(current, AtomicOrdering::SeqCst);
+            self.total_requests.fetch_add(1, AtomicOrdering::SeqCst);
+            // Force overlap when the scheduler bound allows parallel fetches,
+            // so an over-broad bound is actually observed by the high-water mark.
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            self.inflight.fetch_sub(1, AtomicOrdering::SeqCst);
+            if request.url.path() == "/" {
+                let links: String = (0..5)
+                    .map(|i| format!(r#"<a href="{}/p{i}">n{i}</a>"#, self.seed_uri))
+                    .collect();
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_string(format!("<html><body>{links}</body></html>"))
+            } else {
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_string("<html><body>leaf</body></html>")
+            }
+        }
+    }
+
+    /// Six-node diagnostic (bug R2-1): with `crawl = 1` staged as an operator
+    /// override on the batch base config, the Engine reached through
+    /// `BatchProcessor.process_single_url -> crawl_site` must fetch the six
+    /// nodes strictly one at a time — the explicit `--concurrency` wins over
+    /// both the configured value and the auto tier table.
+    #[cfg(not(miri))] // wiremock + wreq use boring-sys2 FFI (unsupported by Miri)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn batch_mode_enforces_concurrency_override_six_node_diagnostic() {
+        use crate::domain::budget::{
+            tiers::{BurstPermits, CrawlConcurrency},
+            BudgetOverrides,
+        };
+
+        let server = wiremock::MockServer::start().await;
+        let gauge = SixNodeGauge {
+            inflight: Arc::new(AtomicUsize::new(0)),
+            max_inflight: Arc::new(AtomicUsize::new(0)),
+            total_requests: Arc::new(AtomicUsize::new(0)),
+            seed_uri: server.uri(),
+        };
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(gauge.clone())
+            .mount(&server)
+            .await;
+
+        let seed = Url::parse(&format!("{}/", server.uri())).unwrap();
+        let base_config = CrawlerConfig::builder(seed)
+            .max_depth(1)
+            .max_pages(10)
+            .concurrency(16) // configured value must be beaten by the override
+            .timeout_secs(5)
+            .ignore_robots(true)
+            .budget_overrides(BudgetOverrides {
+                crawl: CrawlConcurrency::new(1).ok(),
+                rate_burst: BurstPermits::new(4).ok(),
+                ..BudgetOverrides::default()
+            })
+            .build();
+
+        let job = BatchJob::new(
+            "r2-1-six-node".to_string(),
+            vec![format!("{}/", server.uri())],
+            base_config,
+        );
+        let processor = BatchProcessor::new(2).unwrap();
+        let result = processor.process_batch(job).await.unwrap();
+
+        assert_eq!(result.succeeded, 1, "the single batch URL must succeed");
+        assert_eq!(
+            gauge.total_requests.load(AtomicOrdering::SeqCst),
+            6,
+            "seed + 5 discovered leaves must all be crawled"
+        );
+        assert_eq!(
+            gauge.max_inflight.load(AtomicOrdering::SeqCst),
+            1,
+            "override crawl=1 must cap concurrent fetches at 1 through batch mode"
+        );
     }
 }
