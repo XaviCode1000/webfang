@@ -1,0 +1,51 @@
+id: rust-doc-unescaped-index-brackets
+name: Unescaped index brackets in doc comment
+severity: warning
+category: correctness
+defect_class: correctness
+inline_tier: warning
+language: rust
+
+message: >-
+  Doc comment contains identifier[digits] / identifier[N..M] brackets — rustdoc
+  parses these as broken intra-doc links under -D warnings. Escape the opening
+  bracket (foo\[1\]) or rephrase.
+
+description: |
+  A `[` immediately following an identifier character inside a `///` doc
+  comment is treated by rustdoc as the start of an intra-doc link target.
+  Indexing examples like `segments[1]` or `args[0..2]` therefore produce
+  broken_intra_doc_links warnings, which fail `-D warnings` builds (Validate
+  Docs) minutes into CI.
+
+  ✅ FIX: escape the bracket (`segments\[1\]`) or rephrase without indexing
+  syntax. This rule only flags digit indexes and numeric ranges directly
+  after an identifier character — markdown links ([text](url)) and escaped
+  forms are ignored by design.
+
+query: |
+  ((line_comment) @DOC
+    (#match? @DOC "^///.*\\w\\[[0-9]+(\\.\\.[0-9]+)?\\]"))
+
+metavars:
+  - DOC
+
+has_fix: false
+
+tags:
+  - rust
+  - documentation
+  - rustdoc
+  - ci
+
+examples:
+  bad: |
+    /// Returns the second segment: `segments[1]`.
+    fn second(segments: &[&str]) -> &str { segments[1] }
+
+    /// Valid range slice args[0..2] covers the head.
+  good: |
+    /// Returns the second segment: `segments\[1\]`.
+    fn second(segments: &[&str]) -> &str { segments[1] }
+
+    /// See the [rust book](https://doc.rust-lang.org) for details.
