@@ -16,6 +16,7 @@ use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
+use webfang_core::domain::options_spec::export;
 
 use crate::mcp_server::validation::{
     require_http_url, require_max_len, require_max_value_u64, require_non_empty, require_one_of,
@@ -23,7 +24,23 @@ use crate::mcp_server::validation::{
     require_safe_path, require_safe_path_allow_absolute, require_safe_seed, MAX_BLOB_LEN,
 };
 
-const EXPORT_FORMATS: &[&str] = &["jsonl", "vector", "auto"];
+/// Accepted `format` values for the export tools, derived from the
+/// OptionsSpec SSOT (`export::EXPORT_FORMAT`) — the same closed set the CLI
+/// `--export-format` flag accepts. Never duplicated as a literal here.
+#[must_use]
+fn export_formats() -> &'static [&'static str] {
+    export::EXPORT_FORMAT.enum_variants().unwrap_or(&[])
+}
+
+#[cfg(test)]
+mod ssot_tests {
+    /// The SSOT accessor must yield the export variants; guards against the
+    /// spec entry silently losing its Enum kind (which would empty this set).
+    #[test]
+    fn export_formats_derive_from_options_spec() {
+        assert_eq!(super::export_formats(), &["jsonl", "vector", "auto"][..]);
+    }
+}
 
 /// Parameters for the `scrape_url` tool.
 #[derive(Deserialize, JsonSchema, Debug)]
@@ -435,7 +452,7 @@ impl ExportFileParams {
     pub fn validate(&self) -> Result<(), McpError> {
         require_safe_path_allow_absolute("output_dir", &self.output_dir)?;
         require_safe_filename("filename", &self.filename)?;
-        require_one_of("format", &self.format, EXPORT_FORMATS)?;
+        require_one_of("format", &self.format, export_formats())?;
         require_max_len("content", &self.content, MAX_BLOB_LEN)?;
         Ok(())
     }
@@ -681,7 +698,7 @@ impl ProcessExportPipelineParams {
             require_http_url("url", u)?;
         }
         if let Some(f) = &self.format {
-            require_one_of("format", f, EXPORT_FORMATS)?;
+            require_one_of("format", f, export_formats())?;
         }
         Ok(())
     }
