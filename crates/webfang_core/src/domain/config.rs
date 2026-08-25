@@ -104,11 +104,9 @@ impl ConcurrencyConfig {
             return value;
         }
 
-        // #897 item 3: derive from the canonical hardware seam (Q2 UNIFY
-        // NOW) instead of calling `available_parallelism` directly. The
-        // seam's fallback (`NonZeroUsize::MIN`) lands on the same table
-        // row as the legacy `unwrap_or(2)` fallback, so behavior is
-        // unchanged.
+        // #897 item 3: derive from the canonical hardware seam instead of
+        // calling `available_parallelism` directly, so "auto" resolves
+        // identically in every subsystem (cgroup limits included).
         let cores = crate::domain::budget::detector::system_parallelism().get();
 
         let optimal = match cores {
@@ -302,9 +300,10 @@ mod tests {
     /// Guards the "auto" path while the clamp sites delegate.
     #[test]
     fn auto_path_matches_legacy_table() {
-        let cores = std::thread::available_parallelism()
-            .map(|p| p.get())
-            .unwrap_or(2);
+        // #897 item 3: derive from the canonical hardware seam instead of
+        // calling `available_parallelism` directly, so "auto" resolves
+        // identically in every subsystem (cgroup limits included).
+        let cores = crate::domain::budget::detector::system_parallelism().get();
         let expected = match cores {
             1 | 2 => 1,
             3 | 4 => 3,
