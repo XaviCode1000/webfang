@@ -54,7 +54,9 @@ pub(crate) const DISABLE_VALIDATING_RESOLVER_ENV: &str = "WEBFANG_DISABLE_SSRF_R
 ///   (255.255.255.255), reserved (240.0.0.0/4), CGNAT (100.64.0.0/10).
 /// - IPv6: loopback (::1), unspecified (::), unique-local (fc00::/7),
 ///   unicast link-local (fe80::/10), IPv4-mapped and IPv4-compatible
-///   (re-validated as IPv4).
+///   (re-validated as IPv4), NAT64 well-known prefix 64:ff9b::/96 and
+///   6to4 2002::/16 (embedded IPv4 re-validated as IPv4), Teredo
+///   2001:0000::/32 (fail-closed).
 #[must_use]
 pub fn is_forbidden_ip(ip: &IpAddr) -> bool {
     match ip {
@@ -85,6 +87,22 @@ pub fn is_forbidden_ip(ip: &IpAddr) -> bool {
             // forbidden IPv4 address can bypass the guard as `::ffff:x.x.x.x`.
             if let Some(v4) = v6.to_ipv4() {
                 return is_forbidden_ip(&IpAddr::V4(v4));
+            }
+            // Translation/encapsulation prefixes carry an embedded IPv4 address
+            // that the socket stack dials directly on IPv6-only networks with
+            // live NAT64 (mobile carriers, enterprises): `64:ff9b::a.b.c.d`
+            // connects to `a.b.c.d` through the NAT64 gateway, and neither
+            // native-range checks nor `to_ipv4()` ever see it. Re-validate every
+            // embedded IPv4 against the same deny list.
+            if let Some(v4) = ipv6_nat64_embedded_v4(v6).or_else(|| ipv6_6to4_embedded_v4(v6)) {
+                return is_forbidden_ip(&IpAddr::V4(v4));
+            }
+            // Teredo (RFC 4380, 2001:0000::/32): the client IPv4/port are
+            // XOR-obfuscated against the attacker-controllable relay's view of
+            // them, so embedded-address re-validation cannot be trusted. Fail
+            // closed over the whole range.
+            if is_ipv6_teredo(v6) {
+                return true;
             }
             false
         },
@@ -120,6 +138,52 @@ pub fn is_ipv6_unique_local(v6: &Ipv6Addr) -> bool {
 #[must_use]
 pub fn is_ipv6_link_local(v6: &Ipv6Addr) -> bool {
     v6.segments()[0] & 0xffc0 == 0xfe80
+}
+
+/// Returns the IPv4 address embedded in a NAT64-translated address when
+/// `v6` falls within the well-known prefix 64:ff9b::/96 (RFC 6052 §2.1);
+/// `None` otherwise. The embedded IPv4 occupies segments[6..8].
+#[must_use]
+pub fn ipv6_nat64_embedded_v4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
+    let segments = v6.segments();
+    if segments[0] != 0x0064
+        || segments[1] != 0xff9b
+        || !segments[2..6].iter().all(|&segment| segment == 0)
+    {
+        return None;
+    }
+    Some(Ipv4Addr::new(
+        (segments[6] >> 8) as u8,
+        segments[6] as u8,
+        (segments[7] >> 8) as u8,
+        segments[7] as u8,
+    ))
+}
+
+/// Returns the IPv4 address encapsulated in a 6to4 address (RFC 3056) when
+/// `v6` falls within 2002::/16; `None` otherwise. The embedded IPv4 bytes
+/// occupy the high byte of segments[1], the low byte of segments[1], and the
+/// high byte of segments[2] — e.g. `2002:7f00:1::` embeds 127.0.0.1.
+#[must_use]
+pub fn ipv6_6to4_embedded_v4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
+    let segments = v6.segments();
+    if segments[0] != 0x2002 {
+        return None;
+    }
+    Some(Ipv4Addr::new(
+        (segments[1] >> 8) as u8,
+        segments[1] as u8,
+        (segments[2] >> 8) as u8,
+        segments[2] as u8,
+    ))
+}
+
+/// Returns `true` if `v6` falls within the Teredo range 2001:0000::/32
+/// (RFC 4380).
+#[must_use]
+pub fn is_ipv6_teredo(v6: &Ipv6Addr) -> bool {
+    let segments = v6.segments();
+    segments[0] == 0x2001 && segments[1] == 0x0000
 }
 
 /// Returns `true` if `host` is a literal IP address within a forbidden range.
@@ -358,6 +422,43 @@ mod tests {
         // Reserved 240.0.0.0/4 and broadcast.
         assert!(is_forbidden_ip(&addr("240.0.0.1")));
         assert!(is_forbidden_ip(&addr("255.255.255.255")));
+    }
+
+    #[test]
+    fn translated_and_encapsulated_ranges_are_revalidated_as_ipv4() {
+        // Finding R3-1 exact trigger addresses.
+        assert!(is_forbidden_ip(&addr("64:ff9b::7f00:1"))); // NAT64 → 127.0.0.1
+        assert!(is_forbidden_ip(&addr("2002:7f00:1::"))); // 6to4 → 127.0.0.1
+                                                          // Loopback/private/metadata/CGNAT embedded through each range.
+        assert!(is_forbidden_ip(&addr("64:ff9b::a9fe:a9fe"))); // 169.254.169.254
+        assert!(is_forbidden_ip(&addr("64:ff9b::a00:1"))); // 10.0.0.1
+        assert!(is_forbidden_ip(&addr("64:ff9b::6440:1"))); // 100.64.0.1
+        assert!(is_forbidden_ip(&addr("64:ff9b::ffff:ffff"))); // broadcast
+        assert!(is_forbidden_ip(&addr("2002:a9fe:a9fe::"))); // 169.254.169.254
+        assert!(is_forbidden_ip(&addr("2002:a00:1::"))); // 10.0.0.1
+    }
+
+    #[test]
+    fn teredo_range_fails_closed() {
+        // 2001:0000::/32: the client IPv4 is XOR-obfuscated and the relay
+        // is attacker-controllable, so the whole range fails closed.
+        assert!(is_forbidden_ip(&addr("2001:0::1")));
+        assert!(is_forbidden_ip(&addr("2001:0:abcd:ef01:5678:5678:7f00:1")));
+    }
+
+    #[test]
+    fn public_addresses_near_translation_prefixes_stay_allowed() {
+        // Real public addresses remain allowed.
+        assert!(!is_forbidden_ip(&addr("2606:4700::1111")));
+        assert!(!is_forbidden_ip(&addr("2001:4860:4860::8888")));
+        assert!(!is_forbidden_ip(&addr("2620:0:ccc::2")));
+        // Public IPv4 embedded through translation ranges remains allowed.
+        assert!(!is_forbidden_ip(&addr("64:ff9b::808:808"))); // 8.8.8.8
+        assert!(!is_forbidden_ip(&addr("2002:808:808::"))); // 8.8.8.8
+                                                            // Prefix look-alikes outside the ranges.
+        assert!(!is_forbidden_ip(&addr("2001:db8::1"))); // not 2001:0::/32
+        assert!(!is_forbidden_ip(&addr("64:ff9b:1::1"))); // outside 64:ff9b::/96
+        assert!(!is_forbidden_ip(&addr("2002:100:1::"))); // 6to4 → 1.0.0.1 (public)
     }
 
     #[test]
