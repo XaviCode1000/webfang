@@ -128,6 +128,36 @@ fn crawl4ai_default_server_url() {
     assert_eq!(url.as_str(), "http://127.0.0.1:11235/crawl");
 }
 
+/// Secrets never leak through Debug formatting of a prepared request:
+/// both single-line and pretty `{:#?}` render the bearer token as
+/// `[REDACTED]` (Tier B Step 0 prerequisite — never log secrets).
+#[test]
+fn prepared_request_debug_redacts_bearer_token() {
+    let token = "super-secret-token-value";
+    let prepared = competitor::firecrawl::prepare_start_crawl(
+        &FirecrawlConfig::default(),
+        &params("https://example.com/docs", 42),
+        Some(token),
+        true,
+    )
+    .expect("prepared request");
+    let debug = format!("{prepared:?}");
+    let debug_pretty = format!("{prepared:#?}");
+    assert!(
+        !debug.contains(token),
+        "single-line Debug leaked the token: {debug}"
+    );
+    assert!(
+        !debug_pretty.contains(token),
+        "pretty Debug leaked the token: {debug_pretty}"
+    );
+    assert!(
+        debug.contains("[REDACTED]"),
+        "redaction marker missing: {debug}"
+    );
+    assert!(debug_pretty.contains("[REDACTED]"));
+}
+
 /// Crawl4AI enforces the same gate contract as Firecrawl.
 #[test]
 fn crawl4ai_gate_contract_matches_firecrawl() {

@@ -73,3 +73,84 @@ fn repeated_target_is_rejected() {
             .expect_err("must fail");
     assert!(matches!(err, BenchmarkError::Render(_)));
 }
+
+/// --max-credits overrides the default budget guard.
+#[test]
+fn max_credits_flag_is_parsed() {
+    let parsed =
+        competitor::parse_bench_live_args(args(&["--target", "firecrawl", "--max-credits", "100"]))
+            .expect("valid invocation parses");
+    assert_eq!(parsed.max_credits, 100);
+}
+
+/// Defaults: budget 250 (approved plan), concurrency 1.
+#[test]
+fn guard_defaults_are_budget_250_concurrency_1() {
+    let parsed = competitor::parse_bench_live_args(args(&["--target", "firecrawl"]))
+        .expect("valid invocation parses");
+    assert_eq!(parsed.max_credits, 250);
+    assert_eq!(parsed.concurrency, 1);
+}
+
+/// --concurrency requests parallelism (clamped later by the planner for
+/// Firecrawl; parsing only validates the value).
+#[test]
+fn concurrency_flag_is_parsed() {
+    let parsed =
+        competitor::parse_bench_live_args(args(&["--target", "firecrawl", "--concurrency", "8"]))
+            .expect("valid invocation parses");
+    assert_eq!(parsed.concurrency, 8);
+}
+
+/// Non-numeric guard values are typed usage errors, not panics.
+#[test]
+fn non_numeric_max_credits_is_usage_error() {
+    let err = competitor::parse_bench_live_args(args(&[
+        "--target",
+        "firecrawl",
+        "--max-credits",
+        "lots",
+    ]))
+    .expect_err("must fail");
+    assert!(matches!(err, BenchmarkError::Render(_)));
+}
+
+/// Zero and negative guard values are rejected at parse time.
+#[test]
+fn zero_or_negative_guard_values_are_rejected() {
+    for bad in ["0", "-3"] {
+        let err = competitor::parse_bench_live_args(args(&[
+            "--target",
+            "firecrawl",
+            "--max-credits",
+            bad,
+        ]))
+        .expect_err("must fail");
+        assert!(matches!(err, BenchmarkError::Render(_)), "bad: {bad}");
+    }
+}
+
+/// Repeated guard flags are rejected instead of silently last-wins.
+#[test]
+fn repeated_guard_flags_are_rejected() {
+    let err = competitor::parse_bench_live_args(args(&[
+        "--target",
+        "firecrawl",
+        "--max-credits",
+        "10",
+        "--max-credits",
+        "20",
+    ]))
+    .expect_err("must fail");
+    assert!(matches!(err, BenchmarkError::Render(_)));
+    let err = competitor::parse_bench_live_args(args(&[
+        "--target",
+        "firecrawl",
+        "--concurrency",
+        "1",
+        "--concurrency",
+        "2",
+    ]))
+    .expect_err("must fail");
+    assert!(matches!(err, BenchmarkError::Render(_)));
+}
