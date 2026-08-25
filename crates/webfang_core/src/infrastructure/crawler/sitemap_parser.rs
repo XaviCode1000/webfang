@@ -33,6 +33,7 @@ use super::sitemap_config::SitemapConfig;
 use super::url_validator::UrlValidator;
 use crate::domain::url_validation::is_internal_link;
 use crate::domain::{CrawlError, UrlValidatorTrait};
+use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
 #[allow(unused_imports)]
 use async_compression::tokio::bufread::GzipDecoder;
 use quick_xml::events::Event;
@@ -107,6 +108,16 @@ pub enum SitemapError {
     /// All child sitemaps in an index failed to parse
     #[error("all {0} child sitemaps failed: {1}")]
     AllChildrenFailed(usize, String),
+
+    /// A WAF/CAPTCHA challenge page was served instead of sitemap content
+    /// (issue #879). `provider` carries the formatted Spanish evidence chain.
+    #[error("waf challenge detected at {url}: {provider}")]
+    WafChallenge {
+        /// URL that served the challenge page.
+        url: String,
+        /// Formatted Spanish evidence chain (REQ-WAF-08).
+        provider: String,
+    },
 }
 
 /// Sitemap URL entry with metadata per sitemaps.org spec
@@ -395,8 +406,9 @@ impl SitemapParser {
             .headers()
             .get("content-type")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        Self::validate_response(status, content_type, url)?;
+            .unwrap_or("")
+            .to_string();
+        Self::validate_response(status, content_type.as_str(), url)?;
 
         // Mark URL as visited after successful fetch
         {
@@ -438,12 +450,30 @@ impl SitemapParser {
             .await
             .map_err(|e| SitemapError::DecompressionError(e.to_string()))?;
 
+        // Issue #879 (Option A): inspect the body BEFORE XML parsing so a WAF
+        // challenge served where sitemap content should be surfaces as the
+        // typed error instead of generic XML-garbage failures.
+        if let Some(err) =
+            Self::waf_challenge_error(&decompressed, url, status.as_u16(), &content_type)
+        {
+            return Err(err);
+        }
+
         // Parse using unified decompression handle
         let (urls, is_index) = if decompressed.is_empty() {
             return Err(SitemapError::NoUrlsFound);
         } else {
             self.parse_xml_sitemap(&decompressed, &base_url).await?
         };
+
+        // [3.7] MemoryManager: handle disk swapping for large result sets
+        // (both branches need it, so hoist it above the index/urlset split).
+        self.memory_manager
+            .handle_disk_swapping(&urls)
+            .map_err(|e| SitemapError::HttpError {
+                status: 0,
+                message: format!("memory management failed: {e}"),
+            })?;
 
         // Check if sitemap index (recursive) - Bug 7: use root element detection
         if is_index {
@@ -452,24 +482,8 @@ impl SitemapParser {
                 depth
             );
 
-            // [3.7] MemoryManager: handle disk swapping for large index
-            self.memory_manager
-                .handle_disk_swapping(&urls)
-                .map_err(|e| SitemapError::HttpError {
-                    status: 0,
-                    message: format!("memory management failed: {e}"),
-                })?;
-
             self.parse_sitemap_index(&urls, depth - 1, visited).await
         } else {
-            // [3.7] MemoryManager: check memory limits before returning
-            self.memory_manager
-                .handle_disk_swapping(&urls)
-                .map_err(|e| SitemapError::HttpError {
-                    status: 0,
-                    message: format!("memory management failed: {e}"),
-                })?;
-
             // [3.8] BatchProcessor: apply crawl budget optimization
             let optimized_urls = self.batch_processor.apply_crawl_budget(urls, &self.config);
 
@@ -525,6 +539,44 @@ impl SitemapParser {
         Ok((urls, is_index))
     }
 
+    /// Inspect a fetched sitemap-chain body for WAF/CAPTCHA challenges
+    /// (issue #879).
+    ///
+    /// Reuses [`WafInspector`] with full HTTP context (status/content-type are
+    /// known here), so verdict semantics match the HTTP client path exactly:
+    /// Challenge-tier markers block at any status, Fingerprint-tier evidence
+    /// blocks only when correlated with a WAF status code (REQ-WAF-05/09).
+    /// Control headers are not re-collected here because `validate_response`
+    /// guarantees a 2xx status, under which Fingerprint evidence never blocks.
+    fn waf_challenge_error(
+        body: &[u8],
+        url: &str,
+        status: u16,
+        content_type: &str,
+    ) -> Option<SitemapError> {
+        let ctx = InspectionContext {
+            status: Some(status),
+            content_type: (!content_type.is_empty()).then(|| content_type.to_string()),
+            headers: wreq::header::HeaderMap::new(),
+            ignore_waf: false,
+        };
+        let text = String::from_utf8_lossy(body);
+        let verdict = WafInspector::inspect(&text, &ctx);
+        if !verdict.is_blocked {
+            return None;
+        }
+        tracing::warn!(
+            url = %url,
+            status = %status,
+            evidences = verdict.evidences.len(),
+            "WAF/CAPTCHA challenge detected in sitemap body; aborting"
+        );
+        Some(SitemapError::WafChallenge {
+            url: url.to_string(),
+            provider: verdict.evidence_chain(),
+        })
+    }
+
     /// Parse sitemap index recursively with error propagation
     async fn parse_sitemap_index(
         &self,
@@ -557,6 +609,23 @@ impl SitemapParser {
                     tracing::warn!("Failed to parse sitemap {}: {}", url, e);
                     failures.push((url, e));
                 },
+            }
+        }
+
+        // Issue #879 (Option A): a challenge on ANY child hard-aborts the
+        // whole index (HybridRouter parity) — the host is serving challenges,
+        // not sitemaps — instead of being swallowed into AllChildrenFailed.
+        for (_, e) in &failures {
+            if let SitemapError::WafChallenge { url, provider } = e {
+                tracing::warn!(
+                    url = %url,
+                    provider = %provider,
+                    "WAF/CAPTCHA challenge detected in index child; aborting index"
+                );
+                return Err(SitemapError::WafChallenge {
+                    url: url.clone(),
+                    provider: provider.clone(),
+                });
             }
         }
 
@@ -859,6 +928,174 @@ pub fn parse_sitemap(
     dedup_and_sort_sitemap_urls(&mut urls);
 
     Ok(urls)
+}
+
+#[cfg(all(test, not(miri)))]
+mod waf_inspection_tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // ── Issue #879 (Option A): WAF inspection over sitemap bodies ──
+
+    /// Cloudflare Turnstile widget marker — Challenge-tier (T1), blocks even
+    /// in degraded mode per REQ-WAF-05/09.
+    const CHALLENGE_HTML: &str = r#"<html><body>Just a moment...</body><div id="cf-turnstile" data-sitekey="abc"></div></html>"#;
+
+    /// Shared writer capturing tracing fmt output for assertions.
+    #[derive(Clone)]
+    struct SharedWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedWriter {
+        type Writer = SharedWriterGuard;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            SharedWriterGuard(self.0.clone())
+        }
+    }
+
+    struct SharedWriterGuard(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SharedWriterGuard {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("trace buffer lock")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A WAF challenge page served where sitemap XML should be must surface the
+    /// typed `SitemapError::WafChallenge` with host context and evidence chain,
+    /// plus a structured trace event — not a generic XML parse failure (#879).
+    #[test]
+    fn parse_from_url_waf_challenge_body_returns_typed_error_and_trace_event() {
+        let buf = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(SharedWriter(buf.clone()))
+            .with_ansi(false)
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            rt.block_on(async {
+                let mock = MockServer::start().await;
+                Mock::given(method("GET"))
+                    .and(path("/sitemap.xml"))
+                    .respond_with(
+                        ResponseTemplate::new(200)
+                            .insert_header("content-type", "text/html")
+                            .set_body_string(CHALLENGE_HTML),
+                    )
+                    .mount(&mock)
+                    .await;
+
+                let parser = SitemapParser::new().unwrap();
+                let result = parser
+                    .parse_from_url(&format!("{}/sitemap.xml", mock.uri()))
+                    .await;
+
+                match result {
+                    Err(SitemapError::WafChallenge { url, provider }) => {
+                        assert_eq!(url, format!("{}/sitemap.xml", mock.uri()));
+                        assert!(
+                            provider.contains("Cloudflare"),
+                            "evidence chain expected in provider, got: {provider}"
+                        );
+                    },
+                    other => panic!("expected SitemapError::WafChallenge, got: {other:?}"),
+                }
+            });
+        });
+
+        let captured = buf.lock().expect("trace buffer lock").clone();
+        let out = String::from_utf8_lossy(&captured);
+        assert!(
+            out.contains("challenge"),
+            "WAF trace event expected on the parser path, got: {out}"
+        );
+    }
+
+    /// A challenge served by ONE child of a sitemap index must hard-abort the
+    /// whole index with `WafChallenge` (HybridRouter parity) instead of being
+    /// swallowed into `AllChildrenFailed` (#879).
+    #[tokio::test]
+    async fn index_child_waf_challenge_propagates_typed_error() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/sitemap.xml"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+                 <sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\
+                 <sitemap><loc>{}/child.xml</loc></sitemap>\
+                 </sitemapindex>",
+                mock.uri()
+            )))
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/child.xml"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/html")
+                    .set_body_string(CHALLENGE_HTML),
+            )
+            .mount(&mock)
+            .await;
+
+        let parser = SitemapParser::new().unwrap();
+        let result = parser
+            .parse_from_url(&format!("{}/sitemap.xml", mock.uri()))
+            .await;
+
+        match result {
+            Err(SitemapError::WafChallenge { url, .. }) => {
+                assert_eq!(url, format!("{}/child.xml", mock.uri()));
+            },
+            other => panic!("expected SitemapError::WafChallenge from index child, got: {other:?}"),
+        }
+    }
+
+    /// A benign sitemap body that merely mentions a WAF vendor at status 200 is
+    /// Fingerprint-tier evidence and must NOT raise `WafChallenge` (REQ-WAF-09).
+    #[tokio::test]
+    async fn benign_sitemap_body_mentioning_vendor_is_not_a_challenge() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <!-- served behind cloudflare -->
+        <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+            <url><loc>https://example.com/page1</loc></url>
+        </urlset>"#;
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/sitemap.xml"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/xml")
+                    .set_body_string(xml),
+            )
+            .mount(&mock)
+            .await;
+
+        let parser = SitemapParser::new().unwrap();
+        let result = parser
+            .parse_from_url(&format!("{}/sitemap.xml", mock.uri()))
+            .await;
+        assert!(
+            !matches!(result, Err(SitemapError::WafChallenge { .. })),
+            "benign vendor mention must not raise WafChallenge, got: {result:?}"
+        );
+        assert!(
+            result.is_ok(),
+            "valid XML must still parse, got: {result:?}"
+        );
+    }
 }
 
 #[cfg(all(test, not(miri)))]
