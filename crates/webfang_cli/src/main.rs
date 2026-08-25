@@ -41,7 +41,6 @@ use webfang_core::cli::config::ConfigDefaults;
 use webfang_core::cli::error::CliExit;
 use webfang_core::cli::preflight;
 use webfang_core::cli::preflight::{ArgSources, TuiOverrides};
-use webfang_core::domain::budget::BudgetOverrides;
 #[cfg(feature = "ai")]
 use webfang_core::domain::semantic_cleaner::SemanticCleaner;
 #[cfg(feature = "adaptive-selectors")]
@@ -356,11 +355,11 @@ async fn __main() -> CliExit {
         };
     // Project contested fields; copy non-contested from Args via From
     let base = CrawlOptions::from(args);
-    let projected = normalized.into_crawl_options();
-    // CLI-explicit budget knobs live ONLY in `base` (--concurrency/
-    // --batch-concurrency/--download-concurrency/--rate-limit-burst via
+    // CLI-explicit budget knobs live ONLY in `base` (--concurrency /
+    // --batch-concurrency / --download-concurrency / --rate-limit-burst via
     // From<Args>); capture them before the move below (#897 item 1).
     let cli_budget = base.budget_overrides;
+    let projected = normalized.into_crawl_options();
     // Overwrite contested fields with provenance-correct values, keep base for the rest
     let mut opts = base;
     opts.crawl.max_pages = projected.crawl.max_pages;
@@ -384,20 +383,13 @@ async fn __main() -> CliExit {
     if opts.crawl.sitemap_url.is_some() {
         opts.crawl.use_sitemap = true;
     }
-    // Budget overrides (#897 item 1): merge FIELD-WISE, never by slot.
-    // `cli_budget` carries CLI-explicit knobs; `projected` carries the
-    // provenance-ranked pipeline value (TOML/TUI via into_crawl_options,
-    // which wholesale-assigns from a fresh default and therefore carries NO
-    // batch/asset overrides). CLI wins each field where it was explicit
-    // (Option semantics: Some = operator-set); staged TOML/TUI fills the rest.
-    opts.budget_overrides = BudgetOverrides {
-        rate_burst: cli_budget
-            .rate_burst
-            .or(projected.budget_overrides.rate_burst),
-        crawl: cli_budget.crawl.or(projected.budget_overrides.crawl),
-        batch: cli_budget.batch.or(projected.budget_overrides.batch),
-        asset: cli_budget.asset.or(projected.budget_overrides.asset),
-    };
+    // Budget overrides (#897 item 1): merge FIELD-WISE, never by slot, with
+    // per-tier provenance rules (see `merge_budget_overrides`): the ranked
+    // pipeline value wins the crawl tier; explicit CLI knobs win the rest.
+    // Before #897 this assignment did not exist at all, so TOML/TUI values
+    // were silently dropped from enforcement.
+    opts.budget_overrides =
+        preflight::merge_budget_overrides(cli_budget, projected.budget_overrides);
 
     // 6b2. Initialize logging (hoisted above the preflight gates on purpose):
     // the 6c-6f2 gates emit `warn!` diagnostics, and a subscriber is only

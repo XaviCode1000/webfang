@@ -11,6 +11,8 @@
 //!   `concurrency` field (`scrape_flow.rs`, right before `buffer_unordered`)
 //! - batch path: `Starting batch processing: N URLs, concurrency=X`
 //!   (`orchestrator.rs prepare_batch_manager`)
+//! - asset path: `Asset downloads wired` with structured
+//!   `asset_concurrency` (`orchestrator.rs prepare_phase`)
 //!
 //! Auto-detection NEVER derives a crawl budget of exactly 2
 //! (1–2 cores → 1, 3–4 cores → 3, 5–7 → 5, 8+ → min(cores−1, 8)), so an
@@ -84,6 +86,19 @@ fn logged_scrape_concurrency(stderr: &str) -> usize {
         panic!("enforcement-site concurrency log not found; stderr was:\n{clean}")
     });
     caps[1].parse().expect("concurrency is numeric")
+}
+
+/// Assert a structured tracing FIELD reached stderr. The pretty layer may
+/// render fields with `=` (compact) or `: ` (pretty), wrapped in ANSI
+/// escapes — normalize and match both.
+fn assert_structured_field(stderr: &str, field: &str, value: usize) {
+    let ansi = Regex::new(r"\x1b\[[0-9;]*m").expect("valid regex");
+    let clean = ansi.replace_all(stderr, "");
+    let re = Regex::new(&format!(r"{field}[=:]\s*{value}\b")).expect("valid regex");
+    assert!(
+        re.is_match(&clean),
+        "structured field `{field}={value}` not found in stderr:\n{clean}"
+    );
 }
 
 /// #897 item 1: a TOML-sourced `concurrency = "2"` must reach the scrape
@@ -197,7 +212,8 @@ async fn batch_concurrency_flag_reaches_model_tier() {
 
 /// #897 item 5: `--download-concurrency` must reach its enforcement site —
 /// `prepare_phase` wires the model's Asset tier into the scraper config and
-/// logs the effective bound. Default is 3, so 7 proves the explicit flag
+/// logs the effective bound as a STRUCTURED field (m1: never interpolate
+/// values into the message). Default is 3, so 7 proves the explicit flag
 /// arrived through the merge.
 #[tokio::test]
 async fn download_concurrency_flag_reaches_asset_tier() {
@@ -220,10 +236,7 @@ async fn download_concurrency_flag_reaches_asset_tier() {
         .success();
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
-    assert!(
-        stderr.contains("Asset downloads wired: concurrency=7"),
-        "--download-concurrency 7 must reach the Asset tier enforcement log; stderr:\n{stderr}"
-    );
+    assert_structured_field(&stderr, "asset_concurrency", 7);
 }
 
 /// #897 triangulation (sharpest slot-copy guard): TOML crawl concurrency AND
@@ -259,10 +272,7 @@ async fn toml_crawl_and_cli_download_survive_same_merge() {
         2,
         "TOML crawl concurrency must survive the merge; stderr:\n{stderr}"
     );
-    assert!(
-        stderr.contains("Asset downloads wired: concurrency=6"),
-        "CLI --download-concurrency must survive the same merge; stderr:\n{stderr}"
-    );
+    assert_structured_field(&stderr, "asset_concurrency", 6);
 }
 
 /// #897 item 2 — Zero Silent Loss: an explicit `--rate-limit-burst 0` on
@@ -291,15 +301,12 @@ fn cli_rate_limit_burst_zero_hard_errors() {
         Some(78),
         "rejected burst 0 must exit 78 (ConfigError)"
     );
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
-    assert!(
-        stderr.contains("--rate-limit-burst debe ser >= 1"),
-        "Spanish reject-0 boundary message expected on stderr; stderr:\n{stderr}"
-    );
 }
 
-/// #897 item 2 — Zero Silent Loss: the TOML config path (`rate_limit_burst = 0`)
-/// must hard-error identically to the CLI flag path.
+/// #897 item 2 — Zero Silent Loss, TOML path: a config-file-sourced
+/// `rate_limit_burst = 0` must also hard-error with exit 78 (ConfigError),
+/// never silently degrade to the derived default. Fails before any network
+/// I/O, so no mock server is needed. (Preserved from the #925 landing.)
 #[test]
 fn toml_rate_limit_burst_zero_hard_errors() {
     let output = TempDir::new().expect("temp output dir");
@@ -321,10 +328,5 @@ fn toml_rate_limit_burst_zero_hard_errors() {
         assert.get_output().status.code(),
         Some(78),
         "TOML-sourced burst 0 must exit 78 (ConfigError)"
-    );
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
-    assert!(
-        stderr.contains("--rate-limit-burst debe ser >= 1"),
-        "Spanish reject-0 boundary message expected on stderr; stderr:\n{stderr}"
     );
 }

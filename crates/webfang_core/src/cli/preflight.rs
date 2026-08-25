@@ -638,6 +638,42 @@ fn stage_env_cli(book: &mut FieldBook, args: &Args, sources: &ArgSources) -> usi
     n
 }
 
+/// Field-wise merge of budget overrides at the binary's final assembly
+/// point (#897 item 1).
+///
+/// * `cli_capture` — the CLI-explicit knobs captured from `From<Args>`
+///   BEFORE provenance projection (unranked by construction).
+/// * `staged` — the pipeline-projected overrides (`into_crawl_options`),
+///   carrying the WINNING source per the `Default < ConfigFile <
+///   Environment < Cli < Tui` resolution upstream.
+///
+/// Tier rules:
+/// - `crawl`: **staged wins; the CLI capture only fills the gap.** Both
+///   sides project the SAME user knob (`--concurrency` / TOML / TUI), but
+///   only `staged` is rank-resolved. A blind `cli.or(staged)` here let a
+///   plain `--concurrency` stomp a Tui-ranked staged value while
+///   `network.concurrency` kept the ranked winner — a silent
+///   contradiction inside one struct (adversarial review M1 of PR #925).
+///   Preferring `staged` keeps `budget_overrides.crawl` consistent with
+///   `network.concurrency` BY CONSTRUCTION.
+/// - `rate_burst` / `batch` / `asset`: CLI-explicit wins where present;
+///   the staged value (ConfigFile/Env ranks for burst; nothing today for
+///   batch/asset — the TUI has no such fields) fills the rest. Where
+///   both sides hold a value it is the same CLI flag parsed twice, so the
+///   order is irrelevant.
+#[must_use]
+pub fn merge_budget_overrides(
+    cli_capture: crate::domain::budget::BudgetOverrides,
+    staged: crate::domain::budget::BudgetOverrides,
+) -> crate::domain::budget::BudgetOverrides {
+    crate::domain::budget::BudgetOverrides {
+        crawl: staged.crawl.or(cli_capture.crawl),
+        rate_burst: cli_capture.rate_burst.or(staged.rate_burst),
+        batch: cli_capture.batch.or(staged.batch),
+        asset: cli_capture.asset.or(staged.asset),
+    }
+}
+
 /// Stage operator budget overrides (task 2.1, design D4).
 ///
 /// Runs AFTER [`apply_cross_field_rules`] and BEFORE [`validate_stage`] so the
@@ -2522,6 +2558,114 @@ mod normalization_pipeline_tests {
             book.budget_overrides.value.rate_burst,
             BurstPermits::new(6).ok()
         );
+    }
+
+    // ========================================================================
+    // merge_budget_overrides (#897 item 1 + review M1 of PR #925)
+    // ========================================================================
+
+    #[test]
+    fn merge_tui_staged_crawl_outranks_cli_capture() {
+        // M1: a plain `--concurrency 2` (unranked CLI capture) must NEVER
+        // stomp a Tui-ranked staged value — the same contradiction that
+        // made `network.concurrency` and the budget model disagree.
+        let merged =
+            merge_budget_overrides(test_overrides(Some(2), None), test_overrides(Some(5), None));
+        assert_eq!(
+            merged
+                .crawl
+                .map(crate::domain::budget::tiers::CrawlConcurrency::get),
+            Some(5),
+            "ranked staged crawl must win over the unranked CLI capture"
+        );
+    }
+
+    #[test]
+    fn merge_cli_capture_fills_unstaged_crawl_gap() {
+        // Nothing staged (no explicit knob anywhere): the CLI capture is
+        // the only source and must survive.
+        let merged =
+            merge_budget_overrides(test_overrides(Some(3), None), test_overrides(None, None));
+        assert_eq!(
+            merged
+                .crawl
+                .map(crate::domain::budget::tiers::CrawlConcurrency::get),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn merge_cli_explicit_asset_wins_and_staged_toml_crawl_survives() {
+        // Sharpest slot-copy guard, at unit level: TOML-staged crawl AND an
+        // explicit CLI --download-concurrency must coexist field-wise.
+        let merged =
+            merge_budget_overrides(test_overrides(None, Some(6)), test_overrides(Some(2), None));
+        assert_eq!(
+            merged
+                .crawl
+                .map(crate::domain::budget::tiers::CrawlConcurrency::get),
+            Some(2)
+        );
+        assert_eq!(
+            merged
+                .asset
+                .map(crate::domain::budget::tiers::DownloadConcurrency::get),
+            Some(6)
+        );
+    }
+
+    /// m2 — full TUI path at the pipeline boundary: `normalize()` is the
+    /// production consumer of `TuiOverrides`, so staging a touched
+    /// `concurrency` override through it exercises
+    /// touched_overrides → rank resolution → projection → merge exactly as
+    /// the binary does after `handle_tui_mode`.
+    #[test]
+    fn tui_concurrency_override_survives_normalize_projection_and_merge() {
+        let build_args = || {
+            let mut args = dummy_args();
+            args.crawler.concurrency = "2".parse().expect("valid ConcurrencyConfig");
+            args
+        };
+
+        // Capture path mirrors main.rs: base BEFORE normalization consumes args.
+        let base = crate::application::crawl_options::CrawlOptions::from(build_args());
+        assert_eq!(
+            base.budget_overrides
+                .crawl
+                .map(crate::domain::budget::tiers::CrawlConcurrency::get),
+            Some(2),
+            "From<Args> captures the explicit CLI concurrency"
+        );
+
+        let mut sources = ArgSources::default();
+        sources.set("concurrency", ConfigSource::Cli);
+        let tui = TuiOverrides::from_json(serde_json::json!({ "concurrency": "5" }));
+        let normalized =
+            normalize(&build_args(), &sources, &dummy_config(), Some(tui)).expect("normalize ok");
+
+        let projected = normalized.into_crawl_options();
+        // Rank guard upstream: TUI outranks CLI for network.concurrency too.
+        assert_eq!(projected.network.concurrency.get(), Some(5));
+
+        let merged = merge_budget_overrides(base.budget_overrides, projected.budget_overrides);
+        assert_eq!(
+            merged
+                .crawl
+                .map(crate::domain::budget::tiers::CrawlConcurrency::get),
+            Some(5),
+            "TUI-staged crawl must drive enforcement consistently with network.concurrency"
+        );
+    }
+
+    /// Test fixture builder: overrides with only the two tiers under test.
+    fn test_overrides(crawl: Option<usize>, asset: Option<usize>) -> BudgetOverrides {
+        BudgetOverrides {
+            rate_burst: None,
+            crawl: crawl.and_then(|v| crate::domain::budget::tiers::CrawlConcurrency::new(v).ok()),
+            batch: None,
+            asset: asset
+                .and_then(|v| crate::domain::budget::tiers::DownloadConcurrency::new(v).ok()),
+        }
     }
 
     #[test]

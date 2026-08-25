@@ -563,12 +563,13 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
         scraper_config.with_asset_h2_profile(parse_asset_h2_profile(&opts.network.h2_profile));
     scraper_config = scraper_config.with_asset_naming(parse_asset_naming(&opts.asset_naming));
     scraper_config = scraper_config.with_download_concurrency(budget.asset().get());
-    // Effective asset-tier bound logged at INFO so operators (and
-    // behavioral tests) can verify an explicit `--download-concurrency`
-    // reached this enforcement site (#897 item 5).
+    // Effective asset-tier bound logged at INFO so operators (and behavioral
+    // tests) can verify an explicit `--download-concurrency` reached this
+    // enforcement site (#897 item 5). Structured field — never interpolate
+    // values into the message (m1).
     info!(
-        "Asset downloads wired: concurrency={}",
-        budget.asset().get()
+        asset_concurrency = budget.asset().get(),
+        "Asset downloads wired"
     );
     scraper_config = scraper_config.with_max_file_size(opts.network.max_file_size);
     scraper_config = scraper_config.with_download_timeout(opts.network.download_timeout_secs);
