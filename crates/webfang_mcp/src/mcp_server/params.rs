@@ -71,8 +71,48 @@ pub(crate) fn validate_max_pages(value: u32) -> Result<(), McpError> {
     Err(invalid_params("max_pages", "is out of range"))
 }
 
+/// THE single enforcement point for the MCP `max_depth` parameter of
+/// `crawl_site` (#940 F3): bounds come exclusively from the OptionsSpec
+/// SSOT (`crawler::MAX_DEPTH`) via its `check_bound` policy — no numeric
+/// literal outside the spec. The rendered message keeps today's
+/// established MCP wording ("must be at most N") — the spec entry's
+/// verbatim messages name the CLI flag (`--max-depth debe ser <= 10`), so
+/// they are not trivially alignable to this wire surface.
+///
+/// # Errors
+/// Returns `McpError::invalid_params` when `value` violates the spec's
+/// inclusive bounds.
+pub(crate) fn validate_max_depth(value: u64) -> Result<(), McpError> {
+    if options_spec::crawler::MAX_DEPTH.check_bound(value).is_ok() {
+        return Ok(());
+    }
+    // Spec rejected the value; render the stable MCP wording from the same
+    // spec policy (no duplicated bound literals).
+    let ValueKind::Uint {
+        policy: Some(policy),
+    } = options_spec::crawler::MAX_DEPTH.kind
+    else {
+        return Err(invalid_params("max_depth", "is out of range"));
+    };
+    if value < policy.min {
+        return Err(invalid_params(
+            "max_depth",
+            format!("must be at least {}", policy.min),
+        ));
+    }
+    if value > policy.max.unwrap_or(u64::MAX) {
+        return Err(invalid_params(
+            "max_depth",
+            format!("must be at most {}", policy.max.unwrap_or(u64::MAX)),
+        ));
+    }
+    Err(invalid_params("max_depth", "is out of range"))
+}
+
 #[cfg(test)]
 mod ssot_tests {
+    use webfang_core::domain::options_spec;
+
     /// The SSOT accessor must yield the export variants; guards against the
     /// spec entry silently losing its Enum kind (which would empty this set).
     #[test]
@@ -130,6 +170,60 @@ mod ssot_tests {
             err.message.contains("must be at most 100000"),
             "above-cap message must keep today's wording, got: {err:?}"
         );
+    }
+
+    /// `max_depth` boundaries flow through `crawler::MAX_DEPTH`: zero
+    /// stays valid (seed-only semantics) and the cap is accepted.
+    #[test]
+    fn max_depth_zero_and_cap_accept() {
+        assert_eq!(super::validate_max_depth(0), Ok(()), "0 = seed-only crawl");
+        assert_eq!(
+            super::CrawlSiteParams {
+                url: "https://example.com".into(),
+                max_depth: Some(0),
+                max_pages: None,
+            }
+            .validate(),
+            Ok(())
+        );
+    }
+
+    /// Drift-killer (#940 F3): the MCP rejection boundary is COMPUTED FROM
+    /// the spec entry at runtime. Changing the spec cap moves the MCP
+    /// boundary with it — a reintroduced duplicated literal would fail
+    /// this test instead of silently disagreeing with the SSOT.
+    #[test]
+    fn max_depth_validation_boundary_follows_the_spec_cap() {
+        let options_spec::ValueKind::Uint {
+            policy: Some(policy),
+        } = options_spec::crawler::MAX_DEPTH.kind
+        else {
+            panic!("crawler::MAX_DEPTH must carry its numeric policy");
+        };
+        let cap = policy.max.expect("MAX_DEPTH must record the shared cap");
+
+        // Exactly at the spec cap: accepted.
+        assert_eq!(super::validate_max_depth(cap), Ok(()));
+        // One past the spec cap: rejected with the stable MCP wording
+        // rendered from the SAME bound — not from a local literal.
+        let err =
+            super::validate_max_depth(cap + 1).expect_err("one past the spec cap must be rejected");
+        assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
+        assert!(
+            err.message
+                .contains(format!("must be at most {cap}").as_str()),
+            "message must render the spec cap, got: {err:?}"
+        );
+    }
+
+    /// The user-facing message keeps TODAY'S exact wording ("must be at
+    /// most 10") — identical to what `require_max_value_u64` emitted
+    /// before the spec routing (#940 F3).
+    #[test]
+    fn max_depth_message_keeps_todays_mcp_wording() {
+        let err = super::validate_max_depth(11).expect_err("above cap must fail");
+        assert_eq!(err.message, "must be at most 10");
+        assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
     }
 }
 
@@ -248,12 +342,13 @@ pub struct CrawlSiteParams {
 impl CrawlSiteParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `url` is not a valid http(s) URL,
-    /// `max_depth` exceeds 10, or `max_pages` violates the shared spec bounds
+    /// `max_depth` violates the shared spec cap (`crawler::MAX_DEPTH`, 0..=10),
+    /// or `max_pages` violates the shared spec bounds
     /// (`crawler::MAX_PAGES`, 1..=100_000).
     pub fn validate(&self) -> Result<(), McpError> {
         require_http_url("url", &self.url)?;
         if let Some(d) = self.max_depth {
-            require_max_value_u64("max_depth", u64::from(d), 10)?;
+            validate_max_depth(u64::from(d))?;
         }
         if let Some(p) = self.max_pages {
             validate_max_pages(p)?;
