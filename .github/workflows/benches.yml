@@ -37,16 +37,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      # Free disk like ci.yml fmt job: unstripped bench profile + BoringSSL
+      # C++ build + criterion data need headroom on stock runners.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          docker rmi $(docker images -q) 2>/dev/null || true
+          sudo apt-get clean
+          df -h /
+
       - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
+      # NOTE: deliberately NO Swatinem/rust-cache here (review finding,
+      # PR #959). Repo Actions-cache usage is at the ~10 GB eviction
+      # threshold; a fresh multi-GB bench-profile cache every night would
+      # evict CI/PR caches and cause cross-workflow rebuild thrash. Cold
+      # compile (~10-15 min incl. BoringSSL) fits comfortably in the
+      # timeout-minutes budget below.
 
       # Compile gate first: a broken bench fails here with a clear signal
       # instead of mid-measurement.
       - name: Compile gate (cargo bench --no-run)
-        run: cargo bench --no-run
+        run: cargo bench --no-run --locked
 
       - name: Record runner environment
         run: |
@@ -61,7 +75,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run full criterion suite
-        run: cargo bench
+        run: cargo bench --locked
 
       - name: Summarize results
         if: always()
@@ -73,6 +87,7 @@ jobs:
               find target/criterion -name 'estimates.json' | while read -r f; do
                 dir=$(dirname "$f")
                 name=${dir#target/criterion/}
+                name=${name%/new}
                 mean=$(python3 -c "import json;print(json.load(open('$f'))['mean']['point_estimate'])" 2>/dev/null || echo "?")
                 echo "$name mean=$mean ns"
               done
@@ -82,7 +97,7 @@ jobs:
 
       - name: Upload criterion reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: criterion-reports-${{ github.run_id }}
           path: target/criterion
