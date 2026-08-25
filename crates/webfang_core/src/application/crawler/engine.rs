@@ -132,15 +132,21 @@ fn rate_limiter_config(config: &CrawlerConfig, budget: &BudgetModel) -> RateLimi
 
 impl Engine {
     /// Create a new Engine from a CrawlerConfig
+    ///
+    /// Bug R2-1: the operator-level [`BudgetOverrides`] carried on the config
+    /// feed `BudgetModel::build`, so an explicit `--concurrency` /
+    /// `--rate-limit-burst` reaches the scheduler spawn bound and rate-limiter
+    /// burst instead of being silently replaced by the auto table.
     fn new(config: CrawlerConfig, ignore_robots: bool) -> Result<Self, CrawlError> {
-        Self::with_budget(config, ignore_robots, BudgetOverrides::default())
+        let overrides = config.budget_overrides;
+        Self::with_budget(config, ignore_robots, overrides)
     }
 
     /// Create an Engine whose concurrency budgets derive from a
     /// [`BudgetModel`] built ONCE at entry (design D4). `Engine::new`
-    /// delegates with default overrides; the orchestrator entry point
-    /// forwards operator overrides (`BudgetModel::build` stays here so the
-    /// model is constructed exactly once per crawl).
+    /// forwards the overrides carried on `CrawlerConfig`; direct callers of
+    /// `with_budget` pass them explicitly (`BudgetModel::build` stays here so
+    /// the model is constructed exactly once per crawl).
     fn with_budget(
         config: CrawlerConfig,
         ignore_robots: bool,
@@ -1205,6 +1211,7 @@ async fn crawl_site_with_options_inner(
 mod tests {
     use super::*;
     use crate::domain::budget::detector::FixedDetector;
+    use crate::domain::budget::tiers::{BurstPermits, CrawlConcurrency};
     use crate::domain::budget::{BudgetModel, BudgetOverrides};
     use url::Url;
     use wiremock::matchers::{path, path_regex};
@@ -1275,6 +1282,63 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Bug R2-1: an explicit operator override carried on `CrawlerConfig`
+    /// must reach the Engine — `Engine::new` feeds `config.budget_overrides`
+    /// into `BudgetModel::build`, so the scheduler spawn bound (Operation.crawl)
+    /// and rate-limiter burst reflect the override instead of the auto table.
+    #[tokio::test]
+    async fn engine_new_consumes_config_budget_overrides() {
+        let seed = Url::parse("http://127.0.0.1:9/").expect("valid seed URL");
+        let overrides = BudgetOverrides {
+            crawl: CrawlConcurrency::new(7).ok(),
+            rate_burst: BurstPermits::new(9).ok(),
+            ..BudgetOverrides::default()
+        };
+        let config = CrawlerConfig::builder(seed)
+            .concurrency(1)
+            .budget_overrides(overrides)
+            .build();
+
+        let engine = Engine::new(config, true).expect("engine must build");
+
+        assert_eq!(
+            engine.budget.crawl().get(),
+            7,
+            "explicit --concurrency must reach the Engine scheduler bound"
+        );
+        assert_eq!(
+            engine.budget.burst().get(),
+            9,
+            "explicit --rate-limit-burst must reach the Engine rate limiter"
+        );
+    }
+
+    /// Triangulation: with default (no-op) overrides the Engine reproduces
+    /// exactly the model derived from those same default overrides through
+    /// the canonical detector seam — the channel changes nothing when unset.
+    #[tokio::test]
+    async fn engine_new_default_overrides_keep_auto_derivation() {
+        let seed = Url::parse("http://127.0.0.1:9/").expect("valid seed URL");
+        let expected = BudgetModel::build(
+            BudgetOverrides::default(),
+            &crate::domain::budget::detector::SystemDetector,
+        );
+        let config = CrawlerConfig::builder(seed).concurrency(16).build();
+
+        let engine = Engine::new(config, true).expect("engine must build");
+
+        assert_eq!(
+            engine.budget.crawl().get(),
+            expected.crawl().get(),
+            "default overrides must keep the auto-derived crawl tier"
+        );
+        assert_eq!(
+            engine.budget.burst().get(),
+            expected.burst().get(),
+            "default overrides must keep the auto-derived burst tier"
+        );
     }
 
     /// Shutdown while a worker waits: cancellation must abort the parked

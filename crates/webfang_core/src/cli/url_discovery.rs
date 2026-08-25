@@ -166,4 +166,108 @@ mod tests {
         // Should return Err for unreachable host, proving Result return type
         assert!(result.is_err(), "Expected Err for unreachable host");
     }
+
+    /// Shared in-flight gauge + six-node star topology (seed + 5 leaves)
+    /// for the R2-1 diagnostic: counts every request and the high-water
+    /// mark of concurrent responses so the scheduler bound derived from
+    /// the operator override is observable end to end.
+    struct SixNodeGauge {
+        inflight: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        max_inflight: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        total_requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        seed_uri: String,
+    }
+
+    impl Clone for SixNodeGauge {
+        fn clone(&self) -> Self {
+            use std::sync::Arc;
+            Self {
+                inflight: Arc::clone(&self.inflight),
+                max_inflight: Arc::clone(&self.max_inflight),
+                total_requests: Arc::clone(&self.total_requests),
+                seed_uri: self.seed_uri.clone(),
+            }
+        }
+    }
+
+    impl wiremock::Respond for SixNodeGauge {
+        fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+            use std::sync::atomic::Ordering as AtomicOrdering;
+            let current = self.inflight.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+            self.max_inflight.fetch_max(current, AtomicOrdering::SeqCst);
+            self.total_requests.fetch_add(1, AtomicOrdering::SeqCst);
+            // Force overlap when the scheduler bound allows parallel
+            // fetches, so an over-broad bound is observed by the gauge.
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            self.inflight.fetch_sub(1, AtomicOrdering::SeqCst);
+            if request.url.path() == "/" {
+                let links: String = (0..5)
+                    .map(|i| format!(r#"<a href="{}/p{i}">n{i}</a>"#, self.seed_uri))
+                    .collect();
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_string(format!("<html><body>{links}</body></html>"))
+            } else {
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_string("<html><body>leaf</body></html>")
+            }
+        }
+    }
+
+    /// Six-node diagnostic (bug R2-1): recursive URL discovery runs the
+    /// real crawl Engine via `crawl_site`, so an operator `crawl = 1`
+    /// override carried on the discovery config must reach it — six nodes
+    /// fetched strictly one at a time instead of the auto tier table.
+    #[cfg(not(miri))] // wiremock + wreq use boring-sys2 FFI (unsupported by Miri)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recursive_discovery_enforces_concurrency_override_six_node_diagnostic() {
+        use crate::domain::budget::tiers::{BurstPermits, CrawlConcurrency};
+        use crate::domain::budget::BudgetOverrides;
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+        let server = wiremock::MockServer::start().await;
+        let gauge = SixNodeGauge {
+            inflight: std::sync::Arc::new(AtomicUsize::new(0)),
+            max_inflight: std::sync::Arc::new(AtomicUsize::new(0)),
+            total_requests: std::sync::Arc::new(AtomicUsize::new(0)),
+            seed_uri: server.uri(),
+        };
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(gauge.clone())
+            .mount(&server)
+            .await;
+
+        let seed_url = url::Url::parse(&format!("{}/", server.uri())).unwrap();
+        let config = CrawlerConfig::builder(seed_url.clone())
+            .max_depth(1)
+            .max_pages(10)
+            .concurrency(16) // configured value must be beaten by the override
+            .timeout_secs(5)
+            .ignore_robots(true)
+            .budget_overrides(BudgetOverrides {
+                crawl: CrawlConcurrency::new(1).ok(),
+                rate_burst: BurstPermits::new(4).ok(),
+                ..BudgetOverrides::default()
+            })
+            .build();
+        let mut opts = CrawlOptions {
+            url: seed_url,
+            ..Default::default()
+        };
+        opts.export.quiet = true;
+
+        let discovered = discover_urls_recursive(config, &opts)
+            .await
+            .expect("six-node discovery must succeed");
+
+        assert_eq!(
+            discovered.len(),
+            6,
+            "seed + 5 discovered leaves must all be found"
+        );
+        assert_eq!(
+            gauge.max_inflight.load(AtomicOrdering::SeqCst),
+            1,
+            "override crawl=1 must cap concurrent fetches at 1 through recursive discovery"
+        );
+    }
 }
