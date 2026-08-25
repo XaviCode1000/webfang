@@ -824,10 +824,40 @@ pub fn process_results_with_chunks(
 
     let processed_urls: Vec<String> = chunks.iter().map(|c| c.url.clone()).collect();
 
-    // Validate chunks before passing to export_batch
+    // Resume gate BEFORE any export (mirrors `process_single_item`): decide()
+    // is read-only over the loaded records + flushed-bytes hash index, so the
+    // decisions can be precomputed per chunk without side effects.
+    let content_hashes: Vec<String> = chunks
+        .iter()
+        // Same digest the exporter stamps into the line; computed up front so
+        // decide() can prove flush membership even with no record.
+        .map(|c| format!("{:x}", Sha256::digest(c.content.as_bytes())))
+        .collect();
+    let decisions: Vec<ItemDecision> = processed_urls
+        .iter()
+        .zip(&content_hashes)
+        .map(|(url_str, hash)| session.decide(url_str, Some(hash.as_str())))
+        .collect();
+    let skipped = decisions
+        .iter()
+        .filter(|d| matches!(d, ItemDecision::AlreadyCommitted))
+        .count();
+    if skipped > 0 {
+        info!(
+            skipped,
+            total = processed_urls.len(),
+            "resume gate: skipping already-flushed AI chunks before batch export"
+        );
+    }
+
+    // Only chunks that will actually drive this run reach export_batch:
+    // COMMITTED-proven and PromoteFromFlushProof chunks must not re-append
+    // (BUG F3-A: exporting before deciding duplicated them on resume).
     let validated_chunks: Vec<crate::domain::DocumentChunkValidated> = chunks
         .iter()
-        .filter_map(|c| c.clone().validate().ok())
+        .zip(&decisions)
+        .filter(|(_, d)| matches!(d, ItemDecision::DriveAndCommit))
+        .filter_map(|(c, _)| c.clone().validate().ok())
         .collect();
 
     // Use export_batch to avoid per-chunk file open/close (which overwrites in VectorExporter)
@@ -835,21 +865,20 @@ pub fn process_results_with_chunks(
         exporter.export_batch(&validated_chunks)?;
     }
 
-    for (chunk, url_str) in chunks.iter().zip(&processed_urls) {
-        // Same digest the exporter stamps into the vector line; computed up
-        // front so decide() can prove flush membership even with no record.
-        let content_hash = format!("{:x}", Sha256::digest(chunk.content.as_bytes()));
-        match session.decide(url_str, Some(content_hash.as_str())) {
+    for ((url_str, content_hash), decision) in
+        processed_urls.iter().zip(&content_hashes).zip(decisions)
+    {
+        match decision {
             ItemDecision::AlreadyCommitted => continue,
             ItemDecision::PromoteFromFlushProof => {
                 session.promote_from_flush_proof(
                     url_str,
                     output_path.display().to_string(),
-                    &content_hash,
+                    content_hash,
                 );
             },
             ItemDecision::DriveAndCommit => {
-                session.commit_item(url_str, content_hash, output_path.clone(), run_id);
+                session.commit_item(url_str, content_hash.clone(), output_path.clone(), run_id);
             },
         }
         if session.cancelled() {
@@ -1323,5 +1352,200 @@ mod tests {
             .lines()
             .count();
         assert_eq!(lines_final, 2, "no duplicated lines across cancel+resume");
+    }
+
+    // =========================================================================
+    // AI chunk export: resume gate BEFORE batch export (BUG F3-A)
+    // =========================================================================
+    // The non-AI path (`process_single_item`) decides BEFORE each export;
+    // the AI chunk path must mirror that ordering so --clean-ai --resume
+    // never appends chunks whose URL is COMMITTED-proven or whose bytes
+    // are already flushed (PromoteFromFlushProof).
+    #[cfg(feature = "ai")]
+    mod ai_chunk_resume_gate {
+        use super::*;
+        use crate::domain::DocumentChunkUnvalidated;
+        use std::collections::HashMap;
+
+        fn make_ai_chunk(url: &str, title: &str, content: &str) -> crate::domain::DocumentChunk {
+            DocumentChunkUnvalidated {
+                id: uuid::Uuid::new_v4(),
+                url: url.to_string(),
+                title: title.to_string(),
+                content: content.to_string(),
+                metadata: HashMap::new(),
+                timestamp: chrono::Utc::now(),
+                embeddings: None,
+                correlation_id: None,
+                _state: std::marker::PhantomData,
+            }
+        }
+
+        fn jsonl_lines(dir: &std::path::Path, filename: &str) -> Vec<String> {
+            std::fs::read_to_string(dir.join(format!("{filename}.jsonl")))
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(str::to_string)
+                .collect()
+        }
+
+        /// RED (F3-A): with --clean-ai --resume, chunks of COMMITTED-proven
+        /// URLs must NOT be re-appended to the output JSONL.
+        #[test]
+        fn ai_resume_does_not_append_chunks_for_committed_urls() {
+            let dir = TempDir::new().unwrap();
+            let store = RecordStore::new("resume-ai.test").with_state_dir(dir.path().to_path_buf());
+
+            // Seed run (fresh): urlA drives + commits; exactly one line.
+            let seed_store = store.clone();
+            let seed_ctx = ResumeContext::new(&seed_store).with_resume(false);
+            process_results_with_chunks(
+                &[make_ai_chunk(
+                    "https://resume-ai.test/a",
+                    "A",
+                    "alpha content",
+                )],
+                dir.path().to_path_buf(),
+                ExportFormat::Jsonl,
+                "export",
+                Some(&seed_ctx),
+            )
+            .unwrap();
+            assert_eq!(jsonl_lines(dir.path(), "export").len(), 1);
+
+            // Resume rerun: urlA is COMMITTED-proven (skip), urlB exports once.
+            let resume_store = store.clone();
+            let resume_ctx = ResumeContext::new(&resume_store).with_resume(true);
+            let processed = process_results_with_chunks(
+                &[
+                    make_ai_chunk("https://resume-ai.test/a", "A", "alpha content"),
+                    make_ai_chunk("https://resume-ai.test/b", "B", "beta content"),
+                ],
+                dir.path().to_path_buf(),
+                ExportFormat::Jsonl,
+                "export",
+                Some(&resume_ctx),
+            )
+            .unwrap();
+            assert_eq!(processed.len(), 2);
+
+            let lines = jsonl_lines(dir.path(), "export");
+            assert_eq!(
+                lines.len(),
+                2,
+                "--clean-ai --resume must not duplicate chunks for COMMITTED-proven URLs"
+            );
+            assert_eq!(
+                lines.iter().filter(|l| l.contains("alpha")).count(),
+                1,
+                "the committed-proven chunk appears exactly once"
+            );
+
+            let records = store.load().unwrap();
+            for url in ["https://resume-ai.test/a", "https://resume-ai.test/b"] {
+                assert_eq!(records[url].status, PageStatus::Committed, "{url}");
+            }
+        }
+
+        /// Regression guard: a fresh-state first run still exports every chunk.
+        #[test]
+        fn ai_fresh_run_exports_all_chunks() {
+            let dir = TempDir::new().unwrap();
+            let store = RecordStore::new("fresh-ai.test").with_state_dir(dir.path().to_path_buf());
+            let ctx_store = store.clone();
+            let ctx = ResumeContext::new(&ctx_store).with_resume(false);
+
+            let processed = process_results_with_chunks(
+                &[
+                    make_ai_chunk("https://fresh-ai.test/one", "One", "first body"),
+                    make_ai_chunk("https://fresh-ai.test/two", "Two", "second body"),
+                ],
+                dir.path().to_path_buf(),
+                ExportFormat::Jsonl,
+                "export",
+                Some(&ctx),
+            )
+            .unwrap();
+
+            assert_eq!(processed.len(), 2);
+            assert_eq!(
+                jsonl_lines(dir.path(), "export").len(),
+                2,
+                "fresh run exports every chunk"
+            );
+            let records = store.load().unwrap();
+            assert_eq!(
+                records["https://fresh-ai.test/one"].status,
+                PageStatus::Committed
+            );
+            assert_eq!(
+                records["https://fresh-ai.test/two"].status,
+                PageStatus::Committed
+            );
+        }
+
+        /// TRIANGULATE: PromoteFromFlushProof items must be promoted WITHOUT
+        /// re-appending their chunk (hash_index membership proves the bytes
+        /// were already flushed).
+        #[test]
+        fn ai_flush_proof_promotion_does_not_reappend_chunk() {
+            let dir = TempDir::new().unwrap();
+            let store = RecordStore::new("flush-ai.test").with_state_dir(dir.path().to_path_buf());
+
+            // Run 1: AI-export commits gamma; one line on disk.
+            let first_store = store.clone();
+            let first = ResumeContext::new(&first_store).with_resume(false);
+            process_results_with_chunks(
+                &[make_ai_chunk(
+                    "https://flush-ai.test/g",
+                    "G",
+                    "gamma content",
+                )],
+                dir.path().to_path_buf(),
+                ExportFormat::Jsonl,
+                "export",
+                Some(&first),
+            )
+            .unwrap();
+            assert_eq!(jsonl_lines(dir.path(), "export").len(), 1);
+
+            // Demote the record to Extracted keeping its content_hash:
+            // bytes proven on disk, but the record no longer claims COMMITTED.
+            let mut records = store.load().unwrap();
+            records
+                .get_mut("https://flush-ai.test/g")
+                .expect("gamma record exists")
+                .status = PageStatus::Extracted;
+            store.save(&records).unwrap();
+
+            // Resume rerun: PromoteFromFlushProof promotes WITHOUT appending.
+            let second_store = store.clone();
+            let second = ResumeContext::new(&second_store).with_resume(true);
+            process_results_with_chunks(
+                &[make_ai_chunk(
+                    "https://flush-ai.test/g",
+                    "G",
+                    "gamma content",
+                )],
+                dir.path().to_path_buf(),
+                ExportFormat::Jsonl,
+                "export",
+                Some(&second),
+            )
+            .unwrap();
+
+            assert_eq!(
+                jsonl_lines(dir.path(), "export").len(),
+                1,
+                "flush-proof promotion must not re-append the chunk"
+            );
+            let records = store.load().unwrap();
+            assert_eq!(
+                records["https://flush-ai.test/g"].status,
+                PageStatus::Committed,
+                "record promoted back to Committed"
+            );
+        }
     }
 }
