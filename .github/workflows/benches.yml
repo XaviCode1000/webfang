@@ -1,0 +1,107 @@
+# Nightly benchmark suite (issue #958)
+#
+# Runs all 9 criterion benches wired in crates/webfang_core/Cargo.toml:
+# cosine_similarity, export, html_conversion, link_extraction,
+# readability, sitemap_parsing, url_parsing, waf_detection,
+# tracing_overhead.
+#
+# This workflow is NOT required and NEVER blocks PRs or merges:
+#   - schedule: nightly reference run on consistent GitHub runners
+#   - workflow_dispatch: manual run for baseline refreshes
+#
+# Results are uploaded as artifacts (criterion reports) so baselines can be
+# compared across nightly runs. Baseline document: benches/BASELINES.md.
+#
+# NOTE: GitHub-hosted runners are not precision lab hardware. Numbers are for
+# regression TREND detection between runs on the same runner image, not
+# absolute microarchitecture claims.
+
+name: Benches
+
+on:
+  schedule:
+    # Nightly 04:30 UTC. Offset from mutants/sanitizers (both Mon 03:00 UTC)
+    # and from top-of-the-hour scheduler congestion (review finding, PR #959).
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: benches-${{ github.ref }}
+  cancel-in-progress: false # never kill a nightly mid-measurement
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  bench:
+    name: Criterion suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      # Free disk like ci.yml fmt job: unstripped bench profile + BoringSSL
+      # C++ build + criterion data need headroom on stock runners.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          docker rmi $(docker images -q) 2>/dev/null || true
+          sudo apt-get clean
+          df -h /
+
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # NOTE: deliberately NO Swatinem/rust-cache here (review finding,
+      # PR #959). Repo Actions-cache usage is at the ~10 GB eviction
+      # threshold; a fresh multi-GB bench-profile cache every night would
+      # evict CI/PR caches and cause cross-workflow rebuild thrash. Cold
+      # compile (~10-15 min incl. BoringSSL) fits comfortably in the
+      # timeout-minutes budget below.
+
+      # Compile gate first: a broken bench fails here with a clear signal
+      # instead of mid-measurement.
+      - name: Compile gate (cargo bench --no-run)
+        run: cargo bench --no-run --locked
+
+      - name: Record runner environment
+        run: |
+          {
+            echo "## Runner environment"
+            echo '```'
+            rustc --version
+            grep -m1 "model name" /proc/cpuinfo || true
+            nproc
+            free -h | head -2 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run full criterion suite
+        run: cargo bench --locked
+
+      - name: Summarize results
+        if: always()
+        run: |
+          if [ -d target/criterion ]; then
+            echo "## Benchmark summary" >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo '```'
+              find target/criterion -name 'estimates.json' | while read -r f; do
+                dir=$(dirname "$f")
+                name=${dir#target/criterion/}
+                name=${name%/new}
+                mean=$(python3 -c "import json;print(json.load(open('$f'))['mean']['point_estimate'])" 2>/dev/null || echo "?")
+                echo "$name mean=$mean ns"
+              done
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload criterion reports
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: criterion-reports-${{ github.run_id }}
+          path: target/criterion
+          retention-days: 30
+          if-no-files-found: warn
