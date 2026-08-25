@@ -459,6 +459,10 @@ fn build_crawler_config_for_discovery(
         .use_sitemap(opts.crawl.use_sitemap)
         .timeout_secs(opts.network.timeout_secs)
         .delay_ms(opts.network.delay_ms)
+        // Bug R2-1: recursive URL discovery runs the real crawl Engine, so
+        // the operator overrides must ride on the config or the Engine
+        // silently re-derives the auto tiers.
+        .budget_overrides(opts.budget_overrides)
         .tls_emulation(tls_emulation);
     if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
         crawler_config = crawler_config.sitemap_url(sitemap_url);
@@ -1160,6 +1164,10 @@ fn build_batch_crawler_config(
         // Concurrency bound derives from the run's budget model
         // Operation.crawl tier (task 2.5b), not from the raw CLI flag.
         .concurrency(budget.crawl().get())
+        // Bug R2-1: each batch URL is crawled through the Engine via
+        // `crawl_site`; without the overrides the Engine drops the explicit
+        // --concurrency / --rate-limit-burst and re-derives the auto tiers.
+        .budget_overrides(opts.budget_overrides)
         .tls_emulation(tls_emulation);
     if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
         crawler_config = crawler_config.sitemap_url(sitemap_url);
@@ -1295,9 +1303,9 @@ fn parse_asset_h2_profile(s: &str) -> wreq_util::Profile {
 #[cfg(test)]
 mod tests {
     use super::{
-        batch_exit_code, build_batch_crawler_config, build_elastic_ingestion, format_failure,
-        parse_asset_h2_profile, plan_urls, report_phase, resolve_export_dir,
-        resolve_persistence_root,
+        batch_exit_code, build_batch_crawler_config, build_crawler_config_for_discovery,
+        build_elastic_ingestion, format_failure, parse_asset_h2_profile, plan_urls, report_phase,
+        resolve_export_dir, resolve_persistence_root,
     };
     use crate::application::crawl_options::CrawlOptions;
     use crate::cli::error::CliExit;
@@ -1331,6 +1339,56 @@ mod tests {
         assert_eq!(
             config.concurrency, 2,
             "explicit --concurrency must reach the crawler through the model"
+        );
+    }
+
+    #[test]
+    fn discovery_config_propagates_budget_overrides() {
+        // Bug R2-1: recursive URL discovery runs the real crawl Engine via
+        // crawl_site; the operator overrides staged on CrawlOptions must be
+        // carried onto the config so the Engine honors them.
+        let mut opts = CrawlOptions::default();
+        opts.budget_overrides.crawl = crate::domain::budget::tiers::CrawlConcurrency::new(6).ok();
+        opts.budget_overrides.rate_burst = crate::domain::budget::tiers::BurstPermits::new(11).ok();
+
+        let config = build_crawler_config_for_discovery(&opts, wreq_util::Profile::Chrome145);
+
+        assert_eq!(
+            config.budget_overrides.crawl.map(|c| c.get()),
+            Some(6),
+            "explicit --concurrency must reach the discovery Engine"
+        );
+        assert_eq!(
+            config.budget_overrides.rate_burst.map(|b| b.get()),
+            Some(11),
+            "explicit --rate-limit-burst must reach the discovery Engine"
+        );
+    }
+
+    #[test]
+    fn batch_config_propagates_budget_overrides() {
+        // Bug R2-1: --batch crawls each URL through the crawl Engine via
+        // BatchProcessor.process_single_url -> crawl_site; the operator
+        // overrides must ride on the base config handed to the batch job.
+        let mut opts = CrawlOptions::default();
+        opts.budget_overrides.crawl = crate::domain::budget::tiers::CrawlConcurrency::new(4).ok();
+        opts.budget_overrides.rate_burst = crate::domain::budget::tiers::BurstPermits::new(13).ok();
+        let budget = crate::domain::budget::BudgetModel::build(
+            opts.budget_overrides,
+            &crate::domain::budget::detector::SystemDetector,
+        );
+
+        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145, &budget);
+
+        assert_eq!(
+            config.budget_overrides.crawl.map(|c| c.get()),
+            Some(4),
+            "explicit --concurrency must reach the batch Engine"
+        );
+        assert_eq!(
+            config.budget_overrides.rate_burst.map(|b| b.get()),
+            Some(13),
+            "explicit --rate-limit-burst must reach the batch Engine"
         );
     }
 
