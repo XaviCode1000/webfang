@@ -115,8 +115,13 @@ fi
 #   8  Still pending (timeout unlikely — watch blocks).
 #   1 Some check FAILED or gh error.
 echo "==> Waiting for required checks on PR #${pr_number}..."
-if ! gh pr checks "$pr_number" --watch --required --fail-fast >/dev/null; then
-  rc=$?
+# NOTE: capture the exit status with `cmd || rc=$?`, NOT `if ! cmd; then rc=$?`.
+# Inside the `then` block of a negated command, `$?` is the status of the
+# negated pipeline (always 0 when the body runs), so the real gh status would
+# be lost (#938).
+rc=0
+gh pr checks "$pr_number" --watch --required --fail-fast >/dev/null || rc=$?
+if [[ $rc -ne 0 ]]; then
   if [[ $rc -eq 8 ]]; then
     echo "error: checks still pending after watch exit" >&2
     exit 4
@@ -168,8 +173,9 @@ if [[ $dry_run -eq 1 ]]; then
 fi
 
 echo "==> Merging PR #${pr_number} (squash)..."
-if ! gh pr merge "$pr_number" --squash; then
-  rc=$?
+rc=0
+gh pr merge "$pr_number" --squash || rc=$?
+if [[ $rc -ne 0 ]]; then
   echo "error: gh pr merge failed (rc=${rc})" >&2
   exit 4
 fi
