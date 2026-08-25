@@ -774,9 +774,10 @@ impl ExportVectorParams {
     }
 }
 
+/// Parameters for the `process_export_pipeline` tool.
 #[derive(Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProcessExportPipelineParams {
+pub struct ProcessExportPipelineParams {
     /// URL to scrape and export
     pub url: Option<String>,
     /// Export format
