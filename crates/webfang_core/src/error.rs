@@ -462,8 +462,12 @@ impl ScraperError {
             Self::Semantic(inner) => inner.classify(),
             Self::Internal(_) => ErrorClass::InternalFatal,
             Self::CrawlLimit(_) => ErrorClass::PermanentFatal,
-            Self::SitemapEmpty => ErrorClass::PermanentFatal,
-            Self::SitemapNotFound(_) => ErrorClass::PermanentFatal,
+            // Row 20: empty/missing sitemap is a domain-content condition,
+            // not a code bug — same class as CrawlError::classify so the
+            // From<CrawlError> pass-through does not invert it. The typed
+            // exit-2 override (`empty_discovery_exit_for`) matches variants
+            // directly and is unaffected.
+            Self::SitemapEmpty | Self::SitemapNotFound(_) => ErrorClass::DomainRecoverable,
             // Non-transient Network (e.g. DNS resolution, TLS errors)
             Self::Network(_) => ErrorClass::InternalFatal,
         }
@@ -788,6 +792,7 @@ impl From<crate::infrastructure::downloader::DownloadError> for ScraperError {
 #[allow(clippy::io_other_error)]
 mod tests {
     use super::*;
+    use crate::domain::error::CrawlError;
 
     #[test]
     fn test_invalid_url_error() {
@@ -1303,6 +1308,43 @@ mod tests {
     fn test_classify_permanent_fatal_waf() {
         let err = ScraperError::waf_blocked("https://example.com", "Cloudflare");
         assert_eq!(err.classify(), ErrorClass::PermanentFatal);
+    }
+
+    // Matrix row 20: SitemapEmpty / SitemapNotFound are DomainRecoverable
+    // (empty/missing sitemap is a domain-content condition, not a bug),
+    // matching CrawlError::classify. The typed exit-2 override in
+    // cli/error.rs (`empty_discovery_exit_for`) matches variants directly
+    // and is unaffected by this class.
+    #[test]
+    fn test_classify_domain_recoverable_sitemap_empty() {
+        let err = ScraperError::SitemapEmpty;
+        assert_eq!(err.classify(), ErrorClass::DomainRecoverable);
+    }
+
+    #[test]
+    fn test_classify_domain_recoverable_sitemap_not_found() {
+        let err = ScraperError::SitemapNotFound("https://example.com/sitemap.xml".to_string());
+        assert_eq!(err.classify(), ErrorClass::DomainRecoverable);
+    }
+
+    // Triangulation: row 20's DomainRecoverable must survive the
+    // `From<CrawlError>` conversion — both layers classify the same class,
+    // while neighboring row-15 variants keep PermanentFatal.
+    #[test]
+    fn test_classify_sitemap_class_survives_crawl_error_conversion() {
+        assert_eq!(
+            ScraperError::from(CrawlError::SitemapEmpty).classify(),
+            ErrorClass::DomainRecoverable
+        );
+        assert_eq!(
+            ScraperError::from(CrawlError::SitemapNotFound("https://example.com".into()))
+                .classify(),
+            ErrorClass::DomainRecoverable
+        );
+        assert_eq!(
+            ScraperError::from(CrawlError::InvalidUrl("bad".into())).classify(),
+            ErrorClass::PermanentFatal
+        );
     }
 
     #[test]

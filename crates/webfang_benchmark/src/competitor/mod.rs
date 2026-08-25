@@ -17,9 +17,16 @@ use crate::error::{BenchmarkError, Result};
 
 pub mod crawl4ai;
 pub mod firecrawl;
+pub mod plan;
+pub mod tierb_corpus;
 
 pub use crawl4ai::Crawl4AiConfig;
 pub use firecrawl::FirecrawlConfig;
+pub use plan::{
+    plan_live_run, LiveRunPlan, DEFAULT_INTER_REQUEST_DELAY_MS, DEFAULT_MAX_CREDITS,
+    FIRECRAWL_MAX_CONCURRENCY,
+};
+pub use tierb_corpus::{egress_type_from_env, CREDITS_PER_PAGE, EGRESS_TYPE_ENV_VAR};
 
 /// Which live competitor target a `bench_live` invocation addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,11 +110,18 @@ pub struct BenchLiveArgs {
     pub target: CompetitorTarget,
     /// Explicit cost opt-in (`--i-understand-costs`).
     pub opt_in: bool,
+    /// Credit budget guard (`--max-credits`); default
+    /// [`plan::DEFAULT_MAX_CREDITS`].
+    pub max_credits: u32,
+    /// Requested concurrency (`--concurrency`); default 1, clamped later by
+    /// the planner for provider limits.
+    pub concurrency: u32,
 }
 
 /// Usage line for the `bench_live` binary.
 pub const BENCH_LIVE_USAGE: &str =
-    "usage: bench_live --target <firecrawl|crawl4ai> [--i-understand-costs]";
+    "usage: bench_live --target <firecrawl|crawl4ai> [--i-understand-costs] \
+     [--max-credits <N>] [--concurrency <N>]";
 
 /// Minimal arg parsing for `bench_live`, kept library-level so it is unit
 /// testable (mirrors the hand-rolled `bench_tier_a` style; no clap dep).
@@ -122,6 +136,10 @@ pub fn parse_bench_live_args(cli_args: impl Iterator<Item = String>) -> Result<B
     let mut iter = cli_args.peekable();
     let mut target = None;
     let mut opt_in = false;
+    let mut max_credits = plan::DEFAULT_MAX_CREDITS;
+    let mut concurrency = 1;
+    let mut seen_max_credits = false;
+    let mut seen_concurrency = false;
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--target" => {
@@ -143,6 +161,38 @@ pub fn parse_bench_live_args(cli_args: impl Iterator<Item = String>) -> Result<B
                 }
                 opt_in = true;
             },
+            "--max-credits" | "--concurrency" => {
+                let flag = arg.as_str();
+                let seen = if arg == "--max-credits" {
+                    &mut seen_max_credits
+                } else {
+                    &mut seen_concurrency
+                };
+                if *seen {
+                    return Err(BenchmarkError::Render(format!(
+                        "{BENCH_LIVE_USAGE}: {arg} given more than once"
+                    )));
+                }
+                *seen = true;
+                let value = iter.next().ok_or_else(|| {
+                    BenchmarkError::Render(format!("{BENCH_LIVE_USAGE}: {flag} needs a value"))
+                })?;
+                let parsed: u32 = value.parse().map_err(|_| {
+                    BenchmarkError::Render(format!(
+                        "{BENCH_LIVE_USAGE}: {flag} expects a positive integer, got `{value}`"
+                    ))
+                })?;
+                if parsed == 0 {
+                    return Err(BenchmarkError::Render(format!(
+                        "{BENCH_LIVE_USAGE}: {flag} must be >= 1"
+                    )));
+                }
+                if arg == "--max-credits" {
+                    max_credits = parsed;
+                } else {
+                    concurrency = parsed;
+                }
+            },
             other => {
                 return Err(BenchmarkError::Render(format!(
                     "{BENCH_LIVE_USAGE}: unexpected argument `{other}`"
@@ -155,7 +205,12 @@ pub fn parse_bench_live_args(cli_args: impl Iterator<Item = String>) -> Result<B
             "{BENCH_LIVE_USAGE}: --target <firecrawl|crawl4ai> is required"
         ))
     })?;
-    Ok(BenchLiveArgs { target, opt_in })
+    Ok(BenchLiveArgs {
+        target,
+        opt_in,
+        max_credits,
+        concurrency,
+    })
 }
 
 /// True iff `env_var` is set to a non-empty, non-whitespace value.
@@ -167,7 +222,11 @@ pub(crate) fn env_key_present(env_var: &str) -> bool {
 ///
 /// Building this value performs NO I/O: it is pure data the future Tier B
 /// execution layer will hand to a wreq client (C-3; never reqwest).
-#[derive(Debug, Clone)]
+///
+/// The manual [`Debug`] impl REDACTS [`Self::bearer_token`] as
+/// `[REDACTED]`: prepared requests flow through logs and error paths, and
+/// a provider API key must never appear in any rendered output.
+#[derive(Clone)]
 pub struct PreparedRequest {
     /// HTTP method of the deferred call.
     pub method: &'static str,
@@ -177,6 +236,17 @@ pub struct PreparedRequest {
     pub bearer_token: String,
     /// JSON request body, already validated/normalized.
     pub body_json: serde_json::Value,
+}
+
+impl std::fmt::Debug for PreparedRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedRequest")
+            .field("method", &self.method)
+            .field("url", &self.url)
+            .field("bearer_token", &"[REDACTED]")
+            .field("body_json", &self.body_json)
+            .finish()
+    }
 }
 
 /// Shared crawl-start parameters accepted by every adapter.
