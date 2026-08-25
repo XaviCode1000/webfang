@@ -105,11 +105,22 @@ pub struct RamThresholds {
     pub critical_percent: u8,
 }
 
+impl RamThresholds {
+    /// Canonical default warning percentage. Consumers that need the value
+    /// in `const` context (e.g. the governor's threshold constants) derive
+    /// from these associated consts so the model stays the single source of
+    /// truth (#897 item 4).
+    pub const DEFAULT_WARNING_PERCENT: u8 = 80;
+    /// Canonical default critical percentage; see
+    /// [`Self::DEFAULT_WARNING_PERCENT`].
+    pub const DEFAULT_CRITICAL_PERCENT: u8 = 90;
+}
+
 impl Default for RamThresholds {
     fn default() -> Self {
         Self {
-            warning_percent: 80,
-            critical_percent: 90,
+            warning_percent: Self::DEFAULT_WARNING_PERCENT,
+            critical_percent: Self::DEFAULT_CRITICAL_PERCENT,
         }
     }
 }

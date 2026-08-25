@@ -38,7 +38,10 @@ pub enum OutputFormat {
 /// Concurrency configuration with smart auto-detection.
 ///
 /// Provides intelligent defaults based on hardware capabilities:
-/// - **Auto-detection**: Uses `std::thread::available_parallelism()` to detect CPU cores
+/// - **Auto-detection**: derives CPU cores from the process-wide hardware
+///   seam ([`crate::domain::budget::detector::system_parallelism`], cgroup
+///   limits included — never raw `available_parallelism`) so "auto" means
+///   the same thing everywhere (#897 item 3)
 /// - **HDD-aware**: Limits concurrency on systems with limited I/O
 /// - **Safe bounds**: Clamps values between 1 and 16
 #[derive(Debug, Clone)]
@@ -101,9 +104,12 @@ impl ConcurrencyConfig {
             return value;
         }
 
-        let cores = std::thread::available_parallelism()
-            .map(|p| p.get())
-            .unwrap_or(2);
+        // #897 item 3: derive from the canonical hardware seam (Q2 UNIFY
+        // NOW) instead of calling `available_parallelism` directly. The
+        // seam's fallback (`NonZeroUsize::MIN`) lands on the same table
+        // row as the legacy `unwrap_or(2)` fallback, so behavior is
+        // unchanged.
+        let cores = crate::domain::budget::detector::system_parallelism().get();
 
         let optimal = match cores {
             1 | 2 => 1,

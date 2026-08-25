@@ -29,10 +29,17 @@ use tracing::{debug, warn};
 use super::DownloadError;
 
 /// RAM usage percentage that triggers a warning and reduces capacity by half.
-const WARNING_THRESHOLD: u8 = 80;
+///
+/// Derived from the budget model's [`RamThresholds`] so the governor and the
+/// pure derivation share ONE threshold source of truth (#897 item 4). Infra →
+/// domain is the allowed dependency direction.
+const WARNING_THRESHOLD: u8 =
+    crate::domain::budget::derivation::RamThresholds::DEFAULT_WARNING_PERCENT;
 
-/// RAM usage percentage that denies all new Chrome instances.
-const CRITICAL_THRESHOLD: u8 = 90;
+/// RAM usage percentage that denies all new Chrome instances; see
+/// [`WARNING_THRESHOLD`] for the single-source-of-truth rationale.
+const CRITICAL_THRESHOLD: u8 =
+    crate::domain::budget::derivation::RamThresholds::DEFAULT_CRITICAL_PERCENT;
 
 /// Gates concurrent heavyweight downloader instances based on system RAM.
 ///
