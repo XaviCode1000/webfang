@@ -142,7 +142,7 @@ pub fn is_ipv6_link_local(v6: &Ipv6Addr) -> bool {
 
 /// Returns the IPv4 address embedded in a NAT64-translated address when
 /// `v6` falls within the well-known prefix 64:ff9b::/96 (RFC 6052 §2.1);
-/// `None` otherwise. The embedded IPv4 occupies segments[6..8].
+/// `None` otherwise. The embedded IPv4 occupies segments\[6..8\].
 #[must_use]
 pub fn ipv6_nat64_embedded_v4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
     let segments = v6.segments();
@@ -162,8 +162,9 @@ pub fn ipv6_nat64_embedded_v4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
 
 /// Returns the IPv4 address encapsulated in a 6to4 address (RFC 3056) when
 /// `v6` falls within 2002::/16; `None` otherwise. The embedded IPv4 bytes
-/// occupy the high byte of segments[1], the low byte of segments[1], and the
-/// high byte of segments[2] — e.g. `2002:7f00:1::` embeds 127.0.0.1.
+/// occupy the high byte of segments\[1\], the low byte of segments\[1\], the
+/// high byte of segments\[2\], and the low byte of segments\[2\] — e.g.
+/// `2002:7f00:1::` embeds 127.0.0.1.
 #[must_use]
 pub fn ipv6_6to4_embedded_v4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
     let segments = v6.segments();
