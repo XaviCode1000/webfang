@@ -79,6 +79,17 @@ pub(crate) fn parse_max_pages(s: &str) -> Result<usize, String> {
     usize::try_from(value).map_err(|_| crawler_specs::MAX_PAGES.parse_error(s).to_string())
 }
 
+/// Validate `--max-depth`: `0` is valid (only the seed URL is scraped);
+/// values above 10 are rejected. Bounds and messages come from the
+/// OptionsSpec (ADR-002 slice 4, #940) — the single validation source,
+/// shared with the MCP tool schema.
+pub(crate) fn parse_max_depth(s: &str) -> Result<u8, String> {
+    let value = crawler_specs::MAX_DEPTH
+        .parse_uint(s)
+        .map_err(|e| e.to_string())?;
+    u8::try_from(value).map_err(|_| crawler_specs::MAX_DEPTH.parse_error(s).to_string())
+}
+
 /// Crawler and discovery configuration arguments.
 ///
 /// Parsing stays derive-driven (`FromArgMatches`); command assembly is

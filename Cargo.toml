@@ -168,7 +168,8 @@ unsafe_code = "deny"
 
 [profile.dev]
 opt-level = 0
-debug = true
+# debug level is governed by .cargo/config.toml (line-tables-only);
+# full debuginfo per-invocation: CARGO_PROFILE_DEV_DEBUG=true cargo build
 
 [profile.dev.package."*"]
 opt-level = 3

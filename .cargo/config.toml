@@ -9,3 +9,10 @@ console = ["run", "-p", "webfang_cli", "--bin", "webfang", "--features", "consol
 # Build with tokio_unstable (for tokio-console)
 # Usage: cargo debug
 debug = ["build", "-p", "webfang_cli", "--bin", "webfang", "--features", "console", "--config", 'env.RUSTFLAGS="--cfg tokio_unstable"']
+
+[profile.dev]
+# Keep backtraces with file:line while dropping full variable-level debuginfo.
+# Cuts debug binary size drastically and curbs growth of the shared
+# CARGO_TARGET_DIR across worktrees. For a one-off full-debuginfo build:
+#   CARGO_PROFILE_DEV_DEBUG=true cargo build
+debug = "line-tables-only"
