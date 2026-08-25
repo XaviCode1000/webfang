@@ -67,6 +67,11 @@ pub const DELAY_MS: OptionSpec = OptionSpec {
 
 /// `--max-pages <MAX_PAGES>` — FULLY migrated: bound enforced through
 /// [`OptionSpec::parse_uint`] with verbatim legacy messages (#780).
+///
+/// Slice 4 (#940): gains the shared inclusive cap `100_000` (the stricter
+/// cap the MCP surface already documented/enforced). INTENTIONAL CLI
+/// behavior change: `--max-pages 100001+` now exits 64 instead of being
+/// accepted.
 pub const MAX_PAGES: OptionSpec = OptionSpec {
     id: "max_pages",
     value_name: "MAX_PAGES",
@@ -77,11 +82,14 @@ pub const MAX_PAGES: OptionSpec = OptionSpec {
     default: Some("10"),
     help: "Maximum pages to scrape",
     heading: Some("Discovery"),
-    kind: ValueKind::uint(NumericPolicy::legacy_verbatim(
-        1,
-        "--max-pages debe ser >= 1 (0 no deja páginas para scrapear)",
-        "'{value}' no es un número válido para --max-pages",
-    )),
+    kind: ValueKind::uint(
+        NumericPolicy::legacy_verbatim(
+            1,
+            "--max-pages debe ser >= 1 (0 no deja páginas para scrapear)",
+            "'{value}' no es un número válido para --max-pages",
+        )
+        .capped(100_000, "--max-pages debe ser <= 100000"),
+    ),
     visible_aliases: &[],
     feature_gate: None,
 };
@@ -302,8 +310,11 @@ pub const TRACE_FILE: OptionSpec = OptionSpec {
     feature_gate: None,
 };
 
-/// `--max-depth <MAX_DEPTH>` — metadata-only: 0 is meaningful ("only seed
-/// URL"), so no bound exists today.
+/// `--max-depth <MAX_DEPTH>` — slice 4 (#940): enforces the shared cap
+/// `10` through the spec while keeping zero valid (`0` = only seed URL).
+/// INTENTIONAL CLI behavior change: `--max-depth 11+` now exits 64 with a
+/// Spanish usage error instead of being accepted; non-numeric input now
+/// renders the canonical Spanish message instead of clap's English one.
 pub const MAX_DEPTH: OptionSpec = OptionSpec {
     id: "max_depth",
     value_name: "MAX_DEPTH",
@@ -314,7 +325,10 @@ pub const MAX_DEPTH: OptionSpec = OptionSpec {
     default: Some("2"),
     help: "Maximum depth to crawl (0 = only seed URL)",
     heading: Some("Crawler Settings"),
-    kind: ValueKind::uint_unbounded(),
+    kind: ValueKind::uint(NumericPolicy::zero_valid_capped(
+        10,
+        "--max-depth debe ser <= 10",
+    )),
     visible_aliases: &[],
     feature_gate: None,
 };

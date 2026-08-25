@@ -32,7 +32,7 @@ pub const MAX_DOMAIN_LEN: usize = 253;
 /// Build the standard `McpError::invalid_params` envelope used by every
 /// handler in this crate. Keeps the field tag and message format identical to
 /// the inline construction at `handlers/scraping.rs:34-37`.
-fn invalid_params(field: &str, msg: impl Into<String>) -> McpError {
+pub(crate) fn invalid_params(field: &str, msg: impl Into<String>) -> McpError {
     McpError::invalid_params(msg.into(), Some(Value::String(field.to_string())))
 }
 

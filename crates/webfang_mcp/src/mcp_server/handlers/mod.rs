@@ -19,8 +19,12 @@ pub mod security;
 pub mod url_utils;
 
 /// Build the combined ToolRouter from all 9 category modules.
+///
+/// After combining the category routers, the schema bridge overrides the
+/// advertised input schemas of tools whose parameters overlap an
+/// OptionsSpec entry (ADR-002 slice 4, #940).
 pub fn build_tool_router() -> ToolRouter<McpHandler> {
-    scraping::build_router()
+    let mut router = scraping::build_router()
         + content::build_router()
         + export::build_router()
         + url_utils::build_router()
@@ -28,5 +32,7 @@ pub fn build_tool_router() -> ToolRouter<McpHandler> {
         + obsidian::build_router()
         + assets::build_router()
         + ai::build_router()
-        + axtree::build_router()
+        + axtree::build_router();
+    crate::mcp_server::schema_bridge::apply_overrides(&mut router);
+    router
 }

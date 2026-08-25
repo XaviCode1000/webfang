@@ -86,8 +86,10 @@ pub const RAM_BUDGET: OptionSpec = OptionSpec {
     kind: ValueKind::MemorySize {
         policy: Some(NumericPolicy {
             min: 1,
+            max: None,
             parse_failure_detail: "un tamaño de memoria válido",
             below_min_message: "ram-budget debe ser > 0",
+            above_max_message: "",
             parse_failure_template: None,
         }),
     },

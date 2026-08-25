@@ -177,15 +177,14 @@ fn numeric_binding(id: &str) -> Option<ValueParser> {
         "timeout_secs" => Some(str_fn(super::args::crawler::parse_timeout_secs)),
         "download_concurrency" => Some(str_fn(super::args::crawler::parse_download_concurrency)),
         "selector" => Some(str_fn(super::args::crawler::parse_selector)),
+        "max_depth" => Some(str_fn(super::args::crawler::parse_max_depth)),
         "delay_ms"
         | "backoff_base_ms"
         | "backoff_max_ms"
         | "max_file_size"
         | "download_timeout"
         | "checkpoint_interval" => Some(ValueParser::from(clap::value_parser!(u64))),
-        "verbose" | "max_depth" | "sitemap_depth" => {
-            Some(ValueParser::from(clap::value_parser!(u8)))
-        },
+        "verbose" | "sitemap_depth" => Some(ValueParser::from(clap::value_parser!(u8))),
         "max_retries" => Some(ValueParser::from(clap::value_parser!(u32))),
         _ => None,
     }
