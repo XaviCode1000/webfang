@@ -40,4 +40,5 @@ Closes #
 - [ ] Conventional commit format (`type(scope): description`)
 - [ ] No `Co-Authored-By` / AI attribution trailers
 - [ ] Docs updated if behavior changed
+- [ ] `CHANGELOG.md` NOT touched by this PR — entries are written once, in the consolidation PR (see AGENTS.md → "CHANGELOG policy")
 - [ ] Defensive error paths annotated with `// LCOV_EXCL_*` markers per docs/src/testing.md (issue #527)
