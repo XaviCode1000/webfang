@@ -27,7 +27,8 @@ use webfang_core::domain::options_spec::{crawler, export, OptionSpec};
 use crate::mcp_server::{
     handlers,
     params::{
-        CrawlSiteParams, ExportFileParams, ProcessExportPipelineParams, ScrapeWithOptionsParams,
+        CrawlSiteParams, ExportFileParams, GetAccessibilitySnapshotParams,
+        ProcessExportPipelineParams, ScrapeBatchParams, ScrapeWithOptionsParams,
     },
 };
 
@@ -40,10 +41,20 @@ pub struct SpecProperty {
     /// OptionsSpec entry describing the property's type, bounds, default,
     /// and description.
     pub spec: &'static OptionSpec,
+    /// Per-tool description override for the advertised MCP schema
+    /// (issue #948 F6). When `Some`, the bridge uses this string as the
+    /// property's `"description"` instead of `spec.help`. Most rows leave
+    /// this `None` and fall back to the spec's `description_override`
+    /// (or `help` if neither is set).
+    pub description_override: Option<&'static str>,
 }
 
 const fn prop(name: &'static str, spec: &'static OptionSpec) -> SpecProperty {
-    SpecProperty { name, spec }
+    SpecProperty {
+        name,
+        spec,
+        description_override: None,
+    }
 }
 
 /// `crawl_site`: every parameter overlaps the crawler spec group.
@@ -68,10 +79,33 @@ pub const SCRAPE_WITH_OPTIONS_PROPERTIES: &[SpecProperty] = &[
 pub const EXPORT_FILE_PROPERTIES: &[SpecProperty] = &[prop("format", &export::EXPORT_FORMAT)];
 
 /// `process_export_pipeline`: `url` and `format` overlap their spec entries.
+/// The `url` row carries a per-tool description override (issue #948 F6) —
+/// the spec's `help` reads "URL to scrape (required unless using a
+/// subcommand)" which is CLI-flavored and confusing for LLM consumers of
+/// this optional-parameter tool.
 pub const PROCESS_EXPORT_PIPELINE_PROPERTIES: &[SpecProperty] = &[
-    prop("url", &crawler::URL),
+    SpecProperty {
+        name: "url",
+        spec: &crawler::URL,
+        description_override: Some(
+            "Optional URL to scrape before exporting. Omit to skip scraping and run the export stage on previously-saved content.",
+        ),
+    },
     prop("format", &export::EXPORT_FORMAT),
 ];
+
+/// `scrape_batch`: the `ignore_robots` field overlaps `crawler::GROUP`
+/// (issue #948 coverage gap — the tool was registered in WU3 without
+/// a bridge table). Other params (`urls`, `concurrency`) are MCP-only
+/// and stay on the schemars derive.
+pub const SCRAPE_BATCH_PROPERTIES: &[SpecProperty] =
+    &[prop("ignore_robots", &crawler::IGNORE_ROBOTS)];
+
+/// `get_accessibility_snapshot`: the `selector` field overlaps
+/// `crawler::GROUP` (issue #948 coverage gap). `url`, `interactive_only`,
+/// and `format` stay on the schemars derive.
+pub const GET_ACCESSIBILITY_SNAPSHOT_PROPERTIES: &[SpecProperty] =
+    &[prop("selector", &crawler::SELECTOR)];
 
 /// One advertised-default override, applied AFTER spec derivation (#940 F1/F2).
 ///
@@ -151,6 +185,15 @@ pub fn apply_default_overrides(props: &mut Map<String, Value>, overrides: &Defau
 /// property exactly as rmcp would emit it today), then replaces each
 /// spec-covered property with its [`OptionSpec::json_schema`] rendering,
 /// finally applying `default_overrides` on top.
+///
+/// Nullability preservation (issue #948 F5): when the derived schema
+/// advertises a property as `["<inner>", "null"]` (the schemars form for
+/// `Option<T>`) and the spec entry is non-nullable (`nullable: false`),
+/// the bridge promotes the spec-rendered `type` to the same
+/// `["<inner>", "null"]` shape so the advertised contract matches the
+/// serde acceptance. `SpecProperty::spec.nullable = true` upgrades the
+/// shape unconditionally; the default behavior preserves the derived
+/// `null`-union exactly as the derive emitted it.
 #[must_use]
 pub fn merged_input_schema<P: JsonSchema>(
     properties: &[SpecProperty],
@@ -162,11 +205,86 @@ pub fn merged_input_schema<P: JsonSchema>(
         _ => Map::new(),
     };
     for property in properties {
-        props.insert(property.name.to_owned(), property.spec.json_schema());
+        let derived_nullable = derived_type_is_nullable(props.get(property.name));
+        let mut rendered = property.spec.json_schema();
+        // Promote to ["<inner>", "null"] when the derived shape is
+        // nullable AND the spec entry is either explicitly nullable or
+        // doesn't override nullability. Without this, a `Option<T>` MCP
+        // field is advertised as `"type": "boolean"` while serde still
+        // accepts `null` — a stricter contract than the runtime
+        // acceptance (#948 F5).
+        if derived_nullable && !property.spec.nullable {
+            promote_spec_to_nullable(&mut rendered);
+        }
+        // When the spec is explicitly nullable, the derive path becomes
+        // irrelevant — the spec is the source of truth.
+        if property.spec.nullable {
+            promote_spec_to_nullable(&mut rendered);
+        }
+        // F6: per-tool description override wins over the spec's
+        // own override (and over `help`). Lets the bridge tailor
+        // descriptions to the MCP consumer without coupling CLI
+        // help wording to the LLM-facing surface.
+        if let Some(override_) = property
+            .description_override
+            .or(property.spec.description_override)
+        {
+            if let Value::Object(map) = &mut rendered {
+                map.insert("description".into(), Value::String(override_.to_owned()));
+            }
+        }
+        props.insert(property.name.to_owned(), rendered);
     }
     apply_default_overrides(&mut props, default_overrides);
     merged.insert("properties".into(), Value::Object(props));
     Arc::new(merged)
+}
+
+/// True when the derived property advertises `null` in its `type` field
+/// — either as `["<inner>", "null"]` (the schemars `Option<T>` form) or
+/// the legacy `{"type": "null"}` (none of our params use it, kept for
+/// forward-compat). The schemars 0.8 derive renders the `null` member as
+/// the STRING `"null"` (not the JSON `null` literal), so we match both
+/// representations.
+fn derived_type_is_nullable(value: Option<&Value>) -> bool {
+    let Some(Value::Object(prop)) = value else {
+        return false;
+    };
+    match prop.get("type") {
+        Some(Value::Array(types)) => types.iter().any(|t| match t {
+            Value::Null => true,
+            Value::String(s) => s == "null",
+            _ => false,
+        }),
+        Some(Value::String(_)) => false,
+        _ => false,
+    }
+}
+
+/// Promote a rendered schema's `type` to the `["<inner>", "null"]` form
+/// (no-op when the inner type is missing or already a union). Emits the
+/// `null` member as the STRING `"null"` to match the schemars 0.8
+/// convention (JSON Schema 2020-12 accepts both forms; the LLM
+/// consumers we target already understand the string form).
+///
+/// Public so the CLI↔MCP parity test (`options_spec_parity_test`) can
+/// apply the same nullability promotion to its expected fragment that
+/// the bridge applies to the production rendering (#948 F5).
+pub fn promote_spec_to_nullable(rendered: &mut Value) {
+    let Value::Object(map) = rendered else {
+        return;
+    };
+    match map.get("type") {
+        Some(Value::Array(_)) => {}, // already nullable
+        Some(Value::String(inner)) => {
+            let inner = inner.clone();
+            map.insert(
+                "type".into(),
+                Value::Array(vec![Value::String(inner), Value::String("null".to_owned())]),
+            );
+        },
+        _ => {},
+    }
 }
 
 /// Schemars-derived root object for `P`, mirroring rmcp 1.8's
@@ -206,6 +324,17 @@ fn process_export_pipeline_input_schema() -> Arc<Map<String, Value>> {
     merged_input_schema::<ProcessExportPipelineParams>(PROCESS_EXPORT_PIPELINE_PROPERTIES, &[])
 }
 
+fn scrape_batch_input_schema() -> Arc<Map<String, Value>> {
+    merged_input_schema::<ScrapeBatchParams>(SCRAPE_BATCH_PROPERTIES, &[])
+}
+
+fn get_accessibility_snapshot_input_schema() -> Arc<Map<String, Value>> {
+    merged_input_schema::<GetAccessibilitySnapshotParams>(
+        GET_ACCESSIBILITY_SNAPSHOT_PROPERTIES,
+        &[],
+    )
+}
+
 type InputSchemaFn = fn() -> Arc<Map<String, Value>>;
 
 /// Tools whose advertised input schema is overridden by the bridge.
@@ -223,6 +352,11 @@ const OVERRIDES: &[(&str, InputSchemaFn)] = &[
     (
         "process_export_pipeline",
         process_export_pipeline_input_schema as InputSchemaFn,
+    ),
+    ("scrape_batch", scrape_batch_input_schema as InputSchemaFn),
+    (
+        "get_accessibility_snapshot",
+        get_accessibility_snapshot_input_schema as InputSchemaFn,
     ),
 ];
 
@@ -316,9 +450,10 @@ mod tests {
     /// decides, so silence is the honest advertisement.
     #[test]
     fn scrape_with_options_advertises_no_max_pages_default() {
-        // Precondition: the spec entry DOES carry a CLI default ("10")
-        // that must be stripped for this tool.
-        assert_eq!(crawler::MAX_PAGES.json_schema()["default"], json!("10"));
+        // Precondition: the spec entry DOES carry a CLI default (Uint(10),
+        // rendered as a JSON number by issue #948 F4) that must be stripped
+        // for this tool.
+        assert_eq!(crawler::MAX_PAGES.json_schema()["default"], json!(10u64));
 
         let schema = scrape_with_options_input_schema();
         assert_eq!(
@@ -383,6 +518,194 @@ mod tests {
         assert_eq!(
             Value::Object(route.attr.input_schema.as_ref().clone()),
             raw_derived::<crate::mcp_server::params::ScrapeUrlParams>(),
+        );
+    }
+
+    /// Proof (issue #948 F5): an `Option<T>` MCP param is advertised as
+    /// `["<inner>", "null"]` (the schemars-derived `Option<T>` shape),
+    /// not the stricter non-nullable `type: "boolean"` the spec entry's
+    /// `json_schema()` would otherwise emit. The bridge preserves the
+    /// derive's `null`-union so the advertised contract matches serde's
+    /// actual acceptance.
+    #[test]
+    fn scrape_with_options_advertises_optional_properties_as_nullable() {
+        let schema = scrape_with_options_input_schema();
+        let props = &schema["properties"];
+
+        // ignore_robots: Option<bool> in the params struct → ["boolean", "null"].
+        let ignore_robots = &props["ignore_robots"];
+        assert_eq!(
+            ignore_robots["type"],
+            json!(["boolean", "null"]),
+            "ignore_robots (Option<bool>) must advertise a nullable type, got: {ignore_robots}"
+        );
+
+        // selector: Option<String> → ["string", "null"].
+        let selector = &props["selector"];
+        assert_eq!(
+            selector["type"],
+            json!(["string", "null"]),
+            "selector (Option<String>) must advertise a nullable type, got: {selector}"
+        );
+
+        // download_images: Option<bool> → ["boolean", "null"].
+        let download_images = &props["download_images"];
+        assert_eq!(
+            download_images["type"],
+            json!(["boolean", "null"]),
+            "download_images (Option<bool>) must advertise a nullable type"
+        );
+
+        // download_documents: Option<bool> → ["boolean", "null"].
+        let download_documents = &props["download_documents"];
+        assert_eq!(
+            download_documents["type"],
+            json!(["boolean", "null"]),
+            "download_documents (Option<bool>) must advertise a nullable type"
+        );
+
+        // Sanity: the derived shape WAS `["<inner>", "null"]` — the
+        // bridge is preserving it, not inventing it.
+        let derived = raw_derived::<ScrapeWithOptionsParams>();
+        assert_eq!(
+            derived["properties"]["ignore_robots"]["type"],
+            json!(["boolean", "null"])
+        );
+        assert_eq!(
+            derived["properties"]["selector"]["type"],
+            json!(["string", "null"])
+        );
+
+        // Non-optional fields (e.g. `url`) keep their non-nullable type.
+        assert_eq!(props["url"]["type"], json!("string"));
+    }
+
+    /// Proof (issue #948 F6): a per-tool `description_override` on a
+    /// `SpecProperty` wins over the spec entry's `help` and over the
+    /// spec's own `description_override`. The bridge renders the
+    /// override as the advertised `"description"` so the LLM-facing
+    /// surface is decoupled from the CLI help wording.
+    #[test]
+    fn process_export_pipeline_url_advertises_per_tool_description_override() {
+        let schema = process_export_pipeline_input_schema();
+        let url = &schema["properties"]["url"];
+        let description = url["description"]
+            .as_str()
+            .expect("description must be a string");
+        assert!(
+            !description.contains("required unless using a subcommand"),
+            "per-tool override must replace the CLI-flavored help text, got: {description}"
+        );
+        assert!(
+            description.contains("Optional URL"),
+            "per-tool override must surface the LLM-facing wording, got: {description}"
+        );
+
+        // Sanity: the spec entry's `help` is unchanged (the override
+        // lives at the bridge layer, not the SSOT).
+        assert_eq!(
+            crawler::URL.help,
+            "URL to scrape (required unless using a subcommand)"
+        );
+    }
+
+    /// Proof (issue #948 F6): when neither `SpecProperty::description_override`
+    /// nor `OptionSpec::description_override` is set, the bridge falls
+    /// back to the spec's `help` text (no behavior change for entries
+    /// that haven't been overridden).
+    #[test]
+    fn crawl_site_url_falls_back_to_spec_help_when_no_override() {
+        let schema = crawl_site_input_schema();
+        let url = &schema["properties"]["url"];
+        assert_eq!(
+            url["description"],
+            json!(crawler::URL.help),
+            "no override → description must equal spec.help"
+        );
+    }
+
+    /// Proof (issue #948 coverage gap): `scrape_batch` now has a bridge
+    /// table that anchors its `ignore_robots` parameter to the spec
+    /// entry. Pre-WU5 the field was bridged by nothing — the schemars
+    /// derive carried the field with no spec-source bounds/description.
+    /// Post-WU5 the bridge renders it through the spec's `json_schema()`.
+    #[test]
+    fn scrape_batch_ignores_robots_renders_through_spec_entry() {
+        let schema = scrape_batch_input_schema();
+        let rendered = &schema["properties"]["ignore_robots"];
+
+        // The spec entry's `json_schema()` is the SSOT rendering.
+        let expected = crawler::IGNORE_ROBOTS.json_schema();
+        // F5: the param is `Option<bool>` so the bridge promotes to
+        // `["boolean", "null"]`; the expected is the spec's
+        // non-nullable form.
+        assert_eq!(
+            rendered["type"],
+            json!(["boolean", "null"]),
+            "ignore_robots (Option<bool>) must advertise a nullable type"
+        );
+        // All other dimensions (description, default) match the spec.
+        assert_eq!(rendered["description"], expected["description"]);
+        assert_eq!(rendered["default"], expected["default"]);
+
+        // Sanity: the schemars derive alone advertises ignore_robots
+        // WITHOUT the spec's boolean default — bridge is the source of
+        // truth.
+        let derived = raw_derived::<ScrapeBatchParams>();
+        let derived_ignore_robots = &derived["properties"]["ignore_robots"];
+        assert_ne!(
+            rendered["default"], derived_ignore_robots["default"],
+            "bridge must override the schemars derive's default with the spec's"
+        );
+    }
+
+    /// Proof (issue #948 coverage gap): `get_accessibility_snapshot` now
+    /// has a bridge table that anchors its `selector` parameter to the
+    /// spec entry. Pre-WU5 the field was bridged by nothing.
+    #[test]
+    fn get_accessibility_snapshot_selector_renders_through_spec_entry() {
+        let schema = get_accessibility_snapshot_input_schema();
+        let rendered = &schema["properties"]["selector"];
+
+        let expected = crawler::SELECTOR.json_schema();
+        // F5: selector is `Option<String>` so the bridge promotes to
+        // `["string", "null"]`.
+        assert_eq!(
+            rendered["type"],
+            json!(["string", "null"]),
+            "selector (Option<String>) must advertise a nullable type"
+        );
+        assert_eq!(rendered["description"], expected["description"]);
+        assert_eq!(rendered["default"], expected["default"]);
+    }
+
+    /// Proof: the router wiring actually swaps in the bridge schemas for
+    /// the two new tools (issue #948 coverage gap). Without the OVERRIDES
+    /// entries, the router would emit the raw schemars derive.
+    #[test]
+    fn build_tool_router_emits_bridge_schemas_for_scrape_batch_and_accessibility() {
+        let router = handlers::build_tool_router();
+
+        let route = router
+            .map
+            .get("scrape_batch")
+            .expect("scrape_batch registered");
+        let emitted = &route.attr.input_schema["properties"]["ignore_robots"];
+        let derived = &raw_derived::<ScrapeBatchParams>()["properties"]["ignore_robots"];
+        assert_ne!(
+            emitted, derived,
+            "scrape_batch router must not emit the raw derive for ignore_robots"
+        );
+
+        let route = router
+            .map
+            .get("get_accessibility_snapshot")
+            .expect("get_accessibility_snapshot registered");
+        let emitted = &route.attr.input_schema["properties"]["selector"];
+        let derived = &raw_derived::<GetAccessibilitySnapshotParams>()["properties"]["selector"];
+        assert_ne!(
+            emitted, derived,
+            "get_accessibility_snapshot router must not emit the raw derive for selector"
         );
     }
 }

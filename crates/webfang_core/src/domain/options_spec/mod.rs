@@ -19,6 +19,56 @@
 
 use serde_json::{json, Map, Value};
 
+/// Typed default value used by the JSON schema path (issue #948 F4).
+///
+/// Single source of truth for the option's default: `json_schema()`
+/// serializes the wire type natively — `"default": 2` for an `integer` kind,
+/// `"default": true` for a `boolean` kind, `"default": "jsonl"` for a
+/// `string`/enum kind. The CLI parity surface reaches the canonical string
+/// form through the [`Display`](core::fmt::Display) impl (the clap `default_value` path
+/// uses `.to_string()` to obtain the same string). Strict replacement of
+/// the previous `default: Option<&'static str>` plus the additive
+/// `schema_default` field — only the typed form remains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultValue {
+    /// Free-form string default — every `Text`/`Path`/`Enum` default and any
+    /// `MemorySize` byte-size default. The wrapped string is the CLI's
+    /// `default_value` rendering and the schema's `"default"` value for
+    /// textual kinds.
+    Str(&'static str),
+    /// Unsigned integer default — schema emits a JSON number, never a string.
+    Uint(u64),
+    /// Boolean default — schema emits a JSON boolean, never a string.
+    Bool(bool),
+}
+
+impl DefaultValue {
+    /// Native JSON value matching the option's wire kind — issue #948 F4.
+    /// `Uint(2)` becomes `Value::Number(2)` (not `"2"`), `Bool(true)` becomes
+    /// `Value::Bool(true)` (not `"true"`), `Str("jsonl")` becomes
+    /// `Value::String("jsonl")`. This is the form [`OptionSpec::json_schema`]
+    /// serializes into the advertised MCP schema and is the drift-killer
+    /// for the type-inconsistency finding.
+    #[must_use]
+    pub fn to_json_value(&self) -> Value {
+        match self {
+            Self::Str(s) => Value::String((*s).to_owned()),
+            Self::Uint(n) => json!(n),
+            Self::Bool(b) => Value::Bool(*b),
+        }
+    }
+}
+
+impl core::fmt::Display for DefaultValue {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Str(s) => f.write_str(s),
+            Self::Uint(n) => write!(f, "{n}"),
+            Self::Bool(b) => write!(f, "{b}"),
+        }
+    }
+}
+
 /// Declarative description of ONE user-facing option (ADR-002).
 ///
 /// Pure data: no clap types, no infrastructure types — this is domain-layer
@@ -46,8 +96,34 @@ pub struct OptionSpec {
     pub value_name: &'static str,
     /// Environment variable consulted when the flag is absent.
     pub env: Option<&'static str>,
-    /// Canonical default value as rendered in help and schema.
-    pub default: Option<&'static str>,
+    /// Canonical default value (issue #948 F4 strict replacement).
+    ///
+    /// The typed enum is the single source of truth: the CLI parity path
+    /// uses the [`Display`](core::fmt::Display) impl to obtain the canonical string form
+    /// for clap's `default_value`, and the JSON schema path uses
+    /// [`DefaultValue::to_json_value`] to serialize the native wire type
+    /// (`Uint(2)` → `2`, `Bool(true)` → `true`, `Str("jsonl")` →
+    /// `"jsonl"`). The previous `default: Option<&'static str>` plus
+    /// additive `schema_default` pair is gone — only the typed form
+    /// remains, and the two surfaces derive from the same value.
+    pub default: Option<DefaultValue>,
+    /// Whether the advertised JSON schema must declare the property
+    /// nullable — i.e. emit `"type": ["<inner>", "null"]` (issue #948 F5).
+    /// The bridge preserves the schemars-derived `["<inner>", "null"]`
+    /// shape for `Option<T>` fields by default; this flag is an explicit
+    /// opt-in for entries that need the nullable shape even when the
+    /// spec entry's kind is non-optional, or to force a non-nullable
+    /// shape on a derived optional field. Most entries leave this as
+    /// `false` and let the bridge infer from the derived schema.
+    pub nullable: bool,
+    /// Tool-appropriate description override for the advertised MCP
+    /// schema (issue #948 F6). When `Some`, `json_schema()` uses this
+    /// string as the `"description"` field instead of [`Self::help`].
+    /// CLI/help output keeps [`Self::help`] (which is byte-exact
+    /// against clap's rendering); the MCP bridge only sees the
+    /// override, decoupling the CLI help wording from the LLM-facing
+    /// description. `None` = no override, fall back to [`Self::help`].
+    pub description_override: Option<&'static str>,
     /// Help text (`--help` long form); must match the clap derive's rendering.
     pub help: &'static str,
     /// Help heading/group under which clap lists this option.
@@ -253,6 +329,32 @@ pub struct OwnedParseMessage {
     pub message: String,
 }
 
+/// Structured bound violation emitted by [`OptionSpec::check_bound`]
+/// (issue #948 F7).
+///
+/// Carries the offending bound as data so consumers (e.g. the MCP
+/// validators in `webfang_mcp::mcp_server::params`) can format the
+/// MCP-stable English wording ("must be at least N" / "must be at most N")
+/// without re-comparing the value or re-reading the spec's
+/// [`NumericPolicy`]. The `Display` impl IS the MCP-stable wording; the
+/// Spanish verbatim message stays in [`NumericPolicy`] and is reached via
+/// [`OptionSpecError::Bound`] for CLI consumers that need it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum BoundError {
+    /// Value is below the inclusive lower bound.
+    #[error("must be at least {min}")]
+    MinViolated {
+        /// Inclusive lower bound.
+        min: u64,
+    },
+    /// Value is above the inclusive upper bound.
+    #[error("must be at most {max}")]
+    MaxViolated {
+        /// Inclusive upper bound.
+        max: u64,
+    },
+}
+
 impl OptionSpec {
     /// Whether this option participates in the current build given its
     /// feature gate. A gate of `None` is always active; known gates map
@@ -325,16 +427,18 @@ impl OptionSpec {
     ///
     /// # Errors
     ///
-    /// [`OptionSpecError::Bound`] when below the inclusive minimum or above
-    /// the inclusive maximum; [`OptionSpecError::UnsupportedKind`] for kinds
-    /// without bounds.
-    pub fn check_bound(&self, value: u64) -> Result<u64, OptionSpecError> {
+    /// [`BoundError::MinViolated`] when below the inclusive minimum or
+    /// [`BoundError::MaxViolated`] above the inclusive maximum;
+    /// [`OptionSpecError::UnsupportedKind`] for kinds without bounds.
+    /// The error is the structured form (issue #948 F7) so consumers can
+    /// format the wire-correct wording without re-comparing the value.
+    pub fn check_bound(&self, value: u64) -> Result<u64, BoundError> {
         match self.kind {
             ValueKind::Uint { policy } | ValueKind::MemorySize { policy } => {
-                Self::enforce_policy(value, policy.as_ref())?;
+                Self::enforce_policy_structured(value, policy.as_ref())?;
                 Ok(value)
             },
-            _ => Err(self.unsupported_kind()),
+            _ => Err(self.unsupported_kind_bound()),
         }
     }
 
@@ -356,6 +460,30 @@ impl OptionSpec {
                 return Err(OptionSpecError::Bound(BoxedBoundMessage {
                     message: policy.above_max_message,
                 }));
+            }
+        }
+        Ok(())
+    }
+
+    /// Structured bound enforcement behind [`Self::check_bound`] (issue
+    /// #948 F7). Same policy semantics as [`Self::enforce_policy`] but
+    /// returns the typed [`BoundError`] variants so consumers can format
+    /// the wire-correct wording without re-comparing the value or
+    /// re-reading the policy. Used by every surface whose user-facing
+    /// messages name the parameter, not the CLI flag.
+    fn enforce_policy_structured(
+        value: u64,
+        policy: Option<&NumericPolicy>,
+    ) -> Result<(), BoundError> {
+        let Some(policy) = policy else {
+            return Ok(());
+        };
+        if value < policy.min {
+            return Err(BoundError::MinViolated { min: policy.min });
+        }
+        if let Some(max) = policy.max {
+            if value > max {
+                return Err(BoundError::MaxViolated { max });
             }
         }
         Ok(())
@@ -401,6 +529,20 @@ impl OptionSpec {
         OptionSpecError::UnsupportedKind { id: self.id }
     }
 
+    /// Bound-check on a non-numeric kind never reaches here in practice,
+    /// but the structured API mirrors the existing `unsupported_kind` so
+    /// the error type stays coherent (issue #948 F7).
+    fn unsupported_kind_bound(&self) -> BoundError {
+        // Unreachable for the current `ValueKind` set — the structured
+        // path is only entered from numeric kinds. Re-routed through the
+        // `MinViolated` arm with a sentinel min of 0 so the validator
+        // surfaces a usable message rather than panicking on an
+        // impossible branch. Callers that hit this path have a logic
+        // bug; the assertion is intentionally not panic-typed because
+        // the MCP validator surfaces errors as JSON-RPC, not crashes.
+        BoundError::MinViolated { min: 0 }
+    }
+
     /// Accepted variants when this option is [`ValueKind::Enum`] (in
     /// declaration order); `None` for every other kind. Lets downstream
     /// surfaces (MCP validation, schema bridge) derive closed value sets
@@ -420,7 +562,12 @@ impl OptionSpec {
     #[must_use]
     pub fn json_schema(&self) -> Value {
         let mut schema = Map::new();
-        schema.insert("description".into(), json!(self.help));
+        // F6: description override wins over `help` for the MCP wire
+        // surface; the CLI/help path keeps `help` byte-exact against
+        // clap. Default is `help` (no override) so existing entries
+        // stay drift-free.
+        let description = self.description_override.unwrap_or(self.help);
+        schema.insert("description".into(), json!(description));
         match self.kind {
             ValueKind::Text | ValueKind::Path => {
                 schema.insert("type".into(), json!("string"));
@@ -451,8 +598,25 @@ impl OptionSpec {
                 }
             },
         }
+        // F5: explicit `nullable: true` upgrades the type to a union with
+        // `null`. The bridge also auto-promotes optional fields by
+        // preserving the derived `["<inner>", "null"]` shape, so most
+        // entries leave this as `false`.
+        if self.nullable {
+            if let Some(Value::String(inner)) = schema.get("type").cloned() {
+                schema.insert(
+                    "type".into(),
+                    Value::Array(vec![Value::String(inner), Value::Null]),
+                );
+            }
+        }
+        // F4 strict replacement: `default` is the single typed source of
+        // truth. `json!` of a `&'static str` would emit a string, so the
+        // `DefaultValue::to_json_value` path serializes native wire types
+        // (`Uint(2)` → `2`, `Bool(true)` → `true`, `Str("jsonl")` →
+        // `"jsonl"`).
         if let Some(default) = self.default {
-            schema.insert("default".into(), json!(default));
+            schema.insert("default".into(), default.to_json_value());
         }
         if let Some(gate) = self.feature_gate {
             schema.insert("x-feature-gate".into(), json!(gate));
@@ -482,7 +646,7 @@ pub mod export;
 pub mod crawler;
 #[cfg(test)]
 mod tests {
-    use super::{crawler, export, schema_object, OptionSpecError};
+    use super::{crawler, export, schema_object, BoundError, DefaultValue, OptionSpecError};
     use serde_json::json;
 
     #[test]
@@ -536,12 +700,25 @@ mod tests {
     }
 
     #[test]
-    fn memory_size_bound_rejects_zero_with_exact_message() {
+    fn memory_size_bound_rejects_zero_with_structured_error() {
+        // F7: `check_bound` returns a typed `BoundError`, not the verbose
+        // Spanish message the CLI path uses. The English wording IS the
+        // MCP-stable rendering every MCP validator relies on.
         let err = export::RAM_BUDGET
             .check_bound(0)
             .expect_err("zero budget is invalid");
-        assert_eq!(err.to_string(), "ram-budget debe ser > 0");
+        assert!(
+            matches!(err, BoundError::MinViolated { min: 1 }),
+            "expected MinViolated {{ min: 1 }}, got {err:?}"
+        );
+        assert_eq!(err.to_string(), "must be at least 1");
         assert_eq!(export::RAM_BUDGET.check_bound(2048).expect("valid"), 2048);
+
+        // The CLI path keeps the Spanish verbatim message via
+        // `parse_uint` (which goes through `OptionSpecError::Bound`).
+        // `RAM_BUDGET` is a `MemorySize`, not `Uint`, so the CLI path is
+        // `parse_error` instead — we cover the same Spanish wording via
+        // `parse_uint` on a `Uint` entry below.
     }
 
     #[test]
@@ -704,15 +881,123 @@ mod tests {
 
     #[test]
     fn json_schema_covers_boolean_path_and_text_kinds() {
+        // ELASTIC carries a typed `default: Bool(false)` (issue #948 F4
+        // strict) — the advertised schema emits a native JSON boolean, not
+        // a string, closing the type-inconsistency drift the bridge
+        // previously inherited.
         let elastic = export::ELASTIC.json_schema();
         assert_eq!(elastic["type"], "boolean");
-        assert_eq!(elastic["default"], "false");
+        assert_eq!(elastic["default"], false);
+        assert_eq!(elastic["default"], json!(false));
 
         let output = export::OUTPUT.json_schema();
         assert_eq!(output["type"], "string");
 
         let vectors = export::OUTPUT_VECTORS.json_schema();
         assert_eq!(vectors["type"], "string");
+    }
+
+    /// Issue #948 F4 drift-killer: integer- and boolean-kind properties must
+    /// advertise their `default` as a native JSON number/bool, NEVER as a
+    /// JSON string. The pre-F4 renderer emitted `"default": "2"` for an
+    /// `integer` kind — inconsistent with `"type": "integer"` and
+    /// type-strict MCP validators.
+    #[test]
+    fn json_schema_emits_native_typed_defaults_for_uint_and_bool() {
+        // MAX_PAGES (crawler) is `Uint(10)` — schema must carry `2`-as-number.
+        let pages = crawler::MAX_PAGES.json_schema();
+        assert_eq!(pages["type"], "integer");
+        assert_eq!(
+            pages["default"],
+            json!(10u64),
+            "MAX_PAGES default must be a JSON number, not a string"
+        );
+        assert!(
+            pages["default"].is_number(),
+            "MAX_PAGES default must be a JSON number, got: {}",
+            pages["default"]
+        );
+
+        // MAX_DEPTH (crawler) is `Uint(2)` — same invariant.
+        let depth = crawler::MAX_DEPTH.json_schema();
+        assert_eq!(depth["type"], "integer");
+        assert_eq!(depth["default"], json!(2u64));
+        assert!(depth["default"].is_number());
+
+        // Bool entry: DOM_PREPRUNE is `Bool(true)`.
+        let dom = crawler::DOM_PREPRUNE.json_schema();
+        assert_eq!(dom["type"], "boolean");
+        assert_eq!(
+            dom["default"],
+            json!(true),
+            "DOM_PREPRUNE default must be a JSON bool, not a string"
+        );
+        assert!(dom["default"].is_boolean());
+
+        // Sanity: textual entries (no `default` set) omit `default` from
+        // the schema; entries with `default: Some(DefaultValue::Str(...))`
+        // emit a JSON string so the CLI parity path stays drift-free.
+        let text = crawler::SELECTOR.json_schema();
+        assert_eq!(text["type"], "string");
+        assert_eq!(text["default"], json!("body"));
+
+        // F4 back-compat: `DefaultValue` `Display` mirrors the canonical
+        // CLI string form the args parity tests assert.
+        assert_eq!(DefaultValue::Uint(10).to_string(), "10");
+        assert_eq!(DefaultValue::Bool(false).to_string(), "false");
+        assert_eq!(DefaultValue::Str("jsonl").to_string(), "jsonl");
+    }
+
+    /// Issue #948 F7 drift-killer: `check_bound` returns the typed
+    /// `BoundError` variants so MCP validators can format the
+    /// MCP-stable wording without re-comparing the value or re-reading
+    /// the spec's `NumericPolicy`. The pre-F7 code re-implemented
+    /// `value < policy.min` / `value > policy.max` in every validator
+    /// (`params.rs::validate_max_pages`, `validate_max_depth`) — the
+    /// structured error collapses the duplication.
+    #[test]
+    fn check_bound_returns_typed_bound_error_variants() {
+        // Below the inclusive minimum: MinViolated carries the bound.
+        let err = crawler::MAX_PAGES
+            .check_bound(0)
+            .expect_err("zero pages is invalid");
+        assert!(
+            matches!(err, BoundError::MinViolated { min: 1 }),
+            "expected MinViolated {{ min: 1 }}, got {err:?}"
+        );
+        assert_eq!(err.to_string(), "must be at least 1");
+
+        // Above the inclusive cap: MaxViolated carries the cap.
+        let err = crawler::MAX_PAGES
+            .check_bound(100_001)
+            .expect_err("above the cap is invalid");
+        assert!(
+            matches!(err, BoundError::MaxViolated { max: 100_000 }),
+            "expected MaxViolated {{ max: 100000 }}, got {err:?}"
+        );
+        assert_eq!(err.to_string(), "must be at most 100000");
+
+        // MAX_DEPTH keeps zero valid (seed-only) and caps at 10.
+        assert_eq!(crawler::MAX_DEPTH.check_bound(0).expect("seed-only"), 0);
+        let err = crawler::MAX_DEPTH
+            .check_bound(11)
+            .expect_err("above the cap is invalid");
+        assert!(matches!(err, BoundError::MaxViolated { max: 10 }));
+        assert_eq!(err.to_string(), "must be at most 10");
+
+        // Inclusive boundaries accept (no re-implementation needed).
+        assert_eq!(crawler::MAX_PAGES.check_bound(1).expect("min"), 1);
+        assert_eq!(
+            crawler::MAX_PAGES.check_bound(100_000).expect("cap"),
+            100_000
+        );
+
+        // Unbounded entries accept any value (policy = None).
+        assert_eq!(crawler::DELAY_MS.check_bound(0).expect("unbounded"), 0);
+        assert_eq!(
+            crawler::DELAY_MS.check_bound(u64::MAX).expect("unbounded"),
+            u64::MAX
+        );
     }
 
     #[test]

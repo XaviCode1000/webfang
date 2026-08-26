@@ -64,7 +64,16 @@ fn build_arg(spec: &'static OptionSpec, headings: Headings) -> clap::Arg {
         arg = arg.env(env);
     }
     if let Some(default) = spec.default {
-        arg = arg.default_value(default);
+        // `DefaultValue` already implements `Display` (see `options_spec::mod`)
+        // — that is the canonical string form for every variant, including any
+        // future `Uint` value, so no per-literal arm table is needed here.
+        // clap 4 is built without the `string` feature, so `default_value`
+        // only accepts `&'static str` via `Into<OsStr>`; `Box::leak` promotes
+        // the rendered `String` to `&'static str`. The leak is bounded by the
+        // number of spec entries (~54 short strings) and lives for the process
+        // lifetime — negligible, and the standard idiom for clap defaults.
+        let leaked: &'static str = Box::leak(default.to_string().into_boxed_str());
+        arg = arg.default_value(leaked);
     }
     if headings == Headings::Applied {
         if let Some(heading) = spec.heading {
@@ -378,6 +387,7 @@ fn manual_cookies() -> clap::Arg {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::options_spec::DefaultValue;
 
     /// Every active spec option must assemble without panicking.
     #[test]
@@ -387,6 +397,42 @@ mod tests {
             options_spec::export::GROUP.len()
         );
         assert_eq!(crawler_args(Headings::Omitted).len(), CRAWLER_LAYOUT.len());
+    }
+
+    /// A `Uint` default outside any previously-known literal set must
+    /// assemble without panicking — the clap `default_value` path derives
+    /// the string from `DefaultValue::Display`, not a hard-coded arm table.
+    ///
+    /// The synthetic spec reuses the `delay_ms` id so the (separate,
+    /// intentional) `numeric_binding` parser lookup succeeds; that isolates
+    /// the default-value rendering path that used to carry the hard-coded
+    /// `Uint` arm table with an `unreachable!()` wildcard. `999_999` is not
+    /// in that old table, so the previous implementation panicked here.
+    #[test]
+    fn unknown_uint_default_does_not_panic() {
+        const SYNTH: OptionSpec = OptionSpec {
+            id: "delay_ms",
+            long: "synth-new-uint",
+            short: None,
+            aliases: &[],
+            visible_aliases: &[],
+            value_name: "SYNTH_NEW_UINT",
+            env: None,
+            default: Some(DefaultValue::Uint(999_999)),
+            nullable: false,
+            description_override: None,
+            help: "synthetic option for the unknown-Uint default test",
+            heading: None,
+            kind: ValueKind::uint_unbounded(),
+            feature_gate: None,
+        };
+        let arg = build_arg(&SYNTH, Headings::Omitted);
+        let defaults: Vec<String> = arg
+            .get_default_values()
+            .iter()
+            .map(|v| v.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(defaults, vec!["999999"]);
     }
 
     /// Heading parity BY CONSTRUCTION: the same specs built through

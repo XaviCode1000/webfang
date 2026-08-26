@@ -16,7 +16,7 @@ use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
-use webfang_core::domain::options_spec::{self as options_spec, export, ValueKind};
+use webfang_core::domain::options_spec::{self as options_spec, export};
 
 use crate::mcp_server::validation::{
     invalid_params, require_http_url, require_max_len, require_max_value_u64, require_non_empty,
@@ -36,77 +36,36 @@ fn export_formats() -> &'static [&'static str] {
 /// THE single enforcement point for the MCP `max_pages` parameter, shared
 /// by `crawl_site` and `scrape_with_options` (#940): bounds come from the
 /// OptionsSpec SSOT (`crawler::MAX_PAGES`) via its `check_bound` policy.
-/// The rendered message keeps today's established MCP wording ("must be at
-/// least/at most N") — the spec entry's verbatim messages name the CLI
-/// flag, so they are not trivially alignable to this wire surface.
+/// `check_bound` returns a typed [`BoundError`] (issue #948 F7) — no
+/// re-comparison of the value, no policy re-access, the MCP-stable wording
+/// renders directly from the variant.
 ///
 /// # Errors
 /// Returns `McpError::invalid_params` when `value` violates the spec's
 /// inclusive bounds.
 pub(crate) fn validate_max_pages(value: u32) -> Result<(), McpError> {
     let raw = u64::from(value);
-    if options_spec::crawler::MAX_PAGES.check_bound(raw).is_ok() {
-        return Ok(());
+    if let Err(bound) = options_spec::crawler::MAX_PAGES.check_bound(raw) {
+        return Err(invalid_params("max_pages", bound.to_string()));
     }
-    // Spec rejected the value; render the stable MCP wording from the same
-    // spec policy (no duplicated bound literals).
-    let ValueKind::Uint {
-        policy: Some(policy),
-    } = options_spec::crawler::MAX_PAGES.kind
-    else {
-        return Err(invalid_params("max_pages", "is out of range"));
-    };
-    if raw < policy.min {
-        return Err(invalid_params(
-            "max_pages",
-            format!("must be at least {}", policy.min),
-        ));
-    }
-    if raw > policy.max.unwrap_or(u64::MAX) {
-        return Err(invalid_params(
-            "max_pages",
-            format!("must be at most {}", policy.max.unwrap_or(u64::MAX)),
-        ));
-    }
-    Err(invalid_params("max_pages", "is out of range"))
+    Ok(())
 }
 
 /// THE single enforcement point for the MCP `max_depth` parameter of
-/// `crawl_site` (#940 F3): bounds come exclusively from the OptionsSpec
-/// SSOT (`crawler::MAX_DEPTH`) via its `check_bound` policy — no numeric
-/// literal outside the spec. The rendered message keeps today's
-/// established MCP wording ("must be at most N") — the spec entry's
-/// verbatim messages name the CLI flag (`--max-depth debe ser <= 10`), so
-/// they are not trivially alignable to this wire surface.
+/// `crawl_site` (#940 F3, #948 F7): bounds come exclusively from the
+/// OptionsSpec SSOT (`crawler::MAX_DEPTH`) via its `check_bound` policy.
+/// The typed [`BoundError`] carries the bound as data so the
+/// MCP-stable wording renders without re-comparing the value or
+/// re-reading the policy.
 ///
 /// # Errors
 /// Returns `McpError::invalid_params` when `value` violates the spec's
 /// inclusive bounds.
 pub(crate) fn validate_max_depth(value: u64) -> Result<(), McpError> {
-    if options_spec::crawler::MAX_DEPTH.check_bound(value).is_ok() {
-        return Ok(());
+    if let Err(bound) = options_spec::crawler::MAX_DEPTH.check_bound(value) {
+        return Err(invalid_params("max_depth", bound.to_string()));
     }
-    // Spec rejected the value; render the stable MCP wording from the same
-    // spec policy (no duplicated bound literals).
-    let ValueKind::Uint {
-        policy: Some(policy),
-    } = options_spec::crawler::MAX_DEPTH.kind
-    else {
-        return Err(invalid_params("max_depth", "is out of range"));
-    };
-    if value < policy.min {
-        return Err(invalid_params(
-            "max_depth",
-            format!("must be at least {}", policy.min),
-        ));
-    }
-    if value > policy.max.unwrap_or(u64::MAX) {
-        return Err(invalid_params(
-            "max_depth",
-            format!("must be at most {}", policy.max.unwrap_or(u64::MAX)),
-        ));
-    }
-    Err(invalid_params("max_depth", "is out of range"))
+    Ok(())
 }
 
 #[cfg(test)]

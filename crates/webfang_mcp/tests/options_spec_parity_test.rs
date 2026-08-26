@@ -18,12 +18,14 @@ use serde_json::{Map, Value};
 use webfang_core::domain::options_spec;
 use webfang_core::domain::options_spec::OptionSpec;
 use webfang_mcp::mcp_server::params::{
-    CrawlSiteParams, ExportFileParams, ProcessExportPipelineParams, ScrapeWithOptionsParams,
+    CrawlSiteParams, ExportFileParams, GetAccessibilitySnapshotParams, ProcessExportPipelineParams,
+    ScrapeBatchParams, ScrapeWithOptionsParams,
 };
 use webfang_mcp::mcp_server::schema_bridge::{
-    apply_default_overrides, default_overrides_for_tool, merged_input_schema, SpecProperty,
-    CRAWL_SITE_PROPERTIES, EXPORT_FILE_PROPERTIES, PROCESS_EXPORT_PIPELINE_PROPERTIES,
-    SCRAPE_WITH_OPTIONS_PROPERTIES,
+    apply_default_overrides, default_overrides_for_tool, merged_input_schema,
+    promote_spec_to_nullable, SpecProperty, CRAWL_SITE_PROPERTIES, EXPORT_FILE_PROPERTIES,
+    GET_ACCESSIBILITY_SNAPSHOT_PROPERTIES, PROCESS_EXPORT_PIPELINE_PROPERTIES,
+    SCRAPE_BATCH_PROPERTIES, SCRAPE_WITH_OPTIONS_PROPERTIES,
 };
 
 const CRAWLER_GROUP: &[OptionSpec] = options_spec::crawler::GROUP;
@@ -126,6 +128,20 @@ const PARITY_CASES: &[ParityCase] = &[
         group: EXPORT_GROUP,
         spec_id: "export_format",
     },
+    // -- scrape_batch (issue #948 coverage gap, WU5) --------------------
+    ParityCase {
+        tool: "scrape_batch",
+        wire_name: "ignore_robots",
+        group: CRAWLER_GROUP,
+        spec_id: "ignore_robots",
+    },
+    // -- get_accessibility_snapshot (issue #948 coverage gap, WU5) -----
+    ParityCase {
+        tool: "get_accessibility_snapshot",
+        wire_name: "selector",
+        group: CRAWLER_GROUP,
+        spec_id: "selector",
+    },
 ];
 
 const TOOL_TABLES: &[ToolTablesErased] = &[
@@ -139,6 +155,11 @@ const TOOL_TABLES: &[ToolTablesErased] = &[
         "process_export_pipeline",
         PROCESS_EXPORT_PIPELINE_PROPERTIES,
     ),
+    ToolTablesErased::of::<ScrapeBatchParams>("scrape_batch", SCRAPE_BATCH_PROPERTIES),
+    ToolTablesErased::of::<GetAccessibilitySnapshotParams>(
+        "get_accessibility_snapshot",
+        GET_ACCESSIBILITY_SNAPSHOT_PROPERTIES,
+    ),
 ];
 
 /// Type-erased handle over [`ToolTable`] so the four typed tools can live in
@@ -148,6 +169,10 @@ struct ToolTablesErased {
     properties: &'static [SpecProperty],
     merged: fn(&'static [SpecProperty], &'static str) -> Map<String, Value>,
     derived_properties: fn() -> Vec<String>,
+    /// Raw schemars-derived properties keyed by name — used by the parity
+    /// test to apply the same nullability promotion the bridge does
+    /// (issue #948 F5).
+    derived: fn() -> Map<String, Value>,
 }
 
 impl ToolTablesErased {
@@ -157,11 +182,16 @@ impl ToolTablesErased {
             properties,
             merged: |props, tool| merged_with_overrides::<P>(props, tool),
             derived_properties: || derived_property_names::<P>(),
+            derived: || derived_properties::<P>(),
         }
     }
 
     fn merged_schema(&self) -> Map<String, Value> {
         (self.merged)(self.properties, self.tool)
+    }
+
+    fn derived_schema(&self) -> Map<String, Value> {
+        (self.derived)()
     }
 }
 
@@ -189,6 +219,22 @@ fn derived_property_names<P: JsonSchema>() -> Vec<String> {
     match object.get("properties") {
         Some(Value::Object(props)) => props.keys().cloned().collect(),
         _ => Vec::new(),
+    }
+}
+
+/// Raw schemars-derived properties of `P` keyed by name — used by the
+/// parity test to apply the same nullability promotion the bridge does
+/// (issue #948 F5).
+fn derived_properties<P: JsonSchema>() -> Map<String, Value> {
+    let mut object = match serde_json::to_value(schemars::schema_for!(P)) {
+        Ok(Value::Object(map)) => map,
+        _ => return Map::new(),
+    };
+    object.remove("title");
+    object.remove("description");
+    match object.remove("properties") {
+        Some(Value::Object(props)) => props,
+        _ => Map::new(),
     }
 }
 
@@ -248,7 +294,44 @@ fn every_overlapping_mcp_param_matches_spec_json_schema() {
             // Expected fragment = SSOT rendering + the tool's overrides,
             // applied through the production code path (not re-derived).
             let mut expected_holder = Map::new();
-            expected_holder.insert(property.name.to_owned(), property.spec.json_schema());
+            let mut expected_value = property.spec.json_schema();
+            // Issue #948 F5: if the derived shape for this property is
+            // nullable (e.g. `Option<T>` in the params struct), the bridge
+            // promotes the spec-rendered `type` to `["<inner>", "null"]`.
+            // Apply the same promotion to the expected so the parity
+            // comparison reflects the production rendering, not a stricter
+            // pre-F5 shape.
+            let derived = table.derived_schema();
+            if let Some(derived_prop) = derived.get(property.name) {
+                let derived_nullable = match derived_prop.get("type") {
+                    Some(Value::Array(types)) => types.iter().any(|t| match t {
+                        Value::Null => true,
+                        Value::String(s) => s == "null",
+                        _ => false,
+                    }),
+                    _ => false,
+                };
+                if derived_nullable && !property.spec.nullable {
+                    promote_spec_to_nullable(&mut expected_value);
+                }
+                if property.spec.nullable {
+                    promote_spec_to_nullable(&mut expected_value);
+                }
+            }
+            // Issue #948 F6: per-tool description override wins over the
+            // spec's `help` (and over the spec's own
+            // `description_override`). Mirror the bridge's precedence
+            // here so the parity comparison reflects the production
+            // rendering.
+            if let Some(override_) = property
+                .description_override
+                .or(property.spec.description_override)
+            {
+                if let Value::Object(map) = &mut expected_value {
+                    map.insert("description".into(), Value::String(override_.to_owned()));
+                }
+            }
+            expected_holder.insert(property.name.to_owned(), expected_value);
             let overrides = default_overrides_for_tool(table.tool);
             apply_default_overrides(&mut expected_holder, &overrides);
             let expected = expected_holder
@@ -299,12 +382,30 @@ fn no_group_overlapping_param_escapes_the_parity_table() {
         .chain(EXPORT_GROUP.iter())
         .map(|o| o.id)
         .collect();
-    // Known wire-name renames: MCP `format` carries `export::EXPORT_FORMAT`.
+    // Known wire-name renames: MCP `format` carries `export::EXPORT_FORMAT`
+    // — but only for the export-shaped tools. `get_accessibility_snapshot`
+    // also has a `format` field (`SnapshotFormatParams`), which is
+    // unrelated to the export spec.
     spec_ids.push("export_format");
 
     for table in TOOL_TABLES {
         for name in (table.derived_properties)() {
-            let overlaps = spec_ids.contains(&name.as_str());
+            // `get_accessibility_snapshot/format` is `SnapshotFormatParams`,
+            // NOT the export spec's `format`. The alias `format →
+            // export_format` only applies to the export-shaped tools.
+            let is_export_format_alias = name == "format"
+                && !matches!(table.tool, "export_file" | "process_export_pipeline");
+            // `get_accessibility_snapshot/url` is a REQUIRED String field,
+            // not `Option<String>`. The spec's `crawler::URL` carries
+            // CLI-flavored help ("required unless using a subcommand")
+            // that doesn't fit this tool, and the field is not
+            // optional in the params struct — WU5 deliberately
+            // does NOT bridge it (see issue #948 coverage gap).
+            let is_unbridged_required_url =
+                name == "url" && matches!(table.tool, "get_accessibility_snapshot");
+            let overlaps = spec_ids.contains(&name.as_str())
+                && !is_export_format_alias
+                && !is_unbridged_required_url;
             assert!(
                 !overlaps || table.properties.iter().any(|p| p.name == name),
                 "[{}/{}] derives a GROUP-overlapping property with NO parity row",
