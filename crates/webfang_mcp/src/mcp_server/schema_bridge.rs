@@ -316,9 +316,10 @@ mod tests {
     /// decides, so silence is the honest advertisement.
     #[test]
     fn scrape_with_options_advertises_no_max_pages_default() {
-        // Precondition: the spec entry DOES carry a CLI default ("10")
-        // that must be stripped for this tool.
-        assert_eq!(crawler::MAX_PAGES.json_schema()["default"], json!("10"));
+        // Precondition: the spec entry DOES carry a CLI default (Uint(10),
+        // rendered as a JSON number by issue #948 F4) that must be stripped
+        // for this tool.
+        assert_eq!(crawler::MAX_PAGES.json_schema()["default"], json!(10u64));
 
         let schema = scrape_with_options_input_schema();
         assert_eq!(

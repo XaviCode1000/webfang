@@ -115,9 +115,23 @@ pub(crate) fn parse_cpu_cores(s: &str) -> Result<usize, String> {
 pub(crate) fn parse_ram_budget(s: &str) -> Result<u64, String> {
     let value = crate::infrastructure::autotuning::parse_ram_bytes(s)
         .ok_or_else(|| export_specs::RAM_BUDGET.parse_error(s).to_string())?;
+    // Issue #948 F7: `check_bound` now returns a typed `BoundError`. The
+    // CLI parity path needs the Spanish verbatim message, so we look up
+    // the spec policy here (one access, locally scoped).
+    let policy = match export_specs::RAM_BUDGET.kind {
+        crate::domain::options_spec::ValueKind::MemorySize { policy: Some(p) } => p,
+        _ => unreachable!("RAM_BUDGET is MemorySize with policy"),
+    };
     export_specs::RAM_BUDGET
         .check_bound(value)
-        .map_err(|e| e.to_string())
+        .map_err(|bound| match bound {
+            crate::domain::options_spec::BoundError::MinViolated { .. } => {
+                policy.below_min_message.to_owned()
+            },
+            crate::domain::options_spec::BoundError::MaxViolated { .. } => {
+                policy.above_max_message.to_owned()
+            },
+        })
 }
 
 /// Validate `--batch-concurrency` is greater than zero.
