@@ -119,6 +119,14 @@ pub struct OptionSpec {
     /// shape on a derived optional field. Most entries leave this as
     /// `false` and let the bridge infer from the derived schema.
     pub nullable: bool,
+    /// Tool-appropriate description override for the advertised MCP
+    /// schema (issue #948 F6). When `Some`, `json_schema()` uses this
+    /// string as the `"description"` field instead of [`Self::help`].
+    /// CLI/help output keeps [`Self::help`] (which is byte-exact
+    /// against clap's rendering); the MCP bridge only sees the
+    /// override, decoupling the CLI help wording from the LLM-facing
+    /// description. `None` = no override, fall back to [`Self::help`].
+    pub description_override: Option<&'static str>,
     /// Help text (`--help` long form); must match the clap derive's rendering.
     pub help: &'static str,
     /// Help heading/group under which clap lists this option.
@@ -557,7 +565,12 @@ impl OptionSpec {
     #[must_use]
     pub fn json_schema(&self) -> Value {
         let mut schema = Map::new();
-        schema.insert("description".into(), json!(self.help));
+        // F6: description override wins over `help` for the MCP wire
+        // surface; the CLI/help path keeps `help` byte-exact against
+        // clap. Default is `help` (no override) so existing entries
+        // stay drift-free.
+        let description = self.description_override.unwrap_or(self.help);
+        schema.insert("description".into(), json!(description));
         match self.kind {
             ValueKind::Text | ValueKind::Path => {
                 schema.insert("type".into(), json!("string"));

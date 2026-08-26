@@ -30,6 +30,7 @@ pub const URL: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
@@ -48,6 +49,7 @@ pub const SELECTOR: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
@@ -64,6 +66,7 @@ pub const DELAY_MS: OptionSpec = OptionSpec {
     default: Some("1000"),
     schema_default: Some(DefaultValue::Uint(1000)),
     nullable: false,
+    description_override: None,
     help: "Delay between requests in milliseconds",
     heading: Some("Discovery"),
     kind: ValueKind::uint_unbounded(),
@@ -88,6 +91,7 @@ pub const MAX_PAGES: OptionSpec = OptionSpec {
     default: Some("10"),
     schema_default: Some(DefaultValue::Uint(10)),
     nullable: false,
+    description_override: None,
     help: "Maximum pages to scrape",
     heading: Some("Discovery"),
     kind: ValueKind::uint(
@@ -119,6 +123,7 @@ pub const USE_SITEMAP: OptionSpec = OptionSpec {
         visible_aliases: &[],
         schema_default: None,
         nullable: false,
+        description_override: None,
         feature_gate: None,
     };
 
@@ -137,6 +142,7 @@ pub const SITEMAP_URL: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
@@ -151,6 +157,7 @@ pub const SINGLE_PAGE: OptionSpec = OptionSpec {
     default: Some("false"),
     schema_default: Some(DefaultValue::Bool(false)),
     nullable: false,
+    description_override: None,
     help: "Scrape only the seed URL without discovery or crawling",
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
@@ -175,6 +182,7 @@ pub const RESUME: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
@@ -193,6 +201,7 @@ pub const STATE_DIR: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
@@ -207,6 +216,7 @@ pub const DOWNLOAD_IMAGES: OptionSpec = OptionSpec {
     default: Some("false"),
     schema_default: Some(DefaultValue::Bool(false)),
     nullable: false,
+    description_override: None,
     help: "Download images from the page",
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
@@ -225,6 +235,7 @@ pub const DOWNLOAD_DOCUMENTS: OptionSpec = OptionSpec {
     default: Some("false"),
     schema_default: Some(DefaultValue::Bool(false)),
     nullable: false,
+    description_override: None,
     help: "Download documents from the page",
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
@@ -243,6 +254,7 @@ pub const DOWNLOAD_ASSETS: OptionSpec = OptionSpec {
     default: Some("false"),
     schema_default: Some(DefaultValue::Bool(false)),
     nullable: false,
+    description_override: None,
     help: "Download all assets (images + documents) from the page",
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
@@ -261,6 +273,7 @@ pub const EXTRACTION_FINGERPRINT: OptionSpec = OptionSpec {
         default: Some("false"),
         schema_default: Some(DefaultValue::Bool(false)),
         nullable: false,
+        description_override: None,
         // Byte-exact transcription of clap's rendering of the multi-line doc
         // comment (lines joined with spaces; only the FINAL period stripped,
         // interior sentence periods retained).
@@ -287,6 +300,7 @@ pub const VERBOSE: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
@@ -301,6 +315,7 @@ pub const QUIET: OptionSpec = OptionSpec {
     default: Some("false"),
     schema_default: Some(DefaultValue::Bool(false)),
     nullable: false,
+    description_override: None,
     help: "Quiet mode — suppress info/debug output",
     heading: Some("Display"),
     kind: ValueKind::Bool,
@@ -319,6 +334,7 @@ pub const DRY_RUN: OptionSpec = OptionSpec {
     default: Some("false"),
     schema_default: Some(DefaultValue::Bool(false)),
     nullable: false,
+    description_override: None,
     help: "Dry-run mode — discover URLs and print without scraping",
     heading: Some("Display"),
     kind: ValueKind::Bool,
@@ -341,6 +357,7 @@ pub const TRACE_FILE: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
@@ -359,6 +376,7 @@ pub const MAX_DEPTH: OptionSpec = OptionSpec {
     default: Some("2"),
     schema_default: Some(DefaultValue::Uint(2)),
     nullable: false,
+    description_override: None,
     help: "Maximum depth to crawl (0 = only seed URL)",
     heading: Some("Crawler Settings"),
     kind: ValueKind::uint(NumericPolicy::zero_valid_capped(
@@ -381,6 +399,7 @@ pub const TIMEOUT_SECS: OptionSpec = OptionSpec {
     default: Some("30"),
     schema_default: Some(DefaultValue::Uint(30)),
     nullable: false,
+    description_override: None,
     help: "Request timeout in seconds",
     heading: Some("Crawler Settings"),
     kind: ValueKind::uint(NumericPolicy::legacy_verbatim(
@@ -409,6 +428,7 @@ pub const ASSET_NAMING: OptionSpec = OptionSpec {
         visible_aliases: &[],
         schema_default: None,
         nullable: false,
+        description_override: None,
         feature_gate: None,
     };
 
@@ -434,6 +454,7 @@ pub const DOWNLOAD_CONCURRENCY: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
@@ -448,6 +469,7 @@ pub const MAX_RETRIES: OptionSpec = OptionSpec {
     default: Some("3"),
     schema_default: Some(DefaultValue::Uint(3)),
     nullable: false,
+    description_override: None,
     help: "Maximum number of retry attempts",
     heading: Some("HTTP Client Settings"),
     kind: ValueKind::uint_unbounded(),
@@ -467,6 +489,7 @@ pub const BACKOFF_BASE_MS: OptionSpec = OptionSpec {
     default: Some("1000"),
     schema_default: Some(DefaultValue::Uint(1000)),
     nullable: false,
+    description_override: None,
     help: "Base delay for exponential backoff (ms)",
     heading: Some("HTTP Client Settings"),
     kind: ValueKind::uint_unbounded(),
@@ -485,6 +508,7 @@ pub const BACKOFF_MAX_MS: OptionSpec = OptionSpec {
     default: Some("10000"),
     schema_default: Some(DefaultValue::Uint(10000)),
     nullable: false,
+    description_override: None,
     help: "Maximum delay for exponential backoff (ms)",
     heading: Some("HTTP Client Settings"),
     kind: ValueKind::uint_unbounded(),
@@ -507,6 +531,7 @@ pub const ACCEPT_LANGUAGE: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
@@ -525,6 +550,7 @@ pub const USER_AGENT: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
@@ -539,6 +565,7 @@ pub const MAX_FILE_SIZE: OptionSpec = OptionSpec {
     default: Some("52428800"),
     schema_default: Some(DefaultValue::Uint(52428800)),
     nullable: false,
+    description_override: None,
     help: "Maximum file size to download in bytes (default: 50MB)",
     heading: Some("Download Settings"),
     kind: ValueKind::uint_unbounded(),
@@ -558,6 +585,7 @@ pub const DOWNLOAD_TIMEOUT: OptionSpec = OptionSpec {
     default: Some("30"),
     schema_default: Some(DefaultValue::Uint(30)),
     nullable: false,
+    description_override: None,
     help: "Timeout for individual asset downloads in seconds",
     heading: Some("Download Settings"),
     kind: ValueKind::uint_unbounded(),
@@ -576,6 +604,7 @@ pub const SITEMAP_DEPTH: OptionSpec = OptionSpec {
     default: Some("3"),
     schema_default: Some(DefaultValue::Uint(3)),
     nullable: false,
+    description_override: None,
     help: "Maximum recursion depth for sitemap indexes",
     heading: Some("Sitemap Settings"),
     kind: ValueKind::uint_unbounded(),
@@ -595,6 +624,7 @@ pub const CHECKPOINT_INTERVAL: OptionSpec = OptionSpec {
         default: Some("100"),
         schema_default: Some(DefaultValue::Uint(100)),
         nullable: false,
+        description_override: None,
         help: "Pages between automatic checkpoint saves (0 = disabled) NOTE: Checkpoint is for programmatic use (Engine API) only. CLI --resume uses StateStore instead of checkpoints",
         heading: Some("Competitive Features"),
         kind: ValueKind::uint_unbounded(),
@@ -613,6 +643,7 @@ pub const NO_CHECKPOINT: OptionSpec = OptionSpec {
         default: Some("false"),
         schema_default: Some(DefaultValue::Bool(false)),
         nullable: false,
+        description_override: None,
         help: "Disable checkpoint persistence entirely NOTE: Checkpoint is for programmatic use (Engine API) only. CLI --resume uses StateStore instead of checkpoints",
         heading: Some("Competitive Features"),
         kind: ValueKind::Bool,
@@ -631,6 +662,7 @@ pub const IGNORE_ROBOTS: OptionSpec = OptionSpec {
     default: Some("false"),
     schema_default: Some(DefaultValue::Bool(false)),
     nullable: false,
+    description_override: None,
     help: "Skip robots.txt enforcement",
     heading: Some("Competitive Features"),
     kind: ValueKind::Bool,
@@ -649,6 +681,7 @@ pub const IGNORE_WAF: OptionSpec = OptionSpec {
     default: Some("false"),
     schema_default: Some(DefaultValue::Bool(false)),
     nullable: false,
+    description_override: None,
     help: "Bypass WAF/CAPTCHA detection entirely (never block on challenge markers)",
     heading: Some("Competitive Features"),
     kind: ValueKind::Bool,
@@ -667,6 +700,7 @@ pub const AUTOSCALE: OptionSpec = OptionSpec {
     default: Some("false"),
     schema_default: Some(DefaultValue::Bool(false)),
     nullable: false,
+    description_override: None,
     help: "Enable autoscaled concurrency — dynamically adjusts task concurrency based on RAM usage",
     heading: Some("Competitive Features"),
     kind: ValueKind::Bool,
@@ -685,6 +719,7 @@ pub const NO_SESSION_HEALTH: OptionSpec = OptionSpec {
     default: Some("false"),
     schema_default: Some(DefaultValue::Bool(false)),
     nullable: false,
+    description_override: None,
     help: "Disable session pool health checks",
     heading: Some("Competitive Features"),
     kind: ValueKind::Bool,
@@ -707,6 +742,7 @@ pub const H2_PROFILE: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
@@ -727,6 +763,7 @@ pub const JS_STRATEGY: OptionSpec = OptionSpec {
         visible_aliases: &[],
         schema_default: None,
         nullable: false,
+        description_override: None,
         feature_gate: None,
     };
 
@@ -745,6 +782,7 @@ pub const OBSCURA_BINARY: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
@@ -760,6 +798,7 @@ pub const DOM_PREPRUNE: OptionSpec = OptionSpec {
         default: Some("true"),
         schema_default: Some(DefaultValue::Bool(true)),
         nullable: false,
+        description_override: None,
         help: "Enable DOM pre-pruning before Readability (removes invisible/empty wrappers). Default: enabled (true). Set to false via --dom-preprune=false or WEBFANG_DOM_PREPRUNE=false",
         heading: Some("Cleanup"),
         kind: ValueKind::Bool,
@@ -781,6 +820,7 @@ pub const CLEAN_AI: OptionSpec = OptionSpec {
     default: Some("false"),
     schema_default: Some(DefaultValue::Bool(false)),
     nullable: false,
+    description_override: None,
     help: "Use AI-powered semantic cleaning for better RAG output",
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
@@ -799,6 +839,7 @@ pub const ADAPTIVE_SELECTORS: OptionSpec = OptionSpec {
     default: Some("false"),
     schema_default: Some(DefaultValue::Bool(false)),
     nullable: false,
+    description_override: None,
     help: "Enable adaptive CSS selector repair (2-tier cascade)",
     heading: Some("Behavior"),
     kind: ValueKind::Bool,

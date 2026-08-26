@@ -40,10 +40,20 @@ pub struct SpecProperty {
     /// OptionsSpec entry describing the property's type, bounds, default,
     /// and description.
     pub spec: &'static OptionSpec,
+    /// Per-tool description override for the advertised MCP schema
+    /// (issue #948 F6). When `Some`, the bridge uses this string as the
+    /// property's `"description"` instead of `spec.help`. Most rows leave
+    /// this `None` and fall back to the spec's `description_override`
+    /// (or `help` if neither is set).
+    pub description_override: Option<&'static str>,
 }
 
 const fn prop(name: &'static str, spec: &'static OptionSpec) -> SpecProperty {
-    SpecProperty { name, spec }
+    SpecProperty {
+        name,
+        spec,
+        description_override: None,
+    }
 }
 
 /// `crawl_site`: every parameter overlaps the crawler spec group.
@@ -68,8 +78,18 @@ pub const SCRAPE_WITH_OPTIONS_PROPERTIES: &[SpecProperty] = &[
 pub const EXPORT_FILE_PROPERTIES: &[SpecProperty] = &[prop("format", &export::EXPORT_FORMAT)];
 
 /// `process_export_pipeline`: `url` and `format` overlap their spec entries.
+/// The `url` row carries a per-tool description override (issue #948 F6) —
+/// the spec's `help` reads "URL to scrape (required unless using a
+/// subcommand)" which is CLI-flavored and confusing for LLM consumers of
+/// this optional-parameter tool.
 pub const PROCESS_EXPORT_PIPELINE_PROPERTIES: &[SpecProperty] = &[
-    prop("url", &crawler::URL),
+    SpecProperty {
+        name: "url",
+        spec: &crawler::URL,
+        description_override: Some(
+            "Optional URL to scrape before exporting. Omit to skip scraping and run the export stage on previously-saved content.",
+        ),
+    },
     prop("format", &export::EXPORT_FORMAT),
 ];
 
@@ -186,6 +206,18 @@ pub fn merged_input_schema<P: JsonSchema>(
         // irrelevant — the spec is the source of truth.
         if property.spec.nullable {
             promote_to_nullable(&mut rendered);
+        }
+        // F6: per-tool description override wins over the spec's
+        // own override (and over `help`). Lets the bridge tailor
+        // descriptions to the MCP consumer without coupling CLI
+        // help wording to the LLM-facing surface.
+        if let Some(override_) = property
+            .description_override
+            .or(property.spec.description_override)
+        {
+            if let Value::Object(map) = &mut rendered {
+                map.insert("description".into(), Value::String(override_.to_owned()));
+            }
         }
         props.insert(property.name.to_owned(), rendered);
     }
@@ -515,5 +547,49 @@ mod tests {
 
         // Non-optional fields (e.g. `url`) keep their non-nullable type.
         assert_eq!(props["url"]["type"], json!("string"));
+    }
+
+    /// Proof (issue #948 F6): a per-tool `description_override` on a
+    /// `SpecProperty` wins over the spec entry's `help` and over the
+    /// spec's own `description_override`. The bridge renders the
+    /// override as the advertised `"description"` so the LLM-facing
+    /// surface is decoupled from the CLI help wording.
+    #[test]
+    fn process_export_pipeline_url_advertises_per_tool_description_override() {
+        let schema = process_export_pipeline_input_schema();
+        let url = &schema["properties"]["url"];
+        let description = url["description"]
+            .as_str()
+            .expect("description must be a string");
+        assert!(
+            !description.contains("required unless using a subcommand"),
+            "per-tool override must replace the CLI-flavored help text, got: {description}"
+        );
+        assert!(
+            description.contains("Optional URL"),
+            "per-tool override must surface the LLM-facing wording, got: {description}"
+        );
+
+        // Sanity: the spec entry's `help` is unchanged (the override
+        // lives at the bridge layer, not the SSOT).
+        assert_eq!(
+            crawler::URL.help,
+            "URL to scrape (required unless using a subcommand)"
+        );
+    }
+
+    /// Proof (issue #948 F6): when neither `SpecProperty::description_override`
+    /// nor `OptionSpec::description_override` is set, the bridge falls
+    /// back to the spec's `help` text (no behavior change for entries
+    /// that haven't been overridden).
+    #[test]
+    fn crawl_site_url_falls_back_to_spec_help_when_no_override() {
+        let schema = crawl_site_input_schema();
+        let url = &schema["properties"]["url"];
+        assert_eq!(
+            url["description"],
+            json!(crawler::URL.help),
+            "no override → description must equal spec.help"
+        );
     }
 }

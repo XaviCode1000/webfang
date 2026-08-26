@@ -297,6 +297,22 @@ fn every_overlapping_mcp_param_matches_spec_json_schema() {
                     promote_spec_to_nullable(&mut expected_value);
                 }
             }
+            // Issue #948 F6: per-tool description override wins over the
+            // spec's `help` (and over the spec's own
+            // `description_override`). Mirror the bridge's precedence
+            // here so the parity comparison reflects the production
+            // rendering.
+            if let Some(override_) = property
+                .description_override
+                .or(property.spec.description_override)
+            {
+                if let Value::Object(map) = &mut expected_value {
+                    map.insert(
+                        "description".into(),
+                        Value::String(override_.to_owned()),
+                    );
+                }
+            }
             expected_holder.insert(property.name.to_owned(), expected_value);
             let overrides = default_overrides_for_tool(table.tool);
             apply_default_overrides(&mut expected_holder, &overrides);

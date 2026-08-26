@@ -17,6 +17,7 @@ pub const OUTPUT: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
@@ -39,6 +40,7 @@ pub const FORMAT: OptionSpec = OptionSpec {
         visible_aliases: &[],
         schema_default: None,
         nullable: false,
+        description_override: None,
         feature_gate: None,
     };
 
@@ -59,6 +61,7 @@ pub const EXPORT_FORMAT: OptionSpec = OptionSpec {
         visible_aliases: &[],
         schema_default: None,
         nullable: false,
+        description_override: None,
         feature_gate: None,
     };
 
@@ -77,6 +80,7 @@ pub const CPU_CORES: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
@@ -104,6 +108,7 @@ pub const RAM_BUDGET: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
@@ -122,6 +127,7 @@ pub const DB_PATH: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
@@ -136,6 +142,7 @@ pub const ELASTIC: OptionSpec = OptionSpec {
     default: Some("false"),
     schema_default: Some(DefaultValue::Bool(false)),
     nullable: false,
+    description_override: None,
     help: "Enable elastic ingestion pipeline (streaming, SQLite dedup, Rayon CPU bridge)",
     heading: Some("Elastic Ingestion"),
     kind: ValueKind::Bool,
@@ -159,6 +166,7 @@ pub const OUTPUT_VECTORS: OptionSpec = OptionSpec {
         visible_aliases: &[],
         schema_default: None,
         nullable: false,
+        description_override: None,
         feature_gate: None,
     };
 
@@ -173,6 +181,7 @@ pub const BATCH: OptionSpec = OptionSpec {
     default: Some("false"),
     schema_default: Some(DefaultValue::Bool(false)),
     nullable: false,
+    description_override: None,
     help: "Enable batch mode — read URLs from stdin (one per line)",
     heading: Some("Batch Processing"),
     kind: ValueKind::Bool,
@@ -195,6 +204,7 @@ pub const BATCH_FILE: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
@@ -213,6 +223,7 @@ pub const BATCH_CONCURRENCY: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
@@ -227,6 +238,7 @@ pub const PIPELINE: OptionSpec = OptionSpec {
     default: Some("false"),
     schema_default: Some(DefaultValue::Bool(false)),
     nullable: false,
+    description_override: None,
     help: "Enable item pipeline processing (validate → clean → output)",
     heading: Some("Item Pipeline"),
     kind: ValueKind::Bool,
@@ -251,6 +263,7 @@ pub const PIPELINE_OUTPUT: OptionSpec = OptionSpec {
     visible_aliases: &[],
     schema_default: None,
     nullable: false,
+    description_override: None,
     feature_gate: None,
 };
 
