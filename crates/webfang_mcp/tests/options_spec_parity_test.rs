@@ -18,12 +18,14 @@ use serde_json::{Map, Value};
 use webfang_core::domain::options_spec;
 use webfang_core::domain::options_spec::OptionSpec;
 use webfang_mcp::mcp_server::params::{
-    CrawlSiteParams, ExportFileParams, ProcessExportPipelineParams, ScrapeWithOptionsParams,
+    CrawlSiteParams, ExportFileParams, GetAccessibilitySnapshotParams, ProcessExportPipelineParams,
+    ScrapeBatchParams, ScrapeWithOptionsParams,
 };
 use webfang_mcp::mcp_server::schema_bridge::{
-    apply_default_overrides, default_overrides_for_tool, merged_input_schema, promote_spec_to_nullable,
-    SpecProperty, CRAWL_SITE_PROPERTIES, EXPORT_FILE_PROPERTIES, PROCESS_EXPORT_PIPELINE_PROPERTIES,
-    SCRAPE_WITH_OPTIONS_PROPERTIES,
+    apply_default_overrides, default_overrides_for_tool, merged_input_schema,
+    promote_spec_to_nullable, SpecProperty, CRAWL_SITE_PROPERTIES, EXPORT_FILE_PROPERTIES,
+    GET_ACCESSIBILITY_SNAPSHOT_PROPERTIES, PROCESS_EXPORT_PIPELINE_PROPERTIES,
+    SCRAPE_BATCH_PROPERTIES, SCRAPE_WITH_OPTIONS_PROPERTIES,
 };
 
 const CRAWLER_GROUP: &[OptionSpec] = options_spec::crawler::GROUP;
@@ -126,6 +128,20 @@ const PARITY_CASES: &[ParityCase] = &[
         group: EXPORT_GROUP,
         spec_id: "export_format",
     },
+    // -- scrape_batch (issue #948 coverage gap, WU5) --------------------
+    ParityCase {
+        tool: "scrape_batch",
+        wire_name: "ignore_robots",
+        group: CRAWLER_GROUP,
+        spec_id: "ignore_robots",
+    },
+    // -- get_accessibility_snapshot (issue #948 coverage gap, WU5) -----
+    ParityCase {
+        tool: "get_accessibility_snapshot",
+        wire_name: "selector",
+        group: CRAWLER_GROUP,
+        spec_id: "selector",
+    },
 ];
 
 const TOOL_TABLES: &[ToolTablesErased] = &[
@@ -138,6 +154,11 @@ const TOOL_TABLES: &[ToolTablesErased] = &[
     ToolTablesErased::of::<ProcessExportPipelineParams>(
         "process_export_pipeline",
         PROCESS_EXPORT_PIPELINE_PROPERTIES,
+    ),
+    ToolTablesErased::of::<ScrapeBatchParams>("scrape_batch", SCRAPE_BATCH_PROPERTIES),
+    ToolTablesErased::of::<GetAccessibilitySnapshotParams>(
+        "get_accessibility_snapshot",
+        GET_ACCESSIBILITY_SNAPSHOT_PROPERTIES,
     ),
 ];
 
@@ -307,10 +328,7 @@ fn every_overlapping_mcp_param_matches_spec_json_schema() {
                 .or(property.spec.description_override)
             {
                 if let Value::Object(map) = &mut expected_value {
-                    map.insert(
-                        "description".into(),
-                        Value::String(override_.to_owned()),
-                    );
+                    map.insert("description".into(), Value::String(override_.to_owned()));
                 }
             }
             expected_holder.insert(property.name.to_owned(), expected_value);
@@ -364,12 +382,30 @@ fn no_group_overlapping_param_escapes_the_parity_table() {
         .chain(EXPORT_GROUP.iter())
         .map(|o| o.id)
         .collect();
-    // Known wire-name renames: MCP `format` carries `export::EXPORT_FORMAT`.
+    // Known wire-name renames: MCP `format` carries `export::EXPORT_FORMAT`
+    // — but only for the export-shaped tools. `get_accessibility_snapshot`
+    // also has a `format` field (`SnapshotFormatParams`), which is
+    // unrelated to the export spec.
     spec_ids.push("export_format");
 
     for table in TOOL_TABLES {
         for name in (table.derived_properties)() {
-            let overlaps = spec_ids.contains(&name.as_str());
+            // `get_accessibility_snapshot/format` is `SnapshotFormatParams`,
+            // NOT the export spec's `format`. The alias `format →
+            // export_format` only applies to the export-shaped tools.
+            let is_export_format_alias = name == "format"
+                && !matches!(table.tool, "export_file" | "process_export_pipeline");
+            // `get_accessibility_snapshot/url` is a REQUIRED String field,
+            // not `Option<String>`. The spec's `crawler::URL` carries
+            // CLI-flavored help ("required unless using a subcommand")
+            // that doesn't fit this tool, and the field is not
+            // optional in the params struct — WU5 deliberately
+            // does NOT bridge it (see issue #948 coverage gap).
+            let is_unbridged_required_url =
+                name == "url" && matches!(table.tool, "get_accessibility_snapshot");
+            let overlaps = spec_ids.contains(&name.as_str())
+                && !is_export_format_alias
+                && !is_unbridged_required_url;
             assert!(
                 !overlaps || table.properties.iter().any(|p| p.name == name),
                 "[{}/{}] derives a GROUP-overlapping property with NO parity row",

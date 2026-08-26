@@ -991,7 +991,10 @@ mod tests {
 
         // Inclusive boundaries accept (no re-implementation needed).
         assert_eq!(crawler::MAX_PAGES.check_bound(1).expect("min"), 1);
-        assert_eq!(crawler::MAX_PAGES.check_bound(100_000).expect("cap"), 100_000);
+        assert_eq!(
+            crawler::MAX_PAGES.check_bound(100_000).expect("cap"),
+            100_000
+        );
 
         // Unbounded entries accept any value (policy = None).
         assert_eq!(crawler::DELAY_MS.check_bound(0).expect("unbounded"), 0);
