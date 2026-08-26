@@ -228,7 +228,7 @@ mod spec_parity_tests {
                 .iter()
                 .map(|v| v.to_string_lossy().into_owned())
                 .collect();
-            let expected: Vec<String> = s.default.map(|d| vec![d.to_owned()]).unwrap_or_default();
+            let expected: Vec<String> = s.default.map(|d| vec![d.to_string()]).unwrap_or_default();
             assert_eq!(defaults, expected, "default mismatch for `{}`", s.id);
         }
     }

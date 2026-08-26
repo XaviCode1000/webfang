@@ -28,7 +28,7 @@
 //! built here by hand at their exact declaration-order positions so the
 //! help listing order never changes.
 
-use crate::domain::options_spec::{self, OptionSpec, ValueKind};
+use crate::domain::options_spec::{self, DefaultValue, OptionSpec, ValueKind};
 use clap::builder::{ArgAction, PossibleValuesParser, ValueParser};
 
 /// Whether assembled args carry their spec heading.
@@ -64,7 +64,30 @@ fn build_arg(spec: &'static OptionSpec, headings: Headings) -> clap::Arg {
         arg = arg.env(env);
     }
     if let Some(default) = spec.default {
-        arg = arg.default_value(default);
+        // clap 4 here has no `string` feature, so `OsStr` only accepts
+        // `&'static str`. Materialize the canonical string form for the
+        // known Uint/Bool space via a `match` (zero-cost) and reuse the
+        // `&'static str` already carried by `DefaultValue::Str`. The
+        // wildcard arm is unreachable: the spec entry population is
+        // bounded by the `OPTIONS_SPEC` constants — adding a new
+        // `DefaultValue::Uint(n)` literal demands a new arm here.
+        let s: &'static str = match default {
+            DefaultValue::Str(s) => s,
+            DefaultValue::Bool(true) => "true",
+            DefaultValue::Bool(false) => "false",
+            DefaultValue::Uint(2) => "2",
+            DefaultValue::Uint(3) => "3",
+            DefaultValue::Uint(10) => "10",
+            DefaultValue::Uint(30) => "30",
+            DefaultValue::Uint(100) => "100",
+            DefaultValue::Uint(1000) => "1000",
+            DefaultValue::Uint(10000) => "10000",
+            DefaultValue::Uint(52428800) => "52428800",
+            other => unreachable!(
+                "spec_command encountered a `DefaultValue` literal not in the clap `default_value` arm table: {other}"
+            ),
+        };
+        arg = arg.default_value(s);
     }
     if headings == Headings::Applied {
         if let Some(heading) = spec.heading {

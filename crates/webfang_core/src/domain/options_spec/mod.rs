@@ -21,20 +21,20 @@ use serde_json::{json, Map, Value};
 
 /// Typed default value used by the JSON schema path (issue #948 F4).
 ///
-/// Replaces the previous single-string `"default"` in the advertised MCP
-/// schema so `json_schema()` can serialize the wire type natively —
-/// `"default": 2` for an `integer` kind, `"default": true` for a `boolean`
-/// kind, `"default": "jsonl"` for a `string`/enum kind. The CLI parity
-/// surface keeps the canonical string form via [`OptionSpec::default`] (a
-/// `&'static str` that mirrors clap's `default_value`); [`Display`] is the
-/// canonical string form for every `DefaultValue` variant so the two stay
-/// drift-free.
+/// Single source of truth for the option's default: `json_schema()`
+/// serializes the wire type natively — `"default": 2` for an `integer` kind,
+/// `"default": true` for a `boolean` kind, `"default": "jsonl"` for a
+/// `string`/enum kind. The CLI parity surface reaches the canonical string
+/// form through [`DefaultValue::Display`] (the clap `default_value` path
+/// uses `.to_string()` to obtain the same string). Strict replacement of
+/// the previous `default: Option<&'static str>` plus the additive
+/// `schema_default` field — only the typed form remains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DefaultValue {
     /// Free-form string default — every `Text`/`Path`/`Enum` default and any
-    /// `Bool`/`Uint` that the legacy `&'static str` representation is still
-    /// useful for. The wrapped string is the CLI's `default_value` rendering
-    /// and the schema's `"default"` value for textual kinds.
+    /// `MemorySize` byte-size default. The wrapped string is the CLI's
+    /// `default_value` rendering and the schema's `"default"` value for
+    /// textual kinds.
     Str(&'static str),
     /// Unsigned integer default — schema emits a JSON number, never a string.
     Uint(u64),
@@ -96,20 +96,17 @@ pub struct OptionSpec {
     pub value_name: &'static str,
     /// Environment variable consulted when the flag is absent.
     pub env: Option<&'static str>,
-    /// Canonical CLI default value — the string form clap's `default_value`
-    /// accepts as a `&'static str`. The advertised MCP schema derives its
-    /// wire-typed `default` from [`Self::schema_default`]; for textual
-    /// kinds both fields carry the same string, but for `Uint`/`Bool` the
-    /// schema path is the one that emits the native JSON type (issue #948
-    /// F4).
-    pub default: Option<&'static str>,
-    /// Wire-typed default for the JSON schema path (issue #948 F4). When
-    /// `None`, the schema falls back to [`Self::default`] (a string), which
-    /// is correct for every `Text`/`Path`/`Enum` kind. When `Some`, the
-    /// schema serializes the native JSON type (`Uint(2)` → `2`,
-    /// `Bool(true)` → `true`). CLI parity stays governed by
-    /// [`Self::default`].
-    pub schema_default: Option<DefaultValue>,
+    /// Canonical default value (issue #948 F4 strict replacement).
+    ///
+    /// The typed enum is the single source of truth: the CLI parity path
+    /// uses [`DefaultValue::Display`] to obtain the canonical string form
+    /// for clap's `default_value`, and the JSON schema path uses
+    /// [`DefaultValue::to_json_value`] to serialize the native wire type
+    /// (`Uint(2)` → `2`, `Bool(true)` → `true`, `Str("jsonl")` →
+    /// `"jsonl"`). The previous `default: Option<&'static str>` plus
+    /// additive `schema_default` pair is gone — only the typed form
+    /// remains, and the two surfaces derive from the same value.
+    pub default: Option<DefaultValue>,
     /// Whether the advertised JSON schema must declare the property
     /// nullable — i.e. emit `"type": ["<inner>", "null"]` (issue #948 F5).
     /// The bridge preserves the schemars-derived `["<inner>", "null"]`
@@ -613,15 +610,13 @@ impl OptionSpec {
                 );
             }
         }
-        // F4: prefer the wire-typed `schema_default`; fall back to the CLI
-        // string form for every option that doesn't override it. Bool/Uint
-        // entries that override `schema_default` will emit native JSON
-        // types (true / 2), closing the type-inconsistency drift in the
-        // advertised MCP schema.
-        if let Some(typed) = self.schema_default {
-            schema.insert("default".into(), typed.to_json_value());
-        } else if let Some(default) = self.default {
-            schema.insert("default".into(), json!(default));
+        // F4 strict replacement: `default` is the single typed source of
+        // truth. `json!` of a `&'static str` would emit a string, so the
+        // `DefaultValue::to_json_value` path serializes native wire types
+        // (`Uint(2)` → `2`, `Bool(true)` → `true`, `Str("jsonl")` →
+        // `"jsonl"`).
+        if let Some(default) = self.default {
+            schema.insert("default".into(), default.to_json_value());
         }
         if let Some(gate) = self.feature_gate {
             schema.insert("x-feature-gate".into(), json!(gate));
@@ -886,9 +881,9 @@ mod tests {
 
     #[test]
     fn json_schema_covers_boolean_path_and_text_kinds() {
-        // ELASTIC carries a typed `schema_default: Bool(false)` (issue #948
-        // F4) — the advertised schema emits a native JSON boolean, not a
-        // string, closing the type-inconsistency drift the bridge
+        // ELASTIC carries a typed `default: Bool(false)` (issue #948 F4
+        // strict) — the advertised schema emits a native JSON boolean, not
+        // a string, closing the type-inconsistency drift the bridge
         // previously inherited.
         let elastic = export::ELASTIC.json_schema();
         assert_eq!(elastic["type"], "boolean");
@@ -939,8 +934,9 @@ mod tests {
         );
         assert!(dom["default"].is_boolean());
 
-        // Sanity: textual entries (no `schema_default`) still emit strings
-        // so the CLI parity path stays drift-free.
+        // Sanity: textual entries (no `default` set) omit `default` from
+        // the schema; entries with `default: Some(DefaultValue::Str(...))`
+        // emit a JSON string so the CLI parity path stays drift-free.
         let text = crawler::SELECTOR.json_schema();
         assert_eq!(text["type"], "string");
         assert_eq!(text["default"], json!("body"));
