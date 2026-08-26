@@ -458,6 +458,34 @@ gh pr create --base main --head "$(git branch --show-current)" \
 
 Base the body on `.github/PULL_REQUEST_TEMPLATE.md`.
 
+### CHANGELOG policy (written at consolidation — work PRs never touch it)
+
+`CHANGELOG.md` is **out of scope for ordinary work PRs and for every delegated agent**. Do not
+add, edit, or "keep it fresh" in a feature/fix branch.
+
+The entries are written **once, centrally, in the consolidation step** — the batch PR that merges
+the reviewed work to `main` (see "Batch merge of multiple green PRs" below):
+
+- **Large slice → ONE entry** covering the whole slice.
+- **Small slice → ONE entry per issue closed** (closing `Closes #A` + `Closes #B` gets two entries).
+- Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), entries under `## [Unreleased]`
+  in the matching category (respect the existing emoji category headings).
+- Entry text: English, imperative, with the `#<issue>` reference.
+
+```markdown
+## [Unreleased]
+
+### 🔧 Fixed
+
+#### Unified filename sanitizer (#911)
+- Collapsed the two divergent filename sanitizers into one join-safe helper.
+```
+
+> **Why the restriction, not just a preference:** the batch-merge policy requires the merged PRs to
+> touch **disjoint files** so N green PRs cost one CI run instead of N. `CHANGELOG.md` is a single
+> shared file, so per-PR edits guarantee a conflict in every batch and silently kill the
+> optimization. The file stays untouched until one writer — the consolidation PR — owns it.
+
 ### Pre-commit gate (every commit)
 
 ```bash
@@ -488,6 +516,7 @@ gh run list --workflow=ci.yml --branch "$(git branch --show-current)" --limit 1 
 - [ ] Review `git diff --stat main...HEAD` to confirm only expected symbols/files changed
 - [ ] Error messages in Spanish if user-facing; new public items have doc comments
 - [ ] PR has exactly one `type:*` label + linked issue + conventional branch
+- [ ] `CHANGELOG.md` **not** touched by this PR (entries are written once, in the consolidation PR — AGENTS.md → "CHANGELOG policy")
 - [ ] Verified worktree: `git branch --show-current` matches directory name
 - [ ] No `git checkout`/`switch`/`stash` was executed during the session
 - [ ] Post-merge handoff runbook will be executed after merge
@@ -540,6 +569,8 @@ re-runs the FULL CI (~27 min). N PRs sequential ≈ N × 27 min. One batch PR �
 2. **Files touched are fully disjoint** — check with:
    `for pr in <N1> <N2>; do gh pr view $pr --json files --jq '.files[].path'; done`
    Any overlap → do NOT batch; merge sequentially instead.
+   (`CHANGELOG.md` must not appear in any of these lists — see "CHANGELOG policy" above. If it
+   does, that PR violated the policy and must drop the file before batching.)
 3. All PRs share a compatible `type:*` label (e.g. all `fix` → one `type:bug`).
 
 **Procedure:**
@@ -554,7 +585,11 @@ git worktree add ~/Projects/webfang-worktrees/fix-batch -b fix/batch-<topic>
 git merge --no-ff <sha1> -m "Merge <branch> (PR #N1)"
 git merge --no-ff <sha2> -m "Merge <branch> (PR #N2)"
 
-# 3. Local gate, push, create the batch PR linking ALL issues
+# 3. Write the CHANGELOG entries HERE — this is the ONE place they are written.
+#    Under `## [Unreleased]`, one entry per merged slice (or per closed issue for small ones).
+#    See "CHANGELOG policy" above: no other PR ever touches this file.
+
+# 4. Local gate, push, create the batch PR linking ALL issues
 cargo check && cargo clippy --all-targets --all-features -- -D warnings \
   -W clippy::cognitive_complexity -W clippy::too_many_lines && cargo fmt
 git push -u origin fix/batch-<topic>
@@ -565,10 +600,10 @@ Closes #B
 ## Summary
 ..."
 
-# 4. Close the original PRs as superseded
+# 5. Close the original PRs as superseded
 for pr in <N1> <N2>; do gh pr close $pr --comment "Superseded by #<batch-PR>"; done
 
-# 5. Delete the now-orphan remote branches (gh pr close does NOT delete them)
+# 6. Delete the now-orphan remote branches (gh pr close does NOT delete them)
 git push origin --delete <branch1> <branch2>
 ```
 

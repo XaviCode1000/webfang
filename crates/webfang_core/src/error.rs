@@ -3,6 +3,7 @@
 //! Uses thiserror for library error types (err-thiserror-lib).
 //! This provides type-safe, structured error handling instead of anyhow.
 
+use crate::domain::error::ResourceKind;
 use thiserror::Error;
 use wreq::Error as WreqError;
 
@@ -169,11 +170,29 @@ pub enum ScraperError {
     /// Crawl limit exceeded.
     ///
     /// Groups all crawl-budget configuration limits — max-depth, max-pages,
-    /// and sitemap-depth. All three are `PermanentFatal` configuration
-    /// boundaries (see [`Self::classify`]); the payload carries the
-    /// human-readable limit description rendered verbatim by `Display`.
+    /// and sitemap-depth. All three are `DomainRecoverable` budget stops
+    /// (matrix rows 9 and 11; see [`Self::classify`]); the payload carries
+    /// the human-readable limit description rendered verbatim by `Display`.
     #[error("{0}")]
     CrawlLimit(String),
+
+    /// Resource limit exhausted (budget backpressure).
+    ///
+    /// 1:1 pass-through of `CrawlError::ResourceExhausted` so the resource
+    /// kind survives the layer boundary and [`Self::classify`] can split
+    /// matrix row 12 (RAM backpressure, retriable after backoff) from row 11
+    /// (sitemap budgets, by-design stops). `Display` is deliberately
+    /// identical to `CrawlError::ResourceExhausted` so the message survives
+    /// layer conversion.
+    #[error("resource exhausted: {resource:?} limit={limit} actual={actual}")]
+    ResourceExhausted {
+        /// Which resource limit was hit.
+        resource: ResourceKind,
+        /// Configured limit value.
+        limit: usize,
+        /// Actual usage that exceeded the limit.
+        actual: usize,
+    },
 
     /// Sitemap contained no URLs (valid XML but empty urlset)
     #[error("no URLs found in sitemap")]
@@ -461,7 +480,25 @@ impl ScraperError {
             Self::Conversion(_) => ErrorClass::InternalFatal,
             Self::Semantic(inner) => inner.classify(),
             Self::Internal(_) => ErrorClass::InternalFatal,
-            Self::CrawlLimit(_) => ErrorClass::PermanentFatal,
+            // Rows 9/11 (#957): budget exhaustion by design is the crawler
+            // doing its job, not a failure. `CrawlLimit` is the shared
+            // pass-through target of `From<CrawlError>` for max-depth,
+            // max-pages and sitemap-depth, so this arm must agree with
+            // `CrawlError::classify` or it inverts all three siblings.
+            Self::CrawlLimit(_) => ErrorClass::DomainRecoverable,
+            // Rows 11/12 (#957): same split as `CrawlError::classify` —
+            // RamBudget backpressure resolves itself when memory frees,
+            // sitemap url/depth budgets are by-design stops. Enumerating
+            // every kind (no wildcard) keeps a new `ResourceKind` from
+            // silently inheriting a class.
+            Self::ResourceExhausted {
+                resource: ResourceKind::RamBudget,
+                ..
+            } => ErrorClass::TransientBackoff,
+            Self::ResourceExhausted {
+                resource: ResourceKind::SitemapUrls | ResourceKind::SitemapDepth,
+                ..
+            } => ErrorClass::DomainRecoverable,
             // Row 20: empty/missing sitemap is a domain-content condition,
             // not a code bug — same class as CrawlError::classify so the
             // From<CrawlError> pass-through does not invert it. The typed
@@ -684,14 +721,22 @@ impl From<crate::domain::error::CrawlError> for ScraperError {
                 std::io::ErrorKind::ConnectionReset,
                 msg,
             ))),
+            // Rows 11/12 (#957): typed 1:1 pass-through. Flattening every
+            // kind into `Internal` collapsed row 11 (DomainRecoverable) and
+            // row 12 (TransientBackoff) to InternalFatal at this layer.
             CrawlError::ResourceExhausted {
                 resource,
                 limit,
                 actual,
-            } => ScraperError::Internal(format!(
-                "resource exhausted: {resource:?} limit={limit} actual={actual}"
-            )),
+            } => ScraperError::ResourceExhausted {
+                resource,
+                limit,
+                actual,
+            },
             CrawlError::SitemapEmpty => ScraperError::SitemapEmpty,
+            // Row 11: sitemap-depth is a budget stop, same family as
+            // max-depth/max-pages, so it shares `CrawlLimit`, which
+            // classifies `DomainRecoverable` at this layer (#957).
             CrawlError::SitemapDepthExceeded => {
                 ScraperError::CrawlLimit("sitemap depth exceeded".to_string())
             },
@@ -1347,6 +1392,69 @@ mod tests {
         );
     }
 
+    // Matrix rows 9/11 (#957): crawl-budget limits — max-depth, max-pages and
+    // sitemap-depth — are DomainRecoverable. `CrawlLimit` is the shared
+    // pass-through target of `From<CrawlError>` for all three, so classifying
+    // it `PermanentFatal` inverted the class for every sibling.
+    #[test]
+    fn test_classify_domain_recoverable_crawl_limit() {
+        let err = ScraperError::CrawlLimit("maximum pages 100 exceeded".to_string());
+        assert_eq!(err.classify(), ErrorClass::DomainRecoverable);
+    }
+
+    // Matrix rows 11/12 (#957): each `ResourceExhausted` kind keeps its own
+    // class across the layer boundary — sitemap budgets are by-design stops
+    // (row 11), RamBudget backpressure resolves itself when memory frees
+    // (row 12). Flattening every kind to `Internal` made both InternalFatal.
+    #[test]
+    fn test_classify_resource_exhausted_class_survives_crawl_error_conversion() {
+        assert_eq!(
+            ScraperError::from(CrawlError::ResourceExhausted {
+                resource: crate::domain::error::ResourceKind::RamBudget,
+                limit: 1024,
+                actual: 2048,
+            })
+            .classify(),
+            ErrorClass::TransientBackoff
+        );
+        assert_eq!(
+            ScraperError::from(CrawlError::ResourceExhausted {
+                resource: crate::domain::error::ResourceKind::SitemapDepth,
+                limit: 10,
+                actual: 11,
+            })
+            .classify(),
+            ErrorClass::DomainRecoverable
+        );
+    }
+
+    // Triangulation: the row-9/11/12 budget siblings survive `From<CrawlError>`
+    // with the matrix class, while the row-13 backpressure bug and the row-15
+    // bad input keep their fatal classes (no blanket widening).
+    #[test]
+    fn test_classify_budget_class_survives_crawl_error_conversion() {
+        assert_eq!(
+            ScraperError::from(CrawlError::SitemapDepthExceeded).classify(),
+            ErrorClass::DomainRecoverable
+        );
+        assert_eq!(
+            ScraperError::from(CrawlError::MaxDepthExceeded { current: 5, max: 3 }).classify(),
+            ErrorClass::DomainRecoverable
+        );
+        assert_eq!(
+            ScraperError::from(CrawlError::MaxPagesExceeded { max: 100 }).classify(),
+            ErrorClass::DomainRecoverable
+        );
+        assert_eq!(
+            ScraperError::from(CrawlError::SemaphoreInanition).classify(),
+            ErrorClass::InternalFatal
+        );
+        assert_eq!(
+            ScraperError::from(CrawlError::InvalidUrl("bad".into())).classify(),
+            ErrorClass::PermanentFatal
+        );
+    }
+
     #[test]
     fn test_classify_internal_fatal_semaphore() {
         let err = ScraperError::SemaphoreInanition;
@@ -1863,7 +1971,7 @@ mod tests {
     }
 
     #[test]
-    fn test_crawl_error_resource_exhausted_flattens_to_internal_preserving_fields() {
+    fn test_crawl_error_resource_exhausted_passes_through_preserving_fields() {
         let crawl_err = crate::domain::error::CrawlError::ResourceExhausted {
             resource: crate::domain::error::ResourceKind::RamBudget,
             limit: 512,
@@ -1871,8 +1979,15 @@ mod tests {
         };
         let scraper_err: ScraperError = crawl_err.into();
         assert!(
-            matches!(&scraper_err, ScraperError::Internal(_)),
-            "ResourceExhausted must flatten to ScraperError::Internal, got: {scraper_err}"
+            matches!(
+                &scraper_err,
+                ScraperError::ResourceExhausted {
+                    resource: crate::domain::error::ResourceKind::RamBudget,
+                    limit: 512,
+                    actual: 1024,
+                }
+            ),
+            "ResourceExhausted must keep its typed kind + budget fields, got: {scraper_err}"
         );
         let rendered = scraper_err.to_string();
         assert!(

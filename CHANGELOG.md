@@ -57,7 +57,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Extensible Design:** Easy to add new validation rules and error variants
 - **Memory Safety:** Pure move semantics prevent accidental clones in hot paths
 
+### 📖 Documentation
+
+#### CHANGELOG policy — single-write at consolidation (#965)
+- Codify that `CHANGELOG.md` is written once in the consolidation PR — work PRs and delegated agents must not touch it, preserving the batch-merge disjoint-files optimization.
+
 ### 🔧 Fixed
+
+#### From<CrawlError> error-class inversions for budget siblings (#957)
+- Realign `From<CrawlError>` error classes for budget siblings — `CrawlLimit` now `DomainRecoverable` (rows 9/11), `ResourceExhausted` typed pass-through preserving `DomainRecoverable`/`TransientBackoff` split (rows 11/12) — `Display` byte-identical, no snapshot churn.
 
 #### Sitemap double decompression (#757)
 - **Root cause:** `wreq` (built with `.gzip(true)`) auto-decompresses the transport `Content-Encoding` and strips that header, while `CompressionHandler::detect_compression` trusted the `.gz` URL extension and decompressed again — `decompression failed: Invalid gzip header` on every `.xml.gz` sitemap served with `content-encoding: gzip` (e.g. MDN: 10/10 child sitemaps failed).
