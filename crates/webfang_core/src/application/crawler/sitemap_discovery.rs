@@ -6,9 +6,11 @@
 //! infrastructure concern from DOM-link discovery.
 
 use crate::application::url_filter::is_allowed;
+use crate::domain::error::WafDetectionKind;
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl};
 use crate::infrastructure::crawler::{SitemapConfig, SitemapError, SitemapParser, SitemapUrl};
+use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
 use tracing::{info, instrument};
 use url::Url;
 
@@ -238,6 +240,14 @@ async fn parse_sitemap(
             SitemapError::AllChildrenFailed(count, details) => {
                 CrawlError::Parse(format!("all {count} child sitemaps failed: {details}"))
             },
+            // Issue #879: a challenge detected in the sitemap chain keeps its
+            // typed identity through the CrawlError layer (PermanentFatal per
+            // classify(), Spanish evidence chain via ScraperError::WafBlocked).
+            SitemapError::WafChallenge { url, provider } => CrawlError::WafChallenge {
+                provider,
+                kind: WafDetectionKind::BodySignature,
+                url,
+            },
             other => CrawlError::Parse(other.to_string()),
         }
     })?;
@@ -423,8 +433,8 @@ async fn parse_subpath_sitemap(
 async fn discover_sitemap_url(base_url: &str, client: &wreq::Client) -> Result<String, CrawlError> {
     let base = Url::parse(base_url).map_err(|e| CrawlError::InvalidUrl(e.to_string()))?;
 
-    // 1. robots.txt `Sitemap:` directive
-    if let Some(url) = fetch_robots_sitemap(&base, client).await {
+    // 1. robots.txt `Sitemap:` directive (a WAF challenge aborts via `?`)
+    if let Some(url) = fetch_robots_sitemap(&base, client).await? {
         return Ok(url);
     }
     tracing::debug!("No sitemap found in robots.txt, trying fallback locations");
@@ -450,19 +460,67 @@ async fn discover_sitemap_url(base_url: &str, client: &wreq::Client) -> Result<S
 }
 
 /// Fetch `robots.txt` and extract its `Sitemap:` directive, if present.
-async fn fetch_robots_sitemap(base: &Url, client: &wreq::Client) -> Option<String> {
-    let robots_url = base.join("/robots.txt").ok()?;
+///
+/// The response body is inspected for WAF challenges before directive
+/// parsing (issue #879): a challenge page served where `robots.txt` should
+/// be aborts discovery with [`CrawlError::WafChallenge`] instead of being
+/// silently treated as "no robots.txt". Every other failure mode keeps the
+/// legacy `None` ("not found") semantics.
+async fn fetch_robots_sitemap(
+    base: &Url,
+    client: &wreq::Client,
+) -> Result<Option<String>, CrawlError> {
+    let Ok(robots_url) = base.join("/robots.txt") else {
+        tracing::warn!("invalid base URL for robots.txt: {}", base);
+        return Ok(None);
+    };
     tracing::info!("Checking robots.txt: {}", robots_url);
 
-    let response = client.get(robots_url.as_str()).send().await.ok()?;
-    tracing::info!("robots.txt status: {}", response.status());
-    if !response.status().is_success() {
-        return None;
+    let Ok(response) = client.get(robots_url.as_str()).send().await else {
+        return Ok(None);
+    };
+    let status = response.status();
+    tracing::info!("robots.txt status: {}", status);
+    if !status.is_success() {
+        return Ok(None);
     }
 
-    let content = response.text().await.ok()?;
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let Ok(content) = response.text().await else {
+        return Ok(None);
+    };
+
+    // Issue #879: inspect the body before directive parsing — Challenge-tier
+    // markers block at any status; Fingerprint-tier evidence never blocks at
+    // 2xx (REQ-WAF-09), so benign vendor mentions keep flowing through.
+    let ctx = InspectionContext {
+        status: Some(status.as_u16()),
+        content_type: (!content_type.is_empty()).then_some(content_type),
+        headers: wreq::header::HeaderMap::new(),
+        ignore_waf: false,
+    };
+    let verdict = WafInspector::inspect(&content, &ctx);
+    if verdict.is_blocked {
+        tracing::warn!(
+        url = %robots_url,
+        status = status.as_u16(),
+        evidences = verdict.evidences.len(),
+        "WAF/CAPTCHA challenge detected in robots.txt body; aborting sitemap discovery"
+                );
+        return Err(CrawlError::WafChallenge {
+            provider: verdict.evidence_chain(),
+            kind: WafDetectionKind::BodySignature,
+            url: robots_url.to_string(),
+        });
+    }
+
     log_robots_content(&content);
-    extract_robots_sitemap_directive(&content, base)
+    Ok(extract_robots_sitemap_directive(&content, base))
 }
 
 /// Log the robots.txt body (capped to the first 500 chars for instrumentation).
@@ -579,6 +637,7 @@ async fn probe_subpath_sitemaps(base: &Url, client: &wreq::Client) -> Option<Str
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
+    use crate::domain::error::WafDetectionKind;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -658,6 +717,115 @@ mod tests {
         let base = format!("{}/docs", mock.uri());
         let result = discover_sitemap_url(&base, &test_client()).await;
         assert_eq!(result.unwrap(), format!("{}/docs/sitemap.xml", mock.uri()));
+    }
+
+    // ── Issue #879 (Option A): WAF inspection over sitemap-chain bodies ──
+
+    /// Cloudflare Turnstile widget marker — Challenge-tier (T1), blocks even
+    /// in degraded mode per REQ-WAF-05/09.
+    const CHALLENGE_HTML: &str = r#"<html><body>Just a moment...</body><div id="cf-turnstile" data-sitekey="abc"></div></html>"#;
+
+    /// Shared writer capturing tracing fmt output for assertions (same
+    /// pattern as `pipeline::executor` span-capture tests).
+    #[derive(Clone)]
+    struct SharedWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedWriter {
+        type Writer = SharedWriterGuard;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            SharedWriterGuard(self.0.clone())
+        }
+    }
+
+    struct SharedWriterGuard(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SharedWriterGuard {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("trace buffer lock")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A WAF challenge served where robots.txt should be must abort discovery
+    /// with the typed `CrawlError::WafChallenge` (carrying host context and
+    /// evidence chain) and emit a structured trace event — not silently fall
+    /// through to `SitemapNotFound` (issue #879).
+    #[test]
+    fn robots_txt_waf_challenge_yields_typed_error_and_trace_event() {
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(SharedWriter(buf.clone()))
+            .with_ansi(false)
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            rt.block_on(async {
+                let mock = MockServer::start().await;
+                Mock::given(method("GET"))
+                    .and(path("/robots.txt"))
+                    .respond_with(ResponseTemplate::new(200).set_body_string(CHALLENGE_HTML))
+                    .mount(&mock)
+                    .await;
+
+                let result = discover_sitemap_url(mock.uri().as_str(), &test_client()).await;
+
+                match result {
+                    Err(CrawlError::WafChallenge {
+                        provider,
+                        kind,
+                        url,
+                    }) => {
+                        assert_eq!(kind, WafDetectionKind::BodySignature);
+                        assert!(
+                            provider.contains("Cloudflare"),
+                            "evidence chain expected in provider, got: {provider}"
+                        );
+                        assert_eq!(url, format!("{}/robots.txt", mock.uri()));
+                    },
+                    other => panic!("expected CrawlError::WafChallenge, got: {other:?}"),
+                }
+            });
+        });
+
+        let captured = buf.lock().expect("trace buffer lock").clone();
+        let out = String::from_utf8_lossy(&captured);
+        assert!(
+            out.contains("challenge"),
+            "WAF trace event expected on the discovery path, got: {out}"
+        );
+    }
+
+    /// A benign robots.txt that merely mentions a WAF vendor at status 200 is
+    /// Fingerprint-tier evidence, which never blocks without a correlated WAF
+    /// status (REQ-WAF-09): discovery must proceed to fallbacks as before.
+    #[tokio::test]
+    async fn benign_robots_txt_mentioning_vendor_does_not_trigger_waf_error() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/robots.txt"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("User-agent: *\n# site hosted behind cloudflare\n"),
+            )
+            .mount(&mock)
+            .await;
+
+        let result = discover_sitemap_url(mock.uri().as_str(), &test_client()).await;
+        assert!(
+            !matches!(result, Err(CrawlError::WafChallenge { .. })),
+            "benign vendor mention must not raise WafChallenge, got: {result:?}"
+        );
     }
 
     #[tokio::test]

@@ -35,7 +35,9 @@ type AdaptiveSelectorEngine = ();
 // Re-exports preserve the historical `scraper_service::*` public paths after
 // the #443 decomposition into focused application modules. Callers (MCP
 // handlers, `crawler::discovery`, integration tests) keep resolving unchanged.
-pub use crate::application::asset_download::download_assets_if_enabled;
+pub use crate::application::asset_download::{
+    download_asset_urls, download_assets_if_enabled, extract_asset_urls,
+};
 pub use crate::application::extraction::{extract_with_selector, scrape_with_readability};
 pub use crate::application::spa_detection::{
     detect_spa_content, SpaDetectionResult, MIN_CONTENT_CHARS,
@@ -251,10 +253,6 @@ async fn scrape_with_config_inner(
 
     detect_waf(html, &response, config, url, &correlation)?;
 
-    // H1 FIX: Extract title from original DOM BEFORE any transformation.
-    // This preserves the <title> tag even when --selector filters it out.
-    let original_title = extract_original_title(html);
-
     // M7 FIX: Log selector feedback when --selector is active
     if config.selector != "body" {
         info!(
@@ -297,14 +295,24 @@ async fn scrape_with_config_inner(
 
     let extraction_html = extract_result.as_html().to_owned();
 
+    // #962: single DOM parse per page. Every shared-document operation
+    // (title, Readability, author, assets) runs synchronously inside
+    // [`extract_page_extractions`]: `scraper::Html` is neither `Send` nor
+    // `Sync`, so confining all DOM access to a non-async function guarantees
+    // this scrape future never captures the document across an `.await`.
+    let page = extract_page_extractions(html, &extraction_html, url, config);
+
     // Try Readability first, fallback to plain text extraction
     let content = build_scraped_content(
+        page.article,
+        page.author,
         html,
         &extraction_html,
+        &page.asset_urls,
         url,
         config,
         downloader,
-        &original_title,
+        &page.original_title,
         &correlation,
         quality_hint,
     )
@@ -411,16 +419,74 @@ fn detect_waf(
 /// Extract the `<title>` from the original DOM before any transformation.
 ///
 /// 'title' is a compile-time-constant selector; `Selector::parse` cannot fail.
-fn extract_original_title(html: &str) -> String {
-    let doc = scraper::Html::parse_document(html);
+fn extract_original_title(document: &scraper::Html) -> String {
     #[allow(clippy::expect_used)]
     let selector = scraper::Selector::parse("title")
         // LCOV_EXCL_LINE defensive: compile-time-selector — 'title' is a constant valid selector
         .expect("invariant: 'title' is a valid CSS selector — this cannot fail");
-    doc.select(&selector)
+    document
+        .select(&selector)
         .next()
         .map(|el| el.text().collect::<String>())
         .unwrap_or_default()
+}
+
+/// Every shared-document extraction product for one fetched page (#962).
+///
+/// Produced synchronously by [`extract_page_extractions`]; the async scrape
+/// pipeline consumes only these owned, `Send` values — never the document.
+struct PageExtractions {
+    /// `<title>` of the original DOM (H1 FIX), empty when absent.
+    original_title: String,
+    /// Readability article over the extracted HTML (`Err` → fallback branch).
+    article: crate::error::Result<crate::infrastructure::scraper::readability::Article>,
+    /// Author resolved against the shared DOM and the readability byline.
+    author: Option<String>,
+    /// Deduplicated asset URLs extracted from the shared DOM.
+    asset_urls: Vec<String>,
+}
+
+/// Parse `html` once (#962) and run every document-dependent stage over the
+/// single parsed DOM: original-title extraction, Readability, author
+/// extraction and asset URL extraction.
+///
+/// Deliberately non-async: [`scraper::Html`] contains interior mutability
+/// (neither `Send` nor `Sync`), so all DOM access is confined to this
+/// synchronous function and dies with its scope — the enclosing scrape future
+/// only ever holds the owned [`PageExtractions`] values.
+fn extract_page_extractions(
+    html: &str,
+    extraction_html: &str,
+    url: &url::Url,
+    config: &ScraperConfig,
+) -> PageExtractions {
+    let document = scraper::Html::parse_document(html);
+    tracing::debug!(url = %url, "parsed page document once for all extraction stages");
+
+    // H1 FIX: Extract title from original DOM BEFORE any transformation.
+    // This preserves the <title> tag even when --selector filters it out.
+    let original_title = extract_original_title(&document);
+
+    // Try Readability first; the caller falls back to plain-text extraction
+    // when this fails.
+    let article =
+        crate::infrastructure::scraper::readability::parse(extraction_html, Some(url.as_str()));
+
+    let author = article.as_ref().ok().and_then(|a| {
+        crate::infrastructure::scraper::author_extractor::extract_author_from_document(
+            &document,
+            a.byline.as_deref(),
+        )
+    });
+
+    let asset_urls = extract_asset_urls(&document, url, config);
+
+    PageExtractions {
+        original_title,
+        article,
+        author,
+        asset_urls,
+    }
 }
 
 /// Clean HTML boilerplate (scripts, styles, nav, sidebar, footer) BEFORE
@@ -441,10 +507,19 @@ fn clean_html_for_scrape(html: &str, config: &ScraperConfig) -> String {
 
 /// Build a [`ScrapedContent`] from the fetched HTML, trying Readability first
 /// and falling back to plain-text extraction.
+///
+/// #962: every shared-document operation (Readability parse, author
+/// extraction, asset URL extraction) completes synchronously in
+/// [`scrape_with_config_inner`] — `scraper::Html` is neither `Send` nor
+/// `Sync`, and async-fn parameters are conservatively live across `.await`
+/// points, so this future only receives owned / `Send` data.
 #[allow(clippy::too_many_arguments)]
 async fn build_scraped_content(
+    article: crate::error::Result<crate::infrastructure::scraper::readability::Article>,
+    author: Option<String>,
     html: &str,
     extraction_html: &str,
+    asset_urls: &[String],
     url: &url::Url,
     config: &ScraperConfig,
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
@@ -452,11 +527,10 @@ async fn build_scraped_content(
     correlation: &CorrelationId,
     quality_hint: Option<crate::domain::extraction_quality::ExtractionQualityHint>,
 ) -> Result<ScrapedContent> {
-    match crate::infrastructure::scraper::readability::parse(extraction_html, Some(url.as_str())) {
+    match article {
         Ok(article) => {
-            let assets = download_assets_if_enabled(
-                html,
-                url,
+            let assets = download_asset_urls(
+                asset_urls,
                 config,
                 downloader.map(|d| d as &dyn crate::domain::ports::AssetDownloaderPort),
             )
@@ -470,11 +544,6 @@ async fn build_scraped_content(
                 html,
                 correlation,
             )?;
-
-            let author = crate::infrastructure::scraper::author_extractor::extract_author(
-                html,
-                article.byline.as_deref(),
-            );
 
             Ok(ScrapedContent {
                 // H1 FIX: Use title from original DOM, falling back to Readability's title
@@ -508,9 +577,8 @@ async fn build_scraped_content(
                 crate::infrastructure::scraper::fallback::extract_text(extraction_html);
             let fallback_content =
                 crate::infrastructure::converter::html_cleaner::clean_html(&raw_fallback);
-            let assets = download_assets_if_enabled(
-                html,
-                url,
+            let assets = download_asset_urls(
+                asset_urls,
                 config,
                 downloader.map(|d| d as &dyn crate::domain::ports::AssetDownloaderPort),
             )
