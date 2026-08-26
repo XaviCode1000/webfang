@@ -137,6 +137,14 @@ Remaining divergences between `ScraperError::classify` and this matrix
 (ExtractionFailed, Conversion, Readability/Extraction, Middleware,
 Ingestion) are tracked for reconciliation in issue #839.
 
+As of #957, the Family 2 budget rows are materialized end-to-end too:
+`ScraperError::CrawlLimit` classifies `DomainRecoverable` (rows 9 and 11) and
+`ScraperError::ResourceExhausted` is a typed 1:1 pass-through of
+`CrawlError::ResourceExhausted` that preserves the kind split (row 11 →
+`DomainRecoverable`, row 12 → `TransientBackoff`). Previously both flattened to
+variants classifying `PermanentFatal`/`InternalFatal`, inverting the class for
+every consumer of `ErrorClass` at the `ScraperError` layer.
+
 ## Exhaustiveness enforcement
 
 1. `CrawlError::classify()`: flat match, zero wildcard arms. Adding a variant
