@@ -77,9 +77,12 @@ pub trait AuthorExtractor: Send + Sync {
     /// Human-readable strategy name for logging.
     fn name(&self) -> &str;
 
-    /// Try to extract an author from the HTML. Returns `None` if this
-    /// strategy finds nothing.
-    fn extract(&self, html: &str) -> Option<String>;
+    /// Try to extract an author from the parsed document. Returns `None` if
+    /// this strategy finds nothing.
+    ///
+    /// Strategies receive the already-parsed DOM (#962) so the scrape hot
+    /// path never re-parses the same page per strategy.
+    fn extract(&self, document: &Html) -> Option<String>;
 }
 
 /// Strategy 1: JSON-LD structured data.
@@ -94,8 +97,7 @@ impl AuthorExtractor for JsonLdAuthorExtractor {
         "json-ld"
     }
 
-    fn extract(&self, html: &str) -> Option<String> {
-        let document = Html::parse_document(html);
+    fn extract(&self, document: &Html) -> Option<String> {
         document.select(&SEL_JSONLD).find_map(|element| {
             let json: String = element.text().collect();
             author_from_jsonld(&json)
@@ -112,8 +114,7 @@ impl AuthorExtractor for MetaTagAuthorExtractor {
         "meta-tag"
     }
 
-    fn extract(&self, html: &str) -> Option<String> {
-        let document = Html::parse_document(html);
+    fn extract(&self, document: &Html) -> Option<String> {
         document
             .select(&SEL_META_AUTHOR)
             .find_map(|element| element.value().attr("content").and_then(non_empty))
@@ -129,9 +130,7 @@ impl AuthorExtractor for ItempropAuthorExtractor {
         "itemprop"
     }
 
-    fn extract(&self, html: &str) -> Option<String> {
-        let document = Html::parse_document(html);
-
+    fn extract(&self, document: &Html) -> Option<String> {
         for element in document.select(&SEL_ITEMPROP_AUTHOR) {
             let nested_name = element
                 .select(&SEL_ITEMPROP_NAME)
@@ -163,8 +162,7 @@ impl AuthorExtractor for CssClassAuthorExtractor {
         "css-class"
     }
 
-    fn extract(&self, html: &str) -> Option<String> {
-        let document = Html::parse_document(html);
+    fn extract(&self, document: &Html) -> Option<String> {
         document.select(&SEL_CSS_CLASS).find_map(|element| {
             let raw = text_content(&element)?;
             let candidate = strip_byline_prefix(&raw);
@@ -181,6 +179,10 @@ impl AuthorExtractor for CssClassAuthorExtractor {
 /// Try each extraction strategy in order, returning the first successful
 /// result. Falls back to the legible byline when no strategy matches.
 ///
+/// Convenience wrapper that parses `html` once and delegates to
+/// [`extract_author_from_document`]. Hot-path callers that already hold a
+/// parsed DOM should call [`extract_author_from_document`] directly (#962).
+///
 /// # Arguments
 ///
 /// * `html` - Full raw HTML of the page (must include `<head>` for meta/JSON-LD)
@@ -191,6 +193,27 @@ impl AuthorExtractor for CssClassAuthorExtractor {
 /// * `Some(author)` - The first non-empty author found
 /// * `None` - No strategy matched and no byline was supplied
 pub fn extract_author(html: &str, legible_byline: Option<&str>) -> Option<String> {
+    let document = Html::parse_document(html);
+    extract_author_from_document(&document, legible_byline)
+}
+
+/// Try each extraction strategy in order against an already-parsed document,
+/// returning the first successful result. Falls back to the legible byline
+/// when no strategy matches (#962).
+///
+/// # Arguments
+///
+/// * `document` - Parsed DOM shared across the scrape pipeline stages
+/// * `legible_byline` - Byline produced by readability, used as last resort
+///
+/// # Returns
+///
+/// * `Some(author)` - The first non-empty author found
+/// * `None` - No strategy matched and no byline was supplied
+pub fn extract_author_from_document(
+    document: &Html,
+    legible_byline: Option<&str>,
+) -> Option<String> {
     let extractors: Vec<Box<dyn AuthorExtractor>> = vec![
         Box::new(JsonLdAuthorExtractor),
         Box::new(MetaTagAuthorExtractor),
@@ -199,7 +222,7 @@ pub fn extract_author(html: &str, legible_byline: Option<&str>) -> Option<String
     ];
 
     for extractor in &extractors {
-        if let Some(author) = extractor.extract(html) {
+        if let Some(author) = extractor.extract(document) {
             let author = author.trim().to_string();
             if !author.is_empty() {
                 tracing::debug!(strategy = extractor.name(), %author, "author extracted");
@@ -280,7 +303,8 @@ mod tests {
     use super::*;
 
     fn extract_with(extractor: &dyn AuthorExtractor, html: &str) -> Option<String> {
-        extractor.extract(html)
+        let document = Html::parse_document(html);
+        extractor.extract(&document)
     }
 
     // ---- JSON-LD strategy ----
