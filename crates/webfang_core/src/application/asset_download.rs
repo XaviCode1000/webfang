@@ -116,8 +116,7 @@ pub async fn download_asset_urls(
         urls.len()
     );
 
-    // Trait impl already returns domain::DownloadedAsset — collect directly
-    Ok(downloader.download_batch(urls).await?)
+    downloader.download_batch(urls).await
 }
 
 #[cfg(test)]

@@ -35,7 +35,9 @@ type AdaptiveSelectorEngine = ();
 // Re-exports preserve the historical `scraper_service::*` public paths after
 // the #443 decomposition into focused application modules. Callers (MCP
 // handlers, `crawler::discovery`, integration tests) keep resolving unchanged.
-pub use crate::application::asset_download::{download_asset_urls, download_assets_if_enabled, extract_asset_urls};
+pub use crate::application::asset_download::{
+    download_asset_urls, download_assets_if_enabled, extract_asset_urls,
+};
 pub use crate::application::extraction::{extract_with_selector, scrape_with_readability};
 pub use crate::application::spa_detection::{
     detect_spa_content, SpaDetectionResult, MIN_CONTENT_CHARS,
