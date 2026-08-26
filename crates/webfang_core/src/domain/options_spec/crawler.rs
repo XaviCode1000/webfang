@@ -13,7 +13,7 @@
 //! warn-and-default semantics — not a clap bound), and `include_patterns`,
 //! `exclude_patterns`, `headers`, `cookies` (`Vec` args with value
 //! delimiters).
-use super::{NumericPolicy, OptionSpec, ValueKind};
+use super::{DefaultValue, NumericPolicy, OptionSpec, ValueKind};
 
 /// `--url <URL>` (short `-u`)
 pub const URL: OptionSpec = OptionSpec {
@@ -28,6 +28,7 @@ pub const URL: OptionSpec = OptionSpec {
     heading: Some("Target"),
     kind: ValueKind::Text,
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
@@ -44,6 +45,7 @@ pub const SELECTOR: OptionSpec = OptionSpec {
     heading: Some("Target"),
     kind: ValueKind::Text,
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
@@ -58,6 +60,7 @@ pub const DELAY_MS: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_DELAY_MS"),
     default: Some("1000"),
+    schema_default: Some(DefaultValue::Uint(1000)),
     help: "Delay between requests in milliseconds",
     heading: Some("Discovery"),
     kind: ValueKind::uint_unbounded(),
@@ -80,6 +83,7 @@ pub const MAX_PAGES: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_MAX_PAGES"),
     default: Some("10"),
+    schema_default: Some(DefaultValue::Uint(10)),
     help: "Maximum pages to scrape",
     heading: Some("Discovery"),
     kind: ValueKind::uint(
@@ -109,6 +113,7 @@ pub const USE_SITEMAP: OptionSpec = OptionSpec {
         heading: Some("Discovery"),
         kind: ValueKind::Bool,
         visible_aliases: &[],
+        schema_default: None,
         feature_gate: None,
     };
 
@@ -125,6 +130,7 @@ pub const SITEMAP_URL: OptionSpec = OptionSpec {
     heading: Some("Discovery"),
     kind: ValueKind::Text,
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
@@ -137,6 +143,7 @@ pub const SINGLE_PAGE: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_SINGLE_PAGE"),
     default: Some("false"),
+    schema_default: Some(DefaultValue::Bool(false)),
     help: "Scrape only the seed URL without discovery or crawling",
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
@@ -159,6 +166,7 @@ pub const RESUME: OptionSpec = OptionSpec {
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
@@ -175,6 +183,7 @@ pub const STATE_DIR: OptionSpec = OptionSpec {
     heading: Some("Behavior"),
     kind: ValueKind::Path,
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
@@ -187,6 +196,7 @@ pub const DOWNLOAD_IMAGES: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_DOWNLOAD_IMAGES"),
     default: Some("false"),
+    schema_default: Some(DefaultValue::Bool(false)),
     help: "Download images from the page",
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
@@ -203,6 +213,7 @@ pub const DOWNLOAD_DOCUMENTS: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_DOWNLOAD_DOCUMENTS"),
     default: Some("false"),
+    schema_default: Some(DefaultValue::Bool(false)),
     help: "Download documents from the page",
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
@@ -219,6 +230,7 @@ pub const DOWNLOAD_ASSETS: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_DOWNLOAD_ASSETS"),
     default: Some("false"),
+    schema_default: Some(DefaultValue::Bool(false)),
     help: "Download all assets (images + documents) from the page",
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
@@ -235,6 +247,7 @@ pub const EXTRACTION_FINGERPRINT: OptionSpec = OptionSpec {
         aliases: &[],
         env: Some("WEBFANG_EXTRACTION_FINGERPRINT"),
         default: Some("false"),
+        schema_default: Some(DefaultValue::Bool(false)),
         // Byte-exact transcription of clap's rendering of the multi-line doc
         // comment (lines joined with spaces; only the FINAL period stripped,
         // interior sentence periods retained).
@@ -259,6 +272,7 @@ pub const VERBOSE: OptionSpec = OptionSpec {
     heading: Some("Display"),
     kind: ValueKind::uint_unbounded(),
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
@@ -271,6 +285,7 @@ pub const QUIET: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_QUIET"),
     default: Some("false"),
+    schema_default: Some(DefaultValue::Bool(false)),
     help: "Quiet mode — suppress info/debug output",
     heading: Some("Display"),
     kind: ValueKind::Bool,
@@ -287,6 +302,7 @@ pub const DRY_RUN: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_DRY_RUN"),
     default: Some("false"),
+    schema_default: Some(DefaultValue::Bool(false)),
     help: "Dry-run mode — discover URLs and print without scraping",
     heading: Some("Display"),
     kind: ValueKind::Bool,
@@ -307,6 +323,7 @@ pub const TRACE_FILE: OptionSpec = OptionSpec {
     heading: Some("Display"),
     kind: ValueKind::Path,
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
@@ -323,6 +340,7 @@ pub const MAX_DEPTH: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_MAX_DEPTH"),
     default: Some("2"),
+    schema_default: Some(DefaultValue::Uint(2)),
     help: "Maximum depth to crawl (0 = only seed URL)",
     heading: Some("Crawler Settings"),
     kind: ValueKind::uint(NumericPolicy::zero_valid_capped(
@@ -343,6 +361,7 @@ pub const TIMEOUT_SECS: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_TIMEOUT_SECS"),
     default: Some("30"),
+    schema_default: Some(DefaultValue::Uint(30)),
     help: "Request timeout in seconds",
     heading: Some("Crawler Settings"),
     kind: ValueKind::uint(NumericPolicy::legacy_verbatim(
@@ -369,6 +388,7 @@ pub const ASSET_NAMING: OptionSpec = OptionSpec {
             variants: &["hash", "slug", "content-disposition"],
         },
         visible_aliases: &[],
+        schema_default: None,
         feature_gate: None,
     };
 
@@ -392,6 +412,7 @@ pub const DOWNLOAD_CONCURRENCY: OptionSpec = OptionSpec {
         "'{value}' no es un número válido para --download-concurrency",
     )),
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
@@ -404,6 +425,7 @@ pub const MAX_RETRIES: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_MAX_RETRIES"),
     default: Some("3"),
+    schema_default: Some(DefaultValue::Uint(3)),
     help: "Maximum number of retry attempts",
     heading: Some("HTTP Client Settings"),
     kind: ValueKind::uint_unbounded(),
@@ -421,6 +443,7 @@ pub const BACKOFF_BASE_MS: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_BACKOFF_BASE_MS"),
     default: Some("1000"),
+    schema_default: Some(DefaultValue::Uint(1000)),
     help: "Base delay for exponential backoff (ms)",
     heading: Some("HTTP Client Settings"),
     kind: ValueKind::uint_unbounded(),
@@ -437,6 +460,7 @@ pub const BACKOFF_MAX_MS: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_BACKOFF_MAX_MS"),
     default: Some("10000"),
+    schema_default: Some(DefaultValue::Uint(10000)),
     help: "Maximum delay for exponential backoff (ms)",
     heading: Some("HTTP Client Settings"),
     kind: ValueKind::uint_unbounded(),
@@ -457,6 +481,7 @@ pub const ACCEPT_LANGUAGE: OptionSpec = OptionSpec {
     heading: Some("HTTP Client Settings"),
     kind: ValueKind::Text,
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
@@ -473,6 +498,7 @@ pub const USER_AGENT: OptionSpec = OptionSpec {
     heading: Some("HTTP Client Settings"),
     kind: ValueKind::Text,
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
@@ -485,6 +511,7 @@ pub const MAX_FILE_SIZE: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_MAX_FILE_SIZE"),
     default: Some("52428800"),
+    schema_default: Some(DefaultValue::Uint(52428800)),
     help: "Maximum file size to download in bytes (default: 50MB)",
     heading: Some("Download Settings"),
     kind: ValueKind::uint_unbounded(),
@@ -502,6 +529,7 @@ pub const DOWNLOAD_TIMEOUT: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_DOWNLOAD_TIMEOUT"),
     default: Some("30"),
+    schema_default: Some(DefaultValue::Uint(30)),
     help: "Timeout for individual asset downloads in seconds",
     heading: Some("Download Settings"),
     kind: ValueKind::uint_unbounded(),
@@ -518,6 +546,7 @@ pub const SITEMAP_DEPTH: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_SITEMAP_DEPTH"),
     default: Some("3"),
+    schema_default: Some(DefaultValue::Uint(3)),
     help: "Maximum recursion depth for sitemap indexes",
     heading: Some("Sitemap Settings"),
     kind: ValueKind::uint_unbounded(),
@@ -535,6 +564,7 @@ pub const CHECKPOINT_INTERVAL: OptionSpec = OptionSpec {
         aliases: &[],
         env: Some("WEBFANG_CHECKPOINT_INTERVAL"),
         default: Some("100"),
+        schema_default: Some(DefaultValue::Uint(100)),
         help: "Pages between automatic checkpoint saves (0 = disabled) NOTE: Checkpoint is for programmatic use (Engine API) only. CLI --resume uses StateStore instead of checkpoints",
         heading: Some("Competitive Features"),
         kind: ValueKind::uint_unbounded(),
@@ -551,6 +581,7 @@ pub const NO_CHECKPOINT: OptionSpec = OptionSpec {
         aliases: &[],
         env: Some("WEBFANG_NO_CHECKPOINT"),
         default: Some("false"),
+        schema_default: Some(DefaultValue::Bool(false)),
         help: "Disable checkpoint persistence entirely NOTE: Checkpoint is for programmatic use (Engine API) only. CLI --resume uses StateStore instead of checkpoints",
         heading: Some("Competitive Features"),
         kind: ValueKind::Bool,
@@ -567,6 +598,7 @@ pub const IGNORE_ROBOTS: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_IGNORE_ROBOTS"),
     default: Some("false"),
+    schema_default: Some(DefaultValue::Bool(false)),
     help: "Skip robots.txt enforcement",
     heading: Some("Competitive Features"),
     kind: ValueKind::Bool,
@@ -583,6 +615,7 @@ pub const IGNORE_WAF: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_IGNORE_WAF"),
     default: Some("false"),
+    schema_default: Some(DefaultValue::Bool(false)),
     help: "Bypass WAF/CAPTCHA detection entirely (never block on challenge markers)",
     heading: Some("Competitive Features"),
     kind: ValueKind::Bool,
@@ -599,6 +632,7 @@ pub const AUTOSCALE: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_AUTOSCALE"),
     default: Some("false"),
+    schema_default: Some(DefaultValue::Bool(false)),
     help: "Enable autoscaled concurrency — dynamically adjusts task concurrency based on RAM usage",
     heading: Some("Competitive Features"),
     kind: ValueKind::Bool,
@@ -615,6 +649,7 @@ pub const NO_SESSION_HEALTH: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_NO_SESSION_HEALTH"),
     default: Some("false"),
+    schema_default: Some(DefaultValue::Bool(false)),
     help: "Disable session pool health checks",
     heading: Some("Competitive Features"),
     kind: ValueKind::Bool,
@@ -635,6 +670,7 @@ pub const H2_PROFILE: OptionSpec = OptionSpec {
     heading: Some("Competitive Features"),
     kind: ValueKind::Text,
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
@@ -653,6 +689,7 @@ pub const JS_STRATEGY: OptionSpec = OptionSpec {
             variants: &["static", "hybrid", "full"],
         },
         visible_aliases: &[],
+        schema_default: None,
         feature_gate: None,
     };
 
@@ -669,6 +706,7 @@ pub const OBSCURA_BINARY: OptionSpec = OptionSpec {
     heading: Some("JS Rendering"),
     kind: ValueKind::Text,
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
@@ -682,6 +720,7 @@ pub const DOM_PREPRUNE: OptionSpec = OptionSpec {
         aliases: &[],
         env: Some("WEBFANG_DOM_PREPRUNE"),
         default: Some("true"),
+        schema_default: Some(DefaultValue::Bool(true)),
         help: "Enable DOM pre-pruning before Readability (removes invisible/empty wrappers). Default: enabled (true). Set to false via --dom-preprune=false or WEBFANG_DOM_PREPRUNE=false",
         heading: Some("Cleanup"),
         kind: ValueKind::Bool,
@@ -701,6 +740,7 @@ pub const CLEAN_AI: OptionSpec = OptionSpec {
     visible_aliases: &["ai"],
     env: Some("WEBFANG_CLEAN_AI"),
     default: Some("false"),
+    schema_default: Some(DefaultValue::Bool(false)),
     help: "Use AI-powered semantic cleaning for better RAG output",
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
@@ -717,6 +757,7 @@ pub const ADAPTIVE_SELECTORS: OptionSpec = OptionSpec {
     visible_aliases: &[],
     env: Some("WEBFANG_ADAPTIVE_SELECTORS"),
     default: Some("false"),
+    schema_default: Some(DefaultValue::Bool(false)),
     help: "Enable adaptive CSS selector repair (2-tier cascade)",
     heading: Some("Behavior"),
     kind: ValueKind::Bool,

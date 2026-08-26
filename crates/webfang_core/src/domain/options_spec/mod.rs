@@ -19,6 +19,56 @@
 
 use serde_json::{json, Map, Value};
 
+/// Typed default value used by the JSON schema path (issue #948 F4).
+///
+/// Replaces the previous single-string `"default"` in the advertised MCP
+/// schema so `json_schema()` can serialize the wire type natively —
+/// `"default": 2` for an `integer` kind, `"default": true` for a `boolean`
+/// kind, `"default": "jsonl"` for a `string`/enum kind. The CLI parity
+/// surface keeps the canonical string form via [`OptionSpec::default`] (a
+/// `&'static str` that mirrors clap's `default_value`); [`Display`] is the
+/// canonical string form for every `DefaultValue` variant so the two stay
+/// drift-free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultValue {
+    /// Free-form string default — every `Text`/`Path`/`Enum` default and any
+    /// `Bool`/`Uint` that the legacy `&'static str` representation is still
+    /// useful for. The wrapped string is the CLI's `default_value` rendering
+    /// and the schema's `"default"` value for textual kinds.
+    Str(&'static str),
+    /// Unsigned integer default — schema emits a JSON number, never a string.
+    Uint(u64),
+    /// Boolean default — schema emits a JSON boolean, never a string.
+    Bool(bool),
+}
+
+impl DefaultValue {
+    /// Native JSON value matching the option's wire kind — issue #948 F4.
+    /// `Uint(2)` becomes `Value::Number(2)` (not `"2"`), `Bool(true)` becomes
+    /// `Value::Bool(true)` (not `"true"`), `Str("jsonl")` becomes
+    /// `Value::String("jsonl")`. This is the form [`OptionSpec::json_schema`]
+    /// serializes into the advertised MCP schema and is the drift-killer
+    /// for the type-inconsistency finding.
+    #[must_use]
+    pub fn to_json_value(&self) -> Value {
+        match self {
+            Self::Str(s) => Value::String((*s).to_owned()),
+            Self::Uint(n) => json!(n),
+            Self::Bool(b) => Value::Bool(*b),
+        }
+    }
+}
+
+impl core::fmt::Display for DefaultValue {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Str(s) => f.write_str(s),
+            Self::Uint(n) => write!(f, "{n}"),
+            Self::Bool(b) => write!(f, "{b}"),
+        }
+    }
+}
+
 /// Declarative description of ONE user-facing option (ADR-002).
 ///
 /// Pure data: no clap types, no infrastructure types — this is domain-layer
@@ -46,8 +96,20 @@ pub struct OptionSpec {
     pub value_name: &'static str,
     /// Environment variable consulted when the flag is absent.
     pub env: Option<&'static str>,
-    /// Canonical default value as rendered in help and schema.
+    /// Canonical CLI default value — the string form clap's `default_value`
+    /// accepts as a `&'static str`. The advertised MCP schema derives its
+    /// wire-typed `default` from [`Self::schema_default`]; for textual
+    /// kinds both fields carry the same string, but for `Uint`/`Bool` the
+    /// schema path is the one that emits the native JSON type (issue #948
+    /// F4).
     pub default: Option<&'static str>,
+    /// Wire-typed default for the JSON schema path (issue #948 F4). When
+    /// `None`, the schema falls back to [`Self::default`] (a string), which
+    /// is correct for every `Text`/`Path`/`Enum` kind. When `Some`, the
+    /// schema serializes the native JSON type (`Uint(2)` → `2`,
+    /// `Bool(true)` → `true`). CLI parity stays governed by
+    /// [`Self::default`].
+    pub schema_default: Option<DefaultValue>,
     /// Help text (`--help` long form); must match the clap derive's rendering.
     pub help: &'static str,
     /// Help heading/group under which clap lists this option.
@@ -451,7 +513,14 @@ impl OptionSpec {
                 }
             },
         }
-        if let Some(default) = self.default {
+        // F4: prefer the wire-typed `schema_default`; fall back to the CLI
+        // string form for every option that doesn't override it. Bool/Uint
+        // entries that override `schema_default` will emit native JSON
+        // types (true / 2), closing the type-inconsistency drift in the
+        // advertised MCP schema.
+        if let Some(typed) = self.schema_default {
+            schema.insert("default".into(), typed.to_json_value());
+        } else if let Some(default) = self.default {
             schema.insert("default".into(), json!(default));
         }
         if let Some(gate) = self.feature_gate {
@@ -482,7 +551,7 @@ pub mod export;
 pub mod crawler;
 #[cfg(test)]
 mod tests {
-    use super::{crawler, export, schema_object, OptionSpecError};
+    use super::{crawler, export, schema_object, DefaultValue, OptionSpecError};
     use serde_json::json;
 
     #[test]
@@ -704,15 +773,70 @@ mod tests {
 
     #[test]
     fn json_schema_covers_boolean_path_and_text_kinds() {
+        // ELASTIC carries a typed `schema_default: Bool(false)` (issue #948
+        // F4) — the advertised schema emits a native JSON boolean, not a
+        // string, closing the type-inconsistency drift the bridge
+        // previously inherited.
         let elastic = export::ELASTIC.json_schema();
         assert_eq!(elastic["type"], "boolean");
-        assert_eq!(elastic["default"], "false");
+        assert_eq!(elastic["default"], false);
+        assert_eq!(elastic["default"], json!(false));
 
         let output = export::OUTPUT.json_schema();
         assert_eq!(output["type"], "string");
 
         let vectors = export::OUTPUT_VECTORS.json_schema();
         assert_eq!(vectors["type"], "string");
+    }
+
+    /// Issue #948 F4 drift-killer: integer- and boolean-kind properties must
+    /// advertise their `default` as a native JSON number/bool, NEVER as a
+    /// JSON string. The pre-F4 renderer emitted `"default": "2"` for an
+    /// `integer` kind — inconsistent with `"type": "integer"` and
+    /// type-strict MCP validators.
+    #[test]
+    fn json_schema_emits_native_typed_defaults_for_uint_and_bool() {
+        // MAX_PAGES (crawler) is `Uint(10)` — schema must carry `2`-as-number.
+        let pages = crawler::MAX_PAGES.json_schema();
+        assert_eq!(pages["type"], "integer");
+        assert_eq!(
+            pages["default"],
+            json!(10u64),
+            "MAX_PAGES default must be a JSON number, not a string"
+        );
+        assert!(
+            pages["default"].is_number(),
+            "MAX_PAGES default must be a JSON number, got: {}",
+            pages["default"]
+        );
+
+        // MAX_DEPTH (crawler) is `Uint(2)` — same invariant.
+        let depth = crawler::MAX_DEPTH.json_schema();
+        assert_eq!(depth["type"], "integer");
+        assert_eq!(depth["default"], json!(2u64));
+        assert!(depth["default"].is_number());
+
+        // Bool entry: DOM_PREPRUNE is `Bool(true)`.
+        let dom = crawler::DOM_PREPRUNE.json_schema();
+        assert_eq!(dom["type"], "boolean");
+        assert_eq!(
+            dom["default"],
+            json!(true),
+            "DOM_PREPRUNE default must be a JSON bool, not a string"
+        );
+        assert!(dom["default"].is_boolean());
+
+        // Sanity: textual entries (no `schema_default`) still emit strings
+        // so the CLI parity path stays drift-free.
+        let text = crawler::SELECTOR.json_schema();
+        assert_eq!(text["type"], "string");
+        assert_eq!(text["default"], json!("body"));
+
+        // F4 back-compat: `DefaultValue` `Display` mirrors the canonical
+        // CLI string form the args parity tests assert.
+        assert_eq!(DefaultValue::Uint(10).to_string(), "10");
+        assert_eq!(DefaultValue::Bool(false).to_string(), "false");
+        assert_eq!(DefaultValue::Str("jsonl").to_string(), "jsonl");
     }
 
     #[test]

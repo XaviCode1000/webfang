@@ -1,6 +1,6 @@
 //! Export flag group (ADR-002 slice 1): mirrors `cli::args::ExportArgs`
 //! field-by-field. The parity tests in that module enforce lockstep.
-use super::{NumericPolicy, OptionSpec, ValueKind};
+use super::{DefaultValue, NumericPolicy, OptionSpec, ValueKind};
 
 /// `--output <OUTPUT>` (short `-o`)
 pub const OUTPUT: OptionSpec = OptionSpec {
@@ -15,6 +15,7 @@ pub const OUTPUT: OptionSpec = OptionSpec {
     heading: Some("Output"),
     kind: ValueKind::Path,
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
@@ -35,6 +36,7 @@ pub const FORMAT: OptionSpec = OptionSpec {
             variants: &["markdown", "json", "text"],
         },
         visible_aliases: &[],
+        schema_default: None,
         feature_gate: None,
     };
 
@@ -44,15 +46,16 @@ pub const EXPORT_FORMAT: OptionSpec = OptionSpec {
         value_name: "EXPORT_FORMAT",
         long: "export-format",
         short: None,
-        aliases: &["export"],
-        env: Some("WEBFANG_EXPORT_FORMAT"),
-        default: Some("jsonl"),
-        help: "Export format for RAG pipeline (jsonl, vector, auto) NOTE: Use --format for output file format (markdown, text, json)",
+    aliases: &["export"],
+    env: Some("WEBFANG_EXPORT_FORMAT"),
+    default: Some("jsonl"),
+    help: "Export format for RAG pipeline (jsonl, vector, auto) NOTE: Use --format for output file format (markdown, text, json)",
         heading: Some("Output"),
         kind: ValueKind::Enum {
             variants: &["jsonl", "vector", "auto"],
         },
         visible_aliases: &[],
+        schema_default: None,
         feature_gate: None,
     };
 
@@ -69,6 +72,7 @@ pub const CPU_CORES: OptionSpec = OptionSpec {
     heading: Some("Elastic Ingestion"),
     kind: ValueKind::uint(NumericPolicy::positive("cpu-cores debe ser > 0")),
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
@@ -94,6 +98,7 @@ pub const RAM_BUDGET: OptionSpec = OptionSpec {
         }),
     },
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
@@ -110,6 +115,7 @@ pub const DB_PATH: OptionSpec = OptionSpec {
     heading: Some("Elastic Ingestion"),
     kind: ValueKind::Path,
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
@@ -122,6 +128,7 @@ pub const ELASTIC: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_ELASTIC"),
     default: Some("false"),
+    schema_default: Some(DefaultValue::Bool(false)),
     help: "Enable elastic ingestion pipeline (streaming, SQLite dedup, Rayon CPU bridge)",
     heading: Some("Elastic Ingestion"),
     kind: ValueKind::Bool,
@@ -143,6 +150,7 @@ pub const OUTPUT_VECTORS: OptionSpec = OptionSpec {
         heading: Some("Elastic Ingestion"),
         kind: ValueKind::Text,
         visible_aliases: &[],
+        schema_default: None,
         feature_gate: None,
     };
 
@@ -155,6 +163,7 @@ pub const BATCH: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_BATCH"),
     default: Some("false"),
+    schema_default: Some(DefaultValue::Bool(false)),
     help: "Enable batch mode — read URLs from stdin (one per line)",
     heading: Some("Batch Processing"),
     kind: ValueKind::Bool,
@@ -175,6 +184,7 @@ pub const BATCH_FILE: OptionSpec = OptionSpec {
     heading: Some("Batch Processing"),
     kind: ValueKind::Path,
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
@@ -191,6 +201,7 @@ pub const BATCH_CONCURRENCY: OptionSpec = OptionSpec {
     heading: Some("Batch Processing"),
     kind: ValueKind::uint(NumericPolicy::positive("batch-concurrency debe ser > 0")),
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
@@ -203,6 +214,7 @@ pub const PIPELINE: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_PIPELINE"),
     default: Some("false"),
+    schema_default: Some(DefaultValue::Bool(false)),
     help: "Enable item pipeline processing (validate → clean → output)",
     heading: Some("Item Pipeline"),
     kind: ValueKind::Bool,
@@ -225,6 +237,7 @@ pub const PIPELINE_OUTPUT: OptionSpec = OptionSpec {
         variants: &["jsonl", "none"],
     },
     visible_aliases: &[],
+    schema_default: None,
     feature_gate: None,
 };
 
