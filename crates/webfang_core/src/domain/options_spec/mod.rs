@@ -25,7 +25,7 @@ use serde_json::{json, Map, Value};
 /// serializes the wire type natively — `"default": 2` for an `integer` kind,
 /// `"default": true` for a `boolean` kind, `"default": "jsonl"` for a
 /// `string`/enum kind. The CLI parity surface reaches the canonical string
-/// form through [`DefaultValue::Display`] (the clap `default_value` path
+/// form through the [`Display`](core::fmt::Display) impl (the clap `default_value` path
 /// uses `.to_string()` to obtain the same string). Strict replacement of
 /// the previous `default: Option<&'static str>` plus the additive
 /// `schema_default` field — only the typed form remains.
@@ -99,7 +99,7 @@ pub struct OptionSpec {
     /// Canonical default value (issue #948 F4 strict replacement).
     ///
     /// The typed enum is the single source of truth: the CLI parity path
-    /// uses [`DefaultValue::Display`] to obtain the canonical string form
+    /// uses the [`Display`](core::fmt::Display) impl to obtain the canonical string form
     /// for clap's `default_value`, and the JSON schema path uses
     /// [`DefaultValue::to_json_value`] to serialize the native wire type
     /// (`Uint(2)` → `2`, `Bool(true)` → `true`, `Str("jsonl")` →
