@@ -38,14 +38,13 @@ pub fn estimate(metrics: &StrategyMetrics, config: &CostConfig) -> Result<CostEs
         )));
     }
 
-    let hourly = config.infra.instance_hourly_usd;
-    let compute_share = hourly * ((1000.0 / metrics.pages_per_sec) / (60.0 * 60.0));
-    let ram_share = hourly
-        * (metrics.ram_cost_bytes as f64
-            / (config.infra.instance_ram_gb * 1024.0 * 1024.0 * 1024.0));
-
     Ok(CostEstimate {
-        webfang_usd_per_1k: compute_share + ram_share,
+        webfang_usd_per_1k: infra_usd_per_1k(
+            config.infra.instance_hourly_usd,
+            metrics.pages_per_sec,
+            metrics.ram_cost_bytes,
+            config.infra.instance_ram_gb,
+        ),
     })
 }
 
@@ -95,9 +94,27 @@ pub fn crawl4ai_usd_per_1k(
             "non-positive throughput ({pages_per_sec}) cannot price a run"
         )));
     }
-    let hourly = config.crawl4ai.instance_hourly_usd;
-    let compute_share = hourly * ((1000.0 / pages_per_sec) / (60.0 * 60.0));
-    let ram_share = hourly
-        * (ram_cost_bytes as f64 / (config.crawl4ai.instance_ram_gb * 1024.0 * 1024.0 * 1024.0));
-    Ok(compute_share + ram_share)
+    Ok(infra_usd_per_1k(
+        config.crawl4ai.instance_hourly_usd,
+        pages_per_sec,
+        ram_cost_bytes,
+        config.crawl4ai.instance_ram_gb,
+    ))
+}
+
+/// Shared infra-cost math for [`estimate`] and [`crawl4ai_usd_per_1k`]:
+/// compute share plus RAM-share amortization for 1000 pages crawled at
+/// `pages_per_sec` on an instance priced at `hourly_usd` with
+/// `instance_ram_gb` of RAM. One helper keeps both pricing bases on
+/// bit-identical arithmetic (single source for the design §4 formula).
+fn infra_usd_per_1k(
+    hourly_usd: f64,
+    pages_per_sec: f64,
+    ram_cost_bytes: usize,
+    instance_ram_gb: f64,
+) -> f64 {
+    let compute_share = hourly_usd * ((1000.0 / pages_per_sec) / (60.0 * 60.0));
+    let ram_share =
+        hourly_usd * (ram_cost_bytes as f64 / (instance_ram_gb * 1024.0 * 1024.0 * 1024.0));
+    compute_share + ram_share
 }
