@@ -21,8 +21,8 @@ use webfang_mcp::mcp_server::params::{
     CrawlSiteParams, ExportFileParams, ProcessExportPipelineParams, ScrapeWithOptionsParams,
 };
 use webfang_mcp::mcp_server::schema_bridge::{
-    apply_default_overrides, default_overrides_for_tool, merged_input_schema, SpecProperty,
-    CRAWL_SITE_PROPERTIES, EXPORT_FILE_PROPERTIES, PROCESS_EXPORT_PIPELINE_PROPERTIES,
+    apply_default_overrides, default_overrides_for_tool, merged_input_schema, promote_spec_to_nullable,
+    SpecProperty, CRAWL_SITE_PROPERTIES, EXPORT_FILE_PROPERTIES, PROCESS_EXPORT_PIPELINE_PROPERTIES,
     SCRAPE_WITH_OPTIONS_PROPERTIES,
 };
 
@@ -148,6 +148,10 @@ struct ToolTablesErased {
     properties: &'static [SpecProperty],
     merged: fn(&'static [SpecProperty], &'static str) -> Map<String, Value>,
     derived_properties: fn() -> Vec<String>,
+    /// Raw schemars-derived properties keyed by name — used by the parity
+    /// test to apply the same nullability promotion the bridge does
+    /// (issue #948 F5).
+    derived: fn() -> Map<String, Value>,
 }
 
 impl ToolTablesErased {
@@ -157,11 +161,16 @@ impl ToolTablesErased {
             properties,
             merged: |props, tool| merged_with_overrides::<P>(props, tool),
             derived_properties: || derived_property_names::<P>(),
+            derived: || derived_properties::<P>(),
         }
     }
 
     fn merged_schema(&self) -> Map<String, Value> {
         (self.merged)(self.properties, self.tool)
+    }
+
+    fn derived_schema(&self) -> Map<String, Value> {
+        (self.derived)()
     }
 }
 
@@ -189,6 +198,22 @@ fn derived_property_names<P: JsonSchema>() -> Vec<String> {
     match object.get("properties") {
         Some(Value::Object(props)) => props.keys().cloned().collect(),
         _ => Vec::new(),
+    }
+}
+
+/// Raw schemars-derived properties of `P` keyed by name — used by the
+/// parity test to apply the same nullability promotion the bridge does
+/// (issue #948 F5).
+fn derived_properties<P: JsonSchema>() -> Map<String, Value> {
+    let mut object = match serde_json::to_value(schemars::schema_for!(P)) {
+        Ok(Value::Object(map)) => map,
+        _ => return Map::new(),
+    };
+    object.remove("title");
+    object.remove("description");
+    match object.remove("properties") {
+        Some(Value::Object(props)) => props,
+        _ => Map::new(),
     }
 }
 
@@ -248,7 +273,31 @@ fn every_overlapping_mcp_param_matches_spec_json_schema() {
             // Expected fragment = SSOT rendering + the tool's overrides,
             // applied through the production code path (not re-derived).
             let mut expected_holder = Map::new();
-            expected_holder.insert(property.name.to_owned(), property.spec.json_schema());
+            let mut expected_value = property.spec.json_schema();
+            // Issue #948 F5: if the derived shape for this property is
+            // nullable (e.g. `Option<T>` in the params struct), the bridge
+            // promotes the spec-rendered `type` to `["<inner>", "null"]`.
+            // Apply the same promotion to the expected so the parity
+            // comparison reflects the production rendering, not a stricter
+            // pre-F5 shape.
+            let derived = table.derived_schema();
+            if let Some(derived_prop) = derived.get(property.name) {
+                let derived_nullable = match derived_prop.get("type") {
+                    Some(Value::Array(types)) => types.iter().any(|t| match t {
+                        Value::Null => true,
+                        Value::String(s) => s == "null",
+                        _ => false,
+                    }),
+                    _ => false,
+                };
+                if derived_nullable && !property.spec.nullable {
+                    promote_spec_to_nullable(&mut expected_value);
+                }
+                if property.spec.nullable {
+                    promote_spec_to_nullable(&mut expected_value);
+                }
+            }
+            expected_holder.insert(property.name.to_owned(), expected_value);
             let overrides = default_overrides_for_tool(table.tool);
             apply_default_overrides(&mut expected_holder, &overrides);
             let expected = expected_holder

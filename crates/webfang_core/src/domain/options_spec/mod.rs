@@ -110,6 +110,15 @@ pub struct OptionSpec {
     /// `Bool(true)` → `true`). CLI parity stays governed by
     /// [`Self::default`].
     pub schema_default: Option<DefaultValue>,
+    /// Whether the advertised JSON schema must declare the property
+    /// nullable — i.e. emit `"type": ["<inner>", "null"]` (issue #948 F5).
+    /// The bridge preserves the schemars-derived `["<inner>", "null"]`
+    /// shape for `Option<T>` fields by default; this flag is an explicit
+    /// opt-in for entries that need the nullable shape even when the
+    /// spec entry's kind is non-optional, or to force a non-nullable
+    /// shape on a derived optional field. Most entries leave this as
+    /// `false` and let the bridge infer from the derived schema.
+    pub nullable: bool,
     /// Help text (`--help` long form); must match the clap derive's rendering.
     pub help: &'static str,
     /// Help heading/group under which clap lists this option.
@@ -578,6 +587,18 @@ impl OptionSpec {
                     schema.insert("minimumBytes".into(), json!(policy.min));
                 }
             },
+        }
+        // F5: explicit `nullable: true` upgrades the type to a union with
+        // `null`. The bridge also auto-promotes optional fields by
+        // preserving the derived `["<inner>", "null"]` shape, so most
+        // entries leave this as `false`.
+        if self.nullable {
+            if let Some(Value::String(inner)) = schema.get("type").cloned() {
+                schema.insert(
+                    "type".into(),
+                    Value::Array(vec![Value::String(inner), Value::Null]),
+                );
+            }
         }
         // F4: prefer the wire-typed `schema_default`; fall back to the CLI
         // string form for every option that doesn't override it. Bool/Uint

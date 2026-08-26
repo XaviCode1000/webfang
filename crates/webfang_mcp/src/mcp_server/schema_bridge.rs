@@ -151,6 +151,15 @@ pub fn apply_default_overrides(props: &mut Map<String, Value>, overrides: &Defau
 /// property exactly as rmcp would emit it today), then replaces each
 /// spec-covered property with its [`OptionSpec::json_schema`] rendering,
 /// finally applying `default_overrides` on top.
+///
+/// Nullability preservation (issue #948 F5): when the derived schema
+/// advertises a property as `["<inner>", "null"]` (the schemars form for
+/// `Option<T>`) and the spec entry is non-nullable (`nullable: false`),
+/// the bridge promotes the spec-rendered `type` to the same
+/// `["<inner>", "null"]` shape so the advertised contract matches the
+/// serde acceptance. `SpecProperty::spec.nullable = true` upgrades the
+/// shape unconditionally; the default behavior preserves the derived
+/// `null`-union exactly as the derive emitted it.
 #[must_use]
 pub fn merged_input_schema<P: JsonSchema>(
     properties: &[SpecProperty],
@@ -162,11 +171,79 @@ pub fn merged_input_schema<P: JsonSchema>(
         _ => Map::new(),
     };
     for property in properties {
-        props.insert(property.name.to_owned(), property.spec.json_schema());
+        let derived_nullable = derived_type_is_nullable(props.get(property.name));
+        let mut rendered = property.spec.json_schema();
+        // Promote to ["<inner>", "null"] when the derived shape is
+        // nullable AND the spec entry is either explicitly nullable or
+        // doesn't override nullability. Without this, a `Option<T>` MCP
+        // field is advertised as `"type": "boolean"` while serde still
+        // accepts `null` — a stricter contract than the runtime
+        // acceptance (#948 F5).
+        if derived_nullable && !property.spec.nullable {
+            promote_to_nullable(&mut rendered);
+        }
+        // When the spec is explicitly nullable, the derive path becomes
+        // irrelevant — the spec is the source of truth.
+        if property.spec.nullable {
+            promote_to_nullable(&mut rendered);
+        }
+        props.insert(property.name.to_owned(), rendered);
     }
     apply_default_overrides(&mut props, default_overrides);
     merged.insert("properties".into(), Value::Object(props));
     Arc::new(merged)
+}
+
+/// True when the derived property advertises `null` in its `type` field
+/// — either as `["<inner>", "null"]` (the schemars `Option<T>` form) or
+/// the legacy `{"type": "null"}` (none of our params use it, kept for
+/// forward-compat). The schemars 0.8 derive renders the `null` member as
+/// the STRING `"null"` (not the JSON `null` literal), so we match both
+/// representations.
+fn derived_type_is_nullable(value: Option<&Value>) -> bool {
+    let Some(Value::Object(prop)) = value else {
+        return false;
+    };
+    match prop.get("type") {
+        Some(Value::Array(types)) => types.iter().any(|t| match t {
+            Value::Null => true,
+            Value::String(s) => s == "null",
+            _ => false,
+        }),
+        Some(Value::String(_)) => false,
+        _ => false,
+    }
+}
+
+/// Promote a rendered schema's `type` to the `["<inner>", "null"]` form
+/// (no-op when the inner type is missing or already a union). Emits the
+/// `null` member as the STRING `"null"` to match the schemars 0.8
+/// convention (JSON Schema 2020-12 accepts both forms; the LLM
+/// consumers we target already understand the string form).
+///
+/// Public so the CLI↔MCP parity test (`options_spec_parity_test`) can
+/// apply the same nullability promotion to its expected fragment that
+/// the bridge applies to the production rendering (#948 F5).
+#[must_use]
+pub fn promote_spec_to_nullable(rendered: &mut Value) {
+    let Value::Object(map) = rendered else {
+        return;
+    };
+    match map.get("type") {
+        Some(Value::Array(_)) => return, // already nullable
+        Some(Value::String(inner)) => {
+            let inner = inner.clone();
+            map.insert(
+                "type".into(),
+                Value::Array(vec![Value::String(inner), Value::String("null".to_owned())]),
+            );
+        },
+        _ => return,
+    }
+}
+
+fn promote_to_nullable(rendered: &mut Value) {
+    promote_spec_to_nullable(rendered);
 }
 
 /// Schemars-derived root object for `P`, mirroring rmcp 1.8's
@@ -385,5 +462,58 @@ mod tests {
             Value::Object(route.attr.input_schema.as_ref().clone()),
             raw_derived::<crate::mcp_server::params::ScrapeUrlParams>(),
         );
+    }
+
+    /// Proof (issue #948 F5): an `Option<T>` MCP param is advertised as
+    /// `["<inner>", "null"]` (the schemars-derived `Option<T>` shape),
+    /// not the stricter non-nullable `type: "boolean"` the spec entry's
+    /// `json_schema()` would otherwise emit. The bridge preserves the
+    /// derive's `null`-union so the advertised contract matches serde's
+    /// actual acceptance.
+    #[test]
+    fn scrape_with_options_advertises_optional_properties_as_nullable() {
+        let schema = scrape_with_options_input_schema();
+        let props = &schema["properties"];
+
+        // ignore_robots: Option<bool> in the params struct → ["boolean", "null"].
+        let ignore_robots = &props["ignore_robots"];
+        assert_eq!(
+            ignore_robots["type"],
+            json!(["boolean", "null"]),
+            "ignore_robots (Option<bool>) must advertise a nullable type, got: {ignore_robots}"
+        );
+
+        // selector: Option<String> → ["string", "null"].
+        let selector = &props["selector"];
+        assert_eq!(
+            selector["type"],
+            json!(["string", "null"]),
+            "selector (Option<String>) must advertise a nullable type, got: {selector}"
+        );
+
+        // download_images: Option<bool> → ["boolean", "null"].
+        let download_images = &props["download_images"];
+        assert_eq!(
+            download_images["type"],
+            json!(["boolean", "null"]),
+            "download_images (Option<bool>) must advertise a nullable type"
+        );
+
+        // download_documents: Option<bool> → ["boolean", "null"].
+        let download_documents = &props["download_documents"];
+        assert_eq!(
+            download_documents["type"],
+            json!(["boolean", "null"]),
+            "download_documents (Option<bool>) must advertise a nullable type"
+        );
+
+        // Sanity: the derived shape WAS `["<inner>", "null"]` — the
+        // bridge is preserving it, not inventing it.
+        let derived = raw_derived::<ScrapeWithOptionsParams>();
+        assert_eq!(derived["properties"]["ignore_robots"]["type"], json!(["boolean", "null"]));
+        assert_eq!(derived["properties"]["selector"]["type"], json!(["string", "null"]));
+
+        // Non-optional fields (e.g. `url`) keep their non-nullable type.
+        assert_eq!(props["url"]["type"], json!("string"));
     }
 }
