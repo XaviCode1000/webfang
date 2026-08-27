@@ -26,29 +26,6 @@ Arguments:
           URL to scrape (positional shorthand — equivalent to --url)
 
 Options:
-  -u, --url <URL>
-          URL to scrape (required unless using a subcommand)
-          
-          [env: WEBFANG_URL=]
-
-  -s, --selector <SELECTOR>
-          CSS selector for content extraction
-          
-          [env: WEBFANG_SELECTOR=]
-          [default: body]
-
-      --delay-ms <DELAY_MS>
-          Delay between requests in milliseconds
-          
-          [env: WEBFANG_DELAY_MS=]
-          [default: 1000]
-
-      --max-pages <MAX_PAGES>
-          Maximum pages to scrape
-          
-          [env: WEBFANG_MAX_PAGES=]
-          [default: 10]
-
       --concurrency <CONCURRENCY>
           Concurrency level (auto or number)
           
@@ -61,94 +38,6 @@ Options:
           Overrides the hardware-derived budget-model default (Q1: burst is decoupled from crawl concurrency). Raw string here ON PURPOSE: validation/conversion happens once in preflight staging via `parse_rate_limit_burst` so CLI, env, and programmatic input all share one accept / reject-0 / warn-and-default semantic.
           
           [env: WEBFANG_RATE_LIMIT_BURST=]
-
-      --use-sitemap
-          Use sitemap for URL discovery NOTE: HTTP redirects (301/302) are resolved at scrape-time, not parse-time. This avoids redundant HEAD requests during sitemap parsing for better performance
-          
-          [env: WEBFANG_USE_SITEMAP=]
-
-      --sitemap-url <SITEMAP_URL>
-          Explicit sitemap URL
-          
-          [env: WEBFANG_SITEMAP_URL=]
-
-      --single-page
-          Scrape only the seed URL without discovery or crawling
-          
-          [env: WEBFANG_SINGLE_PAGE=]
-
-      --resume
-          Resume mode - skip URLs already processed
-          
-          [env: WEBFANG_RESUME=]
-
-      --state-dir <STATE_DIR>
-          Custom state directory for resume mode
-          
-          [env: WEBFANG_STATE_DIR=]
-
-      --download-images
-          Download images from the page
-          
-          [env: WEBFANG_DOWNLOAD_IMAGES=]
-
-      --download-documents
-          Download documents from the page
-          
-          [env: WEBFANG_DOWNLOAD_DOCUMENTS=]
-
-      --download-assets
-          Download all assets (images + documents) from the page
-          
-          [env: WEBFANG_DOWNLOAD_ASSETS=]
-
-      --extraction-fingerprint
-          Record extraction failure fingerprints in SQLite and attach them to low-quality extraction hints (#792). Repeated low-score extractions on the same site/selector pair accumulate a failure count surfaced in the hint, instead of degrading silently
-          
-          [env: WEBFANG_EXTRACTION_FINGERPRINT=]
-
-      --clean-ai
-          Use AI-powered semantic cleaning for better RAG output
-          
-          [env: WEBFANG_CLEAN_AI=]
-          [alias: --ai]
-
-      --adaptive-selectors
-          Enable adaptive CSS selector repair (2-tier cascade)
-          
-          [env: WEBFANG_ADAPTIVE_SELECTORS=]
-
-  -v, --verbose...
-          Verbosity level: -v (INFO), -vv (DEBUG), -vvv (TRACE)
-          
-          [env: WEBFANG_VERBOSE=]
-
-  -q, --quiet
-          Quiet mode — suppress info/debug output
-          
-          [env: WEBFANG_QUIET=]
-
-  -n, --dry-run
-          Dry-run mode — discover URLs and print without scraping
-          
-          [env: WEBFANG_DRY_RUN=]
-
-      --trace-file <TRACE_FILE>
-          Path to write OTel spans as JSONL for offline debugging
-          
-          [env: WEBFANG_TRACE_FILE=]
-
-      --max-depth <MAX_DEPTH>
-          Maximum depth to crawl (0 = only seed URL)
-          
-          [env: WEBFANG_MAX_DEPTH=]
-          [default: 2]
-
-      --timeout-secs <TIMEOUT_SECS>
-          Request timeout in seconds
-          
-          [env: WEBFANG_TIMEOUT_SECS=]
-          [default: 30]
 
       --include-pattern <INCLUDE_PATTERNS>
           URL patterns to include (glob-style). Three modes:
@@ -175,35 +64,6 @@ Options:
           
           [env: WEBFANG_DOWNLOAD_CONCURRENCY=]
 
-      --max-retries <MAX_RETRIES>
-          Maximum number of retry attempts
-          
-          [env: WEBFANG_MAX_RETRIES=]
-          [default: 3]
-
-      --backoff-base-ms <BACKOFF_BASE_MS>
-          Base delay for exponential backoff (ms)
-          
-          [env: WEBFANG_BACKOFF_BASE_MS=]
-          [default: 1000]
-
-      --backoff-max-ms <BACKOFF_MAX_MS>
-          Maximum delay for exponential backoff (ms)
-          
-          [env: WEBFANG_BACKOFF_MAX_MS=]
-          [default: 10000]
-
-      --accept-language <ACCEPT_LANGUAGE>
-          Accept-Language header value
-          
-          [env: WEBFANG_ACCEPT_LANGUAGE=]
-          [default: en-US,en;q=0.9]
-
-      --user-agent <USER_AGENT>
-          Custom User-Agent header value (overrides Chrome 145 default)
-          
-          [env: WEBFANG_USER_AGENT=]
-
   -H, --header <NAME: VALUE>
           Inject a custom HTTP header as `Name: Value` (repeatable).
           
@@ -217,168 +77,6 @@ Options:
           Seeded into the cookie jar before the first request so authenticated crawls work without a prior login round-trip. Example: `--cookie "session=abc123"`.
           
           [env: WEBFANG_COOKIE=]
-
-      --max-file-size <MAX_FILE_SIZE>
-          Maximum file size to download in bytes (default: 50MB)
-          
-          [env: WEBFANG_MAX_FILE_SIZE=]
-          [default: 52428800]
-
-      --download-timeout <DOWNLOAD_TIMEOUT>
-          Timeout for individual asset downloads in seconds
-          
-          [env: WEBFANG_DOWNLOAD_TIMEOUT=]
-          [default: 30]
-
-      --sitemap-depth <SITEMAP_DEPTH>
-          Maximum recursion depth for sitemap indexes
-          
-          [env: WEBFANG_SITEMAP_DEPTH=]
-          [default: 3]
-
-      --checkpoint-interval <CHECKPOINT_INTERVAL>
-          Pages between automatic checkpoint saves (0 = disabled) NOTE: Checkpoint is for programmatic use (Engine API) only. CLI --resume uses StateStore instead of checkpoints
-          
-          [env: WEBFANG_CHECKPOINT_INTERVAL=]
-          [default: 100]
-
-      --no-checkpoint
-          Disable checkpoint persistence entirely NOTE: Checkpoint is for programmatic use (Engine API) only. CLI --resume uses StateStore instead of checkpoints
-          
-          [env: WEBFANG_NO_CHECKPOINT=]
-
-      --ignore-robots
-          Skip robots.txt enforcement
-          
-          [env: WEBFANG_IGNORE_ROBOTS=]
-
-      --ignore-waf
-          Bypass WAF/CAPTCHA detection entirely (never block on challenge markers)
-          
-          [env: WEBFANG_IGNORE_WAF=]
-
-      --autoscale
-          Enable autoscaled concurrency — dynamically adjusts task concurrency based on RAM usage
-          
-          [env: WEBFANG_AUTOSCALE=]
-
-      --no-session-health
-          Disable session pool health checks
-          
-          [env: WEBFANG_NO_SESSION_HEALTH=]
-
-      --h2-profile <H2_PROFILE>
-          TLS/HTTP2 profile name (default: Chrome145)
-          
-          [env: WEBFANG_H2_PROFILE=]
-          [default: Chrome145]
-
-      --js-strategy <JS_STRATEGY>
-          JavaScript rendering strategy: static (wreq only), hybrid (3-layer), full (Chromiumoxide only)
-
-          Possible values:
-          - static: Static HTTP only (wreq). Fastest, no JS rendering
-          - hybrid: Hybrid 3-layer: wreq → Obscura → Chromiumoxide
-          - full:   Full JS rendering only (Chromiumoxide). Slowest, handles all SPAs
-          
-          [env: WEBFANG_JS_STRATEGY=]
-          [default: static]
-
-      --obscura-binary <OBSCURA_BINARY>
-          Path to the obscura binary (default: "obscura")
-          
-          [env: WEBFANG_OBSCURA_BINARY=]
-          [default: obscura]
-
-      --dom-preprune [<DOM_PREPRUNE>]
-          Enable DOM pre-pruning before Readability (removes invisible/empty wrappers). Default: enabled (true). Set to false via --dom-preprune=false or WEBFANG_DOM_PREPRUNE=false
-          
-          [env: WEBFANG_DOM_PREPRUNE=]
-          [default: true]
-          [possible values: true, false]
-
-  -o, --output <OUTPUT>
-          Output directory for scraped content
-          
-          [env: WEBFANG_OUTPUT=]
-          [default: output]
-
-  -f, --format <FORMAT>
-          Output format for individual files (markdown, text, json) NOTE: For RAG pipeline export, use --export-format instead
-
-          Possible values:
-          - markdown: Markdown format with YAML frontmatter (recommended for RAG)
-          - json:     Structured JSON with metadata
-          - text:     Plain text without formatting
-          
-          [env: WEBFANG_FORMAT=]
-          [default: markdown]
-
-      --export-format <EXPORT_FORMAT>
-          Export format for RAG pipeline (jsonl, vector, auto) NOTE: Use --format for output file format (markdown, text, json)
-
-          Possible values:
-          - jsonl:  JSONL format (JSON Lines - one JSON object per line) Optimal for RAG pipelines and vector database ingestion
-          - vector: Vector format (JSON with metadata header) Supports embeddings and cosine similarity
-          - auto:   Auto-detect format from existing export files
-          
-          [env: WEBFANG_EXPORT_FORMAT=]
-          [default: jsonl]
-
-      --cpu-cores <CPU_CORES>
-          CPU core override for the elastic ingestion Rayon pool (else auto-detect)
-          
-          [env: WEBFANG_CPU_CORES=]
-
-      --ram-budget <RAM_BUDGET>
-          RAM budget override for the byte-weighted semaphore (`8GB`, `2048MB`, or bytes)
-          
-          [env: WEBFANG_RAM_BUDGET=]
-
-      --db-path <DB_PATH>
-          SQLite database path override for persisted resources/chunks
-          
-          [env: WEBFANG_DB_PATH=]
-
-      --elastic
-          Enable elastic ingestion pipeline (streaming, SQLite dedup, Rayon CPU bridge)
-          
-          [env: WEBFANG_ELASTIC=]
-
-      --output-vectors <OUTPUT_VECTORS>
-          Write extracted vectors to a JSONL file for RAG pipelines. Use `-` for stdout. No SQLite dependency — available in every build (core binary too)
-          
-          [env: WEBFANG_OUTPUT_VECTORS=]
-
-      --batch
-          Enable batch mode — read URLs from stdin (one per line)
-          
-          [env: WEBFANG_BATCH=]
-
-      --batch-file <BATCH_FILE>
-          Path to a file containing URLs to crawl (one per line)
-          
-          [env: WEBFANG_BATCH_FILE=]
-
-      --batch-concurrency <BATCH_CONCURRENCY>
-          Maximum concurrent URLs in batch mode (omit = auto from budget model)
-          
-          [env: WEBFANG_BATCH_CONCURRENCY=]
-
-      --pipeline
-          Enable item pipeline processing (validate → clean → output)
-          
-          [env: WEBFANG_PIPELINE=]
-
-      --pipeline-output <PIPELINE_OUTPUT>
-          Pipeline output format: jsonl (default), none
-
-          Possible values:
-          - jsonl: Write items as JSON Lines to a file (default)
-          - none:  No pipeline output — items are processed but not written
-          
-          [env: WEBFANG_PIPELINE_OUTPUT=]
-          [default: jsonl]
 
       --obsidian-wiki-links
           Convert same-domain links to Obsidian [[wiki-link]] syntax
@@ -444,6 +142,323 @@ Options:
 
   -V, --version
           Print version
+
+Target:
+  -u, --url <URL>
+          URL to scrape (required unless using a subcommand)
+          
+          [env: WEBFANG_URL=]
+
+  -s, --selector <SELECTOR>
+          CSS selector for content extraction
+          
+          [env: WEBFANG_SELECTOR=]
+          [default: body]
+
+Discovery:
+      --delay-ms <DELAY_MS>
+          Delay between requests in milliseconds
+          
+          [env: WEBFANG_DELAY_MS=]
+          [default: 1000]
+
+      --max-pages <MAX_PAGES>
+          Maximum pages to scrape
+          
+          [env: WEBFANG_MAX_PAGES=]
+          [default: 10]
+
+      --use-sitemap
+          Use sitemap for URL discovery NOTE: HTTP redirects (301/302) are resolved at scrape-time, not parse-time. This avoids redundant HEAD requests during sitemap parsing for better performance
+          
+          [env: WEBFANG_USE_SITEMAP=]
+
+      --sitemap-url <SITEMAP_URL>
+          Explicit sitemap URL
+          
+          [env: WEBFANG_SITEMAP_URL=]
+
+Behavior:
+      --single-page
+          Scrape only the seed URL without discovery or crawling
+          
+          [env: WEBFANG_SINGLE_PAGE=]
+
+      --resume
+          Resume mode - skip URLs already processed
+          
+          [env: WEBFANG_RESUME=]
+
+      --state-dir <STATE_DIR>
+          Custom state directory for resume mode
+          
+          [env: WEBFANG_STATE_DIR=]
+
+      --download-images
+          Download images from the page
+          
+          [env: WEBFANG_DOWNLOAD_IMAGES=]
+
+      --download-documents
+          Download documents from the page
+          
+          [env: WEBFANG_DOWNLOAD_DOCUMENTS=]
+
+      --download-assets
+          Download all assets (images + documents) from the page
+          
+          [env: WEBFANG_DOWNLOAD_ASSETS=]
+
+      --extraction-fingerprint
+          Record extraction failure fingerprints in SQLite and attach them to low-quality extraction hints (#792). Repeated low-score extractions on the same site/selector pair accumulate a failure count surfaced in the hint, instead of degrading silently
+          
+          [env: WEBFANG_EXTRACTION_FINGERPRINT=]
+
+      --clean-ai
+          Use AI-powered semantic cleaning for better RAG output
+          
+          [env: WEBFANG_CLEAN_AI=]
+          [alias: --ai]
+
+      --adaptive-selectors
+          Enable adaptive CSS selector repair (2-tier cascade)
+          
+          [env: WEBFANG_ADAPTIVE_SELECTORS=]
+
+Display:
+  -v, --verbose...
+          Verbosity level: -v (INFO), -vv (DEBUG), -vvv (TRACE)
+          
+          [env: WEBFANG_VERBOSE=]
+
+  -q, --quiet
+          Quiet mode — suppress info/debug output
+          
+          [env: WEBFANG_QUIET=]
+
+  -n, --dry-run
+          Dry-run mode — discover URLs and print without scraping
+          
+          [env: WEBFANG_DRY_RUN=]
+
+      --trace-file <TRACE_FILE>
+          Path to write OTel spans as JSONL for offline debugging
+          
+          [env: WEBFANG_TRACE_FILE=]
+
+Crawler Settings:
+      --max-depth <MAX_DEPTH>
+          Maximum depth to crawl (0 = only seed URL)
+          
+          [env: WEBFANG_MAX_DEPTH=]
+          [default: 2]
+
+      --timeout-secs <TIMEOUT_SECS>
+          Request timeout in seconds
+          
+          [env: WEBFANG_TIMEOUT_SECS=]
+          [default: 30]
+
+HTTP Client Settings:
+      --max-retries <MAX_RETRIES>
+          Maximum number of retry attempts
+          
+          [env: WEBFANG_MAX_RETRIES=]
+          [default: 3]
+
+      --backoff-base-ms <BACKOFF_BASE_MS>
+          Base delay for exponential backoff (ms)
+          
+          [env: WEBFANG_BACKOFF_BASE_MS=]
+          [default: 1000]
+
+      --backoff-max-ms <BACKOFF_MAX_MS>
+          Maximum delay for exponential backoff (ms)
+          
+          [env: WEBFANG_BACKOFF_MAX_MS=]
+          [default: 10000]
+
+      --accept-language <ACCEPT_LANGUAGE>
+          Accept-Language header value
+          
+          [env: WEBFANG_ACCEPT_LANGUAGE=]
+          [default: en-US,en;q=0.9]
+
+      --user-agent <USER_AGENT>
+          Custom User-Agent header value (overrides Chrome 145 default)
+          
+          [env: WEBFANG_USER_AGENT=]
+
+Download Settings:
+      --max-file-size <MAX_FILE_SIZE>
+          Maximum file size to download in bytes (default: 50MB)
+          
+          [env: WEBFANG_MAX_FILE_SIZE=]
+          [default: 52428800]
+
+      --download-timeout <DOWNLOAD_TIMEOUT>
+          Timeout for individual asset downloads in seconds
+          
+          [env: WEBFANG_DOWNLOAD_TIMEOUT=]
+          [default: 30]
+
+Sitemap Settings:
+      --sitemap-depth <SITEMAP_DEPTH>
+          Maximum recursion depth for sitemap indexes
+          
+          [env: WEBFANG_SITEMAP_DEPTH=]
+          [default: 3]
+
+Competitive Features:
+      --checkpoint-interval <CHECKPOINT_INTERVAL>
+          Pages between automatic checkpoint saves (0 = disabled) NOTE: Checkpoint is for programmatic use (Engine API) only. CLI --resume uses StateStore instead of checkpoints
+          
+          [env: WEBFANG_CHECKPOINT_INTERVAL=]
+          [default: 100]
+
+      --no-checkpoint
+          Disable checkpoint persistence entirely NOTE: Checkpoint is for programmatic use (Engine API) only. CLI --resume uses StateStore instead of checkpoints
+          
+          [env: WEBFANG_NO_CHECKPOINT=]
+
+      --ignore-robots
+          Skip robots.txt enforcement
+          
+          [env: WEBFANG_IGNORE_ROBOTS=]
+
+      --ignore-waf
+          Bypass WAF/CAPTCHA detection entirely (never block on challenge markers)
+          
+          [env: WEBFANG_IGNORE_WAF=]
+
+      --autoscale
+          Enable autoscaled concurrency — dynamically adjusts task concurrency based on RAM usage
+          
+          [env: WEBFANG_AUTOSCALE=]
+
+      --no-session-health
+          Disable session pool health checks
+          
+          [env: WEBFANG_NO_SESSION_HEALTH=]
+
+      --h2-profile <H2_PROFILE>
+          TLS/HTTP2 profile name (default: Chrome145)
+          
+          [env: WEBFANG_H2_PROFILE=]
+          [default: Chrome145]
+
+JS Rendering:
+      --js-strategy <JS_STRATEGY>
+          JavaScript rendering strategy: static (wreq only), hybrid (3-layer), full (Chromiumoxide only)
+
+          Possible values:
+          - static: Static HTTP only (wreq). Fastest, no JS rendering
+          - hybrid: Hybrid 3-layer: wreq → Obscura → Chromiumoxide
+          - full:   Full JS rendering only (Chromiumoxide). Slowest, handles all SPAs
+          
+          [env: WEBFANG_JS_STRATEGY=]
+          [default: static]
+
+      --obscura-binary <OBSCURA_BINARY>
+          Path to the obscura binary (default: "obscura")
+          
+          [env: WEBFANG_OBSCURA_BINARY=]
+          [default: obscura]
+
+Cleanup:
+      --dom-preprune [<DOM_PREPRUNE>]
+          Enable DOM pre-pruning before Readability (removes invisible/empty wrappers). Default: enabled (true). Set to false via --dom-preprune=false or WEBFANG_DOM_PREPRUNE=false
+          
+          [env: WEBFANG_DOM_PREPRUNE=]
+          [default: true]
+          [possible values: true, false]
+
+Output:
+  -o, --output <OUTPUT>
+          Output directory for scraped content
+          
+          [env: WEBFANG_OUTPUT=]
+          [default: output]
+
+  -f, --format <FORMAT>
+          Output format for individual files (markdown, text, json) NOTE: For RAG pipeline export, use --export-format instead
+
+          Possible values:
+          - markdown: Markdown format with YAML frontmatter (recommended for RAG)
+          - json:     Structured JSON with metadata
+          - text:     Plain text without formatting
+          
+          [env: WEBFANG_FORMAT=]
+          [default: markdown]
+
+      --export-format <EXPORT_FORMAT>
+          Export format for RAG pipeline (jsonl, vector, auto) NOTE: Use --format for output file format (markdown, text, json)
+
+          Possible values:
+          - jsonl:  JSONL format (JSON Lines - one JSON object per line) Optimal for RAG pipelines and vector database ingestion
+          - vector: Vector format (JSON with metadata header) Supports embeddings and cosine similarity
+          - auto:   Auto-detect format from existing export files
+          
+          [env: WEBFANG_EXPORT_FORMAT=]
+          [default: jsonl]
+
+Elastic Ingestion:
+      --cpu-cores <CPU_CORES>
+          CPU core override for the elastic ingestion Rayon pool (else auto-detect)
+          
+          [env: WEBFANG_CPU_CORES=]
+
+      --ram-budget <RAM_BUDGET>
+          RAM budget override for the byte-weighted semaphore (`8GB`, `2048MB`, or bytes)
+          
+          [env: WEBFANG_RAM_BUDGET=]
+
+      --db-path <DB_PATH>
+          SQLite database path override for persisted resources/chunks
+          
+          [env: WEBFANG_DB_PATH=]
+
+      --elastic
+          Enable elastic ingestion pipeline (streaming, SQLite dedup, Rayon CPU bridge)
+          
+          [env: WEBFANG_ELASTIC=]
+
+      --output-vectors <OUTPUT_VECTORS>
+          Write extracted vectors to a JSONL file for RAG pipelines. Use `-` for stdout. No SQLite dependency — available in every build (core binary too)
+          
+          [env: WEBFANG_OUTPUT_VECTORS=]
+
+Batch Processing:
+      --batch
+          Enable batch mode — read URLs from stdin (one per line)
+          
+          [env: WEBFANG_BATCH=]
+
+      --batch-file <BATCH_FILE>
+          Path to a file containing URLs to crawl (one per line)
+          
+          [env: WEBFANG_BATCH_FILE=]
+
+      --batch-concurrency <BATCH_CONCURRENCY>
+          Maximum concurrent URLs in batch mode (omit = auto from budget model)
+          
+          [env: WEBFANG_BATCH_CONCURRENCY=]
+
+Item Pipeline:
+      --pipeline
+          Enable item pipeline processing (validate → clean → output)
+          
+          [env: WEBFANG_PIPELINE=]
+
+      --pipeline-output <PIPELINE_OUTPUT>
+          Pipeline output format: jsonl (default), none
+
+          Possible values:
+          - jsonl: Write items as JSON Lines to a file (default)
+          - none:  No pipeline output — items are processed but not written
+          
+          [env: WEBFANG_PIPELINE_OUTPUT=]
+          [default: jsonl]
 
 EXIT CODES:
   0    Success
