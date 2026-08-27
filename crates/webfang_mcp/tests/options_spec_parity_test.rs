@@ -6,7 +6,8 @@
 //! where a runtime-effective advertised-default override applies (#940 F1/F2:
 //! schema truth over spec-default propagation). It also proves the bridge
 //! tables stay anchored to their declared GROUPs (`crawler::GROUP`,
-//! `export::GROUP`). Adding, removing, or renaming a GROUP member forces this
+//! `export::GROUP`, `ai::GROUP`, `obsidian::GROUP`, `tui::GROUP`). Adding,
+//! removing, or renaming a GROUP member forces this
 //! table to be reviewed; adding an overlapping MCP param without bridging it
 //! fails the completeness check.
 //!
@@ -383,6 +384,9 @@ fn no_group_overlapping_param_escapes_the_parity_table() {
     let mut spec_ids: Vec<&str> = CRAWLER_GROUP
         .iter()
         .chain(EXPORT_GROUP.iter())
+        .chain(AI_GROUP.iter())
+        .chain(OBSIDIAN_GROUP.iter())
+        .chain(TUI_GROUP.iter())
         .map(|o| o.id)
         .collect();
     // Known wire-name renames: MCP `format` carries `export::EXPORT_FORMAT`
