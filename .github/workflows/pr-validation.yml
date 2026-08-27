@@ -3,7 +3,9 @@ name: PR Validation
 env:
   # Gate 0 freeze (Sprint 0 stabilization): blocks type:feature and
   # type:breaking-change PRs. See AGENTS.md Freeze policy.
-  FREEZE_FEATURES: "true"
+  # DRAIN: opening for persistencemode-5b (#980) and 5c breaking/feature slices.
+  # Closes #980. Deadline 2026-08-30. Revert PR forthcoming.
+  FREEZE_FEATURES: "false"
   # Drain window expiry (ISO date YYYY-MM-DD) or empty = no active drain.
   # Contract: setting FREEZE_FEATURES="false" REQUIRES all three:
   #   (a) a linked issue documenting why the drain is open,
@@ -11,7 +13,7 @@ env:
   #   (c) the closing revert PR created in the same batch that opens the drain.
   # After this date EVERY PR fails validation until the flag is restored —
   # a forgotten drain fails closed instead of silently disabling the gate.
-  FREEZE_DRAIN_UNTIL: ""
+  FREEZE_DRAIN_UNTIL: "2026-08-30"
 
 on:
   pull_request:
