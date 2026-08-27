@@ -68,117 +68,6 @@ Arguments:
           URL to scrape (positional shorthand — equivalent to --url)
 
 Options:
-      --concurrency <CONCURRENCY>
-          Concurrency level (auto or number)
-          
-          [env: WEBFANG_CONCURRENCY=]
-          [default: auto]
-
-      --rate-limit-burst <RATE_LIMIT_BURST>
-          Explicit rate-limiter burst permits (token-bucket capacity).
-          
-          Overrides the hardware-derived budget-model default (Q1: burst is decoupled from crawl concurrency). Raw string here ON PURPOSE: validation/conversion happens once in preflight staging via `parse_rate_limit_burst` so CLI, env, and programmatic input all share one accept / reject-0 / warn-and-default semantic.
-          
-          [env: WEBFANG_RATE_LIMIT_BURST=]
-
-      --include-pattern <INCLUDE_PATTERNS>
-          URL patterns to include (glob-style). Three modes:
-          
-          * Path: starts with `/` → matched against URL path, e.g. `/pricing`, `/admin/*` * Path glob: starts with `*/` → matched against URL path, e.g. `*/api/*` * Host (default): matched against hostname, e.g. `example.com`, `*.example.com`
-          
-          Example: to exclude a path, use `--exclude-pattern "/admin/*"`, not `*admin*`
-          
-          [env: WEBFANG_INCLUDE=]
-
-      --exclude-pattern <EXCLUDE_PATTERNS>
-          URL patterns to exclude (glob-style, same three modes as --include-pattern). Deny takes precedence over allow
-          
-          [env: WEBFANG_EXCLUDE=]
-
-      --asset-naming <ASSET_NAMING>
-          Estrategia de nombre de archivo para assets descargados: hash (default), slug, content-disposition
-          
-          [default: hash]
-          [possible values: hash, slug, content-disposition]
-
-      --download-concurrency <DOWNLOAD_CONCURRENCY>
-          Máximo de descargas de assets concurrentes por página (mínimo 1)
-          
-          [env: WEBFANG_DOWNLOAD_CONCURRENCY=]
-
-  -H, --header <NAME: VALUE>
-          Inject a custom HTTP header as `Name: Value` (repeatable).
-          
-          Overrides any default header with the same (case-insensitive) name. Example: `-H "Authorization: Bearer TOKEN"`.
-          
-          [env: WEBFANG_HEADER=]
-
-      --cookie <NAME=VALUE>
-          Inject a custom cookie as `name=value` (repeatable).
-          
-          Seeded into the cookie jar before the first request so authenticated crawls work without a prior login round-trip. Example: `--cookie "session=abc123"`.
-          
-          [env: WEBFANG_COOKIE=]
-
-      --obsidian-wiki-links
-          Convert same-domain links to Obsidian [[wiki-link]] syntax
-          
-          [env: WEBFANG_OBSIDIAN_WIKI_LINKS=]
-
-      --obsidian-tags <OBSIDIAN_TAGS>
-          Tags to include in YAML frontmatter (comma-separated)
-          
-          [env: WEBFANG_OBSIDIAN_TAGS=]
-
-      --obsidian-relative-assets
-          Rewrite downloaded asset paths as relative to the .md file
-          
-          [env: WEBFANG_OBSIDIAN_RELATIVE_ASSETS=]
-
-      --vault <VAULT>
-          Path to Obsidian vault (auto-detects if not provided).
-          
-          When provided explicitly, the vault becomes the output base: Markdown, downloaded assets and the RAG export are written inside it — no need to duplicate the path in `-o` (which then must stay at its default). Auto-detected or config-file vaults do NOT redirect output (#762).
-          
-          [env: WEBFANG_OBSIDIAN_VAULT=]
-
-      --quick-save
-          Quick-save mode: save directly to vault _inbox folder
-          
-          [env: WEBFANG_OBSIDIAN_QUICK_SAVE=]
-
-      --obsidian-rich-metadata
-          Add rich metadata to frontmatter
-          
-          [env: WEBFANG_OBSIDIAN_RICH_METADATA=]
-
-      --threshold <THRESHOLD>
-          Relevance threshold for AI semantic filtering (0.0-1.0)
-          
-          [env: WEBFANG_THRESHOLD=]
-          [default: 0.3]
-
-      --max-tokens <MAX_TOKENS>
-          Maximum tokens per chunk before rejection (a chunk-size guard, not a context-window setting; chunks exceeding this fail)
-          
-          [env: WEBFANG_MAX_TOKENS=]
-          [default: 32768]
-
-      --offline
-          Run AI model in offline mode
-          
-          [env: WEBFANG_OFFLINE=]
-
-      --ai-model <AI_MODEL>
-          AI model to use: granite-97m (default, fast) or granite-311m (higher quality)
-          
-          [env: AI_MODEL_ID=]
-
-      --tui
-          Unified TUI mode: config form (collapsible sections) → URL selector → scraping
-          
-          [env: WEBFANG_TUI=]
-
   -h, --help
           Print help (see a summary with '-h')
 
@@ -209,6 +98,19 @@ Discovery:
           
           [env: WEBFANG_MAX_PAGES=]
           [default: 10]
+
+      --concurrency <CONCURRENCY>
+          Concurrency level (auto or number)
+          
+          [env: WEBFANG_CONCURRENCY=]
+          [default: auto]
+
+      --rate-limit-burst <RATE_LIMIT_BURST>
+          Explicit rate-limiter burst permits (token-bucket capacity).
+          
+          Overrides the hardware-derived budget-model default (Q1: burst is decoupled from crawl concurrency). Raw string here ON PURPOSE: validation/conversion happens once in preflight staging via `parse_rate_limit_burst` so CLI, env, and programmatic input all share one accept / reject-0 / warn-and-default semantic.
+          
+          [env: WEBFANG_RATE_LIMIT_BURST=]
 
       --use-sitemap
           Use sitemap for URL discovery NOTE: HTTP redirects (301/302) are resolved at scrape-time, not parse-time. This avoids redundant HEAD requests during sitemap parsing for better performance
@@ -262,6 +164,11 @@ Behavior:
           [env: WEBFANG_CLEAN_AI=]
           [alias: --ai]
 
+      --tui
+          Unified TUI mode: config form (collapsible sections) → URL selector → scraping
+          
+          [env: WEBFANG_TUI=]
+
 Display:
   -v, --verbose...
           Verbosity level: -v (INFO), -vv (DEBUG), -vvv (TRACE)
@@ -296,6 +203,44 @@ Crawler Settings:
           [env: WEBFANG_TIMEOUT_SECS=]
           [default: 30]
 
+      --include-pattern <INCLUDE_PATTERNS>
+          URL patterns to include (glob-style). Three modes:
+          
+          * Path: starts with `/` → matched against URL path, e.g. `/pricing`, `/admin/*` * Path glob: starts with `*/` → matched against URL path, e.g. `*/api/*` * Host (default): matched against hostname, e.g. `example.com`, `*.example.com`
+          
+          Example: to exclude a path, use `--exclude-pattern "/admin/*"`, not `*admin*`
+          
+          [env: WEBFANG_INCLUDE=]
+
+      --exclude-pattern <EXCLUDE_PATTERNS>
+          URL patterns to exclude (glob-style, same three modes as --include-pattern). Deny takes precedence over allow
+          
+          [env: WEBFANG_EXCLUDE=]
+
+Download Settings:
+      --asset-naming <ASSET_NAMING>
+          Estrategia de nombre de archivo para assets descargados: hash (default), slug, content-disposition
+          
+          [default: hash]
+          [possible values: hash, slug, content-disposition]
+
+      --download-concurrency <DOWNLOAD_CONCURRENCY>
+          Máximo de descargas de assets concurrentes por página (mínimo 1)
+          
+          [env: WEBFANG_DOWNLOAD_CONCURRENCY=]
+
+      --max-file-size <MAX_FILE_SIZE>
+          Maximum file size to download in bytes (default: 50MB)
+          
+          [env: WEBFANG_MAX_FILE_SIZE=]
+          [default: 52428800]
+
+      --download-timeout <DOWNLOAD_TIMEOUT>
+          Timeout for individual asset downloads in seconds
+          
+          [env: WEBFANG_DOWNLOAD_TIMEOUT=]
+          [default: 30]
+
 HTTP Client Settings:
       --max-retries <MAX_RETRIES>
           Maximum number of retry attempts
@@ -326,18 +271,19 @@ HTTP Client Settings:
           
           [env: WEBFANG_USER_AGENT=]
 
-Download Settings:
-      --max-file-size <MAX_FILE_SIZE>
-          Maximum file size to download in bytes (default: 50MB)
+  -H, --header <NAME: VALUE>
+          Inject a custom HTTP header as `Name: Value` (repeatable).
           
-          [env: WEBFANG_MAX_FILE_SIZE=]
-          [default: 52428800]
+          Overrides any default header with the same (case-insensitive) name. Example: `-H "Authorization: Bearer TOKEN"`.
+          
+          [env: WEBFANG_HEADER=]
 
-      --download-timeout <DOWNLOAD_TIMEOUT>
-          Timeout for individual asset downloads in seconds
+      --cookie <NAME=VALUE>
+          Inject a custom cookie as `name=value` (repeatable).
           
-          [env: WEBFANG_DOWNLOAD_TIMEOUT=]
-          [default: 30]
+          Seeded into the cookie jar before the first request so authenticated crawls work without a prior login round-trip. Example: `--cookie "session=abc123"`.
+          
+          [env: WEBFANG_COOKIE=]
 
 Sitemap Settings:
       --sitemap-depth <SITEMAP_DEPTH>
@@ -496,6 +442,62 @@ Item Pipeline:
           
           [env: WEBFANG_PIPELINE_OUTPUT=]
           [default: jsonl]
+
+Obsidian:
+      --obsidian-wiki-links
+          Convert same-domain links to Obsidian [[wiki-link]] syntax
+          
+          [env: WEBFANG_OBSIDIAN_WIKI_LINKS=]
+
+      --obsidian-tags <OBSIDIAN_TAGS>
+          Tags to include in YAML frontmatter (comma-separated)
+          
+          [env: WEBFANG_OBSIDIAN_TAGS=]
+
+      --obsidian-relative-assets
+          Rewrite downloaded asset paths as relative to the .md file
+          
+          [env: WEBFANG_OBSIDIAN_RELATIVE_ASSETS=]
+
+      --vault <VAULT>
+          Path to Obsidian vault (auto-detects if not provided).
+          
+          When provided explicitly, the vault becomes the output base: Markdown, downloaded assets and the RAG export are written inside it — no need to duplicate the path in `-o` (which then must stay at its default). Auto-detected or config-file vaults do NOT redirect output (#762).
+          
+          [env: WEBFANG_OBSIDIAN_VAULT=]
+
+      --quick-save
+          Quick-save mode: save directly to vault _inbox folder
+          
+          [env: WEBFANG_OBSIDIAN_QUICK_SAVE=]
+
+      --obsidian-rich-metadata
+          Add rich metadata to frontmatter
+          
+          [env: WEBFANG_OBSIDIAN_RICH_METADATA=]
+
+AI Settings:
+      --threshold <THRESHOLD>
+          Relevance threshold for AI semantic filtering (0.0-1.0)
+          
+          [env: WEBFANG_THRESHOLD=]
+          [default: 0.3]
+
+      --max-tokens <MAX_TOKENS>
+          Maximum tokens per chunk before rejection (a chunk-size guard, not a context-window setting; chunks exceeding this fail)
+          
+          [env: WEBFANG_MAX_TOKENS=]
+          [default: 32768]
+
+      --offline
+          Run AI model in offline mode
+          
+          [env: WEBFANG_OFFLINE=]
+
+      --ai-model <AI_MODEL>
+          AI model to use: granite-97m (default, fast) or granite-311m (higher quality)
+          
+          [env: AI_MODEL_ID=]
 
 EXIT CODES:
   0    Success

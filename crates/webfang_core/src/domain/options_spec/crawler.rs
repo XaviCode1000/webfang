@@ -402,7 +402,7 @@ pub const ASSET_NAMING: OptionSpec = OptionSpec {
         env: None,
         default: Some(DefaultValue::Str("hash")),
         help: "Estrategia de nombre de archivo para assets descargados: hash (default), slug, content-disposition",
-        heading: None,
+        heading: Some("Download Settings"),
         kind: ValueKind::Enum {
             variants: &["hash", "slug", "content-disposition"],
         },
@@ -425,7 +425,7 @@ pub const DOWNLOAD_CONCURRENCY: OptionSpec = OptionSpec {
     default: None,
     // Explicit `help = ...` attribute overrides the doc comment.
     help: "Máximo de descargas de assets concurrentes por página (mínimo 1)",
-    heading: None,
+    heading: Some("Download Settings"),
     kind: ValueKind::uint(NumericPolicy::legacy_verbatim(
         1,
         "--download-concurrency debe ser >= 1 (0 causa un deadlock / hang infinito)",
