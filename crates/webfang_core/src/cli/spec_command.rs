@@ -300,6 +300,7 @@ fn manual_concurrency() -> clap::Arg {
             crate::domain::config::ConcurrencyConfig
         ))
         .help("Concurrency level (auto or number)")
+        .help_heading("Discovery")
 }
 
 fn manual_rate_limit_burst() -> clap::Arg {
@@ -318,6 +319,7 @@ fn manual_rate_limit_burst() -> clap::Arg {
              `parse_rate_limit_burst` so CLI, env, and programmatic input all \
              share one accept / reject-0 / warn-and-default semantic.",
         )
+        .help_heading("Discovery")
 }
 
 fn manual_include_patterns() -> clap::Arg {
@@ -338,6 +340,7 @@ fn manual_include_patterns() -> clap::Arg {
              Example: to exclude a path, use `--exclude-pattern \"/admin/*\"`, \
              not `*admin*`",
         )
+        .help_heading("Crawler Settings")
 }
 
 fn manual_exclude_patterns() -> clap::Arg {
@@ -352,6 +355,7 @@ fn manual_exclude_patterns() -> clap::Arg {
             "URL patterns to exclude (glob-style, same three modes as \
              --include-pattern). Deny takes precedence over allow",
         )
+        .help_heading("Crawler Settings")
 }
 
 fn manual_headers() -> clap::Arg {
@@ -369,6 +373,7 @@ fn manual_headers() -> clap::Arg {
              Overrides any default header with the same (case-insensitive) name. \
              Example: `-H \"Authorization: Bearer TOKEN\"`.",
         )
+        .help_heading("HTTP Client Settings")
 }
 
 fn manual_cookies() -> clap::Arg {
@@ -386,6 +391,7 @@ fn manual_cookies() -> clap::Arg {
              crawls work without a prior login round-trip. Example: \
              `--cookie \"session=abc123\"`.",
         )
+        .help_heading("HTTP Client Settings")
 }
 
 #[cfg(test)]
@@ -496,6 +502,33 @@ mod tests {
                 "runtime arg `{}` heading mismatch",
                 spec.id
             );
+        }
+    }
+
+    /// Manual (structurally-deferred) crawler args carry their layout-adjacent
+    /// headings unconditionally so no flag renders under the orphan `Options:` bucket (#976).
+    #[test]
+    fn manual_args_carry_headings() {
+        let expectations = [
+            ("concurrency", Some("Discovery")),
+            ("rate_limit_burst", Some("Discovery")),
+            ("include_patterns", Some("Crawler Settings")),
+            ("exclude_patterns", Some("Crawler Settings")),
+            ("headers", Some("HTTP Client Settings")),
+            ("cookies", Some("HTTP Client Settings")),
+        ];
+        for (id, expected) in expectations {
+            for headings in [Headings::Omitted, Headings::Applied] {
+                let arg = crawler_args(headings)
+                    .into_iter()
+                    .find(|a| a.get_id() == id)
+                    .unwrap_or_else(|| panic!("manual arg `{id}` missing for {headings:?}"));
+                assert_eq!(
+                    arg.get_help_heading(),
+                    expected,
+                    "manual `{id}` {headings:?}"
+                );
+            }
         }
     }
 }

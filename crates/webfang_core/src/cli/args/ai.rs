@@ -23,21 +23,24 @@ pub struct AiArgs {
         default_value = "0.3",
         env = "WEBFANG_THRESHOLD",
         value_parser = parse_threshold,
-        allow_negative_numbers = true
+        allow_negative_numbers = true,
+        help_heading = "AI Settings"
     )]
-    #[clap(next_help_heading = "AI Settings")]
     pub threshold: f32,
 
     /// Maximum tokens per chunk before rejection (a chunk-size guard, not a context-window setting; chunks exceeding this fail)
     #[cfg(feature = "ai")]
-    #[arg(long, default_value = "32768", env = "WEBFANG_MAX_TOKENS")]
-    #[clap(next_help_heading = "AI Settings")]
+    #[arg(
+        long,
+        default_value = "32768",
+        env = "WEBFANG_MAX_TOKENS",
+        help_heading = "AI Settings"
+    )]
     pub max_tokens: usize,
 
     /// Run AI model in offline mode
     #[cfg(feature = "ai")]
-    #[arg(long, default_value = "false", env = "WEBFANG_OFFLINE", action = clap::ArgAction::SetTrue)]
-    #[clap(next_help_heading = "AI Settings")]
+    #[arg(long, default_value = "false", env = "WEBFANG_OFFLINE", action = clap::ArgAction::SetTrue, help_heading = "AI Settings")]
     pub offline: bool,
 
     // Raw string on purpose (#827): validation is deferred to the AI init
@@ -45,7 +48,6 @@ pub struct AiArgs {
     // make unrelated CLI invocations fail at parse time.
     /// AI model to use: granite-97m (default, fast) or granite-311m (higher quality)
     #[cfg(feature = "ai")]
-    #[arg(long, env = "AI_MODEL_ID")]
-    #[clap(next_help_heading = "AI Settings")]
+    #[arg(long, env = "AI_MODEL_ID", help_heading = "AI Settings")]
     pub ai_model: Option<String>,
 }
