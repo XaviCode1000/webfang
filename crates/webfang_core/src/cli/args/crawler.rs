@@ -350,7 +350,7 @@ impl clap::FromArgMatches for CrawlerArgs {
 impl clap::Args for CrawlerArgs {
     fn augment_args(cmd: clap::Command) -> clap::Command {
         cmd.args(crate::cli::spec_command::crawler_args(
-            crate::cli::spec_command::Headings::Omitted,
+            crate::cli::spec_command::Headings::Applied,
         ))
     }
 
