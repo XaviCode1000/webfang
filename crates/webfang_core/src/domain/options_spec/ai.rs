@@ -83,19 +83,19 @@ pub const OFFLINE: OptionSpec = OptionSpec {
     value_delimiter: None,
 };
 
-/// `--ai-model <AI_MODEL>` (env `AI_MODEL_ID`, `Option<String>`).
+/// `--ai-model <AI_MODEL>` (env `WEBFANG_AI_MODEL_ID`, `Option<String>`).
 ///
 /// Raw string on purpose (#827): validation is deferred to the AI init
 /// path (`build_ai_cleaner`) so a poisoned `AI_MODEL_ID` env var cannot
-/// make unrelated CLI invocations fail at parse time. The env var name
-/// is intentionally NOT `WEBFANG_AI_MODEL` — the rename is sub-slice 5b.
+/// make unrelated CLI invocations fail at parse time. `AI_MODEL_ID` is
+/// accepted as a hidden CLI alias for backward compatibility.
 pub const AI_MODEL: OptionSpec = OptionSpec {
     id: "ai_model",
     value_name: "AI_MODEL",
     long: "ai-model",
     short: None,
-    aliases: &[],
-    env: Some("AI_MODEL_ID"),
+    aliases: &["AI_MODEL_ID"],
+    env: Some("WEBFANG_AI_MODEL_ID"),
     default: None,
     nullable: false,
     description_override: None,

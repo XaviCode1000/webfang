@@ -26,9 +26,6 @@ pub const DEFAULT_FALLBACK_MODEL_FILE: &str = "onnx/model.onnx";
 pub const DEFAULT_FALLBACK_MODEL_SHA256: &str =
     "75f9f258bf5013f5fe8a4dad61dd0fd16ac0cbaa7a106e3d3f41c2d04a42d541";
 
-/// Environment variable for model selection
-pub const MODEL_SELECTION_ENV: &str = "AI_MODEL_ID";
-
 /// AI model variants supported by the inference engine
 ///
 /// Two-tier model architecture:
@@ -117,7 +114,7 @@ impl AiModel {
         }
     }
 
-    /// Resolve the AI model variant from the `MODEL_SELECTION_ENV` variable.
+    /// Resolve the AI model variant from the `WEBFANG_AI_MODEL_ID` / `AI_MODEL_ID` variables.
     ///
     /// Distinguishes an unset variable (user made no choice → `Ok(None)`,
     /// callers apply their own silent default) from a set-but-unrecognized
@@ -130,7 +127,8 @@ impl AiModel {
     /// IDs (`granite-97m`, `granite-311m`) when the variable is present but
     /// does not parse.
     pub fn from_env() -> Result<Option<Self>, String> {
-        Self::resolve(std::env::var(MODEL_SELECTION_ENV).ok().as_deref())
+        let compat = crate::infrastructure_ai::compat::read_ai_model_id();
+        Self::resolve(compat.as_deref())
     }
 
     /// Pure core of [`Self::from_env`], taking the raw env value so tests stay
@@ -290,14 +288,14 @@ mod tests {
         // We only assert the shape here; value-specific behavior is covered
         // by the pure `resolve` tests above (env mutation is unsafe/racy in
         // parallel test runs).
-        match std::env::var(MODEL_SELECTION_ENV) {
-            Ok(v) => {
+        match crate::infrastructure_ai::compat::read_ai_model_id() {
+            Some(v) => {
                 let expected = AiModel::parse(&v).map(Some).ok_or_else(|| {
                     format!("Unknown AI model '{v}'. Valid values: granite-97m, granite-311m")
                 });
                 assert_eq!(AiModel::from_env(), expected);
             },
-            Err(_) => assert_eq!(AiModel::from_env(), Ok(None)),
+            None => assert_eq!(AiModel::from_env(), Ok(None)),
         }
     }
 }

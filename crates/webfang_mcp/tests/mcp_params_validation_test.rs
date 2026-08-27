@@ -329,7 +329,7 @@ fn export_file_params_accepts_valid() {
     let p = ExportFileParams {
         output_dir: "exports/2026".into(),
         filename: "out".into(),
-        format: "jsonl".into(),
+        content_format: "jsonl".into(),
         content: "row".into(),
     };
     p.validate().expect("valid export");
@@ -340,7 +340,7 @@ fn export_file_params_rejects_output_dir_traversal() {
     let p = ExportFileParams {
         output_dir: "../etc".into(),
         filename: "out".into(),
-        format: "jsonl".into(),
+        content_format: "jsonl".into(),
         content: "row".into(),
     };
     let err = p.validate().unwrap_err();
@@ -352,7 +352,7 @@ fn export_file_params_rejects_unknown_format() {
     let p = ExportFileParams {
         output_dir: "exports".into(),
         filename: "out".into(),
-        format: "xml".into(),
+        content_format: "xml".into(),
         content: "row".into(),
     };
     let err = p.validate().unwrap_err();
@@ -364,7 +364,7 @@ fn export_file_params_rejects_empty_filename() {
     let p = ExportFileParams {
         output_dir: "exports".into(),
         filename: String::new(),
-        format: "jsonl".into(),
+        content_format: "jsonl".into(),
         content: "row".into(),
     };
     let err = p.validate().unwrap_err();
