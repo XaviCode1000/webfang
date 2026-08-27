@@ -117,8 +117,11 @@ pub(crate) fn cmd() -> Command {
     sanitize_env(Command::new(webfang_path()))
 }
 
-/// Remove all `WEBFANG_*` and `AI_MODEL_ID` env vars from a command so tests
-/// are hermetic even when CI bug-discovery workflows poison the environment.
+/// Remove all `WEBFANG_*`, `WEBFANG_AI_MODEL_ID`, and `AI_MODEL_ID` env
+/// vars from a command so tests are hermetic even when CI bug-discovery
+/// workflows poison the environment. The legacy `AI_MODEL_ID` is still
+/// honored by `webfang_ai::infrastructure_ai::compat::read_ai_model_id()`
+/// (#980 slice 5b), so a poisoned run exercises that fallback.
 fn sanitize_env(mut cmd: Command) -> Command {
     let poisoned: Vec<String> = std::env::vars()
         .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")

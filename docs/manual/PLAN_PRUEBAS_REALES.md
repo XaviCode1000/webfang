@@ -201,7 +201,7 @@ source of truth for which site tests what.
 | 7.2 | Chunk quality | same on S4 (wikipedia) | chunks are semantically coherent paragraphs, not mid-sentence garbage; relevance scores present |
 | 7.3 | Explicit output vectors | `--clean-ai --output-vectors ./vecs.jsonl` | JSONL with 384-dim vectors; count ≈ chunk count |
 | 7.4 | AI via stdout vectors | `--output-vectors -` | vectors on stdout, human log on stderr, no cross-pollution |
-| 7.5 | Model override | `--ai-model IBM/watsonx-granite-embedding-311m-multilingual` (or `AI_MODEL_ID`) | downloads/uses 311M model, vectors 384-dim, honest about size |
+| 7.5 | Model override | `--ai-model IBM/watsonx-granite-embedding-311m-multilingual` (or `WEBFANG_AI_MODEL_ID`, legacy `AI_MODEL_ID`) | downloads/uses 311M model, vectors 384-dim, honest about size |
 | 7.6 | Offline + warm cache | disconnect network (or `HTTP_PROXY=http://127.0.0.1:9`) with cache present | cache-hit, works offline |
 | 7.7 | Offline + cold cache | clear hub cache + no network | honest Spanish error: model unavailable offline; NO panic, NO silent fallback to garbage |
 | 7.8 | ChunkTooLarge | feed a page with a single >32768-token text block (craft or find) | SemanticError::ChunkTooLarge honest message |
