@@ -3,13 +3,16 @@
 //! Saves and loads crawl state (visited URLs, queued URLs, pages crawled)
 //! using JSON serialization with CRC32 integrity checks and atomic writes.
 //!
-//! # Scope — Sprint 0 Gate 0 (out-of-scope for `--resume`)
+//! # Scope — PersistenceMode unification (persistencemode-5c / #980)
 //!
 //! `CrawlCheckpoint` / `BincodeCheckpoint` (JSON+CRC32, `version:u32`,
-//! `checkpoint_interval=100`) is **engine-internal** and **not wired to CLI
-//! `--resume`**. The CLI resume path uses `StateStore` (`ExportState`
-//! file-per-domain JSON with `version:1` + discard-on-mismatch). Do not
-//! conflate the two systems. See `sdd/stabilization-sprint0-baseline`.
+//! `checkpoint_interval=100`) is the engine crash-resume mechanism. Since
+//! `persistencemode-5c` the CLI wires it via the domain control-plane
+//! `PersistenceMode` (`domain/persistence.rs`) — `Engine::with_persistence`
+//! gates `with_checkpoint` when the resolved mode is `Checkpoint` or `Full`.
+//! The export resume path (`StateStore` → `RecordStore v2`) and the engine
+//! checkpoint path remain separate files/formats (no combined envelope).
+//! See `sdd/persistencemode-5c` and `COMPATIBILITY-MATRIX`.
 //!
 //! # Design Decisions
 //!

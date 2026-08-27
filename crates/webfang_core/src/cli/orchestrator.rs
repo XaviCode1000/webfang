@@ -142,9 +142,13 @@ pub async fn run(
     };
 
     let discovered_count = prepare.urls_to_scrape.len();
+    // PersistenceMode unified control-plane — pure resolver with default dir.
+    crate::cli::scrape_flow::warn_if_state_dir_without_resume(&opts);
+    let default_state_dir = crate::cli::scrape_flow::resolve_default_state_dir();
+    let persistence_mode = opts.crawl.persistence_mode(&default_state_dir);
     let (urls_to_scrape, state_store) = match apply_resume_mode(
         prepare.urls_to_scrape,
-        &opts,
+        &persistence_mode,
         opts.url.as_str(),
         &root_correlation,
     )
@@ -1000,16 +1004,11 @@ fn build_batch_resume_store(opts: &CrawlOptions) -> Result<Option<StateStore>, C
     if !opts.crawl.resume {
         return Ok(None);
     }
-    let state_dir = opts.crawl.state_dir.clone().unwrap_or_else(|| {
-        let cache_base = std::env::var("XDG_CACHE_HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| {
-                dirs::home_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".cache")
-            });
-        cache_base.join("webfang").join("state")
-    });
+    let state_dir = opts
+        .crawl
+        .state_dir
+        .clone()
+        .unwrap_or_else(crate::cli::scrape_flow::resolve_default_state_dir);
     let domain = opts.url.host_str().unwrap_or("batch").to_string();
     crate::application::export_factory::create_state_store(state_dir, &domain)
         .map(Some)

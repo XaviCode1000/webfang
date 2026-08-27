@@ -252,6 +252,17 @@ pub struct IngestionTuning {
 // Default implementations
 // ============================================================================
 
+impl CrawlLimits {
+    /// Thin delegator to [`crate::domain::persistence::PersistenceMode::from_limits`].
+    #[must_use]
+    pub fn persistence_mode(
+        &self,
+        default_state_dir: &std::path::Path,
+    ) -> crate::domain::persistence::PersistenceMode {
+        crate::domain::persistence::PersistenceMode::from_limits(self, default_state_dir)
+    }
+}
+
 impl Default for CrawlLimits {
     fn default() -> Self {
         Self {

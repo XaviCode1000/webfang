@@ -229,6 +229,21 @@ impl Engine {
         self
     }
 
+    /// Unified persistence — wraps `with_checkpoint` when `PersistenceMode` enables checkpointing.
+    ///
+    /// `Checkpoint` and `Full` variants configure periodic checkpointing via
+    /// `with_checkpoint`; `Disabled` and `Resume` leave checkpoint disabled.
+    /// On IO error creating the checkpoint directory, `with_checkpoint` logs
+    /// `error!` and disables checkpoint without failing the crawl (CRC32
+    /// atomic guarantees preserved).
+    pub fn with_persistence(self, mode: crate::domain::persistence::PersistenceMode) -> Self {
+        if let Some(cfg) = mode.checkpoint_cfg() {
+            self.with_checkpoint(cfg.interval, cfg.dir.clone())
+        } else {
+            self
+        }
+    }
+
     /// Enable checkpoint persistence with the given interval and base directory.
     ///
     /// If the checkpoint directory cannot be created, checkpointing is disabled
@@ -1564,5 +1579,58 @@ mod tests {
             "seed NOT matching exclude pattern must be crawled, got {} pages",
             result.total_pages
         );
+    }
+
+    // ——— PersistenceMode::with_persistence wiring (5c) ———
+
+    #[tokio::test]
+    async fn with_persistence_disabled_leaves_checkpoint_disabled() {
+        let seed = Url::parse("http://127.0.0.1:9/").expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed).build();
+        let engine = Engine::new(config, true).expect("engine must build");
+        assert_eq!(engine.checkpoint_interval, 100);
+        assert!(engine.checkpoint_path.is_none());
+
+        let mode = crate::domain::persistence::PersistenceMode::Disabled;
+        let engine = engine.with_persistence(mode);
+        assert!(engine.checkpoint_path.is_none());
+        // Disabled must not change interval (preserved from initial 100, but not enabling file)
+        // The key invariant: no checkpoint file configured.
+        assert!(engine.checkpoint_path.is_none());
+    }
+
+    #[tokio::test]
+    async fn with_persistence_checkpoint_configures_path_and_interval() {
+        let seed = Url::parse("http://127.0.0.1:9/").expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed).build();
+        let engine = Engine::new(config, true).expect("engine must build");
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let mode = crate::domain::persistence::PersistenceMode::Checkpoint {
+            cfg: crate::domain::persistence::CheckpointCfg {
+                dir: tmp.path().to_path_buf(),
+                interval: 42,
+            },
+        };
+        let engine = engine.with_persistence(mode);
+        assert!(engine.checkpoint_path.is_some());
+        assert_eq!(engine.checkpoint_interval, 42);
+        assert!(
+            engine.checkpoint_path.unwrap().starts_with(tmp.path()),
+            "checkpoint path should be under requested dir"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_persistence_resume_only_leaves_checkpoint_disabled() {
+        let seed = Url::parse("http://127.0.0.1:9/").expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed).build();
+        let engine = Engine::new(config, true).expect("engine must build");
+
+        let mode = crate::domain::persistence::PersistenceMode::Resume {
+            dir: std::path::PathBuf::from("/tmp/resume"),
+        };
+        let engine = engine.with_persistence(mode);
+        assert!(engine.checkpoint_path.is_none());
     }
 }

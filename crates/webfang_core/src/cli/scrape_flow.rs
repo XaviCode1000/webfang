@@ -15,6 +15,7 @@ use crate::application::resume::{filter_committed, record_store_bridge};
 use crate::application::scrape_single_url_for_tui;
 use crate::cli::error::CliExit;
 use crate::domain::entities::progress::{ScrapeError, ScrapeStatus};
+use crate::domain::persistence::PersistenceMode;
 use crate::domain::{CorrelationId, ScrapedContent};
 use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
 use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
@@ -31,73 +32,94 @@ use crate::application::adaptive_engine::AdaptiveSelectorEngine;
 #[cfg(not(feature = "adaptive-selectors"))]
 type AdaptiveSelectorEngine = ();
 
-/// Apply resume mode filtering.
+/// Resolve the default state directory (XDG_CACHE_HOME or `~/.cache/webfang/state`).
 ///
-/// # Errors
-///
-/// Returns `CliExit::IoError` when `--resume` is active and the state store
-/// cannot be created. Without a working store the crawl would silently
-/// re-scrape every URL, defeating the purpose of resume mode.
-pub async fn apply_resume_mode(
-    urls_to_scrape: Vec<Url>,
-    opts: &CrawlOptions,
-    target_url: &str,
-    _root_correlation: &CorrelationId,
-) -> Result<(Vec<Url>, Option<StateStore>), CliExit> {
-    let state_store: Option<StateStore> = if opts.crawl.resume {
-        info!("Resume mode enabled - tracking processed URLs");
-        let state_dir = resolve_state_dir(opts);
-
-        let domain = export_factory::domain_from_url(target_url);
-        info!("State store domain: {}", domain);
-        match export_factory::create_state_store(state_dir, &domain) {
-            Ok(store) => Some(store),
-            // LCOV_EXCL_START defensive: state-store-creation — store creation failure with --resume is an environment invariant break
-            Err(e) => {
-                tracing::error!(error = %e, "state store creation failed with --resume active");
-                return Err(CliExit::IoError(format!(
-                    "No se pudo crear el almacén de estado para --resume: {e}"
-                )));
-            },
-            // LCOV_EXCL_STOP
-        }
-    } else {
-        None
-    };
-
-    // PR3: the single resume gate — skip ONLY COMMITTED-proven records,
-    // via the v2 RecordStore (legacy v1 files migrate in place on load).
-    let filtered = if opts.crawl.resume {
-        match state_store.as_ref() {
-            Some(store) => {
-                let record_store = record_store_bridge(store);
-                filter_committed(urls_to_scrape, &record_store).0
-            },
-            None => urls_to_scrape,
-        }
-    } else {
-        urls_to_scrape
-    };
-
-    // Crash-injection: discovery + resume filtering done, nothing
-    // persisted yet in this run.
-    crate::cli::crash_points::hit(crate::cli::crash_points::PRE_FIRST_PERSIST);
-
-    Ok((filtered, state_store))
+/// Pure helper extracted for `PersistenceMode::from_limits` callers.
+#[must_use]
+pub fn resolve_default_state_dir() -> PathBuf {
+    let cache_base = std::env::var("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".cache")
+        });
+    cache_base.join("webfang").join("state")
 }
 
 /// Resolve the resume state directory, defaulting to the XDG cache path.
+#[allow(dead_code)]
 fn resolve_state_dir(opts: &CrawlOptions) -> PathBuf {
-    opts.crawl.state_dir.clone().unwrap_or_else(|| {
-        let cache_base = std::env::var("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                dirs::home_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join(".cache")
-            });
-        cache_base.join("webfang").join("state")
-    })
+    opts.crawl
+        .state_dir
+        .clone()
+        .unwrap_or_else(resolve_default_state_dir)
+}
+
+/// Emit `warn!` when `--state-dir` is set without `--resume` (soft-degrade, not error).
+///
+/// Called from the orchestrator before constructing `PersistenceMode`; the domain
+/// resolver also emits the same `warn!` so unit tests capture it via `tracing_test`.
+pub(crate) fn warn_if_state_dir_without_resume(opts: &CrawlOptions) {
+    if opts.crawl.state_dir.is_some() && !opts.crawl.resume {
+        warn!(
+            state_dir = ?opts.crawl.state_dir,
+            "ignoring --state-dir without --resume"
+        );
+    }
+}
+
+/// Apply resume mode filtering via `PersistenceMode`.
+///
+/// `mode` is the unified control-plane — exhaustive `match` on
+/// `Disabled|Resume|Checkpoint|Full`. Only `Resume` and `Full` create a
+/// `StateStore` and filter committed URLs; `Checkpoint` and `Disabled` pass
+/// all URLs through.
+///
+/// # Errors
+///
+/// Returns `CliExit::IoError` when resume is active and the state store
+/// cannot be created.
+pub async fn apply_resume_mode(
+    urls_to_scrape: Vec<Url>,
+    mode: &PersistenceMode,
+    target_url: &str,
+    _root_correlation: &CorrelationId,
+) -> Result<(Vec<Url>, Option<StateStore>), CliExit> {
+    let state_store: Option<StateStore> = match mode {
+        PersistenceMode::Disabled | PersistenceMode::Checkpoint { .. } => None,
+        PersistenceMode::Resume { dir }
+        | PersistenceMode::Full {
+            resume_dir: dir, ..
+        } => {
+            info!("Resume mode enabled - tracking processed URLs");
+            let domain = export_factory::domain_from_url(target_url);
+            info!("State store domain: {}", domain);
+            match export_factory::create_state_store(dir.clone(), &domain) {
+                Ok(store) => Some(store),
+                // LCOV_EXCL_START defensive: state-store-creation
+                Err(e) => {
+                    tracing::error!(error = %e, "state store creation failed with --resume active");
+                    return Err(CliExit::IoError(format!(
+                        "No se pudo crear el almacén de estado para --resume: {e}"
+                    )));
+                },
+                // LCOV_EXCL_STOP
+            }
+        },
+    };
+
+    let filtered = match (&state_store, mode.is_resume()) {
+        (Some(store), true) => {
+            let record_store = record_store_bridge(store);
+            filter_committed(urls_to_scrape, &record_store).0
+        },
+        _ => urls_to_scrape,
+    };
+
+    crate::cli::crash_points::hit(crate::cli::crash_points::PRE_FIRST_PERSIST);
+
+    Ok((filtered, state_store))
 }
 
 /// Seed operator `--cookie` values (#890) into a shared wreq jar so the
@@ -930,7 +952,7 @@ mod tests {
         assert!(!opts.crawl.ignore_robots);
     }
 
-    // ===== apply_resume_mode tests =====
+    // ===== apply_resume_mode tests (via PersistenceMode) =====
 
     #[tokio::test]
     async fn apply_resume_mode_disabled_returns_all_urls() {
@@ -939,18 +961,35 @@ mod tests {
             Url::parse("https://example.com/a").unwrap(),
             Url::parse("https://example.com/b").unwrap(),
         ];
-        let opts = CrawlOptions {
-            crawl: crate::application::crawl_options::CrawlLimits {
-                resume: false,
-                ..Default::default()
+        let mode = crate::domain::persistence::PersistenceMode::Disabled;
+
+        let (filtered, state_store) =
+            apply_resume_mode(urls.clone(), &mode, "https://example.com", &root)
+                .await
+                .expect("resume disabled should not fail");
+
+        assert_eq!(filtered.len(), 2);
+        assert!(state_store.is_none());
+    }
+
+    #[tokio::test]
+    async fn apply_resume_mode_checkpoint_returns_all_urls() {
+        let root = crate::domain::CorrelationId::new();
+        let urls = vec![
+            Url::parse("https://example.com/a").unwrap(),
+            Url::parse("https://example.com/b").unwrap(),
+        ];
+        let mode = crate::domain::persistence::PersistenceMode::Checkpoint {
+            cfg: crate::domain::persistence::CheckpointCfg {
+                dir: std::path::PathBuf::from("/tmp/chk"),
+                interval: 100,
             },
-            ..Default::default()
         };
 
         let (filtered, state_store) =
-            apply_resume_mode(urls.clone(), &opts, "https://example.com", &root)
+            apply_resume_mode(urls.clone(), &mode, "https://example.com", &root)
                 .await
-                .expect("resume disabled should not fail");
+                .expect("checkpoint only should not fail");
 
         assert_eq!(filtered.len(), 2);
         assert!(state_store.is_none());
@@ -975,16 +1014,11 @@ mod tests {
             Url::parse("https://example.com/b").unwrap(),
             Url::parse("https://example.com/c").unwrap(),
         ];
-        let opts = CrawlOptions {
-            crawl: crate::application::crawl_options::CrawlLimits {
-                resume: true,
-                state_dir: Some(state_dir),
-                ..Default::default()
-            },
-            ..Default::default()
+        let mode = crate::domain::persistence::PersistenceMode::Resume {
+            dir: state_dir.clone(),
         };
 
-        let (filtered, state_store) = apply_resume_mode(urls, &opts, "https://example.com", &root)
+        let (filtered, state_store) = apply_resume_mode(urls, &mode, "https://example.com", &root)
             .await
             .expect("valid state dir should not fail");
 
@@ -1003,6 +1037,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_resume_mode_full_skips_previously_scraped_urls() {
+        let root = crate::domain::CorrelationId::new();
+        let tmp = TempDir::new().unwrap();
+        let state_dir = tmp.path().to_path_buf();
+
+        let state_file = state_dir.join("example.com.json");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(
+            &state_file,
+            r#"{"domain":"example.com","processed_urls":["https://example.com/a"],"last_export":null,"total_exported":1}"#,
+        ).unwrap();
+
+        let urls = vec![
+            Url::parse("https://example.com/a").unwrap(),
+            Url::parse("https://example.com/b").unwrap(),
+        ];
+        let mode = crate::domain::persistence::PersistenceMode::Full {
+            resume_dir: state_dir.clone(),
+            checkpoint: crate::domain::persistence::CheckpointCfg {
+                dir: state_dir.clone(),
+                interval: 50,
+            },
+        };
+
+        let (filtered, state_store) = apply_resume_mode(urls, &mode, "https://example.com", &root)
+            .await
+            .expect("Full mode should not fail");
+
+        assert_eq!(filtered.len(), 1);
+        assert!(state_store.is_some());
+    }
+
+    #[tokio::test]
     async fn apply_resume_mode_with_corrupted_state_returns_all_urls() {
         let root = crate::domain::CorrelationId::new();
         let tmp = TempDir::new().unwrap();
@@ -1017,17 +1084,12 @@ mod tests {
             Url::parse("https://example.com/a").unwrap(),
             Url::parse("https://example.com/b").unwrap(),
         ];
-        let opts = CrawlOptions {
-            crawl: crate::application::crawl_options::CrawlLimits {
-                resume: true,
-                state_dir: Some(state_dir),
-                ..Default::default()
-            },
-            ..Default::default()
+        let mode = crate::domain::persistence::PersistenceMode::Resume {
+            dir: state_dir.clone(),
         };
 
         let (filtered, state_store) =
-            apply_resume_mode(urls.clone(), &opts, "https://example.com", &root)
+            apply_resume_mode(urls.clone(), &mode, "https://example.com", &root)
                 .await
                 .expect("corrupted state file should not prevent store creation");
 
@@ -1048,16 +1110,11 @@ mod tests {
         std::fs::create_dir_all(&state_dir).unwrap();
 
         let urls = vec![Url::parse("https://example.com/a").unwrap()];
-        let opts = CrawlOptions {
-            crawl: crate::application::crawl_options::CrawlLimits {
-                resume: true,
-                state_dir: Some(state_dir.clone()),
-                ..Default::default()
-            },
-            ..Default::default()
+        let mode = crate::domain::persistence::PersistenceMode::Resume {
+            dir: state_dir.clone(),
         };
 
-        let (filtered, state_store) = apply_resume_mode(urls, &opts, "https://example.com", &root)
+        let (filtered, state_store) = apply_resume_mode(urls, &mode, "https://example.com", &root)
             .await
             .expect("custom state dir should not fail");
 
@@ -1072,6 +1129,15 @@ mod tests {
         assert!(
             state_path.starts_with(&state_dir),
             "state path should be under custom state_dir: {state_path:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_default_state_dir_contains_webfang_state() {
+        let dir = super::resolve_default_state_dir();
+        assert!(
+            dir.to_string_lossy().contains("webfang/state"),
+            "default state dir should contain webfang/state, got: {dir:?}"
         );
     }
 }
