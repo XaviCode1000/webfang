@@ -83,7 +83,7 @@ impl clap::FromArgMatches for ExportArgs {
 impl clap::Args for ExportArgs {
     fn augment_args(cmd: clap::Command) -> clap::Command {
         cmd.args(crate::cli::spec_command::export_args(
-            crate::cli::spec_command::Headings::Omitted,
+            crate::cli::spec_command::Headings::Applied,
         ))
     }
 

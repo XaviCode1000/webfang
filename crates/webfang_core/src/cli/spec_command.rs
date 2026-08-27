@@ -10,15 +10,13 @@
 //!
 //! # Heading policy
 //!
-//! Empirical fact pinned in slice 3: clap derive's `next_help_heading`
-//! attributes are INERT — they never rendered sections and
-//! [`clap::Arg::get_help_heading`] returned `None` for every arg. The
-//! rendered `--help` is one flat `Options:` block, and byte-identical output
-//! is the acceptance bar. Therefore the runtime command omits headings
-//! ([`Headings::Omitted`]); the parity suite builds the SAME specs through
-//! [`Headings::Applied`] to prove heading parity BY CONSTRUCTION:
-//! `get_help_heading()` equals `spec.heading` on every built arg. Flipping
-//! the runtime switch later is a one-line change with snapshots as oracle.
+//! The spec owns each arg's `help_heading`; the runtime build path
+//! ([`Headings::Applied`]) wires it onto every arg so `--help` renders
+//! grouped sections (`Target:`, `Discovery:`, `Crawler Settings:`,
+//! `Competitive Features:`, …) instead of one flat `Options:` block (#932,
+//! post-ADR-002). The parity suite builds the same specs through the same
+//! `Headings::Applied` and pins `get_help_heading() == spec.heading` on
+//! every entry as the construction-time correctness oracle.
 //!
 //! # Deferred crawler fields
 //!
@@ -34,8 +32,9 @@ use clap::builder::{ArgAction, PossibleValuesParser, ValueParser};
 /// Whether assembled args carry their spec heading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Headings {
-    /// Runtime shape: headings omitted, byte-identical to the pre-slice-3
-    /// derive rendering (one flat `Options:` block).
+    /// Runtime shape: headings omitted (legacy; only the parity suite still
+    /// pins it to keep the `Headings::Applied` path honest by contrast).
+    #[allow(dead_code)]
     Omitted,
     /// Parity-suite shape: `help_heading` applied from the spec so
     /// `get_help_heading()` can be asserted against `spec.heading`.
@@ -457,19 +456,30 @@ mod tests {
         }
     }
 
-    /// The runtime shape keeps the inert-heading byte contract: no arg
-    /// carries a heading, exactly like the pre-slice-3 derive output.
+    /// The runtime shape carries headings (#932, post-ADR-002): every active
+    /// spec entry built through the runtime path exposes the same heading as
+    /// the parity-suite path. This is the post-flip dual of the previous
+    /// "inert heading" guard; the parity suite already pins the per-arg
+    /// mapping, this test pins the runtime wiring.
     #[test]
-    fn runtime_shape_keeps_headings_inert() {
-        for arg in export_args(Headings::Omitted)
-            .into_iter()
-            .chain(crawler_args(Headings::Omitted))
+    fn runtime_shape_applies_spec_headings() {
+        for spec in options_spec::export::GROUP
+            .iter()
+            .chain(CRAWLER_LAYOUT.iter().filter_map(|slot| match slot {
+                CrawlerSlot::Spec(s) => Some(*s),
+                CrawlerSlot::Manual(_) => None,
+            }))
         {
+            let arg = export_args(Headings::Applied)
+                .into_iter()
+                .chain(crawler_args(Headings::Applied))
+                .find(|a| a.get_id() == spec.id)
+                .unwrap_or_else(|| panic!("runtime arg `{}` missing", spec.id));
             assert_eq!(
                 arg.get_help_heading(),
-                None,
-                "runtime arg `{}` must not carry a heading",
-                arg.get_id()
+                spec.heading,
+                "runtime arg `{}` heading mismatch",
+                spec.id
             );
         }
     }
