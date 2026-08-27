@@ -67,6 +67,9 @@ fn build_arg(spec: &'static OptionSpec, headings: Headings) -> clap::Arg {
     if let Some(env) = spec.env {
         arg = arg.env(env);
     }
+    if let Some(delimiter) = spec.value_delimiter {
+        arg = arg.value_delimiter(delimiter);
+    }
     if let Some(default) = spec.default {
         // `DefaultValue` already implements `Display` (see `options_spec::mod`)
         // — that is the canonical string form for every variant, including any
@@ -106,6 +109,23 @@ fn build_arg(spec: &'static OptionSpec, headings: Headings) -> clap::Arg {
             arg.value_parser(parser)
         },
         ValueKind::Text => arg.value_parser(clap::value_parser!(String)),
+        ValueKind::TextList => {
+            // Comma-delimited list: parser stays `String` and the
+            // `value_delimiter` (applied above from `spec.value_delimiter`)
+            // makes `get_many::<String>` return the split values. Binding
+            // the parser to `Vec<String>` is NOT supported by clap 4's
+            // `value_parser!` macro; the splitter is the integration
+            // point. The `FromArgMatches` consumer reads via
+            // [`extract::opt_many`] / [`extract::many`].
+            //
+            // Action MUST be `Append`: the source `Option<Vec<String>>` /
+            // `Vec<String>` derive resolves to `ArgAction::Append`
+            // (clap_derive `Ty::OptionVec`), so repeated `--flag a --flag b`
+            // appends rather than overwriting. `Set` (the arg default)
+            // would keep only the last occurrence and silently drop values.
+            arg.action(ArgAction::Append)
+                .value_parser(clap::value_parser!(String))
+        },
         ValueKind::Path => arg.value_parser(clap::value_parser!(std::path::PathBuf)),
         ValueKind::Uint { .. } | ValueKind::MemorySize { .. } => {
             let parser = numeric_binding(spec.id).unwrap_or_else(|| {
@@ -191,6 +211,7 @@ fn numeric_binding(id: &str) -> Option<ValueParser> {
         "download_concurrency" => Some(str_fn(super::args::crawler::parse_download_concurrency)),
         "selector" => Some(str_fn(super::args::crawler::parse_selector)),
         "max_depth" => Some(str_fn(super::args::crawler::parse_max_depth)),
+        "max_tokens" => Some(ValueParser::from(clap::value_parser!(usize))),
         "delay_ms"
         | "backoff_base_ms"
         | "backoff_max_ms"
@@ -210,6 +231,97 @@ fn numeric_binding(id: &str) -> Option<ValueParser> {
 /// All export-group args in declaration order — pure spec build.
 pub(crate) fn export_args(headings: Headings) -> Vec<clap::Arg> {
     options_spec::export::GROUP
+        .iter()
+        .map(|s| build_arg(s, headings))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// AI group
+// ---------------------------------------------------------------------------
+
+/// One slot of the AI layout: either a spec entry or a hand-built deferred
+/// arg, positioned exactly where the field is declared. Mirrors the
+/// [`CrawlerSlot`] pattern (slice 2). The manual `threshold` slot carries
+/// the `f32` parser + range check + verbatim Spanish error message that
+/// the spec SSOT does not yet model — see the defer note in
+/// [`options_spec::ai::THRESHOLD`].
+#[cfg(feature = "ai")]
+enum AiSlot {
+    Spec(&'static OptionSpec),
+    Manual(fn() -> clap::Arg),
+}
+
+/// AI declaration order: the hand-built `threshold` first, then the three
+/// spec entries in `AiArgs` field-declaration order.
+#[cfg(feature = "ai")]
+const AI_LAYOUT: &[AiSlot] = &[
+    AiSlot::Manual(manual_threshold),
+    AiSlot::Spec(&options_spec::ai::MAX_TOKENS),
+    AiSlot::Spec(&options_spec::ai::OFFLINE),
+    AiSlot::Spec(&options_spec::ai::AI_MODEL),
+];
+
+/// All AI-group args in declaration order. With `cfg(not(feature = "ai"))`
+/// the AI group is empty (the pre-migration derive produced zero AI args
+/// under that configuration; the spec's `feature_gate = Some("ai")` would
+/// otherwise render hidden placeholders — wrong for this group).
+#[cfg(feature = "ai")]
+pub(crate) fn ai_args(headings: Headings) -> Vec<clap::Arg> {
+    AI_LAYOUT
+        .iter()
+        .map(|slot| match slot {
+            AiSlot::Spec(spec) => build_arg(spec, headings),
+            AiSlot::Manual(build) => build(),
+        })
+        .collect()
+}
+
+/// `cfg(not(feature = "ai"))` counterpart: zero args, matching the
+/// pre-migration derive's behavior of producing no AI flags without the
+/// cargo feature.
+#[cfg(not(feature = "ai"))]
+pub(crate) fn ai_args(_headings: Headings) -> Vec<clap::Arg> {
+    Vec::new()
+}
+
+/// Hand-built `--threshold` (deferred from the spec — see
+/// [`options_spec::ai::THRESHOLD`]). Parser + range + error messages come
+/// from [`super::args::ai::parse_threshold`]. The spec records the
+/// identity (id, long, env, default, help, heading) verbatim.
+#[cfg(feature = "ai")]
+fn manual_threshold() -> clap::Arg {
+    use super::args::ai::parse_threshold;
+    clap::Arg::new("threshold")
+        .long("threshold")
+        .value_name("THRESHOLD")
+        .env("WEBFANG_THRESHOLD")
+        .default_value("0.3")
+        .value_parser(parse_threshold)
+        .allow_negative_numbers(true)
+        .help("Relevance threshold for AI semantic filtering (0.0-1.0)")
+        .help_heading("AI Settings")
+}
+
+// ---------------------------------------------------------------------------
+// Obsidian group
+// ---------------------------------------------------------------------------
+
+/// All Obsidian-group args in declaration order — pure spec build.
+pub(crate) fn obsidian_args(headings: Headings) -> Vec<clap::Arg> {
+    options_spec::obsidian::GROUP
+        .iter()
+        .map(|s| build_arg(s, headings))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// TUI group
+// ---------------------------------------------------------------------------
+
+/// All TUI-group args in declaration order — pure spec build.
+pub(crate) fn tui_args(headings: Headings) -> Vec<clap::Arg> {
+    options_spec::tui::GROUP
         .iter()
         .map(|s| build_arg(s, headings))
         .collect()
@@ -407,6 +519,16 @@ mod tests {
             options_spec::export::GROUP.len()
         );
         assert_eq!(crawler_args(Headings::Omitted).len(), CRAWLER_LAYOUT.len());
+        assert_eq!(
+            obsidian_args(Headings::Omitted).len(),
+            options_spec::obsidian::GROUP.len()
+        );
+        assert_eq!(
+            tui_args(Headings::Omitted).len(),
+            options_spec::tui::GROUP.len()
+        );
+        #[cfg(feature = "ai")]
+        assert_eq!(ai_args(Headings::Omitted).len(), AI_LAYOUT.len());
     }
 
     /// Every active spec option must assemble without panicking (runtime heading shape).
@@ -417,6 +539,16 @@ mod tests {
             options_spec::export::GROUP.len()
         );
         assert_eq!(crawler_args(Headings::Applied).len(), CRAWLER_LAYOUT.len());
+        assert_eq!(
+            obsidian_args(Headings::Applied).len(),
+            options_spec::obsidian::GROUP.len()
+        );
+        assert_eq!(
+            tui_args(Headings::Applied).len(),
+            options_spec::tui::GROUP.len()
+        );
+        #[cfg(feature = "ai")]
+        assert_eq!(ai_args(Headings::Applied).len(), AI_LAYOUT.len());
     }
 
     /// A `Uint` default outside any previously-known literal set must
@@ -445,6 +577,7 @@ mod tests {
             heading: None,
             kind: ValueKind::uint_unbounded(),
             feature_gate: None,
+            value_delimiter: None,
         };
         let arg = build_arg(&SYNTH, Headings::Omitted);
         let defaults: Vec<String> = arg
@@ -475,6 +608,20 @@ mod tests {
                 assert_eq!(arg.get_help_heading(), spec.heading, "`{}`", spec.id);
             }
         }
+        for spec in options_spec::obsidian::GROUP {
+            let arg = obsidian_args(Headings::Applied)
+                .into_iter()
+                .find(|a| a.get_id() == spec.id)
+                .unwrap_or_else(|| panic!("obsidian arg `{}` missing", spec.id));
+            assert_eq!(arg.get_help_heading(), spec.heading, "`{}`", spec.id);
+        }
+        for spec in options_spec::tui::GROUP {
+            let arg = tui_args(Headings::Applied)
+                .into_iter()
+                .find(|a| a.get_id() == spec.id)
+                .unwrap_or_else(|| panic!("tui arg `{}` missing", spec.id));
+            assert_eq!(arg.get_help_heading(), spec.heading, "`{}`", spec.id);
+        }
     }
 
     /// The runtime shape carries headings (#932, post-ADR-002): every active
@@ -484,16 +631,41 @@ mod tests {
     /// mapping, this test pins the runtime wiring.
     #[test]
     fn runtime_shape_applies_spec_headings() {
-        for spec in options_spec::export::GROUP
-            .iter()
-            .chain(CRAWLER_LAYOUT.iter().filter_map(|slot| match slot {
-                CrawlerSlot::Spec(s) => Some(*s),
-                CrawlerSlot::Manual(_) => None,
-            }))
-        {
-            let arg = export_args(Headings::Applied)
-                .into_iter()
-                .chain(crawler_args(Headings::Applied))
+        let mut specs: Vec<&'static OptionSpec> = options_spec::export::GROUP.iter().collect();
+        for slot in CRAWLER_LAYOUT.iter() {
+            if let CrawlerSlot::Spec(s) = slot {
+                specs.push(*s);
+            }
+        }
+        specs.extend(options_spec::obsidian::GROUP.iter());
+        specs.extend(options_spec::tui::GROUP.iter());
+        #[cfg(feature = "ai")]
+        for slot in AI_LAYOUT.iter() {
+            if let AiSlot::Spec(s) = slot {
+                specs.push(*s);
+            }
+        }
+
+        let args: Vec<clap::Arg> = export_args(Headings::Applied)
+            .into_iter()
+            .chain(crawler_args(Headings::Applied))
+            .chain(obsidian_args(Headings::Applied))
+            .chain(tui_args(Headings::Applied))
+            .chain({
+                #[cfg(feature = "ai")]
+                {
+                    ai_args(Headings::Applied)
+                }
+                #[cfg(not(feature = "ai"))]
+                {
+                    Vec::new()
+                }
+            })
+            .collect();
+
+        for spec in specs {
+            let arg = args
+                .iter()
                 .find(|a| a.get_id() == spec.id)
                 .unwrap_or_else(|| panic!("runtime arg `{}` missing", spec.id));
             assert_eq!(
@@ -578,5 +750,21 @@ pub(crate) mod extract {
             .get_many::<T>(id)
             .map(|values| values.cloned().collect())
             .unwrap_or_default()
+    }
+
+    /// Optional repeated values (`Option<Vec<T>>` field with `value_delimiter`).
+    /// `None` when the flag was never provided; `Some(vec)` (possibly empty
+    /// after clap splits) when the user typed at least one value. This
+    /// matches the legacy clap-derive semantics for `Option<Vec<String>>`:
+    /// missing flag = `None`, present flag = `Some(Vec)`.
+    pub(crate) fn opt_many<T: Clone + Send + Sync + 'static>(
+        matches: &ArgMatches,
+        id: &str,
+    ) -> Option<Vec<T>> {
+        if matches.value_source(id).is_some() {
+            Some(many::<T>(matches, id))
+        } else {
+            None
+        }
     }
 }

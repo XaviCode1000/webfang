@@ -133,6 +133,11 @@ pub struct OptionSpec {
     /// Cargo feature required for this option to exist (`None` = always).
     /// No export-group option is gated; the seam serves later slices.
     pub feature_gate: Option<&'static str>,
+    /// Optional character that splits a single CLI value into a `Vec` at
+    /// parse time. Present only on flag groups whose surface includes a
+    /// delimiter (slice 5a `obsidian_tags`); every other entry keeps
+    /// `None` so the clap builder stays a pure hand-off from this field.
+    pub value_delimiter: Option<char>,
 }
 
 /// Validation policy for numeric options: the inclusive bounds and the
@@ -233,6 +238,12 @@ impl NumericPolicy {
 pub enum ValueKind {
     /// Free-form string.
     Text,
+    /// Comma-delimited list of strings (`Vec<String>`); clap splits on
+    /// [`OptionSpec::value_delimiter`]. Absent today outside slice 5a's
+    /// `obsidian_tags`, but the kind ships now so any future
+    /// comma-delimited flag (or a delimiter other than `,`) reuses the
+    /// same code path without a spec extension.
+    TextList,
     /// Filesystem path.
     Path,
     /// Boolean switch parsed from `"true"`/`"false"`.
@@ -572,6 +583,12 @@ impl OptionSpec {
             ValueKind::Text | ValueKind::Path => {
                 schema.insert("type".into(), json!("string"));
             },
+            ValueKind::TextList => {
+                schema.insert("type".into(), json!("array"));
+                let mut items = Map::new();
+                items.insert("type".into(), json!("string"));
+                schema.insert("items".into(), Value::Object(items));
+            },
             ValueKind::Bool => {
                 schema.insert("type".into(), json!("boolean"));
             },
@@ -644,6 +661,15 @@ pub mod export;
 
 /// Crawler flag group (ADR-002 slice 2): mirrors `cli::args::CrawlerArgs`.
 pub mod crawler;
+
+/// AI flag group (ADR-002 slice 5a): mirrors `cli::args::AiArgs`.
+pub mod ai;
+
+/// Obsidian flag group (ADR-002 slice 5a): mirrors `cli::args::ObsidianArgs`.
+pub mod obsidian;
+
+/// TUI flag group (ADR-002 slice 5a): mirrors `cli::args::TuiArgs`.
+pub mod tui;
 #[cfg(test)]
 mod tests {
     use super::{crawler, export, schema_object, BoundError, DefaultValue, OptionSpecError};

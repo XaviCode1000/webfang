@@ -30,6 +30,9 @@ use webfang_mcp::mcp_server::schema_bridge::{
 
 const CRAWLER_GROUP: &[OptionSpec] = options_spec::crawler::GROUP;
 const EXPORT_GROUP: &[OptionSpec] = options_spec::export::GROUP;
+const AI_GROUP: &[OptionSpec] = options_spec::ai::GROUP;
+const OBSIDIAN_GROUP: &[OptionSpec] = options_spec::obsidian::GROUP;
+const TUI_GROUP: &[OptionSpec] = options_spec::tui::GROUP;
 
 /// One overlapping MCP parameter: the wire property `wire_name` on `tool`
 /// backed by the OptionsSpec entry `spec_id` inside `group`.
@@ -413,6 +416,60 @@ fn no_group_overlapping_param_escapes_the_parity_table() {
                 name
             );
         }
+    }
+}
+
+/// Slice 5a coverage: the three new groups (AI, Obsidian, TUI) have no
+/// MCP wire counterpart today — they're CLI-only. This test pins two
+/// invariants so a future MCP param addition that overlaps one of these
+/// spec ids fails the test instead of silently shipping a divergent
+/// bound or description:
+///
+/// 1. Every spec id in the three new groups is unique (the existing
+///    `no_group_overlapping_param_escapes_the_parity_table` test would
+///    catch any overlap with a current MCP param; this catches
+///    internal-name collisions in the SSOT itself).
+/// 2. The AI group respects the cargo `ai` feature gate the same way
+///    the spec's `active()` does — without the feature, the spec is
+///    still on disk for parity-table completeness, but the runtime
+///    `ai_args` builder emits zero args (matching the pre-migration
+///    derive's all-fields-cfg-gated behavior).
+#[test]
+fn slice5a_cli_only_groups_cover_their_specs() {
+    // CLI-only groups have no MCP wire overlap; assert no internal id
+    // collision so a future cross-group bridge never aliases two specs.
+    let mut all_new_ids: Vec<&str> = AI_GROUP
+        .iter()
+        .chain(OBSIDIAN_GROUP.iter())
+        .chain(TUI_GROUP.iter())
+        .map(|s| s.id)
+        .collect();
+    all_new_ids.sort_unstable();
+    let before = all_new_ids.len();
+    all_new_ids.dedup();
+    assert_eq!(
+        all_new_ids.len(),
+        before,
+        "duplicate spec id across slice 5a groups"
+    );
+
+    // AI gating: every spec entry in the AI group must carry the `ai`
+    // feature_gate, mirroring the derive's `#[cfg(feature = "ai")]`
+    // duplication. A spec without the gate would render without the
+    // feature, drifting from the runtime.
+    for entry in AI_GROUP {
+        assert_eq!(
+            entry.feature_gate,
+            Some("ai"),
+            "AI spec `{}` must carry feature_gate = Some(\"ai\")",
+            entry.id
+        );
+        assert_eq!(
+            entry.active(),
+            cfg!(feature = "ai"),
+            "AI spec `{}` active() must match the build feature",
+            entry.id
+        );
     }
 }
 

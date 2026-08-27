@@ -31,6 +31,7 @@ pub const URL: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `-s, --selector <SELECTOR>`
@@ -49,6 +50,7 @@ pub const SELECTOR: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--delay-ms <DELAY_MS>` — metadata-only entry: parsing stays with
@@ -69,6 +71,7 @@ pub const DELAY_MS: OptionSpec = OptionSpec {
     kind: ValueKind::uint_unbounded(),
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--max-pages <MAX_PAGES>` — FULLY migrated: bound enforced through
@@ -100,6 +103,7 @@ pub const MAX_PAGES: OptionSpec = OptionSpec {
     ),
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--use-sitemap`
@@ -120,6 +124,7 @@ pub const USE_SITEMAP: OptionSpec = OptionSpec {
         nullable: false,
         description_override: None,
         feature_gate: None,
+    value_delimiter: None,
     };
 
 /// `--sitemap-url <SITEMAP_URL>`
@@ -138,6 +143,7 @@ pub const SITEMAP_URL: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--single-page`
@@ -156,6 +162,7 @@ pub const SINGLE_PAGE: OptionSpec = OptionSpec {
     kind: ValueKind::Bool,
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--resume`
@@ -176,6 +183,7 @@ pub const RESUME: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--state-dir <STATE_DIR>`
@@ -194,6 +202,7 @@ pub const STATE_DIR: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--download-images`
@@ -212,6 +221,7 @@ pub const DOWNLOAD_IMAGES: OptionSpec = OptionSpec {
     kind: ValueKind::Bool,
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--download-documents`
@@ -230,6 +240,7 @@ pub const DOWNLOAD_DOCUMENTS: OptionSpec = OptionSpec {
     kind: ValueKind::Bool,
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--download-assets`
@@ -248,6 +259,7 @@ pub const DOWNLOAD_ASSETS: OptionSpec = OptionSpec {
     kind: ValueKind::Bool,
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--extraction-fingerprint`
@@ -269,6 +281,7 @@ pub const EXTRACTION_FINGERPRINT: OptionSpec = OptionSpec {
         kind: ValueKind::Bool,
         visible_aliases: &[],
         feature_gate: None,
+    value_delimiter: None,
     };
 
 /// `-v, --verbose` — count action; metadata-only (`u8` count has no
@@ -288,6 +301,7 @@ pub const VERBOSE: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `-q, --quiet`
@@ -306,6 +320,7 @@ pub const QUIET: OptionSpec = OptionSpec {
     kind: ValueKind::Bool,
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `-n, --dry-run`
@@ -324,6 +339,7 @@ pub const DRY_RUN: OptionSpec = OptionSpec {
     kind: ValueKind::Bool,
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--trace-file <TRACE_FILE>`
@@ -342,6 +358,7 @@ pub const TRACE_FILE: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--max-depth <MAX_DEPTH>` — slice 4 (#940): enforces the shared cap
@@ -367,6 +384,7 @@ pub const MAX_DEPTH: OptionSpec = OptionSpec {
     )),
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--timeout-secs <TIMEOUT_SECS>` — FULLY migrated: bound enforced
@@ -390,6 +408,7 @@ pub const TIMEOUT_SECS: OptionSpec = OptionSpec {
     )),
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--asset-naming <ASSET_NAMING>`
@@ -410,6 +429,7 @@ pub const ASSET_NAMING: OptionSpec = OptionSpec {
         nullable: false,
         description_override: None,
         feature_gate: None,
+    value_delimiter: None,
     };
 
 /// `--download-concurrency <DOWNLOAD_CONCURRENCY>` — FULLY migrated:
@@ -435,6 +455,7 @@ pub const DOWNLOAD_CONCURRENCY: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--max-retries <MAX_RETRIES>` — metadata-only (no bound today).
@@ -453,6 +474,7 @@ pub const MAX_RETRIES: OptionSpec = OptionSpec {
     kind: ValueKind::uint_unbounded(),
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--backoff-base-ms <BACKOFF_BASE_MS>` — metadata-only (no bound
@@ -472,6 +494,7 @@ pub const BACKOFF_BASE_MS: OptionSpec = OptionSpec {
     kind: ValueKind::uint_unbounded(),
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--backoff-max-ms <BACKOFF_MAX_MS>` — metadata-only (no bound today).
@@ -490,6 +513,7 @@ pub const BACKOFF_MAX_MS: OptionSpec = OptionSpec {
     kind: ValueKind::uint_unbounded(),
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--accept-language <ACCEPT_LANGUAGE>`
@@ -508,6 +532,7 @@ pub const ACCEPT_LANGUAGE: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--user-agent <USER_AGENT>`
@@ -526,6 +551,7 @@ pub const USER_AGENT: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--max-file-size <MAX_FILE_SIZE>` — metadata-only (no bound today).
@@ -544,6 +570,7 @@ pub const MAX_FILE_SIZE: OptionSpec = OptionSpec {
     kind: ValueKind::uint_unbounded(),
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--download-timeout <DOWNLOAD_TIMEOUT>` — metadata-only (no bound
@@ -563,6 +590,7 @@ pub const DOWNLOAD_TIMEOUT: OptionSpec = OptionSpec {
     kind: ValueKind::uint_unbounded(),
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--sitemap-depth <SITEMAP_DEPTH>` — metadata-only (no bound today).
@@ -581,6 +609,7 @@ pub const SITEMAP_DEPTH: OptionSpec = OptionSpec {
     kind: ValueKind::uint_unbounded(),
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--checkpoint-interval <CHECKPOINT_INTERVAL>` — metadata-only (0 =
@@ -600,6 +629,7 @@ pub const CHECKPOINT_INTERVAL: OptionSpec = OptionSpec {
         kind: ValueKind::uint_unbounded(),
         visible_aliases: &[],
         feature_gate: None,
+    value_delimiter: None,
     };
 
 /// `--no-checkpoint`
@@ -618,6 +648,7 @@ pub const NO_CHECKPOINT: OptionSpec = OptionSpec {
         kind: ValueKind::Bool,
         visible_aliases: &[],
         feature_gate: None,
+    value_delimiter: None,
     };
 
 /// `--ignore-robots`
@@ -636,6 +667,7 @@ pub const IGNORE_ROBOTS: OptionSpec = OptionSpec {
     kind: ValueKind::Bool,
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--ignore-waf`
@@ -654,6 +686,7 @@ pub const IGNORE_WAF: OptionSpec = OptionSpec {
     kind: ValueKind::Bool,
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--autoscale`
@@ -672,6 +705,7 @@ pub const AUTOSCALE: OptionSpec = OptionSpec {
     kind: ValueKind::Bool,
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--no-session-health`
@@ -690,6 +724,7 @@ pub const NO_SESSION_HEALTH: OptionSpec = OptionSpec {
     kind: ValueKind::Bool,
     visible_aliases: &[],
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--h2-profile <H2_PROFILE>`
@@ -708,6 +743,7 @@ pub const H2_PROFILE: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--js-strategy <JS_STRATEGY>`
@@ -728,6 +764,7 @@ pub const JS_STRATEGY: OptionSpec = OptionSpec {
         nullable: false,
         description_override: None,
         feature_gate: None,
+    value_delimiter: None,
     };
 
 /// `--obscura-binary <OBSCURA_BINARY>`
@@ -746,6 +783,7 @@ pub const OBSCURA_BINARY: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--dom-preprune` — optional-value bool (`num_args(0..=1)`); the arity
@@ -765,6 +803,7 @@ pub const DOM_PREPRUNE: OptionSpec = OptionSpec {
         kind: ValueKind::Bool,
         visible_aliases: &[],
         feature_gate: None,
+    value_delimiter: None,
     };
 
 /// `--clean-ai` (alias `--ai`) — feature-gated: materializes only under
@@ -785,6 +824,7 @@ pub const CLEAN_AI: OptionSpec = OptionSpec {
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
     feature_gate: Some("ai"),
+    value_delimiter: None,
 };
 
 /// `--adaptive-selectors` — feature-gated under `adaptive-selectors`.
@@ -803,6 +843,7 @@ pub const ADAPTIVE_SELECTORS: OptionSpec = OptionSpec {
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
     feature_gate: Some("adaptive-selectors"),
+    value_delimiter: None,
 };
 
 /// All crawler-group options, in `CrawlerArgs` field-declaration order
