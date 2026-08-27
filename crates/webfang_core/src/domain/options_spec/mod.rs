@@ -662,6 +662,9 @@ pub mod export;
 /// Crawler flag group (ADR-002 slice 2): mirrors `cli::args::CrawlerArgs`.
 pub mod crawler;
 
+/// AI flag group (ADR-002 slice 5a): mirrors `cli::args::AiArgs`.
+pub mod ai;
+
 /// Obsidian flag group (ADR-002 slice 5a): mirrors `cli::args::ObsidianArgs`.
 pub mod obsidian;
 
