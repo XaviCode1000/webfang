@@ -47,28 +47,6 @@ pub fn resolve_default_state_dir() -> PathBuf {
     cache_base.join("webfang").join("state")
 }
 
-/// Resolve the resume state directory, defaulting to the XDG cache path.
-#[allow(dead_code)]
-fn resolve_state_dir(opts: &CrawlOptions) -> PathBuf {
-    opts.crawl
-        .state_dir
-        .clone()
-        .unwrap_or_else(resolve_default_state_dir)
-}
-
-/// Emit `warn!` when `--state-dir` is set without `--resume` (soft-degrade, not error).
-///
-/// Called from the orchestrator before constructing `PersistenceMode`; the domain
-/// resolver also emits the same `warn!` so unit tests capture it via `tracing_test`.
-pub(crate) fn warn_if_state_dir_without_resume(opts: &CrawlOptions) {
-    if opts.crawl.state_dir.is_some() && !opts.crawl.resume {
-        warn!(
-            state_dir = ?opts.crawl.state_dir,
-            "ignoring --state-dir without --resume"
-        );
-    }
-}
-
 /// Apply resume mode filtering via `PersistenceMode`.
 ///
 /// `mode` is the unified control-plane — exhaustive `match` on

@@ -137,7 +137,7 @@ impl Engine {
     /// feed `BudgetModel::build`, so an explicit `--concurrency` /
     /// `--rate-limit-burst` reaches the scheduler spawn bound and rate-limiter
     /// burst instead of being silently replaced by the auto table.
-    fn new(config: CrawlerConfig, ignore_robots: bool) -> Result<Self, CrawlError> {
+    pub(crate) fn new(config: CrawlerConfig, ignore_robots: bool) -> Result<Self, CrawlError> {
         let overrides = config.budget_overrides;
         Self::with_budget(config, ignore_robots, overrides)
     }
@@ -224,7 +224,7 @@ impl Engine {
     ///
     /// Used by `crawl_site` / `crawl_site_with_options` to make the entry-point
     /// tracing span share the same `trace_id` as the engine and all its pages.
-    fn with_correlation_id(mut self, correlation_id: CorrelationId) -> Self {
+    pub(crate) fn with_correlation_id(mut self, correlation_id: CorrelationId) -> Self {
         self.correlation_id = correlation_id;
         self
     }
@@ -947,6 +947,9 @@ impl Engine {
 pub struct EngineOptions {
     /// Path to save checkpoint files. `None` disables checkpointing.
     pub checkpoint_path: Option<PathBuf>,
+    /// Pages between checkpoint saves (0 = disabled, but `checkpoint_path` None already disables).
+    /// Defaults to 100 for backward compat; `PersistenceMode` overrides via `checkpoint_interval`.
+    pub checkpoint_interval: u64,
     /// Enable the domain session pool for per-domain rate limiting.
     pub session_pool_enabled: bool,
     /// Skip robots.txt enforcement.
@@ -981,6 +984,7 @@ impl Default for EngineOptions {
     fn default() -> Self {
         Self {
             checkpoint_path: None,
+            checkpoint_interval: 100,
             session_pool_enabled: false,
             ignore_robots: false,
             js_strategy: JsStrategy::default(),
@@ -1189,9 +1193,9 @@ async fn crawl_site_with_options_inner(
     let mut engine =
         Engine::new(config, options.ignore_robots)?.with_correlation_id(correlation_id);
 
-    // Apply checkpoint if path provided
+    // Apply checkpoint if path provided — interval from options (PersistenceMode), not hardcoded.
     if let Some(ref path) = options.checkpoint_path {
-        engine = engine.with_checkpoint(100, path.clone());
+        engine = engine.with_checkpoint(options.checkpoint_interval, path.clone());
     }
 
     // Apply session pool if enabled

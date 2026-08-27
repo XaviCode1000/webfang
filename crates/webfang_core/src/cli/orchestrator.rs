@@ -14,6 +14,7 @@ use crate::cli::parse::parse_asset_naming;
 use crate::cli::scrape_flow::{apply_resume_mode, scrape_urls};
 use crate::cli::url_discovery::{discover_urls, discover_urls_recursive};
 use crate::domain::http_config::HttpClientConfig;
+use crate::domain::persistence::PersistenceMode;
 use crate::CrawlerConfig;
 use crate::ScraperConfig;
 
@@ -136,16 +137,18 @@ pub async fn run(
         "run identity"
     );
 
-    let prepare = match prepare_phase(&opts).await {
+    // PersistenceMode unified control-plane — pure resolver with default dir.
+    // Built BEFORE prepare_phase so discovery Engine can be wired with
+    // `with_persistence` (checkpoint interval flows from the mode, not hardcoded).
+    let default_state_dir = crate::cli::scrape_flow::resolve_default_state_dir();
+    let persistence_mode = opts.crawl.persistence_mode(&default_state_dir);
+
+    let prepare = match prepare_phase(&opts, &persistence_mode).await {
         Err(e) => return e,
         Ok(p) => p,
     };
 
     let discovered_count = prepare.urls_to_scrape.len();
-    // PersistenceMode unified control-plane — pure resolver with default dir.
-    crate::cli::scrape_flow::warn_if_state_dir_without_resume(&opts);
-    let default_state_dir = crate::cli::scrape_flow::resolve_default_state_dir();
-    let persistence_mode = opts.crawl.persistence_mode(&default_state_dir);
     let (urls_to_scrape, state_store) = match apply_resume_mode(
         prepare.urls_to_scrape,
         &persistence_mode,
@@ -479,7 +482,10 @@ fn build_crawler_config_for_discovery(
 /// Returns the initial `ScraperConfig` (before asset/download wiring) and
 /// the list of URLs to scrape.  On discovery failure, returns the
 /// appropriate `CliExit` error.
-async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
+async fn prepare_phase(
+    opts: &CrawlOptions,
+    persistence_mode: &PersistenceMode,
+) -> Result<PrepareResult, CliExit> {
     let urls_to_scrape = if opts.crawl.single_page {
         plan_urls(true, false, opts.url.clone(), Vec::new())
     } else {
@@ -524,12 +530,9 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
             // Recursive BFS discovery respects max_depth/max_pages/robots/
             // patterns; the existing scrape_phase + export_phase still own
             // content extraction and on-disk output.
-            match discover_urls_recursive(crawler_config, opts).await {
-                Err(e) => {
-                    return Err(CliExit::NetworkError(format!("URL discovery failed: {e}")));
-                },
-                Ok(urls) => urls,
-            }
+            let discovered_urls =
+                discover_recursive_with_persistence(crawler_config, opts, persistence_mode).await?;
+            discovered_urls
         };
 
         plan_urls(
@@ -613,6 +616,37 @@ struct PrepareResult {
     urls_to_scrape: Vec<url::Url>,
     scraper_config: ScraperConfig,
     shared_downloader: Option<std::sync::Arc<crate::adapters::downloader::Downloader>>,
+}
+
+/// Recursive discovery wired to PersistenceMode.
+///
+/// When the mode enables checkpointing (`Checkpoint` or `Full`), the Engine is
+/// constructed with `with_persistence` so `crawl_checkpoint.json` is created
+/// and the checkpoint interval flows from the mode (not hardcoded 100).
+/// `Disabled` and `Resume` fall back to the non-persistent helper.
+async fn discover_recursive_with_persistence(
+    crawler_config: CrawlerConfig,
+    opts: &CrawlOptions,
+    persistence_mode: &PersistenceMode,
+) -> Result<Vec<url::Url>, CliExit> {
+    if persistence_mode.checkpoint_cfg().is_some() {
+        let mut engine = crate::application::crawler::engine::Engine::new(
+            crawler_config,
+            opts.crawl.ignore_robots,
+        )
+        .map_err(|e| CliExit::NetworkError(format!("URL discovery failed: {e}")))?
+        .with_persistence(persistence_mode.clone());
+        let result = engine
+            .run()
+            .await
+            .map_err(|e| CliExit::NetworkError(format!("URL discovery failed: {e}")))?;
+        engine.shutdown().await;
+        Ok(result.urls.into_iter().map(|d| d.url).collect())
+    } else {
+        discover_urls_recursive(crawler_config, opts)
+            .await
+            .map_err(|e| CliExit::NetworkError(format!("URL discovery failed: {e}")))
+    }
 }
 
 /// Run the scraping loop over all URLs with progress events.
@@ -2238,7 +2272,9 @@ mod tests {
             ..Default::default()
         };
 
-        let result = prepare_phase(&opts).await;
+        let default_state_dir = crate::cli::scrape_flow::resolve_default_state_dir();
+        let persistence_mode = opts.crawl.persistence_mode(&default_state_dir);
+        let result = prepare_phase(&opts, &persistence_mode).await;
         assert!(
             result.is_ok(),
             "prepare_phase must succeed: {:?}",
