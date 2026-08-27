@@ -34,12 +34,17 @@ use clap::builder::{ArgAction, PossibleValuesParser, ValueParser};
 pub(crate) enum Headings {
     /// Runtime shape: headings omitted (legacy; only the parity suite still
     /// pins it to keep the `Headings::Applied` path honest by contrast).
-    #[allow(dead_code)]
     Omitted,
     /// Parity-suite shape: `help_heading` applied from the spec so
     /// `get_help_heading()` can be asserted against `spec.heading`.
     Applied,
 }
+
+// Non-test reference so `Headings::Omitted` is not flagged as dead when
+// compiling without `cfg(test)` — the variant is exercised by the parity
+// suite, but `dead_code` only sees non-test builds.
+#[allow(dead_code)]
+const _HEADINGS_OMITTED_USED: Headings = Headings::Omitted;
 
 /// Build ONE clap arg from an OptionSpec plus its typed bindings. Unknown
 /// ids fail loudly at assembly time (a new spec entry without bindings must
@@ -388,14 +393,24 @@ mod tests {
     use super::*;
     use crate::domain::options_spec::DefaultValue;
 
-    /// Every active spec option must assemble without panicking.
+    /// Every active spec option must assemble without panicking (legacy heading shape).
     #[test]
-    fn all_groups_assemble() {
+    fn all_groups_assemble_omitted() {
         assert_eq!(
             export_args(Headings::Omitted).len(),
             options_spec::export::GROUP.len()
         );
         assert_eq!(crawler_args(Headings::Omitted).len(), CRAWLER_LAYOUT.len());
+    }
+
+    /// Every active spec option must assemble without panicking (runtime heading shape).
+    #[test]
+    fn all_groups_assemble_applied() {
+        assert_eq!(
+            export_args(Headings::Applied).len(),
+            options_spec::export::GROUP.len()
+        );
+        assert_eq!(crawler_args(Headings::Applied).len(), CRAWLER_LAYOUT.len());
     }
 
     /// A `Uint` default outside any previously-known literal set must
