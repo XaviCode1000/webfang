@@ -644,6 +644,9 @@ pub mod export;
 
 /// Crawler flag group (ADR-002 slice 2): mirrors `cli::args::CrawlerArgs`.
 pub mod crawler;
+
+/// TUI flag group (ADR-002 slice 5a): mirrors `cli::args::TuiArgs`.
+pub mod tui;
 #[cfg(test)]
 mod tests {
     use super::{crawler, export, schema_object, BoundError, DefaultValue, OptionSpecError};

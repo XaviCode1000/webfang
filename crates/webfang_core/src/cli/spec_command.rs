@@ -216,6 +216,18 @@ pub(crate) fn export_args(headings: Headings) -> Vec<clap::Arg> {
 }
 
 // ---------------------------------------------------------------------------
+// TUI group
+// ---------------------------------------------------------------------------
+
+/// All TUI-group args in declaration order — pure spec build.
+pub(crate) fn tui_args(headings: Headings) -> Vec<clap::Arg> {
+    options_spec::tui::GROUP
+        .iter()
+        .map(|s| build_arg(s, headings))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Crawler group
 // ---------------------------------------------------------------------------
 
