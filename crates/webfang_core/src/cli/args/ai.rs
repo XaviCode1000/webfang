@@ -293,9 +293,9 @@ mod spec_parity_tests {
     }
 
     /// Slice 5a pin: the hand-built `threshold` slot's surface stays
-    /// byte-exact against the pre-migration derive: custom f32 parser
-    /// + range check + verbatim Spanish error messages + the
-    /// `allow_negative_numbers = true` escape hatch (#759, range 0.0..=1.0).
+    /// byte-exact against the pre-migration derive. Custom f32 parser
+    /// plus range check plus verbatim Spanish error messages plus the
+    /// `allow_negative_numbers` escape hatch (#759, range 0.0..=1.0).
     #[test]
     fn manual_threshold_surface_is_pinned() {
         let args = command_args();
@@ -337,10 +337,7 @@ mod spec_parity_tests {
         //   `'{s}' está fuera de rango (rango válido: 0.0 a 1.0)` on range
         // Both messages must round-trip through the spec-built command.
         let err = parse_args(&["--threshold", "abc"]).expect_err("non-numeric rejected");
-        assert!(
-            err.contains("'abc' no es un número válido"),
-            "got: {err}"
-        );
+        assert!(err.contains("'abc' no es un número válido"), "got: {err}");
 
         let err = parse_args(&["--threshold", "1.5"]).expect_err("above range rejected");
         assert!(

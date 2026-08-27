@@ -12,7 +12,9 @@ pub struct TuiArgs {
 
 impl clap::FromArgMatches for TuiArgs {
     fn from_arg_matches(m: &clap::ArgMatches) -> Result<Self, clap::Error> {
-        Ok(Self { tui: m.get_flag("tui") })
+        Ok(Self {
+            tui: m.get_flag("tui"),
+        })
     }
 
     fn update_from_arg_matches(&mut self, m: &clap::ArgMatches) -> Result<(), clap::Error> {

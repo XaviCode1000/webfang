@@ -185,7 +185,11 @@ mod spec_parity_tests {
         assert!(parsed.obsidian.obsidian_wiki_links);
         assert_eq!(
             parsed.obsidian.obsidian_tags,
-            Some(vec!["rust".to_string(), "cargo".to_string(), "docs".to_string()])
+            Some(vec![
+                "rust".to_string(),
+                "cargo".to_string(),
+                "docs".to_string()
+            ])
         );
         assert!(parsed.obsidian.obsidian_relative_assets);
         assert_eq!(

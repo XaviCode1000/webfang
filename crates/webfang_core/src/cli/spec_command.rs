@@ -512,8 +512,14 @@ mod tests {
             options_spec::export::GROUP.len()
         );
         assert_eq!(crawler_args(Headings::Omitted).len(), CRAWLER_LAYOUT.len());
-        assert_eq!(obsidian_args(Headings::Omitted).len(), options_spec::obsidian::GROUP.len());
-        assert_eq!(tui_args(Headings::Omitted).len(), options_spec::tui::GROUP.len());
+        assert_eq!(
+            obsidian_args(Headings::Omitted).len(),
+            options_spec::obsidian::GROUP.len()
+        );
+        assert_eq!(
+            tui_args(Headings::Omitted).len(),
+            options_spec::tui::GROUP.len()
+        );
         #[cfg(feature = "ai")]
         assert_eq!(ai_args(Headings::Omitted).len(), AI_LAYOUT.len());
     }
@@ -526,8 +532,14 @@ mod tests {
             options_spec::export::GROUP.len()
         );
         assert_eq!(crawler_args(Headings::Applied).len(), CRAWLER_LAYOUT.len());
-        assert_eq!(obsidian_args(Headings::Applied).len(), options_spec::obsidian::GROUP.len());
-        assert_eq!(tui_args(Headings::Applied).len(), options_spec::tui::GROUP.len());
+        assert_eq!(
+            obsidian_args(Headings::Applied).len(),
+            options_spec::obsidian::GROUP.len()
+        );
+        assert_eq!(
+            tui_args(Headings::Applied).len(),
+            options_spec::tui::GROUP.len()
+        );
         #[cfg(feature = "ai")]
         assert_eq!(ai_args(Headings::Applied).len(), AI_LAYOUT.len());
     }
