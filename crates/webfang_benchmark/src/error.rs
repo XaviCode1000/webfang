@@ -3,6 +3,11 @@
 //! One enum for the whole leaf crate: no downstream consumers need granular
 //! matching yet, and repo discipline forbids `anyhow` and `.unwrap()`/
 //! `.expect()` outside tests in non-test code.
+//!
+//! Error text in this crate is deliberately written in English:
+//! `webfang_benchmark` is internal developer tooling, not product surface.
+//! The AGENTS.md rule "user-facing errors in Spanish" applies to the product
+//! CLI surface (`webfang_cli`), not to this harness.
 
 /// Errors produced anywhere in the harness pipeline.
 #[derive(Debug, thiserror::Error)]
