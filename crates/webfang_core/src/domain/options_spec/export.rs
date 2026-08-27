@@ -18,6 +18,7 @@ pub const OUTPUT: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `-f, --format <FORMAT>`
@@ -40,6 +41,7 @@ pub const FORMAT: OptionSpec = OptionSpec {
         nullable: false,
         description_override: None,
         feature_gate: None,
+    value_delimiter: None,
     };
 
 /// `--export-format <EXPORT_FORMAT>` (alias `--export`)
@@ -60,6 +62,7 @@ pub const EXPORT_FORMAT: OptionSpec = OptionSpec {
         nullable: false,
         description_override: None,
         feature_gate: None,
+    value_delimiter: None,
     };
 
 /// `--cpu-cores <CPU_CORES>`
@@ -78,6 +81,7 @@ pub const CPU_CORES: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--ram-budget <RAM_BUDGET>`
@@ -105,6 +109,7 @@ pub const RAM_BUDGET: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--db-path <DB_PATH>`
@@ -123,6 +128,7 @@ pub const DB_PATH: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--elastic`
@@ -141,6 +147,7 @@ pub const ELASTIC: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--output-vectors <OUTPUT_VECTORS>`
@@ -160,6 +167,7 @@ pub const OUTPUT_VECTORS: OptionSpec = OptionSpec {
         nullable: false,
         description_override: None,
         feature_gate: None,
+    value_delimiter: None,
     };
 
 /// `--batch`
@@ -178,6 +186,7 @@ pub const BATCH: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--batch-file <BATCH_FILE>`
@@ -196,6 +205,7 @@ pub const BATCH_FILE: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--batch-concurrency <BATCH_CONCURRENCY>`
@@ -214,6 +224,7 @@ pub const BATCH_CONCURRENCY: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--pipeline`
@@ -232,6 +243,7 @@ pub const PIPELINE: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// `--pipeline-output <PIPELINE_OUTPUT>`
@@ -252,6 +264,7 @@ pub const PIPELINE_OUTPUT: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// All export-group options, in `ExportArgs` field-declaration order.

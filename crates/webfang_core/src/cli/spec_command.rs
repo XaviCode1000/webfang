@@ -67,6 +67,9 @@ fn build_arg(spec: &'static OptionSpec, headings: Headings) -> clap::Arg {
     if let Some(env) = spec.env {
         arg = arg.env(env);
     }
+    if let Some(delimiter) = spec.value_delimiter {
+        arg = arg.value_delimiter(delimiter);
+    }
     if let Some(default) = spec.default {
         // `DefaultValue` already implements `Display` (see `options_spec::mod`)
         // — that is the canonical string form for every variant, including any
@@ -106,6 +109,16 @@ fn build_arg(spec: &'static OptionSpec, headings: Headings) -> clap::Arg {
             arg.value_parser(parser)
         },
         ValueKind::Text => arg.value_parser(clap::value_parser!(String)),
+        ValueKind::TextList => {
+            // Comma-delimited list: parser stays `String` and the
+            // `value_delimiter` (applied above from `spec.value_delimiter`)
+            // makes `get_many::<String>` return the split values. Binding
+            // the parser to `Vec<String>` is NOT supported by clap 4's
+            // `value_parser!` macro; the splitter is the integration
+            // point. The `FromArgMatches` consumer reads via
+            // [`extract::opt_many`] / [`extract::many`].
+            arg.value_parser(clap::value_parser!(String))
+        },
         ValueKind::Path => arg.value_parser(clap::value_parser!(std::path::PathBuf)),
         ValueKind::Uint { .. } | ValueKind::MemorySize { .. } => {
             let parser = numeric_binding(spec.id).unwrap_or_else(|| {
@@ -210,6 +223,18 @@ fn numeric_binding(id: &str) -> Option<ValueParser> {
 /// All export-group args in declaration order — pure spec build.
 pub(crate) fn export_args(headings: Headings) -> Vec<clap::Arg> {
     options_spec::export::GROUP
+        .iter()
+        .map(|s| build_arg(s, headings))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Obsidian group
+// ---------------------------------------------------------------------------
+
+/// All Obsidian-group args in declaration order — pure spec build.
+pub(crate) fn obsidian_args(headings: Headings) -> Vec<clap::Arg> {
+    options_spec::obsidian::GROUP
         .iter()
         .map(|s| build_arg(s, headings))
         .collect()
@@ -457,6 +482,7 @@ mod tests {
             heading: None,
             kind: ValueKind::uint_unbounded(),
             feature_gate: None,
+            value_delimiter: None,
         };
         let arg = build_arg(&SYNTH, Headings::Omitted);
         let defaults: Vec<String> = arg
@@ -590,5 +616,21 @@ pub(crate) mod extract {
             .get_many::<T>(id)
             .map(|values| values.cloned().collect())
             .unwrap_or_default()
+    }
+
+    /// Optional repeated values (`Option<Vec<T>>` field with `value_delimiter`).
+    /// `None` when the flag was never provided; `Some(vec)` (possibly empty
+    /// after clap splits) when the user typed at least one value. This
+    /// matches the legacy clap-derive semantics for `Option<Vec<String>>`:
+    /// missing flag = `None`, present flag = `Some(Vec)`.
+    pub(crate) fn opt_many<T: Clone + Send + Sync + 'static>(
+        matches: &ArgMatches,
+        id: &str,
+    ) -> Option<Vec<T>> {
+        if matches.value_source(id).is_some() {
+            Some(many::<T>(matches, id))
+        } else {
+            None
+        }
     }
 }

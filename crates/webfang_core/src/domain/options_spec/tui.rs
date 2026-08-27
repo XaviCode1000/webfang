@@ -23,6 +23,7 @@ pub const TUI: OptionSpec = OptionSpec {
     nullable: false,
     description_override: None,
     feature_gate: None,
+    value_delimiter: None,
 };
 
 /// All TUI-group options, in `TuiArgs` field-declaration order.
