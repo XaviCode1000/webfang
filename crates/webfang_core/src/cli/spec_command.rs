@@ -117,7 +117,14 @@ fn build_arg(spec: &'static OptionSpec, headings: Headings) -> clap::Arg {
             // `value_parser!` macro; the splitter is the integration
             // point. The `FromArgMatches` consumer reads via
             // [`extract::opt_many`] / [`extract::many`].
-            arg.value_parser(clap::value_parser!(String))
+            //
+            // Action MUST be `Append`: the source `Option<Vec<String>>` /
+            // `Vec<String>` derive resolves to `ArgAction::Append`
+            // (clap_derive `Ty::OptionVec`), so repeated `--flag a --flag b`
+            // appends rather than overwriting. `Set` (the arg default)
+            // would keep only the last occurrence and silently drop values.
+            arg.action(ArgAction::Append)
+                .value_parser(clap::value_parser!(String))
         },
         ValueKind::Path => arg.value_parser(clap::value_parser!(std::path::PathBuf)),
         ValueKind::Uint { .. } | ValueKind::MemorySize { .. } => {

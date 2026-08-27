@@ -63,10 +63,13 @@ pub const OBSIDIAN_RELATIVE_ASSETS: OptionSpec = OptionSpec {
 };
 
 /// `--vault <VAULT>` — env `WEBFANG_OBSIDIAN_VAULT`. Byte-exact
-/// transcription of clap's rendering of the multi-line doc comment: outer
-/// paragraphs are joined with single spaces and only the final period is
-/// stripped. The `#762` note travels with the help text so the MCP wire
-/// description stays anchored to the same source of truth.
+/// transcription of clap's rendering of the multi-line doc comment. clap 4.6's
+/// derive (default, non-`unstable-markdown` path) sets `long_help` to the raw
+/// doc lines joined with `\n` — it does NOT collapse paragraphs or strip the
+/// trailing period — so the multi-line block (blank line between paragraphs,
+/// wrapped inner lines, final period) must be reproduced verbatim. The `#762`
+/// note travels with the help text so the MCP wire description stays anchored
+/// to the same source of truth.
 pub const VAULT: OptionSpec = OptionSpec {
     id: "vault",
     value_name: "VAULT",
@@ -75,7 +78,7 @@ pub const VAULT: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_OBSIDIAN_VAULT"),
     default: None,
-    help: "Path to Obsidian vault (auto-detects if not provided). When provided explicitly, the vault becomes the output base: Markdown, downloaded assets and the RAG export are written inside it — no need to duplicate the path in `-o` (which then must stay at its default). Auto-detected or config-file vaults do NOT redirect output (#762)",
+    help: "Path to Obsidian vault (auto-detects if not provided).\n\nWhen provided explicitly, the vault becomes the output base: Markdown,\ndownloaded assets and the RAG export are written inside it — no need\nto duplicate the path in `-o` (which then must stay at its default).\nAuto-detected or config-file vaults do NOT redirect output (#762).",
     heading: Some("Obsidian"),
     kind: ValueKind::Path,
     visible_aliases: &[],

@@ -217,6 +217,17 @@ mod spec_parity_tests {
                         s.id
                     );
                 },
+                // `obsidian_tags` is the first `TextList` entry: the source
+                // `Option<Vec<String>>` derive resolves to `ArgAction::Append`
+                // (clap_derive `Ty::OptionVec`), so repeated `--obsidian-tags`
+                // occurrences append. The spec builder mirrors that exactly.
+                spec::ValueKind::TextList => {
+                    assert!(
+                        matches!(arg.get_action(), clap::ArgAction::Append),
+                        "text list `{}` must use Append",
+                        s.id
+                    );
+                },
                 _ => {
                     assert!(
                         matches!(arg.get_action(), clap::ArgAction::Set),
