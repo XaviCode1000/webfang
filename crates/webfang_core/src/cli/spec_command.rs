@@ -551,6 +551,35 @@ mod tests {
         assert_eq!(ai_args(Headings::Applied).len(), AI_LAYOUT.len());
     }
 
+    #[test]
+    #[cfg(not(feature = "ai"))]
+    fn ai_args_is_empty_without_feature() {
+        assert!(
+            ai_args(Headings::Omitted).is_empty(),
+            "ai_args must be empty without feature (Omitted)"
+        );
+        assert!(
+            ai_args(Headings::Applied).is_empty(),
+            "ai_args must be empty without feature (Applied)"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "ai")]
+    fn ai_args_has_four_entries_with_feature() {
+        assert_eq!(
+            ai_args(Headings::Omitted).len(),
+            4,
+            "ai_args must have 4 entries with feature (Omitted)"
+        );
+        assert_eq!(
+            ai_args(Headings::Applied).len(),
+            4,
+            "ai_args must have 4 entries with feature (Applied)"
+        );
+        assert_eq!(AI_LAYOUT.len(), 4, "AI_LAYOUT must have 4 slots");
+    }
+
     /// A `Uint` default outside any previously-known literal set must
     /// assemble without panicking — the clap `default_value` path derives
     /// the string from `DefaultValue::Display`, not a hard-coded arm table.
