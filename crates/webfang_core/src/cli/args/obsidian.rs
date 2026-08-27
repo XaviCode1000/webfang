@@ -200,6 +200,54 @@ mod spec_parity_tests {
         assert!(parsed.obsidian.obsidian_rich_metadata);
     }
 
+    /// End-to-end coverage for `ValueKind::TextList` (`obsidian_tags`).
+    /// The structural pin (line ~221) only asserts the action is `Append`,
+    /// not that the append actually appends: a future contributor who
+    /// correctly sets the action but breaks the value-name binding or
+    /// silently drops the `value_delimiter` would slip through. This test
+    /// closes that class of gap (the same one that allowed the original
+    /// `Set` vs `Append` bug to escape the spec↔clap self-compare).
+    #[test]
+    fn text_list_repeated_invocations_append_end_to_end() {
+        // Two repeated single-token invocations: each occurrence must
+        // append, not overwrite. Under the broken `Set` action this would
+        // collapse to `Some(vec!["b".to_string()])`.
+        let parsed = parse_args_hermetic(&["--obsidian-tags", "a", "--obsidian-tags", "b"])
+            .expect("repeated `--obsidian-tags` must parse");
+        assert_eq!(
+            parsed.obsidian.obsidian_tags,
+            Some(vec!["a".to_string(), "b".to_string()]),
+            "ArgAction::Append must keep both occurrences"
+        );
+
+        // Three repeated invocations, all single tokens.
+        let parsed = parse_args_hermetic(&[
+            "--obsidian-tags",
+            "a",
+            "--obsidian-tags",
+            "b",
+            "--obsidian-tags",
+            "c",
+        ])
+        .expect("three repeated `--obsidian-tags` must parse");
+        assert_eq!(
+            parsed.obsidian.obsidian_tags,
+            Some(vec!["a".to_string(), "b".to_string(), "c".to_string()])
+        );
+
+        // Single comma-delimited invocation: the `value_delimiter = ','`
+        // splits it. (This is the path the existing
+        // `representative_values_parse_identically_through_clap` covers;
+        // included here so the test fails loudly if either side of the
+        // append/delimiter contract drifts.)
+        let parsed = parse_args_hermetic(&["--obsidian-tags", "x,y,z"])
+            .expect("comma-delimited `--obsidian-tags` must parse");
+        assert_eq!(
+            parsed.obsidian.obsidian_tags,
+            Some(vec!["x".to_string(), "y".to_string(), "z".to_string()])
+        );
+    }
+
     /// Slice 5a pin: structural clap surface the spec-driven builder must
     /// reproduce byte-for-byte. `obsidian_tags` is the first entry that
     /// uses `value_delimiter = ','`, so its delimiter must round-trip
