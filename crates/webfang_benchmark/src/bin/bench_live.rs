@@ -32,9 +32,13 @@ fn main() -> ExitCode {
 fn run() -> Result<()> {
     let parsed = competitor::parse_bench_live_args(std::env::args().skip(1))?;
 
-    // Fail-closed gate: env key presence + explicit CLI opt-in. Nothing below
-    // executes unless both hold.
-    competitor::evaluate_live_gate(parsed.target, parsed.opt_in)?;
+    // The provider key is read ONCE and threaded through: it feeds both the
+    // fail-closed gate and the adapter request preparation below.
+    let api_key = std::env::var(parsed.target.env_var()).ok();
+
+    // Fail-closed gate: non-blank env key + explicit CLI opt-in. Nothing
+    // below executes unless both hold.
+    competitor::evaluate_live_gate(parsed.target, api_key.as_deref(), parsed.opt_in)?;
 
     // Step 0 guards: plan the pass (budget + concurrency clamp + pacing) and
     // refuse typed BEFORE preparing or sending anything. Firecrawl is metered
@@ -64,7 +68,6 @@ fn run() -> Result<()> {
         target_url: String::new(),
         page_limit: 0,
     };
-    let api_key = std::env::var(parsed.target.env_var()).ok();
 
     let outcome = match parsed.target {
         CompetitorTarget::Firecrawl => block_on(competitor::firecrawl::run(
@@ -79,9 +82,12 @@ fn run() -> Result<()> {
             api_key.as_deref(),
             parsed.opt_in,
         )),
-    }?;
+    }??;
 
-    println!("live run completed");
+    // `??` flattens block_on's runtime-construction Result plus the adapter's
+    // own Result, so the adapter's typed deferral error propagates to main.
+    // Success is unreachable in this deferred build; the binding keeps the Ok
+    // arm honest for the slice that wires real execution.
     drop(outcome);
     Ok(())
 }
