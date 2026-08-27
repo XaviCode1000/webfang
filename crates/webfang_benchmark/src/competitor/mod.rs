@@ -93,14 +93,20 @@ pub fn check_live_gate(
     })
 }
 
-/// Convenience wrapper reading key presence from the process environment.
+/// Convenience wrapper gating on an already-read key value, so callers read
+/// the provider environment variable exactly once and thread it through.
 ///
 /// # Errors
 ///
-/// [`BenchmarkError::LiveDisabled`] unless the env var is non-empty AND
+/// [`BenchmarkError::LiveDisabled`] unless the key is non-blank AND
 /// `opt_in_flag` is true.
-pub fn evaluate_live_gate(target: CompetitorTarget, opt_in_flag: bool) -> Result<()> {
-    check_live_gate(target, env_key_present(target.env_var()), opt_in_flag)
+pub fn evaluate_live_gate(
+    target: CompetitorTarget,
+    api_key: Option<&str>,
+    opt_in_flag: bool,
+) -> Result<()> {
+    let key_present = api_key.map(str::trim).is_some_and(|key| !key.is_empty());
+    check_live_gate(target, key_present, opt_in_flag)
 }
 
 /// Parsed `bench_live` invocation (validated, gate-ready).
@@ -211,11 +217,6 @@ pub fn parse_bench_live_args(cli_args: impl Iterator<Item = String>) -> Result<B
         max_credits,
         concurrency,
     })
-}
-
-/// True iff `env_var` is set to a non-empty, non-whitespace value.
-pub(crate) fn env_key_present(env_var: &str) -> bool {
-    std::env::var_os(env_var).is_some_and(|value| !value.to_string_lossy().trim().is_empty())
 }
 
 /// A fully-built HTTP request description.

@@ -61,6 +61,33 @@ fn header_contains_assumption_sources_verbatim() {
     }
 }
 
+/// AC-4.1 — the header also renders the Firecrawl tier figures and the
+/// Crawl4AI sizing note verbatim; dropping either field from the header
+/// breaks this test.
+#[test]
+fn header_contains_tier_figures_and_sizing_note_verbatim() {
+    let config = CostConfig::default();
+    let out = rendered();
+    let tier_figures = format!(
+        "credit tiers ${:.0}/${:.0}/${:.0} for {:.0}/{:.0}/{:.0} credits",
+        config.firecrawl.tier_usd[0],
+        config.firecrawl.tier_usd[1],
+        config.firecrawl.tier_usd[2],
+        config.firecrawl.tier_credits[0],
+        config.firecrawl.tier_credits[1],
+        config.firecrawl.tier_credits[2],
+    );
+    assert!(
+        out.contains(&tier_figures),
+        "header must contain `{tier_figures}` verbatim"
+    );
+    assert!(
+        out.contains(config.crawl4ai.sizing_note),
+        "header must contain sizing note `{}` verbatim",
+        config.crawl4ai.sizing_note
+    );
+}
+
 /// AC-5.2 — every Tier A row carries its honest label; mixing is forbidden.
 #[test]
 fn tier_a_rows_are_labeled_simulated_challenge_corpus() {
