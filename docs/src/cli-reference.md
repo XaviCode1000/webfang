@@ -363,8 +363,8 @@ Output:
           [env: WEBFANG_OUTPUT=]
           [default: output]
 
-  -f, --content-format <FORMAT>
-          Output format for individual files (markdown, text, json) NOTE: For RAG pipeline export, use --pipeline-format instead
+  -f, --format <FORMAT>
+          Output format for individual files (markdown, text, json) NOTE: For RAG pipeline export, use --export-format instead
 
           Possible values:
           - markdown: Markdown format with YAML frontmatter (recommended for RAG)
@@ -374,8 +374,8 @@ Output:
           [env: WEBFANG_FORMAT=]
           [default: markdown]
 
-      --pipeline-format <EXPORT_FORMAT>
-          Export format for RAG pipeline (jsonl, vector, auto) NOTE: Use --content-format for output file format (markdown, text, json)
+      --export-format <EXPORT_FORMAT>
+          Export format for RAG pipeline (jsonl, vector, auto) NOTE: Use --format for output file format (markdown, text, json)
 
           Possible values:
           - jsonl:  JSONL format (JSON Lines - one JSON object per line) Optimal for RAG pipelines and vector database ingestion
