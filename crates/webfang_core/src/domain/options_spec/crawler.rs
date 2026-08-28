@@ -613,7 +613,7 @@ pub const SITEMAP_DEPTH: OptionSpec = OptionSpec {
 };
 
 /// `--checkpoint-interval <CHECKPOINT_INTERVAL>` — metadata-only (0 =
-/// disabled by design, no bound today).
+/// disabled by design, no bound today). Unified via `PersistenceMode` with `--resume`.
 pub const CHECKPOINT_INTERVAL: OptionSpec = OptionSpec {
         id: "checkpoint_interval",
         value_name: "CHECKPOINT_INTERVAL",
@@ -624,7 +624,7 @@ pub const CHECKPOINT_INTERVAL: OptionSpec = OptionSpec {
         default: Some(DefaultValue::Uint(100)),
         nullable: false,
         description_override: None,
-        help: "Pages between automatic checkpoint saves (0 = disabled) NOTE: Checkpoint is for programmatic use (Engine API) only. CLI --resume uses StateStore instead of checkpoints",
+        help: "Pages between automatic checkpoint saves (0 = disabled) — unified via PersistenceMode with --resume (Checkpoint/Full when enabled)",
         heading: Some("Competitive Features"),
         kind: ValueKind::uint_unbounded(),
         visible_aliases: &[],
@@ -632,7 +632,7 @@ pub const CHECKPOINT_INTERVAL: OptionSpec = OptionSpec {
     value_delimiter: None,
     };
 
-/// `--no-checkpoint`
+/// `--no-checkpoint` — unified via `PersistenceMode`.
 pub const NO_CHECKPOINT: OptionSpec = OptionSpec {
         id: "no_checkpoint",
         value_name: "NO_CHECKPOINT",
@@ -643,7 +643,7 @@ pub const NO_CHECKPOINT: OptionSpec = OptionSpec {
         default: Some(DefaultValue::Bool(false)),
         nullable: false,
         description_override: None,
-        help: "Disable checkpoint persistence entirely NOTE: Checkpoint is for programmatic use (Engine API) only. CLI --resume uses StateStore instead of checkpoints",
+        help: "Disable checkpoint persistence entirely — PersistenceMode disables checkpoint (Resume only when combined with --resume)",
         heading: Some("Competitive Features"),
         kind: ValueKind::Bool,
         visible_aliases: &[],

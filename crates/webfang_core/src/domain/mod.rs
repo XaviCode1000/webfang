@@ -60,6 +60,9 @@ pub mod note_repository;
 /// Single source of truth for user-facing options (ADR-002): declarative
 /// specs that generate clap args, JSON Schema, and shared validators.
 pub mod options_spec;
+/// Persistence mode — unified control-plane for `--resume`/`--state-dir` and
+/// `--checkpoint-interval`/`--no-checkpoint` (domain pure, no IO).
+pub mod persistence;
 pub mod semantic_cleaner;
 pub mod semantic_inspector;
 pub mod text_chunker;

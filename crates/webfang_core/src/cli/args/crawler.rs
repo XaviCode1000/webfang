@@ -251,14 +251,10 @@ pub struct CrawlerArgs {
     pub sitemap_depth: u8,
 
     // ========== Competitive Features Phase 1 ==========
-    /// Pages between automatic checkpoint saves (0 = disabled)
-    /// NOTE: Checkpoint is for programmatic use (Engine API) only.
-    /// CLI --resume uses StateStore instead of checkpoints.
+    /// Pages between automatic checkpoint saves (0 = disabled) — unified via PersistenceMode with --resume (Checkpoint/Full when enabled)
     pub checkpoint_interval: u64,
 
-    /// Disable checkpoint persistence entirely
-    /// NOTE: Checkpoint is for programmatic use (Engine API) only.
-    /// CLI --resume uses StateStore instead of checkpoints.
+    /// Disable checkpoint persistence entirely — PersistenceMode disables checkpoint (Resume only when combined with --resume)
     pub no_checkpoint: bool,
 
     /// Skip robots.txt enforcement

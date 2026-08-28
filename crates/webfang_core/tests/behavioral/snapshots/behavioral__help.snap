@@ -257,13 +257,13 @@ Sitemap Settings:
 
 Competitive Features:
       --checkpoint-interval <CHECKPOINT_INTERVAL>
-          Pages between automatic checkpoint saves (0 = disabled) NOTE: Checkpoint is for programmatic use (Engine API) only. CLI --resume uses StateStore instead of checkpoints
+          Pages between automatic checkpoint saves (0 = disabled) — unified via PersistenceMode with --resume (Checkpoint/Full when enabled)
           
           [env: WEBFANG_CHECKPOINT_INTERVAL=]
           [default: 100]
 
       --no-checkpoint
-          Disable checkpoint persistence entirely NOTE: Checkpoint is for programmatic use (Engine API) only. CLI --resume uses StateStore instead of checkpoints
+          Disable checkpoint persistence entirely — PersistenceMode disables checkpoint (Resume only when combined with --resume)
           
           [env: WEBFANG_NO_CHECKPOINT=]
 

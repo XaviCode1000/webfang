@@ -14,6 +14,7 @@ use crate::cli::parse::parse_asset_naming;
 use crate::cli::scrape_flow::{apply_resume_mode, scrape_urls};
 use crate::cli::url_discovery::{discover_urls, discover_urls_recursive};
 use crate::domain::http_config::HttpClientConfig;
+use crate::domain::persistence::PersistenceMode;
 use crate::CrawlerConfig;
 use crate::ScraperConfig;
 
@@ -136,7 +137,13 @@ pub async fn run(
         "run identity"
     );
 
-    let prepare = match prepare_phase(&opts).await {
+    // PersistenceMode unified control-plane — pure resolver with default dir.
+    // Built BEFORE prepare_phase so discovery Engine can be wired with
+    // `with_persistence` (checkpoint interval flows from the mode, not hardcoded).
+    let default_state_dir = crate::cli::scrape_flow::resolve_default_state_dir();
+    let persistence_mode = opts.crawl.persistence_mode(&default_state_dir);
+
+    let prepare = match prepare_phase(&opts, &persistence_mode).await {
         Err(e) => return e,
         Ok(p) => p,
     };
@@ -144,7 +151,7 @@ pub async fn run(
     let discovered_count = prepare.urls_to_scrape.len();
     let (urls_to_scrape, state_store) = match apply_resume_mode(
         prepare.urls_to_scrape,
-        &opts,
+        &persistence_mode,
         opts.url.as_str(),
         &root_correlation,
     )
@@ -475,7 +482,10 @@ fn build_crawler_config_for_discovery(
 /// Returns the initial `ScraperConfig` (before asset/download wiring) and
 /// the list of URLs to scrape.  On discovery failure, returns the
 /// appropriate `CliExit` error.
-async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
+async fn prepare_phase(
+    opts: &CrawlOptions,
+    persistence_mode: &PersistenceMode,
+) -> Result<PrepareResult, CliExit> {
     let urls_to_scrape = if opts.crawl.single_page {
         plan_urls(true, false, opts.url.clone(), Vec::new())
     } else {
@@ -520,7 +530,12 @@ async fn prepare_phase(opts: &CrawlOptions) -> Result<PrepareResult, CliExit> {
             // Recursive BFS discovery respects max_depth/max_pages/robots/
             // patterns; the existing scrape_phase + export_phase still own
             // content extraction and on-disk output.
-            match discover_urls_recursive(crawler_config, opts).await {
+            //
+            // The persistence_mode is forwarded to `discover_urls_recursive`,
+            // which applies `crawl_site_with_options` when the mode enables
+            // checkpointing and falls back to `crawl_site` otherwise — single
+            // call site, no orchestrator-level branching (slice 5c followup).
+            match discover_urls_recursive(crawler_config, opts, persistence_mode).await {
                 Err(e) => {
                     return Err(CliExit::NetworkError(format!("URL discovery failed: {e}")));
                 },
@@ -1000,16 +1015,11 @@ fn build_batch_resume_store(opts: &CrawlOptions) -> Result<Option<StateStore>, C
     if !opts.crawl.resume {
         return Ok(None);
     }
-    let state_dir = opts.crawl.state_dir.clone().unwrap_or_else(|| {
-        let cache_base = std::env::var("XDG_CACHE_HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| {
-                dirs::home_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".cache")
-            });
-        cache_base.join("webfang").join("state")
-    });
+    let state_dir = opts
+        .crawl
+        .state_dir
+        .clone()
+        .unwrap_or_else(crate::cli::scrape_flow::resolve_default_state_dir);
     let domain = opts.url.host_str().unwrap_or("batch").to_string();
     crate::application::export_factory::create_state_store(state_dir, &domain)
         .map(Some)
@@ -2239,7 +2249,9 @@ mod tests {
             ..Default::default()
         };
 
-        let result = prepare_phase(&opts).await;
+        let default_state_dir = crate::cli::scrape_flow::resolve_default_state_dir();
+        let persistence_mode = opts.crawl.persistence_mode(&default_state_dir);
+        let result = prepare_phase(&opts, &persistence_mode).await;
         assert!(
             result.is_ok(),
             "prepare_phase must succeed: {:?}",

@@ -137,7 +137,7 @@ impl Engine {
     /// feed `BudgetModel::build`, so an explicit `--concurrency` /
     /// `--rate-limit-burst` reaches the scheduler spawn bound and rate-limiter
     /// burst instead of being silently replaced by the auto table.
-    fn new(config: CrawlerConfig, ignore_robots: bool) -> Result<Self, CrawlError> {
+    pub(crate) fn new(config: CrawlerConfig, ignore_robots: bool) -> Result<Self, CrawlError> {
         let overrides = config.budget_overrides;
         Self::with_budget(config, ignore_robots, overrides)
     }
@@ -224,9 +224,24 @@ impl Engine {
     ///
     /// Used by `crawl_site` / `crawl_site_with_options` to make the entry-point
     /// tracing span share the same `trace_id` as the engine and all its pages.
-    fn with_correlation_id(mut self, correlation_id: CorrelationId) -> Self {
+    pub(crate) fn with_correlation_id(mut self, correlation_id: CorrelationId) -> Self {
         self.correlation_id = correlation_id;
         self
+    }
+
+    /// Unified persistence — wraps `with_checkpoint` when `PersistenceMode` enables checkpointing.
+    ///
+    /// `Checkpoint` and `Full` variants configure periodic checkpointing via
+    /// `with_checkpoint`; `Disabled` and `Resume` leave checkpoint disabled.
+    /// On IO error creating the checkpoint directory, `with_checkpoint` logs
+    /// `error!` and disables checkpoint without failing the crawl (CRC32
+    /// atomic guarantees preserved).
+    pub fn with_persistence(self, mode: crate::domain::persistence::PersistenceMode) -> Self {
+        if let Some(cfg) = mode.checkpoint_cfg() {
+            self.with_checkpoint(cfg.interval, cfg.dir.clone())
+        } else {
+            self
+        }
     }
 
     /// Enable checkpoint persistence with the given interval and base directory.
@@ -932,6 +947,9 @@ impl Engine {
 pub struct EngineOptions {
     /// Path to save checkpoint files. `None` disables checkpointing.
     pub checkpoint_path: Option<PathBuf>,
+    /// Pages between checkpoint saves (0 = disabled, but `checkpoint_path` None already disables).
+    /// Defaults to 100 for backward compat; `PersistenceMode` overrides via `checkpoint_interval`.
+    pub checkpoint_interval: u64,
     /// Enable the domain session pool for per-domain rate limiting.
     pub session_pool_enabled: bool,
     /// Skip robots.txt enforcement.
@@ -966,6 +984,7 @@ impl Default for EngineOptions {
     fn default() -> Self {
         Self {
             checkpoint_path: None,
+            checkpoint_interval: 100,
             session_pool_enabled: false,
             ignore_robots: false,
             js_strategy: JsStrategy::default(),
@@ -1174,9 +1193,9 @@ async fn crawl_site_with_options_inner(
     let mut engine =
         Engine::new(config, options.ignore_robots)?.with_correlation_id(correlation_id);
 
-    // Apply checkpoint if path provided
+    // Apply checkpoint if path provided — interval from options (PersistenceMode), not hardcoded.
     if let Some(ref path) = options.checkpoint_path {
-        engine = engine.with_checkpoint(100, path.clone());
+        engine = engine.with_checkpoint(options.checkpoint_interval, path.clone());
     }
 
     // Apply session pool if enabled
@@ -1564,5 +1583,58 @@ mod tests {
             "seed NOT matching exclude pattern must be crawled, got {} pages",
             result.total_pages
         );
+    }
+
+    // ——— PersistenceMode::with_persistence wiring (5c) ———
+
+    #[tokio::test]
+    async fn with_persistence_disabled_leaves_checkpoint_disabled() {
+        let seed = Url::parse("http://127.0.0.1:9/").expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed).build();
+        let engine = Engine::new(config, true).expect("engine must build");
+        assert_eq!(engine.checkpoint_interval, 100);
+        assert!(engine.checkpoint_path.is_none());
+
+        let mode = crate::domain::persistence::PersistenceMode::Disabled;
+        let engine = engine.with_persistence(mode);
+        assert!(engine.checkpoint_path.is_none());
+        // Disabled must not change interval (preserved from initial 100, but not enabling file)
+        // The key invariant: no checkpoint file configured.
+        assert!(engine.checkpoint_path.is_none());
+    }
+
+    #[tokio::test]
+    async fn with_persistence_checkpoint_configures_path_and_interval() {
+        let seed = Url::parse("http://127.0.0.1:9/").expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed).build();
+        let engine = Engine::new(config, true).expect("engine must build");
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let mode = crate::domain::persistence::PersistenceMode::Checkpoint {
+            cfg: crate::domain::persistence::CheckpointCfg {
+                dir: tmp.path().to_path_buf(),
+                interval: 42,
+            },
+        };
+        let engine = engine.with_persistence(mode);
+        assert!(engine.checkpoint_path.is_some());
+        assert_eq!(engine.checkpoint_interval, 42);
+        assert!(
+            engine.checkpoint_path.unwrap().starts_with(tmp.path()),
+            "checkpoint path should be under requested dir"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_persistence_resume_only_leaves_checkpoint_disabled() {
+        let seed = Url::parse("http://127.0.0.1:9/").expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed).build();
+        let engine = Engine::new(config, true).expect("engine must build");
+
+        let mode = crate::domain::persistence::PersistenceMode::Resume {
+            dir: std::path::PathBuf::from("/tmp/resume"),
+        };
+        let engine = engine.with_persistence(mode);
+        assert!(engine.checkpoint_path.is_none());
     }
 }

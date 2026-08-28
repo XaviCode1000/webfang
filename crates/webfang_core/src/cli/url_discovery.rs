@@ -8,8 +8,10 @@ use url::Url;
 
 use crate::application::crawl_options::CrawlOptions;
 use crate::application::crawler::crawl_site;
+use crate::application::crawler::engine::{crawl_site_with_options, EngineOptions};
 use crate::application::discover_urls_for_tui;
 use crate::cli::SelectedUrls;
+use crate::domain::persistence::PersistenceMode;
 use crate::error::Result as ScraperResult;
 use crate::CrawlerConfig;
 
@@ -83,15 +85,31 @@ pub async fn discover_urls(
 /// old single-level discovery produced it — so output location and format are
 /// unchanged. Interactive TUI selection keeps using `discover_urls_for_tui` at
 /// depth 1 and is untouched by this path.
+///
+/// `persistence_mode` is the unified control-plane from slice 5c:
+/// when the mode enables checkpointing (`Checkpoint` or `Full`), the
+/// engine is wired with `crawl_site_with_options` so `crawl_checkpoint.json`
+/// is created and the interval flows from the mode (not hardcoded).
+/// `Disabled` and `Resume` fall back to `crawl_site` — the no-checkpoint path.
 pub async fn discover_urls_recursive(
     crawler_config: CrawlerConfig,
     opts: &CrawlOptions,
+    persistence_mode: &PersistenceMode,
 ) -> ScraperResult<Vec<Url>> {
     let discovery_pb = build_discovery_progress_bar(opts, "Discovering URLs (recursive)...");
 
     // The Engine itself respects max_depth etc.; map its error to the same
     // error type `discover_urls` used to surface.
-    let result = crawl_site(crawler_config).await?;
+    let result = if let Some(checkpoint) = persistence_mode.checkpoint_cfg() {
+        let options = EngineOptions {
+            checkpoint_path: Some(checkpoint.dir.clone()),
+            checkpoint_interval: checkpoint.interval,
+            ..EngineOptions::default()
+        };
+        crawl_site_with_options(crawler_config, options).await?
+    } else {
+        crawl_site(crawler_config).await?
+    };
 
     let discovered_urls: Vec<Url> = result.urls.into_iter().map(|d| d.url).collect();
 
@@ -255,7 +273,7 @@ mod tests {
         };
         opts.export.quiet = true;
 
-        let discovered = discover_urls_recursive(config, &opts)
+        let discovered = discover_urls_recursive(config, &opts, &PersistenceMode::Disabled)
             .await
             .expect("six-node discovery must succeed");
 
