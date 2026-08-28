@@ -253,13 +253,39 @@ pub struct IngestionTuning {
 // ============================================================================
 
 impl CrawlLimits {
-    /// Thin delegator to [`crate::domain::persistence::PersistenceMode::from_limits`].
+    /// Translate the four persistence-related CLI flags into the
+    /// domain-owned [`crate::domain::persistence::ResumeConfig`].
+    ///
+    /// Domain owns the input type so the `PersistenceMode` resolver
+    /// stays independent of the application layer (AGENTS.md
+    /// `infrastructure → adapters → application → domain`, inward only).
+    /// This delegator is the only place application code touches
+    /// `ResumeConfig` directly.
+    #[must_use]
+    pub fn resume_config(&self) -> crate::domain::persistence::ResumeConfig {
+        crate::domain::persistence::ResumeConfig {
+            resume: self.resume,
+            state_dir: self.state_dir.clone(),
+            checkpoint_interval: self.checkpoint_interval,
+            no_checkpoint: self.no_checkpoint,
+        }
+    }
+
+    /// Thin delegator to [`crate::domain::persistence::PersistenceMode::from_config`].
+    ///
+    /// Kept for the existing call sites; new code should call
+    /// `self.resume_config()` and pass the result to
+    /// `PersistenceMode::from_config(&cfg, &default_state_dir)` so the
+    /// domain dependency direction stays clean.
     #[must_use]
     pub fn persistence_mode(
         &self,
         default_state_dir: &std::path::Path,
     ) -> crate::domain::persistence::PersistenceMode {
-        crate::domain::persistence::PersistenceMode::from_limits(self, default_state_dir)
+        crate::domain::persistence::PersistenceMode::from_config(
+            &self.resume_config(),
+            default_state_dir,
+        )
     }
 }
 
