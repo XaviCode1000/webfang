@@ -150,11 +150,12 @@ impl InspectionContext {
     /// types (REQ-WAF-01).
     ///
     /// The `content-type` entry is lifted into [`Self::content_type`] for the
-    /// REQ-WAF-02 gate, and the whole map is converted into a wreq
-    /// [`HeaderMap`] for control-header evidence (REQ-WAF-03). Invalid header
-    /// names/values are skipped — they cannot occur for headers already
-    /// validated by the downloaders, but the guard keeps this infallible.
-    /// `ignore_waf` short-circuits inspection to a clean verdict (REQ-WAF-07).
+    /// REQ-WAF-02 gate; the whole map is retained as plain lowercased-key
+    /// `String` pairs so control-header evidence (REQ-WAF-03) needs no `wreq`
+    /// types at the inspection boundary. Headers are single-valued at capture
+    /// (duplicate names collapse, last value wins — WAF control headers are
+    /// single-valued, so no evidence is lost). `ignore_waf` short-circuits
+    /// inspection to a clean verdict (REQ-WAF-07).
     #[must_use]
     pub fn from_lowercase_headers(
         status: u16,

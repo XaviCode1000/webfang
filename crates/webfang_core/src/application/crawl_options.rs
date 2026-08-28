@@ -389,11 +389,11 @@ impl Default for CrawlOptions {
 }
 
 // ============================================================================
-// From<crate::infrastructure::autotuning::ElasticOverrides> for IngestionTuning
+// From<ElasticOverrides> for IngestionTuning
 // ============================================================================
 
-impl From<crate::infrastructure::autotuning::ElasticOverrides> for IngestionTuning {
-    fn from(overrides: crate::infrastructure::autotuning::ElasticOverrides) -> Self {
+impl From<ElasticOverrides> for IngestionTuning {
+    fn from(overrides: ElasticOverrides) -> Self {
         Self {
             enabled: true,
             cpu_cores: overrides.cpu_cores,
@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn test_from_elastic_overrides() {
-        let overrides = crate::infrastructure::autotuning::ElasticOverrides {
+        let overrides = ElasticOverrides {
             cpu_cores: Some(4),
             ram_budget_bytes: Some(8 * 1024 * 1024 * 1024),
             max_resource_bytes: Some(25 * 1024 * 1024),
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn test_from_elastic_overrides_empty() {
-        let overrides = crate::infrastructure::autotuning::ElasticOverrides::default();
+        let overrides = ElasticOverrides::default();
         let tuning = IngestionTuning::from(overrides);
         assert!(tuning.enabled);
         assert!(tuning.cpu_cores.is_none());

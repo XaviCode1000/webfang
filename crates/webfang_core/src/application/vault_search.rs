@@ -231,7 +231,8 @@ impl VaultSearchService {
     ///
     /// # Pipeline
     ///
-    /// 1. Read all `.md` notes from the vault via [`read_vault_notes`]
+    /// 1. Read all `.md` notes from the vault via
+    ///    [`read_vault_notes`](crate::infrastructure::obsidian::read_vault_notes)
     /// 2. Load all indexed note metadata via [`NoteRepository::list_indexed_notes`]
     /// 3. Compare content hashes:
     ///    - **New** note (not indexed) → [`index_note`](Self::index_note)
