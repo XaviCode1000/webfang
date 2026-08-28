@@ -323,6 +323,11 @@ mod spec_parity_tests {
                 .trim(),
             "Relevance threshold for AI semantic filtering (0.0-1.0)"
         );
+        assert_eq!(
+            t.get_help_heading(),
+            Some("AI Settings"),
+            "help_heading mismatch for threshold"
+        );
         assert!(t.get_long_help().is_none());
         // The parser is custom (`parse_threshold`) — clap does not let us
         // introspect its source, but the BEHAVIOR is pinned by the
