@@ -1,8 +1,9 @@
 //! Backward-compatibility layer for environment variable naming.
 //!
-//! Provides [`read_ai_model_id()`] which checks `WEBFANG_AI_MODEL_ID` first,
-//! then falls back to `AI_MODEL_ID`. The fallback is traced at `DEBUG` level
-//! so operators can audit which var was used.
+//! Provides `read_ai_model_id` (the public function in this module) which checks
+//! `WEBFANG_AI_MODEL_ID` first, then falls back to `AI_MODEL_ID`. The
+//! fallback is traced at `DEBUG` level so operators can audit which var
+//! was used.
 
 /// Canonical env var for AI model selection.
 const NEW_ENV_VAR: &str = "WEBFANG_AI_MODEL_ID";
