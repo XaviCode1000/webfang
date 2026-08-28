@@ -21,18 +21,18 @@ pub const OUTPUT: OptionSpec = OptionSpec {
     value_delimiter: None,
 };
 
-/// `-f, --format <FORMAT>`
+/// `-f, --content-format <FORMAT>`
 pub const FORMAT: OptionSpec = OptionSpec {
         id: "format",
         value_name: "FORMAT",
-        long: "format",
+        long: "content-format",
         short: Some('f'),
-        aliases: &[],
+        aliases: &["format"],
         env: Some("WEBFANG_FORMAT"),
         default: Some(DefaultValue::Str("markdown")),
         // Byte-exact transcription of clap's rendering of the two-paragraph
         // doc comment (lines are joined with spaces).
-        help: "Output format for individual files (markdown, text, json) NOTE: For RAG pipeline export, use --export-format instead",
+        help: "Output format for individual files (markdown, text, json) NOTE: For RAG pipeline export, use --pipeline-format instead",
         heading: Some("Output"),
         kind: ValueKind::Enum {
             variants: &["markdown", "json", "text"],
@@ -44,16 +44,16 @@ pub const FORMAT: OptionSpec = OptionSpec {
     value_delimiter: None,
     };
 
-/// `--export-format <EXPORT_FORMAT>` (alias `--export`)
+/// `--pipeline-format <EXPORT_FORMAT>` (aliases `--export`, `--export-format`)
 pub const EXPORT_FORMAT: OptionSpec = OptionSpec {
         id: "export_format",
         value_name: "EXPORT_FORMAT",
-        long: "export-format",
+        long: "pipeline-format",
         short: None,
-        aliases: &["export"],
+        aliases: &["export", "export-format"],
         env: Some("WEBFANG_EXPORT_FORMAT"),
         default: Some(DefaultValue::Str("jsonl")),
-        help: "Export format for RAG pipeline (jsonl, vector, auto) NOTE: Use --format for output file format (markdown, text, json)",
+        help: "Export format for RAG pipeline (jsonl, vector, auto) NOTE: Use --content-format for output file format (markdown, text, json)",
         heading: Some("Output"),
         kind: ValueKind::Enum {
             variants: &["jsonl", "vector", "auto"],

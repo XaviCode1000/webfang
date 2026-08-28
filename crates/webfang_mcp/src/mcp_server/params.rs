@@ -586,7 +586,8 @@ pub struct ExportFileParams {
     /// Filename (without extension)
     pub filename: String,
     /// Export format: jsonl, vector, auto
-    pub format: String,
+    #[serde(alias = "format")]
+    pub content_format: String,
     /// Content to export (written to the output file)
     pub content: String,
 }
@@ -596,12 +597,12 @@ impl ExportFileParams {
     /// Returns `McpError::invalid_params` if `output_dir` is not a safe path
     /// (absolute paths allowed here — issue #600 — but the handler enforces
     /// the server export-root gate before any write, #756), `filename` is
-    /// empty or too long, `format` is not one of the allowed formats, or
-    /// `content` exceeds the maximum blob size.
+    /// empty or too long, `content_format` is not one of the allowed formats,
+    /// or `content` exceeds the maximum blob size.
     pub fn validate(&self) -> Result<(), McpError> {
         require_safe_path_allow_absolute("output_dir", &self.output_dir)?;
         require_safe_filename("filename", &self.filename)?;
-        require_one_of("format", &self.format, export_formats())?;
+        require_one_of("content_format", &self.content_format, export_formats())?;
         require_max_len("content", &self.content, MAX_BLOB_LEN)?;
         Ok(())
     }
@@ -835,20 +836,21 @@ pub struct ProcessExportPipelineParams {
     /// URL to scrape and export
     pub url: Option<String>,
     /// Export format
-    pub format: Option<String>,
+    #[serde(alias = "format", alias = "export_format")]
+    pub pipeline_format: Option<String>,
 }
 
 impl ProcessExportPipelineParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `url` (when present) is not a
-    /// valid http(s) URL or `format` (when present) is not one of the allowed
-    /// formats.
+    /// valid http(s) URL or `pipeline_format` (when present) is not one of the
+    /// allowed formats.
     pub fn validate(&self) -> Result<(), McpError> {
         if let Some(u) = &self.url {
             require_http_url("url", u)?;
         }
-        if let Some(f) = &self.format {
-            require_one_of("format", f, export_formats())?;
+        if let Some(f) = &self.pipeline_format {
+            require_one_of("pipeline_format", f, export_formats())?;
         }
         Ok(())
     }
@@ -1039,5 +1041,47 @@ mod tests {
         });
         let res = serde_json::from_value::<GetAccessibilitySnapshotParams>(json);
         assert!(res.is_err(), "unknown format must be rejected");
+    }
+
+    // ========================================================================
+    // Issue #980 — persistencemode-5b: backward-compatible wire renames
+    // ========================================================================
+
+    /// `ExportFileParams` accepts `format` (legacy) as a serde alias for `content_format`.
+    #[test]
+    fn export_file_params_format_alias_deserializes() {
+        let json = serde_json::json!({
+            "output_dir": "/tmp/out",
+            "filename": "test",
+            "format": "jsonl",
+            "content": "hello"
+        });
+        let params: ExportFileParams = serde_json::from_value(json)
+            .expect("`format` alias must deserialize to `content_format`");
+        assert_eq!(params.content_format, "jsonl");
+    }
+
+    /// `ProcessExportPipelineParams` accepts `export_format` (legacy) as a serde alias for `pipeline_format`.
+    #[test]
+    fn process_export_pipeline_params_export_format_alias_deserializes() {
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "export_format": "vector"
+        });
+        let params: ProcessExportPipelineParams = serde_json::from_value(json)
+            .expect("`export_format` alias must deserialize to `pipeline_format`");
+        assert_eq!(params.pipeline_format, Some("vector".to_string()));
+    }
+
+    /// `ProcessExportPipelineParams` accepts `format` (legacy) as a serde alias for `pipeline_format`.
+    #[test]
+    fn process_export_pipeline_params_format_alias_deserializes() {
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "format": "jsonl"
+        });
+        let params: ProcessExportPipelineParams = serde_json::from_value(json)
+            .expect("`format` alias must deserialize to `pipeline_format`");
+        assert_eq!(params.pipeline_format, Some("jsonl".to_string()));
     }
 }

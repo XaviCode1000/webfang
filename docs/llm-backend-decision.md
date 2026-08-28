@@ -111,7 +111,7 @@ Research reporta: SmolLM2-360M quantizado ~90MB extra, 70-85% JSON válido en sc
 **Guía operativa (doc honesta):**
 - Offline sin LLM → `extract` retorna `Config("no hay proveedor LLM configurado")` en español (preservado).
 - Con API externa → configurar `LLM_API_URL` + `LLM_API_KEY` (o `OLLAMA_URL=http://localhost:11434/v1` con `LLM_API_KEY=dummy`).
-- Con SLM offline → `cargo build --features ai` + `AI_MODEL_ID=HuggingFaceTB/SmolLM2-360M` (o Granite default) → descarga lazy `hf_hub`.
+- Con SLM offline → `cargo build --features ai` + `WEBFANG_AI_MODEL_ID=HuggingFaceTB/SmolLM2-360M` (o `AI_MODEL_ID` heredada) → descarga lazy `hf_hub`.
 
 ## 4. Mitigaciones y riesgos
 

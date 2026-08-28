@@ -231,7 +231,7 @@ fn export_file_params_deserialize() {
         r#"{"output_dir": "/tmp", "filename": "test", "format": "jsonl", "content": "hello"}"#;
     let params: webfang_mcp::mcp_server::params::ExportFileParams =
         serde_json::from_str(json).unwrap();
-    assert_eq!(params.format, "jsonl");
+    assert_eq!(params.content_format, "jsonl");
     assert_eq!(params.content, "hello");
 }
 

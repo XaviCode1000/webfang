@@ -151,7 +151,7 @@ impl McpHandler {
     #[tool(
         description = "Save caller-provided content to a structured export file. Supported formats: jsonl, vector, auto. Reports the real written path."
     )]
-    #[instrument(skip(self), fields(filename = %params.filename, format = %params.format))]
+    #[instrument(skip(self), fields(filename = %params.filename, content_format = %params.content_format))]
     async fn export_file(
         &self,
         Parameters(params): Parameters<ExportFileParams>,
@@ -175,10 +175,10 @@ impl McpHandler {
 
         // Invalid format is a protocol-level invalid-params error, never a
         // silent fallback (REQ-MCP-EXPORT-07).
-        let format = ExportFormat::parse_str(&params.format).map_err(|e| {
+        let format = ExportFormat::parse_str(&params.content_format).map_err(|e| {
             McpError::invalid_params(
                 format!("formato inválido: {e}"),
-                Some(serde_json::Value::String("format".to_string())),
+                Some(serde_json::Value::String("content_format".to_string())),
             )
         })?;
 
@@ -342,11 +342,11 @@ impl McpHandler {
 
         let _permit = acquire_semaphore!(self, export);
 
-        let format_str = params.format.as_deref().unwrap_or("jsonl");
+        let format_str = params.pipeline_format.as_deref().unwrap_or("jsonl");
         let format = ExportFormat::parse_str(format_str).map_err(|e| {
             McpError::invalid_params(
                 format!("formato inválido: {e}"),
-                Some(serde_json::Value::String("format".to_string())),
+                Some(serde_json::Value::String("pipeline_format".to_string())),
             )
         })?;
 
@@ -572,7 +572,7 @@ mod handler_tests {
             .export_file(Parameters(ExportFileParams {
                 output_dir: out_dir.to_string(),
                 filename: "doc".to_string(),
-                format: "jsonl".to_string(),
+                content_format: "jsonl".to_string(),
                 content: "   ".to_string(),
             }))
             .await
@@ -595,7 +595,7 @@ mod handler_tests {
             .export_file(Parameters(ExportFileParams {
                 output_dir: "test-output/export-bad-format".to_string(),
                 filename: "doc".to_string(),
-                format: "bogus".to_string(),
+                content_format: "bogus".to_string(),
                 content: "hello".to_string(),
             }))
             .await;
@@ -612,7 +612,7 @@ mod handler_tests {
             .export_file(Parameters(ExportFileParams {
                 output_dir: tmp.path().to_string_lossy().to_string(),
                 filename: "../escape".to_string(),
-                format: "jsonl".to_string(),
+                content_format: "jsonl".to_string(),
                 content: "hello".to_string(),
             }))
             .await;
@@ -637,7 +637,7 @@ mod handler_tests {
             .export_file(Parameters(ExportFileParams {
                 output_dir: tmp.path().to_string_lossy().to_string(),
                 filename: "sub/out".to_string(),
-                format: "jsonl".to_string(),
+                content_format: "jsonl".to_string(),
                 content: "hello".to_string(),
             }))
             .await;
@@ -655,7 +655,7 @@ mod handler_tests {
             .export_file(Parameters(ExportFileParams {
                 output_dir: "test-output/export-unknown-format".to_string(),
                 filename: "doc".to_string(),
-                format: "md".to_string(),
+                content_format: "md".to_string(),
                 content: "hello".to_string(),
             }))
             .await;
@@ -674,7 +674,7 @@ mod handler_tests {
             .export_file(Parameters(ExportFileParams {
                 output_dir: out_dir.to_string(),
                 filename: "doc".to_string(),
-                format: "jsonl".to_string(),
+                content_format: "jsonl".to_string(),
                 content: "hello world".to_string(),
             }))
             .await
@@ -701,7 +701,7 @@ mod handler_tests {
             .export_file(Parameters(ExportFileParams {
                 output_dir: "/tmp/webfang-mcp-exploit".to_string(),
                 filename: "doc".to_string(),
-                format: "jsonl".to_string(),
+                content_format: "jsonl".to_string(),
                 content: "hello".to_string(),
             }))
             .await;
@@ -854,7 +854,7 @@ mod handler_tests {
         let res = handler
             .process_export_pipeline(Parameters(ProcessExportPipelineParams {
                 url: None,
-                format: Some("jsonl".to_string()),
+                pipeline_format: Some("jsonl".to_string()),
             }))
             .await
             .expect("process_export_pipeline returns Ok");
@@ -876,7 +876,7 @@ mod handler_tests {
         let res = handler
             .process_export_pipeline(Parameters(ProcessExportPipelineParams {
                 url: Some("https://quotes.toscrape.com".to_string()),
-                format: Some("jsonl".to_string()),
+                pipeline_format: Some("jsonl".to_string()),
             }))
             .await
             .expect("process_export_pipeline returns Ok on scrape failure");
@@ -915,7 +915,7 @@ mod handler_tests {
         let res = handler
             .process_export_pipeline(Parameters(ProcessExportPipelineParams {
                 url: Some(format!("{}/private/page", server.uri())),
-                format: Some("jsonl".to_string()),
+                pipeline_format: Some("jsonl".to_string()),
             }))
             .await
             .expect("process_export_pipeline returns Ok on robots denial");
@@ -956,7 +956,7 @@ mod handler_tests {
         let res = handler
             .process_export_pipeline(Parameters(ProcessExportPipelineParams {
                 url: Some("http://127.0.0.1/".to_string()),
-                format: Some("jsonl".to_string()),
+                pipeline_format: Some("jsonl".to_string()),
             }))
             .await;
         assert!(res.is_err(), "loopback URL must be a protocol error");

@@ -174,7 +174,7 @@ An agent suggesting "clean up duplicate dependencies" must be stopped. These con
 
 ### AI feature (`--features ai`)
 
-- ONNX models cached in the native hf_hub cache (`~/.cache/huggingface/hub/`): Granite-97M (default, ~390MB, 384d) or Granite-311M (~1.25GB) via `AI_MODEL_ID` / `--ai-model`. `--clean-ai` uses hf_hub natively: cache-first when online, strict cache-only when offline.
+- ONNX models cached in the native hf_hub cache (`~/.cache/huggingface/hub/`): Granite-97M (default, ~390MB, 384d) or Granite-311M (~1.25GB) via `WEBFANG_AI_MODEL_ID` / `--ai-model` (legacy `AI_MODEL_ID` is still honored as a fallback). `--clean-ai` uses hf_hub natively: cache-first when online, strict cache-only when offline.
 - `cleaner.clean(html)` → `Vec<DocumentChunk>` with embeddings. Embeddings only appear in exports with `--output-vectors`.
 
 ### Build requirement

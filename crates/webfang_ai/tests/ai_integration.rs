@@ -31,7 +31,10 @@ const TEST_URL: &str = "https://example.com/test";
 /// Test that ModelConfig has the correct default values
 #[test]
 fn test_model_config_defaults() {
-    let _guard = webfang_test_utils::EnvGuard::clean(&["AI_MODEL_ID"]);
+    // #980 slice 5b: clean BOTH the canonical (spec env) and the legacy
+    // (compat fallback) so the test is hermetic regardless of which path
+    // the resolver takes. Same pattern as `webfang_core::test_support`.
+    let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_AI_MODEL_ID", "AI_MODEL_ID"]);
 
     let config = ModelConfig::default();
 

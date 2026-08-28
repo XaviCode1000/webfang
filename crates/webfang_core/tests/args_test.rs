@@ -391,15 +391,38 @@ fn test_ai_config_defaults_without_ai_feature() {
 }
 
 // ========================================================================
-// #827 — poisoned AI_MODEL_ID must not break unrelated CLI paths
+// #827 — poisoned AI_MODEL_ID / WEBFANG_AI_MODEL_ID must not break
+// unrelated CLI paths (slice 5b / #980). The canary must cover BOTH the
+// canonical (read by clap via the spec env-fallback) and the legacy
+// (read by `webfang_ai::infrastructure_ai::compat::read_ai_model_id`).
 // ========================================================================
 
-/// A poisoned `AI_MODEL_ID` env var must not make every invocation fail
-/// with clap `InvalidValue`: model validation is deferred to the AI init
-/// path, which is the only place the value actually matters (#827).
+/// A poisoned canonical `WEBFANG_AI_MODEL_ID` (read by clap via the spec
+/// env-fallback on `--ai-model`) must not make every invocation fail
+/// with `InvalidValue`: model validation is deferred to the AI init path
+/// (#827, #980 slice 5b).
 #[cfg(feature = "ai")]
 #[test]
-fn test_poisoned_ai_model_id_env_parses_valid_scrape_command() {
+fn test_poisoned_webfang_ai_model_id_env_parses_valid_scrape_command() {
+    clean_env();
+    let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_AI_MODEL_ID", "not-a-model")]);
+
+    let result = Args::try_parse_from(["webfang", "--url", "https://example.com"]);
+
+    assert!(
+        result.is_ok(),
+        "poisoned WEBFANG_AI_MODEL_ID must not break arg parsing: {:?}",
+        result.err().map(|e| e.to_string())
+    );
+}
+
+/// Legacy `AI_MODEL_ID` is no longer read by clap, but
+/// `webfang_ai::infrastructure_ai::compat::read_ai_model_id` still honors
+/// it. A poisoned legacy value must not break arg parsing either (#827,
+/// #980 slice 5b).
+#[cfg(feature = "ai")]
+#[test]
+fn test_poisoned_ai_model_id_legacy_env_parses_valid_scrape_command() {
     clean_env();
     let _guard = webfang_test_utils::EnvGuard::with(&[("AI_MODEL_ID", "not-a-model")]);
 
@@ -407,7 +430,7 @@ fn test_poisoned_ai_model_id_env_parses_valid_scrape_command() {
 
     assert!(
         result.is_ok(),
-        "poisoned AI_MODEL_ID must not break arg parsing: {:?}",
+        "poisoned AI_MODEL_ID (legacy) must not break arg parsing: {:?}",
         result.err().map(|e| e.to_string())
     );
 }
@@ -432,10 +455,16 @@ fn test_invalid_ai_model_value_defers_validation_to_ai_init_path() {
 
 #[test]
 fn test_dom_preprune_defaults_to_true() {
-    // AI_MODEL_ID must be unset too: clap reads it via `env = "AI_MODEL_ID"`
-    // on --ai-model, so a poisoned value (CI bug-discovery) fails every parse
-    // with InvalidValue before the flag under test is even evaluated.
-    let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_DOM_PREPRUNE", "AI_MODEL_ID"]);
+    // WEBFANG_AI_MODEL_ID must be unset too: clap reads it via the spec
+    // env-fallback on --ai-model, so a poisoned value (CI bug-discovery)
+    // fails every parse with InvalidValue before the flag under test is
+    // even evaluated. Legacy AI_MODEL_ID is cleared for symmetry even
+    // though clap no longer reads it (#980 slice 5b).
+    let _guard = webfang_test_utils::EnvGuard::clean(&[
+        "WEBFANG_DOM_PREPRUNE",
+        "WEBFANG_AI_MODEL_ID",
+        "AI_MODEL_ID",
+    ]);
     // Default value from clap is true
     let args = Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");
     assert!(args.crawler.dom_preprune, "dom_preprune defaults to true");
@@ -471,9 +500,11 @@ fn test_dom_preprune_false() {
 
 #[test]
 fn test_dom_preprune_env_var_true() {
-    // clean_env() unsets AI_MODEL_ID (clap env fallback on --ai-model would
-    // reject a poisoned value); EnvGuard::with then sets only the flag under
-    // test. Two EnvGuards cannot be nested (ENV_LOCK deadlock).
+    // clean_env() unsets WEBFANG_AI_MODEL_ID (clap env fallback on
+    // --ai-model would reject a poisoned value) AND AI_MODEL_ID (legacy
+    // path exercised by `webfang_ai::infrastructure_ai::compat`); see
+    // #980 slice 5b. EnvGuard::with then sets only the flag under test.
+    // Two EnvGuards cannot be nested (ENV_LOCK deadlock).
     clean_env();
     let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_DOM_PREPRUNE", "true")]);
     let args = Args::try_parse_from(["webfang", "-u", "https://example.com"]).expect("valid args");

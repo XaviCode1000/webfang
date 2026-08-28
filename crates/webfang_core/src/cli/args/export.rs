@@ -12,11 +12,11 @@ pub struct ExportArgs {
     pub output: std::path::PathBuf,
 
     /// Output format for individual files (markdown, text, json)
-    /// NOTE: For RAG pipeline export, use --export-format instead
+    /// NOTE: For RAG pipeline export, use --pipeline-format instead
     pub format: OutputFormat,
 
     /// Export format for RAG pipeline (jsonl, vector, auto)
-    /// NOTE: Use --format for output file format (markdown, text, json)
+    /// NOTE: Use --content-format for output file format (markdown, text, json)
     pub export_format: ExportFormat,
 
     // ========== Elastic Ingestion (Issue #51, PR5) ==========

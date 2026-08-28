@@ -74,6 +74,9 @@
 // Core AI infrastructure (Modules 1-2)
 pub mod cache_config;
 
+/// Backward-compat layer for environment variable naming (WEBFANG_AI_MODEL_ID / AI_MODEL_ID).
+pub mod compat;
+
 pub mod semantic_cleaner_impl;
 
 /// Adapter bridging `InferencePool` to the domain `EmbeddingPort` (#433).
@@ -103,9 +106,7 @@ pub mod content_pruner;
 pub mod granite_dom_inspector;
 
 // Re-exports for convenience (Modules 1-2)
-pub use cache_config::{
-    AiModel, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO, DEFAULT_MODEL_SHA256, MODEL_SELECTION_ENV,
-};
+pub use cache_config::{AiModel, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO, DEFAULT_MODEL_SHA256};
 
 pub use semantic_cleaner_impl::{ModelConfig, SemanticCleanerImpl};
 

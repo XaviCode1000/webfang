@@ -50,10 +50,13 @@ fn help_contains_single_page_flag() {
 
 #[test]
 fn help_contains_format_flag() {
+    // Slice 5b (#987) renamed `--format` to `--content-format`; the old
+    // name is preserved as a hidden clap alias and so does not appear
+    // in `--help` output. Test the canonical name (issue #980).
     cmd()
         .arg("--help")
         .assert()
-        .stdout(predicate::str::contains("--format"));
+        .stdout(predicate::str::contains("--content-format"));
 }
 
 #[test]
