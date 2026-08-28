@@ -31,7 +31,7 @@
 use aho_corasick::AhoCorasick;
 use once_cell::sync::Lazy;
 use std::collections::HashSet;
-use wreq::header::HeaderMap;
+use std::collections::HashMap;
 
 // ============================================================================
 // TASK-01 — Domain types + Inspection Context API (REQ-WAF-01)
@@ -139,7 +139,7 @@ pub struct InspectionContext {
     /// Content-Type header value, if known.
     pub content_type: Option<String>,
     /// Response headers.
-    pub headers: HeaderMap,
+    pub headers: HashMap<String, String>,
     /// Bypass WAF detection entirely (yields a clean verdict).
     pub ignore_waf: bool,
 }
@@ -162,19 +162,10 @@ impl InspectionContext {
         ignore_waf: bool,
     ) -> Self {
         let content_type = headers.get("content-type").cloned();
-        let mut map = HeaderMap::new();
-        for (name, value) in headers {
-            if let (Ok(name), Ok(value)) = (
-                wreq::header::HeaderName::from_bytes(name.as_bytes()),
-                wreq::header::HeaderValue::from_str(value),
-            ) {
-                map.insert(name, value);
-            }
-        }
         Self {
             status: Some(status),
             content_type,
-            headers: map,
+            headers: headers.clone(),
             ignore_waf,
         }
     }
@@ -608,6 +599,35 @@ static WAF_AC: Lazy<AhoCorasick> = Lazy::new(|| {
 /// WafInspector provides multi-layer WAF detection
 pub struct WafInspector;
 
+impl crate::domain::waf::sealed::Sealed for WafInspector {}
+
+impl crate::domain::waf::WafInspectorPort for WafInspector {
+    fn inspect(&self, body: &str, ctx: &crate::domain::waf::InspectionContext) -> crate::domain::waf::WafVerdict {
+        let infra_ctx = InspectionContext {
+            status: ctx.status,
+            content_type: ctx.content_type.clone(),
+            headers: ctx.headers.clone(),
+            ignore_waf: ctx.ignore_waf,
+        };
+        let verdict = Self::inspect(body, &infra_ctx);
+        crate::domain::waf::WafVerdict {
+            is_blocked: verdict.is_blocked,
+            evidences: verdict.evidences.into_iter().map(|e| crate::domain::waf::WafEvidence {
+                provider: e.provider,
+                tier: match e.tier {
+                    WafTier::Challenge => crate::domain::waf::WafTier::Challenge,
+                    WafTier::Fingerprint => crate::domain::waf::WafTier::Fingerprint,
+                },
+                matched_pattern: e.matched_pattern,
+                source: match e.source {
+                    EvidenceSource::Body => crate::domain::waf::EvidenceSource::Body,
+                    EvidenceSource::Header => crate::domain::waf::EvidenceSource::Header,
+                },
+            }).collect(),
+        }
+    }
+}
+
 impl WafInspector {
     /// Inspect a response body with full HTTP context and return a verdict.
     ///
@@ -941,7 +961,7 @@ fn should_scan_body(ctx: &InspectionContext) -> bool {
 /// Every control header is [`WafTier::Fingerprint`] evidence — it never
 /// auto-blocks on mere presence (correction B), only when correlated with a
 /// WAF status code by [`decide`].
-fn collect_header_evidence(headers: &HeaderMap) -> Vec<WafEvidence> {
+fn collect_header_evidence(headers: &HashMap<String, String>) -> Vec<WafEvidence> {
     let mut evidences = Vec::new();
     for (name, provider) in WAF_CONTROL_HEADERS {
         if headers.get(*name).is_some() {

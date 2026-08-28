@@ -35,11 +35,10 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 use tracing::{error, info, warn};
 
-use crate::domain::config::AutotuningConfig;
 use crate::domain::repository::VectorRepository;
 use crate::domain::url_validation::{normalize_url, NormalizeConfig, RemoveQueryParameters};
 use crate::error::ScraperError;
-use crate::infrastructure::bridge::CpuBridge;
+// domain port: use crate::domain::cpu_executor::CpuExecutorPort;
 use crate::infrastructure::crawler::resource_downloader::{DownloadedResource, ResourceDownloader};
 
 /// Elastic ingestion pipeline orchestrator (frozen Decision 1).
@@ -55,9 +54,9 @@ use crate::infrastructure::crawler::resource_downloader::{DownloadedResource, Re
 /// [`SemanticCleaner`]: crate::domain::semantic_cleaner::SemanticCleaner
 pub struct ElasticIngestion<R: VectorRepository + Send + Sync> {
     downloader: ResourceDownloader,
-    bridge: CpuBridge,
+    bridge: crate::infrastructure::bridge::CpuBridge,
     repository: R,
-    config: AutotuningConfig,
+    config: crate::infrastructure::config::AutotuningConfig,
     /// Optional ONNX semantic cleaner (frozen Decision 5). When `Some`, the
     /// orchestrator runs the cleaner's async `clean()` (HTML chunking +
     /// embeddings) instead of the bridge's sync lol_html text extraction.
@@ -82,9 +81,9 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
     #[must_use]
     pub fn new(
         downloader: ResourceDownloader,
-        bridge: CpuBridge,
+        bridge: crate::infrastructure::bridge::CpuBridge,
         repository: R,
-        config: AutotuningConfig,
+        config: crate::infrastructure::config::AutotuningConfig,
     ) -> Self {
         Self {
             downloader,
@@ -571,11 +570,11 @@ mod tests {
                 },
             );
             let pool = RayonCpuPool::new(2).expect("pool de 2 hilos");
-            let bridge = CpuBridge::new(
+            let bridge = crate::infrastructure::bridge::CpuBridge::new(
                 pool,
                 Arc::new(crate::infrastructure::content_processing::AggressiveProcessor),
             );
-            let config = AutotuningConfig {
+            let config = crate::infrastructure::config::AutotuningConfig {
                 cpu_cores: 2,
                 ram_budget_bytes: 1 << 20,
             };

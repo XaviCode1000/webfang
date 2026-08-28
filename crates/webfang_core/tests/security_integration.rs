@@ -11,19 +11,19 @@
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use webfang_core::infrastructure::http::waf_engine::{InspectionContext, WafInspector, WafTier};
-use wreq::header::HeaderMap;
+use std::collections::HashMap;
+use webfang_core::domain::waf::{InspectionContext, WafInspector, WafTier};
 
 /// Degraded-mode (no HTTP context) body inspection helper for these tests.
-fn inspect_body(html: &str) -> webfang_core::infrastructure::http::waf_engine::WafVerdict {
+fn inspect_body(html: &str) -> webfang_core::domain::waf::WafVerdict {
     WafInspector::inspect(html, &InspectionContext::default())
 }
 
 /// Headers + body inspection in degraded mode (no status/content-type).
 fn inspect_with_headers(
-    headers: HeaderMap,
+    headers: HashMap<String, String>,
     html: &str,
-) -> webfang_core::infrastructure::http::waf_engine::WafVerdict {
+) -> webfang_core::domain::waf::WafVerdict {
     let ctx = InspectionContext {
         headers,
         ..Default::default()
@@ -328,7 +328,7 @@ async fn test_waf_inspector_cloudflare_detection() {
         </html>
     "#;
 
-    let verdict = inspect_with_headers(HeaderMap::new(), html);
+    let verdict = inspect_with_headers(HashMap::new(), html);
     assert!(verdict.is_blocked);
     assert!(
         verdict.evidence_chain().contains("Cloudflare"),
@@ -342,8 +342,8 @@ async fn test_waf_inspector_datadome_header_detection() {
     // Control headers are Fingerprint-tier evidence — mere presence never
     // auto-blocks without a correlated WAF status (correction B). Degraded mode
     // (no status), so the header alone is clean.
-    let mut headers = HeaderMap::new();
-    headers.insert("x-datadome-response", "blocked".parse().unwrap());
+    let mut headers = HashMap::new();
+    headers.insert("x-datadome-response".to_string(), "blocked".to_string());
 
     let html = "<html><body>Content</body></html>";
     let verdict = inspect_with_headers(headers, html);
@@ -367,7 +367,7 @@ async fn test_waf_inspector_silent_challenge_detection() {
         </html>
     "#;
 
-    let verdict = inspect_with_headers(HeaderMap::new(), html);
+    let verdict = inspect_with_headers(HashMap::new(), html);
     assert!(verdict.is_blocked);
     assert!(
         verdict.evidence_chain().contains("Silent Challenge"),
@@ -413,6 +413,6 @@ async fn test_waf_inspector_normal_content_passes() {
         </html>
     "#;
 
-    let verdict = inspect_with_headers(HeaderMap::new(), html);
+    let verdict = inspect_with_headers(HashMap::new(), html);
     assert!(!verdict.is_blocked);
 }

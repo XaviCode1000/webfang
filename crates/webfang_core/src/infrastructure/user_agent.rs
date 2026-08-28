@@ -252,6 +252,18 @@ pub fn get_random_user_agent() -> String {
     get_random_user_agent_from_pool(&agents)
 }
 
+// Domain port shim — preserves `webfang_core::infrastructure::user_agent::*` API
+pub use crate::domain::user_agent::{
+    fallback_agents as domain_fallback_agents,
+    get_random_user_agent_from_pool as domain_get_random, UserAgentPool, UserAgentProvider,
+};
+
+impl crate::domain::user_agent::UserAgentProvider for UserAgentCache {
+    fn load(&self) -> Vec<String> {
+        Self::fallback_agents()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,12 +7,13 @@ use super::retry::{retry_with_backoff, RetryPolicy};
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::http_error::{HttpError, HttpResult};
 use crate::domain::session_port::{SessionId, SessionPort};
+use crate::domain::user_agent::fallback_agents;
+use crate::domain::waf::{InspectionContext, WafInspector};
 use crate::error::ScraperError;
-use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
-use crate::infrastructure::user_agent::UserAgentCache;
 use governor::clock::DefaultClock;
 use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter};
+use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -61,7 +62,7 @@ impl HttpClient {
     pub fn new(config: HttpClientConfig) -> Result<Self, ScraperError> {
         let client = build_wreq_client(&config, None)?;
 
-        let mut user_agents = UserAgentCache::fallback_agents();
+        let mut user_agents = fallback_agents();
         if let Some(ref ua) = config.user_agent {
             user_agents.insert(0, ua.clone());
         }
@@ -423,13 +424,19 @@ fn waf_block_error(
 /// to a clean verdict (REQ-WAF-07). The header borrow ends when this returns
 /// (the map is cloned), so the caller can still consume the response body.
 fn inspection_context(status: u16, headers: &HeaderMap, ignore_waf: bool) -> InspectionContext {
+    let mut map = HashMap::new();
+    for (name, value) in headers {
+        if let Ok(v) = value.to_str() {
+            map.insert(name.as_str().to_lowercase(), v.to_string());
+        }
+    }
     InspectionContext {
         status: Some(status),
         content_type: headers
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .map(String::from),
-        headers: headers.clone(),
+        headers: map,
         ignore_waf,
     }
 }

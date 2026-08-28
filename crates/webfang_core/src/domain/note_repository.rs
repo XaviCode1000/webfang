@@ -40,6 +40,37 @@ pub struct NoteChunkVector {
     pub embedding: Vec<f32>,
 }
 
+/// A Markdown note read from an Obsidian vault (domain DTO).
+///
+/// Mirrors [`IndexedNoteMeta`] semantics so the application layer can
+/// compare `content_hash` for staleness without conversion.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VaultNote {
+    /// Path relative to the vault root (e.g. `notes/rust.md`).
+    pub path: String,
+    /// Full UTF-8 content of the note.
+    pub content: String,
+    /// Last modification time (Unix epoch seconds).
+    pub mtime_secs: i64,
+    /// SHA-256 content hash (hex, lowercase).
+    pub content_hash: String,
+}
+
+/// Domain port for reading vault notes from the filesystem.
+///
+/// Infrastructure (`obsidian::vault_reader`) implements this.
+pub trait VaultNoteReader: Send + Sync {
+    /// Read all Markdown notes from a vault directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ScraperError::Io` on filesystem failure.
+    fn read_vault_notes(
+        &self,
+        vault_path: &std::path::Path,
+    ) -> Result<Vec<VaultNote>, crate::error::ScraperError>;
+}
+
 /// Metadata about an indexed note for staleness detection.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IndexedNoteMeta {
@@ -201,5 +232,41 @@ mod tests {
         // We can't call assert_dyn_compatible without an impl, but the
         // function definition itself proves object safety.
         let _ = assert_dyn_compatible as fn(&dyn NoteRepository);
+    }
+
+    #[test]
+    fn test_vault_note_fields_and_clone() {
+        let note = VaultNote {
+            path: "notes/rust.md".to_owned(),
+            content: "hello".to_owned(),
+            mtime_secs: 1_700_000_000,
+            content_hash: "abc".to_owned(),
+        };
+        let cloned = note.clone();
+        assert_eq!(note, cloned);
+        assert_eq!(note.path, "notes/rust.md");
+        // Second note with different content triangulates.
+        let note2 = VaultNote {
+            path: "other.md".to_owned(),
+            content: "world".to_owned(),
+            mtime_secs: 1_700_000_001,
+            content_hash: "def".to_owned(),
+        };
+        assert_ne!(note, note2);
+    }
+
+    #[test]
+    fn test_vault_reader_is_object_safe() {
+        fn assert_dyn(_: &dyn VaultNoteReader) {}
+        struct Fake;
+        impl VaultNoteReader for Fake {
+            fn read_vault_notes(
+                &self,
+                _p: &std::path::Path,
+            ) -> Result<Vec<VaultNote>, crate::error::ScraperError> {
+                Ok(vec![])
+            }
+        }
+        assert_dyn(&Fake);
     }
 }

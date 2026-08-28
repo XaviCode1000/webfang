@@ -14,8 +14,8 @@
 //! the bare-client factories here, so both paths build an identical stack.
 
 use crate::domain::http_config::HttpClientConfig;
+use crate::domain::user_agent::fallback_agents;
 use crate::error::ScraperError;
-use crate::infrastructure::user_agent::UserAgentCache;
 use std::time::Duration;
 use wreq::header::{HeaderMap, HeaderName, HeaderValue};
 use wreq::Client;
@@ -133,7 +133,7 @@ pub(super) fn build_wreq_client(
 pub fn create_http_client_with_config(config: &HttpClientConfig) -> Result<Client, ScraperError> {
     let user_agent = match config.user_agent.clone() {
         Some(ua) => ua,
-        None => get_random_user_agent_from_pool(&UserAgentCache::fallback_agents()),
+        None => get_random_user_agent_from_pool(&fallback_agents()),
     };
 
     tracing::debug!("Using user agent: {}", user_agent);

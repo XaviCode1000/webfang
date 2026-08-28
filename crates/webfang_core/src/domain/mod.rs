@@ -13,9 +13,11 @@
 
 use url::Url;
 
+pub mod axtree_port;
 pub mod clock;
 pub mod config;
 pub mod config_value;
+pub mod cpu_executor;
 pub mod crawl_job;
 pub mod crawler_entities;
 pub mod credentials;
@@ -25,12 +27,14 @@ pub mod error;
 pub mod exporter;
 pub mod extraction_quality;
 pub mod fingerprint_repository;
+pub mod html_cleaner;
 pub mod http_config;
 pub mod http_error;
 pub mod http_port;
 pub mod js_renderer;
 pub mod js_strategy;
 pub mod link_extractor;
+pub mod llm;
 /// Typed 8-state page lifecycle (persisted enum + compile-time
 /// typestate wrapper). See module docs for the legacy-encoding mapping.
 pub mod page_state;
@@ -42,11 +46,14 @@ pub mod profile;
 pub mod repositories;
 pub mod repository;
 pub mod result;
+pub mod scraper_port;
 pub mod session_port;
 pub mod site;
 pub mod url_validation;
 pub mod url_validator;
+pub mod user_agent;
 pub mod value_objects;
+pub mod waf;
 
 /// Downloader port — domain-owned trait for page fetching (ADR-0010).
 pub mod downloader_port;
@@ -87,24 +94,30 @@ pub use dom_inspector::{
     SelectorDiagnostic, SelectorErrorKind, SelectorSuggestion,
 };
 pub use embedding_port::EmbeddingPort;
-pub use note_repository::{IndexedNoteMeta, NoteChunkVector, NoteRepository};
+pub use note_repository::{
+    IndexedNoteMeta, NoteChunkVector, NoteRepository, VaultNote, VaultNoteReader,
+};
 pub use semantic_inspector::{
     BoxFuture, SemanticContext, SemanticInspectorPort, SemanticMatch, TierSource,
 };
 pub use text_chunker::TextChunker;
 
+pub use axtree_port::AxTreePort;
+pub use cpu_executor::CpuExecutorPort;
 pub use entities::{
     DocumentChunk, DocumentChunkExported, DocumentChunkUnvalidated, DocumentChunkValidated,
     DownloadedAsset, Draft, ExportState, Exported, ScrapedContent, Validated, ValidationError,
 };
 pub use error::{CrawlError, CrawlErrorCategory, DomainError};
 pub use exporter::{ExportResult, Exporter, ExporterConfig};
+pub use html_cleaner::clean_html;
 pub use http_config::{HttpClientConfig, UnknownProfileError};
 pub use http_error::{HttpError, HttpResult};
 pub use http_port::{HttpClientPort, HttpResponse};
 pub use js_renderer::{JsRenderError, JsRenderer};
 pub use js_strategy::JsStrategy;
 pub use link_extractor::{LinkExtractor, LinkProcessor};
+pub use llm::validation::{validate_record, validate_schema, SchemaError};
 pub use pattern_matching::{match_url_pattern, matches_pattern};
 pub use pipeline_item::{FilterReason, PipelineStage, RejectReason, ScrapedItem, StageOutcome};
 pub use ports::AssetDownloaderPort;
@@ -112,10 +125,15 @@ pub use profile::{profile_from_name, valid_profile_names};
 pub use repositories::CrawlResultRepository;
 pub use repository::VectorRepository;
 pub use result::CrawlResult;
-pub use session_port::{SessionId, SessionPort};
+pub use scraper_port::ScraperPort;
+pub use session_port::{SessionId, SessionPoolConfig, SessionPort};
 pub use site::{CrawlerConfig, CrawlerConfigBuilder};
 pub use url_validator::{StaticUrlValidator, UrlValidator, UrlValidatorTrait};
+pub use user_agent::{UserAgentPool, UserAgentProvider};
 pub use value_objects::{CorrelationId, ValidUrl};
+pub use waf::{
+    EvidenceSource, InspectionContext, WafEvidence, WafInspectorPort, WafTier, WafVerdict,
+};
 
 /// Compression types supported for sitemap parsing
 #[derive(Debug, Clone, PartialEq, Eq)]
