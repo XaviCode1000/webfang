@@ -180,7 +180,7 @@ fn render_metrics(snapshot: &MetricsSnapshot) -> CallToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use webfang_core::infrastructure::http::waf_engine::WafTier;
+    use webfang_core::domain::waf::WafTier;
 
     // ========================================================================
     // TASK-12 — detect_waf degraded mode (REQ-WAF-09)

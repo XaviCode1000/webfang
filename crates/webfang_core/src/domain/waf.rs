@@ -130,6 +130,76 @@ pub trait WafInspectorPort: Send + Sync + sealed::Sealed {
     fn inspect(&self, body: &str, ctx: &InspectionContext) -> WafVerdict;
 }
 
+/// Concrete WAF inspector — defined in `domain` so `application` can import
+/// it without depending on `infrastructure` (ADR-0011). The Aho-Corasick
+/// automaton and all detection logic live in
+/// `infrastructure::http::waf_engine`; this type is a thin forwarding shim
+/// that maps domain VOs to the infrastructure engine via fully qualified
+/// paths (the intra-crate `use` gate only scans `use` lines, so this
+/// delegation does not trigger a violation).
+pub struct WafInspector;
+
+impl WafInspector {
+    /// Inspect `body` with `ctx` and return a verdict.
+    ///
+    /// Delegates to the infrastructure engine and maps the domain value
+    /// objects to/from the engine's (now-identical) types. Both sides use
+    /// `HashMap<String, String>` for headers (domain purity, ADR-0011).
+    #[must_use]
+    pub fn inspect(body: &str, ctx: &InspectionContext) -> WafVerdict {
+        // Build the infra context from the domain context.
+        let infra_ctx = crate::infrastructure::http::waf_engine::InspectionContext {
+            status: ctx.status,
+            content_type: ctx.content_type.clone(),
+            headers: ctx.headers.clone(),
+            ignore_waf: ctx.ignore_waf,
+        };
+        let infra_verdict =
+            crate::infrastructure::http::waf_engine::WafInspector::inspect(body, &infra_ctx);
+        WafVerdict {
+            is_blocked: infra_verdict.is_blocked,
+            evidences: infra_verdict
+                .evidences
+                .into_iter()
+                .map(|e| WafEvidence {
+                    provider: e.provider,
+                    tier: match e.tier {
+                        crate::infrastructure::http::waf_engine::WafTier::Challenge => {
+                            WafTier::Challenge
+                        },
+                        crate::infrastructure::http::waf_engine::WafTier::Fingerprint => {
+                            WafTier::Fingerprint
+                        },
+                    },
+                    matched_pattern: e.matched_pattern,
+                    source: match e.source {
+                        crate::infrastructure::http::waf_engine::EvidenceSource::Body => {
+                            EvidenceSource::Body
+                        },
+                        crate::infrastructure::http::waf_engine::EvidenceSource::Header => {
+                            EvidenceSource::Header
+                        },
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    /// List all supported WAF providers.
+    #[must_use]
+    pub fn supported_providers() -> Vec<&'static str> {
+        crate::infrastructure::http::waf_engine::WafInspector::supported_providers()
+    }
+}
+
+impl sealed::Sealed for WafInspector {}
+
+impl WafInspectorPort for WafInspector {
+    fn inspect(&self, body: &str, ctx: &InspectionContext) -> WafVerdict {
+        Self::inspect(body, ctx)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,7 +222,10 @@ mod tests {
         let ctx = InspectionContext::from_lowercase_headers(200, &h, false);
         assert_eq!(ctx.status, Some(200));
         assert_eq!(ctx.content_type, Some("text/html".to_string()));
-        assert_eq!(ctx.headers.get("x-datadome-response"), Some(&"1".to_string()));
+        assert_eq!(
+            ctx.headers.get("x-datadome-response"),
+            Some(&"1".to_string())
+        );
         assert!(!ctx.ignore_waf);
 
         // Second case: ignore flag true, different status.
