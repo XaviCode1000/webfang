@@ -101,8 +101,8 @@ The 71-file permanent exception was explicitly rejected by the `webfang-architec
 
 - `AGENTS.md` — crate dependency allow-matrix and Clean Architecture layers (`infrastructure → adapters → application → domain`)
 - `scripts/check_dependency_direction.sh` — CI gate for inter-crate direction (Cargo.toml)
-- `scripts/check_intra_crate_direction.sh` — intra-crate gate (this ADR), hardens `crate::ScraperConfig` alias
-- `scripts/check_intra_crate_direction_allowlist.txt` — versioned allowlist (≤5)
+- `scripts/check_intra_crate_direction.sh` — intra-crate gate (this ADR), hardens `crate::ScraperConfig` alias; ADR-0010-A extends to inline qualified paths
+- `scripts/check_intra_crate_direction_allowlist.txt` — versioned allowlist (≤12 during ADR-0010-A, revert toward ≤5 after #994 sub-slice 3)
 - `crates/webfang_core/src/domain/config.rs` — `ScraperConfig` family now owned by domain
 - `crates/webfang_core/src/domain/downloader_port.rs` — `Downloader` + `FetchedPage`/`Cookie`/`DownloadError` (BoxFuture dyn-compat)
 - `crates/webfang_core/src/domain/crawler_port.rs` — `SitemapConfig` + helpers surface
@@ -113,5 +113,145 @@ The 71-file permanent exception was explicitly rejected by the `webfang-architec
 - `crates/webfang_core/src/domain/url_validation.rs` — `is_internal_link`, `normalize_url`, `NormalizeConfig`
 - `.github/workflows/ci.yml` — `toolchain` job next to `check_dependency_direction.sh`
 - ADR-0009 — `domain::persistence::ResumeConfig` precedent for domain-owned config
-- Issues: #990, #984, #809
+- ADR-0010-A (this addendum) — inline qualified-path detection (issue #995)
+- Issues: #990, #984, #809, #994 (sub-slice 3 follow-up), #995 (this addendum)
 - Tutorials: 02 scalability, 07 queue/backpressure, 10 indexing/discovery (filtered `search-engine` template)
+
+## Addendum 0010-A: Inline Fully-Qualified Path Detection (issue #995)
+
+### 1. Problem
+
+The original lint (`scripts/check_intra_crate_direction.sh` per ADR-0010) only
+matched `use crate::<layer>::...;` lines via a single `grep -E '^[[:space:]]*(pub[[:space:]]+)?use[[:space:]]+crate::[A-Za-z_]+(::|;)'`
+pass. That scope missed **inline** fully-qualified paths that appear in any
+position of any non-`use` line — function bodies, struct field defaults, trait
+bounds, pattern matches, format strings, error variants, and so on. Empirically
+(issue #995), a fresh `grep -nE 'crate::(infrastructure|adapters|application)::'`
+across `crates/webfang_core/src/` surfaces **~63 inline sites in ~19 files** that
+the original lint silently approved while the same module had the outward
+import drawn on a different `use` line elsewhere. A new contributor could
+`use`-clean their file, then smuggle the same violation inline, and the strict
+gate would stay green.
+
+The new pass is **mandatory** for the strict gate to be a real architectural
+invariant, not a textual accident of `use`-line coverage.
+
+### 2. Decision
+
+Extend `scripts/check_intra_crate_direction.sh` with a **second scan pass** that
+detects inline qualified `crate::<layer>::...` paths in any position. The two
+passes share the same `#[cfg(test)]` / `mod tests` skip heuristic and the same
+allowlist accounting.
+
+**Layer regex** (inline pass only, no `use` prefix required):
+
+```regex
+crate::(infrastructure|adapters|application)::[a-z_]+
+```
+
+It deliberately does NOT match `crate::domain::` (domain is the innermost, so
+domain→domain and outward imports of `domain::*` from any layer are caught
+elsewhere or impossible by construction) and does NOT match `crate::<PascalCase>`
+(those are the legacy alias re-exports — `crate::ScraperConfig`,
+`crate::AutotuningConfig`, `crate::SitemapConfig`, `crate::ElasticConfig`,
+`crate::ElasticOverrides` — already handled by `ALIAS_AS_INFRA_REGEX` in the
+`use` pass and classified as `infrastructure` per ADR-0010 §3).
+
+**Comment filter — awk state machine.** The inline pass routes every line
+through a small awk filter (`filter_comments` in the script) that:
+
+- Tracks an `in_block` flag for `/* ... */` block comments: opens on `/*` not
+  preceded by `//`, closes on the next `*/`.
+- Drops lines whose first non-whitespace token starts with `//` (covers `//`,
+  `///`, `//!`).
+- Preserves the original 1-indexed line number (`NR`) prepended as
+  `NR<TAB>LINE`, so the downstream `grep` and the resulting
+  `::error::$file:$lineno::` line number is correct for the user.
+
+**Documented limitation (ADR-0010-A):** the awk filter does NOT parse Rust
+string literals or handle backslash continuations. A path inside a `"..."`
+literal or after a `\` continuation cannot be disambiguated by awk alone —
+residual false positives are routed through the allowlist (which already
+substring-matches on the full match), **not** through the regex. The regex
+stays conservative; the allowlist absorbs noise. The user explicitly rejected
+a full Rust parser in bash; this comment is the contract.
+
+**Allowlist matching.** The existing `is_allowlisted($file, $match, $target)`
+is reused as-is. For inline matches, `$match` is the full
+`crate::infrastructure::X::Y...` substring from the line, `$file` is the source
+file path, `$target` is `infrastructure` / `adapters` / `application`. Existing
+broad entries (`infrastructure::crawler`, `infrastructure::downloader`,
+`infrastructure::export`, `infrastructure::observability`,
+`application/container.rs`) continue to absorb pre-existing inline sites by the
+same substring match.
+
+### 3. Allowlist cap revisited (5 → 12, temporary)
+
+The original ADR-0010 §2 capped the allowlist at **≤5 entries**. After the
+inline pass is enabled, the empirical count of pre-existing inline sites not
+already covered by the 5 broad entries is **43 violations across 13 files**.
+The cap must be raised temporarily to **≤12** to keep the strict gate
+green, with the explicit expectation that it reverts toward ≤5 after
+issue #994 sub-slice 3 lands.
+
+Three precision points govern the temporary cap (issue #995 user thread):
+
+1. **Each new entry MUST cite both ADR-0010 and #994 sub-slice 3 in its reason
+   comment** — "fecha de caducidad semántica" (semantic expiration date). When
+   sub-slice 3 ports the offending files, the entry is removed in the same
+   commit and the cap count drops by one.
+2. **Cap is meant to drop back toward 5 after sub-slice 3 ports the top-3
+   files**: `application/elastic_ingestion.rs` (top offender, ~13 sites),
+   `application/scraper_service.rs` (~7 sites), and
+   `application/crawler/crawl_result_repository.rs` (~6 sites, currently
+   covered by the existing `infrastructure::observability` broad entry — no
+   new entry needed for this slice). Sub-slice 3 also covers the
+   `infrastructure::http` `domain/waf.rs` misfile (7 sites) and the
+   `adapters/downloader/mod.rs` `ssrf` wiring (2 sites).
+3. **The cap is a hard gate in the script** (`ALLOWLIST_CAP=12`). Adding a
+   13th entry fails CI; the next entry must wait for sub-slice 3 to remove
+   an existing one or for a deliberate cap bump with its own ADR.
+
+Current cap-12 layout (8 entries — 5 original + 3 new) absorbs all 43
+violations. The 3 new entries are:
+
+- `application/` — broad catch for 11 application/* files (34 sites). Removed
+  per-file as sub-slice 3 lands.
+- `infrastructure::http` — covers `domain/waf.rs` (7 sites). The file is
+  misfiled (lives in `domain/` but acts as a port delegating to
+  `infrastructure::http::waf_engine`); port shape debated separately in
+  sub-slice 3 (move to `adapters/waf` or split domain port + infra impl).
+- `adapters/downloader/mod.rs` — covers 2 inline sites of
+  `crate::infrastructure::ssrf` (lines 266-267). Porting to a domain
+  `DownloaderConfig` requires the wider ssrf port extraction tracked in
+  sub-slice 3.
+
+### 4. Out of scope
+
+Porting the top-3 files (`elastic_ingestion`, `scraper_service`,
+`crawl_result_repository`) to `domain::*` is **not** part of this slice. The
+intra-crate lint extension is bug-fix scope (closes a CI gap that allowed
+architectural violations to slip through); the ports are refactor scope and
+have their own design debate in #994 sub-slice 3:
+
+- `CpuBridge` port shape — currently `infrastructure::bridge::CpuBridge` is
+  used inline in `application/elastic_ingestion.rs` (8 sites). The port
+  surface (`dispatch`, `dispatch_blocking`, `WorkerCount`) is non-trivial;
+  sub-slice 3 weighs `Box<dyn CpuBridge>` vs. a generic `Port<CpuJob>`.
+- `AutotuningConfig` ownership — `infrastructure::autotuning` defines
+  `ElasticConfig` (now re-exported via `domain::config::ElasticOverrides` but
+  the struct still lives in infrastructure). The full `ElasticConfig` →
+  `domain::config` move is deferred to sub-slice 3 to keep this slice ≤800
+  lines.
+
+This PR does NOT touch `Cargo.toml` (no new dependencies; the existing
+`sysinfo` doc-link fix in `infrastructure/autotuning.rs` is a comment-only
+change), does NOT touch `CHANGELOG.md` (AGENTS.md policy — consolidation PR
+owns it), and does NOT modify any production file beyond the comment fix.
+
+### 5. Update history
+
+- **2026-08-29** — Addendum 0010-A issued with the inline-path scanner
+  extension. Issue #995 closed. Allowlist cap raised 5 → 12. Three new
+  entries (`application/`, `infrastructure::http`, `adapters/downloader/mod.rs`)
+  added with #994 sub-slice 3 expiration dates.
