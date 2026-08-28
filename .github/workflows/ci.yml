@@ -102,6 +102,12 @@ jobs:
       # webfang_core depending on cli/tui/mcp/ai, or tui on cli).
       - name: Dependency direction gate
         run: bash scripts/check_dependency_direction.sh
+      # Regression guard for #990 (ADR-0010): intra-crate Clean Architecture
+      # layering `infrastructure → adapters → application → domain` (inward only).
+      # Fails if `application` imports `infrastructure` etc. (see
+      # `scripts/check_intra_crate_direction.sh` and ADR-0010 allowlist).
+      - name: Intra-crate direction gate (strict)
+        run: INTRA_CRATE_MODE=strict bash scripts/check_intra_crate_direction.sh
       # Regression guard for stabilization-sitemap-regression: the ignored-test
       # budget is a frozen Gate 0 baseline (37 rows in docs/test-inventory.md).
       # Any #[ignore] added or fixed without updating the inventory fails here.

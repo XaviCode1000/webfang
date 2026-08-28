@@ -1,222 +1,32 @@
-//! Configuration types for the scraper.
+//! Configuration types for the scraper — shim re-exporting domain VOs.
 //!
-//! Contains [`ScraperConfig`] for scraper behavior and [`ConcurrencyConfig`]
-//! for intelligent concurrency auto-detection.
+//! `ScraperConfig` family now lives in `crate::domain::config` (ADR-0010).
+//! This module keeps a `pub use` shim so `crate::infrastructure::config::ScraperConfig`
+//! and `webfang_core::ScraperConfig` remain valid, and adds the
+//! infrastructure-specific extension `to_download_config()` that builds the
+//! adapters `DownloadConfig` (which would be an outward `domain→adapters`
+//! dependency if it lived in `domain`).
+
+// Domain-owned VOs — canonical definitions
+pub use crate::domain::config::{
+    AssetNamingStrategy, AutotuningConfig, ElasticOverrides, ScraperConfig,
+};
+// ConcurrencyConfig already re-exported in domain, keep shim
+pub use crate::domain::config::ConcurrencyConfig;
+// OutputFormat shim (domain owns it; keep infra path working)
+pub use crate::domain::config::OutputFormat;
 
 // ============================================================================
-// Output Format
+// Extension: ScraperConfig → adapters DownloadConfig
 // ============================================================================
-
-use crate::adapters::downloader::AssetNamingStrategy;
-use clap::ValueEnum;
-use wreq_util::Profile;
-
-/// Output format for scraped content.
-///
-/// # Examples
-///
-/// ```
-/// use webfang_core::OutputFormat;
-///
-/// let format = OutputFormat::Markdown;
-/// assert_eq!(format, OutputFormat::Markdown);
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
-pub enum OutputFormat {
-    /// Markdown format with YAML frontmatter (recommended for RAG)
-    #[default]
-    Markdown,
-    /// Structured JSON with metadata
-    Json,
-    /// Plain text without formatting
-    Text,
-}
-
-// ============================================================================
-// Scraper Config
-// ============================================================================
-
-/// Scraper configuration for download and output behavior.
-///
-/// # Examples
-///
-/// ```
-/// use webfang_core::ScraperConfig;
-///
-/// // Default configuration
-/// let config = ScraperConfig::default();
-///
-/// // Custom configuration with builder pattern
-/// let config = ScraperConfig::default()
-///     .with_images()
-///     .with_documents()
-///     .with_output_dir("./output".into())
-///     .with_scraper_concurrency(5);
-///
-/// assert!(config.download_images);
-/// assert!(config.download_documents);
-/// assert_eq!(config.scraper_concurrency, 5);
-/// ```
-///
-/// # Concurrency Recommendations
-///
-/// | Storage | Concurrency | Reason |
-/// |---------|-------------|--------|
-/// | HDD | 3 (default) | Avoids disk thrashing on mechanical drives |
-/// | SSD | 5-8 | Faster random I/O |
-/// | NVMe | 10+ | Very high IOPS |
-#[derive(Debug, Clone)]
-pub struct ScraperConfig {
-    /// Enable image downloading (PNG, JPG, GIF, WEBP, SVG, BMP)
-    pub download_images: bool,
-    /// Enable document downloading (PDF, DOCX, XLSX, PPTX, etc.)
-    pub download_documents: bool,
-    /// Output directory for downloaded assets
-    pub output_dir: std::path::PathBuf,
-    /// Maximum file size in bytes (default: 50MB)
-    pub max_file_size: Option<u64>,
-    /// Timeout for individual asset downloads in seconds
-    pub download_timeout_secs: u64,
-    /// Maximum concurrent scrapers (default: 3 for HDD-aware on 4C CPU)
-    pub scraper_concurrency: usize,
-    /// Maximum concurrent asset downloads per page (default: 3)
-    ///
-    /// Separate from `scraper_concurrency` because asset downloads have a
-    /// different I/O profile (bandwidth + disk writes vs. network + parsing).
-    pub download_concurrency: usize,
-    /// Maximum pages to scrape (None = unlimited)
-    pub max_pages: Option<usize>,
-    /// CSS selector for content extraction (default: "body")
-    pub selector: String,
-    /// H2/TLS profile for asset downloads
-    pub asset_h2_profile: Profile,
-    /// URL glob patterns to include for asset downloads (empty = allow all)
-    pub asset_include_patterns: Vec<String>,
-    /// URL glob patterns to exclude for asset downloads (always applied)
-    pub asset_exclude_patterns: Vec<String>,
-    /// Strategy for naming downloaded asset files
-    pub asset_naming: AssetNamingStrategy,
-    /// Enable adaptive CSS selector repair (2-tier cascade)
-    pub adaptive_selectors: bool,
-    /// Bypass WAF/CAPTCHA detection entirely (REQ-WAF-07).
-    pub ignore_waf: bool,
-    /// Enable DOM pre-pruning before Readability (removes invisible/empty wrappers).
-    pub dom_preprune: bool,
-}
-
-impl Default for ScraperConfig {
-    fn default() -> Self {
-        Self {
-            download_images: false,
-            download_documents: false,
-            output_dir: std::path::PathBuf::from("output"),
-            max_file_size: Some(50 * 1024 * 1024), // 50MB default
-            download_timeout_secs: 30,
-            scraper_concurrency: 3,  // HDD-aware: nproc - 1 for 4C CPU
-            download_concurrency: 3, // Asset downloads: bandwidth + disk I/O
-            max_pages: None,
-            selector: "body".to_owned(),
-            asset_h2_profile: Profile::Chrome145,
-            asset_include_patterns: Vec::new(),
-            asset_exclude_patterns: Vec::new(),
-            asset_naming: AssetNamingStrategy::Hash,
-            adaptive_selectors: false,
-            ignore_waf: false,
-            dom_preprune: true,
-        }
-    }
-}
 
 impl ScraperConfig {
-    /// Create a new config with default values.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use webfang_core::ScraperConfig;
-    ///
-    /// let config = ScraperConfig::new();
-    /// assert!(!config.download_images);
-    /// ```
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Enable image downloading.
-    #[must_use]
-    pub fn with_images(mut self) -> Self {
-        self.download_images = true;
-        self
-    }
-
-    /// Enable document downloading.
-    #[must_use]
-    pub fn with_documents(mut self) -> Self {
-        self.download_documents = true;
-        self
-    }
-
-    /// Set custom output directory.
-    #[must_use]
-    pub fn with_output_dir(mut self, dir: std::path::PathBuf) -> Self {
-        self.output_dir = dir;
-        self
-    }
-
-    /// Set scraper concurrency limit.
-    ///
-    /// # Recommendations
-    ///
-    /// - **HDD**: 3 (default) — avoids disk thrashing
-    /// - **SSD**: 5-8 — faster random I/O
-    /// - **NVMe**: 10+ — very high IOPS
-    #[must_use]
-    pub fn with_scraper_concurrency(mut self, concurrency: usize) -> Self {
-        self.scraper_concurrency = concurrency;
-        self
-    }
-
-    /// Set download concurrency limit (assets per page).
-    #[must_use]
-    pub fn with_download_concurrency(mut self, concurrency: usize) -> Self {
-        // A value of 0 would make `buffer_unordered(0)` hang forever (deadlock,
-        // D1). Clamp defensively to a minimum of 1 so a programmatic `0` (e.g.
-        // from a test or a non-CLI caller) can never reach the downloader.
-        self.download_concurrency = concurrency.clamp(1, usize::MAX);
-        self
-    }
-
-    /// Set maximum file size for asset downloads in bytes.
-    #[must_use]
-    pub fn with_max_file_size(mut self, max_file_size: Option<u64>) -> Self {
-        self.max_file_size = max_file_size;
-        self
-    }
-
-    /// Set timeout for individual asset downloads in seconds.
-    #[must_use]
-    pub fn with_download_timeout(mut self, timeout_secs: u64) -> Self {
-        self.download_timeout_secs = timeout_secs;
-        self
-    }
-
-    /// Set the WAF/CAPTCHA detection bypass flag (REQ-WAF-07).
-    #[must_use]
-    pub fn with_ignore_waf(mut self, ignore_waf: bool) -> Self {
-        self.ignore_waf = ignore_waf;
-        self
-    }
-
-    /// Check if any download is enabled.
-    pub fn has_downloads(&self) -> bool {
-        self.download_images || self.download_documents
-    }
-
     /// Build a `DownloadConfig` from this scraper configuration.
     ///
     /// This is the single source of truth for mapping ScraperConfig → DownloadConfig,
     /// eliminating duplication between the orchestrator and fallback paths.
+    /// Lives in `infrastructure` so `domain::config` does not depend on `adapters`
+    /// (inward-only).
     pub fn to_download_config(&self) -> crate::adapters::downloader::DownloadConfig {
         crate::adapters::downloader::DownloadConfig {
             output_dir: self.output_dir.clone(),
@@ -230,98 +40,16 @@ impl ScraperConfig {
             ..Default::default()
         }
     }
-
-    /// Set maximum page limit.
-    #[must_use]
-    pub fn with_max_pages(mut self, pages: usize) -> Self {
-        self.max_pages = Some(pages);
-        self
-    }
-
-    /// Set CSS selector for content extraction.
-    #[must_use]
-    pub fn with_selector(mut self, selector: String) -> Self {
-        self.selector = selector;
-        self
-    }
-
-    /// Set H2/TLS profile for asset downloads.
-    #[must_use]
-    pub fn with_asset_h2_profile(mut self, v: Profile) -> Self {
-        self.asset_h2_profile = v;
-        self
-    }
-
-    /// Set URL glob patterns to include for asset downloads.
-    #[must_use]
-    pub fn with_asset_include_patterns(mut self, v: Vec<String>) -> Self {
-        self.asset_include_patterns = v;
-        self
-    }
-
-    /// Set URL glob patterns to exclude for asset downloads.
-    #[must_use]
-    pub fn with_asset_exclude_patterns(mut self, v: Vec<String>) -> Self {
-        self.asset_exclude_patterns = v;
-        self
-    }
-
-    /// Set strategy for naming downloaded asset files.
-    #[must_use]
-    pub fn with_asset_naming(mut self, v: AssetNamingStrategy) -> Self {
-        self.asset_naming = v;
-        self
-    }
-
-    /// Enable/disable DOM pre-pruning before Readability.
-    #[must_use]
-    pub fn with_dom_preprune(mut self, enabled: bool) -> Self {
-        self.dom_preprune = enabled;
-        self
-    }
 }
 
 // ============================================================================
-// Concurrency Config — single source of truth in domain::config (issue #516).
-pub use crate::domain::config::ConcurrencyConfig;
-
+// Extension: AutotuningConfig resolve helpers (infra-owned logic)
 // ============================================================================
-// Elastic Ingestion Autotuning Config (Issue #51)
-// ============================================================================
-
-/// Hardware-autotuning configuration snapshot for the elastic ingestion
-/// pipeline (Issue #51).
-///
-/// Serializable so it can be written to / read from a config file. Holds the
-/// two core auto-detected sizing values; the fuller
-/// [`crate::infrastructure::autotuning::ElasticConfig`] adds DB/pool parameters.
-///
-/// Resolution priority (frozen design decision #12): explicit override >
-/// `WEBFANG_*` env var > auto-detected default.
-///
-/// # Examples
-///
-/// ```
-/// use webfang_core::AutotuningConfig;
-///
-/// // Explicit overrides win.
-/// let cfg = AutotuningConfig::resolve(Some(4), Some(8 * 1024 * 1024 * 1024));
-/// assert_eq!(cfg.cpu_cores, 4);
-/// assert_eq!(cfg.ram_budget_bytes, 8 * 1024 * 1024 * 1024);
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct AutotuningConfig {
-    /// Detected/overridden CPU core count.
-    pub cpu_cores: usize,
-    /// Detected/overridden RAM budget in bytes.
-    pub ram_budget_bytes: u64,
-}
 
 impl AutotuningConfig {
     /// Resolve the autotuning snapshot.
     ///
-    /// Priority: `cpu_override`/`ram_override` > `WEBFANG_CPU_CORES` /
-    /// `WEBFANG_RAM_BUDGET` env > auto-detected defaults.
+    /// Priority: `cpu_override`/`ram_override` > `WEBFANG_*` env > auto-detected.
     #[must_use]
     pub fn resolve(cpu_override: Option<usize>, ram_override: Option<u64>) -> Self {
         use crate::infrastructure::autotuning;
@@ -334,7 +62,7 @@ impl AutotuningConfig {
         }
     }
 
-    /// Build a snapshot from a resolved [`crate::infrastructure::autotuning::ElasticConfig`].
+    /// Build a snapshot from a resolved `ElasticConfig`.
     #[must_use]
     pub fn from_elastic(elastic: &crate::infrastructure::autotuning::ElasticConfig) -> Self {
         Self {
@@ -345,7 +73,7 @@ impl AutotuningConfig {
 }
 
 // ============================================================================
-// Tests
+// Tests — ScraperConfig + AutotuningConfig via shim
 // ============================================================================
 
 #[cfg(test)]
@@ -364,7 +92,6 @@ mod tests {
 
     #[test]
     fn test_scraper_config_with_ignore_waf() {
-        // REQ-WAF-07: persistent config field + builder for the bypass flag.
         let config = ScraperConfig::default().with_ignore_waf(true);
         assert!(config.ignore_waf);
     }
@@ -444,7 +171,6 @@ mod tests {
 
     #[test]
     fn test_autotuning_config_resolve_without_overrides_is_sane() {
-        // No overrides → falls through env (likely unset) → auto-detected defaults.
         let cfg = AutotuningConfig::resolve(None, None);
         assert!(cfg.cpu_cores > 0, "cpu_cores must be positive");
         assert!(
@@ -478,5 +204,16 @@ mod tests {
         let snap = AutotuningConfig::from_elastic(&elastic);
         assert_eq!(snap.cpu_cores, 6);
         assert_eq!(snap.ram_budget_bytes, 12 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_to_download_config_maps_fields() {
+        let scraper = ScraperConfig::default()
+            .with_images()
+            .with_download_concurrency(7)
+            .with_asset_naming(AssetNamingStrategy::Slug);
+        let dl = scraper.to_download_config();
+        assert_eq!(dl.concurrency_limit, 7);
+        assert_eq!(dl.asset_naming, AssetNamingStrategy::Slug);
     }
 }

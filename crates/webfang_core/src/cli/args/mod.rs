@@ -152,7 +152,7 @@ impl Args {
     /// [`ElasticOverrides`]: crate::infrastructure::autotuning::ElasticOverrides
     #[must_use]
     pub fn elastic_overrides(&self) -> crate::infrastructure::autotuning::ElasticOverrides {
-        use crate::infrastructure::autotuning::ElasticOverrides;
+        use crate::domain::config::ElasticOverrides;
         ElasticOverrides {
             cpu_cores: self.export.cpu_cores,
             ram_budget_bytes: self.export.ram_budget,

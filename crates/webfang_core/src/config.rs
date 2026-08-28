@@ -4,8 +4,8 @@
 //! with validation and feature gating.
 
 use crate::domain::config::HttpClientConfig;
+use crate::domain::config::ScraperConfig;
 use crate::domain::site::CrawlerConfig;
-use crate::infrastructure::config::ScraperConfig;
 use crate::infrastructure::output::file_saver::ObsidianOptions;
 
 /// Central application configuration

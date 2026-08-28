@@ -14,6 +14,7 @@ use crate::application::progress_observer::ProgressObserver;
 use crate::application::resume::{filter_committed, record_store_bridge};
 use crate::application::scrape_single_url_for_tui;
 use crate::cli::error::CliExit;
+use crate::domain::config::ScraperConfig;
 use crate::domain::entities::progress::{ScrapeError, ScrapeStatus};
 use crate::domain::persistence::PersistenceMode;
 use crate::domain::{CorrelationId, ScrapedContent};
@@ -23,7 +24,6 @@ use crate::infrastructure::downloader::Downloader;
 use crate::infrastructure::export::state_store::StateStore;
 use crate::infrastructure::observability::log_scrape_error;
 use crate::HttpClientConfig;
-use crate::ScraperConfig;
 
 #[cfg(feature = "adaptive-selectors")]
 use crate::application::adaptive_engine::AdaptiveSelectorEngine;

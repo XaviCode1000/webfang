@@ -16,6 +16,7 @@
 //! We re-export the trait here so downstream code can import from the
 //! domain layer without reaching into the application layer.
 
+pub use crate::domain::downloader_port::{Cookie, DownloadError, Downloader, FetchedPage};
 pub use crate::domain::http_port::HttpClientPort;
 
 use std::future::Future;

@@ -18,9 +18,9 @@ use url::Url;
 use crate::application::crawler::collector::{CrawlMessage, ResultsCollector};
 use crate::application::crawler::fetch_router::FetchRouter;
 use crate::application::pipeline::{PipelineExecutor, ScrapedItem, StageOutcome};
+use crate::domain::downloader_port::{Cookie, DownloadError, Downloader};
 use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl};
 use crate::infrastructure::crawler::{extract_links, fetch_url, RobotsFetcher};
-use crate::infrastructure::downloader::{Cookie, DownloadError, Downloader};
 
 /// Outcome of fetching a single page.
 ///

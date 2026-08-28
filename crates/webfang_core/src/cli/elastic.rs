@@ -8,10 +8,10 @@ use tracing::{warn, Instrument};
 
 use crate::application::crawl_options::CrawlOptions;
 use crate::cli::error::CliExit;
+use crate::domain::config::ScraperConfig;
 use crate::domain::repository::DynVectorRepository;
 use crate::error::ScraperError;
 use crate::CrawlerConfig;
-use crate::ScraperConfig;
 
 /// Run the elastic ingestion pipeline on all scraped results.
 ///

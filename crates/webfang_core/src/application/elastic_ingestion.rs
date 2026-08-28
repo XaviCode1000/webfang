@@ -35,11 +35,11 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 use tracing::{error, info, warn};
 
+use crate::domain::config::AutotuningConfig;
 use crate::domain::repository::VectorRepository;
 use crate::domain::url_validation::{normalize_url, NormalizeConfig, RemoveQueryParameters};
 use crate::error::ScraperError;
 use crate::infrastructure::bridge::CpuBridge;
-use crate::infrastructure::config::AutotuningConfig;
 use crate::infrastructure::crawler::resource_downloader::{DownloadedResource, ResourceDownloader};
 
 /// Elastic ingestion pipeline orchestrator (frozen Decision 1).

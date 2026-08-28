@@ -9,9 +9,10 @@ use std::path::PathBuf;
 use url::Url;
 
 use crate::domain::budget::BudgetOverrides;
-use crate::domain::config::{ConcurrencyConfig, ExportFormat, OutputFormat, PipelineOutputFormat};
+use crate::domain::config::{
+    ConcurrencyConfig, ElasticOverrides, ExportFormat, OutputFormat, PipelineOutputFormat,
+};
 use crate::domain::JsStrategy;
-use crate::infrastructure::autotuning::ElasticOverrides;
 
 // ============================================================================
 // Top-level options

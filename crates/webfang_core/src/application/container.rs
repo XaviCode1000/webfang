@@ -24,6 +24,7 @@ use crate::application::deduplicator::UrlDeduplicator;
 use crate::application::elastic_ingestion::ElasticIngestion;
 use crate::application::http_client::{HttpClient, HttpClientConfig};
 use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
+use crate::domain::config::ScraperConfig;
 use crate::domain::credentials::CredentialStore;
 use crate::domain::embedding_port::EmbeddingPort;
 use crate::domain::llm_port::LlmPort;
@@ -35,7 +36,6 @@ use crate::domain::text_chunker::TextChunker;
 use crate::domain::{repositories::CrawlResultRepository, CrawlerConfig};
 use crate::infrastructure::autotuning::ElasticConfig;
 use crate::infrastructure::bridge::CpuBridge;
-use crate::infrastructure::config::ScraperConfig;
 use crate::infrastructure::cpu_pool::RayonCpuPool;
 use crate::infrastructure::crawler::resource_downloader::{DownloadConfig, ResourceDownloader};
 use crate::infrastructure::export::state_store::StateStore;
@@ -547,9 +547,9 @@ impl Container {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::config::ScraperConfig;
     use crate::domain::CrawlerConfig;
     use crate::infrastructure::autotuning::{ElasticConfig, ElasticOverrides};
-    use crate::infrastructure::config::ScraperConfig;
     use tempfile::TempDir;
 
     /// Create a Container with default configs backed by a TempDir.

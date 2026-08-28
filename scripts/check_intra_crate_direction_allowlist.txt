@@ -1,0 +1,7 @@
+# ADR-0010 allowlist — hybrid slice covers ~80% via domain ports; remainder is DI root + transversal + deferred low fan-in (follow-up slice)
+# Each line: <pattern> # ADR-0010 <reason>  (pattern is substring of file path or import; CI prints allowlisted count; max 5 entries)
+application/container.rs # ADR-0010 DI root — composition root must know concretes (CpuBridge, RayonCpuPool, DomainSessionPool, ResourceDownloader)
+infrastructure::observability # ADR-0010 transversal — log_scrape_error, memory_probe (no domain value, tracing is the stack)
+infrastructure::crawler # ADR-0010 deferred — UrlQueue, RobotsFetcher, SitemapParser, extract_links, UrlSource (follow-up slice)
+infrastructure::downloader # ADR-0010 deferred — concrete downloaders (Wreq, Obscura, Chromium), ResourceGovernor, CookieBridge (follow-up slice)
+infrastructure:: # ADR-0010 deferred broad — StateStore, WafInspector, UserAgentCache, scraper, bridge, obsidian, llm, converter, axtree, network (follow-up slice, keep ≤5)

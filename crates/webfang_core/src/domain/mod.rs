@@ -48,6 +48,12 @@ pub mod url_validation;
 pub mod url_validator;
 pub mod value_objects;
 
+/// Downloader port — domain-owned trait for page fetching (ADR-0010).
+pub mod downloader_port;
+
+/// Crawler port — SitemapConfig + pure helpers (ADR-0010).
+pub mod crawler_port;
+
 /// Budget model: Global→Domain→Operation→Asset concurrency tiers,
 /// canonical clamp, hardware-detector seam, and pure derivation fns.
 pub mod budget;
@@ -69,7 +75,10 @@ pub mod text_chunker;
 
 // Re-exports for backward compatibility (crate::domain::X)
 pub use clock::{Clock, MockClock, MockUtcClock, SystemClock, SystemUtcClock, UtcClock};
-pub use config::{ConcurrencyConfig, ExportFormat, OutputFormat, PipelineOutputFormat};
+pub use config::{
+    AssetNamingStrategy, AutotuningConfig, ConcurrencyConfig, ElasticOverrides, ExportFormat,
+    OutputFormat, PipelineOutputFormat, ScraperConfig,
+};
 pub use content_processor::ContentProcessor;
 pub use crawl_job::{ContentType, DiscoveredUrl};
 pub use credentials::{AccessToken, ApiKey, CredentialStore, SecretCredential, SensitiveString};
