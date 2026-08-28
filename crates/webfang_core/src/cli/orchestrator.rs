@@ -530,9 +530,17 @@ async fn prepare_phase(
             // Recursive BFS discovery respects max_depth/max_pages/robots/
             // patterns; the existing scrape_phase + export_phase still own
             // content extraction and on-disk output.
-            let discovered_urls =
-                discover_recursive_with_persistence(crawler_config, opts, persistence_mode).await?;
-            discovered_urls
+            //
+            // The persistence_mode is forwarded to `discover_urls_recursive`,
+            // which applies `crawl_site_with_options` when the mode enables
+            // checkpointing and falls back to `crawl_site` otherwise — single
+            // call site, no orchestrator-level branching (slice 5c followup).
+            match discover_urls_recursive(crawler_config, opts, persistence_mode).await {
+                Err(e) => {
+                    return Err(CliExit::NetworkError(format!("URL discovery failed: {e}")));
+                },
+                Ok(urls) => urls,
+            }
         };
 
         plan_urls(
@@ -616,37 +624,6 @@ struct PrepareResult {
     urls_to_scrape: Vec<url::Url>,
     scraper_config: ScraperConfig,
     shared_downloader: Option<std::sync::Arc<crate::adapters::downloader::Downloader>>,
-}
-
-/// Recursive discovery wired to PersistenceMode.
-///
-/// When the mode enables checkpointing (`Checkpoint` or `Full`), the Engine is
-/// constructed with `with_persistence` so `crawl_checkpoint.json` is created
-/// and the checkpoint interval flows from the mode (not hardcoded 100).
-/// `Disabled` and `Resume` fall back to the non-persistent helper.
-async fn discover_recursive_with_persistence(
-    crawler_config: CrawlerConfig,
-    opts: &CrawlOptions,
-    persistence_mode: &PersistenceMode,
-) -> Result<Vec<url::Url>, CliExit> {
-    if persistence_mode.checkpoint_cfg().is_some() {
-        let mut engine = crate::application::crawler::engine::Engine::new(
-            crawler_config,
-            opts.crawl.ignore_robots,
-        )
-        .map_err(|e| CliExit::NetworkError(format!("URL discovery failed: {e}")))?
-        .with_persistence(persistence_mode.clone());
-        let result = engine
-            .run()
-            .await
-            .map_err(|e| CliExit::NetworkError(format!("URL discovery failed: {e}")))?;
-        engine.shutdown().await;
-        Ok(result.urls.into_iter().map(|d| d.url).collect())
-    } else {
-        discover_urls_recursive(crawler_config, opts)
-            .await
-            .map_err(|e| CliExit::NetworkError(format!("URL discovery failed: {e}")))
-    }
 }
 
 /// Run the scraping loop over all URLs with progress events.
