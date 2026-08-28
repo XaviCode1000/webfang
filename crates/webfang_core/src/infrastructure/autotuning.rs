@@ -223,18 +223,11 @@ pub fn parse_ram_bytes(s: &str) -> Option<u64> {
 // ElasticConfig — full elastic ingestion config (frozen design §Interfaces)
 // ============================================================================
 
-/// Overrides supplied by CLI flags (PR5). `None` means "not set → fall back".
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ElasticOverrides {
-    /// `--cpu-cores` override.
-    pub cpu_cores: Option<usize>,
-    /// `--ram-budget` override (bytes).
-    pub ram_budget_bytes: Option<u64>,
-    /// `--max-resource-mb` override (bytes).
-    pub max_resource_bytes: Option<u64>,
-    /// `--db-path` override.
-    pub db_path: Option<PathBuf>,
-}
+/// Overrides supplied by CLI flags (PR5) — domain-owned DTO.
+///
+/// Re-exported from `crate::domain::config` so `application::crawl_options`
+/// can depend on it without `application→infrastructure` (ADR-0010).
+pub use crate::domain::config::ElasticOverrides;
 
 /// Resolved elastic ingestion configuration.
 ///

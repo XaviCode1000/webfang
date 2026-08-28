@@ -48,10 +48,10 @@ pub struct SomCapture {
 /// 4. Emits a mark if the box intersects, with the node's name as label
 #[cfg(feature = "chromium")]
 pub async fn extract_marks(url: &str) -> crate::Result<Vec<Mark>> {
-    use crate::infrastructure::axtree::fetch_raw_axtree;
+    // domain port: use crate::domain::axtree_port::AxTreePort;
     let parsed =
         url::Url::parse(url).map_err(|e| crate::ScraperError::invalid_url(e.to_string()))?;
-    let nodes = fetch_raw_axtree(&parsed)
+    let nodes = crate::infrastructure::axtree::fetch_raw_axtree(&parsed)
         .await
         .map_err(|e| crate::ScraperError::extraction(format!("SOM fetch_raw failed: {e}")))?;
     // Compact path kept for mark ref assignment without extra allocation.

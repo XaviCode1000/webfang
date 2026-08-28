@@ -14,6 +14,7 @@ use wreq_util::Profile;
 use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
+use crate::domain::downloader_port::{DownloadError, Downloader, FetchedPage};
 use crate::domain::JsStrategy;
 use crate::infrastructure::downloader::chromiumoxide_downloader::ChromiumoxideDownloader;
 use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
@@ -21,7 +22,6 @@ use crate::infrastructure::downloader::hybrid_router::HybridRouter;
 use crate::infrastructure::downloader::obscura_downloader::ObscuraDownloader;
 use crate::infrastructure::downloader::resource_governor::ResourceGovernor;
 use crate::infrastructure::downloader::wreq_downloader::WreqDownloader;
-use crate::infrastructure::downloader::{DownloadError, Downloader, FetchedPage};
 
 /// Type-erased fetch router that dispatches to the appropriate downloader
 /// based on the configured [`JsStrategy`].

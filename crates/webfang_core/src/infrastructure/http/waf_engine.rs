@@ -30,8 +30,8 @@
 
 use aho_corasick::AhoCorasick;
 use once_cell::sync::Lazy;
+use std::collections::HashMap;
 use std::collections::HashSet;
-use wreq::header::HeaderMap;
 
 // ============================================================================
 // TASK-01 — Domain types + Inspection Context API (REQ-WAF-01)
@@ -139,7 +139,7 @@ pub struct InspectionContext {
     /// Content-Type header value, if known.
     pub content_type: Option<String>,
     /// Response headers.
-    pub headers: HeaderMap,
+    pub headers: HashMap<String, String>,
     /// Bypass WAF detection entirely (yields a clean verdict).
     pub ignore_waf: bool,
 }
@@ -150,11 +150,12 @@ impl InspectionContext {
     /// types (REQ-WAF-01).
     ///
     /// The `content-type` entry is lifted into [`Self::content_type`] for the
-    /// REQ-WAF-02 gate, and the whole map is converted into a wreq
-    /// [`HeaderMap`] for control-header evidence (REQ-WAF-03). Invalid header
-    /// names/values are skipped — they cannot occur for headers already
-    /// validated by the downloaders, but the guard keeps this infallible.
-    /// `ignore_waf` short-circuits inspection to a clean verdict (REQ-WAF-07).
+    /// REQ-WAF-02 gate; the whole map is retained as plain lowercased-key
+    /// `String` pairs so control-header evidence (REQ-WAF-03) needs no `wreq`
+    /// types at the inspection boundary. Headers are single-valued at capture
+    /// (duplicate names collapse, last value wins — WAF control headers are
+    /// single-valued, so no evidence is lost). `ignore_waf` short-circuits
+    /// inspection to a clean verdict (REQ-WAF-07).
     #[must_use]
     pub fn from_lowercase_headers(
         status: u16,
@@ -162,19 +163,10 @@ impl InspectionContext {
         ignore_waf: bool,
     ) -> Self {
         let content_type = headers.get("content-type").cloned();
-        let mut map = HeaderMap::new();
-        for (name, value) in headers {
-            if let (Ok(name), Ok(value)) = (
-                wreq::header::HeaderName::from_bytes(name.as_bytes()),
-                wreq::header::HeaderValue::from_str(value),
-            ) {
-                map.insert(name, value);
-            }
-        }
         Self {
             status: Some(status),
             content_type,
-            headers: map,
+            headers: headers.clone(),
             ignore_waf,
         }
     }
@@ -608,6 +600,43 @@ static WAF_AC: Lazy<AhoCorasick> = Lazy::new(|| {
 /// WafInspector provides multi-layer WAF detection
 pub struct WafInspector;
 
+impl crate::domain::waf::sealed::Sealed for WafInspector {}
+
+impl crate::domain::waf::WafInspectorPort for WafInspector {
+    fn inspect(
+        &self,
+        body: &str,
+        ctx: &crate::domain::waf::InspectionContext,
+    ) -> crate::domain::waf::WafVerdict {
+        let infra_ctx = InspectionContext {
+            status: ctx.status,
+            content_type: ctx.content_type.clone(),
+            headers: ctx.headers.clone(),
+            ignore_waf: ctx.ignore_waf,
+        };
+        let verdict = Self::inspect(body, &infra_ctx);
+        crate::domain::waf::WafVerdict {
+            is_blocked: verdict.is_blocked,
+            evidences: verdict
+                .evidences
+                .into_iter()
+                .map(|e| crate::domain::waf::WafEvidence {
+                    provider: e.provider,
+                    tier: match e.tier {
+                        WafTier::Challenge => crate::domain::waf::WafTier::Challenge,
+                        WafTier::Fingerprint => crate::domain::waf::WafTier::Fingerprint,
+                    },
+                    matched_pattern: e.matched_pattern,
+                    source: match e.source {
+                        EvidenceSource::Body => crate::domain::waf::EvidenceSource::Body,
+                        EvidenceSource::Header => crate::domain::waf::EvidenceSource::Header,
+                    },
+                })
+                .collect(),
+        }
+    }
+}
+
 impl WafInspector {
     /// Inspect a response body with full HTTP context and return a verdict.
     ///
@@ -941,7 +970,7 @@ fn should_scan_body(ctx: &InspectionContext) -> bool {
 /// Every control header is [`WafTier::Fingerprint`] evidence — it never
 /// auto-blocks on mere presence (correction B), only when correlated with a
 /// WAF status code by [`decide`].
-fn collect_header_evidence(headers: &HeaderMap) -> Vec<WafEvidence> {
+fn collect_header_evidence(headers: &HashMap<String, String>) -> Vec<WafEvidence> {
     let mut evidences = Vec::new();
     for (name, provider) in WAF_CONTROL_HEADERS {
         if headers.get(*name).is_some() {
@@ -1627,8 +1656,8 @@ mod tests {
         // is_t2_blocking_status directly. Body-sourced T2 at 5xx is carved out
         // by FIX B — see test_inspect_t2_body_at_503_does_not_block.
         for status in [403u16, 429, 503, 520, 525, 529] {
-            let mut headers = HeaderMap::new();
-            headers.insert("cf-mitigated", "challenge".parse().unwrap());
+            let mut headers = HashMap::new();
+            headers.insert("cf-mitigated".to_string(), "challenge".to_string());
             let ctx = InspectionContext {
                 status: Some(status),
                 content_type: Some("text/html".into()),
@@ -1639,8 +1668,8 @@ mod tests {
             assert!(verdict.is_blocked, "T2 header at {status} must block");
         }
         for status in [200u16, 201, 301, 404, 500, 519, 530] {
-            let mut headers = HeaderMap::new();
-            headers.insert("cf-mitigated", "challenge".parse().unwrap());
+            let mut headers = HashMap::new();
+            headers.insert("cf-mitigated".to_string(), "challenge".to_string());
             let ctx = InspectionContext {
                 status: Some(status),
                 content_type: Some("text/html".into()),
@@ -1673,8 +1702,8 @@ mod tests {
     fn test_collect_header_evidence_source_is_header() {
         // FIX B: control-header evidence is tagged EvidenceSource::Header so it
         // still blocks on 5xx (active mitigation) unlike body-sourced T2.
-        let mut headers = HeaderMap::new();
-        headers.insert("cf-mitigated", "challenge".parse().unwrap());
+        let mut headers = HashMap::new();
+        headers.insert("cf-mitigated".to_string(), "challenge".to_string());
         let evidences = collect_header_evidence(&headers);
         assert_eq!(evidences.len(), 1, "expected one header evidence");
         assert!(
@@ -1719,8 +1748,8 @@ mod tests {
     #[test]
     fn test_inspect_control_header_t2_never_auto_blocks() {
         // Correction B: a control header alone (T2) never blocks on mere presence.
-        let mut headers = HeaderMap::new();
-        headers.insert("x-datadome-response", "blocked".parse().unwrap());
+        let mut headers = HashMap::new();
+        headers.insert("x-datadome-response".to_string(), "blocked".to_string());
         let ctx = InspectionContext {
             headers,
             ..Default::default()
@@ -1739,8 +1768,8 @@ mod tests {
     #[test]
     fn test_inspect_control_header_with_503_blocks() {
         // Control header (T2) + correlated status → block.
-        let mut headers = HeaderMap::new();
-        headers.insert("cf-mitigated", "challenge".parse().unwrap());
+        let mut headers = HashMap::new();
+        headers.insert("cf-mitigated".to_string(), "challenge".to_string());
         let ctx = InspectionContext {
             headers,
             status: Some(503),
@@ -2143,8 +2172,8 @@ mod tests {
         );
         assert!(!ctx.ignore_waf);
         // Both headers survive the conversion (control header is T2 evidence).
-        assert!(ctx.headers.get("cf-mitigated").is_some());
-        assert!(ctx.headers.get("content-type").is_some());
+        assert!(ctx.headers.contains_key("cf-mitigated"));
+        assert!(ctx.headers.contains_key("content-type"));
     }
 
     #[test]
@@ -2474,8 +2503,8 @@ mod tests {
         // Control headers are Fingerprint-tier evidence — mere presence never
         // auto-blocks (correction B). Degraded mode (no status), so a T2 header
         // alone is clean.
-        let mut headers = HeaderMap::new();
-        headers.insert("x-datadome-response", "blocked".parse().unwrap());
+        let mut headers = HashMap::new();
+        headers.insert("x-datadome-response".to_string(), "blocked".to_string());
         let ctx = InspectionContext {
             headers,
             ..Default::default()
@@ -2487,8 +2516,8 @@ mod tests {
         );
 
         // cf-ray alone also doesn't trigger (common in normal requests).
-        let mut headers = HeaderMap::new();
-        headers.insert("cf-ray", "abc123".parse().unwrap());
+        let mut headers = HashMap::new();
+        headers.insert("cf-ray".to_string(), "abc123".to_string());
         let ctx = InspectionContext {
             headers,
             ..Default::default()

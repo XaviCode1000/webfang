@@ -44,6 +44,7 @@ use crate::application::pipeline::{OutputStage, PipelineExecutor};
 use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::domain::budget::{BudgetModel, BudgetOverrides};
 use crate::domain::clock::SystemClock;
+use crate::domain::session_port::SessionPoolConfig;
 use crate::domain::{
     CorrelationId, CrawlError, CrawlErrorCategory, CrawlResult, CrawlerConfig, JsStrategy,
 };
@@ -51,7 +52,6 @@ use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
 use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
 use crate::infrastructure::downloader::resource_governor::ResourceGovernor;
 use crate::infrastructure::downloader::DownloadError;
-use crate::infrastructure::network::session_pool::{DomainSessionPool, SessionPoolConfig};
 
 /// Shared shutdown signal — set to `true` when SIGINT/SIGTERM received.
 type ShutdownSignal = Arc<AtomicBool>;
@@ -92,7 +92,7 @@ pub struct Engine {
     /// Shared robots.txt fetcher for the crawl session (TLS-fingerprinted, #337).
     robots_fetcher: Arc<RobotsFetcher>,
     /// Optional domain session pool for per-domain rate limiting.
-    session_pool: Option<DomainSessionPool>,
+    session_pool: Option<crate::infrastructure::network::session_pool::DomainSessionPool>,
     /// Atomic counter for total pages crawled (used by checkpoint and signal handler).
     pages_crawled: Arc<AtomicU64>,
     /// Shared shutdown signal for graceful termination.
@@ -284,12 +284,24 @@ impl Engine {
     pub fn with_session_pool(mut self, cooldown: Duration) -> Self {
         // Slot count derives from the model's Domain tier, not a raw default
         // (task 2.2c).
-        let config = SessionPoolConfig {
+        let domain_cfg = SessionPoolConfig {
             base_delay: cooldown,
             pool_size: self.budget.domain(),
             ..SessionPoolConfig::default()
         };
-        self.session_pool = Some(DomainSessionPool::new(config, Arc::new(SystemClock)));
+        let infra_cfg = crate::infrastructure::network::session_pool::SessionPoolConfig {
+            pool_size: domain_cfg.pool_size,
+            base_delay: domain_cfg.base_delay,
+            max_delay: domain_cfg.max_delay,
+            max_exp: domain_cfg.max_exp,
+            ttl_duration: domain_cfg.ttl_duration,
+        };
+        self.session_pool = Some(
+            crate::infrastructure::network::session_pool::DomainSessionPool::new(
+                infra_cfg,
+                Arc::new(SystemClock),
+            ),
+        );
         self
     }
 

@@ -21,7 +21,7 @@ mod common;
 
 use common::{redact_nondeterministic, BehavioralTest};
 use std::path::Path;
-use webfang_core::infrastructure::http::waf_engine::{InspectionContext, WafInspector, WafVerdict};
+use webfang_core::domain::waf::{InspectionContext, WafInspector, WafVerdict};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -73,6 +73,12 @@ async fn inspect_served_fixture(
         .send()
         .await
         .expect("fetch fixture over HTTP");
+    let mut header_map = std::collections::HashMap::new();
+    for (k, v) in response.headers().iter() {
+        if let Ok(val) = v.to_str() {
+            header_map.insert(k.as_str().to_lowercase(), val.to_string());
+        }
+    }
     let ctx = InspectionContext {
         status: Some(response.status().as_u16()),
         content_type: response
@@ -80,7 +86,7 @@ async fn inspect_served_fixture(
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .map(String::from),
-        headers: response.headers().clone(),
+        headers: header_map,
         ignore_waf,
     };
     let body = response.text().await.expect("read response body");

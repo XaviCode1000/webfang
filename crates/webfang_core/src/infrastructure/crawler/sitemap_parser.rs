@@ -557,7 +557,7 @@ impl SitemapParser {
         let ctx = InspectionContext {
             status: Some(status),
             content_type: (!content_type.is_empty()).then(|| content_type.to_string()),
-            headers: wreq::header::HeaderMap::new(),
+            headers: std::collections::HashMap::new(),
             ignore_waf: false,
         };
         let text = String::from_utf8_lossy(body);

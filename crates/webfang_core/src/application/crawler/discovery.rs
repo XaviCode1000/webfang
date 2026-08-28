@@ -12,12 +12,12 @@ use url::Url;
 use crate::application::url_filter::is_allowed;
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::url_validation::{NormalizeConfig, RemoveQueryParameters};
+use crate::domain::waf::{InspectionContext, WafInspector};
 use crate::domain::{CorrelationId, CrawlerConfig, ScrapedContent, ValidUrl};
 use crate::error::{Result as ScraperResult, ScraperError};
 use crate::infrastructure::crawler::binary_utils::derive_filename_from_response;
 use crate::infrastructure::crawler::{extract_links, is_internal_link, normalize_url};
 use crate::infrastructure::downloader::{DownloadError, Downloader};
-use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
 use crate::infrastructure::observability::log_scrape_error;
 use crate::ScraperConfig;
 

@@ -13,10 +13,10 @@ use crate::cli::export_flow::{run_export, save_files, ExportConfig};
 use crate::cli::parse::parse_asset_naming;
 use crate::cli::scrape_flow::{apply_resume_mode, scrape_urls};
 use crate::cli::url_discovery::{discover_urls, discover_urls_recursive};
+use crate::domain::config::ScraperConfig;
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::persistence::PersistenceMode;
 use crate::CrawlerConfig;
-use crate::ScraperConfig;
 
 use crate::domain;
 use crate::infrastructure::export::state_store::StateStore;

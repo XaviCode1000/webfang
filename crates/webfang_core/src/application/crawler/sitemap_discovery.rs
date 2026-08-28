@@ -8,9 +8,9 @@
 use crate::application::url_filter::is_allowed;
 use crate::domain::error::WafDetectionKind;
 use crate::domain::http_config::HttpClientConfig;
+use crate::domain::waf::{InspectionContext, WafInspector};
 use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl};
 use crate::infrastructure::crawler::{SitemapConfig, SitemapError, SitemapParser, SitemapUrl};
-use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
 use tracing::{info, instrument};
 use url::Url;
 
@@ -501,7 +501,7 @@ async fn fetch_robots_sitemap(
     let ctx = InspectionContext {
         status: Some(status.as_u16()),
         content_type: (!content_type.is_empty()).then_some(content_type),
-        headers: wreq::header::HeaderMap::new(),
+        headers: std::collections::HashMap::new(),
         ignore_waf: false,
     };
     let verdict = WafInspector::inspect(&content, &ctx);

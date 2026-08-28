@@ -7,12 +7,12 @@ use std::sync::Arc;
 use crate::application::scraper_service::enforce_robots_policy;
 use crate::domain::credentials::ApiKey;
 use crate::domain::http_port::HttpClientPort;
+use crate::domain::llm::validation::{validate_record, validate_schema};
 use crate::domain::llm_port::{ChatMessage, LlmPort, LlmRequest, LlmResponse};
 use crate::domain::semantic_cleaner::SemanticCleaner;
 use crate::domain::text_chunker::TextChunker;
 use crate::error::{Result, ScraperError};
 use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
-use crate::infrastructure::llm::validation::{validate_record, validate_schema};
 use serde_json::Value;
 use url::Url;
 

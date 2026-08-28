@@ -21,7 +21,7 @@ use crate::domain::embedding_port::EmbeddingPort;
 use crate::domain::note_repository::NoteRepository;
 use crate::domain::text_chunker::TextChunker;
 use crate::error::ScraperError;
-use crate::infrastructure::obsidian::read_vault_notes;
+// domain port: use crate::domain::note_repository::VaultNoteReader;
 
 /// A search result with relevance score and source metadata.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -231,7 +231,8 @@ impl VaultSearchService {
     ///
     /// # Pipeline
     ///
-    /// 1. Read all `.md` notes from the vault via [`read_vault_notes`]
+    /// 1. Read all `.md` notes from the vault via
+    ///    [`read_vault_notes`](crate::infrastructure::obsidian::read_vault_notes)
     /// 2. Load all indexed note metadata via [`NoteRepository::list_indexed_notes`]
     /// 3. Compare content hashes:
     ///    - **New** note (not indexed) → [`index_note`](Self::index_note)
@@ -250,7 +251,7 @@ impl VaultSearchService {
         let start = Instant::now();
 
         // Step 1: Read all notes from the vault filesystem.
-        let notes = read_vault_notes(vault_path)?;
+        let notes = crate::infrastructure::obsidian::read_vault_notes(vault_path)?;
 
         // Step 2: Load all indexed note metadata.
         let indexed = self.repository.list_indexed_notes().await?;

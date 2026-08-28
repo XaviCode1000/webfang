@@ -113,23 +113,12 @@ use uuid::Uuid;
 use wreq::{Client, Response};
 use wreq_util::Profile;
 
-/// Strategy for generating downloaded asset filenames.
+/// Strategy for generating downloaded asset filenames — domain-owned VO.
 ///
-/// # Variants
-///
-/// - `Hash` — SHA-256 hash of content (first 12 hex chars). Dedup-friendly.
-/// - `Slug` — Last path segment of the URL (e.g. `rust-book.pdf`).
-/// - `ContentDisposition` — `filename=` from `Content-Disposition` header, falls back to `Hash`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum AssetNamingStrategy {
-    /// SHA-256 hash of content (first 12 hex chars). Dedup-friendly.
-    #[default]
-    Hash,
-    /// Last path segment of the URL (e.g. `rust-book.pdf`).
-    Slug,
-    /// `filename=` from `Content-Disposition` header, falls back to `Hash`.
-    ContentDisposition,
-}
+/// Re-exported from `crate::domain::config` so `ScraperConfig` (domain) does
+/// not depend on `adapters` (outward). The `adapters` implementation re-uses the
+/// domain type via this pub use (inward `adapters → domain` is allowed).
+pub use crate::domain::config::AssetNamingStrategy;
 
 /// Result of a successful download
 #[derive(Debug, Clone)]

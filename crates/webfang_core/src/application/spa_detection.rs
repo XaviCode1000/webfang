@@ -103,8 +103,8 @@ pub fn detect_spa_content(
 /// costs roughly one extraction pass. Acceptable for a diagnostic tool that
 /// runs before the scrape, in place of a wrong cheap signal.
 pub fn predict_spa_status(url: &str, raw_html: &str) -> Option<SpaDetectionResult> {
-    use crate::infrastructure::converter::html_cleaner::clean_html;
-    use crate::infrastructure::scraper::{fallback, readability};
+    use crate::domain::html_cleaner::clean_html;
+    use crate::domain::scraper_port::{fallback, readability};
 
     let cleaned_html = clean_html(raw_html);
     let extracted_text = match readability::parse(&cleaned_html, Some(url)) {

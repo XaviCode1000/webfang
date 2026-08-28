@@ -7,12 +7,12 @@
 use crate::application::diagnostic::build_diagnostic;
 use crate::application::http_client::HttpClientPort;
 use crate::application::scraper_service::scrape_with_config;
+use crate::domain::scraper_port::{fallback, readability};
 use crate::domain::{
     CorrelationId, DomInspectorPort, ExtractResult, ScrapedContent, SelectorErrorKind, ValidUrl,
 };
 use crate::error::{Result, ScraperError};
 use crate::infrastructure::observability::log_scrape_error;
-use crate::infrastructure::scraper::{fallback, readability};
 use crate::ScraperConfig;
 use tracing::{debug, warn};
 
