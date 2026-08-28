@@ -2,7 +2,7 @@
 //!
 //! Derives pipeline sizing defaults from the host hardware:
 //! - CPU cores via the canonical budget detector seam (Rayon pool / DB pool fan-out).
-//! - RAM budget via [`sys_info::mem_info()`] × 0.7 (byte-weighted semaphore).
+//! - RAM budget via `sys_info::mem_info()` × 0.7 (byte-weighted semaphore).
 //!
 //! Configuration resolution priority (frozen design decision #12):
 //! **CLI flag > `WEBFANG_*` env var > auto-detected default**.
@@ -89,7 +89,7 @@ pub fn ram_budget_from(total_kib: Option<u64>) -> u64 {
     }
 }
 
-/// Detect the RAM budget via [`sys_info::mem_info()`], falling back to 2 GiB.
+/// Detect the RAM budget via `sys_info::mem_info()`, falling back to 2 GiB.
 ///
 /// The `sys_info` syscall is only available under the `persistence` feature
 /// (the SQLite path). When `persistence` is OFF the lightweight core binary
