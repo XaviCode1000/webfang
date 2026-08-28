@@ -119,9 +119,24 @@ pub(crate) fn cmd() -> Command {
 
 /// Remove all `WEBFANG_*`, `WEBFANG_AI_MODEL_ID`, and `AI_MODEL_ID` env
 /// vars from a command so tests are hermetic even when CI bug-discovery
-/// workflows poison the environment. The legacy `AI_MODEL_ID` is still
+/// workflows poison the environment, and point `XDG_CACHE_HOME` at a fresh
+/// per-invocation temp directory. The legacy `AI_MODEL_ID` is still
 /// honored by `webfang_ai::infrastructure_ai::compat::read_ai_model_id()`
 /// (#980 slice 5b), so a poisoned run exercises that fallback.
+///
+/// Hermetic cache: since the PersistenceMode wiring made checkpointing
+/// default-on, every ordinary scrape loads and saves
+/// `<cache>/webfang/state/crawl_checkpoint.json` from the default cache.
+/// Parallel behavioral tests all run against `127.0.0.1` wiremock servers
+/// with ephemeral ports, and the OS reuses recently freed ports within one
+/// test-binary run, so a visited URL recorded by one test
+/// (`http://127.0.0.1:<port>/page1`) can collide with a later test whose
+/// server drew the same port: the engine then treats that test's seed or
+/// pages as already visited and crawls nothing ("expected /page1 to be
+/// crawled, got 0"). The resume state file is worse — it is keyed by host
+/// WITHOUT the port (`127.0.0.1.json`), so it collides across every
+/// wiremock test. Giving each spawned binary its own cache base keeps both
+/// state files per-test without changing any production default.
 fn sanitize_env(mut cmd: Command) -> Command {
     let poisoned: Vec<String> = std::env::vars()
         .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")
@@ -130,7 +145,21 @@ fn sanitize_env(mut cmd: Command) -> Command {
     for key in poisoned {
         cmd.env_remove(&key);
     }
+    cmd.env("XDG_CACHE_HOME", hermetic_cache_dir());
     cmd
+}
+
+/// Unique cache base directory for one spawned-binary invocation.
+///
+/// Created eagerly so no code path observes a missing parent. The `Command`
+/// cannot own the directory's lifetime, so it is intentionally left for the
+/// OS temp cleanup to reclaim.
+fn hermetic_cache_dir() -> std::path::PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("webfang-test-cache-{}-{n}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    dir
 }
 
 /// Shared test harness: one mock server + one temp output directory.
