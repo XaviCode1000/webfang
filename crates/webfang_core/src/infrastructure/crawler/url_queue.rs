@@ -20,19 +20,12 @@ use dashmap::DashSet;
 use tokio::sync::Mutex;
 use tracing::debug;
 
+use crate::domain::crawler_port::UrlSource;
 use crate::domain::url_validation::{normalize_url, NormalizeConfig, RemoveQueryParameters};
 use crate::domain::DiscoveredUrl;
 
-/// Source of a discovered URL, used for priority scoring.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UrlSource {
-    /// Seed URL (the initial URL to crawl)
-    Seed,
-    /// URL discovered from a sitemap
-    Sitemap,
-    /// URL discovered from page links
-    Link,
-}
+// UrlSource moved to domain::crawler_port (sub-slice 3.A). Infra re-exports
+// it for backwards compatibility.
 
 /// A URL with priority for the priority queue.
 ///

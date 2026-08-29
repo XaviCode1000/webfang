@@ -5,6 +5,17 @@
 //! so `application::crawler::*` can depend on `domain::*` without
 //! `application→infrastructure` (ADR-0010). Infrastructure keeps a `pub use`
 //! shim and the `LinkExtractor` impl.
+//!
+//! # Sub-slice 3.A (ADR-0012)
+//!
+//! Moves the `UrlSource` enum from `infrastructure::crawler::url_queue`
+//! into domain. The remaining `infrastructure::crawler` types
+//! (`UrlQueue`, `RobotsFetcher`, `SitemapParser`, `FsBinaryWriter`,
+//! `extract_links`, `parse_sitemap`, `binary_utils::*`) are
+//! infrastructure concerns and will be addressed in dedicated
+//! sub-slices — `RobotsFetcher` and `SitemapParser` need domain
+//! traits (3.C, 3.A-trait), the rest are pure re-exports to be
+//! bundled in 3.A+ (DTO migration).
 
 use crate::domain::CompressionType;
 
@@ -15,6 +26,21 @@ pub use crate::domain::url_validation::{
     NormalizeConfig,
 };
 pub use url_normalize::RemoveQueryParameters;
+
+// ============================================================================
+// UrlSource — moved from infrastructure::crawler::url_queue in sub-slice 3.A
+// ============================================================================
+
+/// Source of a discovered URL, used for priority scoring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UrlSource {
+    /// Seed URL (the initial URL to crawl)
+    Seed,
+    /// URL discovered from a sitemap
+    Sitemap,
+    /// URL discovered from page links
+    Link,
+}
 
 // ============================================================================
 // SitemapConfig — moved from infrastructure::crawler::sitemap_config
