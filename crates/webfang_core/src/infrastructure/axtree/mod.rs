@@ -245,7 +245,11 @@ pub async fn fetch_axtree_snapshot(
     require_supported_format(format)?;
     let nodes = fetch_raw_axtree(url).await?;
     let views = wrap_as_views(nodes);
-    Ok(crate::domain::axtree_port::compact(&views, interactive_only, selector))
+    Ok(crate::domain::axtree_port::compact(
+        &views,
+        interactive_only,
+        selector,
+    ))
 }
 
 /// Fetch a Playwright MCP YAML snapshot (R1).
