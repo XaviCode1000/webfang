@@ -56,8 +56,11 @@ pub async fn extract_marks(url: &str) -> crate::Result<Vec<Mark>> {
     let nodes = crate::infrastructure::axtree::fetch_raw_axtree(&parsed)
         .await
         .map_err(|e| crate::ScraperError::extraction(format!("SOM fetch_raw failed: {e}")))?;
+    // Wrap chromiumoxide nodes as trait objects so the domain `compact`
+    // function can process them. See sub-slice 3.A.2-followup.A.
+    let views = crate::infrastructure::axtree::wrap_as_views(nodes);
     // Compact path kept for mark ref assignment without extra allocation.
-    let snapshot = crate::infrastructure::axtree::compact::compact(&nodes, true, None);
+    let snapshot = crate::domain::axtree_port::compact(&views, true, None);
     let mut marks = Vec::with_capacity(snapshot.nodes.len());
     for (idx, node) in snapshot.nodes.iter().enumerate() {
         let (box_, valid) = simulate_box_model(node, idx);

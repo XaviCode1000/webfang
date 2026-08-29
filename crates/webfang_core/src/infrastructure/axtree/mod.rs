@@ -11,18 +11,69 @@
 //! feature-agnostic so the non-chromium stub keeps an identical signature.
 
 #[cfg(feature = "chromium")]
-pub(crate) mod compact;
-
-#[cfg(feature = "chromium")]
 pub(crate) mod playwright;
 
 use url::Url;
 
 use super::downloader::DownloadError;
+#[cfg(feature = "chromium")]
+use crate::domain::axtree_port::RawAxNodeView;
 
 // DTOs moved to domain::axtree_port in sub-slice 3.A.2 (ADR-0012). Infra
 // re-exports them so existing call sites continue to resolve.
 pub use crate::domain::axtree_port::{CompactNode, CompactSnapshot, SnapshotFormat};
+
+// RawAxNodeView impls — chromiumoxide is the foreign type we abstract.
+// In the chromium build we wrap the real `AxNode`; in the non-chromium stub
+// build we return an empty vec / a placeholder type.
+
+// ============================================================================
+// RawAxNodeView impls (sub-slice 3.A.2-followup.A)
+// ============================================================================
+
+/// Wrap a chromiumoxide `AxNode` so the domain `compact` function can iterate
+/// it without depending on browser-specific types. Owns the node data so the
+/// returned trait objects are `'static` (the trait `RawAxNodeView` does not
+/// carry a lifetime).
+#[cfg(feature = "chromium")]
+struct AxNodeView {
+    inner: chromiumoxide::cdp::browser_protocol::accessibility::AxNode,
+}
+
+#[cfg(feature = "chromium")]
+impl RawAxNodeView for AxNodeView {
+    fn is_ignored(&self) -> bool {
+        self.inner.ignored
+    }
+    fn role_str(&self) -> Option<&str> {
+        if self.inner.role.is_some() {
+            Some(ax_value_str(self.inner.role.as_ref()))
+        } else {
+            None
+        }
+    }
+    fn name_str(&self) -> Option<&str> {
+        if self.inner.name.is_some() {
+            Some(ax_value_str(self.inner.name.as_ref()))
+        } else {
+            None
+        }
+    }
+}
+
+/// Extract the string payload of an `AxValue` (empty when absent).
+/// Re-exported so `playwright` (which still uses raw `AxNode`/`AxProperty`
+/// until 3.A.2-followup.B) can call it without depending on the deleted
+/// `compact` module.
+#[cfg(feature = "chromium")]
+pub(crate) fn ax_value_str(
+    value: Option<&chromiumoxide::cdp::browser_protocol::accessibility::AxValue>,
+) -> &str {
+    value
+        .and_then(|v| v.value.as_ref())
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+}
 
 /// Reject unsupported snapshot formats before any browser work (spec R3).
 ///
@@ -163,6 +214,18 @@ pub(crate) async fn fetch_raw_axtree(
     .await
 }
 
+/// Wrap chromiumoxide `AxNode` references as trait objects so the domain
+/// `compact` function can consume them. Sub-slice 3.A.2-followup.A.
+#[cfg(feature = "chromium")]
+pub(crate) fn wrap_as_views(
+    nodes: Vec<chromiumoxide::cdp::browser_protocol::accessibility::AxNode>,
+) -> Vec<Box<dyn RawAxNodeView>> {
+    nodes
+        .into_iter()
+        .map(|n| Box::new(AxNodeView { inner: n }) as Box<dyn RawAxNodeView>)
+        .collect()
+}
+
 /// Fetch a compact accessibility snapshot for `url` via a fresh headless
 /// Chromium session (CDP `Accessibility.getFullAXTree`).
 ///
@@ -181,7 +244,8 @@ pub async fn fetch_axtree_snapshot(
 ) -> Result<CompactSnapshot, DownloadError> {
     require_supported_format(format)?;
     let nodes = fetch_raw_axtree(url).await?;
-    Ok(compact::compact(&nodes, interactive_only, selector))
+    let views = wrap_as_views(nodes);
+    Ok(crate::domain::axtree_port::compact(&views, interactive_only, selector))
 }
 
 /// Fetch a Playwright MCP YAML snapshot (R1).
