@@ -17,11 +17,11 @@ use super::crawl_task_ctx::CrawlTaskCtx;
 use super::ports::{waf_challenge_message, FetchOutcome};
 use crate::application::pipeline::{ScrapedItem, StageOutcome};
 use crate::application::url_filter::is_allowed;
+use crate::domain::crawler_port::UrlSource;
 use crate::domain::downloader_port::Cookie;
 use crate::domain::session_port::SessionId;
 use crate::domain::url_validation::is_internal_link;
 use crate::domain::{CorrelationId, CrawlError, CrawlErrorCategory, DiscoveredUrl};
-use crate::infrastructure::crawler::UrlSource;
 use crate::infrastructure::observability::{log_classified_error, log_scrape_error};
 
 /// Handle result from a completed crawl task

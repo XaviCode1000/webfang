@@ -32,4 +32,8 @@ pub use resource_downloader::{
 pub use robots_utils::{RobotsFetcher, RobotsRules};
 pub use sitemap_config::{SitemapConfig, SitemapConfigBuilder};
 pub use sitemap_parser::{parse_sitemap, resolve_url, SitemapError, SitemapParser, SitemapUrl};
-pub use url_queue::{UrlQueue, UrlSource};
+pub use url_queue::UrlQueue;
+// UrlSource moved to domain::crawler_port in sub-slice 3.A; infra keeps
+// a re-export shim for backwards compatibility (application/* can still
+// use `crate::infrastructure::crawler::UrlSource` while migration lands).
+pub use crate::domain::crawler_port::UrlSource;

@@ -46,8 +46,9 @@ use url::Url;
 use super::concurrency_level::SharedConcurrencyLevel;
 use crate::application::deduplicator::UrlDeduplicator;
 use crate::domain::budget::CrawlConcurrency;
+use crate::domain::crawler_port::UrlSource;
 use crate::domain::DiscoveredUrl;
-use crate::infrastructure::crawler::{UrlQueue, UrlSource};
+use crate::infrastructure::crawler::UrlQueue;
 
 /// Scheduling policy for a crawl: visited dedup, pending-work buffer, and
 /// concurrency limits.
