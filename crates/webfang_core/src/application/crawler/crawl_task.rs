@@ -425,11 +425,11 @@ mod tests {
     use crate::application::pipeline::stages::output::OutputError;
     use crate::application::pipeline::OutputStage;
     use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
+    use crate::domain::cookie_bridge::CookieBridge;
     use crate::domain::downloader_port::Cookie;
     use crate::domain::session_port::{SessionId, SessionPort};
     use crate::domain::CorrelationId;
     use crate::infrastructure::crawler::UrlQueue;
-    use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
     use tokio_util::sync::CancellationToken;
 
     // ── Mock implementations ──

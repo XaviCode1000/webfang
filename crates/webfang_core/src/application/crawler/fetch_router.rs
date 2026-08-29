@@ -14,10 +14,10 @@ use wreq_util::Profile;
 use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
+use crate::domain::cookie_bridge::CookieBridge;
 use crate::domain::downloader_port::{DownloadError, Downloader, FetchedPage};
 use crate::domain::JsStrategy;
 use crate::infrastructure::downloader::chromiumoxide_downloader::ChromiumoxideDownloader;
-use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
 use crate::infrastructure::downloader::hybrid_router::HybridRouter;
 use crate::infrastructure::downloader::obscura_downloader::ObscuraDownloader;
 use crate::infrastructure::downloader::resource_governor::ResourceGovernor;
@@ -78,7 +78,7 @@ fn build_obscura_layer(timeout_secs: u64, obscura_binary: &str) -> ObscuraDownlo
 /// * `accept_language` - optional Accept-Language override (`--accept-language`, #890)
 /// * `initial_cookie_jar` - pre-seeded wreq cookie store (`--cookie`, #890) shared
 ///   by the Static and Hybrid-L1 layers; the Chromiumoxide L3 layer keeps using
-///   [`crate::infrastructure::downloader::cookie_bridge::CookieBridge`]
+///   [`crate::domain::cookie_bridge::CookieBridge`]
 ///
 /// Returns [`DownloadError::Internal`] if the wreq client cannot be built.
 #[allow(clippy::too_many_arguments)]
