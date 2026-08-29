@@ -7,7 +7,7 @@
 use chromiumoxide::cdp::browser_protocol::accessibility::{AxNode, AxProperty};
 
 #[cfg(feature = "chromium")]
-use crate::infrastructure::axtree::compact::ax_value_str;
+use crate::infrastructure::axtree::ax_value_str;
 
 /// YAML-like accessibility snapshot with `eN` refs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -372,9 +372,11 @@ mod tests {
 
     #[test]
     fn compact_vs_playwright_delta_github_nav() {
-        use crate::infrastructure::axtree::compact::compact;
+        use crate::domain::axtree_port::compact;
+        use crate::infrastructure::axtree::wrap_as_views;
         let nodes = parse(GITHUB_FIXTURE);
-        let compact_snap = compact(&nodes, true, None);
+        let views = wrap_as_views(nodes.clone());
+        let compact_snap = compact(&views, true, None);
         let pw = playwright(&nodes, true, None);
         // playwright uses chars/4, compact uses Σ(2+name/4+role/4) — delta ~51-79% per F1[6]
         assert!(
