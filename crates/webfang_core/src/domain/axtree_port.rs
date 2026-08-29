@@ -96,9 +96,10 @@ const INTERACTIVE_ROLES: &[&str] = &[
 /// Serialize a full AXTree into a compact snapshot.
 ///
 /// Skipped unconditionally: `ignored` nodes and `genericcontainer` wrappers.
-/// When `interactive_only`, only nodes whose role is in [`INTERACTIVE_ROLES`]
-/// are emitted. When `selector` is present, only nodes whose name or role
-/// contains it (case-insensitive substring) are kept.
+/// When `interactive_only`, only nodes whose role is in the interactive
+/// roles set (button, link, textbox, etc.) are emitted. When `selector` is
+/// present, only nodes whose name or role contains it (case-insensitive
+/// substring) are kept.
 ///
 /// `@eN` refs are assigned in emission order and are valid ONLY within the
 /// returned snapshot (RDD causal invariant).
