@@ -494,6 +494,8 @@ cargo check && cargo clippy --all-targets --all-features -- -D warnings -W clipp
 
 > ⚠️ **The clippy command MUST match CI exactly.** CI runs the strict gate above, which enables the `#516` complexity ratchets (`clippy::cognitive_complexity` + `clippy::too_many_lines`, thresholds in `clippy.toml`). Running a bare `cargo clippy -- -D warnings` locally will PASS while CI FAILS on any function >100 lines or over the cognitive-complexity limit. Always use the full command above before pushing.
 
+> 🚨 **`--all-features` is a safety flag here, not a strictness preference.** This crate has `chromium`-gated code whose only consumers are behind `#[cfg(feature = "chromium")]`. Running clippy **without** `--all-features` makes those imports look dead, and `clippy --fix` will **delete live code** — `cargo check` with default features then still passes, so the loss is invisible until `--all-features` fails. This bit the main checkout twice during #994 (see #1006). Never run `clippy --fix`, and never wire an auto-fixing tool, against a feature set narrower than the build's. `.pi-lens.json` disables the pi-lens autofix paths for exactly this reason; do not re-enable them.
+
 ### Cloud verification
 
 ```bash
