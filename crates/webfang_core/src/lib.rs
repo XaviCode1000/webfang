@@ -113,9 +113,11 @@ pub use cli::{
 // Observability - includes LogGuard for RAII logging
 pub use infrastructure::observability::LogGuard;
 
-// Config types
-pub use domain::config::{ConcurrencyConfig, ExportFormat, OutputFormat, PipelineOutputFormat};
-pub use infrastructure::config::{AutotuningConfig, ScraperConfig};
+// Config types (domain-owned; see ADR-0010 + ADR-0012 sub-slice 1)
+pub use domain::config::{
+    AssetNamingStrategy, AutotuningConfig, ConcurrencyConfig, ElasticOverrides, ExportFormat,
+    OutputFormat, PipelineOutputFormat, ScraperConfig,
+};
 
 // Error and result types
 pub use error::{Result, ScraperError};

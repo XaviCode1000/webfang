@@ -10,6 +10,7 @@
 // --- Domain / infrastructure re-exports (unchanged) ---
 pub use super::url_filter::is_allowed;
 pub use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
+pub use crate::domain::config::ScraperConfig;
 pub use crate::domain::scraper_port::{fallback, readability};
 pub use crate::domain::{
     CorrelationId, CrawlError, CrawlResult, CrawlerConfig, DiscoveredUrl, ScrapedContent, ValidUrl,
@@ -19,7 +20,6 @@ pub use crate::infrastructure::crawler::{
     extract_links, fetch_url, is_internal_link, normalize_url, UrlQueue,
 };
 pub use crate::infrastructure::crawler::{SitemapConfig, SitemapParser};
-pub use crate::ScraperConfig;
 
 // --- Crawler sub-module re-exports (canonical paths) ---
 pub use super::crawler::collector::{ResultsAdapter, ResultsCollector};
