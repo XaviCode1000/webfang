@@ -14,7 +14,7 @@
 
 use serde::Serialize;
 
-use crate::domain::axtree_port::CompactNode;
+use crate::domain::axtree_port::{compact, AxTreePort, CompactNode};
 
 /// A single mark emitted for an AX tree node intersecting the viewport.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize, Serialize)]
@@ -43,24 +43,23 @@ pub struct SomCapture {
 /// Extract marks from an AX tree, filtering by viewport intersection.
 ///
 /// For each AX tree node, this function:
-/// 1. Reuses `fetch_raw_axtree` (R4) for the
-///    raw `Vec<AxNode>` — no formatting cost when only raw nodes are needed.
+/// 1. Uses the injected `AxTreePort` to fetch the raw `Vec<Box<dyn RawAxNodeView>>`.
 /// 2. Generates a placeholder box model (simulating `DOM.getBoxModel`)
 /// 3. Checks if the box intersects the captured viewport
 /// 4. Emits a mark if the box intersects, with the node's name as label
+///
+/// The port is injected so the I/O backend (chromiumoxide today, anything
+/// else tomorrow) stays out of domain. See ADR-0012 sub-slice 3.A.2-followup.B.
 #[cfg(feature = "chromium")]
-pub async fn extract_marks(url: &str) -> crate::Result<Vec<Mark>> {
-    // domain port: use crate::domain::axtree_port::AxTreePort;
+pub async fn extract_marks(url: &str, port: &dyn AxTreePort) -> crate::Result<Vec<Mark>> {
     let parsed =
         url::Url::parse(url).map_err(|e| crate::ScraperError::invalid_url(e.to_string()))?;
-    let nodes = crate::infrastructure::axtree::fetch_raw_axtree(&parsed)
+    let nodes = port
+        .fetch_raw_axtree(&parsed)
         .await
         .map_err(|e| crate::ScraperError::extraction(format!("SOM fetch_raw failed: {e}")))?;
-    // Wrap chromiumoxide nodes as trait objects so the domain `compact`
-    // function can process them. See sub-slice 3.A.2-followup.A.
-    let views = crate::infrastructure::axtree::wrap_as_views(nodes);
     // Compact path kept for mark ref assignment without extra allocation.
-    let snapshot = crate::domain::axtree_port::compact(&views, true, None);
+    let snapshot = compact(&nodes, true, None);
     let mut marks = Vec::with_capacity(snapshot.nodes.len());
     for (idx, node) in snapshot.nodes.iter().enumerate() {
         let (box_, valid) = simulate_box_model(node, idx);
