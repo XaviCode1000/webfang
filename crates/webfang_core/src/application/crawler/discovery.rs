@@ -11,6 +11,7 @@ use url::Url;
 
 use crate::application::url_filter::is_allowed;
 use crate::domain::config::ScraperConfig;
+use crate::domain::downloader_port::{DownloadError, Downloader};
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::url_validation::{NormalizeConfig, RemoveQueryParameters};
 use crate::domain::waf::{InspectionContext, WafInspector};
@@ -18,7 +19,6 @@ use crate::domain::{CorrelationId, CrawlerConfig, ScrapedContent, ValidUrl};
 use crate::error::{Result as ScraperResult, ScraperError};
 use crate::infrastructure::crawler::binary_utils::derive_filename_from_response;
 use crate::infrastructure::crawler::{extract_links, is_internal_link, normalize_url};
-use crate::infrastructure::downloader::{DownloadError, Downloader};
 use crate::infrastructure::observability::log_scrape_error;
 
 #[cfg(feature = "adaptive-selectors")]
@@ -684,7 +684,7 @@ mod tests {
     // scrape_single_url_for_tui — Downloader-injection unit tests (#303)
     // ========================================================================
 
-    use crate::infrastructure::downloader::FetchedPage;
+    use crate::domain::downloader_port::FetchedPage;
     use futures::future::BoxFuture;
     use std::collections::HashMap;
 

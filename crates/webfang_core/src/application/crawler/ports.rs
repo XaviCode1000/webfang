@@ -8,7 +8,7 @@
 //! Async methods use manual `Pin<Box<dyn Future>>` desugaring (BoxFuture)
 //! instead of the `async_trait` crate, matching the frozen decision #1
 //! established in [`crate::domain::repository::VectorRepository`] and
-//! [`crate::infrastructure::downloader::Downloader`].
+//! [`crate::domain::downloader_port::Downloader`].
 
 use std::sync::Arc;
 
