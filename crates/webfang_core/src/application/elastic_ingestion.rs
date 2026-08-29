@@ -56,7 +56,7 @@ pub struct ElasticIngestion<R: VectorRepository + Send + Sync> {
     downloader: ResourceDownloader,
     bridge: crate::infrastructure::bridge::CpuBridge,
     repository: R,
-    config: crate::infrastructure::config::AutotuningConfig,
+    config: crate::domain::config::AutotuningConfig,
     /// Optional ONNX semantic cleaner (frozen Decision 5). When `Some`, the
     /// orchestrator runs the cleaner's async `clean()` (HTML chunking +
     /// embeddings) instead of the bridge's sync lol_html text extraction.
@@ -83,7 +83,7 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
         downloader: ResourceDownloader,
         bridge: crate::infrastructure::bridge::CpuBridge,
         repository: R,
-        config: crate::infrastructure::config::AutotuningConfig,
+        config: crate::domain::config::AutotuningConfig,
     ) -> Self {
         Self {
             downloader,
@@ -574,7 +574,7 @@ mod tests {
                 pool,
                 Arc::new(crate::infrastructure::content_processing::AggressiveProcessor),
             );
-            let config = crate::infrastructure::config::AutotuningConfig {
+            let config = crate::domain::config::AutotuningConfig {
                 cpu_cores: 2,
                 ram_budget_bytes: 1 << 20,
             };

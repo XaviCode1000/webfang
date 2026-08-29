@@ -3,7 +3,7 @@
 //! # Design note (#443)
 //!
 //! [`download_assets_if_enabled`] is application-layer orchestration, not
-//! adapter logic: it reads [`ScraperConfig`](crate::ScraperConfig), extracts
+//! adapter logic: it reads [`ScraperConfig`], extracts
 //! asset URLs from the HTML via [`crate::extractor`], deduplicates them, and
 //! delegates the actual transfer to the [`AssetDownloaderPort`](crate::domain::ports::AssetDownloaderPort) adapter
 //! (`adapters::downloader::Downloader` implements the port). Pushing this into
@@ -11,6 +11,7 @@
 //! (adapters implement domain ports; they do not orchestrate application
 //! config), so the function lives here and delegates downward through the port.
 
+use crate::domain::config::ScraperConfig;
 use crate::domain::DownloadedAsset;
 use crate::error::Result;
 
@@ -21,7 +22,7 @@ use crate::error::Result;
 pub async fn download_assets_if_enabled(
     html: &str,
     base_url: &url::Url,
-    config: &crate::ScraperConfig,
+    config: &ScraperConfig,
     shared_downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
 ) -> Result<Vec<DownloadedAsset>> {
     // #962: parsing happens inside the synchronous extraction helper, so no
@@ -44,7 +45,7 @@ pub async fn download_assets_if_enabled(
 pub fn extract_asset_urls_from_html(
     html: &str,
     _base_url: &url::Url,
-    _config: &crate::ScraperConfig,
+    _config: &ScraperConfig,
 ) -> Vec<String> {
     if !_config.has_downloads() {
         return Vec::new();
@@ -63,7 +64,7 @@ pub fn extract_asset_urls_from_html(
 pub fn extract_asset_urls(
     document: &scraper::Html,
     _base_url: &url::Url,
-    _config: &crate::ScraperConfig,
+    _config: &ScraperConfig,
 ) -> Vec<String> {
     // Extract URLs from HTML
     let mut urls: Vec<String> = Vec::new();
@@ -93,7 +94,7 @@ pub fn extract_asset_urls(
 /// progress log, then the batch transfer.
 pub async fn download_asset_urls(
     urls: &[String],
-    _config: &crate::ScraperConfig,
+    _config: &ScraperConfig,
     _shared_downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
 ) -> Result<Vec<DownloadedAsset>> {
     // Use shared downloader when provided; create a fallback one otherwise
@@ -130,7 +131,7 @@ mod tests {
     /// inner block entirely; now the runtime check is the single gate.
     #[tokio::test]
     async fn download_assets_returns_empty_when_disabled() {
-        let config = crate::ScraperConfig::default(); // has_downloads() == false
+        let config = ScraperConfig::default(); // has_downloads() == false
         let base_url = Url::parse("https://example.com").expect("valid url");
         let html = r#"<html><body><img src="/image.png"></body></html>"#;
 
