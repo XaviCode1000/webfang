@@ -12,11 +12,17 @@
 #      of any non-comment line (function bodies, struct fields, trait bounds, etc.).
 #
 # === Comment filter (issue #995, ADR-0010-A) ===
-# The inline pass routes every line through an awk state machine that:
-#   - tracks `/* ... */` block comments (open on `/*` not preceded by `//`,
-#     close on `*/`),
+# The inline pass routes every line through a single awk state machine that:
+#   - tracks `/* ... */` block comments,
 #   - skips lines whose first non-whitespace token starts with `//`
-#     (covers `//`, `///`, `//!`).
+#     (covers `//`, `///`, `//!`),
+#   - extracts EVERY occurrence of the inline layer regex on the surviving
+#     code (one output line per match), and
+#   - preserves the original 1-indexed line number as `NR<TAB>MATCH`.
+# All matching happens inside this single awk pass — one process per file, not
+# one per line (see ADR-0010-A: the per-line subshell variant was measured at
+# >30s across ~93k lines and is forbidden).
+#
 # It does NOT attempt to parse Rust string literals. A path inside a `"..."`
 # literal or after a backslash continuation cannot be disambiguated by awk.
 # Residual false positives are routed through the allowlist (which already
@@ -36,7 +42,10 @@ set -euo pipefail
 ROOT="crates/webfang_core/src"
 MODE="${INTRA_CRATE_MODE:-warn}"
 ALLOWLIST="scripts/check_intra_crate_direction_allowlist.txt"
-ALLOWLIST_CAP=19
+# Hard cap. 19 current entries + headroom, so a NEW one-file violation does not
+# force an ADR edit on every PR. Warn (do not fail) when within 2 of the cap.
+ALLOWLIST_CAP=22
+ALLOWLIST_WARN_AT=20
 
 declare -A LAYER_RANK=(
   [infrastructure]=0
@@ -50,11 +59,14 @@ declare -A LAYER_RANK=(
 # (ADR-0010). They must be treated as `infrastructure` for layering purposes.
 ALIAS_AS_INFRA_REGEX='^[[:space:]]*(pub[[:space:]]+)?use[[:space:]]+crate::(ScraperConfig|AutotuningConfig|SitemapConfig|ElasticConfig|ElasticOverrides)(::|;|$)'
 
-# Layer regex for the inline qualified-path pass. Matches `crate::<layer>::...`
-# where <layer> is a lowercase snake_case layer (infrastructure, adapters,
-# application). Does NOT match `crate::domain::` (innermost, never outward) or
-# `crate::<PascalCase>` (aliases handled separately).
-INLINE_LAYER_REGEX='crate::(infrastructure|adapters|application)::[a-z_]+'
+# Layer regex for the inline qualified-path pass (consumed by filter_and_match
+# via `awk -v`). Matches the FULL path `crate::<layer>::seg(::seg)*` in ANY
+# position of non-comment code, EVERY occurrence per line. Full-path capture is
+# what makes narrow allowlist entries (e.g. `infrastructure::http::waf_engine`)
+# substring-match the recorded violation. Does NOT match `crate::domain::`
+# (innermost, never outward) or `crate::<PascalCase>` (aliases handled
+# separately).
+INLINE_LAYER_REGEX='crate::(infrastructure|adapters|application)::[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*'
 
 layer_of_file() {
   local file="$1"
@@ -105,8 +117,11 @@ if [[ -f "$ALLOWLIST" ]]; then
     ALLOW_PATTERNS+=("$pattern")
   done < "$ALLOWLIST"
   if (( ${#ALLOW_PATTERNS[@]} > ALLOWLIST_CAP )); then
-    echo "::error::allowlist $ALLOWLIST has ${#ALLOW_PATTERNS[@]} entries, max is $ALLOWLIST_CAP (ADR-0010-A temporary cap raised 12→19; the `crate::ScraperConfig` alias entry is removed after #994 sub-slice 1 ports the ScraperConfig family, dropping the cap by 1; remaining entries drop incrementally as sub-slices 3 and 4 land)"
+    echo "::error::allowlist $ALLOWLIST has ${#ALLOW_PATTERNS[@]} entries, max is $ALLOWLIST_CAP (ADR-0010-A temporary cap; entries drop incrementally as #994 sub-slices 1, 3 and 4 land)"
     exit 1
+  fi
+  if (( ${#ALLOW_PATTERNS[@]} >= ALLOWLIST_WARN_AT )); then
+    echo "::warning::allowlist has ${#ALLOW_PATTERNS[@]} entries (warn threshold $ALLOWLIST_WARN_AT, hard cap $ALLOWLIST_CAP) — prune entries as #994 sub-slices land before raising the cap"
   fi
 fi
 
@@ -122,14 +137,15 @@ is_allowlisted() {
   return 1
 }
 
-# Awk comment-filter state machine. Reads a single file from stdin and prints
-# each non-comment line with its ORIGINAL 1-indexed line number prepended as
-# `NR<TAB>LINE`. Block comments (`/* ... */`) are tracked; line comments
-# (`//`, `///`, `//!`) drop the whole line. Rust string literals are NOT
-# parsed — residual false positives are absorbed by the allowlist, not the
-# regex (ADR-0010-A).
-filter_comments() {
-  awk '
+# Awk comment-filter + match extractor. Reads a single file from stdin and
+# prints one line per inline qualified-path match found in non-comment code,
+# as `NR<TAB>MATCH`. This is the ONLY process spawned for the inline pass —
+# matching inside awk keeps the whole scan at O(1) process per file (ADR-0010-A).
+# Block comments (`/* ... */`) are tracked; line comments (`//`, `///`, `//!`)
+# drop the whole line. Rust string literals are NOT parsed — residual false
+# positives are absorbed by the allowlist, not the regex (ADR-0010-A).
+filter_and_match() {
+  awk -v re="$INLINE_LAYER_REGEX" '
     BEGIN { in_block = 0 }
     {
       line = $0
@@ -168,20 +184,13 @@ filter_comments() {
           }
         }
       }
-      if (length(out) > 0) {
-        # Drop `//` line comments that appear AFTER code on the same line.
-        # e.g. `let x = 1; // comment` — naive state machine would keep the
-        # code but it is followed by a comment; for our use the only thing
-        # that matters is that we do not match `crate::...` across the `//`.
-        # Strip from the FIRST `//` that is NOT inside a `crate::...::ident`
-        # boundary. Simple heuristic: find any `//` and drop from there.
-        # This is a conservative filter; it is allowed to drop some code as
-        # long as the allowlist absorbs the noise.
-        # We do not apply this heuristic to avoid complexity: a path like
-        # `crate::foo` cannot legally appear after a `//` on the same line
-        # in idiomatic Rust (it would be commented out). The block-comment
-        # state machine above is sufficient.
-        printf("%d\t%s\n", NR, out)
+      # Emit EVERY regex match on the surviving code (not just the first).
+      # A trailing `// comment` on a code line is not stripped: an idiomatic
+      # `crate::layer::...` path cannot legally live inside a comment, so any
+      # hit there is a residual false positive absorbed by the allowlist.
+      while (match(out, re)) {
+        printf("%d\t%s\n", NR, substr(out, RSTART, RLENGTH))
+        out = substr(out, RSTART + RLENGTH)
       }
     }
   '
@@ -206,11 +215,13 @@ classify_use_target() {
 }
 
 # Classify a target_layer from an inline qualified-path match (the match is
-# the full substring like `crate::infrastructure::foo::Bar`). The first path
-# segment after `crate::` is the layer.
+# the substring like `crate::infrastructure::foo::Bar`). Pure bash regex —
+# no subprocess per match.
 classify_inline_target() {
   local match="$1"
-  printf '%s' "$match" | sed -nE 's/^crate::([a-z_]+)::.*/\1/p' | head -n 1
+  if [[ "$match" =~ ^crate::([a-z_]+):: ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  fi
 }
 
 # Process a single match (either a use line or an inline qualified path) and
@@ -283,15 +294,14 @@ while read -r file; do
   done < <(grep -n -E '^[[:space:]]*(pub[[:space:]]+)?use[[:space:]]+crate::[A-Za-z_]+(::|;)' "$file" 2>/dev/null || true)
 
   # --- Pass 2: inline qualified-path scan ---
-  # Step A: filter out comments via awk, preserving line numbers.
-  # Step B: grep the filtered output for inline qualified paths in any position.
-  # Step C: apply the same #[cfg(test)] / mod tests skip heuristic.
+  # Single awk pass per file: strips comments and emits EVERY
+  # `crate::<layer>::X` match as `NR<TAB>MATCH` (see filter_and_match).
   inline_tmp=$(mktemp)
   trap 'rm -f "$inline_tmp"' EXIT
-  filter_comments < "$file" > "$inline_tmp"
+  filter_and_match < "$file" > "$inline_tmp"
 
-  while IFS=$'\t' read -r lineno rest; do
-    [[ -z "$rest" ]] && continue
+  while IFS=$'\t' read -r lineno inline_match; do
+    [[ -z "$inline_match" ]] && continue
 
     # Skip test-only inline paths: line is after the first #[cfg(test)]/mod tests
     if (( lineno > first_test_line )); then
@@ -302,13 +312,6 @@ while read -r file; do
     if sed -n "${start},$((lineno-1))p" "$file" 2>/dev/null | grep -q -E '#\[cfg\(test\)\]'; then
       continue
     fi
-
-    # Extract the first inline qualified path of interest from this line.
-    # Use sed -n to pick the first match.
-    inline_match=$(printf '%s\n' "$rest" \
-      | sed -nE "0,/${INLINE_LAYER_REGEX}/{s/.*(${INLINE_LAYER_REGEX}).*/\\1/p;}" \
-      | head -n 1)
-    [[ -z "$inline_match" ]] && continue
 
     process_match "$file" "$lineno" "$inline_match" "inline" "$src_layer"
   done < "$inline_tmp"

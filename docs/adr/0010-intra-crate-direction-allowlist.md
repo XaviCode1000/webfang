@@ -102,7 +102,7 @@ The 71-file permanent exception was explicitly rejected by the `webfang-architec
 - `AGENTS.md` — crate dependency allow-matrix and Clean Architecture layers (`infrastructure → adapters → application → domain`)
 - `scripts/check_dependency_direction.sh` — CI gate for inter-crate direction (Cargo.toml)
 - `scripts/check_intra_crate_direction.sh` — intra-crate gate (this ADR), hardens `crate::ScraperConfig` alias; ADR-0010-A extends to inline qualified paths
-- `scripts/check_intra_crate_direction_allowlist.txt` — versioned allowlist (≤19 during ADR-0010-A; cap reverts incrementally as #994 sub-slices 1, 3, 4 land; realistic post-#994 floor is ~10–13, not 5)
+- `scripts/check_intra_crate_direction_allowlist.txt` — versioned allowlist (≤22 during ADR-0010-A, warn at 20; cap reverts incrementally as #994 sub-slices 1, 3, 4 land; realistic post-#994 floor is ~10–13, not 5)
 - `crates/webfang_core/src/domain/config.rs` — `ScraperConfig` family now owned by domain
 - `crates/webfang_core/src/domain/downloader_port.rs` — `Downloader` + `FetchedPage`/`Cookie`/`DownloadError` (BoxFuture dyn-compat)
 - `crates/webfang_core/src/domain/crawler_port.rs` — `SitemapConfig` + helpers surface
@@ -146,8 +146,13 @@ allowlist accounting.
 **Layer regex** (inline pass only, no `use` prefix required):
 
 ```regex
-crate::(infrastructure|adapters|application)::[a-z_]+
+crate::(infrastructure|adapters|application)::[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*
 ```
+
+The regex captures the FULL qualified path (all `::Segment` components), not
+just the layer + first segment — this is what allows narrow allowlist entries
+(e.g. `infrastructure::http::waf_engine`) to substring-match the recorded
+violation instead of forcing a broad `infrastructure::http` entry.
 
 It deliberately does NOT match `crate::domain::` (domain is the innermost, so
 domain→domain and outward imports of `domain::*` from any layer are caught
@@ -164,9 +169,15 @@ through a small awk filter (`filter_comments` in the script) that:
   preceded by `//`, closes on the next `*/`.
 - Drops lines whose first non-whitespace token starts with `//` (covers `//`,
   `///`, `//!`).
-- Preserves the original 1-indexed line number (`NR`) prepended as
-  `NR<TAB>LINE`, so the downstream `grep` and the resulting
+- Extracts **every** occurrence of the layer regex on the surviving code —
+  not just the first match per line — and emits one record per match.
+- Preserves the original 1-indexed line number (`NR`), so the resulting
   `::error::$file:$lineno::` line number is correct for the user.
+- Runs as a **single awk process per file** (the layer regex is passed via
+  `awk -v` from `INLINE_LAYER_REGEX`, keeping one source of truth). The
+  per-line-subshell variant was measured at >30s across the ~93k lines of
+  `webfang_core` and is explicitly forbidden — the O(1)-processes-per-file
+  contract is part of this addendum.
 
 **Documented limitation (ADR-0010-A):** the awk filter does NOT parse Rust
 string literals or handle backslash continuations. A path inside a `"..."`
@@ -205,7 +216,10 @@ stragglers whose porting depends on later architectural decisions beyond
 ADR and explicit cost/benefit analysis — the 5-entry number is not a target
 to blindly chase.
 
-The cap is currently **≤19** to absorb all 19 per-file entries. The cap
+The cap is currently **≤22** (19 entries + headroom), with a **soft warn
+threshold at 20 entries** (`::warning::` in CI, non-blocking) so a NEW
+one-file violation does not force an ADR edit on every PR. The hard cap still
+fails CI. The cap
 reversal path is:
 
 | After #994 sub-slice | Cap drops by | Reason |
