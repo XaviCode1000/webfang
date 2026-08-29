@@ -2,6 +2,14 @@
   "format": {
     "enabled": false
   },
+  "autofix": {
+    "enabled": false
+  },
+  "actionableWarnings": {
+    "autoFix": {
+      "enabled": false
+    }
+  },
   "rules": {
     "line-length": { "disable": ["line-length"] },
     "high-complexity": { "threshold": 30 }
