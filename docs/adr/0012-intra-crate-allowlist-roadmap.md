@@ -154,10 +154,161 @@ to a `domain::observability` port if we ever want a pure logging abstraction).
 | Delete the gate and rely on PR review | Loses the CI enforcement, no auto-regression on merge |
 | Apply `INTRA_CRATE_MODE=strict` now without sub-slices | Fails CI immediately — 133 absorbed sites become 133 errors |
 
+## Erratum (2026-08-29) — Sub-slice 3 design correction
+
+### What the original said
+
+The "Sub-slice 3" section above (line 89) described the work as porting
+concrete types from `infrastructure::*` to `domain::*` ports:
+
+> `infrastructure::crawler::{UrlQueue, RobotsFetcher, SitemapParser, extract_links, UrlSource}` → `domain::crawler` port
+> `infrastructure::downloader::{Wreq, Obscura, Chromium, ResourceGovernor, CookieBridge}` → `domain::downloader` port
+> `infrastructure::ssrf::{redirect_policy, ValidatingResolver, is_forbidden_literal_host}` → `domain::ssrf` port
+> `infrastructure::bridge::CpuBridge` (8 sites in `elastic_ingestion.rs`) → `domain::bridge` port
+
+### Why that was wrong
+
+`UrlQueue`, `RobotsFetcher`, `SitemapParser`, `extract_links`, the `Wreq`/
+`Obscura`/`Chromium` downloaders, and the `CpuBridge` concrete are **not
+domain primitives**. They are infra with real I/O or mutable state:
+
+- `RobotsFetcher` makes HTTP requests to fetch `robots.txt`.
+- `SitemapParser` parses remote XML, possibly with HTTP recursion.
+- `UrlQueue` is an async, mutable priority queue.
+- `ResourceDownloader` opens sockets, manages byte-weighted semaphores, writes to disk.
+- `CpuBridge` dispatches to a Rayon pool with internal locking.
+
+Moving any of these to `domain::*` would put the innermost layer in
+charge of the outer layer's I/O concerns — the opposite of Clean
+Architecture. It would also make `domain::*` depend on `tokio`, `reqwest`,
+`lol_html`, `rayon`, etc., violating the inward-only rule that ADR-0010
+§1 and ADR-0009 already established.
+
+The original sub-slice 3 conflated *"move so the static scanner stops
+flagging it"* with *"move by Clean Architecture"*. The former is a
+mechanical lint fix; the latter is a layering principle. They diverge
+for concrete infra types — the scanner fix must follow the layering
+principle, not override it.
+
+### Corrected decision
+
+For each `infrastructure::*` type that `application::*` consumes, the
+correct porting pattern is **trait in domain, concrete in infra, DI
+through container**:
+
+1. **Define the trait in `domain::*`** with the public surface that
+   `application::*` actually needs. The trait depends on no infra type.
+2. **Keep the concrete implementation in `infrastructure::*`**, impl-ing
+   the new `domain::*` trait.
+3. **Migrate call sites in `application/*` and `adapters/*`** to depend
+   on the trait, not the concrete. Use `Arc<dyn Trait>` if the call site
+   stores it in a struct field.
+4. **Container wires the concrete** as the trait implementation (this
+   already happens for `WafInspector`; the rest follow the same pattern).
+
+The shim pattern from PR #993 (WafInspector, ScraperConfig family)
+applies to every port: the canonical type lives in `domain::*`, the
+`infrastructure::*` module is a thin `pub use` re-export for backwards
+compatibility.
+
+This is the only valid approach. Moving the concrete types to
+`domain::*` is rejected as a layering violation; bypassing the scanner
+by re-exporting from `domain::*` to `infrastructure::*` and keeping
+call sites on the infra path is rejected as lint evasion (the scanner
+is intra-crate, not path-based — it sees the use line, not the resolved
+symbol).
+
+### Sub-slice 3 re-breakdown — 14 small PRs
+
+Sub-slice 3 is not one big slice (~1100L, exceeds 400L budget, needs
+`size:exception` or chained feature-branch-chain). It is **13 small
+sub-slices (3.A through 3.K) plus sub-slice 4 plus sub-slice 2** = 14
+PRs total. Each PR:
+
+- Stays within the 400L budget (typical 80–250L).
+- Migrates call sites for one or two related `infrastructure::*` modules
+  to depend on a `domain::*` trait/port.
+- Removes the corresponding entry (or entries) from
+  `scripts/check_intra_crate_direction_allowlist.txt` as part of the
+  PR's DoD — not as a follow-up. A merged PR that leaves the entry
+  rotting is a hidden leak.
+- Keeps `INTRA_CRATE_MODE=strict` green.
+
+| PR    | Módulos                                           | Sitios | LOC est. | Crea port nuevo?      | Depende de |
+|-------|---------------------------------------------------|-------:|---------:|-----------------------|------------|
+| 3.A   | crawler call sites → `domain::crawler_port`       |     28 |    ~180  | NO (ya existe)        | —          |
+| 3.A.2 | axtree call sites → `domain::axtree_port`         |      6 |     ~60  | NO (ya existe)        | —          |
+| 3.B   | downloader → `domain::downloader_port`            |     23 |    ~200  | NO (ya existe)        | —          |
+| 3.B.2 | cpu_pool → `domain::cpu_executor`                 |      4 |     ~40  | NO (ya existe)        | —          |
+| 3.C   | **Crear `domain::ssrf_guard`** + migrar 17 sitios |     17 |    ~250  | **SÍ**                | —          |
+| 3.D   | scraper + converter → `domain::scraper_port` / `domain::html_cleaner` | 21 | ~180 | NO (ya existen) | — |
+| 3.E   | **`domain::bridge` trait + DTO `ProcessedChunk`** + shim   |     10 |    ~180  | **SÍ (diseño)**       | —          |
+| 3.E.2 | `application/elastic_ingestion.rs` field `Arc<dyn CpuBridgePort>` + container wiring | 0 (rewrite) | ~200 | NO (3.E provides) | 3.E |
+| 3.F   | network/session_pool → `domain::session_port`     |      7 |    ~120  | NO (ya existe)        | —          |
+| 3.G   | autotuning helpers (`from_elastic`/`resolve`) → `domain::config` | 8 | ~120 | NO (mover impls) | **sub-slice 1** (sub-slice 1 ya mergeado en #998) |
+| 3.H   | export (ADR-0011 next) → `domain::export_port` (parcial) | 7 | ~150 | **SÍ (parcial)** | — |
+| 3.I   | **Crear `domain::obsidian`** + migrar; **Crear `domain::content_processing`** + migrar | 11 | ~250 | **SÍ (×2)** | — |
+| 3.J   | http misc → `domain::http_port`                   |      5 |    ~100  | NO (ya existe)        | —          |
+| 3.K   | persistence → `domain::persistence`               |      5 |    ~120  | NO (ya existe)        | —          |
+| 4     | `http::waf_engine` lógica → `domain::waf`        |      7 |    ~250  | parcial               | —          |
+| 2     | strict mode default flip (`check_intra_crate_direction.sh:43`) | 0 | 1 | NO | sub-slice 1 (merging only) |
+| **Total** |                                              |   ~173 |  ~2230  | 4 ports nuevos        |            |
+
+**Operational notes:**
+
+- **3.E is split** because the field change in `elastic_ingestion.rs`
+  (`bridge: CpuBridge` → `bridge: Arc<dyn CpuBridgePort>`) touches the
+  struct constructor, the DI wiring in `application/container.rs`, and
+  every `ElasticIngestion::new` call site. Splitting 3.E (DTO + trait +
+  shim) from 3.E.2 (field rewrite + container + call sites) keeps each
+  PR reviewable and isolates the lock-across-await risk to 3.E.2.
+- **3.C crosses `application/` and `adapters/downloader/`** in the
+  same crate. Verify with `codedb_deps` that no shared files outside
+  the listed ones are touched, so the PR can be batch-merged with
+  others (3.A, 3.A.2, 3.I, etc., that touch disjoint files).
+- **3.G depends on sub-slice 1** because the `from_elastic`/`resolve`
+  impls on `AutotuningConfig` are currently in the infra shim (added
+  by PR #993). Sub-slice 1 migrated the *call sites* to
+  `domain::config::AutotuningConfig`; the impls stayed in infra. 3.G
+  moves the impls themselves. Sub-slice 1 is already in flight (PR
+  #998); 3.G can land any time after.
+- **Batch-merge optimization:** with `strict: true` on `main`, 14
+  sequential merges re-run CI ~14×. For the small migration-only
+  PRs (3.A, 3.A.2, 3.B, 3.B.2, 3.D, 3.F, 3.J, 3.K) that touch
+  disjoint files in `application/` and `adapters/`, batch-merge via
+  `fix/batch-3-migrations-<date>` saves ~7× CI runs. The 4 port-creating
+  PRs (3.C, 3.E, 3.I, 3.H) merge sequentially because each introduces
+  a new domain module and could conflict on `domain/mod.rs`.
+
+### Allowlist language sync
+
+The 11 per-file allowlist entries in
+`scripts/check_intra_crate_direction_allowlist.txt` currently say
+`"Remove after sub-slice 3 ports X to domain"`. The word *ports* is
+already aligned with the corrected decision (port = trait in domain +
+concrete in infra). No change required to the entry text. The
+sub-slice 3.x numbering in this erratum is a planning refinement;
+the existing per-file entries continue to track which 3.x removes them.
+
+### What this erratum does NOT change
+
+- Sub-slice 1 (already landed in PR #998) — the ScraperConfig family
+  migration is unaffected. The infra shim is unchanged in shape; the
+  call-site migration is correct under both the original and corrected
+  decisions because `ScraperConfig` and `AutotuningConfig` are pure
+  DTOs and legitimately live in `domain::config`.
+- Sub-slice 2 (strict mode flip) — the 1-line gate default change.
+- Sub-slice 4 (WAF AC automaton → `domain::waf`) — the WAF work is
+  intra-domain (logic, not infra), so the original description stands.
+- Sub-slice 5 (final cleanup) — unchanged.
+- The shim pattern (canonical in `domain::*`, re-export in
+  `infrastructure::*`) — unchanged. The erratum only rejects the
+  interpretation that "porting" means moving the concrete type.
+
 ## References
 
 - `scripts/check_intra_crate_direction.sh` (gate, ADR-0010 + ADR-0010-A hardened)
-- `scripts/check_intra_crate_direction_allowlist.txt` (19 entries, each cites its sub-slice)
+- `scripts/check_intra_crate_direction_allowlist.txt` (18 entries after sub-slice 1, each cites its sub-slice)
 - `docs/adr/0010-intra-crate-direction-allowlist.md`
 - `docs/adr/0011-tighten-intra-crate-allowlist.md`
 - PRs #993 (squash `d442119f`) and #997 (squash `6894f18a`)
