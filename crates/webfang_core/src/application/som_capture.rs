@@ -14,6 +14,8 @@
 
 use serde::Serialize;
 
+use crate::domain::axtree_port::CompactNode;
+
 /// A single mark emitted for an AX tree node intersecting the viewport.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize, Serialize)]
 pub struct Mark {
@@ -80,10 +82,7 @@ pub async fn extract_marks(url: &str) -> crate::Result<Vec<Mark>> {
 /// In a full implementation, this would call the CDP `DOM.getBoxModel`
 /// command keyed by `backendDOMNodeId`.
 #[allow(dead_code)]
-fn simulate_box_model(
-    node: &crate::infrastructure::axtree::CompactNode,
-    _idx: usize,
-) -> ([f64; 8], bool) {
+fn simulate_box_model(node: &CompactNode, _idx: usize) -> ([f64; 8], bool) {
     // Placeholder: generate a box that depends on the node's role and name length.
     // This ensures each node gets a distinct box shape for testing the filter logic.
     let name_len = node.name.chars().count() as f64;

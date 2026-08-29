@@ -20,40 +20,9 @@ use url::Url;
 
 use super::downloader::DownloadError;
 
-/// Snapshot serialization formats (spec R3).
-///
-/// Only [`Compact`](Self::Compact) is implemented in this slice; `playwright-mcp`
-/// returns an honest unsupported error (ai.rs precedent).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
-pub enum SnapshotFormat {
-    /// Interactive-only `@eN`-referenced node list with a `token_estimate`.
-    #[default]
-    Compact,
-    /// Playwright MCP AXSnapshot format — deferred to a follow-up change.
-    PlaywrightMcp,
-}
-
-/// A single compact node: `@eN` ref, accessible name, and role.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct CompactNode {
-    /// Snapshot-scoped reference (`@e1`, `@e2`, …) — valid ONLY within the
-    /// snapshot that created it (RDD causal invariant).
-    #[serde(rename = "ref")]
-    pub r#ref: String,
-    /// Accessible name.
-    pub name: String,
-    /// Accessible role.
-    pub role: String,
-}
-
-/// Compact accessibility snapshot — interactive nodes plus a token estimate.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct CompactSnapshot {
-    /// Emitted nodes, each with a snapshot-scoped `@eN` ref.
-    pub nodes: Vec<CompactNode>,
-    /// `Σ(2 + name_chars/4 + role_chars/4)` over the emitted nodes.
-    pub token_estimate: usize,
-}
+// DTOs moved to domain::axtree_port in sub-slice 3.A.2 (ADR-0012). Infra
+// re-exports them so existing call sites continue to resolve.
+pub use crate::domain::axtree_port::{CompactNode, CompactSnapshot, SnapshotFormat};
 
 /// Reject unsupported snapshot formats before any browser work (spec R3).
 ///
