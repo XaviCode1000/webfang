@@ -36,7 +36,7 @@ set -euo pipefail
 ROOT="crates/webfang_core/src"
 MODE="${INTRA_CRATE_MODE:-warn}"
 ALLOWLIST="scripts/check_intra_crate_direction_allowlist.txt"
-ALLOWLIST_CAP=18
+ALLOWLIST_CAP=19
 
 declare -A LAYER_RANK=(
   [infrastructure]=0
@@ -105,7 +105,7 @@ if [[ -f "$ALLOWLIST" ]]; then
     ALLOW_PATTERNS+=("$pattern")
   done < "$ALLOWLIST"
   if (( ${#ALLOW_PATTERNS[@]} > ALLOWLIST_CAP )); then
-    echo "::error::allowlist $ALLOWLIST has ${#ALLOW_PATTERNS[@]} entries, max is $ALLOWLIST_CAP (ADR-0010-A temporary cap raised 12→18 to absorb 11 per-file application/* entries from the prior broad `application/` entry; revert toward 5 after issue #994 sub-slice 3 lands; the top-3 files for sub-slice 3 — elastic_ingestion.rs, scraper_service.rs, crawl_result_repository.rs — drop the cap by 2 once ported)"
+    echo "::error::allowlist $ALLOWLIST has ${#ALLOW_PATTERNS[@]} entries, max is $ALLOWLIST_CAP (ADR-0010-A temporary cap raised 12→19; the `crate::ScraperConfig` alias entry is removed after #994 sub-slice 1 ports the ScraperConfig family, dropping the cap by 1; remaining entries drop incrementally as sub-slices 3 and 4 land)"
     exit 1
   fi
 fi
