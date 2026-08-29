@@ -1,10 +1,10 @@
 //! AXTree port — domain trait for accessibility-tree snapshots.
 //!
-//! Owns the pure DTOs (`SnapshotFormat`, `CompactNode`, `CompactSnapshot`)
-//! and the `AxTreePort` trait. The I/O implementations
-//! (chromiumoxide CDP fetcher, playwright serializer) live in
-//! `infrastructure::axtree` and impl this trait; `application::som_capture`
-//! consumes the trait through container DI.
+//! Owns the pure DTOs (`SnapshotFormat`, `CompactNode`, `CompactSnapshot`),
+//! the `RawAxNodeView` trait abstraction, the `compact` serializer, and
+//! the `AxTreePort` trait. The I/O implementations (chromiumoxide CDP
+//! fetcher) live in `infrastructure::axtree` and impl this trait;
+//! `application::som_capture` consumes the trait through container DI.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -18,11 +18,21 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Domain port for fetching raw accessibility trees.
 ///
+/// The I/O implementations live in `infrastructure::axtree`. Application
+/// code consumes the trait through container DI as `Arc<dyn AxTreePort>`.
+///
 /// `#[cfg(feature = "chromium")]` impl spawns headless Chromium via CDP;
 /// non-chromium stub returns an error.
 pub trait AxTreePort: Send + Sync {
-    /// Fetch the raw AXTree JSON for a URL.
-    fn fetch_raw_axtree<'a>(&'a self, url: &'a Url) -> BoxFuture<'a, Result<String, ScraperError>>;
+    /// Fetch the raw AXTree nodes for a URL.
+    ///
+    /// Returns the nodes as trait objects (`Box<dyn RawAxNodeView>`) so the
+    /// domain `compact` function can process them without depending on
+    /// browser-specific types.
+    fn fetch_raw_axtree<'a>(
+        &'a self,
+        url: &'a Url,
+    ) -> BoxFuture<'a, Result<Vec<Box<dyn RawAxNodeView>>, ScraperError>>;
 }
 
 /// Snapshot serialization formats (spec R3).
@@ -162,42 +172,8 @@ mod tests {
     use std::sync::Arc;
     use url::Url;
 
-    struct FakeAx;
-
-    impl AxTreePort for FakeAx {
-        fn fetch_raw_axtree<'a>(
-            &'a self,
-            url: &'a Url,
-        ) -> BoxFuture<'a, Result<String, ScraperError>> {
-            let u = url.clone();
-            Box::pin(async move { Ok(format!("axtree:{u}")) })
-        }
-    }
-
-    #[tokio::test]
-    async fn fetch_raw_axtree_returns_string() {
-        let port = FakeAx;
-        let url = Url::parse("https://example.com").unwrap();
-        let out = port.fetch_raw_axtree(&url).await.unwrap();
-        assert!(out.contains("example.com"));
-
-        let url2 = Url::parse("https://rust-lang.org").unwrap();
-        let out2 = port.fetch_raw_axtree(&url2).await.unwrap();
-        assert!(out2.contains("rust-lang.org"));
-    }
-
-    #[test]
-    fn axtree_port_is_object_safe() {
-        fn assert_dyn(_: &dyn AxTreePort) {}
-        let p = FakeAx;
-        assert_dyn(&p);
-        let _: Arc<dyn AxTreePort> = Arc::new(FakeAx);
-    }
-
     // ========================================================================
-    // compact() tests — moved from infrastructure::axtree::compact in
-    // sub-slice 3.A.2-followup.A. Use a local `FakeNode` implementing
-    // `RawAxNodeView` so tests don't depend on chromiumoxide types.
+    // FakeNode — local RawAxNodeView impl for tests
     // ========================================================================
 
     struct FakeNode {
@@ -233,6 +209,52 @@ mod tests {
             },
         })
     }
+
+    struct FakeAx;
+
+    impl AxTreePort for FakeAx {
+        fn fetch_raw_axtree<'a>(
+            &'a self,
+            url: &'a Url,
+        ) -> BoxFuture<'a, Result<Vec<Box<dyn RawAxNodeView>>, ScraperError>> {
+            let u = url.clone();
+            Box::pin(async move {
+                let node: Box<dyn RawAxNodeView> = Box::new(FakeNode {
+                    ignored: false,
+                    role: Some("button".to_string()),
+                    name: Some(format!("fake:{u}")),
+                });
+                Ok(vec![node])
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_raw_axtree_returns_nodes() {
+        let port = FakeAx;
+        let url = Url::parse("https://example.com").unwrap();
+        let nodes = port.fetch_raw_axtree(&url).await.unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].role_str(), Some("button"));
+        assert!(nodes[0].name_str().unwrap().contains("example.com"));
+
+        let url2 = Url::parse("https://rust-lang.org").unwrap();
+        let nodes2 = port.fetch_raw_axtree(&url2).await.unwrap();
+        assert!(nodes2[0].name_str().unwrap().contains("rust-lang.org"));
+    }
+
+    #[test]
+    fn axtree_port_is_object_safe() {
+        fn assert_dyn(_: &dyn AxTreePort) {}
+        let p = FakeAx;
+        assert_dyn(&p);
+        let _: Arc<dyn AxTreePort> = Arc::new(FakeAx);
+    }
+
+    // ========================================================================
+    // compact() tests — moved from infrastructure::axtree::compact in
+    // sub-slice 3.A.2-followup.A.
+    // ========================================================================
 
     #[test]
     fn interactive_only_emits_interactive_nodes_with_sequential_refs() {

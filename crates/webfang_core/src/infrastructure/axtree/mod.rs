@@ -6,9 +6,10 @@
 //! `Page` connection, reusing the launch → navigate → close lifecycle of
 //! `ChromiumoxideDownloader::fetch`.
 //!
-//! The pure compact serializer lives in `compact` (chromium-gated because it
-//! borrows the crate `AxNode` type); the snapshot/format types here are
-//! feature-agnostic so the non-chromium stub keeps an identical signature.
+//! The pure `compact` serializer and `RawAxNodeView` trait live in
+//! `domain::axtree_port` (sub-slice 3.A.2-followup.A). This module owns
+//! the chromiumoxide impls and the `ChromiumoxideAxTreeAdapter` that
+//! implements the `AxTreePort` domain trait (sub-slice 3.A.2-followup.B).
 
 #[cfg(feature = "chromium")]
 pub(crate) mod playwright;
@@ -17,7 +18,10 @@ use url::Url;
 
 use super::downloader::DownloadError;
 #[cfg(feature = "chromium")]
+use crate::domain::axtree_port::AxTreePort;
+#[cfg(feature = "chromium")]
 use crate::domain::axtree_port::RawAxNodeView;
+use crate::error::ScraperError;
 
 // DTOs moved to domain::axtree_port in sub-slice 3.A.2 (ADR-0012). Infra
 // re-exports them so existing call sites continue to resolve.
@@ -190,6 +194,40 @@ where
     handler_job.abort();
 
     result
+}
+
+// ============================================================================
+// ChromiumoxideAxTreeAdapter — implements the domain `AxTreePort` trait.
+// Sub-slice 3.A.2-followup.B. Container wires `Arc<dyn AxTreePort>` to this.
+// ============================================================================
+
+/// Concrete `AxTreePort` impl that drives chromiumoxide CDP to fetch the
+/// raw AXTree and wraps the result as `Box<dyn RawAxNodeView>` for the
+/// domain `compact` function. Cheap to construct (no I/O in `new`), so
+/// the container can build one and clone the `Arc` cheaply.
+#[cfg(feature = "chromium")]
+#[derive(Clone, Default)]
+pub struct ChromiumoxideAxTreeAdapter;
+
+#[cfg(feature = "chromium")]
+impl AxTreePort for ChromiumoxideAxTreeAdapter {
+    fn fetch_raw_axtree<'a>(
+        &'a self,
+        url: &'a Url,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Vec<Box<dyn RawAxNodeView>>, ScraperError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let raw = fetch_raw_axtree(url)
+                .await
+                .map_err(|e| ScraperError::extraction(format!("AXTree fetch failed: {e}")))?;
+            Ok(wrap_as_views(raw))
+        })
+    }
 }
 
 /// Fetch raw `Vec<AxNode>` via `with_cdp_page` (R4).
