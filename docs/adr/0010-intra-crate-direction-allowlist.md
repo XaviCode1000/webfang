@@ -102,7 +102,7 @@ The 71-file permanent exception was explicitly rejected by the `webfang-architec
 - `AGENTS.md` — crate dependency allow-matrix and Clean Architecture layers (`infrastructure → adapters → application → domain`)
 - `scripts/check_dependency_direction.sh` — CI gate for inter-crate direction (Cargo.toml)
 - `scripts/check_intra_crate_direction.sh` — intra-crate gate (this ADR), hardens `crate::ScraperConfig` alias; ADR-0010-A extends to inline qualified paths
-- `scripts/check_intra_crate_direction_allowlist.txt` — versioned allowlist (≤12 during ADR-0010-A, revert toward ≤5 after #994 sub-slice 3)
+- `scripts/check_intra_crate_direction_allowlist.txt` — versioned allowlist (≤19 during ADR-0010-A; cap reverts incrementally as #994 sub-slices 1, 3, 4 land; realistic post-#994 floor is ~10–13, not 5)
 - `crates/webfang_core/src/domain/config.rs` — `ScraperConfig` family now owned by domain
 - `crates/webfang_core/src/domain/downloader_port.rs` — `Downloader` + `FetchedPage`/`Cookie`/`DownloadError` (BoxFuture dyn-compat)
 - `crates/webfang_core/src/domain/crawler_port.rs` — `SitemapConfig` + helpers surface
@@ -185,54 +185,70 @@ broad entries (`infrastructure::crawler`, `infrastructure::downloader`,
 `application/container.rs`) continue to absorb pre-existing inline sites by the
 same substring match.
 
-### 3. Allowlist cap revisited (5 → 12, temporary)
+### 3. Allowlist cap revisited (5 → 19, temporary, with honest reversal floor)
 
 The original ADR-0010 §2 capped the allowlist at **≤5 entries**. After the
 inline pass is enabled, the empirical count of pre-existing inline sites not
 already covered by the 5 broad entries is **43 violations across 13 files**.
-The cap must be raised temporarily to **≤12** to keep the strict gate
-green, with the explicit expectation that it reverts toward ≤5 after
-issue #994 sub-slice 3 lands.
+The cap must be raised to keep the strict gate green.
+
+**Honest cap-reversal floor (correction to the original addendum draft):**
+the goal of "revert toward 5" stated in the first draft of this addendum
+was wrong. The 5-entry cap assumed one broad `application/`-style entry; the
+per-file shape (which we adopted to make cleanup mechanical) inherently
+needs more entries. After all #994 sub-slices land (1, 3, 4), the realistic
+floor is **~10–13 entries**, not 5. The remaining entries would be:
+`application/container.rs` (composition root, never ported), the 5 broad
+infrastructure entries (each with its own port candidate), and the per-file
+stragglers whose porting depends on later architectural decisions beyond
+#994. Future work that further reduces the floor must come with its own
+ADR and explicit cost/benefit analysis — the 5-entry number is not a target
+to blindly chase.
+
+The cap is currently **≤19** to absorb all 19 per-file entries. The cap
+reversal path is:
+
+| After #994 sub-slice | Cap drops by | Reason |
+|---|---|---|
+| 1 (ScraperConfig family → `domain::config`) | -1 | `crate::ScraperConfig` alias entry removed |
+| 1 (continued) | -3 | `application/crawler/discovery.rs`, `application/crawler_service.rs`, `application/extraction.rs` no longer need ScraperConfig-specific entries (they are absorbed by other broad entries) |
+| 3 (persistence/scraper/converter ports → `domain::*`) | -3 | `application/elastic_ingestion.rs`, `application/scraper_service.rs`, `application/vault_search.rs` removed (or split per port) |
+| 3 (continued) | -1 | `application/som_capture.rs` (axtree port) removed |
+| 3 (continued) | -1 | `application/http_client/factory.rs` (SSRF port) removed |
+| 3 (continued) | -1 | `application/llm_extraction.rs` (SSRF port) removed |
+| 3 (continued) | -1 | `application/asset_download.rs` (Downloader port) removed |
+| 3 (continued) | -1 | `application/crawler/engine.rs` (SessionPool port) removed |
+| 3 (continued) | -1 | `adapters/downloader/mod.rs` (SSRF wiring) removed |
+| 4 (WAF AC → `domain::waf`) | -1 | `infrastructure::http` entry removed |
+| **Realistic post-#994 floor** | **~10** | `application/container.rs` + 5 broad infra entries + ~4 stragglers |
 
 Three precision points govern the temporary cap (issue #995 user thread):
 
-1. **Each new entry MUST cite both ADR-0010 and #994 sub-slice 3 in its reason
-   comment** — "fecha de caducidad semántica" (semantic expiration date). When
-   sub-slice 3 ports the offending files, the entry is removed in the same
-   commit and the cap count drops by one.
-2. **Cap is meant to drop back toward 5 after sub-slice 3 ports the top-3
-   files**: `application/elastic_ingestion.rs` (top offender, ~13 sites),
-   `application/scraper_service.rs` (~7 sites), and
-   `application/crawler/crawl_result_repository.rs` (~6 sites, currently
-   covered by the existing `infrastructure::observability` broad entry — no
-   new entry needed for this slice). Sub-slice 3 also covers the
-   `infrastructure::http` `domain/waf.rs` misfile (7 sites) and the
-   `adapters/downloader/mod.rs` `ssrf` wiring (2 sites).
-3. **The cap is a hard gate in the script** (`ALLOWLIST_CAP=12`). Adding a
-   13th entry fails CI; the next entry must wait for sub-slice 3 to remove
-   an existing one or for a deliberate cap bump with its own ADR.
-
-Current cap-12 layout (8 entries — 5 original + 3 new) absorbs all 43
-violations. The 3 new entries are:
-
-- `application/` — broad catch for 11 application/* files (34 sites). Removed
-  per-file as sub-slice 3 lands.
-- `infrastructure::http` — covers `domain/waf.rs` (7 sites). The file is
-  misfiled (lives in `domain/` but acts as a port delegating to
-  `infrastructure::http::waf_engine`); port shape debated separately in
-  sub-slice 3 (move to `adapters/waf` or split domain port + infra impl).
-- `adapters/downloader/mod.rs` — covers 2 inline sites of
-  `crate::infrastructure::ssrf` (lines 266-267). Porting to a domain
-  `DownloaderConfig` requires the wider ssrf port extraction tracked in
-  sub-slice 3.
+1. **Each new entry MUST cite ADR-0010 AND the specific #994 sub-slice in
+   its reason comment** — "fecha de caducidad semántica" (semantic expiration
+   date). When the cited sub-slice ports the offending file, the entry is
+   removed in the same commit and the cap count drops by one. This is what
+   makes cleanup mechanical (a `sed` per sub-slice, not a manual audit).
+2. **Per-file entries are non-negotiable.** The first draft of this addendum
+   used a broad `application/` substring entry. That was rejected because
+   it froze debt (any new file under `application/` would silently match
+   without per-file accountability) and made the cap-reversal unactionable
+   (cleanup would require an audit of which files the broad entry matched).
+3. **The cap is a hard gate in the script** (`ALLOWLIST_CAP=19`). Adding a
+   20th entry fails CI; the next entry must wait for a sub-slice to remove
+   an existing one or for a deliberate cap bump with its own ADR note.
 
 ### 4. Out of scope
 
-Porting the top-3 files (`elastic_ingestion`, `scraper_service`,
-`crawl_result_repository`) to `domain::*` is **not** part of this slice. The
-intra-crate lint extension is bug-fix scope (closes a CI gap that allowed
-architectural violations to slip through); the ports are refactor scope and
-have their own design debate in #994 sub-slice 3:
+Porting the 13 application/* files (top-3: `elastic_ingestion`,
+`scraper_service`, `crawler/crawl_result_repository`; long tail: `som_capture`,
+`vault_search`, `http_client/factory`, `llm_extraction`, `asset_download`,
+`crawler/engine`, `crawler/discovery`, `crawler_service`, `extraction`, plus
+`domain/waf.rs` and `adapters/downloader/mod.rs`) to `domain::*` is **not**
+part of this slice. The intra-crate lint extension is bug-fix scope (closes
+a CI gap that allowed architectural violations to slip through); the ports
+are refactor scope and have their own design debate in #994 sub-slices 1, 3,
+4:
 
 - `CpuBridge` port shape — currently `infrastructure::bridge::CpuBridge` is
   used inline in `application/elastic_ingestion.rs` (8 sites). The port
@@ -241,8 +257,10 @@ have their own design debate in #994 sub-slice 3:
 - `AutotuningConfig` ownership — `infrastructure::autotuning` defines
   `ElasticConfig` (now re-exported via `domain::config::ElasticOverrides` but
   the struct still lives in infrastructure). The full `ElasticConfig` →
-  `domain::config` move is deferred to sub-slice 3 to keep this slice ≤800
-  lines.
+  `domain::config` move is deferred to sub-slice 1.
+- WAF AC automaton — `domain/waf.rs` is misfiled (delegates via qualified
+  path to `infrastructure::http::waf_engine`). The full AC logic → `domain::waf`
+  move is deferred to sub-slice 4.
 
 This PR does NOT touch `Cargo.toml` (no new dependencies; the existing
 `sysinfo` doc-link fix in `infrastructure/autotuning.rs` is a comment-only
@@ -252,6 +270,9 @@ owns it), and does NOT modify any production file beyond the comment fix.
 ### 5. Update history
 
 - **2026-08-29** — Addendum 0010-A issued with the inline-path scanner
-  extension. Issue #995 closed. Allowlist cap raised 5 → 12. Three new
-  entries (`application/`, `infrastructure::http`, `adapters/downloader/mod.rs`)
-  added with #994 sub-slice 3 expiration dates.
+  extension. Issue #995 closed. Allowlist cap raised 5 → 19. All 19 entries
+  carry per-file inventory + cited #994 sub-slice (1, 3, or 4) for
+  mechanical cleanup. Honest cap-reversal floor documented: ~10–13 after
+  sub-slices 1+3+4 land, not 5. The "revert toward 5" language in the first
+  draft was corrected because the per-file shape inherently needs more
+  entries than the pre-#995 broad-entry model.
