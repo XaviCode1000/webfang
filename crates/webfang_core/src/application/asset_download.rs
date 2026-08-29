@@ -3,7 +3,7 @@
 //! # Design note (#443)
 //!
 //! [`download_assets_if_enabled`] is application-layer orchestration, not
-//! adapter logic: it reads [`ScraperConfig`](crate::domain::config::ScraperConfig), extracts
+//! adapter logic: it reads [`ScraperConfig`], extracts
 //! asset URLs from the HTML via [`crate::extractor`], deduplicates them, and
 //! delegates the actual transfer to the [`AssetDownloaderPort`](crate::domain::ports::AssetDownloaderPort) adapter
 //! (`adapters::downloader::Downloader` implements the port). Pushing this into
