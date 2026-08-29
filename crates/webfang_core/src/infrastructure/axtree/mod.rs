@@ -17,11 +17,11 @@ pub(crate) mod playwright;
 use url::Url;
 
 use super::downloader::DownloadError;
-use crate::error::ScraperError;
-#[cfg(feature = "chromium")]
-use crate::domain::axtree_port::RawAxNodeView;
 #[cfg(feature = "chromium")]
 use crate::domain::axtree_port::AxTreePort;
+#[cfg(feature = "chromium")]
+use crate::domain::axtree_port::RawAxNodeView;
+use crate::error::ScraperError;
 
 // DTOs moved to domain::axtree_port in sub-slice 3.A.2 (ADR-0012). Infra
 // re-exports them so existing call sites continue to resolve.
