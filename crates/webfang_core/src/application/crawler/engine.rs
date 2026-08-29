@@ -44,13 +44,13 @@ use crate::application::pipeline::{OutputStage, PipelineExecutor};
 use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::domain::budget::{BudgetModel, BudgetOverrides};
 use crate::domain::clock::SystemClock;
+use crate::domain::cookie_bridge::CookieBridge;
 use crate::domain::downloader_port::DownloadError;
 use crate::domain::session_port::SessionPoolConfig;
 use crate::domain::{
     CorrelationId, CrawlError, CrawlErrorCategory, CrawlResult, CrawlerConfig, JsStrategy,
 };
 use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
-use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
 use crate::infrastructure::downloader::resource_governor::ResourceGovernor;
 
 /// Shared shutdown signal — set to `true` when SIGINT/SIGTERM received.

@@ -17,10 +17,10 @@ use crate::application::crawler::ports::{
 };
 use crate::application::pipeline::OutputStage;
 use crate::application::rate_limiter::SharedRateLimiter;
+use crate::domain::cookie_bridge::CookieBridge;
 use crate::domain::session_port::SessionPort;
 use crate::domain::{CorrelationId, CrawlerConfig};
 use crate::infrastructure::crawler::UrlQueue;
-use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
 
 /// Shared context for all crawl tasks spawned by the engine.
 ///
