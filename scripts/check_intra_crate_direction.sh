@@ -40,9 +40,9 @@
 set -euo pipefail
 
 ROOT="crates/webfang_core/src"
-MODE="${INTRA_CRATE_MODE:-warn}"
+MODE="${INTRA_CRATE_MODE:-strict}"
 ALLOWLIST="scripts/check_intra_crate_direction_allowlist.txt"
-# Hard cap. 19 current entries + headroom, so a NEW one-file violation does not
+# Hard cap. 18 current entries + headroom, so a NEW one-file violation does not
 # force an ADR edit on every PR. Warn (do not fail) when within 2 of the cap.
 ALLOWLIST_CAP=22
 ALLOWLIST_WARN_AT=20
