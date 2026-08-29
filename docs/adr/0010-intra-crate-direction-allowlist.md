@@ -196,7 +196,7 @@ broad entries (`infrastructure::crawler`, `infrastructure::downloader`,
 `application/container.rs`) continue to absorb pre-existing inline sites by the
 same substring match.
 
-### 3. Allowlist cap revisited (5 → 19, temporary, with honest reversal floor)
+### 3. Allowlist cap revisited (5 → 22, temporary, with honest reversal floor)
 
 The original ADR-0010 §2 capped the allowlist at **≤5 entries**. After the
 inline pass is enabled, the empirical count of pre-existing inline sites not
@@ -248,9 +248,13 @@ Three precision points govern the temporary cap (issue #995 user thread):
    it froze debt (any new file under `application/` would silently match
    without per-file accountability) and made the cap-reversal unactionable
    (cleanup would require an audit of which files the broad entry matched).
-3. **The cap is a hard gate in the script** (`ALLOWLIST_CAP=19`). Adding a
-   20th entry fails CI; the next entry must wait for a sub-slice to remove
-   an existing one or for a deliberate cap bump with its own ADR note.
+3. **The cap is a hard gate in the script** (`ALLOWLIST_CAP=22`, with a soft
+   non-blocking `::warning::` at `ALLOWLIST_WARN_AT=20`). Adding a 23rd entry
+   fails CI; the warning fires when the allowlist reaches 20 entries so
+   pruning is prompted BEFORE the hard gate bites. The 3-entry headroom
+   exists so a NEW one-file violation does not force an ADR edit on every
+   PR — the next entry must still wait for a sub-slice to remove an existing
+   one or for a deliberate cap bump with its own ADR note.
 
 ### 4. Out of scope
 
@@ -284,9 +288,17 @@ owns it), and does NOT modify any production file beyond the comment fix.
 ### 5. Update history
 
 - **2026-08-29** — Addendum 0010-A issued with the inline-path scanner
-  extension. Issue #995 closed. Allowlist cap raised 5 → 19. All 19 entries
+  extension. Issue #995 closed. Allowlist cap raised 5 → 22 (19 entries +
+  headroom, soft warn at 20). All 19 entries
   carry per-file inventory + cited #994 sub-slice (1, 3, or 4) for
   mechanical cleanup. Honest cap-reversal floor documented: ~10–13 after
   sub-slices 1+3+4 land, not 5. The "revert toward 5" language in the first
   draft was corrected because the per-file shape inherently needs more
   entries than the pre-#995 broad-entry model.
+- **2026-08-29 (review fixes)** — Scanner hardened after external review:
+  single-awk-pass matcher (one process per file; the per-line subshell
+  variant measured >30s and is forbidden), every-match-per-line emission,
+  full-qualified-path capture so allowlist entries stay narrow
+  (`infrastructure::http::waf_engine`, not broad `infrastructure::http`),
+  and the cap text in this document synchronized with the script
+  (`ALLOWLIST_CAP=22`, warn at 20).

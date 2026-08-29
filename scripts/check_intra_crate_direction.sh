@@ -188,6 +188,9 @@ filter_and_match() {
       # A trailing `// comment` on a code line is not stripped: an idiomatic
       # `crate::layer::...` path cannot legally live inside a comment, so any
       # hit there is a residual false positive absorbed by the allowlist.
+      # `out` holds the un-scanned remainder of the code segments; each
+      # iteration advances past the last match (RSTART/RLENGTH from the
+      # match() above are still valid for the substr calls that follow).
       while (match(out, re)) {
         printf("%d\t%s\n", NR, substr(out, RSTART, RLENGTH))
         out = substr(out, RSTART + RLENGTH)
@@ -264,6 +267,12 @@ process_match() {
 violations=0
 allowlisted_count=0
 
+# Scratch file for the inline pass — created ONCE, outside the per-file loop,
+# and removed by a single EXIT trap (a trap inside the loop is fragile: any
+# unhandled error between the trap and the rm leaks the temp file).
+inline_tmp=$(mktemp)
+trap 'rm -f "$inline_tmp"' EXIT
+
 while read -r file; do
   if ! src_layer=$(layer_of_file "$file"); then
     continue
@@ -296,8 +305,6 @@ while read -r file; do
   # --- Pass 2: inline qualified-path scan ---
   # Single awk pass per file: strips comments and emits EVERY
   # `crate::<layer>::X` match as `NR<TAB>MATCH` (see filter_and_match).
-  inline_tmp=$(mktemp)
-  trap 'rm -f "$inline_tmp"' EXIT
   filter_and_match < "$file" > "$inline_tmp"
 
   while IFS=$'\t' read -r lineno inline_match; do
@@ -315,8 +322,6 @@ while read -r file; do
 
     process_match "$file" "$lineno" "$inline_match" "inline" "$src_layer"
   done < "$inline_tmp"
-  rm -f "$inline_tmp"
-  trap - EXIT
 
 done < <(find "$ROOT" -name "*.rs" -type f)
 
