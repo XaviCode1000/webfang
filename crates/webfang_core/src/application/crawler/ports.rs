@@ -9,6 +9,12 @@
 //! instead of the `async_trait` crate, matching the frozen decision #1
 //! established in [`crate::domain::repository::VectorRepository`] and
 //! [`crate::domain::downloader_port::Downloader`].
+//!
+//! rust-analyzer caveat (#1034): the manual `Box::pin(async move { ... })`
+//! form can produce a spurious `E0308` mismatch against an `BoxFuture<'a, ...>`
+//! return type in editor diagnostics, even when `cargo check --all-features`
+//! accepts the file as well-typed. Treat the compiler as the source of truth
+//! for these methods; the rust-analyzer overlay is not.
 
 use std::sync::Arc;
 
@@ -121,12 +127,12 @@ impl PageFetcher for ProductionPageFetcher {
                     Err(e) => Err(e.into()),
                 }
             } else {
-                let html = fetch_url(url.as_str(), config).await?;
+                let result = fetch_url(url.as_str(), config).await?;
                 Ok(FetchOutcome {
-                    body: html,
-                    final_url: url.clone(),
-                    cookies: Vec::new(),
-                    status: 200,
+                    body: result.body,
+                    final_url: result.final_url,
+                    cookies: result.cookies,
+                    status: result.status,
                 })
             }
         })
@@ -220,63 +226,25 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    #[test]
-    fn test_fetch_outcome_preserves_final_url() {
-        let requested = Url::parse("https://example.com/redirect/5").expect("valid URL");
-        let final_url = Url::parse("https://example.com/final").expect("valid URL");
-        let outcome = FetchOutcome {
-            body: "<html></html>".to_string(),
-            final_url: final_url.clone(),
-            cookies: Vec::new(),
-            status: 200,
-        };
-        assert_eq!(outcome.final_url, final_url);
-        assert_ne!(outcome.final_url, requested);
-        assert_eq!(outcome.body, "<html></html>");
-        assert_eq!(outcome.status, 200);
-    }
-
     // -----------------------------------------------------------------------
-    // #1024 — branch observability for ProductionPageFetcher
+    // Branch observability for ProductionPageFetcher (#1024 → #1027 → #1030)
     //
-    // `fetch_page` has two branches that were previously indistinguishable to
-    // the test suite. The router branch propagates `status` and `cookies` from
-    // the `Downloader`; the fallback branch calls `fetch_url`, which returns
-    // only a body, and then hardcodes `status: 200` and `cookies: Vec::new()`.
+    // `fetch_page` has two branches: a router branch that delegates to a
+    // [`Downloader`] and a fallback branch that calls the static
+    // [`fetch_url`] helper. Both must report the same observable truth about
+    // a response — same status, same cookies, same final URL after redirects.
     //
-    // That mattered concretely: sub-slice 3.B-1b made `with_js_strategy` build
-    // a downloader only when a `DownloaderFactory` is injected, and four
-    // `EngineOptions` literals using `..Default::default()` silently flipped to
-    // the fallback while still passing. A regression that routed every crawl
-    // onto the static fallback would have been invisible to CI.
+    // Before #1027 the fallback fabricated `status: 200` and `cookies:
+    // Vec::new()`, diverging from the real HTTP response. `fetch_url` rejected
+    // every non-2xx before the fallback saw them, so the fabrication could
+    // only misreport *within* the 2xx family (201, 203, 204, 226). That made
+    // it a data-correctness defect (the published `ScrapedItem.status_code`
+    // lied) but not a safety hole (no error turned into a success).
     //
-    // `status_code` is not cosmetic — `run_pipeline` writes it into
-    // `ScrapedItem.status_code`, and `ScrapedItem` is what reaches exported
-    // output, so the fallback publishes a status the server never sent.
-    //
-    // # Decision (#1024 AC-3): keep the fabrication, pin it, fix it separately
-    //
-    // The fabrication is narrower than it first looks. `fetch_url` rejects every
-    // non-2xx response before the fallback can build an outcome, so `status: 200`
-    // can only misreport *within* the 2xx family (201, 203, 204, 226) — it never
-    // turns an error into a success. That makes it a data-correctness defect, not
-    // a safety hole.
-    //
-    // Removing the fallback branch is not an option: `crawl_site` and
-    // `crawl_site_capturing` (the batch and MCP chains) never call
-    // `with_js_strategy`, so the fallback is the path most of the crawl surface
-    // already runs on.
-    //
-    // Reporting the truth requires `fetch_url` to return the status *and* the
-    // post-redirect final URL (the fallback also echoes the requested URL, so it
-    // cannot observe redirects). That is a production signature change with its
-    // own blast radius across every `fetch_url` caller, and it is not required by
-    // #994, whose purpose is to shrink, not grow. Bundling it into a test-only
-    // issue would blur review focus, so it is tracked as **#1027**.
-    //
-    // `fallback_branch_fabricates_status_and_drops_cookies` asserts the current
-    // behaviour deliberately. When the real fix lands, that test fails and forces
-    // the change to be an explicit decision instead of silent drift.
+    // #1027 changed `fetch_url` to return `HttpFetchResult { body, status,
+    // final_url, cookies }` so the fallback could propagate the real values.
+    // The two tests below are the tripwire: any regression that re-introduces
+    // fabrication would surface here as a status / cookie mismatch.
     // -----------------------------------------------------------------------
 
     /// A [`Downloader`] double reporting a status and cookies the fallback
@@ -382,15 +350,20 @@ mod tests {
         assert_eq!(outcome.body, "<html>rendered</html>");
     }
 
-    /// Fallback branch against a **real** HTTP response: `fetch_url` discards
-    /// everything but the body, so the outcome reports a status the server never
-    /// sent and no cookies even though `Set-Cookie` was present.
+    /// Fallback branch against a **real** HTTP response: after #1027, the
+    /// fallback propagates the server's true status and `Set-Cookie` instead of
+    /// fabricating them.
     ///
-    /// These assertions pin the fabrication on purpose. If the fallback is ever
-    /// fixed to report the true status, this test fails and the change is forced
-    /// to be a deliberate decision rather than a silent drift.
+    /// 203 is deliberate: `fetch_url` rejects only non-2xx responses before the
+    /// caller ever sees a status, so 203 reaches the fallback's success path and
+    /// exercises the propagation without the test depending on an error being
+    /// turned into a success.
+    ///
+    /// This is the tripwire from #1024 → #1027. A regression that re-introduced
+    /// fabrication (e.g. reverting the fallback to `status: 200` / `Vec::new()`)
+    /// would surface here as a status or cookie mismatch.
     #[tokio::test]
-    async fn fallback_branch_fabricates_status_and_drops_cookies() {
+    async fn fallback_branch_propagates_status_and_cookies() {
         let (_server, url) = mock_203_with_cookie().await;
         let config = config_for(&url);
         let fetcher = ProductionPageFetcher { router: None };
@@ -401,32 +374,37 @@ mod tests {
             .expect("203 is 2xx, so fetch_url should succeed");
 
         assert_eq!(
-            outcome.status, 200,
-            "fallback fabricates 200 even though the server answered 203 (#1024)"
-        );
-        assert!(
-            outcome.cookies.is_empty(),
-            "fallback drops Set-Cookie entirely (#1024)"
+            outcome.status, 203,
+            "fallback must propagate the server's 203, not fabricate 200 (#1027)"
         );
         assert_eq!(
+            outcome.cookies.len(),
+            1,
+            "fallback must propagate the Set-Cookie set by the server (#1027)"
+        );
+        assert_eq!(outcome.cookies[0].name, "wf_session");
+        assert_eq!(
             outcome.body, "<html>served</html>",
-            "the body is the only field the fallback carries faithfully"
+            "body is the only field the fallback already carried faithfully"
         );
         assert_eq!(
             outcome.final_url, url,
-            "fallback echoes the requested URL, so it cannot observe redirects"
+            "no redirect was configured, so final_url equals the requested URL"
         );
     }
 
-    /// The regression gate: both branches driven against the same server must
-    /// produce **different** observable outcomes.
+    /// The router branch and the fallback branch must agree on the real status
+    /// of the same HTTP response (#1027). Before the fix the branches diverged
+    /// (router=203, fallback=200) because the fallback fabricated 200; after the
+    /// fix they converge on the truth (both = 203).
     ///
-    /// Before #1024 no test in the repository could tell the branches apart, so
-    /// routing every crawl onto the static fallback passed CI green. This pins
-    /// the contract stated in `EngineOptions::downloader_factory`'s doc comment
-    /// — no factory means the static fallback, and that is observable.
+    /// `cookies` may still differ in shape (the router's `RouterDouble` hardcodes
+    /// a `127.0.0.1` domain; the fallback parses the raw `Set-Cookie` header),
+    /// which is expected — what matters is that both branches report the
+    /// server-observed status faithfully. A regression that re-introduced
+    /// fabrication would surface here as `with_router.status != without_router.status`.
     #[tokio::test]
-    async fn branches_diverge_on_the_same_http_response() {
+    async fn branches_agree_on_status_after_fix() {
         let (_server, url) = mock_203_with_cookie().await;
         let config = config_for(&url);
 
@@ -447,14 +425,76 @@ mod tests {
             .await
             .expect("fallback branch should succeed");
 
-        assert_ne!(
+        assert_eq!(
             with_router.status, without_router.status,
-            "status must distinguish the branches: router reports the real code, \
-             fallback fabricates 200"
+            "both branches must report the server's real status, not fabricate 200 (#1027)"
         );
+        assert_eq!(with_router.status, 203);
+        // Body may legitimately differ: the router branch uses `RouterDouble`'s
+        // canned body ("<html>rendered</html>") while the fallback branch reads
+        // the mock server's body ("<html>served</html>"). What the tripwire
+        // cares about is status and cookie provenance, not body equality.
         assert!(
-            !with_router.cookies.is_empty() && without_router.cookies.is_empty(),
-            "cookies must distinguish the branches: only the router branch carries them"
+            with_router.cookies[0].name == "wf_session"
+                && without_router.cookies[0].name == "wf_session",
+            "both branches must surface the Set-Cookie set by the server (#1027)"
         );
+    }
+
+    /// Fallback branch follows a redirect and exposes the post-redirect URL.
+    ///
+    /// Before #1027 the fallback echoed the *requested* URL as `final_url`,
+    /// making it impossible to deduplicate crawl output across redirect aliases
+    /// (#651, Bug 3). After #1027, `fetch_url` returns the post-redirect URI
+    /// wreq observed through the chain.
+    ///
+    /// `WEBFANG_DISABLE_SSRF_REDIRECT_GUARD=1` is set because wiremock binds
+    /// 127.0.0.1 and the SSRF redirect guard (#703) blocks redirect targets on
+    /// literal IPs. The guard exists for production traffic; this test bypasses
+    /// it explicitly. Same pattern as
+    /// `WreqDownloader::test_fetch_returns_final_url`.
+    #[tokio::test]
+    async fn fallback_branch_propagates_final_url_after_redirect() {
+        std::env::set_var(crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV, "1");
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/redirect"))
+            .respond_with(ResponseTemplate::new(301).insert_header("location", "/target"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/target"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("<html>landed</html>")
+                    .insert_header("set-cookie", "wf_session=postredirect; Path=/"),
+            )
+            .mount(&server)
+            .await;
+
+        let requested = Url::parse(&format!("{}/redirect", server.uri())).expect("valid mock URL");
+        let config = config_for(&requested);
+        let fetcher = ProductionPageFetcher { router: None };
+
+        let outcome = fetcher
+            .fetch_page(&requested, &config)
+            .await
+            .expect("redirect chain should resolve to a 2xx response");
+
+        assert_ne!(
+            outcome.final_url, requested,
+            "fallback must expose the post-redirect URL, not the requested one (#1027, #651)"
+        );
+        let expected_final =
+            Url::parse(&format!("{}/target", server.uri())).expect("valid mock URL");
+        assert_eq!(
+            outcome.final_url, expected_final,
+            "final_url must point at the resolved target"
+        );
+        assert_eq!(outcome.status, 200);
+        assert_eq!(outcome.body, "<html>landed</html>");
+        assert_eq!(outcome.cookies.len(), 1);
+        assert_eq!(outcome.cookies[0].name, "wf_session");
     }
 }
