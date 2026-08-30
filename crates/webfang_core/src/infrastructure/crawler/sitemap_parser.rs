@@ -32,8 +32,9 @@ use super::retry_policy::RetryPolicy;
 use super::sitemap_config::SitemapConfig;
 use super::url_validator::UrlValidator;
 use crate::domain::url_validation::is_internal_link;
+use crate::domain::waf::InspectionContext;
 use crate::domain::{CrawlError, UrlValidatorTrait};
-use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
+use crate::infrastructure::http::waf_engine::WafInspector;
 #[allow(unused_imports)]
 use async_compression::tokio::bufread::GzipDecoder;
 use quick_xml::events::Event;
