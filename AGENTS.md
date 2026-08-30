@@ -345,14 +345,121 @@ A merge is NOT done until the repo is clean and ready for the next mission. Clea
 
 Both tools resolve projects by name; bare-name resolution picks the main checkout — so queries run from a worktree without the absolute path read the **main checkout**, not your worktree (#360). **In worktrees, ALWAYS use the absolute path** (§2.3).
 
-### Bounded Review (4R) in worktrees
+### Bounded Review (RDD) — required per candidate
 
-The gentle-ai bounded review hook resolves the target repo from the OpenCode session CWD. When the session runs from main but changes live in a worktree, the binding mismatches and every lens refuses to launch.
+Receipt-driven development is **enabled** for this repository (`gentle-ai review mode status`
+→ `on`, decided by global). As of 2026-08-30 the project policy is that it is actually
+exercised: every change candidate is routed through the native review before delivery
+(#1035). The previous wording here claimed the PR workflow does *not* require a receipt;
+that was the documented policy but not an enforced one, and the global switch was
+therefore decorative — `review status` showed zero lineages ever created.
 
-- **Option A (proper):** set `GENTLE_AI_REVIEW_CWD=<absolute worktree path>` in the OpenCode server environment BEFORE starting the session.
-- **Option B (no restart):** launch lenses as `general` agents — the hook only intercepts `review-*` agent types with a `GENTLE_AI_REVIEW_BINDING` prefix.
+**Route** — always start from the provider, never from status prose or eligibility. Under
+Pi this is the review tool; the CLI form below is what the provider echoes back as the
+transition to execute, not something to type in a shell (see the worktree section):
 
-The project's PR workflow does NOT require a gentle-ai review receipt — only cargo gates, linked issue, one `type:*` label, conventional branch.
+```text
+review status --contract gentle-ai.review-integration/v2 --agent pi --next-transition
+```
+
+Route only from the returned `next_transition`:
+
+| Kind | What to do |
+| :--- | :--- |
+| `execute` | invoke its exact operation and ordered argument tokens, unchanged |
+| `collect` | satisfy only its named inputs with their exact capture operations, then re-query status |
+| `stop` | run **no** lifecycle operation; surface `reason_code` and its continuation |
+
+**The lens plan is provider-derived, never chosen by the orchestrator.** Risk, tier, the
+frozen line count and the correction budget `min(200, ceil(original_changed_lines / 2))`
+all belong to native RAR. Low risk gets 0 lenses (silent structural readback), standard
+gets 1 focus lens, high risk gets the canonical 4R. A passive documentation-only edit is
+structural readback — do not inflate it into a semantic-verification ceremony.
+
+**The review verdict does not authorise delivery.** Commit, push, PR and merge follow
+ordinary repository policy: cargo gates, `pr-validation.yml`, linked issue, exactly one
+`type:*` label, conventional branch name. See *What the review does NOT do here* below —
+in this repo the verdict does not currently gate anything either.
+
+**At most one correction per immutable candidate.** There is no loop-until-clean
+behaviour; later observations become follow-up issues, not another correction.
+
+### Bounded Review in worktrees
+
+The historical hazard: the bounded review hook resolved the target repo from the session
+CWD, so when the session ran from `main` while changes lived in a sibling worktree the
+binding mismatched and every lens refused to launch. The two remedies documented here for a
+decade were OpenCode-specific — setting `GENTLE_AI_REVIEW_CWD` in the server environment,
+or launching lenses as `general` agents to dodge a hook that only intercepts `review-*`
+agent types.
+
+**Neither reproduces under Pi, and neither is needed.**
+Verified from Pi on 2026-08-30 (first real review, lineage `review-83ec9848aae6e387`):
+
+- **Pass `workspaceRoot` explicitly to the review tools.** The binding resolves to the
+  worktree correctly — the provider reported `paths: ["AGENTS.md"]` and
+  `workspace_root: <worktree>`. Neither `GENTLE_AI_REVIEW_CWD` nor the `general`-agent
+  workaround above is needed under Pi. Those two options are OpenCode-era advice.
+- **Never negotiate the v2 review lifecycle from a shell.** Any `gentle-ai review` call
+  carrying `--contract=gentle-ai.review-integration/v2` — `start`, `capture-result`, and
+  even a read-only `status --next-transition` — fails with
+  `immutable_review_transport_unsupported`, because `GENTLE_PI_REVIEW_RELAY_CONTRACT` is
+  exported only by the Pi host on invocations it relays. Every lifecycle step below happens
+  through the **Pi review tools**, never a shell. Two read-only views are the exception and
+  are safe from bash: `gentle-ai review status` without the contract flag (authority view)
+  and `gentle-ai review validate`.
+- **Do not export that variable by hand to make the CLI work.** The failure message
+  suggests it; doing so would forge the relay provenance the transport exists to verify.
+- **Plain `status` does not see an active lineage.** After consent was granted and the
+  store reported `state: reviewing`, the tool's `status` kept returning `fresh_target_ready`
+  with `repair.counts.lineages: 0`. Calling the tool's **`start`** operation again **with
+  the `lineageId`** resumes the same review — it does not create a second one — and only
+  then yields the real `collect` transition. The legacy `gentle-ai review status` (authority
+  view, no contract flag) is safe from bash for read-only inspection and showed the truth
+  the whole time.
+- **Copy opaque bindings character-exactly.** One wrong hex digit in a 40-char tree hash
+  produced `capture-binding-rejected` with `mutation_performed: false`. Retrying with a
+  corrected copy is safe — a rejected binding leaves no state.
+
+### What the review does NOT do here: gate delivery
+
+Measured on 2026-08-30 across three states of the same candidate, `review validate` never
+allows or blocks anything:
+
+| Authority state at gate time | `validate --gate pre-commit` reports |
+|---|---|
+| no lineage | `delivery: unmanaged`, `allowed: false`, `action: repository-policy` |
+| `reviewing` (active, lens not captured) | identical |
+| `approved`, **not yet acknowledged** | identical |
+
+Its reason string is the giveaway: *"review enforcement is enabled but no review authority
+governs this candidate, so delivery follows ordinary repository policy."* And `review
+validate --help` states it directly: **"gates do not read authority"**.
+
+The structural cause is that **no git hooks are installed in this repository** —
+`.git/hooks/` contains only `.sample` files, and `core.hooksPath` is unset both locally and
+globally. Nothing ever invokes `review validate` on commit, push, or PR.
+
+So, in this repo as configured:
+
+- ✅ a bounded review **runs**, produces a risk tier, a provider-derived lens plan, real
+  findings, and an approved verdict;
+- ❌ that verdict **gates nothing**. Delivery is enforced by the ordinary cargo gates,
+  `pr-validation.yml`, and branch protection — exactly as before.
+
+Treating the review as an independent second opinion is useful and is why it is still worth
+running per candidate. Treating it as a receipt that authorises delivery would be false.
+Wiring the gates — installing hooks that call `review validate` — is **#1036**; the related
+false hook claims in this file are **#1037**.
+
+### Acknowledgement is terminal and erases the lineage
+
+`review acknowledge-approved` closes the review and **removes all trace of it** — the
+transaction directory is deleted and the lineage id appears nowhere under `.git` afterwards.
+That is correct for a verdict already recorded in the conversation, but it means the
+acknowledgement must not be treated as a step that leaves a durable artefact for a later
+gate to find. There is none.
+
 
 ### Rebase caveats
 
