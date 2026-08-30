@@ -32,17 +32,32 @@ if ! command -v gentle-ai >/dev/null 2>&1; then
 fi
 
 if ! command -v jq >/dev/null 2>&1; then
-    echo "[review-gate] BLOCK: 'jq' not on PATH — cannot parse gate verdict safely. Install jq or remove scripts/githooks from core.hooksPath." >&2
-    exit 1
+    echo "[review-gate] NOTE: 'jq' not on PATH — using the built-in scalar fallback parser." >&2
 fi
 
-OUT="$(gentle-ai review validate --gate "$GATE" --cwd "$REPO_ROOT" 2>/dev/null)" || {
+# Bound the consult: a hung validate must not halt delivery indefinitely (#1048).
+TIMEOUT_CMD=()
+command -v timeout >/dev/null 2>&1 && TIMEOUT_CMD=(timeout 20s)
+
+OUT="$(${TIMEOUT_CMD[@]+"${TIMEOUT_CMD[@]}"} gentle-ai review validate --gate "$GATE" --cwd "$REPO_ROOT" 2>/dev/null)" || {
     echo "[review-gate] BLOCK: 'gentle-ai review validate' failed (exit $?) — cannot verify delivery gate." >&2
     exit 1
 }
 
-DELIVERY="$(printf '%s' "$OUT" | jq -r '.delivery // empty' 2>/dev/null)" || DELIVERY=""
-ALLOWED="$(printf '%s' "$OUT" | jq -r '.allowed // empty' 2>/dev/null)" || ALLOWED=""
+# Extract a flat scalar field from the verdict: jq when available, sed
+# otherwise, so a missing jq cannot disable delivery (#1048 R4-001).
+gate_field() {
+    local key="$1"
+    if command -v jq >/dev/null 2>&1; then
+        printf '%s' "$OUT" | jq -r --arg k "$key" '.[$k] // empty' 2>/dev/null
+    else
+        printf '%s' "$OUT" \
+            | sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p" | head -1
+    fi
+}
+
+DELIVERY="$(gate_field delivery)"
+ALLOWED="$(gate_field allowed)"
 
 if [[ -z "$DELIVERY" && -z "$ALLOWED" ]]; then
     echo "[review-gate] BLOCK: unparseable gate verdict — refusing to proceed without an authoritative answer." >&2
