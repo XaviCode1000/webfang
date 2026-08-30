@@ -38,7 +38,16 @@ const OBSCURA_MEMORY_COST: usize = 30_000_000;
 const DEFAULT_OBSCURA_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Default binary name, resolved from `PATH` at spawn time.
-pub const DEFAULT_OBSCURA_BINARY: &str = "obscura";
+///
+/// ADR-0012 sub-slice 3.B-1b moved the canonical literal to
+/// [`crate::domain::downloader_factory::DEFAULT_OBSCURA_BINARY`] because
+/// `application::crawler` needs it for [`EngineOptions::default`] and must
+/// not name an infrastructure downloader item. This `pub use` keeps the
+/// historical `webfang_core::infrastructure::downloader::obscura_downloader::DEFAULT_OBSCURA_BINARY`
+/// path resolving without duplicating the value.
+///
+/// [`EngineOptions::default`]: crate::application::crawler::engine::EngineOptions
+pub use crate::domain::downloader_factory::DEFAULT_OBSCURA_BINARY;
 
 /// Synthetic content-type for Layer 2 pages (#793): a subprocess downloader
 /// has no real response headers, so we mark what obscura was asked to dump.

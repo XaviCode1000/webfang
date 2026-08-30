@@ -36,7 +36,6 @@ use super::concurrency_level::{ConcurrencyLevel, SharedConcurrencyLevel};
 use super::content_sink::CrawlContentSink;
 use super::crawl_scheduler::CrawlScheduler;
 use super::crawl_task::{handle_crawl_result, run_crawl_task};
-use super::fetch_router::{build_fetch_router, FetchRouter};
 use super::ports;
 use super::progress::CrawlProgress;
 use crate::application::crawler::crawl_task_ctx::CrawlTaskCtx;
@@ -45,7 +44,10 @@ use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::domain::budget::{BudgetModel, BudgetOverrides};
 use crate::domain::clock::SystemClock;
 use crate::domain::cookie_bridge::CookieBridge;
-use crate::domain::downloader_port::DownloadError;
+use crate::domain::downloader_factory::{
+    DownloaderFactory, DownloaderSpec, DEFAULT_OBSCURA_BINARY,
+};
+use crate::domain::downloader_port::{DownloadError, Downloader};
 use crate::domain::session_port::SessionPoolConfig;
 use crate::domain::{
     CorrelationId, CrawlError, CrawlErrorCategory, CrawlResult, CrawlerConfig, JsStrategy,
@@ -102,8 +104,17 @@ pub struct Engine {
     cancel_token: CancellationToken,
     /// JavaScript rendering strategy.
     js_strategy: JsStrategy,
-    /// Optional fetch router for hybrid/full JS rendering.
-    fetch_router: Option<FetchRouter>,
+    /// Optional fetch downloader for hybrid/full JS rendering.
+    ///
+    /// Built through the injected [`DownloaderFactory`] — never constructed
+    /// here. `None` means "no factory was injected", which is a fully
+    /// supported state: [`ports::ProductionPageFetcher`] then falls back to
+    /// the static [`fetch_url`](crate::infrastructure::crawler::fetch_url)
+    /// helper.
+    fetch_router: Option<Arc<dyn Downloader>>,
+    /// Factory that builds [`Self::fetch_router`]. `None` disables the
+    /// dynamic fetch path for this engine.
+    downloader_factory: Option<Arc<dyn DownloaderFactory>>,
     /// Cookie bridge for extracting and injecting cookies.
     cookie_bridge: Arc<RwLock<CookieBridge>>,
     /// Domains currently banned due to WAF or rate limiting.
@@ -211,6 +222,7 @@ impl Engine {
             cancel_token: CancellationToken::new(),
             js_strategy: JsStrategy::default(),
             fetch_router: None,
+            downloader_factory: None,
             cookie_bridge: Arc::new(RwLock::new(CookieBridge::new())),
             banned_domains: Arc::new(RwLock::new(Vec::new())),
             content_sink: None,
@@ -305,6 +317,22 @@ impl Engine {
         self
     }
 
+    /// Inject the factory that builds the fetch downloader.
+    ///
+    /// Must be called before [`Self::with_js_strategy`], which is where the
+    /// factory is actually invoked. Without it `with_js_strategy` records the
+    /// strategy but leaves the downloader unset, and the crawl falls back to
+    /// the static `fetch_url()` path — hybrid/full rendering silently
+    /// degrades to static. Callers that need JS rendering own this wiring:
+    /// `application` cannot name a concrete factory without re-introducing
+    /// the `application → infrastructure` edge this port removes, so the
+    /// composition happens in the gate-exempt `cli` layer.
+    #[must_use]
+    pub fn with_downloader_factory(mut self, factory: Arc<dyn DownloaderFactory>) -> Self {
+        self.downloader_factory = Some(factory);
+        self
+    }
+
     /// Set the JavaScript rendering strategy.
     ///
     /// `tls_emulation` is the TLS/HTTP2 fingerprint profile applied to the wreq
@@ -313,12 +341,18 @@ impl Engine {
     /// Hybrid Layer 2 binary — a path is invoked as given, a bare name is
     /// resolved from `PATH` (#787).
     ///
+    /// The downloader itself is built by the factory injected through
+    /// [`Self::with_downloader_factory`]. When no factory was injected the
+    /// strategy is still recorded but no downloader is built: there is no
+    /// built-in fallback, because building one would mean `application`
+    /// constructing infrastructure concretes again.
+    ///
     /// # Errors
     ///
     /// Returns [`DownloadError::Internal`] if the wreq client cannot be built.
     // 8 params: the strategy's full dependency set (profile, WAF, retry
     // backoff, obscura binary). Bundling them would only move the same
-    // wiring one level up (same pattern as build_fetch_router).
+    // wiring one level up (same pattern as DownloaderSpec).
     #[allow(clippy::too_many_arguments)]
     pub fn with_js_strategy(
         mut self,
@@ -331,31 +365,43 @@ impl Engine {
         obscura_binary: String,
     ) -> Result<Self, DownloadError> {
         let timeout = self.config.timeout_secs;
-        let router = build_fetch_router(
-            &strategy,
-            timeout,
-            tls_emulation,
-            Arc::clone(&self.cookie_bridge),
-            ignore_waf,
-            // #503: the Engine path keeps today's rotating default behavior —
-            // `CrawlerConfig.user_agent` is a separate dead field, out of scope.
-            None,
-            // #890: operator headers/cookies are wired on the scrape path
-            // (cli/scrape_flow.rs). The Engine path keeps profile-default
-            // behavior — same out-of-scope precedent as the UA above.
-            Vec::new(),
-            None,
-            None,
-            // #509: the Full strategy's governor shares the engine token so
-            // permit waits abort on shutdown.
-            self.cancel_token.clone(),
-            max_retries,
-            backoff_base_ms,
-            backoff_max_ms,
-            &obscura_binary,
-        )?;
+        // No factory injected => no downloader built. `None` is a supported
+        // state: ProductionPageFetcher falls back to the static fetch_url().
+        let router = self
+            .downloader_factory
+            .as_ref()
+            .map(|factory| {
+                factory.build(
+                    &DownloaderSpec {
+                        strategy,
+                        timeout_secs: timeout,
+                        tls_emulation,
+                        ignore_waf,
+                        // #503: the Engine path keeps today's rotating default
+                        // behavior — `CrawlerConfig.user_agent` is a separate
+                        // dead field, out of scope.
+                        user_agent: None,
+                        // #890: operator headers/cookies are wired on the scrape
+                        // path (cli/scrape_flow.rs). The Engine path keeps
+                        // profile-default behavior — same out-of-scope precedent
+                        // as the UA above.
+                        custom_headers: Vec::new(),
+                        accept_language: None,
+                        initial_cookie_jar: None,
+                        max_retries,
+                        backoff_base_ms,
+                        backoff_max_ms,
+                        obscura_binary,
+                    },
+                    // #509: the Full strategy's governor shares the engine token
+                    // so permit waits abort on shutdown.
+                    Arc::clone(&self.cookie_bridge),
+                    self.cancel_token.clone(),
+                )
+            })
+            .transpose()?;
         self.js_strategy = strategy;
-        self.fetch_router = Some(router);
+        self.fetch_router = router;
         Ok(self)
     }
 
@@ -990,6 +1036,16 @@ pub struct EngineOptions {
     pub backoff_base_ms: u64,
     /// Maximum delay for exponential backoff (ms).
     pub backoff_max_ms: u64,
+    /// Factory that builds the fetch downloader for `js_strategy`.
+    ///
+    /// `None` (the default) means the engine records the strategy but builds
+    /// no downloader, so the crawl uses the static `fetch_url()` path. Any
+    /// caller that needs `Hybrid` or `Full` rendering MUST inject a factory —
+    /// the only production implementation lives in
+    /// [`crate::infrastructure::downloader::fetch_router::DefaultDownloaderFactory`],
+    /// so wiring it is a `cli`/composition-root responsibility (`cli` is
+    /// exempt from the ADR-0010 direction gate).
+    pub downloader_factory: Option<Arc<dyn DownloaderFactory>>,
 }
 
 impl Default for EngineOptions {
@@ -1002,15 +1058,14 @@ impl Default for EngineOptions {
             js_strategy: JsStrategy::default(),
             // #787: keep today's `obscura`-on-PATH behavior for callers that
             // do not configure the binary.
-            obscura_binary:
-                crate::infrastructure::downloader::obscura_downloader::DEFAULT_OBSCURA_BINARY
-                    .to_string(),
+            obscura_binary: DEFAULT_OBSCURA_BINARY.to_string(),
             autoscale_enabled: false,
             tls_emulation: Profile::Chrome145,
             ignore_waf: false,
             max_retries: 3,
             backoff_base_ms: 1000,
             backoff_max_ms: 10000,
+            downloader_factory: None,
         }
     }
 }
@@ -1213,6 +1268,12 @@ async fn crawl_site_with_options_inner(
     // Apply session pool if enabled
     if options.session_pool_enabled {
         engine = engine.with_session_pool(Duration::from_secs(2));
+    }
+
+    // Apply the downloader factory before the JS strategy: `with_js_strategy`
+    // is where the factory is invoked, and it has no built-in fallback.
+    if let Some(factory) = options.downloader_factory.clone() {
+        engine = engine.with_downloader_factory(factory);
     }
 
     // Apply JS strategy

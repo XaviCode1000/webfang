@@ -16,7 +16,6 @@ use futures::future::BoxFuture;
 use url::Url;
 
 use crate::application::crawler::collector::{CrawlMessage, ResultsCollector};
-use crate::application::crawler::fetch_router::FetchRouter;
 use crate::application::pipeline::{PipelineExecutor, ScrapedItem, StageOutcome};
 use crate::domain::downloader_port::{Cookie, DownloadError, Downloader};
 use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl};
@@ -40,7 +39,8 @@ pub(crate) struct FetchOutcome {
     pub status: u16,
 }
 
-/// Fetches a web page. Unifies the `FetchRouter` and static `fetch_url()` paths.
+/// Fetches a web page. Unifies the dynamic [`Downloader`] and static
+/// `fetch_url()` paths.
 ///
 /// Returns a [`FetchOutcome`] carrying the final post-redirect URL. The WAF
 /// variant is preserved in the error so `run_crawl_task` can apply domain-banning
@@ -94,13 +94,13 @@ pub(crate) trait CrawlResultCollector: Send + Sync {
 // Production implementations
 // ---------------------------------------------------------------------------
 
-/// Production [`PageFetcher`] that wraps an optional [`FetchRouter`].
+/// Production [`PageFetcher`] that wraps an optional [`Downloader`].
 ///
-/// When a router is present, delegates to [`Downloader::fetch`]; otherwise
+/// When a downloader is present, delegates to [`Downloader::fetch`]; otherwise
 /// falls back to the static [`fetch_url`] helper.
 pub(crate) struct ProductionPageFetcher {
-    /// Optional fetch router for hybrid/full JS rendering.
-    pub(crate) router: Option<FetchRouter>,
+    /// Optional fetch downloader for hybrid/full JS rendering.
+    pub(crate) router: Option<Arc<dyn Downloader>>,
 }
 
 impl PageFetcher for ProductionPageFetcher {

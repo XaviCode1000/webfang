@@ -8,7 +8,6 @@ use tracing::{debug, info, warn};
 use url::Url;
 
 use crate::application::crawl_options::CrawlOptions;
-use crate::application::crawler::build_fetch_router;
 use crate::application::export_factory;
 use crate::application::progress_observer::ProgressObserver;
 use crate::application::resume::{filter_committed, record_store_bridge};
@@ -20,6 +19,7 @@ use crate::domain::persistence::PersistenceMode;
 use crate::domain::{CorrelationId, ScrapedContent};
 use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
 use crate::infrastructure::downloader::cookie_bridge::CookieBridge;
+use crate::infrastructure::downloader::fetch_router::build_fetch_router;
 use crate::infrastructure::downloader::Downloader;
 use crate::infrastructure::export::state_store::StateStore;
 use crate::infrastructure::observability::log_scrape_error;

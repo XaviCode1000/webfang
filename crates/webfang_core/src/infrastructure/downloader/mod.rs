@@ -9,6 +9,7 @@
 
 pub mod chromiumoxide_downloader;
 pub mod cookie_bridge;
+pub mod fetch_router;
 pub mod hybrid_router;
 pub mod obscura_downloader;
 pub mod resource_governor;
