@@ -215,6 +215,10 @@ pub(crate) fn waf_challenge_message(err: &CrawlError) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::downloader_port::FetchedPage;
+    use std::collections::HashMap;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn test_fetch_outcome_preserves_final_url() {
@@ -230,5 +234,227 @@ mod tests {
         assert_ne!(outcome.final_url, requested);
         assert_eq!(outcome.body, "<html></html>");
         assert_eq!(outcome.status, 200);
+    }
+
+    // -----------------------------------------------------------------------
+    // #1024 — branch observability for ProductionPageFetcher
+    //
+    // `fetch_page` has two branches that were previously indistinguishable to
+    // the test suite. The router branch propagates `status` and `cookies` from
+    // the `Downloader`; the fallback branch calls `fetch_url`, which returns
+    // only a body, and then hardcodes `status: 200` and `cookies: Vec::new()`.
+    //
+    // That mattered concretely: sub-slice 3.B-1b made `with_js_strategy` build
+    // a downloader only when a `DownloaderFactory` is injected, and four
+    // `EngineOptions` literals using `..Default::default()` silently flipped to
+    // the fallback while still passing. A regression that routed every crawl
+    // onto the static fallback would have been invisible to CI.
+    //
+    // `status_code` is not cosmetic — `run_pipeline` writes it into
+    // `ScrapedItem.status_code`, and `ScrapedItem` is what reaches exported
+    // output, so the fallback publishes a status the server never sent.
+    //
+    // # Decision (#1024 AC-3): keep the fabrication, pin it, fix it separately
+    //
+    // The fabrication is narrower than it first looks. `fetch_url` rejects every
+    // non-2xx response before the fallback can build an outcome, so `status: 200`
+    // can only misreport *within* the 2xx family (201, 203, 204, 226) — it never
+    // turns an error into a success. That makes it a data-correctness defect, not
+    // a safety hole.
+    //
+    // Removing the fallback branch is not an option: `crawl_site` and
+    // `crawl_site_capturing` (the batch and MCP chains) never call
+    // `with_js_strategy`, so the fallback is the path most of the crawl surface
+    // already runs on.
+    //
+    // Reporting the truth requires `fetch_url` to return the status *and* the
+    // post-redirect final URL (the fallback also echoes the requested URL, so it
+    // cannot observe redirects). That is a production signature change with its
+    // own blast radius across every `fetch_url` caller, and it is not required by
+    // #994, whose purpose is to shrink, not grow. Bundling it into a test-only
+    // issue would blur review focus, so it is tracked as **#1027**.
+    //
+    // `fallback_branch_fabricates_status_and_drops_cookies` asserts the current
+    // behaviour deliberately. When the real fix lands, that test fails and forces
+    // the change to be an explicit decision instead of silent drift.
+    // -----------------------------------------------------------------------
+
+    /// A [`Downloader`] double reporting a status and cookies the fallback
+    /// branch cannot produce. Any assertion satisfied through it proves the
+    /// router branch ran rather than the static fallback.
+    struct RouterDouble {
+        status: u16,
+        cookies: Vec<Cookie>,
+    }
+
+    impl Downloader for RouterDouble {
+        fn fetch<'a>(&'a self, url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
+            Box::pin(async move {
+                Ok(FetchedPage {
+                    url: url.clone(),
+                    html: "<html>rendered</html>".to_string(),
+                    status: self.status,
+                    headers: HashMap::new(),
+                    cookies: self.cookies.clone(),
+                })
+            })
+        }
+
+        fn supports_interactions(&self) -> bool {
+            true
+        }
+
+        fn memory_cost(&self) -> usize {
+            0
+        }
+    }
+
+    fn session_cookie() -> Cookie {
+        Cookie {
+            name: "wf_session".to_string(),
+            value: "abc123".to_string(),
+            domain: "127.0.0.1".to_string(),
+            path: "/".to_string(),
+            http_only: false,
+            secure: false,
+        }
+    }
+
+    fn config_for(url: &Url) -> CrawlerConfig {
+        CrawlerConfig::builder(url.clone())
+            .max_depth(0)
+            .max_pages(1)
+            .delay_ms(1)
+            .concurrency(1)
+            .timeout_secs(5)
+            .build()
+    }
+
+    /// A mock server answering 203 with a `Set-Cookie` header.
+    ///
+    /// 203 is deliberate: `fetch_url` rejects only non-2xx responses before the
+    /// caller ever sees a status, so 203 reaches the fallback's success path and
+    /// exposes the fabricated `status: 200` without the test depending on an error
+    /// being turned into a success.
+    async fn mock_203_with_cookie() -> (MockServer, Url) {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/page"))
+            .respond_with(
+                ResponseTemplate::new(203)
+                    .set_body_string("<html>served</html>")
+                    .insert_header("set-cookie", "wf_session=abc123; Path=/"),
+            )
+            .mount(&server)
+            .await;
+        let url = Url::parse(&format!("{}/page", server.uri())).expect("valid mock URL");
+        (server, url)
+    }
+
+    /// Router branch: the `Downloader`'s status and cookies reach the caller
+    /// untouched.
+    #[tokio::test]
+    async fn router_branch_propagates_status_and_cookies() {
+        let url = Url::parse("https://example.test/page").expect("valid URL");
+        let config = config_for(&url);
+        let fetcher = ProductionPageFetcher {
+            router: Some(Arc::new(RouterDouble {
+                status: 203,
+                cookies: vec![session_cookie()],
+            })),
+        };
+
+        let outcome = fetcher
+            .fetch_page(&url, &config)
+            .await
+            .expect("router branch should succeed");
+
+        assert_eq!(
+            outcome.status, 203,
+            "router branch must propagate the downloader's real status"
+        );
+        assert_eq!(
+            outcome.cookies.len(),
+            1,
+            "router branch must propagate the downloader's cookies"
+        );
+        assert_eq!(outcome.cookies[0].name, "wf_session");
+        assert_eq!(outcome.body, "<html>rendered</html>");
+    }
+
+    /// Fallback branch against a **real** HTTP response: `fetch_url` discards
+    /// everything but the body, so the outcome reports a status the server never
+    /// sent and no cookies even though `Set-Cookie` was present.
+    ///
+    /// These assertions pin the fabrication on purpose. If the fallback is ever
+    /// fixed to report the true status, this test fails and the change is forced
+    /// to be a deliberate decision rather than a silent drift.
+    #[tokio::test]
+    async fn fallback_branch_fabricates_status_and_drops_cookies() {
+        let (_server, url) = mock_203_with_cookie().await;
+        let config = config_for(&url);
+        let fetcher = ProductionPageFetcher { router: None };
+
+        let outcome = fetcher
+            .fetch_page(&url, &config)
+            .await
+            .expect("203 is 2xx, so fetch_url should succeed");
+
+        assert_eq!(
+            outcome.status, 200,
+            "fallback fabricates 200 even though the server answered 203 (#1024)"
+        );
+        assert!(
+            outcome.cookies.is_empty(),
+            "fallback drops Set-Cookie entirely (#1024)"
+        );
+        assert_eq!(
+            outcome.body, "<html>served</html>",
+            "the body is the only field the fallback carries faithfully"
+        );
+        assert_eq!(
+            outcome.final_url, url,
+            "fallback echoes the requested URL, so it cannot observe redirects"
+        );
+    }
+
+    /// The regression gate: both branches driven against the same server must
+    /// produce **different** observable outcomes.
+    ///
+    /// Before #1024 no test in the repository could tell the branches apart, so
+    /// routing every crawl onto the static fallback passed CI green. This pins
+    /// the contract stated in `EngineOptions::downloader_factory`'s doc comment
+    /// — no factory means the static fallback, and that is observable.
+    #[tokio::test]
+    async fn branches_diverge_on_the_same_http_response() {
+        let (_server, url) = mock_203_with_cookie().await;
+        let config = config_for(&url);
+
+        let routed = ProductionPageFetcher {
+            router: Some(Arc::new(RouterDouble {
+                status: 203,
+                cookies: vec![session_cookie()],
+            })),
+        };
+        let fallback = ProductionPageFetcher { router: None };
+
+        let with_router = routed
+            .fetch_page(&url, &config)
+            .await
+            .expect("router branch should succeed");
+        let without_router = fallback
+            .fetch_page(&url, &config)
+            .await
+            .expect("fallback branch should succeed");
+
+        assert_ne!(
+            with_router.status, without_router.status,
+            "status must distinguish the branches: router reports the real code, \
+             fallback fabricates 200"
+        );
+        assert!(
+            !with_router.cookies.is_empty() && without_router.cookies.is_empty(),
+            "cookies must distinguish the branches: only the router branch carries them"
+        );
     }
 }

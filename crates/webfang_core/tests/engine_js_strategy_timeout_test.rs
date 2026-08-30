@@ -9,6 +9,20 @@
 //! No CLI path reaches `with_js_strategy` today (CLI crawl mode goes through
 //! `scrape_flow`; batch/MCP use `crawl_site`, which leaves the fetch router
 //! unset), so this API-level test is the only behavioral coverage of the fix.
+//!
+//! # What this test does NOT cover
+//!
+//! It asserts on **timing only**, and the static fallback path honours
+//! `CrawlerConfig::timeout_secs` too — `fetch_url` passes it straight to the
+//! request builder. It therefore passes identically on both
+//! `ProductionPageFetcher` branches and **cannot detect a router→fallback
+//! flip**. Verified while writing #1024: with `timeout_secs(3600)` the crawl times
+//! out the same either way.
+//!
+//! Branch observability — that the injected `DownloaderFactory` actually routes
+//! through the downloader and that the fallback fabricates `status: 200` and drops
+//! cookies — is pinned by `ProductionPageFetcher`'s tests in
+//! `src/application/crawler/ports.rs` (#1024), not here.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
