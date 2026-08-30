@@ -71,8 +71,8 @@ In worktrees, BOTH tools need the **absolute worktree path** or they silently re
 
 | Tool | Parameter | Example |
 | :--- | :--- | :--- |
-| CodeDB MCP | `project=` | `project="/home/xavi/Projects/webfang-worktrees/<dir>"` |
-| CodeGraph MCP | `projectPath=` | `projectPath="/home/xavi/Projects/webfang-worktrees/<dir>"` |
+| CodeDB MCP | `project=` | `project="/home/xavi/Projects/Rust/webfang-worktrees/<dir>"` |
+| CodeGraph MCP | `projectPath=` | `projectPath="/home/xavi/Projects/Rust/webfang-worktrees/<dir>"` |
 
 **NEVER use** bare project names in worktrees — ambiguous between main + all worktrees (#360). The absolute path is the official upstream disambiguation.
 
@@ -264,17 +264,19 @@ This project uses **sibling worktrees** for parallel development. Each active br
 
 - **CWD is the absolute boundary.** Never access paths outside the current worktree via `../<sibling-worktree>/`.
 - **ONE worktree per session.** Never switch branches mid-task — create a new worktree instead.
+- **`.git/worktrees/` is Git's internal state.** Never create, edit, or delete entries there by hand — use `git worktree add/remove/prune/repair`.
 - **Forbidden commands:**
   - `git checkout`, `git switch` — they change the branch inside the current worktree. Use `git worktree add`.
   - `git stash` / `git stash pop` / `git stash apply` / `git stash drop` — **stash storage (`refs/stash`) is shared across ALL worktrees**. A `pop` in one worktree can apply a stash from a completely different session. If you need to set work aside, commit to a throwaway branch.
   - `git worktree move`, `git worktree lock` — use `remove` + `add` instead.
+  - `git worktree add --force` — it bypasses Git's native guard that refuses a branch already checked out in another worktree. Two agents on the same branch is exactly the failure that guard prevents. Only with explicit human authorization.
 
 ### Placement & naming
 
 Worktrees live as **siblings** of the repo (never inside it — in-repo worktrees cause recursion with file watchers, ripgrep, and code intelligence tools):
 
 ```text
-~/Projects/
+~/Projects/Rust/
 ├── webfang/                     # main repo (always on main)
 ├── webfang-worktrees/           # worktree siblings (gitignored globally)
 │   ├── feat-auth/               # branch: feat/auth
@@ -288,12 +290,12 @@ Branch `feat/auth` → directory `feat-auth` (`/` → `-`). Worktree/branch matc
 **Create (from main repo):**
 
 ```bash
-git worktree add ~/Projects/webfang-worktrees/feat-auth -b feat/auth
-cd ~/Projects/webfang-worktrees/feat-auth
+git worktree add ~/Projects/Rust/webfang-worktrees/feat-auth -b feat/auth
+cd ~/Projects/Rust/webfang-worktrees/feat-auth
 
 # Per-worktree bootstrap (NONE of these are shared):
-cp ~/Projects/webfang/.envrc . && direnv allow     # shared CARGO_TARGET_DIR (gitignored)
-cp ~/Projects/webfang/.env .                       # .env is gitignored
+cp ~/Projects/Rust/webfang/.envrc . && direnv allow     # shared CARGO_TARGET_DIR (gitignored)
+cp ~/Projects/Rust/webfang/.env .                       # .env is gitignored
 codegraph init                                     # CodeGraph: source exploration index
 codedb index .                                     # CodeDB: inverted index + outlines
 cargo build                                        # fast: reuses shared target via direnv
@@ -315,11 +317,11 @@ git log main --oneline -10                         # inspect history
 
 ### Post-merge cleanup & mission handoff (MANDATORY)
 
-A merge is NOT done until the repo is clean and ready for the next mission. Cleanup is part of the **definition of done**. Run from the MAIN repo (`~/Projects/webfang`, always on `main`):
+A merge is NOT done until the repo is clean and ready for the next mission. Cleanup is part of the **definition of done**. Run from the MAIN repo (`~/Projects/Rust/webfang`, always on `main`):
 
 1. **Verify the merge landed** — `gh pr view <N> --json state,mergedAt,mergeCommit`; `state` must be `MERGED`.
 2. **Sync local main (ff-only)** — `git fetch origin && git merge --ff-only origin/main`. If `--ff-only` FAILS, local main diverged — STOP and investigate; never paper over it.
-3. **Remove the mission worktree** — `git worktree remove ~/Projects/webfang-worktrees/<dir>`.
+3. **Remove the mission worktree** — `git worktree remove ~/Projects/Rust/webfang-worktrees/<dir>`.
 4. **Delete the local branch** — `git branch -D <type>/<description>`. Squash-merge rewrites history, so safe `-d` refuses; the step-1 `MERGED` check is your safety net. Never touch: `main`, `gh-pages`, `backup/*`, or the current branch.
 5. **Prune orphaned metadata** — `git worktree prune`.
 6. **Verify the handoff contract** — `git worktree list` (ONLY main), `git branch -vv` (ONLY main, in sync), `git status --short` (empty).
@@ -643,7 +645,7 @@ re-runs the FULL CI (~27 min). N PRs sequential ≈ N × 27 min. One batch PR �
 ```bash
 # 1. Branch from current main in a new worktree
 git fetch origin && git merge --ff-only origin/main
-git worktree add ~/Projects/webfang-worktrees/fix-batch -b fix/batch-<topic>
+git worktree add ~/Projects/Rust/webfang-worktrees/fix-batch -b fix/batch-<topic>
 
 # 2. Merge each PR's REMOTE head SHA (not the local branch — it may be stale)
 #    Get the exact SHA: gh pr view <N> --json headRefOid --jq '.headRefOid'
