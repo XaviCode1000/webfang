@@ -15,7 +15,7 @@ use crate::application::error_mapping::scraper_error_from_http;
 use crate::application::http_client::HttpClientPort;
 use crate::domain::config::ScraperConfig;
 use crate::domain::http_port::HttpResponse;
-use crate::domain::waf::{InspectionContext, WafInspector};
+use crate::domain::waf::{waf_inspector, InspectionContext};
 use crate::domain::{CorrelationId, DomInspectorPort, ExtractResult, ScrapedContent, ValidUrl};
 use crate::error::{Result, ScraperError};
 use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
@@ -401,7 +401,7 @@ fn detect_waf(
         &response.headers,
         config.ignore_waf,
     );
-    let verdict = WafInspector::inspect(html, &ctx);
+    let verdict = waf_inspector().inspect(html, &ctx);
     if verdict.is_blocked {
         let chain = verdict.evidence_chain();
         log_scrape_error(

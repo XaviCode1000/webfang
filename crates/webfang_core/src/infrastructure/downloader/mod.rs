@@ -8,12 +8,14 @@
 //! an outward `domain→wreq` dependency if they lived in `domain`).
 
 pub mod chromiumoxide_downloader;
-pub mod cookie_bridge;
 pub mod fetch_router;
 pub mod hybrid_router;
 pub mod obscura_downloader;
 pub mod resource_governor;
 pub mod spa_detector;
+/// Domain-port impl for system RAM-usage reads — see
+/// `crate::domain::ram_probe_port` and ADR-0012 sub-slice 3.B-1c.
+pub mod system_ram_probe;
 pub mod wreq_downloader;
 
 // Domain-owned port — re-exported so `crate::infrastructure::downloader::Downloader`

@@ -394,7 +394,9 @@ fn test_ai_config_defaults_without_ai_feature() {
 // #827 — poisoned AI_MODEL_ID / WEBFANG_AI_MODEL_ID must not break
 // unrelated CLI paths (slice 5b / #980). The canary must cover BOTH the
 // canonical (read by clap via the spec env-fallback) and the legacy
-// (read by `webfang_ai::infrastructure_ai::compat::read_ai_model_id`).
+// (read by `webfang_ai::infrastructure_ai::compat::read_ai_model_id_with` via
+// the default `std_env_var` accessor — see #992 for the snapshot-based
+// test refactor).
 // ========================================================================
 
 /// A poisoned canonical `WEBFANG_AI_MODEL_ID` (read by clap via the spec
@@ -417,9 +419,9 @@ fn test_poisoned_webfang_ai_model_id_env_parses_valid_scrape_command() {
 }
 
 /// Legacy `AI_MODEL_ID` is no longer read by clap, but
-/// `webfang_ai::infrastructure_ai::compat::read_ai_model_id` still honors
-/// it. A poisoned legacy value must not break arg parsing either (#827,
-/// #980 slice 5b).
+/// `webfang_ai::infrastructure_ai::compat::read_ai_model_id_with` (via
+/// `read_ai_model_id`) still honors it. A poisoned legacy value must not
+/// break arg parsing either (#827, #980 slice 5b).
 #[cfg(feature = "ai")]
 #[test]
 fn test_poisoned_ai_model_id_legacy_env_parses_valid_scrape_command() {

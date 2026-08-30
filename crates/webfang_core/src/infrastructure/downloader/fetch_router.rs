@@ -140,7 +140,16 @@ pub(crate) fn build_fetch_router(
             )?;
             let l2 = build_obscura_layer(timeout_secs, obscura_binary);
             let l3 = ChromiumoxideDownloader::new(cookie_bridge);
-            FetchRouter::Hybrid(Arc::new(HybridRouter::new(l1, l2, l3, ignore_waf)))
+            // #1009: share the engine's cancellation token with the Hybrid
+            // governor so permit waits abort on shutdown (parity with the Full
+            // strategy, see #509).
+            FetchRouter::Hybrid(Arc::new(HybridRouter::new(
+                l1,
+                l2,
+                l3,
+                ignore_waf,
+                cancel_token,
+            )))
         },
         // Full renders every page directly in Chrome (no wreq → Obscura
         // escalation) and gates concurrency on system RAM via its own

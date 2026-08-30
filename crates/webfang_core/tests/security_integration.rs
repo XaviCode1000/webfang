@@ -12,11 +12,25 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use std::collections::HashMap;
-use webfang_core::domain::waf::{InspectionContext, WafInspector, WafTier};
+use std::sync::{Arc, OnceLock};
+use webfang_core::domain::waf::{waf_inspector, InspectionContext, WafTier};
+use webfang_core::infrastructure::http::waf_engine::WafInspector;
+
+// Install the process-wide WAF inspector once per test binary. The static is
+// idempotent (#996), so a no-op if a composition root already initialized it.
+fn ensure_waf_inspector() {
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        webfang_core::domain::waf::set_waf_inspector(
+            Arc::new(WafInspector) as Arc<dyn webfang_core::domain::waf::WafInspectorPort>
+        );
+    });
+}
 
 /// Degraded-mode (no HTTP context) body inspection helper for these tests.
 fn inspect_body(html: &str) -> webfang_core::domain::waf::WafVerdict {
-    WafInspector::inspect(html, &InspectionContext::default())
+    ensure_waf_inspector();
+    waf_inspector().inspect(html, &InspectionContext::default())
 }
 
 /// Headers + body inspection in degraded mode (no status/content-type).
@@ -24,11 +38,12 @@ fn inspect_with_headers(
     headers: HashMap<String, String>,
     html: &str,
 ) -> webfang_core::domain::waf::WafVerdict {
+    ensure_waf_inspector();
     let ctx = InspectionContext {
         headers,
         ..Default::default()
     };
-    WafInspector::inspect(html, &ctx)
+    waf_inspector().inspect(html, &ctx)
 }
 
 // ============================================================================

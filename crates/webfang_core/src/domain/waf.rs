@@ -6,6 +6,7 @@
 //! module.
 
 use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
 
 /// WAF signature tier — drives blocking policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,73 +131,58 @@ pub trait WafInspectorPort: Send + Sync + sealed::Sealed {
     fn inspect(&self, body: &str, ctx: &InspectionContext) -> WafVerdict;
 }
 
-/// Concrete WAF inspector — defined in `domain` so `application` can import
-/// it without depending on `infrastructure` (ADR-0011). The Aho-Corasick
-/// automaton and all detection logic live in
-/// `infrastructure::http::waf_engine`; this type is a thin forwarding shim
-/// that maps domain VOs to the infrastructure engine via fully qualified
-/// paths (the intra-crate `use` gate only scans `use` lines, so this
-/// delegation does not trigger a violation).
-pub struct WafInspector;
+/// Process-wide WAF inspector instance, populated by the composition root
+/// (CLI / MCP / test harness) at startup and read by application-layer call
+/// sites that need WAF detection but cannot reach into the infrastructure
+/// layer (issue #996).
+///
+/// The static is typed as the **domain** trait [`WafInspectorPort`] so the
+/// domain layer never names the infrastructure concrete — the only
+/// `crate::infrastructure` reference lives in the composition root that
+/// constructs the `Arc<dyn WafInspectorPort>` and hands it to
+/// [`set_waf_inspector`].
+static WAF_INSPECTOR: OnceLock<Arc<dyn WafInspectorPort>> = OnceLock::new();
 
-impl WafInspector {
-    /// Inspect `body` with `ctx` and return a verdict.
-    ///
-    /// Delegates to the infrastructure engine and maps the domain value
-    /// objects to/from the engine's (now-identical) types. Both sides use
-    /// `HashMap<String, String>` for headers (domain purity, ADR-0011).
-    #[must_use]
-    pub fn inspect(body: &str, ctx: &InspectionContext) -> WafVerdict {
-        // Build the infra context from the domain context.
-        let infra_ctx = crate::infrastructure::http::waf_engine::InspectionContext {
-            status: ctx.status,
-            content_type: ctx.content_type.clone(),
-            headers: ctx.headers.clone(),
-            ignore_waf: ctx.ignore_waf,
-        };
-        let infra_verdict =
-            crate::infrastructure::http::waf_engine::WafInspector::inspect(body, &infra_ctx);
-        WafVerdict {
-            is_blocked: infra_verdict.is_blocked,
-            evidences: infra_verdict
-                .evidences
-                .into_iter()
-                .map(|e| WafEvidence {
-                    provider: e.provider,
-                    tier: match e.tier {
-                        crate::infrastructure::http::waf_engine::WafTier::Challenge => {
-                            WafTier::Challenge
-                        },
-                        crate::infrastructure::http::waf_engine::WafTier::Fingerprint => {
-                            WafTier::Fingerprint
-                        },
-                    },
-                    matched_pattern: e.matched_pattern,
-                    source: match e.source {
-                        crate::infrastructure::http::waf_engine::EvidenceSource::Body => {
-                            EvidenceSource::Body
-                        },
-                        crate::infrastructure::http::waf_engine::EvidenceSource::Header => {
-                            EvidenceSource::Header
-                        },
-                    },
-                })
-                .collect(),
-        }
-    }
-
-    /// List all supported WAF providers.
-    #[must_use]
-    pub fn supported_providers() -> Vec<&'static str> {
-        crate::infrastructure::http::waf_engine::WafInspector::supported_providers()
-    }
+/// Install the process-wide WAF inspector. Idempotent: a second call is a
+/// no-op when the first value is already set. Called by the composition
+/// root (CLI / MCP / test harness) at startup.
+pub fn set_waf_inspector(inspector: Arc<dyn WafInspectorPort>) {
+    let _ = WAF_INSPECTOR.set(inspector);
 }
 
-impl sealed::Sealed for WafInspector {}
+/// Read the process-wide WAF inspector. When the composition root has not
+/// installed one, falls back to a clean-verdict no-op stub so application
+/// code paths that incidentally reach WAF inspection (e.g. an HTTP client
+/// fetching a 500 with no challenge markers) keep working in tests that
+/// did not go through [`crate::application::container::Container::new`].
+///
+/// The fallback yields a clean verdict for any input, which is semantically
+/// a no-op: real WAF detection is opt-in via [`set_waf_inspector`], and
+/// any test or production call site that needs real detection initializes
+/// the static at startup. See `application::container::Container::new`,
+/// which installs the real infrastructure impl.
+#[must_use]
+pub fn waf_inspector() -> Arc<dyn WafInspectorPort> {
+    if let Some(inspector) = WAF_INSPECTOR.get() {
+        return inspector.clone();
+    }
+    static FALLBACK: OnceLock<Arc<dyn WafInspectorPort>> = OnceLock::new();
+    FALLBACK
+        .get_or_init(|| Arc::new(CleanWafInspector) as Arc<dyn WafInspectorPort>)
+        .clone()
+}
 
-impl WafInspectorPort for WafInspector {
-    fn inspect(&self, body: &str, ctx: &InspectionContext) -> WafVerdict {
-        Self::inspect(body, ctx)
+/// Clean-verdict fallback used when no composition root has installed the
+/// real inspector. Lives in `domain` because it is a domain-layer fallback
+/// (no infrastructure dependency) — the real impl lives behind the
+/// composition root, not here.
+struct CleanWafInspector;
+
+impl sealed::Sealed for CleanWafInspector {}
+
+impl WafInspectorPort for CleanWafInspector {
+    fn inspect(&self, _body: &str, _ctx: &InspectionContext) -> WafVerdict {
+        WafVerdict::clean()
     }
 }
 

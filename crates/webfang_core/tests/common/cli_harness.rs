@@ -122,6 +122,7 @@ pub(crate) fn cmd() -> Command {
 /// workflows poison the environment, and point `XDG_CACHE_HOME` at a fresh
 /// per-invocation temp directory. The legacy `AI_MODEL_ID` is still
 /// honored by `webfang_ai::infrastructure_ai::compat::read_ai_model_id()`
+/// (the default-accesor wrapper over `read_ai_model_id_with`)
 /// (#980 slice 5b), so a poisoned run exercises that fallback.
 ///
 /// Hermetic cache: since the PersistenceMode wiring made checkpointing

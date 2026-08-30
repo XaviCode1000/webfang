@@ -17,6 +17,7 @@ use tracing::{debug, instrument, warn};
 use url::Url;
 
 use futures::future::BoxFuture;
+use tokio_util::sync::CancellationToken;
 
 use super::resource_governor::ResourceGovernor;
 use super::spa_detector::{detect_spa, SpaSignal};
@@ -41,12 +42,25 @@ pub struct HybridRouter<L1: Downloader, L2: Downloader, L3: Downloader> {
 }
 
 impl<L1: Downloader, L2: Downloader, L3: Downloader> HybridRouter<L1, L2, L3> {
-    pub(crate) fn new(layer1: L1, layer2: L2, layer3: L3, ignore_waf: bool) -> Self {
+    /// Build a hybrid router whose internal [`ResourceGovernor`] shares the
+    /// caller's cancellation token (issue #1009, mirrors #509 for the Full
+    /// strategy).
+    ///
+    /// Permit waits inside the L2/L3 escalation abort with
+    /// [`DownloadError::Cancelled`] when the token fires; pass an inert
+    /// [`CancellationToken::new`] where no shutdown policy exists.
+    pub(crate) fn new(
+        layer1: L1,
+        layer2: L2,
+        layer3: L3,
+        ignore_waf: bool,
+        cancel_token: CancellationToken,
+    ) -> Self {
         Self {
             layer1,
             layer2,
             layer3,
-            governor: ResourceGovernor::new(),
+            governor: ResourceGovernor::with_cancel_token(cancel_token),
             ignore_waf,
         }
     }
@@ -290,6 +304,7 @@ mod tests {
             StubDownloader::spa_page(),
             StubDownloader::static_page().with_interactions(true),
             false,
+            CancellationToken::new(),
         );
         let url: Url = "https://example.com".parse().unwrap();
         let page = router.fetch(&url).await.unwrap();
@@ -330,6 +345,7 @@ mod tests {
             StubDownloader::static_page().with_cost(30_000_000),
             StubDownloader::static_page().with_interactions(true),
             false,
+            CancellationToken::new(),
         );
         assert_escalates_to_layer3(&router, "https://spa.example.com").await;
     }
@@ -344,6 +360,7 @@ mod tests {
             StubDownloader::static_page().with_cost(30_000_000),
             StubDownloader::static_page().with_interactions(true),
             false,
+            CancellationToken::new(),
         );
         assert_escalates_to_layer3(&router, "https://js.example.com").await;
     }
@@ -355,6 +372,7 @@ mod tests {
             StubDownloader::static_page(),
             StubDownloader::static_page(),
             false,
+            CancellationToken::new(),
         );
         assert_waf_aborts(&router, "https://waf.example.com").await;
     }
@@ -373,6 +391,7 @@ mod tests {
             )),
             StubDownloader::static_page().with_interactions(true),
             false,
+            CancellationToken::new(),
         );
         assert_waf_aborts(&router, "https://obscura-waf.example.com").await;
         let url: Url = "https://obscura-waf.example.com".parse().unwrap();
@@ -398,6 +417,7 @@ mod tests {
             )),
             StubDownloader::static_page().with_interactions(true),
             true,
+            CancellationToken::new(),
         );
         assert_waf_aborts(&router, "https://obscura-waf.example.com").await;
         let url: Url = "https://obscura-waf.example.com".parse().unwrap();
@@ -414,6 +434,7 @@ mod tests {
             StubDownloader::static_page(),
             StubDownloader::static_page(),
             false,
+            CancellationToken::new(),
         );
         assert_waf_aborts(&router, "https://waf.example.com").await;
     }
@@ -431,6 +452,7 @@ mod tests {
             StubDownloader::static_page(),
             StubDownloader::static_page(),
             true,
+            CancellationToken::new(),
         );
         let url: Url = "https://waf.example.com".parse().unwrap();
         let page = router
@@ -450,6 +472,7 @@ mod tests {
             StubDownloader::empty_page(),
             StubDownloader::static_page().with_interactions(true),
             false,
+            CancellationToken::new(),
         );
         assert_escalates_to_layer3(&router, "https://spa.example.com").await;
     }
@@ -467,6 +490,7 @@ mod tests {
             }),
             StubDownloader::static_page().with_interactions(true),
             false,
+            CancellationToken::new(),
         );
         assert_escalates_to_layer3(&router, "https://spa.example.com").await;
     }
@@ -487,6 +511,7 @@ mod tests {
                 std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "chromium crashed"),
             ))),
             false,
+            CancellationToken::new(),
         );
         let url: Url = "https://spa.example.com".parse().unwrap();
         let err = router.fetch(&url).await.unwrap_err();
@@ -506,6 +531,7 @@ mod tests {
             StubDownloader::static_page(),
             StubDownloader::static_page(),
             false,
+            CancellationToken::new(),
         );
         let url: Url = "https://down.example.com".parse().unwrap();
         let err = router.fetch(&url).await.unwrap_err();
@@ -521,6 +547,7 @@ mod tests {
                 .with_cost(200_000_000)
                 .with_interactions(true),
             false,
+            CancellationToken::new(),
         );
         assert_eq!(router.memory_cost(), 231_000_000);
     }
@@ -532,6 +559,7 @@ mod tests {
             StubDownloader::static_page(),
             StubDownloader::static_page().with_interactions(true),
             false,
+            CancellationToken::new(),
         );
         assert!(router.supports_interactions());
 
@@ -540,7 +568,47 @@ mod tests {
             StubDownloader::static_page(),
             StubDownloader::static_page(),
             false,
+            CancellationToken::new(),
         );
         assert!(!router.supports_interactions());
+    }
+
+    // ---- #1009: cancel-token wiring ------------------------------------
+    //
+    // The plan budgets ~30L for the cancel-token fix. The strongest
+    // observable property we can assert without exposing the private
+    // `governor` field is the wiring contract: a HybridRouter built with a
+    // pre-cancelled token must NOT hang — its embedded governor listens to
+    // the same token via `with_cancel_token` (parity with the Full
+    // strategy, see #509), and the semantic guarantee of that builder is
+    // that future permit awaits unblock immediately. The non-hang check is
+    // the cheapest verifiable slice; the deeper "acquire().await returns
+    // Cancelled" assertion already lives next to the governor's own
+    // `with_cancel_token` definition (`resource_governor.rs::acquire_returns_cancelled_when_blocked_and_token_fires`).
+    #[tokio::test]
+    async fn test_hybrid_router_with_cancelled_token_does_not_hang() {
+        use std::time::Duration;
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let router = HybridRouter::new(
+            StubDownloader::spa_page(),
+            StubDownloader::static_page(),
+            StubDownloader::static_page().with_interactions(true),
+            false,
+            cancel,
+        );
+
+        let url: Url = "https://example.com".parse().unwrap();
+        // The L1 stub returns SPA content, so escalation is attempted. We
+        // don't assert a specific variant — the invariant is that the
+        // router terminates within a tight bound instead of hanging on an
+        // uncanceled semaphore wait.
+        let result = tokio::time::timeout(Duration::from_secs(2), router.fetch(&url)).await;
+        assert!(
+            result.is_ok(),
+            "HybridRouter with pre-cancelled token must not hang"
+        );
     }
 }

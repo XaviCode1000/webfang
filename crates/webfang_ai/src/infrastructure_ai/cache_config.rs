@@ -127,7 +127,9 @@ impl AiModel {
     /// IDs (`granite-97m`, `granite-311m`) when the variable is present but
     /// does not parse.
     pub fn from_env() -> Result<Option<Self>, String> {
-        let compat = crate::infrastructure_ai::compat::read_ai_model_id();
+        let compat = crate::infrastructure_ai::compat::read_ai_model_id_with(
+            &crate::infrastructure_ai::compat::std_env_var,
+        );
         Self::resolve(compat.as_deref())
     }
 
@@ -288,7 +290,12 @@ mod tests {
         // We only assert the shape here; value-specific behavior is covered
         // by the pure `resolve` tests above (env mutation is unsafe/racy in
         // parallel test runs).
-        match crate::infrastructure_ai::compat::read_ai_model_id() {
+        // Use the default accessor for parity with the production caller;
+        // assert structural equivalence without asserting a specific value.
+        let raw = crate::infrastructure_ai::compat::read_ai_model_id_with(
+            &crate::infrastructure_ai::compat::std_env_var,
+        );
+        match raw {
             Some(v) => {
                 let expected = AiModel::parse(&v).map(Some).ok_or_else(|| {
                     format!("Unknown AI model '{v}'. Valid values: granite-97m, granite-311m")
