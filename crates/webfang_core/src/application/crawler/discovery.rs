@@ -14,7 +14,7 @@ use crate::domain::config::ScraperConfig;
 use crate::domain::downloader_port::{DownloadError, Downloader};
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::url_validation::{NormalizeConfig, RemoveQueryParameters};
-use crate::domain::waf::{InspectionContext, WafInspector};
+use crate::domain::waf::{waf_inspector, InspectionContext};
 use crate::domain::{CorrelationId, CrawlerConfig, ScrapedContent, ValidUrl};
 use crate::error::{Result as ScraperResult, ScraperError};
 use crate::infrastructure::crawler::binary_utils::derive_filename_from_response;
@@ -362,7 +362,7 @@ async fn scrape_single_url_for_tui_inner(
     // verdict (REQ-WAF-07).
     let ctx =
         InspectionContext::from_lowercase_headers(page.status, &page.headers, config.ignore_waf);
-    let verdict = WafInspector::inspect(&html, &ctx);
+    let verdict = waf_inspector().inspect(&html, &ctx);
     if verdict.is_blocked {
         let chain = verdict.evidence_chain();
         log_scrape_error(
@@ -412,6 +412,19 @@ mod tests {
     use crate::domain::CrawlError;
     #[cfg(not(miri))]
     use std::time::Duration;
+
+    // Install the real WAF inspector on first test access (#996). The static
+    // is idempotent, so a no-op if `Container::new` already initialized it.
+    use std::sync::{Arc, OnceLock};
+    fn ensure_waf_inspector() {
+        use crate::infrastructure::http::waf_engine::WafInspector;
+        use crate::domain::waf::set_waf_inspector;
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            set_waf_inspector(Arc::new(WafInspector)
+                as Arc<dyn crate::domain::waf::WafInspectorPort>);
+        });
+    }
 
     #[test]
     fn test_parse_sitemap_xml() {
@@ -759,6 +772,7 @@ mod tests {
 
     #[tokio::test]
     async fn scrape_single_waf_body_signature_returns_waf_blocked() {
+        ensure_waf_inspector();
         let waf_html = r#"<html><body><div id="cf-browser-verification">Checking your browser before accessing the site.</div></body></html>"#;
         let page = stub_page(waf_html, 200, vec![("content-type", "text/html")]);
         let dl = StubDownloader::returning(Ok(page));

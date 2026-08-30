@@ -21,7 +21,21 @@ mod common;
 
 use common::{redact_nondeterministic, BehavioralTest};
 use std::path::Path;
-use webfang_core::domain::waf::{InspectionContext, WafInspector, WafVerdict};
+use std::sync::{Arc, OnceLock};
+use webfang_core::domain::waf::{
+    set_waf_inspector, waf_inspector, InspectionContext, WafVerdict,
+};
+use webfang_core::infrastructure::http::waf_engine::WafInspector;
+
+// Install the process-wide WAF inspector once per test binary. The static is
+// idempotent (#996), so a no-op if a composition root already initialized it
+// (defensive in case `Container::new` ran in the same process).
+fn ensure_waf_inspector() {
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        set_waf_inspector(Arc::new(WafInspector) as Arc<dyn webfang_core::domain::waf::WafInspectorPort>);
+    });
+}
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -90,7 +104,8 @@ async fn inspect_served_fixture(
         ignore_waf,
     };
     let body = response.text().await.expect("read response body");
-    WafInspector::inspect(&body, &ctx)
+    ensure_waf_inspector();
+    waf_inspector().inspect(&body, &ctx)
 }
 
 /// Load a fixture file, serve + inspect it, and snapshot the verdict.

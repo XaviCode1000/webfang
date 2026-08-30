@@ -8,7 +8,7 @@
 use crate::application::url_filter::is_allowed;
 use crate::domain::error::WafDetectionKind;
 use crate::domain::http_config::HttpClientConfig;
-use crate::domain::waf::{InspectionContext, WafInspector};
+use crate::domain::waf::{waf_inspector, InspectionContext};
 use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl};
 use crate::infrastructure::crawler::{SitemapConfig, SitemapError, SitemapParser, SitemapUrl};
 use tracing::{info, instrument};
@@ -504,7 +504,7 @@ async fn fetch_robots_sitemap(
         headers: std::collections::HashMap::new(),
         ignore_waf: false,
     };
-    let verdict = WafInspector::inspect(&content, &ctx);
+    let verdict = waf_inspector().inspect(&content, &ctx);
     if verdict.is_blocked {
         tracing::warn!(
         url = %robots_url,
@@ -641,6 +641,18 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    // Install the real WAF inspector on first test access (#996). Idempotent.
+    fn ensure_waf_inspector() {
+        use std::sync::{Arc, OnceLock};
+        use crate::infrastructure::http::waf_engine::WafInspector;
+        use crate::domain::waf::set_waf_inspector;
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            set_waf_inspector(Arc::new(WafInspector)
+                as Arc<dyn crate::domain::waf::WafInspectorPort>);
+        });
+    }
+
     fn test_client() -> wreq::Client {
         wreq::Client::new()
     }
@@ -759,6 +771,7 @@ mod tests {
     /// through to `SitemapNotFound` (issue #879).
     #[test]
     fn robots_txt_waf_challenge_yields_typed_error_and_trace_event() {
+        ensure_waf_inspector();
         let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
         let subscriber = tracing_subscriber::fmt()
             .with_writer(SharedWriter(buf.clone()))
