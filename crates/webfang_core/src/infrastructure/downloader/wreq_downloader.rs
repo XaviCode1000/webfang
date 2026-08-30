@@ -82,7 +82,7 @@ impl WreqDownloader {
     /// * `initial_cookie_jar` - Pre-seeded wreq cookie store (`--cookie`,
     ///   #890). When provided it replaces the default empty jar, so Static
     ///   and Hybrid-L1 requests carry the operator's cookies from the first
-    ///   fetch. The Chromiumoxide L3 path keeps using [`crate::infrastructure::downloader::cookie_bridge::CookieBridge`].
+    ///   fetch. The Chromiumoxide L3 path keeps using [`crate::domain::cookie_bridge::CookieBridge`].
     ///
     /// # Errors
     ///
