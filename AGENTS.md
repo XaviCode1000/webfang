@@ -428,6 +428,13 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 Every PR is validated on open / edit / synchronize / label changes. **All three MUST pass:**
 
 1. **Linked issue** — PR body must contain `Closes #N`, `Fixes #N`, or `Resolves #N`.
+   For a **partial slice of an umbrella issue**, use `Closes part of #N` — it passes
+   validation and, because GitHub's auto-close requires strict adjacency, does **not**
+   close the umbrella. Never write a bare `Closes #N` against an umbrella that has
+   remaining scope: it auto-closes the tracker mid-plan, which is exactly how #994 was
+   closed after sub-slice 1 of 5 with 0 of 11 acceptance criteria ticked (#1010).
+   The cleanest shape remains **one issue per PR**, with the umbrella as an index that
+   links child issues rather than a link target.
 2. **Exactly one `type:*` label** — count of labels starting with `type:` must be exactly 1.
 3. **Conventional branch name** — must match `^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)/[a-z0-9._-]+$`.
 
@@ -543,11 +550,21 @@ The automation path that works:
 
 The script:
 
-- Polls `gh pr checks <N> --watch --required --fail-fast` until all required checks are
-  SUCCESS or one FAILS/CANCELS (exit 2 on failure).
+- Reads the required status-check contexts from **branch protection**, then polls
+  `gh pr checks <N> --json name,bucket` until every one of them has **reported** with a
+  terminal bucket, and all report `pass` (exit 2 on failure, 4 if a required context
+  never reports). Waiting on `--watch --required` alone is unsafe: it evaluates against
+  the checks reported *so far*, so immediately after a push it declared "all required
+  checks are GREEN" from a 2-of-3 subset while `CI Gate` had not been queued yet, then
+  exited 3 on `BLOCKED` (#1011). If the required-context list cannot be read, the script
+  falls back to the old watch behaviour and warns on stderr.
 - Verifies `mergeStateStatus` is `CLEAN` or `UNSTABLE` (UNSTABLE with required checks
   green is the repo's normal green state — skipped-by-design jobs push it there, #823).
+  `UNKNOWN` is retried for up to 90s rather than treated as a verdict — it means GitHub
+  has not finished computing mergeability, the same incomplete-answer class as #1011.
   If `BEHIND`, exits 3 and asks you to rebase (single maintainer, ~30s; no auto-rebase needed).
+- A **required** check that reports `skipping` is treated as not-green (exit 2). Required
+  checks are expected to run; a skipped one is not evidence of anything.
 - Calls `gh pr merge <N> --squash --delete-branch`. This **respects branch protection** —
   required checks must be green at merge time. It is NOT the synchronous-PUT bypass
   (`gh api -X PUT .../pulls/N/merge`) which bypasses required checks and should not be
