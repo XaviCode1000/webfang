@@ -8,7 +8,7 @@ use crate::domain::http_config::HttpClientConfig;
 use crate::domain::http_error::{HttpError, HttpResult};
 use crate::domain::session_port::{SessionId, SessionPort};
 use crate::domain::user_agent::fallback_agents;
-use crate::domain::waf::{InspectionContext, WafInspector};
+use crate::domain::waf::{waf_inspector, InspectionContext};
 use crate::error::ScraperError;
 use governor::clock::DefaultClock;
 use governor::state::{InMemoryState, NotKeyed};
@@ -403,7 +403,7 @@ fn waf_block_error(
     body: &str,
     ctx: &InspectionContext,
 ) -> Option<HttpError> {
-    let verdict = WafInspector::inspect(body, ctx);
+    let verdict = waf_inspector().inspect(body, ctx);
     if verdict.is_blocked {
         warn!(
             url = %url,
@@ -788,15 +788,29 @@ mod wiremock_tests {
 }
 
 #[cfg(test)]
-#[cfg(not(miri))] // all tests create wreq::Client with boring-sys2 FFI (unsupported by Miri)
+#[cfg(not(miri))]
 mod waf_detection_tests {
     use super::*;
     use crate::domain::http_config::HttpClientConfig;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    // Install the real WAF inspector on first test access (#996). Idempotent.
+    fn ensure_waf_inspector() {
+        use crate::domain::waf::set_waf_inspector;
+        use crate::infrastructure::http::waf_engine::WafInspector;
+        use std::sync::{Arc, OnceLock};
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            set_waf_inspector(
+                Arc::new(WafInspector) as Arc<dyn crate::domain::waf::WafInspectorPort>
+            );
+        });
+    }
+
     #[tokio::test]
     async fn test_200_cloudflare_challenge_returns_waf_error() {
+        ensure_waf_inspector();
         let mock_server = MockServer::start().await;
 
         let challenge_body = r#"<html><head><title>Just a moment...</title></head>
@@ -822,6 +836,7 @@ mod waf_detection_tests {
 
     #[tokio::test]
     async fn test_200_recaptcha_challenge_returns_waf_error() {
+        ensure_waf_inspector();
         let mock_server = MockServer::start().await;
 
         let challenge_body =
@@ -877,6 +892,7 @@ mod waf_detection_tests {
     /// immediately — no retry loop, no wasted requests.
     #[tokio::test]
     async fn test_503_cloudflare_challenge_returns_waf_error_not_server_error() {
+        ensure_waf_inspector();
         let mock_server = MockServer::start().await;
 
         let challenge_body = r#"<html><head><title>Just a moment...</title></head>
@@ -995,6 +1011,7 @@ mod waf_detection_tests {
     /// proves the block returns immediately with no retry.
     #[tokio::test]
     async fn test_503_cf_mitigated_still_returns_waf_error() {
+        ensure_waf_inspector();
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -1094,6 +1111,7 @@ mod waf_detection_tests {
     /// old fallback ladder (~4 requests / ~5s of UA rotation) is gone.
     #[tokio::test]
     async fn test_200_classified_block_skips_fallback_ladder() {
+        ensure_waf_inspector();
         let mock_server = MockServer::start().await;
 
         let challenge_body =

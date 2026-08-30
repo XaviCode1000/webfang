@@ -39,6 +39,7 @@ use crate::infrastructure::bridge::CpuBridge;
 use crate::infrastructure::cpu_pool::RayonCpuPool;
 use crate::infrastructure::crawler::resource_downloader::{DownloadConfig, ResourceDownloader};
 use crate::infrastructure::export::state_store::StateStore;
+use crate::infrastructure::http::waf_engine::WafInspector;
 use crate::infrastructure::network::session_pool::DomainSessionPool;
 // SQLite persistence layer — only compiled under the `persistence` feature.
 #[cfg(feature = "persistence")]
@@ -192,6 +193,13 @@ impl Container {
                 None
             },
         };
+
+        // 6. WAF inspector — install the process-wide static the application
+        //    call sites consume via `waf_inspector()`. Idempotent (#996): a
+        //    second container build keeps the first value.
+        crate::domain::waf::set_waf_inspector(
+            Arc::new(WafInspector) as Arc<dyn crate::domain::waf::WafInspectorPort>
+        );
 
         Ok(Self {
             scraper_config,
