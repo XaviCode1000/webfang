@@ -349,31 +349,51 @@ restore the description here with its actual scope.
 
 Both tools resolve projects by name; bare-name resolution picks the main checkout — so queries run from a worktree without the absolute path read the **main checkout**, not your worktree (#360). **In worktrees, ALWAYS use the absolute path** (§2.3).
 
-### Bounded review — delivery gates WIRED (#1036, #1047)
+### Bounded review — delivery gates wired, and what they actually enforce (#1036, #1047, #1050)
 
 RDD is ON (decided by global). Reviews are routed per candidate through the Pi
-review tools; the verdict is **enforcing**: git hooks consult the review receipt
-before delivery and block when a governing authority does not allow it.
+review tools. `core.hooksPath` points at `scripts/githooks/`, so `pre-commit` and
+`pre-push` consult `gentle-ai review validate --gate <gate>` on every delivery.
 
-**Mechanism** — `core.hooksPath` points at `scripts/githooks/` (repo-local git
-config; shared across all worktrees). `pre-commit` and `pre-push` call
-`gentle-ai review validate --gate <gate>` and apply the measured decision
-matrix:
+**What the gate really blocks:** it blocks only while a review lineage governs
+*this exact candidate* and has not reached an allowed state. It is **not** a
+receipt gate and cannot be:
+
+- `review acknowledge-approved` is terminal and **burns the lineage** — after
+  approval there is no durable receipt for any gate to consult.
+- Authority is pinned to a candidate tree; **any change to the candidate
+  un-governs it**. Observed directly in #1048: the hook printed
+  `delivery: unmanaged` while the lineage sat in `correction_required`, because
+  the correction commit produced a new candidate identity.
+- The provider declares this boundary deliberately: review verdicts are
+  model-produced (untrusted actor output), so `gentle-ai` states its gates are
+  **"informational and unmanaged; ordinary repository policy decides
+  delivery"** (upstream: gentle-pi `README.md:135`, `:272`, `:306`,
+  `docs/native-authority-architecture.md:5`, and the policy string embedded in
+  the `gentle-ai` binary).
+
+So the wiring is honest friction — no commit while a review of this candidate is
+open, and no silent delivery over a hung or failing gate — not a delivery
+authorization. Treat "the review passed" as evidence, never as permission.
+
+**Mechanism** — repo-local git config, shared across all worktrees. Fresh clones
+must run `git config core.hooksPath scripts/githooks`. Decision matrix:
 
 | validate output | hook decision |
 |---|---|
 | `gentle-ai` binary absent | ALLOW + warning (a machine without the tool cannot gate anything) |
-| validate fails / unparseable output | **BLOCK** (fail-closed) |
+| validate fails, hangs past `timeout 20s`, or output is unparseable | **BLOCK** (fail-closed) |
 | `delivery: unmanaged` | ALLOW — ordinary repository policy applies |
 | `allowed: true` | ALLOW |
-| anything else (reviewing, invalidated, approved-not-acked) | **BLOCK** |
+| any other governed state | **BLOCK** |
 
-`jq` is required (the verdict is parsed, the exit code alone is NOT trusted:
-`validate` exits 0 even when `allowed: false`).
+The verdict is parsed from JSON, never from the exit code: `validate` exits **0
+even when `allowed: false`**. `jq` is preferred with a built-in `sed` scalar
+fallback, so a missing `jq` downgrades the parser but never disables the gate.
 
 **Boundary:** initiating a review from a plain shell fails with
-`immutable_review_transport_unsupported` — the relay contract is host-only.
-The hooks therefore only *consult* an existing verdict; reviews are initiated
+`immutable_review_transport_unsupported` — the relay contract is host-only. The
+hooks therefore only *consult* an existing verdict; reviews are initiated
 through the Pi review tools, which persist the authority `validate` reads.
 Measured 2026-08-30: `validate --gate` itself exits 0 and abstains
 (`delivery: unmanaged`) for unmanaged candidates, so the wiring does not block
