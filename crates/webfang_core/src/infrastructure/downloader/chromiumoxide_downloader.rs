@@ -22,10 +22,10 @@ use std::sync::RwLock;
 use futures::future::BoxFuture;
 use url::Url;
 
-#[cfg(feature = "chromium")]
-use super::cookie_bridge::domain_matches;
-use super::cookie_bridge::CookieBridge;
 use super::{DownloadError, Downloader, FetchedPage};
+#[cfg(feature = "chromium")]
+use crate::domain::cookie_bridge::domain_matches;
+use crate::domain::cookie_bridge::CookieBridge;
 
 /// Memory budget for one Chrome tab (~200 MB).
 #[cfg(feature = "chromium")]
@@ -99,13 +99,13 @@ impl Downloader for ChromiumoxideDownloader {
                 bridge
                     .to_cdp_cookies()
                     .into_iter()
-                    .filter(|c| domain_matches(current_domain, &c.domain))
+                    .filter(|c| domain_matches(current_domain, c.domain()))
                     .map(|c| {
-                        let mut param = CookieParam::new(c.name, c.value);
-                        param.domain = Some(c.domain);
-                        param.path = Some(c.path);
-                        param.secure = Some(c.secure);
-                        param.http_only = Some(c.http_only);
+                        let mut param = CookieParam::new(c.name(), c.value());
+                        param.domain = Some(c.domain().to_string());
+                        param.path = Some(c.path().to_string());
+                        param.secure = Some(c.secure());
+                        param.http_only = Some(c.http_only());
                         param
                     })
                     .collect()

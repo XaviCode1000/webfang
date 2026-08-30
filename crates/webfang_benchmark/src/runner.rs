@@ -27,11 +27,11 @@ use crate::corpus::{self, CorpusManifest};
 use crate::error::{BenchmarkError, Result};
 use webfang_core::application::crawl_site_with_options;
 use webfang_core::application::crawler::EngineOptions;
+use webfang_core::domain::cookie_bridge::CookieBridge;
 use webfang_core::domain::downloader_factory::{DownloaderFactory, DownloaderSpec};
 use webfang_core::domain::value_objects::CorrelationId;
 use webfang_core::domain::CrawlerConfig;
 use webfang_core::domain::JsStrategy;
-use webfang_core::infrastructure::downloader::cookie_bridge::CookieBridge;
 use webfang_core::infrastructure::downloader::fetch_router::DefaultDownloaderFactory;
 use webfang_core::infrastructure::observability::FileTraceLayer;
 
