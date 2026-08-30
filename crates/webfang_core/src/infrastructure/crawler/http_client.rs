@@ -11,13 +11,40 @@
 use std::time::Duration;
 
 use tracing::debug;
+use url::Url;
 use wreq::Client;
 use wreq_util::Profile;
 
+use crate::domain::downloader_port::Cookie;
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::{CrawlError, CrawlerConfig};
 use crate::error::Result as ScraperResult;
 use crate::infrastructure::http::create_http_client_with_config;
+
+/// Result of a plain HTTP fetch via [`fetch_url`].
+///
+/// Distinct from the application-layer [`crate::application::crawler::FetchOutcome`].
+/// The application layer wraps this into a `FetchOutcome`; the infrastructure
+/// layer must not construct `FetchOutcome` directly (Clean Architecture: domain
+/// types flow inward, infrastructure flows outward — but `FetchOutcome` lives
+/// in the application layer, so it stays out of `infrastructure::*`).
+///
+/// `cookies` reuses the domain [`Cookie`] type rather than wreq's internal
+/// `wreq::cookie::Cookie<'a>` to keep the lifetime out of this DTO and align
+/// with what every other downloader in the codebase already returns.
+#[derive(Debug, Clone)]
+pub struct HttpFetchResult {
+    /// Decoded response body.
+    pub body: String,
+    /// HTTP status code, observed before any further processing.
+    pub status: u16,
+    /// Final URL after redirects. Falls back to the requested URL when wreq
+    /// cannot parse the final `Uri` back into a `url::Url` (rare; e.g. when
+    /// a redirect chain ends at an opaque URI).
+    pub final_url: Url,
+    /// Cookies set by the server during this request.
+    pub cookies: Vec<Cookie>,
+}
 
 /// Create a rate-limited HTTP client
 ///
@@ -66,7 +93,7 @@ pub fn create_rate_limited_client(delay_ms: u64, tls_emulation: Profile) -> Scra
     Ok(client)
 }
 
-/// Fetch a URL and return the response text
+/// Fetch a URL and return the response plus its final URL, status, and cookies
 ///
 /// Following **own-borrow-over-clone**: Accepts `&str` and `&CrawlerConfig`.
 /// Following **clean-architecture**: Converts reqwest::Error → CrawlError::Network
@@ -78,10 +105,22 @@ pub fn create_rate_limited_client(delay_ms: u64, tls_emulation: Profile) -> Scra
 ///
 /// # Returns
 ///
-/// * `Ok(String)` - Response text
-/// * `Err(CrawlError)` - Error during fetch
-pub async fn fetch_url(url: &str, config: &CrawlerConfig) -> Result<String, CrawlError> {
+/// * `Ok(HttpFetchResult)` - Body, status, post-redirect `final_url`, and cookies
+/// * `Err(CrawlError)` - Error during fetch (transport, non-2xx status, body read)
+///
+/// # Note on final URL
+///
+/// `final_url` reflects the URL after wreq follows redirects. When the response
+/// `Uri` cannot be parsed back into a `url::Url` (e.g. an opaque final URI), the
+/// caller-supplied URL is reused as a conservative fallback so callers can keep
+/// keying by URL without special-casing the rare failure path.
+pub async fn fetch_url(url: &str, config: &CrawlerConfig) -> Result<HttpFetchResult, CrawlError> {
     debug!("Fetching URL: {}", url);
+
+    let requested = Url::parse(url).map_err(|e| CrawlError::Network {
+        message: format!("invalid URL {url}: {e}"),
+        status_code: None,
+    })?;
 
     let client = create_rate_limited_client(config.delay_ms, config.tls_emulation)
         // LCOV_EXCL_LINE defensive: wreq-client-build — client construction fails only on invalid TLS profile, an invariant
@@ -97,12 +136,37 @@ pub async fn fetch_url(url: &str, config: &CrawlerConfig) -> Result<String, Craw
             status_code: e.status().map(|s| s.as_u16()),
         })?;
 
+    let status = response.status().as_u16();
+
+    // The final URL after redirects — wreq's `Response::uri()` returns the
+    // post-redirect URI that hyper tracks through the redirect chain. Fall back
+    // to the requested URL when the URI cannot be round-tripped through `url::Url`
+    // (e.g. an opaque scheme or a fragment-only URI), matching the conservative
+    // behaviour of the legacy fallback path.
+    let final_url = Url::parse(&response.uri().to_string()).unwrap_or_else(|_| requested.clone());
+
+    // Extract cookies BEFORE consuming the body. wreq's `Response::cookies()`
+    // yields `wreq::cookie::Cookie<'_>` items parsed from `Set-Cookie` headers;
+    // we project them into the domain `Cookie` DTO to match every other
+    // downloader in the codebase (see `WreqDownloader::extract_cookies`).
+    let cookies = response
+        .cookies()
+        .map(|c| Cookie {
+            name: c.name().to_string(),
+            value: c.value().to_string(),
+            domain: c.domain().unwrap_or("").to_string(),
+            path: c.path().unwrap_or("/").to_string(),
+            http_only: c.http_only(),
+            secure: c.secure(),
+        })
+        .collect();
+
     // Check for successful status
     if !response.status().is_success() {
         // Convert HTTP error to CrawlError::Network
         return Err(CrawlError::Network {
             message: format!("HTTP error: {}", response.status()),
-            status_code: Some(response.status().as_u16()),
+            status_code: Some(status),
         });
     }
 
@@ -111,7 +175,12 @@ pub async fn fetch_url(url: &str, config: &CrawlerConfig) -> Result<String, Craw
         status_code: None,
     })?;
 
-    Ok(text)
+    Ok(HttpFetchResult {
+        body: text,
+        status,
+        final_url,
+        cookies,
+    })
 }
 
 #[cfg(test)]
@@ -161,7 +230,8 @@ mod tests {
 
         let html = fetch_url(&server.uri(), &config)
             .await
-            .expect("fetch_url should succeed with a custom TLS profile");
+            .expect("fetch_url should succeed with a custom TLS profile")
+            .body;
         assert_eq!(html, "<html>ok</html>");
     }
 }
