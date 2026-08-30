@@ -61,8 +61,14 @@ jobs:
         run: |
           set -euo pipefail
           BODY=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json body --jq '.body // ""')
-          if ! printf '%s' "$BODY" | grep -qiE '(closes|fixes|resolves) #[0-9]+'; then
-            echo "::error::El cuerpo del PR debe vincular una issue con 'Closes #N', 'Fixes #N' o 'Resolves #N'."
+          # Accept the partial form too. GitHub's own auto-close only fires on the
+          # strict adjacency (`Closes #N`), so `Closes part of #N` passes this check
+          # WITHOUT closing the umbrella — which is exactly the semantics a partial
+          # slice needs. Before #1010 the strict-only regex forced every partial PR
+          # in a chain to write a full-closing keyword, which auto-closed #994 after
+          # sub-slice 1 of 5 with 0 of 11 acceptance criteria met.
+          if ! printf '%s' "$BODY" | grep -qiE '(closes|fixes|resolves)([[:space:]]+(part|some|one)[[:space:]]+of)?[[:space:]]*#[[:space:]]*[0-9]+'; then
+            echo "::error::El cuerpo del PR debe vincular una issue con 'Closes #N', 'Fixes #N' o 'Resolves #N'. Para un slice parcial de una issue paraguas usa 'Closes part of #N' (pasa esta validación y NO cierra la issue)."
             exit 1
           fi
           echo "OK: issue vinculada."
