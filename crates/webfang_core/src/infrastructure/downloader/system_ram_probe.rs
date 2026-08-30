@@ -5,7 +5,7 @@
 //! domain-owned seam. The loop no longer reaches into
 //! `infrastructure::downloader::ResourceGovernor` directly; it holds an
 //! `Arc<dyn RamProbePort>` and the production wiring (`cli`, gate-exempt)
-//! injects this [`SystemRamProbe`].
+//! injects the `SystemRamProbe` defined in this module.
 //!
 //! The conversion from `ResourceGovernor::ram_usage_percent`'s `u8` to
 //! the new port's `f32` happens here once; the autoscale loop reads `f32`
