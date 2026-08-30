@@ -268,7 +268,6 @@ This project uses **sibling worktrees** for parallel development. Each active br
   - `git checkout`, `git switch` — they change the branch inside the current worktree. Use `git worktree add`.
   - `git stash` / `git stash pop` / `git stash apply` / `git stash drop` — **stash storage (`refs/stash`) is shared across ALL worktrees**. A `pop` in one worktree can apply a stash from a completely different session. If you need to set work aside, commit to a throwaway branch.
   - `git worktree move`, `git worktree lock` — use `remove` + `add` instead.
-- **Forbidden:** any commit whose branch doesn't match the worktree's directory name (enforced by global pre-commit hook).
 
 ### Placement & naming
 
@@ -282,7 +281,7 @@ Worktrees live as **siblings** of the repo (never inside it — in-repo worktree
 │   └── fix-crawler-timeout/     # branch: fix/crawler-timeout
 ```
 
-Branch `feat/auth` → directory `feat-auth` (`/` → `-`). The global pre-commit hook validates this mapping.
+Branch `feat/auth` → directory `feat-auth` (`/` → `-`). Worktree/branch matching is a CONVENTION the agent must verify; run `[ "$(basename "$PWD")" = "$(git branch --show-current | tr '/' '-')" ] || echo "MISMATCH"` before each commit in a worktree.
 
 ### Worktree lifecycle
 
@@ -345,14 +344,11 @@ A merge is NOT done until the repo is clean and ready for the next mission. Clea
 
 Both tools resolve projects by name; bare-name resolution picks the main checkout — so queries run from a worktree without the absolute path read the **main checkout**, not your worktree (#360). **In worktrees, ALWAYS use the absolute path** (§2.3).
 
-### Bounded Review (4R) in worktrees
+### Bounded review — advisory only
 
-The gentle-ai bounded review hook resolves the target repo from the OpenCode session CWD. When the session runs from main but changes live in a worktree, the binding mismatches and every lens refuses to launch.
+RDD is OFF clone-local. `gentle-ai review mode status` will show `off (decided by clone-local)`. Reviews are an optional second opinion and gate nothing. Commit, push, PR and merge follow ordinary repository policy (cargo gates + linked issue + one `type:*` label + conventional branch).
 
-- **Option A (proper):** set `GENTLE_AI_REVIEW_CWD=<absolute worktree path>` in the OpenCode server environment BEFORE starting the session.
-- **Option B (no restart):** launch lenses as `general` agents — the hook only intercepts `review-*` agent types with a `GENTLE_AI_REVIEW_BINDING` prefix.
-
-The project's PR workflow does NOT require a gentle-ai review receipt — only cargo gates, linked issue, one `type:*` label, conventional branch.
+Hook-based gates were considered and rejected on 2026-08-30: `review validate --gate pre-commit` returns `allowed: false` in this runtime because `review status --next-transition` fails with `immutable_review_transport_unsupported` — the host gentle-pi relay contract is not exported to non-IDE shells. Wiring hooks would block every commit.
 
 ### Rebase caveats
 
