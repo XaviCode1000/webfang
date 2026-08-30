@@ -417,12 +417,13 @@ mod tests {
     // is idempotent, so a no-op if `Container::new` already initialized it.
     use std::sync::{Arc, OnceLock};
     fn ensure_waf_inspector() {
-        use crate::infrastructure::http::waf_engine::WafInspector;
         use crate::domain::waf::set_waf_inspector;
+        use crate::infrastructure::http::waf_engine::WafInspector;
         static INIT: OnceLock<()> = OnceLock::new();
         INIT.get_or_init(|| {
-            set_waf_inspector(Arc::new(WafInspector)
-                as Arc<dyn crate::domain::waf::WafInspectorPort>);
+            set_waf_inspector(
+                Arc::new(WafInspector) as Arc<dyn crate::domain::waf::WafInspectorPort>
+            );
         });
     }
 

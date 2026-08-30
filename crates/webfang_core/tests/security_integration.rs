@@ -21,8 +21,9 @@ use webfang_core::infrastructure::http::waf_engine::WafInspector;
 fn ensure_waf_inspector() {
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
-        webfang_core::domain::waf::set_waf_inspector(Arc::new(WafInspector)
-            as Arc<dyn webfang_core::domain::waf::WafInspectorPort>);
+        webfang_core::domain::waf::set_waf_inspector(
+            Arc::new(WafInspector) as Arc<dyn webfang_core::domain::waf::WafInspectorPort>
+        );
     });
 }
 

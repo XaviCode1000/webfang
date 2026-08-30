@@ -197,8 +197,9 @@ impl Container {
         // 6. WAF inspector — install the process-wide static the application
         //    call sites consume via `waf_inspector()`. Idempotent (#996): a
         //    second container build keeps the first value.
-        crate::domain::waf::set_waf_inspector(Arc::new(WafInspector)
-            as Arc<dyn crate::domain::waf::WafInspectorPort>);
+        crate::domain::waf::set_waf_inspector(
+            Arc::new(WafInspector) as Arc<dyn crate::domain::waf::WafInspectorPort>
+        );
 
         Ok(Self {
             scraper_config,

@@ -22,9 +22,7 @@ mod common;
 use common::{redact_nondeterministic, BehavioralTest};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
-use webfang_core::domain::waf::{
-    set_waf_inspector, waf_inspector, InspectionContext, WafVerdict,
-};
+use webfang_core::domain::waf::{set_waf_inspector, waf_inspector, InspectionContext, WafVerdict};
 use webfang_core::infrastructure::http::waf_engine::WafInspector;
 
 // Install the process-wide WAF inspector once per test binary. The static is
@@ -33,7 +31,9 @@ use webfang_core::infrastructure::http::waf_engine::WafInspector;
 fn ensure_waf_inspector() {
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
-        set_waf_inspector(Arc::new(WafInspector) as Arc<dyn webfang_core::domain::waf::WafInspectorPort>);
+        set_waf_inspector(
+            Arc::new(WafInspector) as Arc<dyn webfang_core::domain::waf::WafInspectorPort>
+        );
     });
 }
 use wiremock::matchers::{method, path};

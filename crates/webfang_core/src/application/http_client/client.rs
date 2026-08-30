@@ -797,13 +797,14 @@ mod waf_detection_tests {
 
     // Install the real WAF inspector on first test access (#996). Idempotent.
     fn ensure_waf_inspector() {
-        use std::sync::{Arc, OnceLock};
-        use crate::infrastructure::http::waf_engine::WafInspector;
         use crate::domain::waf::set_waf_inspector;
+        use crate::infrastructure::http::waf_engine::WafInspector;
+        use std::sync::{Arc, OnceLock};
         static INIT: OnceLock<()> = OnceLock::new();
         INIT.get_or_init(|| {
-            set_waf_inspector(Arc::new(WafInspector)
-                as Arc<dyn crate::domain::waf::WafInspectorPort>);
+            set_waf_inspector(
+                Arc::new(WafInspector) as Arc<dyn crate::domain::waf::WafInspectorPort>
+            );
         });
     }
 
