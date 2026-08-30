@@ -10,7 +10,8 @@
 //! # Usage
 //!
 //! ```ignore
-//! use webfang_core::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
+//! use webfang_core::domain::waf::InspectionContext;
+//! use webfang_core::infrastructure::http::waf_engine::WafInspector;
 //!
 //! # let headers = wreq::header::HeaderMap::new();
 //! # let body = String::new();
@@ -34,143 +35,12 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 // ============================================================================
-// TASK-01 — Domain types + Inspection Context API (REQ-WAF-01)
+// Canonical WAF VOs (#1039) — the single VO family lives in `domain::waf`.
+// The engine consumes the domain types directly; infrastructure → domain is
+// the allowed inward dependency direction (Clean Architecture).
 // ============================================================================
 
-/// WAF signature tier — determines the blocking policy for a matched pattern.
-///
-/// Tier drives the verdict policy in [`WafInspector::inspect`]:
-/// - [`WafTier::Challenge`] blocks at ANY HTTP status, including 200.
-/// - [`WafTier::Fingerprint`] is evidence only; it blocks solely when correlated
-///   with a WAF-associated status code (403 / 429 / 503 / 520–529).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WafTier {
-    /// Unambiguous challenge/captcha markers (widget tokens, challenge prose).
-    Challenge,
-    /// Fingerprint markers (bare vendor names, domains, cookies, control headers).
-    Fingerprint,
-}
-
-impl WafTier {
-    /// Spanish user-facing label for the evidence chain (REQ-WAF-08).
-    #[must_use]
-    pub const fn label_es(self) -> &'static str {
-        match self {
-            WafTier::Challenge => "desafío",
-            WafTier::Fingerprint => "huella",
-        }
-    }
-}
-
-/// Where a piece of WAF evidence was observed (FIX B).
-///
-/// Drives the 5xx body-vs-header carve-out in the verdict policy: on a 5xx
-/// response a bare vendor mention sourced from the BODY ([`EvidenceSource::Body`])
-/// is ubiquitous diagnostic noise and does not block, whereas the same Fingerprint
-/// tier sourced from a control HEADER ([`EvidenceSource::Header`], e.g.
-/// `cf-mitigated`) signals active mitigation and still blocks. Internal to the
-/// verdict — it is deliberately NOT part of the Spanish evidence chain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EvidenceSource {
-    /// Evidence matched in the response body (signatures or entropy).
-    Body,
-    /// Evidence matched in a response control header.
-    Header,
-}
-
-/// A single piece of WAF detection evidence collected during inspection.
-///
-/// A verdict carries *all* collected evidences (REQ-WAF-01), enabling an
-/// evidence-chain error message (REQ-WAF-08) instead of a first-hit provider.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WafEvidence {
-    /// Detected WAF provider (e.g. `"Cloudflare"`, `"DataDome"`).
-    pub provider: &'static str,
-    /// Signature tier that matched.
-    pub tier: WafTier,
-    /// The literal pattern (or rule label) that matched.
-    pub matched_pattern: &'static str,
-    /// Where the evidence was observed (body or header) — drives the 5xx
-    /// body-vs-header carve-out in the verdict policy; not surfaced in the
-    /// Spanish evidence chain.
-    pub source: EvidenceSource,
-}
-
-/// The verdict of a WAF inspection.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct WafVerdict {
-    /// Whether the response should be treated as WAF-blocked.
-    pub is_blocked: bool,
-    /// All collected evidence (not just the first hit).
-    pub evidences: Vec<WafEvidence>,
-}
-
-impl WafVerdict {
-    /// A clean verdict: not blocked, no evidence.
-    #[must_use]
-    pub fn clean() -> Self {
-        Self::default()
-    }
-
-    /// Spanish user-facing evidence chain for the block error (REQ-WAF-08).
-    ///
-    /// Each evidence renders as `provider (patrón: <pattern>, tier: <label_es>)`,
-    /// joined by `; `. Falls back to a generic label when the verdict carries no
-    /// evidence. Callers that raise a block error (HTTP client, scraper service,
-    /// crawler discovery, MCP) pass this string as the `provider` payload so the
-    /// full chain reaches the user instead of a bare first-hit provider name.
-    #[must_use]
-    pub fn evidence_chain(&self) -> String {
-        format_evidence_chain(&self.evidences)
-    }
-}
-
-/// HTTP context for a WAF inspection (REQ-WAF-01).
-///
-/// [`Default`] is *degraded mode* — no HTTP context (status/content-type
-/// unknown, empty headers, `ignore_waf` false). Callers that only have the
-/// body (e.g. the MCP `detect_waf` tool) use degraded mode, where only
-/// [`WafTier::Challenge`] markers block and [`WafTier::Fingerprint`] evidence
-/// is reported as low-confidence and never blocks (REQ-WAF-05).
-#[derive(Debug, Clone, Default)]
-pub struct InspectionContext {
-    /// HTTP status code, if known.
-    pub status: Option<u16>,
-    /// Content-Type header value, if known.
-    pub content_type: Option<String>,
-    /// Response headers.
-    pub headers: HashMap<String, String>,
-    /// Bypass WAF detection entirely (yields a clean verdict).
-    pub ignore_waf: bool,
-}
-
-impl InspectionContext {
-    /// Build a full context from an HTTP status and a lowercased-key header map,
-    /// as captured by the domain `HttpResponse` and infrastructure `FetchedPage`
-    /// types (REQ-WAF-01).
-    ///
-    /// The `content-type` entry is lifted into [`Self::content_type`] for the
-    /// REQ-WAF-02 gate; the whole map is retained as plain lowercased-key
-    /// `String` pairs so control-header evidence (REQ-WAF-03) needs no `wreq`
-    /// types at the inspection boundary. Headers are single-valued at capture
-    /// (duplicate names collapse, last value wins — WAF control headers are
-    /// single-valued, so no evidence is lost). `ignore_waf` short-circuits
-    /// inspection to a clean verdict (REQ-WAF-07).
-    #[must_use]
-    pub fn from_lowercase_headers(
-        status: u16,
-        headers: &std::collections::HashMap<String, String>,
-        ignore_waf: bool,
-    ) -> Self {
-        let content_type = headers.get("content-type").cloned();
-        Self {
-            status: Some(status),
-            content_type,
-            headers: headers.clone(),
-            ignore_waf,
-        }
-    }
-}
+use crate::domain::waf::{EvidenceSource, InspectionContext, WafEvidence, WafTier, WafVerdict};
 
 /// Control headers that indicate WAF processing (REQ-WAF-03).
 ///
@@ -603,37 +473,8 @@ pub struct WafInspector;
 impl crate::domain::waf::sealed::Sealed for WafInspector {}
 
 impl crate::domain::waf::WafInspectorPort for WafInspector {
-    fn inspect(
-        &self,
-        body: &str,
-        ctx: &crate::domain::waf::InspectionContext,
-    ) -> crate::domain::waf::WafVerdict {
-        let infra_ctx = InspectionContext {
-            status: ctx.status,
-            content_type: ctx.content_type.clone(),
-            headers: ctx.headers.clone(),
-            ignore_waf: ctx.ignore_waf,
-        };
-        let verdict = Self::inspect(body, &infra_ctx);
-        crate::domain::waf::WafVerdict {
-            is_blocked: verdict.is_blocked,
-            evidences: verdict
-                .evidences
-                .into_iter()
-                .map(|e| crate::domain::waf::WafEvidence {
-                    provider: e.provider,
-                    tier: match e.tier {
-                        WafTier::Challenge => crate::domain::waf::WafTier::Challenge,
-                        WafTier::Fingerprint => crate::domain::waf::WafTier::Fingerprint,
-                    },
-                    matched_pattern: e.matched_pattern,
-                    source: match e.source {
-                        EvidenceSource::Body => crate::domain::waf::EvidenceSource::Body,
-                        EvidenceSource::Header => crate::domain::waf::EvidenceSource::Header,
-                    },
-                })
-                .collect(),
-        }
+    fn inspect(&self, body: &str, ctx: &InspectionContext) -> WafVerdict {
+        Self::inspect(body, ctx)
     }
 }
 
@@ -1111,28 +952,6 @@ fn is_html_content_type(ct: &str) -> bool {
         .trim()
         .to_ascii_lowercase();
     mime == "text/html" || mime == "application/xhtml+xml"
-}
-
-/// Format the evidence chain for the Spanish user-facing block message (REQ-WAF-08).
-///
-/// Each evidence renders as `provider (patrón: <pattern>, tier: <label_es>)`,
-/// joined by `; `. Falls back to a generic label when the chain is empty.
-fn format_evidence_chain(evidences: &[WafEvidence]) -> String {
-    if evidences.is_empty() {
-        return "WAF desconocido".to_string();
-    }
-    evidences
-        .iter()
-        .map(|e| {
-            format!(
-                "{} (patrón: {}, tier: {})",
-                e.provider,
-                e.matched_pattern,
-                e.tier.label_es()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("; ")
 }
 
 /// Calculate Shannon entropy of a string
@@ -2080,7 +1899,11 @@ mod tests {
                 source: EvidenceSource::Body,
             },
         ];
-        let chain = format_evidence_chain(&evidences);
+        let chain = WafVerdict {
+            is_blocked: false,
+            evidences,
+        }
+        .evidence_chain();
         // Every evidence's provider + pattern + Spanish tier label is listed.
         assert!(chain.contains("Cloudflare"), "chain: {chain}");
         assert!(chain.contains("cf-turnstile"), "chain: {chain}");
@@ -2098,7 +1921,7 @@ mod tests {
 
     #[test]
     fn test_evidence_chain_empty_fallback() {
-        assert_eq!(format_evidence_chain(&[]), "WAF desconocido");
+        assert_eq!(WafVerdict::clean().evidence_chain(), "WAF desconocido");
     }
 
     // ========================================================================
@@ -2222,12 +2045,16 @@ mod tests {
         // REQ-WAF-08: ErrorClass stays PermanentFatal (exit 69).
         let err = ScraperError::waf_blocked(
             "https://example.com",
-            format_evidence_chain(&[WafEvidence {
-                provider: "Cloudflare",
-                tier: WafTier::Challenge,
-                matched_pattern: "cf-turnstile",
-                source: EvidenceSource::Body,
-            }]),
+            WafVerdict {
+                is_blocked: true,
+                evidences: vec![WafEvidence {
+                    provider: "Cloudflare",
+                    tier: WafTier::Challenge,
+                    matched_pattern: "cf-turnstile",
+                    source: EvidenceSource::Body,
+                }],
+            }
+            .evidence_chain(),
         );
         assert_eq!(err.classify(), crate::error::ErrorClass::PermanentFatal);
     }

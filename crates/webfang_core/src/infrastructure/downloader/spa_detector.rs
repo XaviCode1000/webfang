@@ -21,7 +21,8 @@
 //!   with substantial text are static even if they embed hydration markers
 //!   (SSR), mirroring the char-gate-first semantics of the application layer.
 
-use crate::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
+use crate::domain::waf::InspectionContext;
+use crate::infrastructure::http::waf_engine::WafInspector;
 
 /// Signal indicating whether a page is static, an SPA, or WAF-blocked.
 #[derive(Debug, Clone, PartialEq, Eq)]

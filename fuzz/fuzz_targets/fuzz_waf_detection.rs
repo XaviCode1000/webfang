@@ -8,7 +8,7 @@ fuzz_target!(|data: &[u8]| {
         // Degraded-mode inspection (no HTTP context): the verdict is discarded,
         // we only exercise the scan path for panics. (`webfang` is the fuzz
         // crate's rename of `webfang_core`.)
-        let ctx = webfang::infrastructure::http::waf_engine::InspectionContext::default();
+        let ctx = webfang::domain::waf::InspectionContext::default();
         let _ = webfang::infrastructure::http::waf_engine::WafInspector::inspect(body, &ctx);
     }
 });
