@@ -48,12 +48,13 @@ use crate::domain::downloader_factory::{
     DownloaderFactory, DownloaderSpec, DEFAULT_OBSCURA_BINARY,
 };
 use crate::domain::downloader_port::{DownloadError, Downloader};
+use crate::domain::ram_probe_port::RamProbePort;
 use crate::domain::session_port::SessionPoolConfig;
 use crate::domain::{
     CorrelationId, CrawlError, CrawlErrorCategory, CrawlResult, CrawlerConfig, JsStrategy,
 };
 use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
-use crate::infrastructure::downloader::resource_governor::ResourceGovernor;
+use crate::infrastructure::downloader::system_ram_probe::SystemRamProbe;
 
 /// Shared shutdown signal — set to `true` when SIGINT/SIGTERM received.
 type ShutdownSignal = Arc<AtomicBool>;
@@ -131,6 +132,11 @@ pub struct Engine {
     /// Immutable budget snapshot built once at entry; every derived tier
     /// (burst, crawl, domain) reads from it.
     budget: BudgetModel,
+    /// System RAM-usage probe — domain port read by the autoscale loop
+    /// (`with_autoscale`) to throttle crawl permits under memory pressure.
+    /// Defaults to the sysinfo-backed production impl; tests inject a fake.
+    /// ADR-0012 sub-slice 3.B-1c.
+    ram_probe: Arc<dyn RamProbePort>,
 }
 
 /// Rate-limiter burst source derived from the budget model (design D4/D1):
@@ -229,6 +235,10 @@ impl Engine {
             pipeline: None,
             output_stages: Vec::new(),
             signal_handle: None,
+            // Default to the sysinfo-backed probe so the autoscale loop is
+            // wired without any extra setup. Tests inject a fake via
+            // `Engine::with_ram_probe` (no real sysinfo reads in unit tests).
+            ram_probe: Arc::new(SystemRamProbe::new()),
         })
     }
 
@@ -407,12 +417,13 @@ impl Engine {
 
     /// Enable autoscaled concurrency based on system RAM.
     ///
-    /// Spawns a background task that polls `ResourceGovernor::ram_usage_percent()`
+    /// Spawns a background task that polls the injected [`RamProbePort`]
     /// every 5 seconds and adjusts the shared concurrency level accordingly.
     /// The engine's spawn loop reads this level to compute effective concurrency.
     pub fn with_autoscale(mut self) -> Self {
         let level = Arc::new(SharedConcurrencyLevel::new());
         let level_clone = Arc::clone(&level);
+        let probe = Arc::clone(&self.ram_probe);
 
         tokio::spawn(
             async move {
@@ -420,17 +431,17 @@ impl Engine {
                 interval.tick().await; // skip first immediate tick
                 loop {
                     interval.tick().await;
-                    let usage = ResourceGovernor::ram_usage_percent();
-                    let new_level = if usage >= 90 {
+                    let usage = probe.ram_usage_percent().as_percent();
+                    let new_level = if usage >= f32::from(crate::domain::budget::derivation::RamThresholds::DEFAULT_CRITICAL_PERCENT) {
                         ConcurrencyLevel::Critical
-                    } else if usage >= 80 {
+                    } else if usage >= f32::from(crate::domain::budget::derivation::RamThresholds::DEFAULT_WARNING_PERCENT) {
                         ConcurrencyLevel::Reduced
                     } else {
                         ConcurrencyLevel::Normal
                     };
                     if level_clone.get() != new_level {
                         info!(
-                            "Autoscale: RAM {usage}% → concurrency level {:?}",
+                            "Autoscale: RAM {usage:.2}% → concurrency level {:?}",
                             new_level
                         );
                         level_clone.set(new_level);
@@ -441,6 +452,17 @@ impl Engine {
         );
 
         self.scheduler.set_autoscale(level);
+        self
+    }
+
+    /// Override the RAM-usage probe used by [`Self::with_autoscale`].
+    ///
+    /// Tests inject a deterministic fake so the autoscale loop's threshold
+    /// branches can be exercised without real sysinfo reads. Production
+    /// code can leave the default ([`SystemRamProbe`]) in place.
+    #[must_use]
+    pub fn with_ram_probe(mut self, probe: Arc<dyn RamProbePort>) -> Self {
+        self.ram_probe = probe;
         self
     }
 
@@ -1709,5 +1731,53 @@ mod tests {
         };
         let engine = engine.with_persistence(mode);
         assert!(engine.checkpoint_path.is_none());
+    }
+
+    /// ADR-0012 sub-slice 3.B-1c — the autoscale loop MUST read RAM via the
+    /// injected [`RamProbePort`], not via a hardcoded `ResourceGovernor` static
+    /// call. This test injects a high-pressure reading, runs the autoscale
+    /// background task, and asserts the shared concurrency level reaches
+    /// `Critical` without ever touching real sysinfo.
+    #[tokio::test]
+    async fn with_autoscale_uses_injected_ram_probe() {
+        #[derive(Debug)]
+        struct HighPressureProbe;
+        impl crate::domain::ram_probe_port::RamProbePort for HighPressureProbe {
+            fn ram_usage_percent(&self) -> crate::domain::ram_probe_port::RamUsagePercent {
+                crate::domain::ram_probe_port::RamUsagePercent::new_clamped(95.0)
+            }
+        }
+        impl crate::domain::ram_probe_port::Sealed for HighPressureProbe {}
+
+        let seed = Url::parse("http://127.0.0.1:9/").expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed).build();
+        let engine = Engine::new(config, true)
+            .expect("engine must build")
+            .with_ram_probe(Arc::new(HighPressureProbe))
+            .with_autoscale();
+
+        // The probe returns 95% on every poll. The autoscale background loop
+        // ticks at 5s; we wait long enough for at least one post-skip tick
+        // to land, then verify the shared level moved to Critical. The
+        // probe is `Arc<dyn RamProbePort>` so it MUST be the one polled —
+        // not the production `SystemRamProbe`.
+        let level = engine
+            .scheduler
+            .autoscale_level()
+            .expect("with_autoscale must install a level")
+            .clone();
+        // Sleep slightly longer than one 5s tick so the spawn'd loop runs
+        // at least once past the initial skip-tick.
+        tokio::time::sleep(Duration::from_millis(5_100)).await;
+        assert_ne!(
+            level.get(),
+            crate::application::crawler::concurrency_level::ConcurrencyLevel::Normal,
+            "autoscale loop must have moved off Normal under 95% injected RAM pressure",
+        );
+        assert_eq!(
+            level.get(),
+            crate::application::crawler::concurrency_level::ConcurrencyLevel::Critical,
+            "autoscale loop must reach Critical at 95% (>= 90% threshold)",
+        );
     }
 }
