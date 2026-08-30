@@ -38,7 +38,7 @@ pub(crate) fn std_env_var(key: &str) -> Option<String> {
 ///
 /// `env_var` should return `None` when the requested variable is unset OR
 /// set to an empty string (the public callers treat an empty value as
-/// absent). Production code passes [`std_env_var`]; tests pass a
+/// absent). Production code passes `std_env_var`; tests pass a
 /// snapshot closure over a `HashMap` so no real env mutation occurs.
 ///
 /// Returns `None` if neither variable is set.
@@ -66,7 +66,7 @@ pub fn read_ai_model_id_with(env_var: &dyn Fn(&str) -> Option<String>) -> Option
 /// Read the AI model ID from the process environment.
 ///
 /// Convenience wrapper over [`read_ai_model_id_with`] using the default
-/// [`std_env_var`] accessor.
+/// `std_env_var` accessor.
 #[must_use]
 pub fn read_ai_model_id() -> Option<String> {
     read_ai_model_id_with(&std_env_var)
