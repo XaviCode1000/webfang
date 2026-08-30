@@ -23,11 +23,12 @@ use crate::infrastructure::http::create_http_client_with_config;
 
 /// Result of a plain HTTP fetch via [`fetch_url`].
 ///
-/// Distinct from the application-layer [`crate::application::crawler::FetchOutcome`].
-/// The application layer wraps this into a `FetchOutcome`; the infrastructure
-/// layer must not construct `FetchOutcome` directly (Clean Architecture: domain
-/// types flow inward, infrastructure flows outward — but `FetchOutcome` lives
-/// in the application layer, so it stays out of `infrastructure::*`).
+/// Carries the body plus the response metadata the static-fetch fallback
+/// must propagate — status, post-redirect final URL and cookies — so the
+/// crawl fallback reports the real response instead of fabricating values
+/// (#1027). The infrastructure layer is the sole constructor; consumers
+/// read the fields outward (infrastructure → application direction is
+/// allowed: domain/application types flow inward, this DTO flows out).
 ///
 /// `cookies` reuses the domain [`Cookie`] type rather than wreq's internal
 /// `wreq::cookie::Cookie<'a>` to keep the lifetime out of this DTO and align
