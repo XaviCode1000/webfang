@@ -43,7 +43,7 @@ pub(crate) use sealed::Sealed;
 /// Domain port that exposes the current system RAM-usage reading.
 ///
 /// Object-safe: yes (single method, no generics, no `Self` in return,
-/// no associated types). Implemented via the sealed [`Sealed`] trait so
+/// no associated types). Implemented via the sealed `Sealed` trait so
 /// only this crate can add a new production impl.
 ///
 /// `Send + Sync` because the autoscale loop polls from a `tokio::spawn`-ed
