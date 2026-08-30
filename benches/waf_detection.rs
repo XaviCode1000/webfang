@@ -1,5 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use webfang_core::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
+use webfang_core::domain::waf::InspectionContext;
+use webfang_core::infrastructure::http::waf_engine::WafInspector;
 
 fn bench_waf_inspect(c: &mut Criterion) {
     // Generate ~500KB HTML body with some WAF signatures embedded

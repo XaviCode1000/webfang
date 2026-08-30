@@ -1,24 +1,31 @@
 //! WAF domain port — VOs + sealed inspection trait.
 //!
-//! Domain-owned value objects for WAF detection. The infrastructure layer
-//! (`infrastructure::http::waf_engine`) keeps the Aho-Corasick automaton
-//! and implements [`WafInspectorPort`]. Application imports only this
-//! module.
+//! Canonical domain-owned value objects for WAF detection (#1039): this is the
+//! ONLY WAF VO family — the infrastructure engine
+//! (`infrastructure::http::waf_engine`) keeps the Aho-Corasick automaton,
+//! signature tables, and detection logic, and consumes these types directly
+//! (infrastructure → domain is the allowed inward direction). Application
+//! imports only this module.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-/// WAF signature tier — drives blocking policy.
+/// WAF signature tier — determines the blocking policy for a matched pattern.
+///
+/// Tier drives the verdict policy in [`WafInspectorPort::inspect`]:
+/// - [`WafTier::Challenge`] blocks at ANY HTTP status, including 200.
+/// - [`WafTier::Fingerprint`] is evidence only; it blocks solely when correlated
+///   with a WAF-associated status code (403 / 429 / 503 / 520–529).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WafTier {
-    /// Unambiguous challenge/captcha marker — blocks at any status.
+    /// Unambiguous challenge/captcha markers (widget tokens, challenge prose).
     Challenge,
-    /// Fingerprint marker — blocks only with WAF-correlated status.
+    /// Fingerprint markers (bare vendor names, domains, cookies, control headers).
     Fingerprint,
 }
 
 impl WafTier {
-    /// Spanish user-facing label for the evidence chain.
+    /// Spanish user-facing label for the evidence chain (REQ-WAF-08).
     #[must_use]
     pub const fn label_es(self) -> &'static str {
         match self {
@@ -28,34 +35,46 @@ impl WafTier {
     }
 }
 
-/// Where a piece of WAF evidence was observed.
+/// Where a piece of WAF evidence was observed (FIX B).
+///
+/// Drives the 5xx body-vs-header carve-out in the verdict policy: on a 5xx
+/// response a bare vendor mention sourced from the BODY ([`EvidenceSource::Body`])
+/// is ubiquitous diagnostic noise and does not block, whereas the same Fingerprint
+/// tier sourced from a control HEADER ([`EvidenceSource::Header`], e.g.
+/// `cf-mitigated`) signals active mitigation and still blocks. Internal to the
+/// verdict — it is deliberately NOT part of the Spanish evidence chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvidenceSource {
-    /// Evidence matched in the response body.
+    /// Evidence matched in the response body (signatures or entropy).
     Body,
     /// Evidence matched in a response control header.
     Header,
 }
 
-/// A single piece of WAF detection evidence.
+/// A single piece of WAF detection evidence collected during inspection.
+///
+/// A verdict carries *all* collected evidences (REQ-WAF-01), enabling an
+/// evidence-chain error message (REQ-WAF-08) instead of a first-hit provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WafEvidence {
-    /// Detected WAF provider (e.g. `"Cloudflare"`).
+    /// Detected WAF provider (e.g. `"Cloudflare"`, `"DataDome"`).
     pub provider: &'static str,
     /// Signature tier that matched.
     pub tier: WafTier,
-    /// The literal pattern that matched.
+    /// The literal pattern (or rule label) that matched.
     pub matched_pattern: &'static str,
-    /// Where the evidence was observed.
+    /// Where the evidence was observed (body or header) — drives the 5xx
+    /// body-vs-header carve-out in the verdict policy; not surfaced in the
+    /// Spanish evidence chain.
     pub source: EvidenceSource,
 }
 
-/// Verdict of a WAF inspection.
+/// The verdict of a WAF inspection.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WafVerdict {
     /// Whether the response should be treated as WAF-blocked.
     pub is_blocked: bool,
-    /// All collected evidence.
+    /// All collected evidence (not just the first hit).
     pub evidences: Vec<WafEvidence>,
 }
 
@@ -66,7 +85,13 @@ impl WafVerdict {
         Self::default()
     }
 
-    /// Spanish evidence chain for user-facing errors.
+    /// Spanish user-facing evidence chain for the block error (REQ-WAF-08).
+    ///
+    /// Each evidence renders as `provider (patrón: <pattern>, tier: <label_es>)`,
+    /// joined by `; `. Falls back to a generic label when the verdict carries no
+    /// evidence. Callers that raise a block error (HTTP client, scraper service,
+    /// crawler discovery, MCP) pass this string as the `provider` payload so the
+    /// full chain reaches the user instead of a bare first-hit provider name.
     #[must_use]
     pub fn evidence_chain(&self) -> String {
         if self.evidences.is_empty() {
@@ -87,7 +112,14 @@ impl WafVerdict {
     }
 }
 
-/// HTTP context for a WAF inspection (domain pure, no `wreq::HeaderMap`).
+/// HTTP context for a WAF inspection (REQ-WAF-01) — domain pure, no
+/// `wreq::HeaderMap`.
+///
+/// [`Default`] is *degraded mode* — no HTTP context (status/content-type
+/// unknown, empty headers, `ignore_waf` false). Callers that only have the
+/// body (e.g. the MCP `detect_waf` tool) use degraded mode, where only
+/// [`WafTier::Challenge`] markers block and [`WafTier::Fingerprint`] evidence
+/// is reported as low-confidence and never blocks (REQ-WAF-05).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InspectionContext {
     /// HTTP status code, if known.
@@ -96,12 +128,22 @@ pub struct InspectionContext {
     pub content_type: Option<String>,
     /// Response headers (lowercased keys).
     pub headers: HashMap<String, String>,
-    /// Bypass WAF detection entirely.
+    /// Bypass WAF detection entirely (yields a clean verdict).
     pub ignore_waf: bool,
 }
 
 impl InspectionContext {
-    /// Build a full context from status and lowercased header map.
+    /// Build a full context from an HTTP status and a lowercased-key header map,
+    /// as captured by the domain `HttpResponse` and infrastructure `FetchedPage`
+    /// types (REQ-WAF-01).
+    ///
+    /// The `content-type` entry is lifted into [`Self::content_type`] for the
+    /// REQ-WAF-02 gate; the whole map is retained as plain lowercased-key
+    /// `String` pairs so control-header evidence (REQ-WAF-03) needs no `wreq`
+    /// types at the inspection boundary. Headers are single-valued at capture
+    /// (duplicate names collapse, last value wins — WAF control headers are
+    /// single-valued, so no evidence is lost). `ignore_waf` short-circuits
+    /// inspection to a clean verdict (REQ-WAF-07).
     #[must_use]
     pub fn from_lowercase_headers(
         status: u16,
