@@ -31,10 +31,18 @@
 # `--all-features` build. This is the single most important knob:
 # without it, all cfg-gated code (chromium, ai, ui, persistence,
 # adaptive-selectors, mcp) appears inactive and produces noise.
-allFeatures = true
+#
+# The schema field is `cargo.features` (string or list), and the magic
+# value "all" maps to `--all-features` per the official schema:
+#   rust-analyzer.cargo.features:
+#     "List of features to activate. Set this to `'all'` to pass
+#      `--all-features` to cargo."
+# Earlier draft used `cargo.allFeatures = true`, which is silently
+# ignored — that field does not exist in the schema.
+features = "all"
 
 # `webfang_ai` exposes its entire `infrastructure_ai` module only under
-# `#[cfg(feature = "ai")]`. With `allFeatures = true` that resolves, but
+# `#[cfg(feature = "ai")]`. With `features = "all"` that resolves, but
 # rust-analyzer still needs to know which workspace members to load —
 # auto-discovery handles this, no need to enumerate.
 
@@ -71,14 +79,14 @@ allTargets = true
 # 1. `typeError` = true   — keep the only class that maps 1:1 to a real
 #    rustc error. This is what you see inline as a red squiggle.
 # 2. `unusedImports`      — leave at the rust-analyzer default. With
-#    `allFeatures = true` these are now accurate (they no longer
+#    `features = "all"` these are now accurate (they no longer
 #    delete cfg-gated live imports — that bug was the
 #    feature-mismatch, not this lint).
 #
 # We deliberately do NOT disable the noisy categories here. Observation
 # #571 root-caused the prior incidents as autofix-runs-with-wrong-
 # feature-set, not as over-reporting by the analyser. With
-# `allFeatures = true` those false positives go away naturally.
+# `features = "all"` those false positives go away naturally.
 typeError = true
 unusedImports = true
 unusedVariables = true
@@ -147,7 +155,7 @@ imports = { granularity = "module", prefix = "self", group = "fold" }
 
 [cfg]
 # `rust-analyzer` ignores `cfg` directives that are not active for the
-# current target by default. With `allFeatures = true` above, every
+# current target by default. With `features = "all"` above, every
 # `#[cfg(feature = "...")]` is active, so this stays empty.
 #
 # If a new cfg (e.g. `target_os = "linux"` for a Linux-only shim) is
