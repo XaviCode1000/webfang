@@ -238,7 +238,7 @@ PRs total. Each PR:
 |-------|---------------------------------------------------|-------:|---------:|-----------------------|------------|
 | 3.A   | crawler call sites → `domain::crawler_port`       |     28 |    ~180  | NO (ya existe)        | —          |
 | 3.A.2 | axtree call sites → `domain::axtree_port`         |      6 |     ~60  | NO (ya existe)        | —          |
-| 3.B   | downloader → `domain::downloader_port`            |     23 |    ~200  | NO (ya existe)        | —          |
+| 3.B ⚠️ | downloader → `domain::downloader_port`            |     23 |    ~200  | NO (ya existe)        | —          |
 | 3.B.2 | cpu_pool → `domain::cpu_executor`                 |      4 |     ~40  | NO (ya existe)        | —          |
 | 3.C   | **Crear `domain::ssrf_guard`** + migrar 17 sitios |     17 |    ~250  | **SÍ**                | —          |
 | 3.D   | scraper + converter → `domain::scraper_port` / `domain::html_cleaner` | 21 | ~180 | NO (ya existen) | — |
@@ -253,6 +253,12 @@ PRs total. Each PR:
 | 4     | `http::waf_engine` lógica → `domain::waf`        |      7 |    ~250  | parcial               | —          |
 | 2     | strict mode default flip (`check_intra_crate_direction.sh:43`) | 0 | 1 | NO | sub-slice 1 (merging only) |
 | **Total** |                                              |   ~173 |  ~2230  | 4 ports nuevos        |            |
+
+> ⚠️ **Row `3.B` is stale.** Its three numbers — 23 sitios, ~200L, "NO (ya existe)" —
+> were all wrong, and the third one is what made it dangerous. See
+> **Erratum (2026-08-30) — Sub-slice 3.B measured reality** below for the measured
+> scope, the four-PR decomposition actually used, and why `3.B-1c` no longer has a
+> purpose. Do not size a slice from this table without re-measuring it.
 
 **Operational notes:**
 
@@ -274,11 +280,14 @@ PRs total. Each PR:
   #998); 3.G can land any time after.
 - **Batch-merge optimization:** with `strict: true` on `main`, 14
   sequential merges re-run CI ~14×. For the small migration-only
-  PRs (3.A, 3.A.2, 3.B, 3.B.2, 3.D, 3.F, 3.J, 3.K) that touch
+  PRs (3.A, 3.A.2, ~~3.B~~, 3.B.2, 3.D, 3.F, 3.J, 3.K) that touch
   disjoint files in `application/` and `adapters/`, batch-merge via
   `fix/batch-3-migrations-<date>` saves ~7× CI runs. The 4 port-creating
   PRs (3.C, 3.E, 3.I, 3.H) merge sequentially because each introduces
   a new domain module and could conflict on `domain/mod.rs`.
+  *(3.B was struck from the "small migration-only" list by the 2026-08-30
+  erratum: it creates a new port and moves concrete types, so it belongs
+  with the sequential group.)*
 
 ### Allowlist language sync
 
@@ -289,6 +298,13 @@ already aligned with the corrected decision (port = trait in domain +
 concrete in infra). No change required to the entry text. The
 sub-slice 3.x numbering in this erratum is a planning refinement;
 the existing per-file entries continue to track which 3.x removes them.
+
+> ⚠️ **The last sentence of that paragraph held until 3.B-1b landed.** Once
+> `domain::downloader_factory` existed, the `application/asset_download.rs` entry's
+> removal condition became readable as *satisfied* while its call site was still
+> there. See **An allowlist entry is now self-contradictory** in the 2026-08-30
+> erratum. Prose removal-conditions go stale silently — they are not a substitute
+> for re-checking the site.
 
 ### What this erratum does NOT change
 
@@ -305,11 +321,168 @@ the existing per-file entries continue to track which 3.x removes them.
   `infrastructure::*`) — unchanged. The erratum only rejects the
   interpretation that "porting" means moving the concrete type.
 
+## Erratum (2026-08-30) — Sub-slice 3.B measured reality
+
+Filed as #1012. This corrects the **2026-08-29 re-breakdown table above**, not the
+original sub-slice 3 prose (which the 2026-08-29 erratum already replaced).
+
+### What row 3.B claimed
+
+```
+| 3.B | downloader → domain::downloader_port | 23 sitios | ~200L | NO (ya existe) | — |
+```
+
+Three separate false claims in one row.
+
+### Why each was wrong
+
+**"23 sitios"** — the violations were spread across **4 `application/` files** for
+`CookieBridge` alone (`crawl_task_ctx.rs`, `engine.rs`, `fetch_router.rs` in production,
+plus `crawl_task.rs:432` which is test-only — its `mod tests` opens at line 411), and
+the work landed across **9 files in #1005 plus 15 files in #1023**. The row's number
+conflated `use` lines with inline qualified paths and counted test-only modules the
+gate does not police.
+
+**"~200L"** — the two PRs that actually executed 3.B changed **366+/332-** (#1005) and
+**387+/75-** (#1023). The estimate assumed a call-site repoint; the work required
+creating a port, moving concrete types, and threading a DI seam through `EngineOptions`.
+
+**"NO (ya existe)"** — this was the damaging one. `domain::downloader_port`
+existed, but the thing `application/` actually needed was a **`DownloaderFactory`**,
+which **did not exist anywhere**. Verified against history: `git cat-file -e
+e428dcdf~1:crates/webfang_core/src/domain/downloader_factory.rs` fails — the file was
+first added by 3.B-1b itself. The row told the next implementer "no design work
+needed, just repoint imports." Anyone who trusted that would have started a
+~200L mechanical PR and discovered mid-flight that it was an architecture change.
+
+### Decomposition actually used
+
+3.B was executed as **four** PRs, not one:
+
+| Slice | Qué hizo | PR | Resultado |
+|-------|----------|----|-----------|
+| 3.B-0  | Repoint 4 imports que apuntaban al shim hacia `domain::downloader_port` | #1005 (`e9d9f2da`) | mecánico, como se vendió |
+| 3.B-1a | `CookieBridge` movido a `domain::cookie_bridge` vía `git mv` + shim en infra | #1005 (`e9d9f2da`) | prerequisite real |
+| 3.B-1b | **Crea** `domain::downloader_factory` (`DownloaderSpec` + `DownloaderFactory`), mueve `FetchRouter` + `build_fetch_router` a `infrastructure/downloader/`, seam `EngineOptions.downloader_factory` | #1023 (`e428dcdf`) | `feat`-sized, etiquetado `type:breaking-change` |
+| 3.B-1c | ~~Delete the broad `infrastructure::downloader` entry~~ | — | **degradada — ver abajo** |
+
+3.B-1a had to precede 3.B-1b: `CookieBridge` is referenced by three **production**
+`application/` files (`crawl_task_ctx.rs:52`, `engine.rs:108`, `fetch_router.rs:89`),
+each storing it as `Arc<RwLock<CookieBridge>>` independently of any factory. No port
+signature could name it without leaking an infra type into a `domain` trait.
+
+Allowlist effect: entries **17 → 16**, absorbed sites **115 → 104**.
+
+3.B-1b removed the **first broad module-level entry** (`infrastructure::downloader`) in
+the chain. Two entries had already been deleted, and the distinction matters:
+
+| Commit | Slice | Entries | Absorbed | Entry removed | Calibre |
+|--------|-------|--------:|---------:|---------------|---------|
+| `6894f18a` | #997 | 19 | — | *(none — 14 added to absorb pre-existing)* | — |
+| `09d8d2cd` | sub-slice 1 | 18 | 128 | `crate::ScraperConfig` | alias family |
+| `2e1379f1` | 3.A.2-followup.B | 17 | — | `application/som_capture.rs` | per-file |
+| `e9d9f2da` | 3.B-0 + 3.B-1a | 17 | 115 | *(none)* | — |
+| `e428dcdf` | **3.B-1b** | **16** | **104** | **`infrastructure::downloader`** | **broad module** |
+
+A broad entry is the one that actually hides things: the gate matches allowlist
+patterns as substrings, so `infrastructure::downloader` silently covers every module
+beneath it — which is why entry 15 of the file is deliberately scoped to
+`infrastructure::http::waf_engine` with the note *"the broad form would also
+substring-match `infrastructure::http_client`"*. Deleting a per-file entry relocates
+debt; deleting a broad entry removes a blind spot.
+
+### 3.B-1c is demoted — its stated purpose is already gone
+
+3.B-1c was scoped as *"delete the broad `infrastructure::downloader` entry"*. That
+entry **was already deleted by 3.B-1b**, deliberately and verified empirically (gate
+exits 0, absorbed count unchanged at 104). Removing a broad umbrella while the
+per-file entries survive cannot hide violations, so there was no reason to wait.
+
+What actually remains under the 3.B label is two narrow sites, and they are **not**
+the same job:
+
+1. **`application/crawler/engine.rs:56`** — `use crate::infrastructure::downloader::
+resource_governor::ResourceGovernor`, feeding the static `ram_usage_percent()` call
+in the autoscale loop (`engine.rs:423`). This is a genuine port-extraction: a domain
+RAM-usage probe. Small, and it is the only live `infrastructure::downloader` reference
+left in `application/`.
+2. **`application/asset_download.rs:106`** — `crate::adapters::downloader::
+Downloader::new(...)`. **The original row 3.B never counted this correctly.** It goes
+through `adapters::`, not `infrastructure::`, and it **bypasses the `DownloaderFactory`
+that 3.B-1b just created**. The port exists and `engine.rs` uses it; this call site
+was simply never migrated to it.
+
+### An allowlist entry is now self-contradictory
+
+The `asset_download.rs` entry still reads:
+
+> *"Remove after sub-slice 3 ports the Downloader factory call to a domain
+> DownloaderFactory port."*
+
+`DownloaderFactory` **now exists**. Read literally, the entry's removal condition is
+met, but the site is still there — because the promise was written when the port did
+not exist and describes a migration, not a precondition. This is the failure mode of
+prose removal-conditions: they go stale silently. The entry text should be corrected
+to name the *call-site migration* as the condition, in the slice that does it.
+
+### Line-number citations in the allowlist already rotted
+
+The `application/crawler/engine.rs` entry points at:
+
+> *"...the `ResourceGovernor::ram_usage_percent()` static call in the autoscale loop
+> (`engine.rs:377`)"*
+
+`engine.rs:377` is `timeout_secs: timeout,` inside a `DownloaderSpec` literal. The
+actual call is at **`engine.rs:423`**. The citation was correct when written; 3.B-1b
+inserted the factory seam into the same file and shifted everything below it by 46
+lines.
+
+The lesson generalises to the remaining 13 slices: **cite symbols, not line numbers.**
+Every sibling slice edits these same files above the cited line, so a numeric anchor in
+a removal-condition is guaranteed to drift before the slice that honours it lands.
+
+
+### Review-size note for the remaining slices
+
+3.B-1a moved a file and left a `pub use` shim at the old path —
+`infrastructure/downloader/cookie_bridge.rs` is now a documented shim. That defeats
+`git -M` rename detection: the source path is **modified**, not deleted, so Git cannot
+pair it and the diff renders as a near-full delete plus a near-full add. Measured on
+the `cookie_bridge.rs` paths of #1005:
+
+```
+git diff -M --shortstat e9d9f2da~1 e9d9f2da -- '*cookie_bridge.rs'
+  2 files changed, 353 insertions(+), 323 deletions(-)   # 676 changed lines
+
+git diff -C --shortstat e9d9f2da~1 e9d9f2da -- '*cookie_bridge.rs'
+  2 files changed,  29 insertions(+), 325 deletions(-)   # 354 changed lines
+```
+
+`git diff -C` (content-copy detection) recovers the truth: the move is ~1.9× smaller
+than `-M` reports. Anyone sizing a move+shim slice from a `-M` diff will over-report
+review workload by roughly double. 3.B-1b's move had **no** shim, so `-M` paired it
+cleanly: `.../downloader}/fetch_router.rs — 1 file changed, 59 insertions(+), 4
+deletions(-)`.
+
+### What this erratum does NOT change
+
+- Rows 3.A, 3.A.2, 3.B.2, 3.C … 3.K, 4, 2 — only 3.B was measured against real work.
+  The same class of error may well exist in the others; they are unverified until
+  someone starts them, and that is the honest status of this table.
+- The 2026-08-29 corrected decision (trait in `domain`, concrete in `infra`, DI
+  through container) — 3.B-1b followed it exactly, which is evidence the pattern works.
+- Sub-slice 5 (final cleanup) — unchanged.
+
+
 ## References
 
 - `scripts/check_intra_crate_direction.sh` (gate, ADR-0010 + ADR-0010-A hardened)
-- `scripts/check_intra_crate_direction_allowlist.txt` (18 entries after sub-slice 1, each cites its sub-slice)
+- `scripts/check_intra_crate_direction_allowlist.txt` (**16 entries, 104 absorbed sites
+  as of 2026-08-30**, each cites its sub-slice; was 18 entries / 128 absorbed sites
+  after sub-slice 1 `09d8d2cd`, measured with `INTRA_CRATE_MODE=strict`)
 - `docs/adr/0010-intra-crate-direction-allowlist.md`
 - `docs/adr/0011-tighten-intra-crate-allowlist.md`
-- PRs #993 (squash `d442119f`) and #997 (squash `6894f18a`)
-- Issue #994 (tracking)
+- PRs #993 (squash `d442119f`), #997 (squash `6894f18a`), #1005 (squash `e9d9f2da`,
+  3.B-0 + 3.B-1a), #1023 (squash `e428dcdf`, 3.B-1b)
+- Issue #994 (tracking), #1012 (this erratum), #1022 (3.B-1b), #1024 (3.B-1b coverage gap)
+
