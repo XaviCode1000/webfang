@@ -1,0 +1,162 @@
+# rust-analyzer configuration for WebFang.
+#
+# Why this file exists (see Engram obs #571: "Root cause: pi-lens clippy
+# autofix uses default features, deletes cfg-gated live imports"):
+#   pi-lens is wired to the project's pi session. The pi session also
+#   launches rust-analyzer. By default, rust-analyzer analyses each crate
+#   with that crate's *default* features, which for webfang_core is
+#   `["images", "documents"]`. That leaves `#[cfg(feature = "chromium")]`,
+#   `#[cfg(feature = "ai")]`, `#[cfg(feature = "ui")]`, `#[cfg(feature =
+#   "persistence")]`, `#[cfg(feature = "adaptive-selectors")]` code in
+#   an inactive state from rust-analyzer's point of view, which then
+#   surfaces 569 false-positive diagnostics (`unlinked-file`,
+#   `inactive_code`, `expected String, found ()` on tracing macro
+#   expansion, `Box<T> as Box<dyn Trait>` on tokio::spawn expansion,
+#   etc.) — none of which are real rustc errors. CI runs
+#   `cargo check --all-targets --all-features` and exits clean.
+#
+# Solution: tell rust-analyzer to match the build configuration. This file
+# applies to the whole workspace unless a crate-level override exists.
+#
+# Companion file: AGENTS.md "Iron rules" mandates
+#   `cargo clippy --all-targets --all-features -- -D warnings ...`
+# before any commit. Rust-analyzer's own diagnostics are advisory and
+# MUST NOT block commits; the cargo gate is the source of truth.
+#
+# Reference: https://rust-analyzer.github.io/book/configuration.html
+#            https://docs.rs/rust-analyzer/crate-docs/ide#configuration-knobs
+
+[cargo]
+# Analyse every crate with the full feature set, matching CI's
+# `--all-features` build. This is the single most important knob:
+# without it, all cfg-gated code (chromium, ai, ui, persistence,
+# adaptive-selectors, mcp) appears inactive and produces noise.
+allFeatures = true
+
+# `webfang_ai` exposes its entire `infrastructure_ai` module only under
+# `#[cfg(feature = "ai")]`. With `allFeatures = true` that resolves, but
+# rust-analyzer still needs to know which workspace members to load —
+# auto-discovery handles this, no need to enumerate.
+
+# Keep using the workspace's `target/` so index stays shared between
+# pi-lens, cargo, and rust-analyzer (direnv-managed via .envrc).
+# We do NOT set `targetDir` here to avoid breaking the shared cache.
+
+# `rustc` source: rust-analyzer normally locates the toolchain via
+# `rustup`. On this machine `rust-toolchain.toml` (if present) wins.
+# No override needed.
+
+[check]
+# Use the same gate CI uses: `cargo check` is fast and matches the
+# compile-time behaviour; `clippy` is slower but exercises the same
+# lints enforced by CI's strict gate. The choice is local preference —
+# neither gates the commit (cargo is the source of truth).
+#
+# `cargo check` keeps the diagnostics cache hot for the LSP (goto-def,
+# completions) without re-running clippy on every save. This is the
+# fastest interactive loop.
+command = "check"
+
+# CI runs `cargo clippy --all-targets --all-features`, so rust-analyzer
+# must walk tests, examples, and benches too. Without this flag the
+# analyser skips `tests/`, `examples/`, and `benches/` entirely.
+allTargets = true
+
+[diagnostics]
+# `rust-analyzer` is configured to be ADVISORY ONLY in this repo. The
+# cargo gate is the source of truth (AGENTS.md + observation #571).
+#
+# Two things make diagnostics less noisy without hiding real errors:
+#
+# 1. `typeError` = true   — keep the only class that maps 1:1 to a real
+#    rustc error. This is what you see inline as a red squiggle.
+# 2. `unusedImports`      — leave at the rust-analyzer default. With
+#    `allFeatures = true` these are now accurate (they no longer
+#    delete cfg-gated live imports — that bug was the
+#    feature-mismatch, not this lint).
+#
+# We deliberately do NOT disable the noisy categories here. Observation
+# #571 root-caused the prior incidents as autofix-runs-with-wrong-
+# feature-set, not as over-reporting by the analyser. With
+# `allFeatures = true` those false positives go away naturally.
+typeError = true
+unusedImports = true
+unusedVariables = true
+unusedMethods = true
+deadCode = true
+# `let_underscore_must_use` / similar `unnecessary-*` lints are clippy
+# concerns, not rust-analyzer concerns. Leave at defaults.
+
+[completion]
+# `auto-import` suggests both paths and trait methods. The webfang_core
+# crate has many domain ports; turning this off makes `use
+# crate::domain::*::Foo` require the user to know the canonical path.
+# Keep on.
+autoimports = true
+# `enable magic completions / snippets` — let rust-analyzer suggest
+# `Ok(...)`, `vec![...]`, etc. Pure quality-of-life, no impact.
+snippets = true
+
+[inlayHints]
+# Rust-analyzer's inlay hints are noise on a code review screenshot and
+# can leak into copy-pasted code. Disabled at the project level.
+#
+# Toggle for one session with `:rust-analyzer inlay hints toggle` or
+# the editor command palette if you need them temporarily.
+bindingModeHints = false
+chainingHints = false
+closingBraceHints = false
+closureCaptureHints = false
+discriminantHints = false
+expressionAdjustmentHints = false
+lifetimeElisionHints = "never"
+parameterHints = false
+reborrowHints = false
+returnTypeHints = "never"
+variableType = false
+genericParameterHints = false
+adjustMethodHints = false
+hideNamedConstructorHints = false
+hideLifetimeParameterHints = false
+hideUnsafeMethodHints = false
+
+[semanticTokens]
+# Cheap, opt-in highlighting. Enable — it differentiates mutable vs
+# immutable bindings, async vs sync, and is widely used by editor themes.
+enabled = true
+
+[highlighting]
+# `rainbow-highlighting` paints distinct colours to a variable's
+# bindings — extremely useful when reading long application/orchestration
+# functions. Enable.
+rainbowHighlighting = true
+
+[hover]
+# `format` and `markdown` controls in hover tooltips. `documentation`
+# shows the rendered doc-comment; `links` jump to the canonical home
+# of a symbol (e.g. from a `pub use` shim to the real module).
+documentation = true
+linksInHover = true
+# `debug` hover is mostly for rust-analyzer contributors. Off.
+enableDebugRunnables = false
+hoverDropResults = false
+
+[assist]
+# `imports` for `Ctrl+.` auto-import suggestions. On.
+imports = { granularity = "module", prefix = "self", group = "fold" }
+
+[cfg]
+# `rust-analyzer` ignores `cfg` directives that are not active for the
+# current target by default. With `allFeatures = true` above, every
+# `#[cfg(feature = "...")]` is active, so this stays empty.
+#
+# If a new cfg (e.g. `target_os = "linux"` for a Linux-only shim) is
+# introduced and the analyser is run on macOS, add it here.
+#
+# Disabled features, documented so future maintainers do not "fix" the
+# apparent empty state.
+disabled = []
+
+# `[inlayHints]` block above intentionally disables every category.
+# `[rust-analyzer]` is a free-form key/value block for editor-specific
+# tweaks. Leave to global config (`~/.config/rust-analyzer/...`).
