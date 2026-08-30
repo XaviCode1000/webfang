@@ -434,4 +434,61 @@ mod tests {
             "both branches must surface the Set-Cookie set by the server (#1027)"
         );
     }
+
+    /// Fallback branch follows a redirect and exposes the post-redirect URL.
+    ///
+    /// Before #1027 the fallback echoed the *requested* URL as `final_url`,
+    /// making it impossible to deduplicate crawl output across redirect aliases
+    /// (#651, Bug 3). After #1027, `fetch_url` returns the post-redirect URI
+    /// wreq observed through the chain.
+    ///
+    /// `WEBFANG_DISABLE_SSRF_REDIRECT_GUARD=1` is set because wiremock binds
+    /// 127.0.0.1 and the SSRF redirect guard (#703) blocks redirect targets on
+    /// literal IPs. The guard exists for production traffic; this test bypasses
+    /// it explicitly. Same pattern as
+    /// `WreqDownloader::test_fetch_returns_final_url`.
+    #[tokio::test]
+    async fn fallback_branch_propagates_final_url_after_redirect() {
+        std::env::set_var(crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV, "1");
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/redirect"))
+            .respond_with(ResponseTemplate::new(301).insert_header("location", "/target"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/target"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("<html>landed</html>")
+                    .insert_header("set-cookie", "wf_session=postredirect; Path=/"),
+            )
+            .mount(&server)
+            .await;
+
+        let requested = Url::parse(&format!("{}/redirect", server.uri())).expect("valid mock URL");
+        let config = config_for(&requested);
+        let fetcher = ProductionPageFetcher { router: None };
+
+        let outcome = fetcher
+            .fetch_page(&requested, &config)
+            .await
+            .expect("redirect chain should resolve to a 2xx response");
+
+        assert_ne!(
+            outcome.final_url, requested,
+            "fallback must expose the post-redirect URL, not the requested one (#1027, #651)"
+        );
+        let expected_final =
+            Url::parse(&format!("{}/target", server.uri())).expect("valid mock URL");
+        assert_eq!(
+            outcome.final_url, expected_final,
+            "final_url must point at the resolved target"
+        );
+        assert_eq!(outcome.status, 200);
+        assert_eq!(outcome.body, "<html>landed</html>");
+        assert_eq!(outcome.cookies.len(), 1);
+        assert_eq!(outcome.cookies[0].name, "wf_session");
+    }
 }
