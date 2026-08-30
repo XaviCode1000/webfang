@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Pre-commit delivery gate — consults the Gentle AI review receipt (#1036).
+exec "$(dirname "$0")/review-gate.sh" pre-commit

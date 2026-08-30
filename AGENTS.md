@@ -324,7 +324,12 @@ A merge is NOT done until the repo is clean and ready for the next mission. Clea
 5. **Prune orphaned metadata** — `git worktree prune`.
 6. **Verify the handoff contract** — `git worktree list` (ONLY main), `git branch -vv` (ONLY main, in sync), `git status --short` (empty).
 
-**Automated safety net:** a weekly systemd timer (`git-hygiene.timer`, Sun 03:00) prunes confirmed-safe stale LOCAL branches. It SKIPS `*-worktrees` containers and never syncs main — worktree removal and ff-only sync are STILL your per-mission responsibility.
+**No automated safety net is installed.** This file previously described a weekly systemd
+`git-hygiene.timer` (Sun 03:00) that pruned confirmed-safe stale local branches. **That
+timer does not exist in this environment** — verified 2026-08-30: `systemctl --user
+list-timers --all` lists no such unit and `~/.config/systemd/user/` does not exist. Every
+step of the runbook above is therefore entirely manual. If the timer is ever installed,
+restore the description here with its actual scope.
 
 ### Shared vs. per-worktree resources
 
@@ -344,11 +349,36 @@ A merge is NOT done until the repo is clean and ready for the next mission. Clea
 
 Both tools resolve projects by name; bare-name resolution picks the main checkout — so queries run from a worktree without the absolute path read the **main checkout**, not your worktree (#360). **In worktrees, ALWAYS use the absolute path** (§2.3).
 
-### Bounded review — advisory only
+### Bounded review — delivery gates WIRED (#1036, #1047)
 
-RDD is OFF clone-local. `gentle-ai review mode status` will show `off (decided by clone-local)`. Reviews are an optional second opinion and gate nothing. Commit, push, PR and merge follow ordinary repository policy (cargo gates + linked issue + one `type:*` label + conventional branch).
+RDD is ON (decided by global). Reviews are routed per candidate through the Pi
+review tools; the verdict is **enforcing**: git hooks consult the review receipt
+before delivery and block when a governing authority does not allow it.
 
-Hook-based gates were considered and rejected on 2026-08-30: `review validate --gate pre-commit` returns `allowed: false` in this runtime because `review status --next-transition` fails with `immutable_review_transport_unsupported` — the host gentle-pi relay contract is not exported to non-IDE shells. Wiring hooks would block every commit.
+**Mechanism** — `core.hooksPath` points at `scripts/githooks/` (repo-local git
+config; shared across all worktrees). `pre-commit` and `pre-push` call
+`gentle-ai review validate --gate <gate>` and apply the measured decision
+matrix:
+
+| validate output | hook decision |
+|---|---|
+| `gentle-ai` binary absent | ALLOW + warning (a machine without the tool cannot gate anything) |
+| validate fails / unparseable output | **BLOCK** (fail-closed) |
+| `delivery: unmanaged` | ALLOW — ordinary repository policy applies |
+| `allowed: true` | ALLOW |
+| anything else (reviewing, invalidated, approved-not-acked) | **BLOCK** |
+
+`jq` is required (the verdict is parsed, the exit code alone is NOT trusted:
+`validate` exits 0 even when `allowed: false`).
+
+**Boundary:** initiating a review from a plain shell fails with
+`immutable_review_transport_unsupported` — the relay contract is host-only.
+The hooks therefore only *consult* an existing verdict; reviews are initiated
+through the Pi review tools, which persist the authority `validate` reads.
+Measured 2026-08-30: `validate --gate` itself exits 0 and abstains
+(`delivery: unmanaged`) for unmanaged candidates, so the wiring does not block
+ordinary commits — refuting the earlier "hooks would block every commit"
+claim (#1047 fact 2/3).
 
 ### Rebase caveats
 
