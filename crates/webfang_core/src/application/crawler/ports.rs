@@ -9,6 +9,12 @@
 //! instead of the `async_trait` crate, matching the frozen decision #1
 //! established in [`crate::domain::repository::VectorRepository`] and
 //! [`crate::domain::downloader_port::Downloader`].
+//!
+//! rust-analyzer caveat (#1034): the manual `Box::pin(async move { ... })`
+//! form can produce a spurious `E0308` mismatch against an `BoxFuture<'a, ...>`
+//! return type in editor diagnostics, even when `cargo check --all-features`
+//! accepts the file as well-typed. Treat the compiler as the source of truth
+//! for these methods; the rust-analyzer overlay is not.
 
 use std::sync::Arc;
 
