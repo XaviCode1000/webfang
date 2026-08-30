@@ -58,6 +58,11 @@ pub mod waf;
 /// Downloader port — domain-owned trait for page fetching (ADR-0010).
 pub mod downloader_port;
 
+/// Downloader factory port — domain-owned seam for building the strategy
+/// fetch downloader, so `application` stops constructing infrastructure
+/// concretes (ADR-0012 sub-slice 3.B-1b).
+pub mod downloader_factory;
+
 /// Cookie bridge — domain-owned in-memory cookie jar over the downloader
 /// DTOs, injected into CDP sessions (ADR-0012 sub-slice 3.B-1a).
 pub mod cookie_bridge;
