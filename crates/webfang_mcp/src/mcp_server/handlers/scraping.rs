@@ -783,7 +783,7 @@ fn filter_ssrf_safe(
             continue;
         }
         excluded += 1;
-        let reason = if webfang_core::infrastructure::ssrf::is_forbidden_literal_host(
+        let reason = if webfang_core::domain::ssrf_guard::is_forbidden_literal_host(
             d.url.host_str().unwrap_or(""),
         ) {
             "forbidden_literal_ip"

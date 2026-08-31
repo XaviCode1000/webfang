@@ -2,13 +2,17 @@
 //! [`SsrfGuard`](crate::domain::ssrf_guard::SsrfGuard) trait impl.
 //!
 //! Pure policy (the deny-list functions and `redirect_policy`) lives in
-//! `crate::domain::ssrf_guard`; this module re-exports it for backwards
-//! compatibility (the `webfang_mcp` crate consumes it through this path) and
-//! owns everything that performs real I/O:
+//! `crate::domain::ssrf_guard`. This module owns everything that performs real
+//! I/O and keeps only the `pub(crate)` re-exports its own bodies consume —
+//! production callers never reach policy through this path: every HTTP client
+//! obtains both layers from one place, the domain port
+//! [`ssrf_guard()`](crate::domain::ssrf_guard::ssrf_guard) /
+//! [`SsrfGuard::secure_client`](crate::domain::ssrf_guard::SsrfGuard).
 //!
 //! 1. **Entry validation** — the MCP entry-point validator
 //!    (`validate_url_no_ssrf`) resolves hostnames and checks every resolved
-//!    address with [`is_forbidden_ip`]
+//!    address with
+//!    [`is_forbidden_ip`](crate::domain::ssrf_guard::is_forbidden_ip)
 //!    before any request leaves. This stays as fast-fail typed UX.
 //! 2. **Connect-time enforcement** — [`ValidatingResolver`] is installed via
 //!    `wreq::ClientBuilder::dns_resolver` on every scrape client and re-checks
@@ -18,14 +22,16 @@
 //!    redirect target could reach an address that was never validated at
 //!    entry (DNS rebinding / TOCTOU included).
 //! 3. **Belt-and-suspenders literal guard** —
-//!    [`redirect_policy`] still
+//!    [`redirect_policy`](crate::domain::ssrf_guard::redirect_policy) still
 //!    stops redirects whose target is a *literal* forbidden IP synchronously,
 //!    before any resolution happens.
 //!
 //! Both layers 2 and 3 are applied together, in a single choke point, by
 //! `impl SsrfGuard for DefaultSsrfGuard` below — the domain-owned
 //! `DefaultSsrfGuard` type cannot reference infrastructure I/O, so the impl
-//! lives here (infrastructure → domain is the allowed direction).
+//! lives here (infrastructure → domain is the allowed direction). No production
+//! call site may hand-wire either layer: `secure_client` is the only place
+//! `redirect_policy()` and `ValidatingResolver::new()` are composed.
 //!
 //! Layer boundaries verified against wreq 6.0.0-rc.29: its HTTP connector
 //! parses IP-literal hosts directly (`dns::SocketAddrs::try_parse`) and never
@@ -34,19 +40,19 @@
 //! gap left open by layers 1 and 3, with no overlap and no hole.
 //!
 //! All layers share
-//! [`is_forbidden_ip`] as the
+//! [`is_forbidden_ip`](crate::domain::ssrf_guard::is_forbidden_ip) as the
 //! single deny list.
 
-// Backwards-compatibility shim: the canonical home of the pure policy surface
-// is `crate::domain::ssrf_guard` (ADR-0012 sub-slice 3.C). The `webfang_mcp`
-// crate and infra-internal call sites consume these items through this path.
+// Re-exports of the pure policy this module's own bodies consume. The canonical
+// home of that surface is `crate::domain::ssrf_guard` (ADR-0012 sub-slice 3.C);
+// everything outside this module imports it from there, so nothing here is
+// `pub`. `DISABLE_REDIRECT_GUARD_ENV` stays `pub(crate)` because crate tests in
+// other modules set it before building clients; the rest have in-module
+// consumers only.
 #[cfg(test)]
 pub(crate) use crate::domain::ssrf_guard::DISABLE_REDIRECT_GUARD_ENV;
-pub(crate) use crate::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV;
-pub use crate::domain::ssrf_guard::{
-    ipv6_6to4_embedded_v4, ipv6_nat64_embedded_v4, is_cgnat, is_forbidden_ip,
-    is_forbidden_literal_host, is_ipv6_link_local, is_ipv6_teredo, is_ipv6_unique_local,
-    is_reserved_v4, redirect_policy, DefaultSsrfGuard,
+use crate::domain::ssrf_guard::{
+    is_forbidden_ip, redirect_policy, DISABLE_VALIDATING_RESOLVER_ENV,
 };
 
 use std::net::IpAddr;
@@ -72,7 +78,8 @@ pub struct ForbiddenResolutionError {
 /// Implements [`wreq::dns::Resolve`] using the same mechanism wreq uses by
 /// default when hickory-dns is disabled — the GAI path: blocking
 /// `getaddrinfo` through [`tokio::net::lookup_host`]. Every address in the
-/// answer set is validated with [`is_forbidden_ip`]; if ANY address is
+/// answer set is validated with
+/// [`is_forbidden_ip`](crate::domain::ssrf_guard::is_forbidden_ip); if ANY address is
 /// forbidden, the entire resolution fails (fail-closed, no safe-subset
 /// filtering).
 ///
@@ -95,7 +102,8 @@ pub struct ForbiddenResolutionError {
 ///
 /// Note: wreq short-circuits IP-literal hosts before calling any custom
 /// resolver, so this type only ever sees hostname connections; literal-IP
-/// targets are covered by entry validation and [`redirect_policy`].
+/// targets are covered by entry validation and
+/// [`redirect_policy`](crate::domain::ssrf_guard::redirect_policy).
 #[derive(Debug, Clone)]
 pub struct ValidatingResolver {
     validation_enabled: bool,
