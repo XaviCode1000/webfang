@@ -98,13 +98,13 @@ pub(super) fn build_wreq_client(
         .pool_idle_timeout(Duration::from_secs(60))
         .gzip(true)
         .brotli(true)
-        .cookie_store(true)
-        // SSRF guard (#703): default 10-hop limit + stops redirects that
-        // target a literal forbidden IP (belt-and-suspenders). Hostname
-        // targets — including every redirect hop — are enforced at connect
-        // time by the validating DNS resolver below.
-        .redirect(crate::infrastructure::ssrf::redirect_policy())
-        .dns_resolver(crate::infrastructure::ssrf::ValidatingResolver::new());
+        .cookie_store(true);
+    // SSRF guard (#703) applied through the domain `SsrfGuard` port: default
+    // 10-hop limit + stops redirects that target a literal forbidden IP
+    // (belt-and-suspenders). Hostname targets — including every redirect
+    // hop — are enforced at connect time by the validating DNS resolver the
+    // guard installs.
+    builder = crate::domain::ssrf_guard::ssrf_guard().secure_client(builder);
 
     if let Some(ua) = user_agent {
         builder = builder.user_agent(ua);
