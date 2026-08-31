@@ -83,6 +83,7 @@ pub fn clean_html(html: &str) -> String {
                         .unwrap_or_default();
                     if scheme == "javascript" {
                         el.remove_attribute(&name);
+                        tracing::debug!("Stripped javascript: {} attribute", name);
                     }
                 }
             }
@@ -98,7 +99,10 @@ pub fn clean_html(html: &str) -> String {
         },
     ) {
         Ok(result) => normalize_whitespace(&result),
-        Err(_) => html.to_string(),
+        Err(e) => {
+            tracing::warn!("error rewriting HTML with lol_html: {e}");
+            html.to_string()
+        },
     }
 }
 

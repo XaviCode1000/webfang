@@ -519,7 +519,7 @@ mod tests {
         </body></html>"#;
 
         let article =
-            crate::infrastructure::scraper::readability::parse(html, Some("https://example.com"))
+            crate::domain::scraper_port::readability::parse(html, Some("https://example.com"))
                 .expect("readability should parse a valid article");
         let author = extract_author(html, article.byline.as_deref());
         assert_eq!(author.as_deref(), Some("Structured Reporter"));

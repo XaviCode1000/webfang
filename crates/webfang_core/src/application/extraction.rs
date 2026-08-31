@@ -8,7 +8,8 @@ use crate::application::diagnostic::build_diagnostic;
 use crate::application::http_client::HttpClientPort;
 use crate::application::scraper_service::scrape_with_config;
 use crate::domain::config::ScraperConfig;
-use crate::domain::scraper_port::{fallback, readability};
+use crate::domain::html_cleaner::clean_html;
+use crate::domain::scraper_port::{author_extractor, dom_pruner, fallback, readability};
 use crate::domain::{
     CorrelationId, DomInspectorPort, ExtractResult, ScrapedContent, SelectorErrorKind, ValidUrl,
 };
@@ -255,7 +256,7 @@ pub(crate) async fn adaptive_selector_repair(
 /// display:none / visibility:hidden signals are still intact.
 pub(crate) fn prune_dom_if_enabled(html: &str, config: &ScraperConfig) -> String {
     if config.dom_preprune {
-        let (pruned, reduction_ratio) = crate::infrastructure::scraper::dom_pruner::prune_dom(html);
+        let (pruned, reduction_ratio) = dom_pruner::prune_dom(html);
         debug!(
             original = html.len(),
             pruned = pruned.len(),
@@ -286,7 +287,7 @@ pub async fn extract_content(
     // Clean HTML boilerplate (scripts, styles, nav, sidebar, footer) BEFORE
     // Readability. This helps legible find the main content without being
     // confused by navigation elements, JavaScript bundles, and CSS.
-    let cleaned_html = crate::infrastructure::converter::html_cleaner::clean_html(&pruned_html);
+    let cleaned_html = clean_html(&pruned_html);
 
     // Apply CSS selector extraction if a non-default selector is configured.
     let extract_result = extract_with_selector(&cleaned_html, &config.selector, None);
@@ -339,10 +340,7 @@ pub async fn extract_content(
                 correlation_id,
             )?;
 
-            let author = crate::infrastructure::scraper::author_extractor::extract_author(
-                html,
-                article.byline.as_deref(),
-            );
+            let author = author_extractor::extract_author(html, article.byline.as_deref());
 
             Ok(ScrapedContent {
                 title: crate::application::resolve_title(&article.title, url),

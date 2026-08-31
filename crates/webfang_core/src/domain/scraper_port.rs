@@ -3,6 +3,12 @@
 use crate::domain::dom_inspector::ExtractResult;
 use crate::error::ScraperError;
 
+/// Multi-strategy author extraction (domain pure, `scraper` + `serde_json`).
+pub mod author_extractor;
+
+/// DOM pre-pruning pass to drop invisible/empty nodes before Readability.
+pub mod dom_pruner;
+
 /// Fallback text extraction (domain pure, htmd).
 pub mod fallback {
     /// Extract text without Readability (basic HTML stripping).

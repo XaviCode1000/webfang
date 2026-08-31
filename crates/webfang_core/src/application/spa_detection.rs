@@ -80,13 +80,13 @@ pub fn detect_spa_content(
 /// replicates the exact chain of the default MCP funnel
 /// (`build_scraped_content`):
 ///
-/// 1. [`crate::infrastructure::converter::html_cleaner::clean_html`] on the raw
+/// 1. [`crate::domain::html_cleaner::clean_html`] on the raw
 ///    HTML — removes `<noscript>`/`<header>`/`<footer>`/hidden nodes, the very
 ///    text that made the old raw-HTML-only detector answer "sufficient content"
 ///    while the scrape extracted almost nothing.
 /// 2. Readability on the cleaned HTML; on failure the two-step fallback:
-///    [`crate::infrastructure::scraper::fallback::extract_text`] (htmd) and a
-///    second [`crate::infrastructure::converter::html_cleaner::clean_html`]
+///    [`crate::domain::scraper_port::fallback::extract_text`] (htmd) and a
+///    second [`crate::domain::html_cleaner::clean_html`]
 ///    pass over the extracted text — byte-for-byte the funnel's own fallback.
 /// 3. [`detect_spa_content`] on the resulting text, with the ORIGINAL raw HTML
 ///    for marker inspection (same inputs the guard receives).
@@ -350,7 +350,7 @@ mod tests {
         );
         // The pre-fix detector's input (raw htmd text) clears the 50-char
         // threshold: the exact false negative this test pins.
-        let raw_text = crate::infrastructure::scraper::fallback::extract_text(&html);
+        let raw_text = crate::domain::scraper_port::fallback::extract_text(&html);
         assert!(
             raw_text.chars().count() >= MIN_CONTENT_CHARS,
             "fixture must defeat the old raw-HTML detector, got {} chars",
