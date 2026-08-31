@@ -787,7 +787,10 @@ mod wiremock_tests {
         // The SSRF redirect guard (#703) stops redirects targeting a literal
         // forbidden IP, and wiremock binds 127.0.0.1 — lift the guard for this
         // redirect-flow test before the client is built.
-        std::env::set_var(crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV, "1");
+        let _guard = webfang_test_utils::EnvGuard::with(&[(
+            crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV,
+            "1",
+        )]);
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -833,7 +836,8 @@ mod wiremock_tests {
         // Defensive under shared-process harnesses: the escape hatch must be
         // unset for this process so the guard is active. (nextest isolates
         // each test in its own process, so this is a no-op there.)
-        std::env::remove_var(crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV);
+        let _guard =
+            webfang_test_utils::EnvGuard::clean(&[crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV]);
         let mock_server = MockServer::start().await;
 
         // Location points at a different loopback literal — forbidden by the

@@ -230,27 +230,14 @@ mod tests {
     mod validating_resolver_tests {
         use super::*;
         use std::net::SocketAddr;
-        use std::sync::{Mutex, MutexGuard};
         use wreq::dns::{Name, Resolve};
 
         use crate::domain::ssrf_guard::SsrfGuard as _;
 
-        /// Serializes process-global env mutation across parallel threads
-        /// (`cargo test` shares one process env; see the module contract
-        /// comment above). Poison recovery keeps the suite running after a
-        /// panicking sibling.
-        static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-        fn env_guard() -> MutexGuard<'static, ()> {
-            match ENV_LOCK.lock() {
-                Ok(guard) => guard,
-                Err(poisoned) => poisoned.into_inner(),
-            }
-        }
-
-        fn validation_on(_guard: &MutexGuard<'static, ()>) -> ValidatingResolver {
-            std::env::remove_var(DISABLE_VALIDATING_RESOLVER_ENV);
-            ValidatingResolver::new()
+        fn validation_on() -> (webfang_test_utils::EnvGuard, ValidatingResolver) {
+            let guard =
+                webfang_test_utils::EnvGuard::clean(&[DISABLE_VALIDATING_RESOLVER_ENV]);
+            (guard, ValidatingResolver::new())
         }
 
         async fn resolved_addrs(resolver: &ValidatingResolver, host: &str) -> Vec<SocketAddr> {
@@ -263,8 +250,7 @@ mod tests {
 
         #[tokio::test]
         async fn forbidden_ipv4_literal_hostname_is_rejected() {
-            let guard = env_guard();
-            let resolver = validation_on(&guard);
+            let (_guard, resolver) = validation_on();
 
             for host in ["127.0.0.1", "169.254.169.254", "0.0.0.0"] {
                 let outcome = resolver.resolve(Name::from(host)).await;
@@ -285,8 +271,7 @@ mod tests {
 
         #[tokio::test]
         async fn forbidden_ipv4_mapped_ipv6_is_rejected() {
-            let guard = env_guard();
-            let resolver = validation_on(&guard);
+            let (_guard, resolver) = validation_on();
 
             let outcome = resolver.resolve(Name::from("::ffff:127.0.0.1")).await;
             assert!(
@@ -297,8 +282,7 @@ mod tests {
 
         #[tokio::test]
         async fn public_ip_literals_pass_through() {
-            let guard = env_guard();
-            let resolver = validation_on(&guard);
+            let (_guard, resolver) = validation_on();
 
             let v4 = resolved_addrs(&resolver, "8.8.8.8").await;
             assert_eq!(v4.len(), 1, "literal resolution yields one address");
@@ -311,8 +295,7 @@ mod tests {
 
         #[tokio::test]
         async fn rejection_error_names_the_offending_host_and_ip() {
-            let guard = env_guard();
-            let resolver = validation_on(&guard);
+            let (_guard, resolver) = validation_on();
 
             let err = match resolver.resolve(Name::from("127.0.0.1")).await {
                 Err(err) => err,
@@ -327,9 +310,8 @@ mod tests {
 
         #[tokio::test]
         async fn env_bypass_allows_loopback_resolution() {
-            let _guard = env_guard();
-            std::env::set_var(DISABLE_VALIDATING_RESOLVER_ENV, "1");
-            let resolver = ValidatingResolver::new();
+            let _guard = webfang_test_utils::EnvGuard::with(&[(DISABLE_VALIDATING_RESOLVER_ENV, "1")]);
+                let resolver = ValidatingResolver::new();
 
             let addrs = resolved_addrs(&resolver, "127.0.0.1").await;
             assert_eq!(addrs[0].ip().to_string(), "127.0.0.1");
@@ -339,9 +321,8 @@ mod tests {
         async fn bypass_requires_exact_value_one() {
             // Any value other than the literal "1" (including "0", "true",
             // "yes") must NOT disarm the guard.
-            let _guard = env_guard();
-            std::env::set_var(DISABLE_VALIDATING_RESOLVER_ENV, "0");
-            let resolver = ValidatingResolver::new();
+            let _guard = webfang_test_utils::EnvGuard::with(&[(DISABLE_VALIDATING_RESOLVER_ENV, "0")]);
+                let resolver = ValidatingResolver::new();
 
             let outcome = resolver.resolve(Name::from("127.0.0.1")).await;
             assert!(
@@ -356,8 +337,7 @@ mod tests {
             // already-built resolver must keep enforcing (the flag is read
             // once, at construction time, so long-lived clients cannot be
             // disarmed mid-flight by an env mutation).
-            let guard = env_guard();
-            let resolver = validation_on(&guard);
+            let (_guard, resolver) = validation_on();
             std::env::set_var(DISABLE_VALIDATING_RESOLVER_ENV, "1");
 
             let outcome = resolver.resolve(Name::from("127.0.0.1")).await;
@@ -381,8 +361,8 @@ mod tests {
         #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
         #[tokio::test]
         async fn wired_client_rejects_hostname_resolving_to_loopback() {
-            let _guard = env_guard();
-            std::env::remove_var(DISABLE_VALIDATING_RESOLVER_ENV);
+            let _guard =
+                    webfang_test_utils::EnvGuard::clean(&[DISABLE_VALIDATING_RESOLVER_ENV]);
             let client = crate::domain::ssrf_guard::DefaultSsrfGuard
                 .secure_client(wreq::Client::builder())
                 .build()
@@ -402,8 +382,8 @@ mod tests {
         #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
         #[tokio::test]
         async fn wired_client_reaches_connect_when_validation_disabled() {
-            let _guard = env_guard();
-            std::env::set_var(DISABLE_VALIDATING_RESOLVER_ENV, "1");
+            let _guard =
+                    webfang_test_utils::EnvGuard::with(&[(DISABLE_VALIDATING_RESOLVER_ENV, "1")]);
             let client = crate::domain::ssrf_guard::DefaultSsrfGuard
                 .secure_client(wreq::Client::builder())
                 .build()
@@ -429,8 +409,8 @@ mod tests {
         #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
         #[tokio::test]
         async fn secure_client_applies_resolver_through_trait_object() {
-            let _guard = env_guard();
-            std::env::remove_var(DISABLE_VALIDATING_RESOLVER_ENV);
+            let _guard =
+                    webfang_test_utils::EnvGuard::clean(&[DISABLE_VALIDATING_RESOLVER_ENV]);
             let guarded: std::sync::Arc<dyn crate::domain::ssrf_guard::SsrfGuard> =
                 std::sync::Arc::new(crate::domain::ssrf_guard::DefaultSsrfGuard);
             let client = guarded
