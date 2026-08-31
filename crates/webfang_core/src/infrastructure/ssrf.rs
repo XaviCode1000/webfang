@@ -12,7 +12,7 @@
 //! 1. **Entry validation** — the MCP entry-point validator
 //!    (`validate_url_no_ssrf`) resolves hostnames and checks every resolved
 //!    address with
-//!    [`is_forbidden_ip`](crate::domain::ssrf_guard::is_forbidden_ip)
+//!    [`$1`]
 //!    before any request leaves. This stays as fast-fail typed UX.
 //! 2. **Connect-time enforcement** — [`ValidatingResolver`] is installed via
 //!    `wreq::ClientBuilder::dns_resolver` on every scrape client and re-checks
@@ -22,7 +22,7 @@
 //!    redirect target could reach an address that was never validated at
 //!    entry (DNS rebinding / TOCTOU included).
 //! 3. **Belt-and-suspenders literal guard** —
-//!    [`redirect_policy`](crate::domain::ssrf_guard::redirect_policy) still
+//!    [`$1`] still
 //!    stops redirects whose target is a *literal* forbidden IP synchronously,
 //!    before any resolution happens.
 //!
@@ -40,7 +40,7 @@
 //! gap left open by layers 1 and 3, with no overlap and no hole.
 //!
 //! All layers share
-//! [`is_forbidden_ip`](crate::domain::ssrf_guard::is_forbidden_ip) as the
+//! [`$1`] as the
 //! single deny list.
 
 // Re-exports of the pure policy this module's own bodies consume. The canonical
@@ -79,7 +79,7 @@ pub struct ForbiddenResolutionError {
 /// default when hickory-dns is disabled — the GAI path: blocking
 /// `getaddrinfo` through [`tokio::net::lookup_host`]. Every address in the
 /// answer set is validated with
-/// [`is_forbidden_ip`](crate::domain::ssrf_guard::is_forbidden_ip); if ANY address is
+/// [`$1`]; if ANY address is
 /// forbidden, the entire resolution fails (fail-closed, no safe-subset
 /// filtering).
 ///
@@ -103,7 +103,7 @@ pub struct ForbiddenResolutionError {
 /// Note: wreq short-circuits IP-literal hosts before calling any custom
 /// resolver, so this type only ever sees hostname connections; literal-IP
 /// targets are covered by entry validation and
-/// [`redirect_policy`](crate::domain::ssrf_guard::redirect_policy).
+/// [`$1`].
 #[derive(Debug, Clone)]
 pub struct ValidatingResolver {
     validation_enabled: bool,
