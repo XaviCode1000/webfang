@@ -8,7 +8,7 @@
 //!
 //! 1. **Entry validation** — the MCP entry-point validator
 //!    (`validate_url_no_ssrf`) resolves hostnames and checks every resolved
-//!    address with [`is_forbidden_ip`](crate::domain::ssrf_guard::is_forbidden_ip)
+//!    address with [`is_forbidden_ip`]
 //!    before any request leaves. This stays as fast-fail typed UX.
 //! 2. **Connect-time enforcement** — [`ValidatingResolver`] is installed via
 //!    `wreq::ClientBuilder::dns_resolver` on every scrape client and re-checks
@@ -18,7 +18,7 @@
 //!    redirect target could reach an address that was never validated at
 //!    entry (DNS rebinding / TOCTOU included).
 //! 3. **Belt-and-suspenders literal guard** —
-//!    [`redirect_policy`](crate::domain::ssrf_guard::redirect_policy) still
+//!    [`redirect_policy`] still
 //!    stops redirects whose target is a *literal* forbidden IP synchronously,
 //!    before any resolution happens.
 //!
@@ -34,7 +34,7 @@
 //! gap left open by layers 1 and 3, with no overlap and no hole.
 //!
 //! All layers share
-//! [`is_forbidden_ip`](crate::domain::ssrf_guard::is_forbidden_ip) as the
+//! [`is_forbidden_ip`] as the
 //! single deny list.
 
 // Backwards-compatibility shim: the canonical home of the pure policy surface

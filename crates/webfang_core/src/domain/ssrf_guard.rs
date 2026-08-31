@@ -5,28 +5,28 @@
 //!
 //! 1. **Entry validation** — the MCP entry-point validator
 //!    (`validate_url_no_ssrf`) resolves hostnames and checks every resolved
-//!    address with [`is_forbidden_ip`] before any request leaves. This stays
+//!    address with [`is_forbidden_ip`](crate::domain::ssrf_guard::is_forbidden_ip) before any request leaves. This stays
 //!    as fast-fail typed UX.
 //! 2. **Connect-time enforcement** — the validating DNS resolver (defined in
 //!    the infrastructure `ssrf` module, real GAI I/O stays there) is installed
-//!    via `wreq::ClientBuilder::dns_resolver` through the [`SsrfGuard`] port on
+//!    via `wreq::ClientBuilder::dns_resolver` through the [`SsrfGuard`](crate::domain::ssrf_guard::SsrfGuard) port on
 //!    every scrape client and re-checks every DNS answer against
-//!    [`is_forbidden_ip`]. Because redirects are followed inside the same
+//!    [`is_forbidden_ip`](crate::domain::ssrf_guard::is_forbidden_ip). Because redirects are followed inside the same
 //!    client stack, each redirect hop's connection also resolves through this
 //!    resolver, closing the gap where a hostname redirect target could reach an
 //!    address that was never validated at entry (DNS rebinding / TOCTOU
 //!    included).
-//! 3. **Belt-and-suspenders literal guard** — [`redirect_policy`] still stops
+//! 3. **Belt-and-suspenders literal guard** — [`redirect_policy`](crate::domain::ssrf_guard::redirect_policy) still stops
 //!    redirects whose target is a *literal* forbidden IP synchronously,
 //!    before any resolution happens.
 //!
-//! All layers share [`is_forbidden_ip`] as the single deny list.
+//! All layers share [`is_forbidden_ip`](crate::domain::ssrf_guard::is_forbidden_ip) as the single deny list.
 //!
 //! # Third-party types in `domain/` — accepted deliberately
 //!
 //! This module puts two `wreq` types into the domain layer:
-//! [`wreq::redirect::Policy`] (as the [`redirect_policy`] return type) and
-//! [`wreq::ClientBuilder`] (in the [`SsrfGuard`] port signature). They join the
+//! [`wreq::redirect::Policy`] (as the [`redirect_policy`](crate::domain::ssrf_guard::redirect_policy) return type) and
+//! [`wreq::ClientBuilder`] (in the [`SsrfGuard`](crate::domain::ssrf_guard::SsrfGuard) port signature). They join the
 //! accepted-leak surface already disclosed by the
 //! [`downloader_factory`](crate::domain::downloader_factory) precedent
 //! (`wreq::cookie::Jar` and `tokio_util::sync::CancellationToken` there).
