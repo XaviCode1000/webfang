@@ -646,16 +646,17 @@ jobs:
       # model + stdlib version so Miri UB-detection results stay reproducible
       # across runs. To bump: locally run the same `cargo miri test --lib`
       # commands against the new nightly on a representative commit and
-      # update all three `dtolnay/rust-toolchain@nightly-YYYY-MM-DD` lines
+      # update all three `dtolnay/rust-toolchain` toolchain inputs
       # below + the sysroot cache key (`miri-sysroot-...-YYYY-MM-DD`).
-      - uses: dtolnay/rust-toolchain@nightly-2026-08-27
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-08-27
           components: miri
       - name: Cache Miri sysroot
         uses: actions/cache@v5
         with:
           path: ~/.cache/miri
-          key: miri-sysroot-${{ runner.os }}-2026-07-01
+          key: miri-sysroot-${{ runner.os }}-2026-08-27
           restore-keys: |
             miri-sysroot-${{ runner.os }}-
       - name: Setup & Run Miri (${{ matrix.group }})
@@ -692,14 +693,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       # See the Miri nightly pin rationale in the `miri` job above (#991).
-      - uses: dtolnay/rust-toolchain@nightly-2026-08-27
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-08-27
           components: miri
       - name: Cache Miri sysroot
         uses: actions/cache@v5
         with:
           path: ~/.cache/miri
-          key: miri-sysroot-${{ runner.os }}-2026-07-01
+          key: miri-sysroot-${{ runner.os }}-2026-08-27
           restore-keys: |
             miri-sysroot-${{ runner.os }}-
       - name: Setup & Run Miri (infra-fast)
@@ -736,14 +738,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       # See the Miri nightly pin rationale in the `miri` job above (#991).
-      - uses: dtolnay/rust-toolchain@nightly-2026-08-27
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-08-27
           components: miri
       - name: Cache Miri sysroot
         uses: actions/cache@v5
         with:
           path: ~/.cache/miri
-          key: miri-sysroot-${{ runner.os }}-2026-07-01
+          key: miri-sysroot-${{ runner.os }}-2026-08-27
           restore-keys: |
             miri-sysroot-${{ runner.os }}-
       - name: Setup & Run Miri (infra-slow)
