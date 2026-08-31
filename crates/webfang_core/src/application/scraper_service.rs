@@ -14,7 +14,9 @@
 use crate::application::error_mapping::scraper_error_from_http;
 use crate::application::http_client::HttpClientPort;
 use crate::domain::config::ScraperConfig;
+use crate::domain::html_cleaner::clean_html;
 use crate::domain::http_port::HttpResponse;
+use crate::domain::scraper_port::{author_extractor, fallback, readability};
 use crate::domain::waf::{waf_inspector, InspectionContext};
 use crate::domain::{CorrelationId, DomInspectorPort, ExtractResult, ScrapedContent, ValidUrl};
 use crate::error::{Result, ScraperError};
@@ -439,7 +441,7 @@ struct PageExtractions {
     /// `<title>` of the original DOM (H1 FIX), empty when absent.
     original_title: String,
     /// Readability article over the extracted HTML (`Err` → fallback branch).
-    article: crate::error::Result<crate::infrastructure::scraper::readability::Article>,
+    article: crate::error::Result<readability::Article>,
     /// Author resolved against the shared DOM and the readability byline.
     author: Option<String>,
     /// Deduplicated asset URLs extracted from the shared DOM.
@@ -469,14 +471,10 @@ fn extract_page_extractions(
 
     // Try Readability first; the caller falls back to plain-text extraction
     // when this fails.
-    let article =
-        crate::infrastructure::scraper::readability::parse(extraction_html, Some(url.as_str()));
+    let article = readability::parse(extraction_html, Some(url.as_str()));
 
     let author = article.as_ref().ok().and_then(|a| {
-        crate::infrastructure::scraper::author_extractor::extract_author_from_document(
-            &document,
-            a.byline.as_deref(),
-        )
+        author_extractor::extract_author_from_document(&document, a.byline.as_deref())
     });
 
     let asset_urls = extract_asset_urls(&document, url, config);
@@ -494,7 +492,7 @@ fn extract_page_extractions(
 /// Applies DOM pre-pruning (#791) when enabled.
 fn clean_html_for_scrape(html: &str, config: &ScraperConfig) -> String {
     let pruned_html = crate::application::extraction::prune_dom_if_enabled(html, config);
-    let cleaned_html = crate::infrastructure::converter::html_cleaner::clean_html(&pruned_html);
+    let cleaned_html = clean_html(&pruned_html);
 
     debug!(
         "🧹 Cleaned HTML: {} → {} bytes ({}:0.2% reduction)",
@@ -515,7 +513,7 @@ fn clean_html_for_scrape(html: &str, config: &ScraperConfig) -> String {
 /// points, so this future only receives owned / `Send` data.
 #[allow(clippy::too_many_arguments)]
 async fn build_scraped_content(
-    article: crate::error::Result<crate::infrastructure::scraper::readability::Article>,
+    article: crate::error::Result<readability::Article>,
     author: Option<String>,
     html: &str,
     extraction_html: &str,
@@ -573,10 +571,8 @@ async fn build_scraped_content(
         Err(e) => {
             warn!("⚠️  Readability failed for {}: {}", url, e);
             // H2 FIX: Apply clean_html to fallback content to prevent JS/CSS leakage
-            let raw_fallback =
-                crate::infrastructure::scraper::fallback::extract_text(extraction_html);
-            let fallback_content =
-                crate::infrastructure::converter::html_cleaner::clean_html(&raw_fallback);
+            let raw_fallback = fallback::extract_text(extraction_html);
+            let fallback_content = clean_html(&raw_fallback);
             let assets = download_asset_urls(
                 asset_urls,
                 config,
