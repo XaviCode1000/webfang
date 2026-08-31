@@ -382,6 +382,24 @@ impl Resolve for ValidatingResolver {
     }
 }
 
+// Trait impl for the domain-owned `DefaultSsrfGuard` (type defined in
+// `crate::domain::ssrf_guard`): the registry fallback must be constructible in
+// domain, but applying the full guard requires `ValidatingResolver`, whose
+// construction is infrastructure I/O a domain body may not reference. Same-crate
+// impl placement keeps both halves satisfied (infrastructure → domain is the
+// allowed direction). The resolver is constructed PER `secure_client` call, so
+// the escape hatch is captured at client-build time exactly like the previous
+// inline `dns_resolver(ValidatingResolver::new())` wiring.
+impl crate::domain::ssrf_guard::sealed::Sealed for crate::domain::ssrf_guard::DefaultSsrfGuard {}
+
+impl crate::domain::ssrf_guard::SsrfGuard for crate::domain::ssrf_guard::DefaultSsrfGuard {
+    fn secure_client(&self, builder: wreq::ClientBuilder) -> wreq::ClientBuilder {
+        builder
+            .redirect(redirect_policy())
+            .dns_resolver(ValidatingResolver::new())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,8 +514,9 @@ mod tests {
     /// process on parallel threads sharing process-global environment
     /// state — only nextest isolates per-test processes. Every test that
     /// reads or mutates `DISABLE_VALIDATING_RESOLVER_ENV` must therefore
-    /// hold [`ENV_LOCK`] for its entire body, and wiring proofs must use
-    /// [`ValidatingResolver::new_with_validation`] instead of env at all.
+    /// hold [`ENV_LOCK`] for its entire body, and the wiring proofs hold
+    /// [`ENV_LOCK`] too (they build through the guard, whose resolver
+    /// construction reads the env at `secure_client` time).
     // `await_holding_lock` is deliberate here: each #[tokio::test] runs on its
     // own current-thread runtime, so a guard held across `.await` can never be
     // contended by another task on the same runtime — and holding it for the
@@ -509,6 +528,8 @@ mod tests {
         use std::net::SocketAddr;
         use std::sync::{Mutex, MutexGuard};
         use wreq::dns::{Name, Resolve};
+
+        use crate::domain::ssrf_guard::SsrfGuard as _;
 
         /// Serializes process-global env mutation across parallel threads
         /// (`cargo test` shares one process env; see the module contract
@@ -642,23 +663,24 @@ mod tests {
             );
         }
 
-        // Wiring proofs: a client built exactly like the production sites
-        // (`redirect_policy()` + `dns_resolver(ValidatingResolver)`) must
-        // enforce at connect time for *hostname* targets. `localhost`
-        // resolves through getaddrinfo (/etc/hosts → 127.0.0.1, ::1) without
-        // any network dependency, so this stays deterministic in CI.
+        // Wiring proofs: a client built through the guard port
+        // (`DefaultSsrfGuard::secure_client` — the same construction the
+        // production sites consume) must enforce at connect time for
+        // *hostname* targets. `localhost` resolves through getaddrinfo
+        // (/etc/hosts → 127.0.0.1, ::1) without any network dependency, so
+        // this stays deterministic in CI.
         //
-        // These build the resolver via `new_with_validation` instead of
-        // reading process-global env: under plain `cargo test` (Coverage's
-        // llvm-cov run) sibling tests mutate `DISABLE_VALIDATING_RESOLVER_ENV`
-        // on parallel threads, and an env-read here raced that mutation into
-        // a silently disarmed resolver (issue #926).
+        // The guard constructs the resolver per `secure_client` call, and
+        // that construction reads `DISABLE_VALIDATING_RESOLVER_ENV`; each
+        // proof therefore holds [`ENV_LOCK`] for its whole body so sibling
+        // threads cannot race the env mutation (issue #926).
         #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
         #[tokio::test]
         async fn wired_client_rejects_hostname_resolving_to_loopback() {
-            let client = wreq::Client::builder()
-                .redirect(redirect_policy())
-                .dns_resolver(ValidatingResolver::new_with_validation(true))
+            let _guard = env_guard();
+            std::env::remove_var(DISABLE_VALIDATING_RESOLVER_ENV);
+            let client = crate::domain::ssrf_guard::DefaultSsrfGuard
+                .secure_client(wreq::Client::builder())
                 .build()
                 .expect("test client must build");
 
@@ -676,9 +698,10 @@ mod tests {
         #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
         #[tokio::test]
         async fn wired_client_reaches_connect_when_validation_disabled() {
-            let client = wreq::Client::builder()
-                .redirect(redirect_policy())
-                .dns_resolver(ValidatingResolver::new_with_validation(false))
+            let _guard = env_guard();
+            std::env::set_var(DISABLE_VALIDATING_RESOLVER_ENV, "1");
+            let client = crate::domain::ssrf_guard::DefaultSsrfGuard
+                .secure_client(wreq::Client::builder())
                 .build()
                 .expect("test client must build");
 
@@ -692,6 +715,33 @@ mod tests {
             assert!(
                 !format!("{err:?}").contains("forbidden address"),
                 "bypassed resolver must not reject: {err:?}"
+            );
+        }
+
+        // Unit proof for the guard port: through the `dyn SsrfGuard` trait
+        // object (the shape production consumers hold), ONE choke-point call
+        // applies the resolver layer — observable at connect time. The
+        // redirect-policy layer shares the same impl body.
+        #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+        #[tokio::test]
+        async fn secure_client_applies_resolver_through_trait_object() {
+            let _guard = env_guard();
+            std::env::remove_var(DISABLE_VALIDATING_RESOLVER_ENV);
+            let guarded: std::sync::Arc<dyn crate::domain::ssrf_guard::SsrfGuard> =
+                std::sync::Arc::new(crate::domain::ssrf_guard::DefaultSsrfGuard);
+            let client = guarded
+                .secure_client(wreq::Client::builder())
+                .build()
+                .expect("test client must build");
+
+            let err = client
+                .get("http://localhost:9/")
+                .send()
+                .await
+                .expect_err("hostname resolving to loopback must fail at connect");
+            assert!(
+                format!("{err:?}").contains("ForbiddenResolutionError"),
+                "guard trait object must apply the validating resolver: {err:?}"
             );
         }
     }
