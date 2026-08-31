@@ -617,11 +617,13 @@ mod tests {
             .expect("armed guard builds a client");
     }
 
-    /// Keep-first idempotency (#996): a guard armed before `Container::new`
-    /// survives the container's arming attempt — the second set is a no-op.
-    /// nextest runs each test in its own process, so the process-global
-    /// registry starts unarmed here; plain `cargo test` must not rely on
-    /// this isolation.
+    /// Keep-first idempotency (#996): `Container::new` must not replace a
+    /// guard the registry already holds. The winner is captured after this
+    /// test's own arm rather than assumed, because the registry is
+    /// process-global and unresettable: nextest starts each test unarmed (so
+    /// the winner is exactly the sentinel and the test also proves it
+    /// survives `Container::new`), while plain `cargo test` shares one
+    /// process where a sibling may have armed it first.
     #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_container_ssrf_guard_arming_is_keep_first() {
@@ -636,13 +638,17 @@ mod tests {
 
         let sentinel: std::sync::Arc<dyn crate::domain::ssrf_guard::SsrfGuard> =
             std::sync::Arc::new(SentinelGuard);
-        crate::domain::ssrf_guard::set_ssrf_guard(std::sync::Arc::clone(&sentinel));
+        crate::domain::ssrf_guard::set_ssrf_guard(sentinel);
+        // Captured after our own arm, so this is a registry value and not
+        // the fallback: the sentinel when this test armed an unarmed
+        // registry, or a sibling's guard in a shared `cargo test` process.
+        let winner = crate::domain::ssrf_guard::ssrf_guard();
 
         let (_tmp, _container) = make_test_container().await;
 
         assert!(
-            std::sync::Arc::ptr_eq(&crate::domain::ssrf_guard::ssrf_guard(), &sentinel),
-            "el guard centinela armado antes del Container debe sobrevivir (keep-first)"
+            std::sync::Arc::ptr_eq(&crate::domain::ssrf_guard::ssrf_guard(), &winner),
+            "Container::new no debe reemplazar un guard ya armado (keep-first, #996)"
         );
     }
 

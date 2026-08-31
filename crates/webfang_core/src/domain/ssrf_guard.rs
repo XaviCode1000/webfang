@@ -437,10 +437,13 @@ mod tests {
         assert!(!is_forbidden_literal_host("127.0.0.1.nip.io"));
     }
 
-    // Registry semantics (new in sub-slice 3.C). nextest runs each test in
-    // its own process, so the process-global registry starts unarmed per
-    // test; under plain `cargo test` these tolerate pre-armed state because
-    // both assertions hold for any armed guard as well.
+    // Registry semantics (new in sub-slice 3.C). The registry is process-global
+    // and unresettable, so no test may assume it starts unarmed: nextest gives
+    // each test its own process, but plain `cargo test` (the Coverage job)
+    // shares one process, where a sibling that builds a Container arms it
+    // first. Each registry test therefore captures the winner after its own arm
+    // and asserts only the order- and race-independent invariant — once armed,
+    // no later set replaces it (#996).
     #[test]
     fn ssrf_guard_port_is_object_safe_via_sealed() {
         struct FakeGuard;
@@ -473,17 +476,24 @@ mod tests {
         }
 
         let fake1: Arc<dyn SsrfGuard> = Arc::new(FakeGuard1);
-        set_ssrf_guard(fake1.clone());
+        set_ssrf_guard(fake1);
+        // Read after our own arm, so this is a registry value and never the
+        // fallback: `FakeGuard1` when this test armed an unarmed registry,
+        // or a sibling's guard in a shared `cargo test` process.
+        let winner = ssrf_guard();
         set_ssrf_guard(Arc::new(FakeGuard2));
         assert!(
-            Arc::ptr_eq(&ssrf_guard(), &fake1),
-            "second set must not replace the first armed guard (#996)"
+            Arc::ptr_eq(&ssrf_guard(), &winner),
+            "a later set must not replace the already-armed guard (#996)"
         );
     }
 
     #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
     #[test]
     fn registry_fallback_is_self_sufficient() {
+        // Under a shared `cargo test` process a sibling may have armed the
+        // registry first; either way the accessor must yield a guard that
+        // can build a client.
         let guard = ssrf_guard();
         let client = guard.secure_client(wreq::Client::builder()).build();
         assert!(
