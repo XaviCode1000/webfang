@@ -49,6 +49,9 @@ pub mod result;
 pub mod scraper_port;
 pub mod session_port;
 pub mod site;
+/// SSRF guard — pure deny-list policy + `SsrfGuard` port and registry
+/// (ADR-0012 sub-slice 3.C).
+pub mod ssrf_guard;
 pub mod url_validation;
 pub mod url_validator;
 pub mod user_agent;

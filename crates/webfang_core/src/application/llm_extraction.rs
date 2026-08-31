@@ -258,7 +258,8 @@ impl LlmConfig {
 }
 
 /// SSRF gate for the LLM base URL (#703): scheme allow-list http/https plus
-/// literal-host rejection via [`crate::infrastructure::ssrf::is_forbidden_ip`]
+/// literal-host rejection via
+/// [`is_forbidden_literal_host`](crate::domain::ssrf_guard::is_forbidden_literal_host)
 /// (loopback / private / link-local / CGNAT / IPv6-ULA). A blocked URL never
 /// produces a request.
 ///
@@ -283,7 +284,7 @@ pub fn ssrf_gate(url: &Url) -> Result<()> {
     let host = url
         .host_str()
         .ok_or_else(|| ScraperError::Config("el URL del LLM no tiene host".to_string()))?;
-    if crate::infrastructure::ssrf::is_forbidden_literal_host(host) {
+    if crate::domain::ssrf_guard::is_forbidden_literal_host(host) {
         return Err(ScraperError::Config(format!(
             "URL del LLM bloqueada por SSRF: el host '{host}' pertenece a una red interna (#703)"
         )));

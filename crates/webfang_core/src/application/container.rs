@@ -201,6 +201,13 @@ impl Container {
             Arc::new(WafInspector) as Arc<dyn crate::domain::waf::WafInspectorPort>
         );
 
+        // 6b. SSRF guard — same process-wide registry pattern as the WAF
+        //     inspector. Idempotent (#996): keep-first; the fallback is
+        //     behaviorally identical, so arming order cannot change behavior.
+        crate::domain::ssrf_guard::set_ssrf_guard(Arc::new(
+            crate::domain::ssrf_guard::DefaultSsrfGuard,
+        ));
+
         Ok(Self {
             scraper_config,
             http_client,
@@ -583,6 +590,65 @@ mod tests {
         assert!(
             repo.is_some(),
             "crawl_result_repository() debe retornar Some"
+        );
+    }
+
+    // --- SSRF guard wiring (ADR-0012 sub-slice 3.C) ---
+
+    /// Wiring: `Container::new` arms the process-wide SSRF guard registry.
+    /// Strict-TDD RED without the step-6b arm (fresh nextest process starts
+    /// with the registry unarmed; the fallback does not count as armed).
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[tokio::test]
+    async fn test_container_arms_ssrf_guard() {
+        let (_tmp, _container) = make_test_container().await;
+        assert!(
+            crate::domain::ssrf_guard::ssrf_guard_armed(),
+            "Container::new debe armar el registry del SsrfGuard"
+        );
+        // Behavioral proof the armed guard is the full guard: it builds a
+        // client end-to-end (redirect policy + validating resolver are
+        // applied inside `DefaultSsrfGuard::secure_client`). The concrete
+        // type is guaranteed at the arming site by the compiler.
+        let builder = wreq::Client::builder();
+        let _client = crate::domain::ssrf_guard::ssrf_guard()
+            .secure_client(builder)
+            .build()
+            .expect("armed guard builds a client");
+    }
+
+    /// Keep-first idempotency (#996): `Container::new` must not replace a
+    /// guard the registry already holds. The winner is captured after this
+    /// test's own arm rather than assumed, because the registry is
+    /// process-global and unresettable: nextest starts each test unarmed (so
+    /// the winner is exactly the sentinel and the test also proves it
+    /// survives `Container::new`), while plain `cargo test` shares one
+    /// process where a sibling may have armed it first.
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[tokio::test]
+    async fn test_container_ssrf_guard_arming_is_keep_first() {
+        #[derive(Debug, Default)]
+        struct SentinelGuard;
+        impl crate::domain::ssrf_guard::sealed::Sealed for SentinelGuard {}
+        impl crate::domain::ssrf_guard::SsrfGuard for SentinelGuard {
+            fn secure_client(&self, builder: wreq::ClientBuilder) -> wreq::ClientBuilder {
+                builder // test sentinel: no guard behavior
+            }
+        }
+
+        let sentinel: std::sync::Arc<dyn crate::domain::ssrf_guard::SsrfGuard> =
+            std::sync::Arc::new(SentinelGuard);
+        crate::domain::ssrf_guard::set_ssrf_guard(sentinel);
+        // Captured after our own arm, so this is a registry value and not
+        // the fallback: the sentinel when this test armed an unarmed
+        // registry, or a sibling's guard in a shared `cargo test` process.
+        let winner = crate::domain::ssrf_guard::ssrf_guard();
+
+        let (_tmp, _container) = make_test_container().await;
+
+        assert!(
+            std::sync::Arc::ptr_eq(&crate::domain::ssrf_guard::ssrf_guard(), &winner),
+            "Container::new no debe reemplazar un guard ya armado (keep-first, #996)"
         );
     }
 

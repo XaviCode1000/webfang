@@ -27,9 +27,10 @@ fn is_ssrf_enabled() -> bool {
 /// IPv6 addresses (re-validated against the IPv4 deny list).
 ///
 /// Layered contract: this entry-level check is fast-fail typed UX; it is NOT
-/// the enforcement point. Every scrape client also installs
-/// `webfang_core::infrastructure::ssrf::ValidatingResolver` via
-/// `dns_resolver`, which re-validates every DNS answer at connect time —
+/// the enforcement point. Every scrape client applies the
+/// `webfang_core::domain::ssrf_guard::SsrfGuard` port, which installs the
+/// `webfang_core::infrastructure::ssrf::ValidatingResolver` DNS guard via
+/// `dns_resolver`, re-validating every DNS answer at connect time —
 /// covering hostname redirect hops and DNS-rebinding TOCTOU that this
 /// entry check cannot see.
 ///
