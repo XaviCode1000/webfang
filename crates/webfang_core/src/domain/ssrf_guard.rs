@@ -305,6 +305,17 @@ pub fn set_ssrf_guard(guard: Arc<dyn SsrfGuard>) {
     let _ = SSRF_GUARD.set(guard);
 }
 
+/// Test-only probe: was the registry armed by a composition root?
+///
+/// The armed guard and the fallback are behaviorally identical
+/// (`DefaultSsrfGuard` both ways), so [`ssrf_guard`] cannot distinguish
+/// them; wiring tests need this probe to prove `Container::new` actually
+/// calls [`set_ssrf_guard`] (strict-TDD RED without the arm).
+#[cfg(test)]
+pub(crate) fn ssrf_guard_armed() -> bool {
+    SSRF_GUARD.get().is_some()
+}
+
 /// Read the process-wide SSRF guard. When no composition root has armed one,
 /// falls back to the self-sufficient [`DefaultSsrfGuard`] (whose impl applies
 /// the full guard — redirect policy + validating resolver) so paths that build
