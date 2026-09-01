@@ -113,7 +113,7 @@ INLINE_LAYER_REGEX='crate::(infrastructure|adapters|application)::[A-Za-z_][A-Za
 
 layer_of_file() {
   local file="$1"
-  local rel="${file#${ROOT}/}"
+  local rel="${file#"${ROOT}"/}"
   local dir
   dir=$(dirname "$rel")
   if [[ "$dir" == "." || -z "$dir" ]]; then
@@ -142,7 +142,6 @@ if [[ ! -d "$ROOT" ]]; then
 fi
 
 # --- allowlist handling ---
-allowlisted=0
 declare -a ALLOW_PATTERNS=()
 if [[ -f "$ALLOWLIST" ]]; then
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -270,8 +269,9 @@ filter_and_match() {
       return s
     }
 
-    # Index (1-based) of the `}` that closes the group whose body starts at
-    # position `from` of `s`, or 0 when the group is not closed inside `s`.
+    # Index (1-based) of the `}` that closes the group whose BODY starts at position
+    # `from` of `s` (so `s[from-1]` is the `{` that opened it), or 0 when the group is
+    # not closed inside `s`. Callers must pass the first body character, not the brace.
     function close_of(s, from,   i, d, ch) {
       d = 1
       for (i = from; i <= length(s); i++) {
@@ -296,8 +296,14 @@ filter_and_match() {
         else if (ch == "," && d == 0) { parts[++np] = cur; cur = "" }
         else cur = cur ch
       }
-      if (trim(cur) != "") parts[++np] = cur
-      for (k = 1; k <= np; k++) emit_item(prefix, parts[k], lineno)
+          if (trim(cur) != "") parts[++np] = cur
+          # An empty group carries no symbol to attribute the reference to; keep the
+          # violation visible as the bare prefix rather than dropping it silently.
+          if (np == 0) {
+            printf("%d\t%s\n", lineno, prefix)
+            return
+          }
+          for (k = 1; k <= np; k++) emit_item(prefix, parts[k], lineno)
     }
 
     function emit_item(prefix, item, lineno,   open, cl, head, nested) {
@@ -413,21 +419,25 @@ filter_and_match() {
       while (match(text, re)) {
         m = substr(text, RSTART, RLENGTH)
         after = substr(text, RSTART + RLENGTH)
-        if (substr(after, 1, 1) == "{") {
-          cl = close_of(after, 2)
-          if (cl > 0) {
-            expand(m, substr(after, 2, cl - 2), NR)
-            text = substr(after, cl + 1)
-            continue
-          }
-          # Group opens here but closes on a later line.
-          pend_prefix = m
-          pend_line = NR
-          pend_body = substr(after, 2)
-          pend_lines = 0
-          text = ""
-          break
-        }
+            # The layer regex cannot consume the `::` before a brace group (`{` is not a
+            # valid segment start), so a group always reads `::{` in `after`: the body
+            # starts at index 4. Testing index 1 here made the whole branch dead code
+            # and restored the truncation the expansion exists to remove.
+            if (substr(after, 1, 2) == "::" && substr(after, 3, 1) == "{") {
+              cl = close_of(after, 4)
+              if (cl > 0) {
+                expand(m, substr(after, 4, cl - 4), NR)
+                text = substr(after, cl + 1)
+                continue
+              }
+              # Group opens here but closes on a later line.
+              pend_prefix = m
+              pend_line = NR
+              pend_body = substr(after, 4)
+              pend_lines = 0
+              text = ""
+              break
+            }
         printf("%d\t%s\n", NR, m)
         text = substr(text, RSTART + RLENGTH)
       }
