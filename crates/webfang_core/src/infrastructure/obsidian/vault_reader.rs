@@ -24,6 +24,7 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
+use crate::domain::note_repository::{VaultNote as DomainVaultNote, VaultNoteReader};
 use crate::error::ScraperError;
 
 /// A Markdown note read from an Obsidian vault.
@@ -186,6 +187,38 @@ fn sha256_hex(bytes: &[u8]) -> String {
         let _ = write!(out, "{b:02x}");
     }
     out
+}
+
+// ── Domain port adapter (ADR-0012-B sub-slice 3.I, #1071) ──────────────────
+
+/// Production [`VaultNoteReader`] — filesystem-backed adapter over
+/// [`read_vault_notes`].
+///
+/// Lets the application layer ([`crate::application::vault_search`]) consume
+/// vault reads through the domain port instead of calling the infrastructure
+/// function directly. The module-local [`VaultNote`] DTO is mapped
+/// field-for-field to the domain DTO; [`read_vault_notes`] itself stays
+/// public and unchanged (no API break in this slice).
+///
+/// Stateless like `SystemRamProbe` (precedent #1042): construction is
+/// free, so call sites may default-construct it where no injected port is
+/// available.
+#[derive(Debug, Default)]
+pub struct VaultFsReader;
+
+impl VaultNoteReader for VaultFsReader {
+    fn read_vault_notes(&self, vault_path: &Path) -> Result<Vec<DomainVaultNote>, ScraperError> {
+        let notes = read_vault_notes(vault_path)?;
+        Ok(notes
+            .into_iter()
+            .map(|note| DomainVaultNote {
+                path: note.path,
+                content: note.content,
+                mtime_secs: note.mtime_secs,
+                content_hash: note.content_hash,
+            })
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -376,5 +409,60 @@ mod tests {
         assert_eq!(note, cloned);
         let debug = format!("{note:?}");
         assert!(debug.contains("test.md"));
+    }
+
+    // --- VaultFsReader: domain port adapter (ADR-0012-B sub-slice 3.I, #1071) ---
+
+    #[test]
+    fn vault_fs_reader_reads_notes_through_port() {
+        let tmp = tempfile::tempdir().unwrap();
+        create_vault(tmp.path());
+        fs::create_dir_all(tmp.path().join("notes")).unwrap();
+        fs::write(
+            tmp.path().join("notes").join("rust.md"),
+            "# Rust\nport path",
+        )
+        .unwrap();
+
+        // Consume the adapter as `dyn VaultNoteReader` — the shape the
+        // application layer sees after the 3.I wiring.
+        let reader: &dyn VaultNoteReader = &VaultFsReader;
+        let notes = reader.read_vault_notes(tmp.path()).unwrap();
+
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].path, "notes/rust.md");
+        assert_eq!(notes[0].content, "# Rust\nport path");
+        // DTO mapping fidelity: every domain field equals the infra DTO.
+        let direct = read_vault_notes(tmp.path()).unwrap();
+        assert_eq!(notes[0].content_hash, direct[0].content_hash);
+        assert_eq!(notes[0].mtime_secs, direct[0].mtime_secs);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vault_fs_reader_maps_io_error_to_scraper_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        create_vault(tmp.path());
+        let note_path = tmp.path().join("locked.md");
+        fs::write(&note_path, "unreadable").unwrap();
+        fs::set_permissions(&note_path, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = VaultFsReader.read_vault_notes(tmp.path());
+
+        // Restore permissions so TempDir cleanup can remove the file.
+        fs::set_permissions(&note_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        if result.is_ok() {
+            // A privileged user (root) reads mode-000 files, so the fixture
+            // cannot force an I/O failure — skip instead of false-failing.
+            eprintln!("skipping: effective user can read mode-000 files (running as root?)");
+            return;
+        }
+        assert!(
+            matches!(result, Err(ScraperError::Io(_))),
+            "unreadable note must surface as ScraperError::Io, got {result:?}"
+        );
     }
 }
