@@ -235,8 +235,7 @@ mod tests {
         use crate::domain::ssrf_guard::SsrfGuard as _;
 
         fn validation_on() -> (webfang_test_utils::EnvGuard, ValidatingResolver) {
-            let guard =
-                webfang_test_utils::EnvGuard::clean(&[DISABLE_VALIDATING_RESOLVER_ENV]);
+            let guard = webfang_test_utils::EnvGuard::clean(&[DISABLE_VALIDATING_RESOLVER_ENV]);
             (guard, ValidatingResolver::new())
         }
 
@@ -310,8 +309,9 @@ mod tests {
 
         #[tokio::test]
         async fn env_bypass_allows_loopback_resolution() {
-            let _guard = webfang_test_utils::EnvGuard::with(&[(DISABLE_VALIDATING_RESOLVER_ENV, "1")]);
-                let resolver = ValidatingResolver::new();
+            let _guard =
+                webfang_test_utils::EnvGuard::with(&[(DISABLE_VALIDATING_RESOLVER_ENV, "1")]);
+            let resolver = ValidatingResolver::new();
 
             let addrs = resolved_addrs(&resolver, "127.0.0.1").await;
             assert_eq!(addrs[0].ip().to_string(), "127.0.0.1");
@@ -321,8 +321,9 @@ mod tests {
         async fn bypass_requires_exact_value_one() {
             // Any value other than the literal "1" (including "0", "true",
             // "yes") must NOT disarm the guard.
-            let _guard = webfang_test_utils::EnvGuard::with(&[(DISABLE_VALIDATING_RESOLVER_ENV, "0")]);
-                let resolver = ValidatingResolver::new();
+            let _guard =
+                webfang_test_utils::EnvGuard::with(&[(DISABLE_VALIDATING_RESOLVER_ENV, "0")]);
+            let resolver = ValidatingResolver::new();
 
             let outcome = resolver.resolve(Name::from("127.0.0.1")).await;
             assert!(
@@ -361,8 +362,7 @@ mod tests {
         #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
         #[tokio::test]
         async fn wired_client_rejects_hostname_resolving_to_loopback() {
-            let _guard =
-                    webfang_test_utils::EnvGuard::clean(&[DISABLE_VALIDATING_RESOLVER_ENV]);
+            let _guard = webfang_test_utils::EnvGuard::clean(&[DISABLE_VALIDATING_RESOLVER_ENV]);
             let client = crate::domain::ssrf_guard::DefaultSsrfGuard
                 .secure_client(wreq::Client::builder())
                 .build()
@@ -383,7 +383,7 @@ mod tests {
         #[tokio::test]
         async fn wired_client_reaches_connect_when_validation_disabled() {
             let _guard =
-                    webfang_test_utils::EnvGuard::with(&[(DISABLE_VALIDATING_RESOLVER_ENV, "1")]);
+                webfang_test_utils::EnvGuard::with(&[(DISABLE_VALIDATING_RESOLVER_ENV, "1")]);
             let client = crate::domain::ssrf_guard::DefaultSsrfGuard
                 .secure_client(wreq::Client::builder())
                 .build()
@@ -409,8 +409,7 @@ mod tests {
         #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
         #[tokio::test]
         async fn secure_client_applies_resolver_through_trait_object() {
-            let _guard =
-                    webfang_test_utils::EnvGuard::clean(&[DISABLE_VALIDATING_RESOLVER_ENV]);
+            let _guard = webfang_test_utils::EnvGuard::clean(&[DISABLE_VALIDATING_RESOLVER_ENV]);
             let guarded: std::sync::Arc<dyn crate::domain::ssrf_guard::SsrfGuard> =
                 std::sync::Arc::new(crate::domain::ssrf_guard::DefaultSsrfGuard);
             let client = guarded

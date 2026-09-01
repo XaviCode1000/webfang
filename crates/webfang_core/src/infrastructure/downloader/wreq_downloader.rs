@@ -836,8 +836,9 @@ mod wiremock_tests {
         // Defensive under shared-process harnesses: the escape hatch must be
         // unset for this process so the guard is active. (nextest isolates
         // each test in its own process, so this is a no-op there.)
-        let _guard =
-            webfang_test_utils::EnvGuard::clean(&[crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV]);
+        let _guard = webfang_test_utils::EnvGuard::clean(&[
+            crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV,
+        ]);
         let mock_server = MockServer::start().await;
 
         // Location points at a different loopback literal — forbidden by the
