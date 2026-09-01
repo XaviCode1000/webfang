@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! URL → SHA-256 Check → Semaphore Acquire → HTTP Stream (25MB) →
-//!   CpuBridge (Rayon: lol_html + ONNX) → SQLite Persist → Release Permits
+//!   CPU executor (Rayon: lol_html + ONNX) → SQLite Persist → Release Permits
 //! ```
 //!
 //! # Architecture (frozen Decision 1: monomorphization)
@@ -35,11 +35,11 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 use tracing::{error, info, warn};
 
+use crate::domain::cpu_executor::{CpuExecutorPort, ProcessedChunk};
 use crate::domain::repository::VectorRepository;
 use crate::domain::url_validation::{normalize_url, NormalizeConfig, RemoveQueryParameters};
 use crate::error::ScraperError;
-// domain port: use crate::domain::cpu_executor::CpuExecutorPort;
-use crate::infrastructure::crawler::resource_downloader::{DownloadedResource, ResourceDownloader};
+use crate::infrastructure::crawler::resource_downloader::ResourceDownloader;
 
 /// Elastic ingestion pipeline orchestrator (frozen Decision 1).
 ///
@@ -54,7 +54,7 @@ use crate::infrastructure::crawler::resource_downloader::{DownloadedResource, Re
 /// [`SemanticCleaner`]: crate::domain::semantic_cleaner::SemanticCleaner
 pub struct ElasticIngestion<R: VectorRepository + Send + Sync> {
     downloader: ResourceDownloader,
-    bridge: crate::infrastructure::bridge::CpuBridge,
+    bridge: std::sync::Arc<dyn CpuExecutorPort>,
     repository: R,
     config: crate::domain::config::AutotuningConfig,
     /// Optional ONNX semantic cleaner (frozen Decision 5). When `Some`, the
@@ -81,7 +81,7 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
     #[must_use]
     pub fn new(
         downloader: ResourceDownloader,
-        bridge: crate::infrastructure::bridge::CpuBridge,
+        bridge: std::sync::Arc<dyn CpuExecutorPort>,
         repository: R,
         config: crate::domain::config::AutotuningConfig,
     ) -> Self {
@@ -214,7 +214,7 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
         url: &str,
         bytes: Vec<u8>,
         size: u64,
-    ) -> Result<Vec<crate::infrastructure::bridge::ProcessedChunk>, ScraperError> {
+    ) -> Result<Vec<ProcessedChunk>, ScraperError> {
         #[cfg(feature = "ai")]
         {
             if let Some(cleaner) = &self.cleaner {
@@ -236,7 +236,7 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
         title: &str,
         hash: &str,
         size: u64,
-        chunks: Vec<crate::infrastructure::bridge::ProcessedChunk>,
+        chunks: Vec<ProcessedChunk>,
     ) -> Result<(), ScraperError> {
         self.repository
             .save_resource(url, title, hash, size)
@@ -329,23 +329,26 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
         batch
     }
 
-    /// Dispatch the downloaded bytes through the CpuBridge (sync lol_html text
-    /// extraction, `embedding = None`). Shared by both the `ai`-without-cleaner
-    /// path and the no-`ai` build.
+    /// Dispatch the downloaded bytes through the [`CpuExecutorPort`] (sync
+    /// lol_html text extraction, `embedding = None`). Shared by both the
+    /// `ai`-without-cleaner path and the no-`ai` build.
     async fn bridge_chunks(
         &self,
         url: &str,
         bytes: Vec<u8>,
         size: u64,
-    ) -> Result<Vec<crate::infrastructure::bridge::ProcessedChunk>, ScraperError> {
-        let resource = DownloadedResource {
-            url: url.to_string(),
-            bytes,
-            content_type: None,
-            size_bytes: size,
-        };
-        match self.bridge.dispatch_resource(resource).await {
-            Ok(Ok(processed)) => Ok(processed.chunks),
+    ) -> Result<Vec<ProcessedChunk>, ScraperError> {
+        // Port contract: the caller hands over already-decoded text — the
+        // port doc keeps `from_utf8_lossy` as a boundary concern, applied
+        // before dispatch. The CPU-side shim re-decodes idempotently, so
+        // the processed output is byte-identical to the pre-port pipeline.
+        let content = String::from_utf8_lossy(&bytes).into_owned();
+        match self
+            .bridge
+            .dispatch_resource(url.to_string(), content, size)
+            .await
+        {
+            Ok(Ok(chunks)) => Ok(chunks),
             Ok(Err(e)) => {
                 error!(%url, error = %e, "CPU processing failed: aborting pipeline");
                 Err(e)
@@ -366,7 +369,7 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
         cleaner: &std::sync::Arc<dyn crate::domain::semantic_cleaner::SemanticCleaner>,
         url: &str,
         bytes: &[u8],
-    ) -> Result<Vec<crate::infrastructure::bridge::ProcessedChunk>, ScraperError> {
+    ) -> Result<Vec<ProcessedChunk>, ScraperError> {
         let html = String::from_utf8_lossy(bytes);
         let doc_chunks = cleaner
             .clean(url, &html)
@@ -374,7 +377,7 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
             .map_err(|e| ScraperError::ingestion(format!("limpieza semántica falló: {e}")))?;
         Ok(doc_chunks
             .into_iter()
-            .map(|dc| crate::infrastructure::bridge::ProcessedChunk {
+            .map(|dc| ProcessedChunk {
                 content: dc.content,
                 embedding: dc.embeddings,
             })
@@ -426,7 +429,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 /// Derive a best-effort title from the first chunk's first line (≤200 chars).
 /// Empty when no chunks or an empty first line — the schema allows NULL titles.
-fn extract_title(chunks: &[crate::infrastructure::bridge::ProcessedChunk]) -> String {
+fn extract_title(chunks: &[ProcessedChunk]) -> String {
     chunks
         .first()
         .and_then(|c| c.content.lines().next())
@@ -570,10 +573,10 @@ mod tests {
                 },
             );
             let pool = RayonCpuPool::new(2).expect("pool de 2 hilos");
-            let bridge = crate::infrastructure::bridge::CpuBridge::new(
+            let bridge = Arc::new(crate::infrastructure::bridge::CpuBridge::new(
                 pool,
                 Arc::new(crate::infrastructure::content_processing::AggressiveProcessor),
-            );
+            ));
             let config = crate::domain::config::AutotuningConfig {
                 cpu_cores: 2,
                 ram_budget_bytes: 1 << 20,
@@ -833,6 +836,10 @@ mod tests {
     fn test_elastic_ingestion_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<ElasticIngestion<InMemoryRepo>>();
+        // The bridge field must keep its port type (ADR-0012-B 3.E.2):
+        // an `Arc<dyn CpuExecutorPort>` — `Send + Sync` via the trait's
+        // supertraits — so the orchestrator stays shareable across tasks.
+        assert_send_sync::<std::sync::Arc<dyn CpuExecutorPort>>();
     }
 
     /// Integrity: the content-hash producer emits lowercase hex (no uppercase),
