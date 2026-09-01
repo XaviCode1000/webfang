@@ -196,18 +196,20 @@ impl RobotsFetcher {
     pub fn new(profile: Profile, timeout_secs: u64) -> Result<Self, InfraError> {
         let connect_timeout_secs = timeout_secs.min(10);
 
-        let client = Client::builder()
+        let builder = Client::builder()
             .emulation(profile)
             .timeout(Duration::from_secs(timeout_secs))
             .connect_timeout(Duration::from_secs(connect_timeout_secs))
             .gzip(true)
-            .brotli(true)
-            // SSRF guard (#703): default 10-hop limit + stops redirects that
-            // target a literal forbidden IP (belt-and-suspenders). Hostname
-            // targets — including every redirect hop — are enforced at connect
-            // time by the validating DNS resolver below.
-            .redirect(crate::infrastructure::ssrf::redirect_policy())
-            .dns_resolver(crate::infrastructure::ssrf::ValidatingResolver::new())
+            .brotli(true);
+
+        // SSRF guard (#703) applied through the domain `SsrfGuard` port:
+        // default 10-hop limit + stops redirects that target a literal
+        // forbidden IP (belt-and-suspenders). Hostname targets — including
+        // every redirect hop — are enforced at connect time by the
+        // validating DNS resolver the guard installs.
+        let client = crate::domain::ssrf_guard::ssrf_guard()
+            .secure_client(builder)
             .build()
             .map_err(|e| InfraError::Network(Box::new(e)))?;
 
@@ -463,6 +465,37 @@ Disallow: /tmp/";
 
         // The constructor honors the caller's profile selection.
         assert!(RobotsFetcher::new(Profile::Firefox135, 5).is_ok());
+    }
+
+    /// SSRF choke-point wiring proof (#1060): the client `RobotsFetcher::new`
+    /// actually builds must carry the guard. `localhost` resolves to loopback
+    /// through getaddrinfo with no network dependency, so a connect attempt must
+    /// be rejected by the validating resolver the `SsrfGuard` port installs —
+    /// proving the site consumes the port instead of hand-wiring (or dropping)
+    /// the layers.
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[tokio::test]
+    async fn fetcher_client_enforces_ssrf_guard_from_the_port() {
+        // Env hermeticity (#926): `ValidatingResolver::new()` captures the escape
+        // hatch at client-build time, so this mutation must be serialized against
+        // siblings that set it. `cargo test` (and the Coverage job's `cargo
+        // llvm-cov` run) shares one process env across threads; only nextest
+        // isolates. `EnvGuard` holds the shared lock and restores on drop.
+        let _env = webfang_test_utils::EnvGuard::clean(&[
+            crate::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV,
+        ]);
+        let fetcher = RobotsFetcher::new(Profile::Chrome145, 30).expect("client should build");
+
+        let err = fetcher
+            .client
+            .get("http://localhost:9/")
+            .send()
+            .await
+            .expect_err("hostname resolving to loopback must fail at connect");
+        assert!(
+            format!("{err:?}").contains("ForbiddenResolutionError"),
+            "failure must come from the SSRF resolver, not the network: {err:?}"
+        );
     }
 
     /// Seed a cached `Rules` decision for a domain, bypassing the fetch.

@@ -165,19 +165,20 @@ impl WreqDownloader {
             },
             None => builder.cookie_store(true),
         };
-        let client = builder
+        let builder = builder
             .timeout(Duration::from_secs(timeout_secs))
             .connect_timeout(Duration::from_secs(connect_timeout_secs))
             .pool_max_idle_per_host(pool_size)
             .pool_idle_timeout(Duration::from_secs(60))
             .gzip(true)
-            .brotli(true)
-            // SSRF guard (#703): default 10-hop limit + stops redirects that
-            // target a literal forbidden IP (belt-and-suspenders). Hostname
-            // targets — including every redirect hop — are enforced at connect
-            // time by the validating DNS resolver below.
-            .redirect(crate::infrastructure::ssrf::redirect_policy())
-            .dns_resolver(crate::infrastructure::ssrf::ValidatingResolver::new())
+            .brotli(true);
+        // SSRF guard (#703) applied through the domain `SsrfGuard` port:
+        // default 10-hop limit + stops redirects that target a literal
+        // forbidden IP (belt-and-suspenders). Hostname targets — including
+        // every redirect hop — are enforced at connect time by the
+        // validating DNS resolver the guard installs.
+        let client = crate::domain::ssrf_guard::ssrf_guard()
+            .secure_client(builder)
             .build()
             // LCOV_EXCL_LINE defensive: wreq-client-build — client construction fails only on invalid TLS profile, an invariant
             .map_err(|e| DownloadError::Internal(format!("failed to build wreq client: {e}")))?;
@@ -636,6 +637,45 @@ mod tests {
             .unwrap();
         let downloader = WreqDownloader::from_client(client, 60, 15);
         assert!(!downloader.supports_interactions());
+    }
+
+    /// SSRF choke-point wiring proof (#1060): the client `WreqDownloader::new`
+    /// actually builds must carry the guard obtained from the `SsrfGuard` port.
+    /// `localhost` resolves to loopback through getaddrinfo with no network
+    /// dependency, so the connect attempt must be rejected by the validating
+    /// resolver — not by the (absent) listener on port 9.
+    #[tokio::test]
+    async fn downloader_client_enforces_ssrf_guard_from_the_port() {
+        // Env hermeticity (#926): the escape hatch is captured at client-build
+        // time, so clearing it must be serialized against siblings that set it.
+        // `EnvGuard` holds the shared process-env lock and restores on drop.
+        let _env = webfang_test_utils::EnvGuard::clean(&[
+            crate::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV,
+        ]);
+        let downloader = WreqDownloader::new(
+            30,
+            10,
+            Profile::Chrome145,
+            None,
+            Vec::new(),
+            None,
+            None,
+            3,
+            1000,
+            10000,
+        )
+        .unwrap();
+
+        let err = downloader
+            .client
+            .get("http://localhost:9/")
+            .send()
+            .await
+            .expect_err("hostname resolving to loopback must fail at connect");
+        assert!(
+            format!("{err:?}").contains("ForbiddenResolutionError"),
+            "failure must come from the SSRF resolver, not the network: {err:?}"
+        );
     }
 
     #[test]
