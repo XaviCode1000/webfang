@@ -1536,7 +1536,9 @@ mod tests {
         // Keep the guard active: the escape hatch must be unset in this
         // process (a no-op under nextest, which gives every test its own
         // process; defensive against shared-process harnesses).
-        std::env::remove_var(crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV);
+        let _guard = webfang_test_utils::EnvGuard::clean(&[
+            crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV,
+        ]);
         let mock_server = MockServer::start().await;
 
         // Location points at a different loopback literal — forbidden by the

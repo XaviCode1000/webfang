@@ -455,7 +455,10 @@ mod tests {
     /// `WreqDownloader::test_fetch_returns_final_url`.
     #[tokio::test]
     async fn fallback_branch_propagates_final_url_after_redirect() {
-        std::env::set_var(crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV, "1");
+        let _guard = webfang_test_utils::EnvGuard::with(&[(
+            crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV,
+            "1",
+        )]);
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
