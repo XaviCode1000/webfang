@@ -156,6 +156,31 @@ impl DomainSessionPool {
         Self::new(SessionPoolConfig::default(), Arc::new(SystemClock))
     }
 
+    /// Build the pool from the domain `SessionPoolConfig` DTO.
+    ///
+    /// ADR-0012-B sub-slice 3.F (#1075): the composition-root helper
+    /// `application::container::build_crawl_session_pool` is the only
+    /// production caller — it lets the application layer hand over the
+    /// domain config DTO without ever naming this module's infrastructure
+    /// config type. The mapping is field-for-field: the domain DTO mirrors
+    /// [`SessionPoolConfig`] exactly (same five fields, same defaults).
+    #[must_use]
+    pub fn from_domain_config(
+        config: crate::domain::session_port::SessionPoolConfig,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        Self::new(
+            SessionPoolConfig {
+                pool_size: config.pool_size,
+                base_delay: config.base_delay,
+                max_delay: config.max_delay,
+                max_exp: config.max_exp,
+                ttl_duration: config.ttl_duration,
+            },
+            clock,
+        )
+    }
+
     /// Calculate exponential backoff delay for a given failure count.
     ///
     /// Applies ±20% jitter to prevent thundering herd on retry.
@@ -569,6 +594,43 @@ mod tests {
 
         let sessions = pool.sessions.get("example.com").unwrap();
         assert_eq!(sessions[0].status, SessionStatus::Healthy);
+    }
+
+    // ── ADR-0012-B 3.F: from_domain_config maps the domain DTO ──
+
+    /// The composition-root seam builds the pool from the domain config DTO.
+    /// `pool_size` is observed through the seeded slot count (the default
+    /// would seed 8); `base_delay` through the ban cooldown — with a single
+    /// slot the ban covers the whole domain, and the 1s default would have
+    /// recovered well before the 120s advance below. `max_delay` is raised
+    /// alongside so the 60s default cap does not mask the delay assertion.
+    #[test]
+    fn from_domain_config_maps_pool_size_and_delays() {
+        let clock = MockClock::new(Instant::now());
+        let pool = DomainSessionPool::from_domain_config(
+            crate::domain::session_port::SessionPoolConfig {
+                pool_size: slots(1),
+                base_delay: Duration::from_secs(3600),
+                max_delay: Duration::from_secs(7200),
+                ..Default::default()
+            },
+            clock.handle(),
+        );
+
+        let id = pool.acquire("example.com").expect("healthy session");
+        assert_eq!(
+            pool.domain_count("example.com"),
+            1,
+            "domain DTO pool_size must seed exactly that many slots"
+        );
+
+        pool.report_failure("example.com", id, 429);
+        clock.advance(Duration::from_secs(120));
+        assert!(
+            pool.acquire("example.com").is_none(),
+            "mapped 1h base_delay must keep the session banned past 120s \
+             (the 1s default would already have recovered)"
+        );
     }
 
     // ── Task 2.2(c): pool size follows the budget model's Domain tier ──

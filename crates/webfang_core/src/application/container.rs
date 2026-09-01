@@ -24,6 +24,7 @@ use crate::application::deduplicator::UrlDeduplicator;
 use crate::application::elastic_ingestion::ElasticIngestion;
 use crate::application::http_client::{HttpClient, HttpClientConfig};
 use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
+use crate::domain::clock::SystemClock;
 use crate::domain::config::ScraperConfig;
 use crate::domain::credentials::CredentialStore;
 use crate::domain::embedding_port::EmbeddingPort;
@@ -32,6 +33,7 @@ use crate::domain::note_repository::{NoteRepository, VaultNoteReader};
 use crate::domain::ports::HttpClientPort;
 use crate::domain::repository::{DynVectorRepository, MultiVectorRepository};
 use crate::domain::semantic_cleaner::SemanticCleaner;
+use crate::domain::session_port::{SessionPoolConfig, SessionPort};
 use crate::domain::text_chunker::TextChunker;
 use crate::domain::{repositories::CrawlResultRepository, CrawlerConfig};
 use crate::infrastructure::autotuning::ElasticConfig;
@@ -143,6 +145,34 @@ pub struct VaultAiPorts {
     /// Semantic cleaner for AI-driven content extraction. `None` when the `ai`
     /// feature is off or no cleaner was injected.
     pub cleaner: Option<Arc<dyn SemanticCleaner>>,
+}
+
+/// Composition-root factory for the crawl session pool (ADR-0012-B 3.F, #1075).
+///
+/// `application::crawler::engine` must not construct the infrastructure
+/// concrete `DomainSessionPool` — the layering rule is trait-in-domain,
+/// concrete-in-infra, DI-via-Container (ADR-0012-B §2.1), and this file is
+/// the permanent allowlist entry that owns the `application → infrastructure`
+/// edge. The engine's options flow (`crawl_site_with_options` with
+/// `session_pool_enabled`) calls this helper with the domain
+/// [`SessionPoolConfig`] DTO and receives the pool erased to the domain
+/// [`SessionPort`].
+///
+/// The domain→infrastructure config mapping lives in
+/// [`DomainSessionPool::from_domain_config`], so this function names no new
+/// infrastructure path beyond the already-imported concrete.
+#[must_use]
+pub(crate) fn build_crawl_session_pool(config: SessionPoolConfig) -> Arc<dyn SessionPort> {
+    // Log the INPUT DTO: `SessionPort::config()` is not overridden by the
+    // concrete (it returns the trait default), so reading it back here would
+    // report defaults instead of the actual sizing.
+    tracing::debug!(
+        pool_size = config.pool_size.get(),
+        base_delay_ms = config.base_delay.as_millis(),
+        "crawl_session_pool_built"
+    );
+    let pool = DomainSessionPool::from_domain_config(config, Arc::new(SystemClock));
+    Arc::new(pool)
 }
 
 impl Container {
@@ -676,6 +706,21 @@ mod tests {
         assert!(
             std::sync::Arc::ptr_eq(&crate::domain::ssrf_guard::ssrf_guard(), &winner),
             "Container::new no debe reemplazar un guard ya armado (keep-first, #996)"
+        );
+    }
+
+    // --- Session-pool composition-root seam (ADR-0012-B sub-slice 3.F, #1075) ---
+
+    /// `build_crawl_session_pool` is the sanctioned place where the domain
+    /// `SessionPoolConfig` DTO becomes an `Arc<dyn SessionPort>`. The returned
+    /// port must serve a healthy acquire immediately (pure construction — no
+    /// wreq/FFI, so this test runs under Miri too).
+    #[test]
+    fn build_crawl_session_pool_returns_usable_port() {
+        let pool = build_crawl_session_pool(SessionPoolConfig::default());
+        assert!(
+            pool.acquire("example.com").is_some(),
+            "the port built by the composition-root seam must serve a healthy acquire"
         );
     }
 
