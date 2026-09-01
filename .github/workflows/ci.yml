@@ -129,7 +129,10 @@ jobs:
       # (steps swallowed into a `run: |` block) stay valid YAML and only fail
       # at runtime post-merge (#833→#835). actionlint + shellcheck catch them
       # statically. Both binaries are downloaded pinned + checksum-verified.
-      - name: Lint GitHub Actions workflows (actionlint)
+      # The same shellcheck binary also lints the repo's own scripts (#1070):
+      # actionlint only shells out to it for the embedded `run:` blocks of
+      # workflow YAML, so `scripts/*.sh` had zero static shell coverage anywhere.
+      - name: Lint GitHub Actions workflows and shell scripts (actionlint + shellcheck)
         run: |
           AL_VERSION=1.7.12
           SC_VERSION=0.11.0
@@ -143,15 +146,22 @@ jobs:
           tar -xzf "${DIR}/actionlint.tar.gz" -C "$DIR" actionlint
           tar -xJf "${DIR}/shellcheck.tar.xz" -C "$DIR" shellcheck-v${SC_VERSION}/shellcheck --strip-components=1
           "$DIR/actionlint" -version
-          # The -ignore list is pre-existing style debt (SC2086 word-splitting,
+          # The ignore list is pre-existing style debt (SC2086 word-splitting,
           # SC2129 redirects, ...). Structural codes like SC2215 ("flag used as
           # command name" = a step swallowed into a run: block) stay FATAL.
           # Keep in sync with the actionlint hook in .pre-commit-config.yaml.
-          "$DIR/actionlint" \
-            -ignore 'SC2010' -ignore 'SC2012' -ignore 'SC2027' \
-            -ignore 'SC2034' -ignore 'SC2046' -ignore 'SC2086' \
-            -ignore 'SC2126' -ignore 'SC2129' \
-            .github/workflows/*.yml
+          # ONE list, defined once, consumed by both lints below: workflow
+          # run-blocks and scripts/*.sh share a single severity policy (#1070).
+          SHELLCHECK_IGNORE=(SC2010 SC2012 SC2027 SC2034 SC2046 SC2086 SC2126 SC2129)
+          AL_IGNORE=()
+          for code in "${SHELLCHECK_IGNORE[@]}"; do AL_IGNORE+=(-ignore "$code"); done
+          "$DIR/actionlint" "${AL_IGNORE[@]}" .github/workflows/*.yml
+          # No --severity filter: every finding outside the shared ignore list
+          # fails this step, so a defect in a delivery-gate script blocks merge the
+          # same way broken workflow YAML does. `--format=gcc` keeps one line per
+          # finding (file:line:col: severity: message [SCnnnn]) in the job log.
+          SC_EXCLUDE="$(IFS=,; echo "${SHELLCHECK_IGNORE[*]}")"
+          "$DIR/shellcheck" -x --exclude="$SC_EXCLUDE" --format=gcc scripts/*.sh
 
   # ============================================================================
   # TIER 1: FORMAT GATE (30-60 seconds)

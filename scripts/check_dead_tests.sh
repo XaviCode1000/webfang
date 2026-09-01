@@ -116,7 +116,7 @@ if [ -d "tests" ]; then
   if [ -n "$ROOT_RS" ]; then
     echo "ERROR: Root tests/ has .rs files — workspace root is virtual (no [package]), so these never compile."
     echo "Move them under crates/<crate>/tests/ or wire them with [[test]] entries."
-    echo "$ROOT_RS" | sed 's/^/  /'
+    printf '%s\n' "  ${ROOT_RS//$'\n'/$'\n'  }"
     DEAD=$((DEAD+1))
   fi
 fi
