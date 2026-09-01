@@ -7,8 +7,9 @@
 //! # Architecture
 //!
 //! Concrete application struct (following the `ElasticIngestion` pattern).
-//! Injects domain ports (`EmbeddingPort`, `NoteRepository`, `TextChunker`)
-//! — no dependency on `webfang_ai` concrete types.
+//! Injects domain ports (`EmbeddingPort`, `NoteRepository`, `TextChunker`,
+//! `VaultNoteReader`) — no dependency on `webfang_ai` concrete types and no
+//! direct infrastructure calls (ADR-0012-B sub-slice 3.I, #1071).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -18,10 +19,9 @@ use std::time::Instant;
 use tracing::{debug, info, instrument, warn};
 
 use crate::domain::embedding_port::EmbeddingPort;
-use crate::domain::note_repository::NoteRepository;
+use crate::domain::note_repository::{NoteRepository, VaultNoteReader};
 use crate::domain::text_chunker::TextChunker;
 use crate::error::ScraperError;
-// domain port: use crate::domain::note_repository::VaultNoteReader;
 
 /// A search result with relevance score and source metadata.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -66,20 +66,27 @@ pub struct VaultSearchService {
     embedding: Arc<dyn EmbeddingPort>,
     repository: Arc<dyn NoteRepository>,
     chunker: Arc<dyn TextChunker>,
+    note_reader: Arc<dyn VaultNoteReader>,
 }
 
 impl VaultSearchService {
-    /// Wire the three pipeline components.
+    /// Wire the four pipeline components.
+    ///
+    /// `note_reader` is the domain port for filesystem vault reads
+    /// (#1071): production callers inject the infrastructure `VaultFsReader`
+    /// (directly or via the `Container`), tests inject a stub.
     #[must_use]
     pub fn new(
         embedding: Arc<dyn EmbeddingPort>,
         repository: Arc<dyn NoteRepository>,
         chunker: Arc<dyn TextChunker>,
+        note_reader: Arc<dyn VaultNoteReader>,
     ) -> Self {
         Self {
             embedding,
             repository,
             chunker,
+            note_reader,
         }
     }
 
@@ -231,8 +238,8 @@ impl VaultSearchService {
     ///
     /// # Pipeline
     ///
-    /// 1. Read all `.md` notes from the vault via
-    ///    [`read_vault_notes`](crate::infrastructure::obsidian::read_vault_notes)
+    /// 1. Read all `.md` notes from the vault via the injected
+    ///    [`VaultNoteReader`] domain port
     /// 2. Load all indexed note metadata via [`NoteRepository::list_indexed_notes`]
     /// 3. Compare content hashes:
     ///    - **New** note (not indexed) → [`index_note`](Self::index_note)
@@ -250,8 +257,8 @@ impl VaultSearchService {
     pub async fn sync_vault(&self, vault_path: &Path) -> Result<SyncSummary, ScraperError> {
         let start = Instant::now();
 
-        // Step 1: Read all notes from the vault filesystem.
-        let notes = crate::infrastructure::obsidian::read_vault_notes(vault_path)?;
+        // Step 1: Read all notes through the injected vault reader port.
+        let notes = self.note_reader.read_vault_notes(vault_path)?;
 
         // Step 2: Load all indexed note metadata.
         let indexed = self.repository.list_indexed_notes().await?;
@@ -434,7 +441,7 @@ mod tests {
 
     // --- Stub ports for sync_vault tests ---
 
-    use crate::domain::note_repository::{IndexedNoteMeta, NoteChunkVector};
+    use crate::domain::note_repository::{IndexedNoteMeta, NoteChunkVector, VaultNote};
     use crate::error::SemanticError;
     use std::future::Future;
     use std::pin::Pin;
@@ -589,7 +596,39 @@ mod tests {
     }
 
     fn test_service(repo: Arc<InMemoryNoteRepo>) -> VaultSearchService {
-        VaultSearchService::new(Arc::new(StubEmbedding), repo, Arc::new(StubChunker))
+        VaultSearchService::new(
+            Arc::new(StubEmbedding),
+            repo,
+            Arc::new(StubChunker),
+            // Real fs adapter over TempDir fixtures — ephemeral and
+            // deterministic; the sync-behavior tests below keep exercising
+            // actual filesystem reads through the port.
+            Arc::new(crate::infrastructure::obsidian::VaultFsReader),
+        )
+    }
+
+    /// Stub reader serving canned notes — proves `sync_vault` consumes the
+    /// injected port instead of reaching for the filesystem.
+    struct CannedNoteReader {
+        notes: Vec<VaultNote>,
+    }
+
+    impl VaultNoteReader for CannedNoteReader {
+        fn read_vault_notes(&self, _vault_path: &Path) -> Result<Vec<VaultNote>, ScraperError> {
+            Ok(self.notes.clone())
+        }
+    }
+
+    /// Stub reader that always fails — exercises error propagation through
+    /// the port seam.
+    struct FailingNoteReader;
+
+    impl VaultNoteReader for FailingNoteReader {
+        fn read_vault_notes(&self, _vault_path: &Path) -> Result<Vec<VaultNote>, ScraperError> {
+            Err(ScraperError::Io(std::io::Error::other(
+                "fixture: vault unreadable",
+            )))
+        }
     }
 
     /// Create a synthetic vault with `.obsidian/` marker and notes.
@@ -736,5 +775,57 @@ mod tests {
         assert_eq!(summary.updated, 1, "change.md");
         assert_eq!(summary.deleted, 1, "delete.md");
         assert_eq!(summary.unchanged, 1, "keep.md");
+    }
+
+    #[tokio::test]
+    async fn sync_vault_reads_notes_through_injected_port() {
+        // On-disk vault is EMPTY: any indexed note must come from the stub,
+        // proving the service reads through `VaultNoteReader` (#1071).
+        let tmp = tempfile::tempdir().unwrap();
+        create_test_vault(tmp.path(), &[]);
+
+        let repo = Arc::new(InMemoryNoteRepo::default());
+        let service = VaultSearchService::new(
+            Arc::new(StubEmbedding),
+            repo.clone(),
+            Arc::new(StubChunker),
+            Arc::new(CannedNoteReader {
+                notes: vec![VaultNote {
+                    path: "stub.md".to_owned(),
+                    content: "# Stub".to_owned(),
+                    mtime_secs: 1_700_000_000,
+                    content_hash: "stubhash".to_owned(),
+                }],
+            }),
+        );
+
+        let summary = service.sync_vault(tmp.path()).await.unwrap();
+        assert_eq!(summary.indexed, 1, "the stub note must be indexed");
+
+        let indexed = repo.list_indexed_notes().await.unwrap();
+        assert_eq!(indexed.len(), 1);
+        assert_eq!(indexed[0].path, "stub.md");
+        assert_eq!(indexed[0].content_hash, "stubhash");
+    }
+
+    #[tokio::test]
+    async fn sync_vault_propagates_reader_io_error() {
+        // A valid on-disk vault must NOT mask the stub's failure: the port
+        // error must bubble up unchanged from step 1 of the pipeline.
+        let tmp = tempfile::tempdir().unwrap();
+        create_test_vault(tmp.path(), &[("a.md", "# A")]);
+
+        let service = VaultSearchService::new(
+            Arc::new(StubEmbedding),
+            Arc::new(InMemoryNoteRepo::default()),
+            Arc::new(StubChunker),
+            Arc::new(FailingNoteReader),
+        );
+
+        let err = service.sync_vault(tmp.path()).await.unwrap_err();
+        assert!(
+            matches!(err, ScraperError::Io(_)),
+            "reader failure must surface as ScraperError::Io, got {err:?}"
+        );
     }
 }
