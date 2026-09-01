@@ -613,10 +613,22 @@ The script:
   If `BEHIND`, exits 3 and asks you to rebase (single maintainer, ~30s; no auto-rebase needed).
 - A **required** check that reports `skipping` is treated as not-green (exit 2). Required
   checks are expected to run; a skipped one is not evidence of anything.
-- Calls `gh pr merge <N> --squash --delete-branch`. This **respects branch protection** —
-  required checks must be green at merge time. It is NOT the synchronous-PUT bypass
-  (`gh api -X PUT .../pulls/N/merge`) which bypasses required checks and should not be
-  used for routine merges.
+- Merges with `gh pr merge <N> --squash` (or `--merge` for batch PRs). This
+  **respects branch protection** — required checks must be green at merge time. It is
+  NOT the synchronous-PUT bypass (`gh api -X PUT .../pulls/N/merge`) which bypasses
+  required checks and should not be used for routine merges.
+    - Deletes the **remote** head branch separately, via `git ls-remote` pre-check then
+      `git push origin --delete`, and only for same-owner PRs. It deliberately never passes
+      `--delete-branch` to `gh pr merge`, for two reasons:
+      1. **Linked-worktree invariant.** In this repo's flow the head branch is checked out
+         in a sibling worktree, and Git refuses to delete a branch that is any worktree's
+         HEAD. `gh` would return rc=1 *after a successful merge* trying to delete the local
+         branch, so the exit code would lie. Remote cleanup here + local cleanup in the
+         runbook keep exit codes truthful.
+      2. **Noisy absent-ref deletes.** `--delete-branch` deletes server-side as part of the
+         merge, while `git push --delete` on an already-absent ref prints a
+         `[remote rejected]` error even when nothing is wrong — hence the pre-check.
+      Do not "fix" this by adding `--delete-branch` manually; it desyncs the runbook.
 - Use `--dry-run` to poll and report without merging.
 
 Do NOT rely on `--auto`: it never accepts in this repo configuration. If a future PR
@@ -674,10 +686,14 @@ for pr in <N1> <N2>; do gh pr close $pr --comment "Superseded by #<batch-PR>"; d
 git push origin --delete <branch1> <branch2>
 ```
 
-**Merge method:** use `gh pr merge <batch-PR> --merge` (merge commit), NOT `--squash`.
-Squash would crush N independent fixes into one commit, losing per-fix revert
-granularity. The merge commit preserves each original commit in main's history.
-Note: `merge-when-green.sh` hardcodes `--squash`, so do NOT use it for batch PRs.
+**Merge method:** use `scripts/merge-when-green.sh <batch-PR> --merge` (merge commit),
+NOT `--squash`. Squash would crush N independent fixes into one commit, losing per-fix
+revert granularity. The merge commit preserves each original commit in main's history.
+The `--merge` flag exists for exactly this case (#1033): going through the script keeps
+a batch merge under all four of its guards — required-context reporting (#1011),
+`UNKNOWN` retry, refusing a **required** check that reports `skipping`, and the
+`CLEAN`/`UNSTABLE` vs `BEHIND`/`BLOCKED` check. Merging a batch by hand silently drops
+them, and a batch is the highest-risk case there is.
 
 > ⚠️ **`UNSTABLE` ≠ failed merge.** With non-required checks failing/skipped,
 > `mergeStateStatus` can be `UNSTABLE` while required checks are green; `gh pr merge`
@@ -733,9 +749,15 @@ cargo build --release        # LTO fat, ~3-5 min
 **PR automation (single maintainer):**
 
 ```bash
-scripts/merge-when-green.sh <PR-N>          # Wait for green checks, squash-merge, delete branch
-scripts/merge-when-green.sh <PR-N> --dry-run # Poll and report; do not merge
+scripts/merge-when-green.sh <PR-N>            # Wait for green checks, squash-merge (default)
+scripts/merge-when-green.sh <PR-N> --merge    # Merge commit — use this for batch PRs
+scripts/merge-when-green.sh <PR-N> --dry-run  # Poll and report; do not merge
 ```
+    
+All three delete the **remote** head branch after a successful merge, via a
+`git ls-remote`-guarded `git push origin --delete` — never with
+`gh pr merge --delete-branch` (see "Automated merge workflow"), and never the
+local branch or worktree, which the post-merge runbook owns.
 
 **Miri (unsafe/concurrent code only):**
 
