@@ -613,10 +613,22 @@ The script:
   If `BEHIND`, exits 3 and asks you to rebase (single maintainer, ~30s; no auto-rebase needed).
 - A **required** check that reports `skipping` is treated as not-green (exit 2). Required
   checks are expected to run; a skipped one is not evidence of anything.
-- Calls `gh pr merge <N> --squash --delete-branch`. This **respects branch protection** —
-  required checks must be green at merge time. It is NOT the synchronous-PUT bypass
-  (`gh api -X PUT .../pulls/N/merge`) which bypasses required checks and should not be
-  used for routine merges.
+- Merges with `gh pr merge <N> --squash` (or `--merge` for batch PRs). This
+  **respects branch protection** — required checks must be green at merge time. It is
+  NOT the synchronous-PUT bypass (`gh api -X PUT .../pulls/N/merge`) which bypasses
+  required checks and should not be used for routine merges.
+    - Deletes the **remote** head branch separately, via `git ls-remote` pre-check then
+      `git push origin --delete`, and only for same-owner PRs. It deliberately never passes
+      `--delete-branch` to `gh pr merge`, for two reasons:
+      1. **Linked-worktree invariant.** In this repo's flow the head branch is checked out
+         in a sibling worktree, and Git refuses to delete a branch that is any worktree's
+         HEAD. `gh` would return rc=1 *after a successful merge* trying to delete the local
+         branch, so the exit code would lie. Remote cleanup here + local cleanup in the
+         runbook keep exit codes truthful.
+      2. **Noisy absent-ref deletes.** `--delete-branch` deletes server-side as part of the
+         merge, while `git push --delete` on an already-absent ref prints a
+         `[remote rejected]` error even when nothing is wrong — hence the pre-check.
+      Do not "fix" this by adding `--delete-branch` manually; it desyncs the runbook.
 - Use `--dry-run` to poll and report without merging.
 
 Do NOT rely on `--auto`: it never accepts in this repo configuration. If a future PR
