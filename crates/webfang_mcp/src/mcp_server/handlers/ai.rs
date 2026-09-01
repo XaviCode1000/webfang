@@ -29,7 +29,7 @@ use rmcp::{model::CallToolResult, model::Content, ErrorData as McpError};
 use tracing::instrument;
 use webfang_core::application::vault_search::{SyncSummary, VaultSearchResult, VaultSearchService};
 use webfang_core::domain::DocumentChunk;
-use webfang_core::infrastructure::obsidian::detect_vault;
+use webfang_core::infrastructure::obsidian::{detect_vault, VaultFsReader};
 
 /// Build an honest tool error (`isError:true`) carrying a Spanish message.
 ///
@@ -187,7 +187,15 @@ impl McpHandler {
             ));
         };
 
-        let service = VaultSearchService::new(embedding, repo, chunker);
+        // Vault reader: prefer the Container-injected port; fall back to the
+        // default fs adapter so the tool keeps working without extra wiring
+        // (ADR-0012-B sub-slice 3.I, #1071).
+        let note_reader = self
+            .state
+            .container
+            .vault_note_reader()
+            .unwrap_or_else(|| std::sync::Arc::new(VaultFsReader));
+        let service = VaultSearchService::new(embedding, repo, chunker, note_reader);
         let limit = params.limit.unwrap_or(10);
 
         // Lazy sync: reconcile the vault filesystem against the index

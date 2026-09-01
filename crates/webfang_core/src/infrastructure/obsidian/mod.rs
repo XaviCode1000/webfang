@@ -21,4 +21,4 @@ pub use uri::{
 pub use vault_detector::{
     detect_vault, detect_vault_hermetic, detect_vault_with_root, is_valid_vault,
 };
-pub use vault_reader::{read_vault_notes, VaultNote};
+pub use vault_reader::{read_vault_notes, VaultFsReader, VaultNote};
