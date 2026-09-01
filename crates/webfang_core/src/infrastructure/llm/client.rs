@@ -56,7 +56,9 @@ struct Usage {
 
 /// OpenAI-compatible chat/completions adapter (covers OpenAI / Ollama / vLLM).
 ///
-/// The client carries no SSRF logic: the application-layer
+/// The client carries no SSRF logic of its own: `new` applies the
+/// domain-owned [`crate::domain::ssrf_guard::SsrfGuard`] port (#703), while
+/// the application-layer
 /// [`crate::application::llm_extraction::ssrf_gate`] validates the base URL
 /// before any request is sent. Unit tests call the client directly against
 /// wiremock (loopback) by design.
@@ -73,15 +75,16 @@ impl OpenAiLlmClient {
     ///
     /// Returns [`ScraperError::Config`] if the wreq client cannot be built.
     pub fn new(base_url: Url, api_key: ApiKey) -> Result<Self> {
-        let client = wreq::Client::builder()
+        let builder = wreq::Client::builder()
             .emulation(wreq_util::Profile::Chrome145)
             .timeout(Duration::from_secs(60))
-            .connect_timeout(Duration::from_secs(10))
-            .redirect(crate::infrastructure::ssrf::redirect_policy())
-            // Connect-time enforcement: every DNS answer is re-validated
-            // (see ssrf::ValidatingResolver); entry-level `ssrf_gate` stays
-            // as fast-fail typed UX, this resolver is defense in depth.
-            .dns_resolver(crate::infrastructure::ssrf::ValidatingResolver::new())
+            .connect_timeout(Duration::from_secs(10));
+        // SSRF guard (#703) applied through the domain `SsrfGuard` port:
+        // literal-IP redirect guard + connect-time validating resolver that
+        // re-validates every DNS answer. Entry-level `ssrf_gate` stays as
+        // fast-fail typed UX; this is defense in depth.
+        let client = crate::domain::ssrf_guard::ssrf_guard()
+            .secure_client(builder)
             .build()
             .map_err(|e| ScraperError::Config(format!("no se pudo crear el cliente LLM: {e}")))?;
         Ok(Self {
@@ -196,6 +199,39 @@ mod tests {
             .respond_with(ResponseTemplate::new(status).set_body_string(body))
             .mount(server)
             .await;
+    }
+
+    /// SSRF choke-point wiring proof (#1060): the client `OpenAiLlmClient::new`
+    /// actually builds must carry the guard obtained from the `SsrfGuard` port.
+    /// `localhost` resolves to loopback through getaddrinfo with no network
+    /// dependency, so the connect attempt must be rejected by the validating
+    /// resolver. (The wiremock tests above pass because their base URL is an
+    /// IP *literal*, which wreq resolves without consulting a custom resolver.)
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[tokio::test]
+    async fn llm_client_enforces_ssrf_guard_from_the_port() {
+        // Env hermeticity (#926): the escape hatch is captured at client-build
+        // time, so clearing it must be serialized against siblings that set it.
+        // `EnvGuard` holds the shared process-env lock and restores on drop.
+        let _env = webfang_test_utils::EnvGuard::clean(&[
+            crate::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV,
+        ]);
+        let client = OpenAiLlmClient::new(
+            Url::parse("http://localhost:9/").expect("loopback url parses"),
+            ApiKey::new("sk-test"),
+        )
+        .expect("client builds");
+
+        let err = client
+            .client
+            .get("http://localhost:9/")
+            .send()
+            .await
+            .expect_err("hostname resolving to loopback must fail at connect");
+        assert!(
+            format!("{err:?}").contains("ForbiddenResolutionError"),
+            "failure must come from the SSRF resolver, not the network: {err:?}"
+        );
     }
 
     #[tokio::test]
