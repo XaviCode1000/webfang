@@ -42,14 +42,13 @@ use crate::application::crawler::crawl_task_ctx::CrawlTaskCtx;
 use crate::application::pipeline::{OutputStage, PipelineExecutor};
 use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::domain::budget::{BudgetModel, BudgetOverrides};
-use crate::domain::clock::SystemClock;
 use crate::domain::cookie_bridge::CookieBridge;
 use crate::domain::downloader_factory::{
     DownloaderFactory, DownloaderSpec, DEFAULT_OBSCURA_BINARY,
 };
 use crate::domain::downloader_port::{DownloadError, Downloader};
 use crate::domain::ram_probe_port::RamProbePort;
-use crate::domain::session_port::SessionPoolConfig;
+use crate::domain::session_port::{SessionPoolConfig, SessionPort};
 use crate::domain::{
     CorrelationId, CrawlError, CrawlErrorCategory, CrawlResult, CrawlerConfig, JsStrategy,
 };
@@ -95,7 +94,11 @@ pub struct Engine {
     /// Shared robots.txt fetcher for the crawl session (TLS-fingerprinted, #337).
     robots_fetcher: Arc<RobotsFetcher>,
     /// Optional domain session pool for per-domain rate limiting.
-    session_pool: Option<crate::infrastructure::network::session_pool::DomainSessionPool>,
+    ///
+    /// Stored as the domain port `Arc<dyn SessionPort>` — the concrete
+    /// `DomainSessionPool` is built by the composition-root helper
+    /// `application::container::build_crawl_session_pool` (ADR-0012-B 3.F).
+    session_pool: Option<Arc<dyn SessionPort>>,
     /// Atomic counter for total pages crawled (used by checkpoint and signal handler).
     pages_crawled: Arc<AtomicU64>,
     /// Shared shutdown signal for graceful termination.
@@ -303,27 +306,14 @@ impl Engine {
     }
 
     /// Enable the domain session pool for per-domain rate limiting.
-    pub fn with_session_pool(mut self, cooldown: Duration) -> Self {
-        // Slot count derives from the model's Domain tier, not a raw default
-        // (task 2.2c).
-        let domain_cfg = SessionPoolConfig {
-            base_delay: cooldown,
-            pool_size: self.budget.domain(),
-            ..SessionPoolConfig::default()
-        };
-        let infra_cfg = crate::infrastructure::network::session_pool::SessionPoolConfig {
-            pool_size: domain_cfg.pool_size,
-            base_delay: domain_cfg.base_delay,
-            max_delay: domain_cfg.max_delay,
-            max_exp: domain_cfg.max_exp,
-            ttl_duration: domain_cfg.ttl_duration,
-        };
-        self.session_pool = Some(
-            crate::infrastructure::network::session_pool::DomainSessionPool::new(
-                infra_cfg,
-                Arc::new(SystemClock),
-            ),
-        );
+    ///
+    /// Pure injection — the engine never constructs the pool. The concrete
+    /// `DomainSessionPool` is built by the composition-root helper
+    /// `application::container::build_crawl_session_pool` and handed over as
+    /// the domain port, mirroring the `Engine::with_ram_probe()` precedent
+    /// (ADR-0012-B sub-slice 3.B-1c).
+    pub fn with_session_pool(mut self, pool: Arc<dyn SessionPort>) -> Self {
+        self.session_pool = Some(pool);
         self
     }
 
@@ -741,10 +731,7 @@ impl Engine {
             queue: self.scheduler.queue(),
             rate_limiter: self.rate_limiter.clone(),
             cancel_token: self.cancel_token.clone(),
-            session_pool: self
-                .session_pool
-                .as_ref()
-                .map(|p| Arc::new(p.clone()) as Arc<dyn crate::domain::session_port::SessionPort>),
+            session_pool: self.session_pool.clone(),
             ignore_robots: self.ignore_robots,
             robots_checker: Arc::new(ports::ProductionRobotsChecker {
                 fetcher: Arc::clone(&self.robots_fetcher),
@@ -1287,9 +1274,20 @@ async fn crawl_site_with_options_inner(
         engine = engine.with_checkpoint(options.checkpoint_interval, path.clone());
     }
 
-    // Apply session pool if enabled
+    // Apply session pool if enabled. ADR-0012-B 3.F: the engine consumes the
+    // domain port — the concrete pool is built by the composition-root helper
+    // in `application::container`. Slot count derives from the model's Domain
+    // tier, not a raw default (task 2.2c); the 2s cooldown is the backoff
+    // base delay, exactly as the former in-engine construction used.
     if options.session_pool_enabled {
-        engine = engine.with_session_pool(Duration::from_secs(2));
+        let pool_cfg = SessionPoolConfig {
+            base_delay: Duration::from_secs(2),
+            pool_size: engine.budget.domain(),
+            ..SessionPoolConfig::default()
+        };
+        engine = engine.with_session_pool(crate::application::container::build_crawl_session_pool(
+            pool_cfg,
+        ));
     }
 
     // Apply the downloader factory before the JS strategy: `with_js_strategy`
@@ -1677,6 +1675,88 @@ mod tests {
             result.total_pages, 1,
             "seed NOT matching exclude pattern must be crawled, got {} pages",
             result.total_pages
+        );
+    }
+
+    // ——— ADR-0012-B sub-slice 3.F: session pool is the domain port (#1075) ———
+
+    /// In-crate fake port — proves `Engine` stores and shares the injected
+    /// trait object itself, with no concrete-pool construction in `application`.
+    struct FakeSessionPort;
+
+    impl SessionPort for FakeSessionPort {
+        fn acquire(&self, _domain: &str) -> Option<crate::domain::session_port::SessionId> {
+            Some(crate::domain::session_port::SessionId(0))
+        }
+        fn report_success(&self, _domain: &str, _session: crate::domain::session_port::SessionId) {}
+        fn report_failure(
+            &self,
+            _domain: &str,
+            _session: crate::domain::session_port::SessionId,
+            _status: u16,
+        ) {
+        }
+    }
+
+    /// 3.F wiring: `with_session_pool` injects the port, and `build_task_ctx`
+    /// hands the SAME `Arc` to the crawl task context (the pre-3.F code cloned
+    /// the concrete into a fresh `Arc`; sharing one instance is the point of
+    /// the port — ban/cooldown state must be visible to every consumer).
+    /// `#[tokio::test]`: `Engine::new` spawns the collector worker.
+    #[tokio::test]
+    async fn with_session_pool_injects_port_shared_with_task_ctx() {
+        let seed = Url::parse("https://example.com").expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed).max_depth(0).build();
+        let pool: Arc<dyn SessionPort> = Arc::new(FakeSessionPort);
+
+        let engine = Engine::new(config, true)
+            .expect("engine must build")
+            .with_session_pool(Arc::clone(&pool));
+
+        let ctx = engine.build_task_ctx();
+        let wired = ctx
+            .session_pool
+            .as_ref()
+            .expect("injected pool must reach the task ctx");
+        assert!(
+            Arc::ptr_eq(wired, &pool),
+            "task ctx must share the injected port instance, not a clone of a concrete"
+        );
+    }
+
+    /// 3.F end-to-end: the options flow (`session_pool_enabled: true`) builds
+    /// the real pool through the composition-root helper
+    /// `application::container::build_crawl_session_pool` and the crawl still
+    /// completes — the port-gated fetch path must not block a healthy domain.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn crawl_site_with_options_session_pool_enabled_crawls_through_port() {
+        let server = MockServer::start().await;
+        let port = server.address().port();
+        Mock::given(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("<html><body>seed</body></html>"),
+            )
+            .mount(&server)
+            .await;
+
+        let seed = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed)
+            .max_depth(0)
+            .max_pages(10)
+            .ignore_robots(true)
+            .build();
+        let options = EngineOptions {
+            session_pool_enabled: true,
+            ignore_robots: true,
+            ..Default::default()
+        };
+
+        let result = crawl_site_with_options(config, options)
+            .await
+            .expect("crawl with session pool enabled must succeed");
+        assert_eq!(
+            result.total_pages, 1,
+            "seed must be crawled through the port-wired pool"
         );
     }
 
