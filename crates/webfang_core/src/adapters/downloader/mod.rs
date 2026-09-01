@@ -257,14 +257,15 @@ impl Downloader {
     /// # Errors
     /// Propagates HTTP-client construction failures.
     pub fn with_asset_cache_capacity(config: DownloadConfig, capacity: usize) -> Result<Self> {
-        let client = Client::builder()
+        let builder = Client::builder()
             .emulation(config.h2_profile)
             .timeout(Duration::from_secs(config.timeout_secs))
-            .user_agent(&config.user_agent)
-            // SSRF guard (#703): identical policy to `new` — same client
-            // construction, only the cache bound differs.
-            .redirect(crate::infrastructure::ssrf::redirect_policy())
-            .dns_resolver(crate::infrastructure::ssrf::ValidatingResolver::new())
+            .user_agent(&config.user_agent);
+        // SSRF guard (#703): identical policy to `new` — same client
+        // construction, only the cache bound differs. Applied through the
+        // domain `SsrfGuard` port.
+        let client = crate::domain::ssrf_guard::ssrf_guard()
+            .secure_client(builder)
             .build()
             .map_err(|e| ScraperError::Config(format!("failed to build http client: {e}")))?;
         Ok(Self::from_parts(client, config, capacity))
@@ -1535,7 +1536,9 @@ mod tests {
         // Keep the guard active: the escape hatch must be unset in this
         // process (a no-op under nextest, which gives every test its own
         // process; defensive against shared-process harnesses).
-        std::env::remove_var(crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV);
+        let _guard = webfang_test_utils::EnvGuard::clean(&[
+            crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV,
+        ]);
         let mock_server = MockServer::start().await;
 
         // Location points at a different loopback literal — forbidden by the

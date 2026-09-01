@@ -293,7 +293,8 @@ mod tests {
 
     #[test]
     fn test_waf_detector_logic() {
-        use webfang_core::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
+        use webfang_core::domain::waf::InspectionContext;
+        use webfang_core::infrastructure::http::waf_engine::WafInspector;
         let clean_html = "<html><body>Normal content</body></html>";
         let verdict = WafInspector::inspect(clean_html, &InspectionContext::default());
         assert!(!verdict.is_blocked);
@@ -301,7 +302,8 @@ mod tests {
 
     #[test]
     fn test_waf_detector_cloudflare() {
-        use webfang_core::infrastructure::http::waf_engine::{InspectionContext, WafInspector};
+        use webfang_core::domain::waf::InspectionContext;
+        use webfang_core::infrastructure::http::waf_engine::WafInspector;
         let cf_html = "<div id=\"cf-turnstile\" data-sitekey=\"abc123\"></div>";
         let verdict = WafInspector::inspect(cf_html, &InspectionContext::default());
         assert!(verdict.is_blocked);

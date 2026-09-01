@@ -72,6 +72,11 @@ STATE.md
 skills/
 .opencode/
 
+# Engram memory cache (local server state, not project source)
+# See AGENTS.md "Engram Persistent Memory" — observations live in the
+# Engram server, not git. .engram/ is the per-project working cache.
+.engram/
+
 # ═══════════════════════════════════════════════════════════
 # EDITORES DE CÓDIGO
 # ═══════════════════════════════════════════════════════════

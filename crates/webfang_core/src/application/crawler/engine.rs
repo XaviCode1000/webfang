@@ -36,7 +36,6 @@ use super::concurrency_level::{ConcurrencyLevel, SharedConcurrencyLevel};
 use super::content_sink::CrawlContentSink;
 use super::crawl_scheduler::CrawlScheduler;
 use super::crawl_task::{handle_crawl_result, run_crawl_task};
-use super::fetch_router::{build_fetch_router, FetchRouter};
 use super::ports;
 use super::progress::CrawlProgress;
 use crate::application::crawler::crawl_task_ctx::CrawlTaskCtx;
@@ -45,13 +44,17 @@ use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::domain::budget::{BudgetModel, BudgetOverrides};
 use crate::domain::clock::SystemClock;
 use crate::domain::cookie_bridge::CookieBridge;
-use crate::domain::downloader_port::DownloadError;
+use crate::domain::downloader_factory::{
+    DownloaderFactory, DownloaderSpec, DEFAULT_OBSCURA_BINARY,
+};
+use crate::domain::downloader_port::{DownloadError, Downloader};
+use crate::domain::ram_probe_port::RamProbePort;
 use crate::domain::session_port::SessionPoolConfig;
 use crate::domain::{
     CorrelationId, CrawlError, CrawlErrorCategory, CrawlResult, CrawlerConfig, JsStrategy,
 };
 use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
-use crate::infrastructure::downloader::resource_governor::ResourceGovernor;
+use crate::infrastructure::downloader::system_ram_probe::SystemRamProbe;
 
 /// Shared shutdown signal — set to `true` when SIGINT/SIGTERM received.
 type ShutdownSignal = Arc<AtomicBool>;
@@ -102,8 +105,17 @@ pub struct Engine {
     cancel_token: CancellationToken,
     /// JavaScript rendering strategy.
     js_strategy: JsStrategy,
-    /// Optional fetch router for hybrid/full JS rendering.
-    fetch_router: Option<FetchRouter>,
+    /// Optional fetch downloader for hybrid/full JS rendering.
+    ///
+    /// Built through the injected [`DownloaderFactory`] — never constructed
+    /// here. `None` means "no factory was injected", which is a fully
+    /// supported state: [`ports::ProductionPageFetcher`] then falls back to
+    /// the static [`fetch_url`](crate::infrastructure::crawler::fetch_url)
+    /// helper.
+    fetch_router: Option<Arc<dyn Downloader>>,
+    /// Factory that builds [`Self::fetch_router`]. `None` disables the
+    /// dynamic fetch path for this engine.
+    downloader_factory: Option<Arc<dyn DownloaderFactory>>,
     /// Cookie bridge for extracting and injecting cookies.
     cookie_bridge: Arc<RwLock<CookieBridge>>,
     /// Domains currently banned due to WAF or rate limiting.
@@ -120,6 +132,11 @@ pub struct Engine {
     /// Immutable budget snapshot built once at entry; every derived tier
     /// (burst, crawl, domain) reads from it.
     budget: BudgetModel,
+    /// System RAM-usage probe — domain port read by the autoscale loop
+    /// (`with_autoscale`) to throttle crawl permits under memory pressure.
+    /// Defaults to the sysinfo-backed production impl; tests inject a fake.
+    /// ADR-0012 sub-slice 3.B-1c.
+    ram_probe: Arc<dyn RamProbePort>,
 }
 
 /// Rate-limiter burst source derived from the budget model (design D4/D1):
@@ -211,12 +228,17 @@ impl Engine {
             cancel_token: CancellationToken::new(),
             js_strategy: JsStrategy::default(),
             fetch_router: None,
+            downloader_factory: None,
             cookie_bridge: Arc::new(RwLock::new(CookieBridge::new())),
             banned_domains: Arc::new(RwLock::new(Vec::new())),
             content_sink: None,
             pipeline: None,
             output_stages: Vec::new(),
             signal_handle: None,
+            // Default to the sysinfo-backed probe so the autoscale loop is
+            // wired without any extra setup. Tests inject a fake via
+            // `Engine::with_ram_probe` (no real sysinfo reads in unit tests).
+            ram_probe: Arc::new(SystemRamProbe::new()),
         })
     }
 
@@ -305,6 +327,22 @@ impl Engine {
         self
     }
 
+    /// Inject the factory that builds the fetch downloader.
+    ///
+    /// Must be called before [`Self::with_js_strategy`], which is where the
+    /// factory is actually invoked. Without it `with_js_strategy` records the
+    /// strategy but leaves the downloader unset, and the crawl falls back to
+    /// the static `fetch_url()` path — hybrid/full rendering silently
+    /// degrades to static. Callers that need JS rendering own this wiring:
+    /// `application` cannot name a concrete factory without re-introducing
+    /// the `application → infrastructure` edge this port removes, so the
+    /// composition happens in the gate-exempt `cli` layer.
+    #[must_use]
+    pub fn with_downloader_factory(mut self, factory: Arc<dyn DownloaderFactory>) -> Self {
+        self.downloader_factory = Some(factory);
+        self
+    }
+
     /// Set the JavaScript rendering strategy.
     ///
     /// `tls_emulation` is the TLS/HTTP2 fingerprint profile applied to the wreq
@@ -313,12 +351,18 @@ impl Engine {
     /// Hybrid Layer 2 binary — a path is invoked as given, a bare name is
     /// resolved from `PATH` (#787).
     ///
+    /// The downloader itself is built by the factory injected through
+    /// [`Self::with_downloader_factory`]. When no factory was injected the
+    /// strategy is still recorded but no downloader is built: there is no
+    /// built-in fallback, because building one would mean `application`
+    /// constructing infrastructure concretes again.
+    ///
     /// # Errors
     ///
     /// Returns [`DownloadError::Internal`] if the wreq client cannot be built.
     // 8 params: the strategy's full dependency set (profile, WAF, retry
     // backoff, obscura binary). Bundling them would only move the same
-    // wiring one level up (same pattern as build_fetch_router).
+    // wiring one level up (same pattern as DownloaderSpec).
     #[allow(clippy::too_many_arguments)]
     pub fn with_js_strategy(
         mut self,
@@ -331,42 +375,55 @@ impl Engine {
         obscura_binary: String,
     ) -> Result<Self, DownloadError> {
         let timeout = self.config.timeout_secs;
-        let router = build_fetch_router(
-            &strategy,
-            timeout,
-            tls_emulation,
-            Arc::clone(&self.cookie_bridge),
-            ignore_waf,
-            // #503: the Engine path keeps today's rotating default behavior —
-            // `CrawlerConfig.user_agent` is a separate dead field, out of scope.
-            None,
-            // #890: operator headers/cookies are wired on the scrape path
-            // (cli/scrape_flow.rs). The Engine path keeps profile-default
-            // behavior — same out-of-scope precedent as the UA above.
-            Vec::new(),
-            None,
-            None,
-            // #509: the Full strategy's governor shares the engine token so
-            // permit waits abort on shutdown.
-            self.cancel_token.clone(),
-            max_retries,
-            backoff_base_ms,
-            backoff_max_ms,
-            &obscura_binary,
-        )?;
+        // No factory injected => no downloader built. `None` is a supported
+        // state: ProductionPageFetcher falls back to the static fetch_url().
+        let router = self
+            .downloader_factory
+            .as_ref()
+            .map(|factory| {
+                factory.build(
+                    &DownloaderSpec {
+                        strategy,
+                        timeout_secs: timeout,
+                        tls_emulation,
+                        ignore_waf,
+                        // #503: the Engine path keeps today's rotating default
+                        // behavior — `CrawlerConfig.user_agent` is a separate
+                        // dead field, out of scope.
+                        user_agent: None,
+                        // #890: operator headers/cookies are wired on the scrape
+                        // path (cli/scrape_flow.rs). The Engine path keeps
+                        // profile-default behavior — same out-of-scope precedent
+                        // as the UA above.
+                        custom_headers: Vec::new(),
+                        accept_language: None,
+                        initial_cookie_jar: None,
+                        max_retries,
+                        backoff_base_ms,
+                        backoff_max_ms,
+                        obscura_binary,
+                    },
+                    // #509: the Full strategy's governor shares the engine token
+                    // so permit waits abort on shutdown.
+                    Arc::clone(&self.cookie_bridge),
+                    self.cancel_token.clone(),
+                )
+            })
+            .transpose()?;
         self.js_strategy = strategy;
-        self.fetch_router = Some(router);
+        self.fetch_router = router;
         Ok(self)
     }
 
     /// Enable autoscaled concurrency based on system RAM.
     ///
-    /// Spawns a background task that polls `ResourceGovernor::ram_usage_percent()`
+    /// Spawns a background task that polls the injected [`RamProbePort`]
     /// every 5 seconds and adjusts the shared concurrency level accordingly.
     /// The engine's spawn loop reads this level to compute effective concurrency.
     pub fn with_autoscale(mut self) -> Self {
         let level = Arc::new(SharedConcurrencyLevel::new());
         let level_clone = Arc::clone(&level);
+        let probe = Arc::clone(&self.ram_probe);
 
         tokio::spawn(
             async move {
@@ -374,17 +431,17 @@ impl Engine {
                 interval.tick().await; // skip first immediate tick
                 loop {
                     interval.tick().await;
-                    let usage = ResourceGovernor::ram_usage_percent();
-                    let new_level = if usage >= 90 {
+                    let usage = probe.ram_usage_percent().as_percent();
+                    let new_level = if usage >= f32::from(crate::domain::budget::derivation::RamThresholds::DEFAULT_CRITICAL_PERCENT) {
                         ConcurrencyLevel::Critical
-                    } else if usage >= 80 {
+                    } else if usage >= f32::from(crate::domain::budget::derivation::RamThresholds::DEFAULT_WARNING_PERCENT) {
                         ConcurrencyLevel::Reduced
                     } else {
                         ConcurrencyLevel::Normal
                     };
                     if level_clone.get() != new_level {
                         info!(
-                            "Autoscale: RAM {usage}% → concurrency level {:?}",
+                            "Autoscale: RAM {usage:.2}% → concurrency level {:?}",
                             new_level
                         );
                         level_clone.set(new_level);
@@ -395,6 +452,17 @@ impl Engine {
         );
 
         self.scheduler.set_autoscale(level);
+        self
+    }
+
+    /// Override the RAM-usage probe used by [`Self::with_autoscale`].
+    ///
+    /// Tests inject a deterministic fake so the autoscale loop's threshold
+    /// branches can be exercised without real sysinfo reads. Production
+    /// code can leave the default ([`SystemRamProbe`]) in place.
+    #[must_use]
+    pub fn with_ram_probe(mut self, probe: Arc<dyn RamProbePort>) -> Self {
+        self.ram_probe = probe;
         self
     }
 
@@ -990,6 +1058,16 @@ pub struct EngineOptions {
     pub backoff_base_ms: u64,
     /// Maximum delay for exponential backoff (ms).
     pub backoff_max_ms: u64,
+    /// Factory that builds the fetch downloader for `js_strategy`.
+    ///
+    /// `None` (the default) means the engine records the strategy but builds
+    /// no downloader, so the crawl uses the static `fetch_url()` path. Any
+    /// caller that needs `Hybrid` or `Full` rendering MUST inject a factory —
+    /// the only production implementation lives in
+    /// [`crate::infrastructure::downloader::fetch_router::DefaultDownloaderFactory`],
+    /// so wiring it is a `cli`/composition-root responsibility (`cli` is
+    /// exempt from the ADR-0010 direction gate).
+    pub downloader_factory: Option<Arc<dyn DownloaderFactory>>,
 }
 
 impl Default for EngineOptions {
@@ -1002,15 +1080,14 @@ impl Default for EngineOptions {
             js_strategy: JsStrategy::default(),
             // #787: keep today's `obscura`-on-PATH behavior for callers that
             // do not configure the binary.
-            obscura_binary:
-                crate::infrastructure::downloader::obscura_downloader::DEFAULT_OBSCURA_BINARY
-                    .to_string(),
+            obscura_binary: DEFAULT_OBSCURA_BINARY.to_string(),
             autoscale_enabled: false,
             tls_emulation: Profile::Chrome145,
             ignore_waf: false,
             max_retries: 3,
             backoff_base_ms: 1000,
             backoff_max_ms: 10000,
+            downloader_factory: None,
         }
     }
 }
@@ -1213,6 +1290,12 @@ async fn crawl_site_with_options_inner(
     // Apply session pool if enabled
     if options.session_pool_enabled {
         engine = engine.with_session_pool(Duration::from_secs(2));
+    }
+
+    // Apply the downloader factory before the JS strategy: `with_js_strategy`
+    // is where the factory is invoked, and it has no built-in fallback.
+    if let Some(factory) = options.downloader_factory.clone() {
+        engine = engine.with_downloader_factory(factory);
     }
 
     // Apply JS strategy
@@ -1648,5 +1731,53 @@ mod tests {
         };
         let engine = engine.with_persistence(mode);
         assert!(engine.checkpoint_path.is_none());
+    }
+
+    /// ADR-0012 sub-slice 3.B-1c — the autoscale loop MUST read RAM via the
+    /// injected [`RamProbePort`], not via a hardcoded `ResourceGovernor` static
+    /// call. This test injects a high-pressure reading, runs the autoscale
+    /// background task, and asserts the shared concurrency level reaches
+    /// `Critical` without ever touching real sysinfo.
+    #[tokio::test]
+    async fn with_autoscale_uses_injected_ram_probe() {
+        #[derive(Debug)]
+        struct HighPressureProbe;
+        impl crate::domain::ram_probe_port::RamProbePort for HighPressureProbe {
+            fn ram_usage_percent(&self) -> crate::domain::ram_probe_port::RamUsagePercent {
+                crate::domain::ram_probe_port::RamUsagePercent::new_clamped(95.0)
+            }
+        }
+        impl crate::domain::ram_probe_port::Sealed for HighPressureProbe {}
+
+        let seed = Url::parse("http://127.0.0.1:9/").expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed).build();
+        let engine = Engine::new(config, true)
+            .expect("engine must build")
+            .with_ram_probe(Arc::new(HighPressureProbe))
+            .with_autoscale();
+
+        // The probe returns 95% on every poll. The autoscale background loop
+        // ticks at 5s; we wait long enough for at least one post-skip tick
+        // to land, then verify the shared level moved to Critical. The
+        // probe is `Arc<dyn RamProbePort>` so it MUST be the one polled —
+        // not the production `SystemRamProbe`.
+        let level = engine
+            .scheduler
+            .autoscale_level()
+            .expect("with_autoscale must install a level")
+            .clone();
+        // Sleep slightly longer than one 5s tick so the spawn'd loop runs
+        // at least once past the initial skip-tick.
+        tokio::time::sleep(Duration::from_millis(5_100)).await;
+        assert_ne!(
+            level.get(),
+            crate::application::crawler::concurrency_level::ConcurrencyLevel::Normal,
+            "autoscale loop must have moved off Normal under 95% injected RAM pressure",
+        );
+        assert_eq!(
+            level.get(),
+            crate::application::crawler::concurrency_level::ConcurrencyLevel::Critical,
+            "autoscale loop must reach Critical at 95% (>= 90% threshold)",
+        );
     }
 }

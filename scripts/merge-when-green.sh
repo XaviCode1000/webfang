@@ -6,8 +6,14 @@
 #   scripts/merge-when-green.sh <PR-NUMBER> --dry-run
 #
 # Behavior:
-#   1. Polls `gh pr checks <N> --watch --required --fail-fast` until all required
-#      checks are SUCCESS or one FAILS/CANCELS.
+#   1. Reads the required status-check contexts from branch protection, then polls
+#      `gh pr checks --json name,bucket` until EVERY one of them has REPORTED with
+#      a terminal bucket, and all report `pass`. Waiting on
+#      `gh pr checks --watch --required` alone is not enough: it evaluates against
+#      the checks reported so far, so right after a push it can declare GREEN from a
+#      subset while a slow aggregator context has not been queued yet (#1011). If
+#      the required-context list cannot be read, it falls back to that older watch
+#      behaviour and says so on stderr.
 #   2. Verifies mergeStateStatus is CLEAN or UNSTABLE (not BEHIND, BLOCKED, or
 #      CONFLICT). UNSTABLE with required checks green is this repo's normal
 #      green state: several jobs are skipped by design on PRs (Deploy Docs,
@@ -19,9 +25,10 @@
 # Exit codes:
 #   0  PR merged.
 #   1  Invalid arguments or missing gh.
-#   2  Required check FAILED or was CANCELLED.
+#   2  Required check FAILED, was CANCELLED, or SKIPPED.
 #   3  All checks green but merge state is not mergeable (e.g. BEHIND — rebase first).
-#   4  gh command failure (network, auth, etc.).
+#   4  gh command failure (network, auth, etc.) or a required context that never
+#      reported before the deadline.
 #
 # Notes:
 #   - Respects branch protection: uses `gh pr merge --squash` (NOT --admin, NOT
@@ -110,29 +117,112 @@ if ! command -v gh >/dev/null 2>&1; then
 fi
 
 # --- 1. Wait for required checks to finish -----------------------------------
-# `gh pr checks --watch --required --fail-fast` exits:
-#   0  All required checks SUCCESS.
-#   8  Still pending (timeout unlikely — watch blocks).
-#   1 Some check FAILED or gh error.
+# Do NOT trust `gh pr checks --watch --required` as the "all done" signal.
+# `--required` evaluates against the checks GitHub has REPORTED SO FAR, not
+# against the required-context list from branch protection. Immediately after a
+# push only the fast jobs have reported; a slow aggregator like `CI Gate` is not
+# yet QUEUED, so it is absent rather than pending and "all required checks are
+# green" is trivially satisfied by a subset. That reported GREEN while
+# mergeStateStatus was still BLOCKED (#1011).
+#
+# Instead: read the required contexts from branch protection, then poll until
+# every one of them has REPORTED with a terminal bucket.
 echo "==> Waiting for required checks on PR #${pr_number}..."
-# NOTE: capture the exit status with `cmd || rc=$?`, NOT `if ! cmd; then rc=$?`.
-# Inside the `then` block of a negated command, `$?` is the status of the
-# negated pipeline (always 0 when the body runs), so the real gh status would
-# be lost (#938).
-rc=0
-gh pr checks "$pr_number" --watch --required --fail-fast >/dev/null || rc=$?
-if [[ $rc -ne 0 ]]; then
-  if [[ $rc -eq 8 ]]; then
-    echo "error: checks still pending after watch exit" >&2
-    exit 4
-  fi
-  echo "error: one or more required checks FAILED or were CANCELLED (rc=${rc})" >&2
-  exit 2
+
+repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+
+# Newer protection configs use checks[].context; older ones use contexts[].
+required="$(gh api "repos/${repo}/branches/main/protection" \
+  --jq '.required_status_checks.checks[]?.context // empty' 2>/dev/null || true)"
+if [[ -z "$required" ]]; then
+  required="$(gh api "repos/${repo}/branches/main/protection" \
+    --jq '.required_status_checks.contexts[]? // empty' 2>/dev/null || true)"
 fi
-echo "    all required checks are GREEN."
+
+if [[ -z "$required" ]]; then
+  echo "warning: could not read required contexts from branch protection." >&2
+  echo "         Falling back to 'gh pr checks --watch --required', which is the" >&2
+  echo "         behaviour that reported a false GREEN in #1011." >&2
+  # NOTE: capture the exit status with `cmd || rc=$?`, NOT `if ! cmd; then rc=$?`.
+  # Inside the `then` block of a negated command, `$?` is the status of the
+  # negated pipeline (always 0 when the body runs), so the real gh status would
+  # be lost (#938).
+  rc=0
+  gh pr checks "$pr_number" --watch --required --fail-fast >/dev/null || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    if [[ $rc -eq 8 ]]; then
+      echo "error: checks still pending after watch exit" >&2
+      exit 4
+    fi
+    echo "error: one or more required checks FAILED or were CANCELLED (rc=${rc})" >&2
+    exit 2
+  fi
+  echo "    all required checks are GREEN."
+else
+  required_count=$(printf '%s\n' "$required" | sed '/^[[:space:]]*$/d' | wc -l)
+  echo "    required contexts from branch protection: $(printf '%s\n' "$required" | tr '\n' ',' | sed 's/,$//')"
+
+  # ~10 min at 15s. CI is ~8.5 min on this repo, so this bounds the loop without
+  # pre-empting a normal run.
+  deadline=$((SECONDS + 600))
+  while :; do
+    checks_json="$(gh pr checks "$pr_number" --json name,bucket 2>/dev/null || echo '[]')"
+    buckets="$(printf '%s' "$checks_json" \
+      | jq -r '.[] | "\(.bucket)\t\(.name)"' 2>/dev/null || true)"
+
+    missing=0
+    notgreen=""
+    while IFS= read -r name; do
+      [[ -z "$name" ]] && continue
+      bucket="$(printf '%s\n' "$buckets" | awk -F'\t' -v n="$name" '$2 == n { print $1; exit }')"
+      case "$bucket" in
+        pass) ;;
+        fail) notgreen+=" ${name}=failed" ;;
+        cancelled) notgreen+=" ${name}=cancelled" ;;
+        # A REQUIRED check that skipped is not a pass. Fail closed rather than
+        # merge on a check that never ran.
+        skipping) notgreen+=" ${name}=skipped" ;;
+        *) missing=1 ;;
+      esac
+    done <<< "$required"
+
+    if [[ -n "$notgreen" ]]; then
+      echo "error: required checks not green:${notgreen}" >&2
+      exit 2
+    fi
+
+    if [[ $missing -eq 0 ]]; then
+      echo "    all ${required_count} required checks reported and GREEN."
+      break
+    fi
+
+    if [[ $SECONDS -ge $deadline ]]; then
+      echo "error: timed out waiting for every required context to REPORT (not merely to pass)." >&2
+      echo "       A required context that never appears in the rollup is the #1011 failure mode." >&2
+      exit 4
+    fi
+    sleep 15
+  done
+fi
 
 # --- 2. Verify merge state is CLEAN ------------------------------------------
-state=$(gh pr view "$pr_number" --json mergeStateStatus --jq .mergeStateStatus)
+# UNKNOWN is not a verdict, it is GitHub still computing mergeability — which is
+# the same class of bug as #1011 (acting on an incomplete answer). Reproduced on
+# PR #1017 right after its required checks all went green. Retry within a bounded
+# window before treating it as a failure.
+state="$(gh pr view "$pr_number" --json mergeStateStatus --jq .mergeStateStatus)"
+state_deadline=$((SECONDS + 90))
+while [[ "$state" == "UNKNOWN" ]]; do
+  if [[ $SECONDS -ge $state_deadline ]]; then
+    echo "error: mergeStateStatus still UNKNOWN after 90s — GitHub has not finished" >&2
+    echo "       computing mergeability. Re-run this script." >&2
+    exit 4
+  fi
+  echo "    mergeStateStatus is UNKNOWN (still computing); retrying..."
+  sleep 10
+  state="$(gh pr view "$pr_number" --json mergeStateStatus --jq .mergeStateStatus)"
+done
+
 case "$state" in
   CLEAN|UNSTABLE)
     : ;;  # good — UNSTABLE with required green is mergeable (skipped jobs, #823)

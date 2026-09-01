@@ -71,8 +71,8 @@ In worktrees, BOTH tools need the **absolute worktree path** or they silently re
 
 | Tool | Parameter | Example |
 | :--- | :--- | :--- |
-| CodeDB MCP | `project=` | `project="/home/xavi/Projects/webfang-worktrees/<dir>"` |
-| CodeGraph MCP | `projectPath=` | `projectPath="/home/xavi/Projects/webfang-worktrees/<dir>"` |
+| CodeDB MCP | `project=` | `project="/home/xavi/Projects/Rust/webfang-worktrees/<dir>"` |
+| CodeGraph MCP | `projectPath=` | `projectPath="/home/xavi/Projects/Rust/webfang-worktrees/<dir>"` |
 
 **NEVER use** bare project names in worktrees — ambiguous between main + all worktrees (#360). The absolute path is the official upstream disambiguation.
 
@@ -264,37 +264,38 @@ This project uses **sibling worktrees** for parallel development. Each active br
 
 - **CWD is the absolute boundary.** Never access paths outside the current worktree via `../<sibling-worktree>/`.
 - **ONE worktree per session.** Never switch branches mid-task — create a new worktree instead.
+- **`.git/worktrees/` is Git's internal state.** Never create, edit, or delete entries there by hand — use `git worktree add/remove/prune/repair`.
 - **Forbidden commands:**
   - `git checkout`, `git switch` — they change the branch inside the current worktree. Use `git worktree add`.
   - `git stash` / `git stash pop` / `git stash apply` / `git stash drop` — **stash storage (`refs/stash`) is shared across ALL worktrees**. A `pop` in one worktree can apply a stash from a completely different session. If you need to set work aside, commit to a throwaway branch.
   - `git worktree move`, `git worktree lock` — use `remove` + `add` instead.
-- **Forbidden:** any commit whose branch doesn't match the worktree's directory name (enforced by global pre-commit hook).
+  - `git worktree add --force` — it bypasses Git's native guard that refuses a branch already checked out in another worktree. Two agents on the same branch is exactly the failure that guard prevents. Only with explicit human authorization.
 
 ### Placement & naming
 
 Worktrees live as **siblings** of the repo (never inside it — in-repo worktrees cause recursion with file watchers, ripgrep, and code intelligence tools):
 
 ```text
-~/Projects/
+~/Projects/Rust/
 ├── webfang/                     # main repo (always on main)
 ├── webfang-worktrees/           # worktree siblings (gitignored globally)
 │   ├── feat-auth/               # branch: feat/auth
 │   └── fix-crawler-timeout/     # branch: fix/crawler-timeout
 ```
 
-Branch `feat/auth` → directory `feat-auth` (`/` → `-`). The global pre-commit hook validates this mapping.
+Branch `feat/auth` → directory `feat-auth` (`/` → `-`). Worktree/branch matching is a CONVENTION the agent must verify; run `[ "$(basename "$PWD")" = "$(git branch --show-current | tr '/' '-')" ] || echo "MISMATCH"` before each commit in a worktree.
 
 ### Worktree lifecycle
 
 **Create (from main repo):**
 
 ```bash
-git worktree add ~/Projects/webfang-worktrees/feat-auth -b feat/auth
-cd ~/Projects/webfang-worktrees/feat-auth
+git worktree add ~/Projects/Rust/webfang-worktrees/feat-auth -b feat/auth
+cd ~/Projects/Rust/webfang-worktrees/feat-auth
 
 # Per-worktree bootstrap (NONE of these are shared):
-cp ~/Projects/webfang/.envrc . && direnv allow     # shared CARGO_TARGET_DIR (gitignored)
-cp ~/Projects/webfang/.env .                       # .env is gitignored
+cp ~/Projects/Rust/webfang/.envrc . && direnv allow     # shared CARGO_TARGET_DIR (gitignored)
+cp ~/Projects/Rust/webfang/.env .                       # .env is gitignored
 codegraph init                                     # CodeGraph: source exploration index
 codedb index .                                     # CodeDB: inverted index + outlines
 cargo build                                        # fast: reuses shared target via direnv
@@ -316,16 +317,21 @@ git log main --oneline -10                         # inspect history
 
 ### Post-merge cleanup & mission handoff (MANDATORY)
 
-A merge is NOT done until the repo is clean and ready for the next mission. Cleanup is part of the **definition of done**. Run from the MAIN repo (`~/Projects/webfang`, always on `main`):
+A merge is NOT done until the repo is clean and ready for the next mission. Cleanup is part of the **definition of done**. Run from the MAIN repo (`~/Projects/Rust/webfang`, always on `main`):
 
 1. **Verify the merge landed** — `gh pr view <N> --json state,mergedAt,mergeCommit`; `state` must be `MERGED`.
 2. **Sync local main (ff-only)** — `git fetch origin && git merge --ff-only origin/main`. If `--ff-only` FAILS, local main diverged — STOP and investigate; never paper over it.
-3. **Remove the mission worktree** — `git worktree remove ~/Projects/webfang-worktrees/<dir>`.
+3. **Remove the mission worktree** — `git worktree remove ~/Projects/Rust/webfang-worktrees/<dir>`.
 4. **Delete the local branch** — `git branch -D <type>/<description>`. Squash-merge rewrites history, so safe `-d` refuses; the step-1 `MERGED` check is your safety net. Never touch: `main`, `gh-pages`, `backup/*`, or the current branch.
 5. **Prune orphaned metadata** — `git worktree prune`.
 6. **Verify the handoff contract** — `git worktree list` (ONLY main), `git branch -vv` (ONLY main, in sync), `git status --short` (empty).
 
-**Automated safety net:** a weekly systemd timer (`git-hygiene.timer`, Sun 03:00) prunes confirmed-safe stale LOCAL branches. It SKIPS `*-worktrees` containers and never syncs main — worktree removal and ff-only sync are STILL your per-mission responsibility.
+**No automated safety net is installed.** This file previously described a weekly systemd
+`git-hygiene.timer` (Sun 03:00) that pruned confirmed-safe stale local branches. **That
+timer does not exist in this environment** — verified 2026-08-30: `systemctl --user
+list-timers --all` lists no such unit and `~/.config/systemd/user/` does not exist. Every
+step of the runbook above is therefore entirely manual. If the timer is ever installed,
+restore the description here with its actual scope.
 
 ### Shared vs. per-worktree resources
 
@@ -345,14 +351,56 @@ A merge is NOT done until the repo is clean and ready for the next mission. Clea
 
 Both tools resolve projects by name; bare-name resolution picks the main checkout — so queries run from a worktree without the absolute path read the **main checkout**, not your worktree (#360). **In worktrees, ALWAYS use the absolute path** (§2.3).
 
-### Bounded Review (4R) in worktrees
+### Bounded review — delivery gates wired, and what they actually enforce (#1036, #1047, #1050)
 
-The gentle-ai bounded review hook resolves the target repo from the OpenCode session CWD. When the session runs from main but changes live in a worktree, the binding mismatches and every lens refuses to launch.
+RDD is ON (decided by global). Reviews are routed per candidate through the Pi
+review tools. `core.hooksPath` points at `scripts/githooks/`, so `pre-commit` and
+`pre-push` consult `gentle-ai review validate --gate <gate>` on every delivery.
 
-- **Option A (proper):** set `GENTLE_AI_REVIEW_CWD=<absolute worktree path>` in the OpenCode server environment BEFORE starting the session.
-- **Option B (no restart):** launch lenses as `general` agents — the hook only intercepts `review-*` agent types with a `GENTLE_AI_REVIEW_BINDING` prefix.
+**What the gate really blocks:** it blocks only while a review lineage governs
+*this exact candidate* and has not reached an allowed state. It is **not** a
+receipt gate and cannot be:
 
-The project's PR workflow does NOT require a gentle-ai review receipt — only cargo gates, linked issue, one `type:*` label, conventional branch.
+- `review acknowledge-approved` is terminal and **burns the lineage** — after
+  approval there is no durable receipt for any gate to consult.
+- Authority is pinned to a candidate tree; **any change to the candidate
+  un-governs it**. Observed directly in #1048: the hook printed
+  `delivery: unmanaged` while the lineage sat in `correction_required`, because
+  the correction commit produced a new candidate identity.
+- The provider declares this boundary deliberately: review verdicts are
+  model-produced (untrusted actor output), so `gentle-ai` states its gates are
+  **"informational and unmanaged; ordinary repository policy decides
+  delivery"** (upstream: gentle-pi `README.md:135`, `:272`, `:306`,
+  `docs/native-authority-architecture.md:5`, and the policy string embedded in
+  the `gentle-ai` binary).
+
+So the wiring is honest friction — no commit while a review of this candidate is
+open, and no silent delivery over a hung or failing gate — not a delivery
+authorization. Treat "the review passed" as evidence, never as permission.
+
+**Mechanism** — repo-local git config, shared across all worktrees. Fresh clones
+must run `git config core.hooksPath scripts/githooks`. Decision matrix:
+
+| validate output | hook decision |
+|---|---|
+| `gentle-ai` binary absent | ALLOW + warning (a machine without the tool cannot gate anything) |
+| validate fails, hangs past `timeout 20s`, or output is unparseable | **BLOCK** (fail-closed) |
+| `delivery: unmanaged` | ALLOW — ordinary repository policy applies |
+| `allowed: true` | ALLOW |
+| any other governed state | **BLOCK** |
+
+The verdict is parsed from JSON, never from the exit code: `validate` exits **0
+even when `allowed: false`**. `jq` is preferred with a built-in `sed` scalar
+fallback, so a missing `jq` downgrades the parser but never disables the gate.
+
+**Boundary:** initiating a review from a plain shell fails with
+`immutable_review_transport_unsupported` — the relay contract is host-only. The
+hooks therefore only *consult* an existing verdict; reviews are initiated
+through the Pi review tools, which persist the authority `validate` reads.
+Measured 2026-08-30: `validate --gate` itself exits 0 and abstains
+(`delivery: unmanaged`) for unmanaged candidates, so the wiring does not block
+ordinary commits — refuting the earlier "hooks would block every commit"
+claim (#1047 fact 2/3).
 
 ### Rebase caveats
 
@@ -428,6 +476,13 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 Every PR is validated on open / edit / synchronize / label changes. **All three MUST pass:**
 
 1. **Linked issue** — PR body must contain `Closes #N`, `Fixes #N`, or `Resolves #N`.
+   For a **partial slice of an umbrella issue**, use `Closes part of #N` — it passes
+   validation and, because GitHub's auto-close requires strict adjacency, does **not**
+   close the umbrella. Never write a bare `Closes #N` against an umbrella that has
+   remaining scope: it auto-closes the tracker mid-plan, which is exactly how #994 was
+   closed after sub-slice 1 of 5 with 0 of 11 acceptance criteria ticked (#1010).
+   The cleanest shape remains **one issue per PR**, with the umbrella as an index that
+   links child issues rather than a link target.
 2. **Exactly one `type:*` label** — count of labels starting with `type:` must be exactly 1.
 3. **Conventional branch name** — must match `^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)/[a-z0-9._-]+$`.
 
@@ -543,11 +598,21 @@ The automation path that works:
 
 The script:
 
-- Polls `gh pr checks <N> --watch --required --fail-fast` until all required checks are
-  SUCCESS or one FAILS/CANCELS (exit 2 on failure).
+- Reads the required status-check contexts from **branch protection**, then polls
+  `gh pr checks <N> --json name,bucket` until every one of them has **reported** with a
+  terminal bucket, and all report `pass` (exit 2 on failure, 4 if a required context
+  never reports). Waiting on `--watch --required` alone is unsafe: it evaluates against
+  the checks reported *so far*, so immediately after a push it declared "all required
+  checks are GREEN" from a 2-of-3 subset while `CI Gate` had not been queued yet, then
+  exited 3 on `BLOCKED` (#1011). If the required-context list cannot be read, the script
+  falls back to the old watch behaviour and warns on stderr.
 - Verifies `mergeStateStatus` is `CLEAN` or `UNSTABLE` (UNSTABLE with required checks
   green is the repo's normal green state — skipped-by-design jobs push it there, #823).
+  `UNKNOWN` is retried for up to 90s rather than treated as a verdict — it means GitHub
+  has not finished computing mergeability, the same incomplete-answer class as #1011.
   If `BEHIND`, exits 3 and asks you to rebase (single maintainer, ~30s; no auto-rebase needed).
+- A **required** check that reports `skipping` is treated as not-green (exit 2). Required
+  checks are expected to run; a skipped one is not evidence of anything.
 - Calls `gh pr merge <N> --squash --delete-branch`. This **respects branch protection** —
   required checks must be green at merge time. It is NOT the synchronous-PUT bypass
   (`gh api -X PUT .../pulls/N/merge`) which bypasses required checks and should not be
@@ -580,7 +645,7 @@ re-runs the FULL CI (~27 min). N PRs sequential ≈ N × 27 min. One batch PR �
 ```bash
 # 1. Branch from current main in a new worktree
 git fetch origin && git merge --ff-only origin/main
-git worktree add ~/Projects/webfang-worktrees/fix-batch -b fix/batch-<topic>
+git worktree add ~/Projects/Rust/webfang-worktrees/fix-batch -b fix/batch-<topic>
 
 # 2. Merge each PR's REMOTE head SHA (not the local branch — it may be stale)
 #    Get the exact SHA: gh pr view <N> --json headRefOid --jq '.headRefOid'

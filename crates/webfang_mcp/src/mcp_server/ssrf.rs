@@ -6,10 +6,10 @@
 use rmcp::ErrorData as McpError;
 use std::net::IpAddr;
 use tokio::net::lookup_host;
-// Pure IP deny-list logic lives in `webfang_core::infrastructure::ssrf` so the
+// Pure IP deny-list logic lives in `webfang_core::domain::ssrf_guard` so the
 // synchronous `wreq` redirect policy can reuse it; MCP depends on core, never
 // the other way around (#703).
-use webfang_core::infrastructure::ssrf::is_forbidden_ip;
+use webfang_core::domain::ssrf_guard::is_forbidden_ip;
 
 /// Check if SSRF protection is enabled (based on environment variable).
 ///
@@ -27,9 +27,11 @@ fn is_ssrf_enabled() -> bool {
 /// IPv6 addresses (re-validated against the IPv4 deny list).
 ///
 /// Layered contract: this entry-level check is fast-fail typed UX; it is NOT
-/// the enforcement point. Every scrape client also installs
-/// `webfang_core::infrastructure::ssrf::ValidatingResolver` via
-/// `dns_resolver`, which re-validates every DNS answer at connect time —
+/// the enforcement point. Every scrape client obtains its protection from the
+/// `webfang_core::domain::ssrf_guard::SsrfGuard` port, whose
+/// `secure_client` installs the literal-IP redirect guard and the
+/// `webfang_core::infrastructure::ssrf::ValidatingResolver` DNS guard, so
+/// every DNS answer is re-validated at connect time —
 /// covering hostname redirect hops and DNS-rebinding TOCTOU that this
 /// entry check cannot see.
 ///

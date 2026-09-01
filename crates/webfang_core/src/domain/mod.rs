@@ -49,6 +49,9 @@ pub mod result;
 pub mod scraper_port;
 pub mod session_port;
 pub mod site;
+/// SSRF guard — pure deny-list policy + `SsrfGuard` port and registry
+/// (ADR-0012 sub-slice 3.C).
+pub mod ssrf_guard;
 pub mod url_validation;
 pub mod url_validator;
 pub mod user_agent;
@@ -57,6 +60,11 @@ pub mod waf;
 
 /// Downloader port — domain-owned trait for page fetching (ADR-0010).
 pub mod downloader_port;
+
+/// Downloader factory port — domain-owned seam for building the strategy
+/// fetch downloader, so `application` stops constructing infrastructure
+/// concretes (ADR-0012 sub-slice 3.B-1b).
+pub mod downloader_factory;
 
 /// Cookie bridge — domain-owned in-memory cookie jar over the downloader
 /// DTOs, injected into CDP sessions (ADR-0012 sub-slice 3.B-1a).
@@ -80,6 +88,10 @@ pub mod options_spec;
 /// Persistence mode — unified control-plane for `--resume`/`--state-dir` and
 /// `--checkpoint-interval`/`--no-checkpoint` (domain pure, no IO).
 pub mod persistence;
+/// System RAM-usage probe port — domain-owned seam for autoscale-loop
+/// reads so `application` stops importing `infrastructure::downloader`
+/// (ADR-0012 sub-slice 3.B-1c).
+pub mod ram_probe_port;
 pub mod semantic_cleaner;
 pub mod semantic_inspector;
 pub mod text_chunker;
@@ -136,7 +148,8 @@ pub use url_validator::{StaticUrlValidator, UrlValidator, UrlValidatorTrait};
 pub use user_agent::{UserAgentPool, UserAgentProvider};
 pub use value_objects::{CorrelationId, ValidUrl};
 pub use waf::{
-    EvidenceSource, InspectionContext, WafEvidence, WafInspectorPort, WafTier, WafVerdict,
+    set_waf_inspector, waf_inspector, EvidenceSource, InspectionContext, WafEvidence,
+    WafInspectorPort, WafTier, WafVerdict,
 };
 
 /// Compression types supported for sitemap parsing

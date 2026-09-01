@@ -98,6 +98,13 @@ impl CrawlScheduler {
         self.autoscale_level = Some(level);
     }
 
+    /// Borrow the autoscale level handle (if any) — used by engine integration
+    /// tests to assert the background poller has moved the level.
+    #[cfg(test)]
+    pub(crate) fn autoscale_level(&self) -> Option<&Arc<SharedConcurrencyLevel>> {
+        self.autoscale_level.as_ref()
+    }
+
     /// Clone the discovery queue for the shared task context.
     pub(crate) fn queue(&self) -> Arc<UrlQueue> {
         Arc::clone(&self.queue)

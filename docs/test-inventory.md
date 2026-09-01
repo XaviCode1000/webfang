@@ -1,6 +1,6 @@
 # Test Inventory — `#[ignore]` Catalog (Gate 0)
 
-**Source of truth:** `rg -n "#\[ignore" crates/ --glob '!target'` — **37 rows** (32 test attributes + 5 doc/comment mentions).
+**Source of truth:** `rg -n "#\[ignore" crates/ --glob '!target'` — **31 rows** (26 test attributes + 5 doc/comment mentions).
 Generated: `2026-08-21`. Linked to `COMPATIBILITY-MATRIX.md`.
 
 **CI enforcement:** this baseline is a frozen budget — `scripts/check_ignored_guard.sh` runs in the CI `toolchain` job and fails on any drift between this inventory and the live count (stabilization-sitemap-regression). Update this file in the same PR when adding/removing an ignored test.
@@ -11,13 +11,11 @@ Generated: `2026-08-21`. Linked to `COMPATIBILITY-MATRIX.md`.
 |-------|-------|----------------|-------|-------------|
 | ONNX (AI) | 21 | `requires cached ONNX model` | #433 | Sprint 1 promote with cache |
 | Network | 3 | `requires network` / DNS / client | #542 | Keep ignored; wiremock alternative in behavioral |
-| Timing | 3 | `timing-sensitive` | #569 | Keep ignored; flaky by design |
-| Env | 3 | `env-dependent: uses std::env::set_var` | #800 | Keep ignored; global env |
 | Tracing | 1 | `tracing global subscriber` | #501 | Keep ignored; subscriber race |
 | WAF | 1 | `waf` / bare `#[ignore]` | #337 | Keep ignored; manual gauntlet |
 | Comments/docs | 5 | doc comment mentions `#[ignore]` | #386 | Not tests — count only |
 
-Total: 21+3+3+3+1+1+5 = **37**.
+Total: 21+3+1+1+5 = **31**.
 
 ## Sitemap correction
 
@@ -27,7 +25,7 @@ Stale roadmap claim "7 sitemap tests ignored" is **false**. Reality:
 
 Matrix: [`COMPATIBILITY-MATRIX.md`](../COMPATIBILITY-MATRIX.md).
 
-## Full catalog (37 rows)
+## Full catalog (31 rows)
 
 | # | Test / Location | File:Line | Reason | Issue | Next |
 |---|-----------------|-----------|--------|-------|------|
@@ -41,33 +39,27 @@ Matrix: [`COMPATIBILITY-MATRIX.md`](../COMPATIBILITY-MATRIX.md).
 | 8 | `http_client network` | `crates/webfang_core/src/application/http_client/client.rs:593` | `requires network - run with cargo test --ignored` | #542 | keep ignored |
 | 9 | `sitemap DNS` | `crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs:1218` | `requires network — hits real DNS for invalid-host-xyz-12345.com` | #542 | keep ignored (by design) |
 | 10 | `observability tracing` | `crates/webfang_core/src/infrastructure/observability/logging.rs:202` | `tracing global subscriber may already be set in test context` | #501 | keep ignored |
-| 11 | `vault_detector` | `crates/webfang_core/tests/infrastructure/vault_detector.rs:70` | `env-dependent: uses std::env::set_var` | #800 | keep ignored |
-| 12 | `vault_detector` | `crates/webfang_core/tests/infrastructure/vault_detector.rs:84` | `env-dependent: uses std::env::set_var` | #800 | keep ignored |
-| 13 | `vault_detector` | `crates/webfang_core/tests/infrastructure/vault_detector.rs:162` | `env-dependent: uses std::env::set_var` | #800 | keep ignored |
-| 14 | `session_pool timing` | `crates/webfang_core/tests/infrastructure/session_pool.rs:115` | `timing-sensitive: run with cargo test -- --ignored` | #569 | keep ignored |
-| 15 | `session_pool timing` | `crates/webfang_core/tests/infrastructure/session_pool.rs:145` | `timing-sensitive: run with cargo test -- --ignored` | #569 | keep ignored |
-| 16 | `session_pool timing` | `crates/webfang_core/tests/infrastructure/session_pool.rs:167` | `timing-sensitive: run with cargo test -- --ignored` | #569 | keep ignored |
-| 17 | `cli_binary network` | `crates/webfang_core/tests/cli_binary_test.rs:96` | `requires network access` | #542 | keep ignored |
-| 18 | `doc comment` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:3` | `//! All tests are #[ignore = "requires cached ONNX model"]` | #386 | docs only |
-| 19 | `ai_integration` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:37` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 20 | `ai_integration` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:76` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 21 | `ai_integration` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:131` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 22 | `ai_integration` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:177` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 23 | `ai_integration` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:221` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 24 | `ai_integration` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:255` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 25 | `ai_integration` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:289` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 26 | `ai_integration` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:342` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 27 | `ai_integration` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:407` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 28 | `doc comment` | `crates/webfang_core/tests/behavioral/cli/error_path_test.rs:288` | `/// No #[ignore]: the gate fires before any ONNX model could load.` | #386 | docs only |
-| 29 | `doc comment` | `crates/webfang_core/tests/behavioral/cli/error_path_test.rs:366` | `/// No #[ignore]: the gate fires before any ONNX model could load.` | #386 | docs only |
-| 30 | `export_vector` | `crates/webfang_core/tests/behavioral/cli/export_test.rs:25` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 31 | `trace_correlation` | `crates/webfang_core/tests/behavioral/cli/trace_correlation_test.rs:217` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 32 | `waf_gauntlet` | `crates/webfang_core/tests/behavioral/cli/waf_gauntlet_test.rs:126` | `#[ignore]` (bare, WAF fixtures) | #337 | manual |
-| 33 | `mcp behavioral` | `crates/webfang_mcp/tests/mcp_behavioral_test.rs:1375` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 34 | `mcp behavioral` | `crates/webfang_mcp/tests/mcp_behavioral_test.rs:1444` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 35 | `mcp behavioral` | `crates/webfang_mcp/tests/mcp_behavioral_test.rs:1475` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 36 | `mcp behavioral` | `crates/webfang_mcp/tests/mcp_behavioral_test.rs:1530` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 37 | `mcp behavioral` | `crates/webfang_mcp/tests/mcp_behavioral_test.rs:1559` | `requires cached ONNX model` | #433 | Sprint 1 |
+| 11 | `cli_binary network` | `crates/webfang_core/tests/cli_binary_test.rs:96` | `requires network access` | #542 | keep ignored |
+| 12 | `doc comment` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:3` | `//! All tests are #[ignore = "requires cached ONNX model"]` | #386 | docs only |
+| 13 | `ai_integration` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:37` | `requires cached ONNX model` | #433 | Sprint 1 |
+| 14 | `ai_integration` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:76` | `requires cached ONNX model` | #433 | Sprint 1 |
+| 15 | `ai_integration` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:131` | `requires cached ONNX model` | #433 | Sprint 1 |
+| 16 | `ai_integration` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:177` | `requires cached ONNX model` | #433 | Sprint 1 |
+| 17 | `ai_integration` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:221` | `requires cached ONNX model` | #433 | Sprint 1 |
+| 18 | `ai_integration` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:255` | `requires cached ONNX model` | #433 | Sprint 1 |
+| 19 | `ai_integration` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:289` | `requires cached ONNX model` | #433 | Sprint 1 |
+| 20 | `ai_integration` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:342` | `requires cached ONNX model` | #433 | Sprint 1 |
+| 21 | `ai_integration` | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs:407` | `requires cached ONNX model` | #433 | Sprint 1 |
+| 22 | `doc comment` | `crates/webfang_core/tests/behavioral/cli/error_path_test.rs:288` | `/// No #[ignore]: the gate fires before any ONNX model could load.` | #386 | docs only |
+| 23 | `doc comment` | `crates/webfang_core/tests/behavioral/cli/error_path_test.rs:366` | `/// No #[ignore]: the gate fires before any ONNX model could load.` | #386 | docs only |
+| 24 | `export_vector` | `crates/webfang_core/tests/behavioral/cli/export_test.rs:25` | `requires cached ONNX model` | #433 | Sprint 1 |
+| 25 | `trace_correlation` | `crates/webfang_core/tests/behavioral/cli/trace_correlation_test.rs:217` | `requires cached ONNX model` | #433 | Sprint 1 |
+| 26 | `waf_gauntlet` | `crates/webfang_core/tests/behavioral/cli/waf_gauntlet_test.rs:126` | `#[ignore]` (bare, WAF fixtures) | #337 | manual |
+| 27 | `mcp behavioral` | `crates/webfang_mcp/tests/mcp_behavioral_test.rs:1375` | `requires cached ONNX model` | #433 | Sprint 1 |
+| 28 | `mcp behavioral` | `crates/webfang_mcp/tests/mcp_behavioral_test.rs:1444` | `requires cached ONNX model` | #433 | Sprint 1 |
+| 29 | `mcp behavioral` | `crates/webfang_mcp/tests/mcp_behavioral_test.rs:1475` | `requires cached ONNX model` | #433 | Sprint 1 |
+| 30 | `mcp behavioral` | `crates/webfang_mcp/tests/mcp_behavioral_test.rs:1530` | `requires cached ONNX model` | #433 | Sprint 1 |
+| 31 | `mcp behavioral` | `crates/webfang_mcp/tests/mcp_behavioral_test.rs:1559` | `requires cached ONNX model` | #433 | Sprint 1 |
 
 ## Generation
 

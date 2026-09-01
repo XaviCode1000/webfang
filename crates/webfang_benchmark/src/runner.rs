@@ -26,12 +26,13 @@ use crate::aggregate::{self, CrawlSummary, StrategyMetrics};
 use crate::corpus::{self, CorpusManifest};
 use crate::error::{BenchmarkError, Result};
 use webfang_core::application::crawl_site_with_options;
-use webfang_core::application::crawler::{build_fetch_router, EngineOptions};
+use webfang_core::application::crawler::EngineOptions;
+use webfang_core::domain::cookie_bridge::CookieBridge;
+use webfang_core::domain::downloader_factory::{DownloaderFactory, DownloaderSpec};
 use webfang_core::domain::value_objects::CorrelationId;
 use webfang_core::domain::CrawlerConfig;
 use webfang_core::domain::JsStrategy;
-use webfang_core::infrastructure::downloader::cookie_bridge::CookieBridge;
-use webfang_core::infrastructure::downloader::Downloader;
+use webfang_core::infrastructure::downloader::fetch_router::DefaultDownloaderFactory;
 use webfang_core::infrastructure::observability::FileTraceLayer;
 
 /// Deterministic strategy order for every benchmark invocation.
@@ -67,8 +68,9 @@ pub struct RunOutcome {
 /// Each run serves a fresh corpus (fresh WAF sequence — still deterministic by
 /// construction, AC-1.1), writes its own JSONL trace under a private
 /// [`tempfile::TempDir`], parses it, computes [`StrategyMetrics`] with the RAM
-/// proxy captured from a mirror router build ([`Downloader::memory_cost`] via
-/// [`build_fetch_router`], no core change), and drops the TempDir before
+/// proxy captured from a mirror downloader build
+/// ([`memory_cost`](webfang_core::infrastructure::downloader::Downloader::memory_cost)
+/// via [`DefaultDownloaderFactory`]), and drops the TempDir before
 /// returning so absolute paths can never reach compared output.
 ///
 /// # Errors
@@ -112,6 +114,11 @@ fn run_strategy(
     let options = EngineOptions {
         js_strategy: strategy,
         ignore_robots: true,
+        // ADR-0012 sub-slice 3.B-1b: the engine no longer builds its own
+        // fetch downloader. Without the factory the Hybrid/Full runs would
+        // silently degrade to the static fetch path and measure the wrong
+        // stack, so the benchmark injects the production factory.
+        downloader_factory: Some(Arc::new(DefaultDownloaderFactory)),
         ..EngineOptions::default()
     };
 
@@ -208,30 +215,37 @@ fn run_strategy(
 }
 
 /// Capture the static RAM proxy for a strategy by building a mirror
-/// [`build_fetch_router`] and reading [`Downloader::memory_cost()`]. The engine
-/// builds its own router internally, so this parallel construction is the only
-/// seam that observes the cost without touching core.
+/// downloader through [`DefaultDownloaderFactory`] and reading
+/// [`memory_cost`](webfang_core::infrastructure::downloader::Downloader::memory_cost).
+/// The engine still does not expose the cost of
+/// the downloader it builds, so this parallel construction remains the only
+/// seam that observes it without touching core.
 fn ram_proxy(strategy: JsStrategy) -> Result<usize> {
     let cookie_bridge = Arc::new(RwLock::new(CookieBridge::default()));
     let tls_emulation = EngineOptions::default().tls_emulation;
-    let router = build_fetch_router(
-        &strategy,
-        30,
-        tls_emulation,
-        cookie_bridge,
-        false,
-        None,
-        // #890: operator headers/cookies are wired on the scrape path only;
-        // the benchmark mirror keeps profile defaults.
-        Vec::new(),
-        None,
-        None,
-        CancellationToken::new(),
-        3,
-        1000,
-        10000,
-        "obscura",
-    )
-    .map_err(|error| BenchmarkError::Engine(format!("ram-proxy router build failed: {error}")))?;
-    Ok(router.memory_cost())
+    let downloader = DefaultDownloaderFactory
+        .build(
+            &DownloaderSpec {
+                strategy,
+                timeout_secs: 30,
+                tls_emulation,
+                ignore_waf: false,
+                user_agent: None,
+                // #890: operator headers/cookies are wired on the scrape path
+                // only; the benchmark mirror keeps profile defaults.
+                custom_headers: Vec::new(),
+                accept_language: None,
+                initial_cookie_jar: None,
+                max_retries: 3,
+                backoff_base_ms: 1000,
+                backoff_max_ms: 10000,
+                obscura_binary: "obscura".to_string(),
+            },
+            cookie_bridge,
+            CancellationToken::new(),
+        )
+        .map_err(|error| {
+            BenchmarkError::Engine(format!("ram-proxy downloader build failed: {error}"))
+        })?;
+    Ok(downloader.memory_cost())
 }

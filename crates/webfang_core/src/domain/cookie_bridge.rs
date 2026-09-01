@@ -6,8 +6,9 @@
 //! [`Cookie`](crate::domain::downloader_port::Cookie) and
 //! [`FetchedPage`](crate::domain::downloader_port::FetchedPage), with no
 //! transport or IO dependency, so it belongs at the innermost layer.
-//! `infrastructure::downloader::cookie_bridge` re-exports it for the existing
-//! external callers that still reference the shim path.
+//! Consumers import it directly from `domain` (ADR-0012 sub-slice 3.B-1a;
+//! the `infrastructure::downloader::cookie_bridge` shim was deleted in
+//! #1014 once all callers were repointed).
 //!
 //! Currently stores cookies in-memory. Future phases will call
 //! `Network.setCookies` via CDP to inject cookies into a headless browser session.
@@ -21,7 +22,7 @@ use crate::domain::downloader_port::{Cookie, FetchedPage};
 ///
 /// After each fetch, call [`CookieBridge::ingest`] to capture Set-Cookie
 /// cookies. The accumulated cookie jar can then be injected into CDP
-/// via [`CookieBridge::to_cdp_cookies`] (future).
+/// via [`CookieBridge::to_cdp_cookies`].
 #[derive(Debug, Clone, Default)]
 pub struct CookieBridge {
     cookies: Vec<Cookie>,
@@ -86,10 +87,11 @@ impl CookieBridge {
             .collect()
     }
 
-    /// Format cookies for CDP `Network.setCookies` (future use).
+    /// Format cookies for CDP `Network.setCookies`.
     ///
-    /// Returns a `Vec` of cookie maps suitable for JSON serialization.
-    /// Each map has keys: name, value, domain, path, httpOnly, secure.
+    /// Returns a `Vec` of cookies ready for JSON serialization; consumed by the
+    /// `chromium`-gated Chromiumoxide downloader to inject the jar into a
+    /// headless browser session.
     pub fn to_cdp_cookies(&self) -> Vec<CdpCookie> {
         self.cookies
             .iter()
@@ -133,15 +135,57 @@ impl CookieBridge {
 }
 
 /// CDP-compatible cookie representation for `Network.setCookies`.
-#[allow(dead_code)] // pub(crate) Phase 0 triage — internal API surface
+///
+/// Constructed via [`CookieBridge::to_cdp_cookies`]; external consumers read
+/// it through the accessor methods (#1013 — the fields are private so the
+/// public type has a stable, usable surface).
+#[allow(dead_code)] // consumed only by the `chromium`-gated downloader today
 #[derive(Debug, Clone)]
 pub struct CdpCookie {
-    pub(crate) name: String,
-    pub(crate) value: String,
-    pub(crate) domain: String,
-    pub(crate) path: String,
-    pub(crate) http_only: bool,
-    pub(crate) secure: bool,
+    name: String,
+    value: String,
+    domain: String,
+    path: String,
+    http_only: bool,
+    secure: bool,
+}
+
+impl CdpCookie {
+    /// Cookie name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Cookie value.
+    #[must_use]
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+
+    /// Cookie domain (may include a leading dot for domain cookies).
+    #[must_use]
+    pub fn domain(&self) -> &str {
+        &self.domain
+    }
+
+    /// Cookie path.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Whether the cookie is HTTP-only.
+    #[must_use]
+    pub fn http_only(&self) -> bool {
+        self.http_only
+    }
+
+    /// Whether the cookie is restricted to secure connections.
+    #[must_use]
+    pub fn secure(&self) -> bool {
+        self.secure
+    }
 }
 
 /// Check if `cookie_domain` matches `request_domain`.
@@ -150,9 +194,7 @@ pub struct CdpCookie {
 /// - Exact match: `example.com` matches `example.com`
 /// - Subdomain match: `.example.com` matches `sub.example.com`
 ///
-/// Public because `infrastructure::downloader::cookie_bridge` re-exports it
-/// for the Chromiumoxide downloader (ADR-0012 sub-slice 3.B-1a).
-pub fn domain_matches(request_domain: &str, cookie_domain: &str) -> bool {
+pub(crate) fn domain_matches(request_domain: &str, cookie_domain: &str) -> bool {
     if cookie_domain.starts_with('.') {
         // Subdomain cookie: .example.com matches example.com and sub.example.com
         request_domain == &cookie_domain[1..] || request_domain.ends_with(cookie_domain)

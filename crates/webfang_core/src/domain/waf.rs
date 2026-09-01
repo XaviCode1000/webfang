@@ -1,23 +1,31 @@
 //! WAF domain port — VOs + sealed inspection trait.
 //!
-//! Domain-owned value objects for WAF detection. The infrastructure layer
-//! (`infrastructure::http::waf_engine`) keeps the Aho-Corasick automaton
-//! and implements [`WafInspectorPort`]. Application imports only this
-//! module.
+//! Canonical domain-owned value objects for WAF detection (#1039): this is the
+//! ONLY WAF VO family — the infrastructure engine
+//! (`infrastructure::http::waf_engine`) keeps the Aho-Corasick automaton,
+//! signature tables, and detection logic, and consumes these types directly
+//! (infrastructure → domain is the allowed inward direction). Application
+//! imports only this module.
 
 use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
 
-/// WAF signature tier — drives blocking policy.
+/// WAF signature tier — determines the blocking policy for a matched pattern.
+///
+/// Tier drives the verdict policy in [`WafInspectorPort::inspect`]:
+/// - [`WafTier::Challenge`] blocks at ANY HTTP status, including 200.
+/// - [`WafTier::Fingerprint`] is evidence only; it blocks solely when correlated
+///   with a WAF-associated status code (403 / 429 / 503 / 520–529).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WafTier {
-    /// Unambiguous challenge/captcha marker — blocks at any status.
+    /// Unambiguous challenge/captcha markers (widget tokens, challenge prose).
     Challenge,
-    /// Fingerprint marker — blocks only with WAF-correlated status.
+    /// Fingerprint markers (bare vendor names, domains, cookies, control headers).
     Fingerprint,
 }
 
 impl WafTier {
-    /// Spanish user-facing label for the evidence chain.
+    /// Spanish user-facing label for the evidence chain (REQ-WAF-08).
     #[must_use]
     pub const fn label_es(self) -> &'static str {
         match self {
@@ -27,34 +35,46 @@ impl WafTier {
     }
 }
 
-/// Where a piece of WAF evidence was observed.
+/// Where a piece of WAF evidence was observed (FIX B).
+///
+/// Drives the 5xx body-vs-header carve-out in the verdict policy: on a 5xx
+/// response a bare vendor mention sourced from the BODY ([`EvidenceSource::Body`])
+/// is ubiquitous diagnostic noise and does not block, whereas the same Fingerprint
+/// tier sourced from a control HEADER ([`EvidenceSource::Header`], e.g.
+/// `cf-mitigated`) signals active mitigation and still blocks. Internal to the
+/// verdict — it is deliberately NOT part of the Spanish evidence chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvidenceSource {
-    /// Evidence matched in the response body.
+    /// Evidence matched in the response body (signatures or entropy).
     Body,
     /// Evidence matched in a response control header.
     Header,
 }
 
-/// A single piece of WAF detection evidence.
+/// A single piece of WAF detection evidence collected during inspection.
+///
+/// A verdict carries *all* collected evidences (REQ-WAF-01), enabling an
+/// evidence-chain error message (REQ-WAF-08) instead of a first-hit provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WafEvidence {
-    /// Detected WAF provider (e.g. `"Cloudflare"`).
+    /// Detected WAF provider (e.g. `"Cloudflare"`, `"DataDome"`).
     pub provider: &'static str,
     /// Signature tier that matched.
     pub tier: WafTier,
-    /// The literal pattern that matched.
+    /// The literal pattern (or rule label) that matched.
     pub matched_pattern: &'static str,
-    /// Where the evidence was observed.
+    /// Where the evidence was observed (body or header) — drives the 5xx
+    /// body-vs-header carve-out in the verdict policy; not surfaced in the
+    /// Spanish evidence chain.
     pub source: EvidenceSource,
 }
 
-/// Verdict of a WAF inspection.
+/// The verdict of a WAF inspection.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WafVerdict {
     /// Whether the response should be treated as WAF-blocked.
     pub is_blocked: bool,
-    /// All collected evidence.
+    /// All collected evidence (not just the first hit).
     pub evidences: Vec<WafEvidence>,
 }
 
@@ -65,7 +85,13 @@ impl WafVerdict {
         Self::default()
     }
 
-    /// Spanish evidence chain for user-facing errors.
+    /// Spanish user-facing evidence chain for the block error (REQ-WAF-08).
+    ///
+    /// Each evidence renders as `provider (patrón: <pattern>, tier: <label_es>)`,
+    /// joined by `; `. Falls back to a generic label when the verdict carries no
+    /// evidence. Callers that raise a block error (HTTP client, scraper service,
+    /// crawler discovery, MCP) pass this string as the `provider` payload so the
+    /// full chain reaches the user instead of a bare first-hit provider name.
     #[must_use]
     pub fn evidence_chain(&self) -> String {
         if self.evidences.is_empty() {
@@ -86,7 +112,14 @@ impl WafVerdict {
     }
 }
 
-/// HTTP context for a WAF inspection (domain pure, no `wreq::HeaderMap`).
+/// HTTP context for a WAF inspection (REQ-WAF-01) — domain pure, no
+/// `wreq::HeaderMap`.
+///
+/// [`Default`] is *degraded mode* — no HTTP context (status/content-type
+/// unknown, empty headers, `ignore_waf` false). Callers that only have the
+/// body (e.g. the MCP `detect_waf` tool) use degraded mode, where only
+/// [`WafTier::Challenge`] markers block and [`WafTier::Fingerprint`] evidence
+/// is reported as low-confidence and never blocks (REQ-WAF-05).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InspectionContext {
     /// HTTP status code, if known.
@@ -95,12 +128,22 @@ pub struct InspectionContext {
     pub content_type: Option<String>,
     /// Response headers (lowercased keys).
     pub headers: HashMap<String, String>,
-    /// Bypass WAF detection entirely.
+    /// Bypass WAF detection entirely (yields a clean verdict).
     pub ignore_waf: bool,
 }
 
 impl InspectionContext {
-    /// Build a full context from status and lowercased header map.
+    /// Build a full context from an HTTP status and a lowercased-key header map,
+    /// as captured by the domain `HttpResponse` and infrastructure `FetchedPage`
+    /// types (REQ-WAF-01).
+    ///
+    /// The `content-type` entry is lifted into [`Self::content_type`] for the
+    /// REQ-WAF-02 gate; the whole map is retained as plain lowercased-key
+    /// `String` pairs so control-header evidence (REQ-WAF-03) needs no `wreq`
+    /// types at the inspection boundary. Headers are single-valued at capture
+    /// (duplicate names collapse, last value wins — WAF control headers are
+    /// single-valued, so no evidence is lost). `ignore_waf` short-circuits
+    /// inspection to a clean verdict (REQ-WAF-07).
     #[must_use]
     pub fn from_lowercase_headers(
         status: u16,
@@ -130,73 +173,58 @@ pub trait WafInspectorPort: Send + Sync + sealed::Sealed {
     fn inspect(&self, body: &str, ctx: &InspectionContext) -> WafVerdict;
 }
 
-/// Concrete WAF inspector — defined in `domain` so `application` can import
-/// it without depending on `infrastructure` (ADR-0011). The Aho-Corasick
-/// automaton and all detection logic live in
-/// `infrastructure::http::waf_engine`; this type is a thin forwarding shim
-/// that maps domain VOs to the infrastructure engine via fully qualified
-/// paths (the intra-crate `use` gate only scans `use` lines, so this
-/// delegation does not trigger a violation).
-pub struct WafInspector;
+/// Process-wide WAF inspector instance, populated by the composition root
+/// (CLI / MCP / test harness) at startup and read by application-layer call
+/// sites that need WAF detection but cannot reach into the infrastructure
+/// layer (issue #996).
+///
+/// The static is typed as the **domain** trait [`WafInspectorPort`] so the
+/// domain layer never names the infrastructure concrete — the only
+/// `crate::infrastructure` reference lives in the composition root that
+/// constructs the `Arc<dyn WafInspectorPort>` and hands it to
+/// [`set_waf_inspector`].
+static WAF_INSPECTOR: OnceLock<Arc<dyn WafInspectorPort>> = OnceLock::new();
 
-impl WafInspector {
-    /// Inspect `body` with `ctx` and return a verdict.
-    ///
-    /// Delegates to the infrastructure engine and maps the domain value
-    /// objects to/from the engine's (now-identical) types. Both sides use
-    /// `HashMap<String, String>` for headers (domain purity, ADR-0011).
-    #[must_use]
-    pub fn inspect(body: &str, ctx: &InspectionContext) -> WafVerdict {
-        // Build the infra context from the domain context.
-        let infra_ctx = crate::infrastructure::http::waf_engine::InspectionContext {
-            status: ctx.status,
-            content_type: ctx.content_type.clone(),
-            headers: ctx.headers.clone(),
-            ignore_waf: ctx.ignore_waf,
-        };
-        let infra_verdict =
-            crate::infrastructure::http::waf_engine::WafInspector::inspect(body, &infra_ctx);
-        WafVerdict {
-            is_blocked: infra_verdict.is_blocked,
-            evidences: infra_verdict
-                .evidences
-                .into_iter()
-                .map(|e| WafEvidence {
-                    provider: e.provider,
-                    tier: match e.tier {
-                        crate::infrastructure::http::waf_engine::WafTier::Challenge => {
-                            WafTier::Challenge
-                        },
-                        crate::infrastructure::http::waf_engine::WafTier::Fingerprint => {
-                            WafTier::Fingerprint
-                        },
-                    },
-                    matched_pattern: e.matched_pattern,
-                    source: match e.source {
-                        crate::infrastructure::http::waf_engine::EvidenceSource::Body => {
-                            EvidenceSource::Body
-                        },
-                        crate::infrastructure::http::waf_engine::EvidenceSource::Header => {
-                            EvidenceSource::Header
-                        },
-                    },
-                })
-                .collect(),
-        }
-    }
-
-    /// List all supported WAF providers.
-    #[must_use]
-    pub fn supported_providers() -> Vec<&'static str> {
-        crate::infrastructure::http::waf_engine::WafInspector::supported_providers()
-    }
+/// Install the process-wide WAF inspector. Idempotent: a second call is a
+/// no-op when the first value is already set. Called by the composition
+/// root (CLI / MCP / test harness) at startup.
+pub fn set_waf_inspector(inspector: Arc<dyn WafInspectorPort>) {
+    let _ = WAF_INSPECTOR.set(inspector);
 }
 
-impl sealed::Sealed for WafInspector {}
+/// Read the process-wide WAF inspector. When the composition root has not
+/// installed one, falls back to a clean-verdict no-op stub so application
+/// code paths that incidentally reach WAF inspection (e.g. an HTTP client
+/// fetching a 500 with no challenge markers) keep working in tests that
+/// did not go through [`crate::application::container::Container::new`].
+///
+/// The fallback yields a clean verdict for any input, which is semantically
+/// a no-op: real WAF detection is opt-in via [`set_waf_inspector`], and
+/// any test or production call site that needs real detection initializes
+/// the static at startup. See `application::container::Container::new`,
+/// which installs the real infrastructure impl.
+#[must_use]
+pub fn waf_inspector() -> Arc<dyn WafInspectorPort> {
+    if let Some(inspector) = WAF_INSPECTOR.get() {
+        return inspector.clone();
+    }
+    static FALLBACK: OnceLock<Arc<dyn WafInspectorPort>> = OnceLock::new();
+    FALLBACK
+        .get_or_init(|| Arc::new(CleanWafInspector) as Arc<dyn WafInspectorPort>)
+        .clone()
+}
 
-impl WafInspectorPort for WafInspector {
-    fn inspect(&self, body: &str, ctx: &InspectionContext) -> WafVerdict {
-        Self::inspect(body, ctx)
+/// Clean-verdict fallback used when no composition root has installed the
+/// real inspector. Lives in `domain` because it is a domain-layer fallback
+/// (no infrastructure dependency) — the real impl lives behind the
+/// composition root, not here.
+struct CleanWafInspector;
+
+impl sealed::Sealed for CleanWafInspector {}
+
+impl WafInspectorPort for CleanWafInspector {
+    fn inspect(&self, _body: &str, _ctx: &InspectionContext) -> WafVerdict {
+        WafVerdict::clean()
     }
 }
 

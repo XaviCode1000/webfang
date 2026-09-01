@@ -126,14 +126,14 @@ impl UserAgentCache {
     async fn fetch_and_cache(
         profile: Profile,
     ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
-        let client = Client::builder()
+        let builder = Client::builder()
             .emulation(profile)
-            .timeout(Duration::from_secs(5))
-            // Same layered SSRF contract as every other production client:
-            // literal-IP redirect guard + connect-time validating resolver
-            // (see `infrastructure::ssrf` module docs).
-            .redirect(crate::infrastructure::ssrf::redirect_policy())
-            .dns_resolver(crate::infrastructure::ssrf::ValidatingResolver::new())
+            .timeout(Duration::from_secs(5));
+        // Same layered SSRF contract as every other production client,
+        // obtained through the domain `SsrfGuard` port (#703): literal-IP
+        // redirect guard + connect-time validating resolver.
+        let client = crate::domain::ssrf_guard::ssrf_guard()
+            .secure_client(builder)
             .build()?;
 
         // Fetch from API

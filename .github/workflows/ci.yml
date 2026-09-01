@@ -640,14 +640,23 @@ jobs:
             filter: "-- domain::"
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@nightly
+      # Miri nightly pin (#991): nightly-2026-08-27 was the last known-good
+      # date for both the core and infra-slow Miri jobs on SHA e2b4aa10
+      # (green 2026-08-27 21:31, run 33118500969). Pinning freezes the aliasing
+      # model + stdlib version so Miri UB-detection results stay reproducible
+      # across runs. To bump: locally run the same `cargo miri test --lib`
+      # commands against the new nightly on a representative commit and
+      # update all three `dtolnay/rust-toolchain` toolchain inputs
+      # below + the sysroot cache key (`miri-sysroot-...-YYYY-MM-DD`).
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-08-27
           components: miri
       - name: Cache Miri sysroot
         uses: actions/cache@v5
         with:
           path: ~/.cache/miri
-          key: miri-sysroot-${{ runner.os }}-2026-07-01
+          key: miri-sysroot-${{ runner.os }}-2026-08-27
           restore-keys: |
             miri-sysroot-${{ runner.os }}-
       - name: Setup & Run Miri (${{ matrix.group }})
@@ -683,14 +692,16 @@ jobs:
       RUSTUP_TOOLCHAIN: nightly
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@nightly
+      # See the Miri nightly pin rationale in the `miri` job above (#991).
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-08-27
           components: miri
       - name: Cache Miri sysroot
         uses: actions/cache@v5
         with:
           path: ~/.cache/miri
-          key: miri-sysroot-${{ runner.os }}-2026-07-01
+          key: miri-sysroot-${{ runner.os }}-2026-08-27
           restore-keys: |
             miri-sysroot-${{ runner.os }}-
       - name: Setup & Run Miri (infra-fast)
@@ -726,14 +737,16 @@ jobs:
       RUSTUP_TOOLCHAIN: nightly
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@nightly
+      # See the Miri nightly pin rationale in the `miri` job above (#991).
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-08-27
           components: miri
       - name: Cache Miri sysroot
         uses: actions/cache@v5
         with:
           path: ~/.cache/miri
-          key: miri-sysroot-${{ runner.os }}-2026-07-01
+          key: miri-sysroot-${{ runner.os }}-2026-08-27
           restore-keys: |
             miri-sysroot-${{ runner.os }}-
       - name: Setup & Run Miri (infra-slow)

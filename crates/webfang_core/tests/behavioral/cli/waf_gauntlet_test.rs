@@ -17,6 +17,7 @@ use tempfile::TempDir;
 use url::Url;
 use webfang_core::application::crawler::engine::EngineOptions;
 use webfang_core::domain::JsStrategy;
+use webfang_core::infrastructure::downloader::fetch_router::DefaultDownloaderFactory;
 use webfang_core::{
     crawl_site_with_options, BincodeCheckpoint, CheckpointStore, CrawlCheckpoint, CrawlerConfig,
 };
@@ -352,6 +353,9 @@ async fn crawl_with_checkpoint(
         ignore_robots: true,
         js_strategy: JsStrategy::Static,
         autoscale_enabled: false,
+        // Inject the factory so the JS-strategy router path is built; without it
+        // `ProductionPageFetcher` silently falls back to the static `fetch_url`.
+        downloader_factory: Some(Arc::new(DefaultDownloaderFactory)),
         ..Default::default()
     };
 

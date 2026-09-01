@@ -2,8 +2,19 @@
 //!
 //! [`FetchRouter`] maps a [`JsStrategy`] to a concrete downloader stack and
 //! implements [`Downloader`] so it can be passed as a trait object for runtime
-//! dispatch and test mocking. [`build_fetch_router`] is the single source of
+//! dispatch and test mocking. `build_fetch_router` is the single source of
 //! truth for the strategy → router mapping.
+//!
+//! ADR-0012 sub-slice 3.B-1b (issue #994) moved this module out of
+//! `application::crawler` into `infrastructure::downloader`: the strategy →
+//! concrete-downloader mapping *is* infrastructure. `application` now reaches it
+//! through the [`DownloaderFactory`] port in [`crate::domain::downloader_factory`]
+//! via [`DefaultDownloaderFactory`].
+//!
+//! The old `application::crawler::{FetchRouter, build_fetch_router}` paths are
+//! removed without a re-export shim: a shim would keep `application` naming
+//! infrastructure concretes and need its own ADR-0010 allowlist entry, which is
+//! exactly what this slice deletes.
 
 use std::sync::{Arc, RwLock};
 
@@ -15,6 +26,7 @@ use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
 use crate::domain::cookie_bridge::CookieBridge;
+use crate::domain::downloader_factory::{DownloaderFactory, DownloaderSpec};
 use crate::domain::downloader_port::{DownloadError, Downloader, FetchedPage};
 use crate::domain::JsStrategy;
 use crate::infrastructure::downloader::chromiumoxide_downloader::ChromiumoxideDownloader;
@@ -55,8 +67,9 @@ fn build_obscura_layer(timeout_secs: u64, obscura_binary: &str) -> ObscuraDownlo
 
 /// Build the [`FetchRouter`] for a given JavaScript rendering strategy.
 ///
-/// Single source of truth for the strategy → router mapping, shared by the
-/// crawl [`Engine`](super::engine::Engine) and the CLI scrape path.
+/// Single source of truth for the strategy → router mapping, reached only
+/// through [`DefaultDownloaderFactory`] (the crawl `Engine` and the CLI
+/// scrape path both go via the factory).
 /// `timeout_secs` drives the wreq request timeout (connect timeout is clamped
 /// to 10s); `tls_emulation` is the TLS/HTTP2 fingerprint profile applied to the
 /// wreq layer; `cookie_bridge` is shared with the Chromiumoxide layer for
@@ -82,7 +95,7 @@ fn build_obscura_layer(timeout_secs: u64, obscura_binary: &str) -> ObscuraDownlo
 ///
 /// Returns [`DownloadError::Internal`] if the wreq client cannot be built.
 #[allow(clippy::too_many_arguments)]
-pub fn build_fetch_router(
+pub(crate) fn build_fetch_router(
     strategy: &JsStrategy,
     timeout_secs: u64,
     tls_emulation: Profile,
@@ -127,7 +140,16 @@ pub fn build_fetch_router(
             )?;
             let l2 = build_obscura_layer(timeout_secs, obscura_binary);
             let l3 = ChromiumoxideDownloader::new(cookie_bridge);
-            FetchRouter::Hybrid(Arc::new(HybridRouter::new(l1, l2, l3, ignore_waf)))
+            // #1009: share the engine's cancellation token with the Hybrid
+            // governor so permit waits abort on shutdown (parity with the Full
+            // strategy, see #509).
+            FetchRouter::Hybrid(Arc::new(HybridRouter::new(
+                l1,
+                l2,
+                l3,
+                ignore_waf,
+                cancel_token,
+            )))
         },
         // Full renders every page directly in Chrome (no wreq → Obscura
         // escalation) and gates concurrency on system RAM via its own
@@ -169,6 +191,48 @@ impl Downloader for FetchRouter {
             Self::Hybrid(dl) => dl.memory_cost(),
             Self::Full(dl, _) => dl.memory_cost(),
         }
+    }
+}
+
+/// Production [`DownloaderFactory`] that builds the concrete [`FetchRouter`].
+///
+/// This is the only place the strategy → downloader-stack mapping is turned
+/// into an object the `application` layer can hold, so it is the single
+/// injection point that keeps `application::crawler` free of infrastructure
+/// downloader concretes (ADR-0012 sub-slice 3.B-1b). It is stateless, so a
+/// unit struct is enough; callers share one `Arc` across the process.
+///
+/// # Errors
+///
+/// Propagates `build_fetch_router`'s [`DownloadError::Internal`] when the
+/// wreq client cannot be constructed.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DefaultDownloaderFactory;
+
+impl DownloaderFactory for DefaultDownloaderFactory {
+    fn build(
+        &self,
+        spec: &DownloaderSpec,
+        cookie_bridge: Arc<RwLock<CookieBridge>>,
+        cancel_token: CancellationToken,
+    ) -> Result<Arc<dyn Downloader>, DownloadError> {
+        let router = build_fetch_router(
+            &spec.strategy,
+            spec.timeout_secs,
+            spec.tls_emulation,
+            cookie_bridge,
+            spec.ignore_waf,
+            spec.user_agent.clone(),
+            spec.custom_headers.clone(),
+            spec.accept_language.clone(),
+            spec.initial_cookie_jar.clone(),
+            cancel_token,
+            spec.max_retries,
+            spec.backoff_base_ms,
+            spec.backoff_max_ms,
+            &spec.obscura_binary,
+        )?;
+        Ok(Arc::new(router))
     }
 }
 
