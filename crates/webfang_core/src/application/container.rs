@@ -508,11 +508,14 @@ impl Container {
         // 1. Rayon CPU pool for lol_html processing
         let cpu_pool = RayonCpuPool::new(config.cpu_cores)?;
 
-        // 2. CpuBridge wraps the Rayon pool with catch_unwind safety
-        let bridge = CpuBridge::new(
-            cpu_pool,
-            Arc::new(crate::infrastructure::content_processing::AggressiveProcessor),
-        );
+        // 2. CpuBridge wraps the Rayon pool with catch_unwind safety. The DI
+        //    root keeps naming the concrete (permanent allowlist entry);
+        //    ElasticIngestion holds it behind the domain port (ADR-0012-B 3.E.2).
+        let bridge: std::sync::Arc<dyn crate::domain::cpu_executor::CpuExecutorPort> =
+            Arc::new(CpuBridge::new(
+                cpu_pool,
+                Arc::new(crate::infrastructure::content_processing::AggressiveProcessor),
+            ));
 
         // 3. HTTP client for resource downloads (separate from scraping client)
         let client = crate::application::http_client::create_http_client()?;
