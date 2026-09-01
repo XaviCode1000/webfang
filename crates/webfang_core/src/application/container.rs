@@ -28,7 +28,7 @@ use crate::domain::config::ScraperConfig;
 use crate::domain::credentials::CredentialStore;
 use crate::domain::embedding_port::EmbeddingPort;
 use crate::domain::llm_port::LlmPort;
-use crate::domain::note_repository::NoteRepository;
+use crate::domain::note_repository::{NoteRepository, VaultNoteReader};
 use crate::domain::ports::HttpClientPort;
 use crate::domain::repository::{DynVectorRepository, MultiVectorRepository};
 use crate::domain::semantic_cleaner::SemanticCleaner;
@@ -106,6 +106,11 @@ pub struct Container {
     /// Note repository for vault search persistence (#386). Unset when vault
     /// search is not configured.
     note_repository: OnceCell<Arc<dyn NoteRepository>>,
+
+    /// Vault note reader port (ADR-0012-B sub-slice 3.I, #1071). Unset until
+    /// injected — callers fall back to a default-constructed fs adapter.
+    /// Always compiled: the trait is a domain port.
+    vault_note_reader: OnceCell<Arc<dyn VaultNoteReader>>,
 
     /// Text chunker for Markdown segmentation (#386). Unset when the `ai`
     /// feature is off. Always compiled — the trait is a domain port.
@@ -220,6 +225,7 @@ impl Container {
             cleaner: OnceCell::new(),
             embedding_port: OnceCell::new(),
             note_repository: OnceCell::new(),
+            vault_note_reader: OnceCell::new(),
             text_chunker: OnceCell::new(),
             llm_port: OnceCell::new(),
         })
@@ -283,6 +289,14 @@ impl Container {
     /// Get the note repository, if one was injected (#386).
     pub fn note_repository(&self) -> Option<Arc<dyn NoteRepository>> {
         self.note_repository.get().cloned()
+    }
+
+    /// Get the vault note reader port, if one was injected (#1071).
+    ///
+    /// Clones the `Arc` (cheap) so callers can hold the port across an
+    /// `.await` without borrowing the container (`async-clone-before-await`).
+    pub fn vault_note_reader(&self) -> Option<Arc<dyn VaultNoteReader>> {
+        self.vault_note_reader.get().cloned()
     }
 
     /// Get the text chunker, if one was injected (#386).
@@ -357,6 +371,19 @@ impl Container {
     /// the first repository.
     pub fn with_note_repository(self, repo: Arc<dyn NoteRepository>) -> Self {
         let _ = self.note_repository.set(repo);
+        self
+    }
+
+    /// Inject a vault note reader port for filesystem vault reads (#1071).
+    ///
+    /// Takes `Arc<dyn VaultNoteReader>` — the concrete `VaultFsReader` is
+    /// constructed by the binary layer (or defaulted at the call site) and
+    /// injected here. Absence stays the default.
+    ///
+    /// Injection is at-most-once ([`OnceCell`] semantics): a second call keeps
+    /// the first reader.
+    pub fn with_vault_note_reader(self, reader: Arc<dyn VaultNoteReader>) -> Self {
+        let _ = self.vault_note_reader.set(reader);
         self
     }
 
@@ -819,6 +846,46 @@ mod tests {
         assert!(
             container.llm_port().is_some(),
             "llm_port() must be Some after with_llm_port injection"
+        );
+    }
+
+    // --- Vault note reader port (ADR-0012-B sub-slice 3.I, #1071) ---
+
+    /// In-crate stub reader — proves the seam accepts any
+    /// `Arc<dyn VaultNoteReader>` without touching the filesystem.
+    #[derive(Debug, Default)]
+    struct StubVaultNoteReader;
+
+    impl crate::domain::note_repository::VaultNoteReader for StubVaultNoteReader {
+        fn read_vault_notes(
+            &self,
+            _vault_path: &std::path::Path,
+        ) -> Result<Vec<crate::domain::note_repository::VaultNote>, crate::error::ScraperError>
+        {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Absence: a freshly built container reports no vault note reader.
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[tokio::test]
+    async fn vault_note_reader_absent_by_default() {
+        let (_tmp, container) = make_test_container().await;
+        assert!(
+            container.vault_note_reader().is_none(),
+            "vault_note_reader() must be None when no reader was injected"
+        );
+    }
+
+    /// Injection: `with_vault_note_reader` makes the accessor report present.
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[tokio::test]
+    async fn with_vault_note_reader_sets_reader() {
+        let (_tmp, container) = make_test_container().await;
+        let container = container.with_vault_note_reader(Arc::new(StubVaultNoteReader));
+        assert!(
+            container.vault_note_reader().is_some(),
+            "vault_note_reader() must be Some after with_vault_note_reader injection"
         );
     }
 
