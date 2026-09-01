@@ -674,10 +674,14 @@ for pr in <N1> <N2>; do gh pr close $pr --comment "Superseded by #<batch-PR>"; d
 git push origin --delete <branch1> <branch2>
 ```
 
-**Merge method:** use `gh pr merge <batch-PR> --merge` (merge commit), NOT `--squash`.
-Squash would crush N independent fixes into one commit, losing per-fix revert
-granularity. The merge commit preserves each original commit in main's history.
-Note: `merge-when-green.sh` hardcodes `--squash`, so do NOT use it for batch PRs.
+**Merge method:** use `scripts/merge-when-green.sh <batch-PR> --merge` (merge commit),
+NOT `--squash`. Squash would crush N independent fixes into one commit, losing per-fix
+revert granularity. The merge commit preserves each original commit in main's history.
+The `--merge` flag exists for exactly this case (#1033): going through the script keeps
+a batch merge under all four of its guards — required-context reporting (#1011),
+`UNKNOWN` retry, refusing a **required** check that reports `skipping`, and the
+`CLEAN`/`UNSTABLE` vs `BEHIND`/`BLOCKED` check. Merging a batch by hand silently drops
+them, and a batch is the highest-risk case there is.
 
 > ⚠️ **`UNSTABLE` ≠ failed merge.** With non-required checks failing/skipped,
 > `mergeStateStatus` can be `UNSTABLE` while required checks are green; `gh pr merge`
@@ -733,9 +737,15 @@ cargo build --release        # LTO fat, ~3-5 min
 **PR automation (single maintainer):**
 
 ```bash
-scripts/merge-when-green.sh <PR-N>          # Wait for green checks, squash-merge, delete branch
-scripts/merge-when-green.sh <PR-N> --dry-run # Poll and report; do not merge
+scripts/merge-when-green.sh <PR-N>            # Wait for green checks, squash-merge (default)
+scripts/merge-when-green.sh <PR-N> --merge    # Merge commit — use this for batch PRs
+scripts/merge-when-green.sh <PR-N> --dry-run  # Poll and report; do not merge
 ```
+    
+All three delete the **remote** head branch after a successful merge, via a
+`git ls-remote`-guarded `git push origin --delete` — never with
+`gh pr merge --delete-branch` (see "Automated merge workflow"), and never the
+local branch or worktree, which the post-merge runbook owns.
 
 **Miri (unsafe/concurrent code only):**
 

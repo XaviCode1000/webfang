@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# merge-when-green.sh — wait for required CI checks to pass, then squash-merge.
+# merge-when-green.sh — wait for required CI checks to pass, then merge.
 #
 # Usage:
 #   scripts/merge-when-green.sh <PR-NUMBER>
 #   scripts/merge-when-green.sh <PR-NUMBER> --dry-run
+#   scripts/merge-when-green.sh <PR-NUMBER> --merge     # merge commit (batch PRs)
+#   scripts/merge-when-green.sh <PR-NUMBER> --squash    # explicit default
 #
 # Behavior:
 #   1. Reads the required status-check contexts from branch protection, then polls
@@ -18,21 +20,28 @@
 #      CONFLICT). UNSTABLE with required checks green is this repo's normal
 #      green state: several jobs are skipped by design on PRs (Deploy Docs,
 #      Miri shards), and each SKIPPED pushes the state to UNSTABLE (#823).
-#   3. Squash-merges with `gh pr merge --squash`, then deletes the remote head
+#   3. Merges with `gh pr merge --squash` (default) or `gh pr merge --merge` when
+#      `--merge` is passed, then deletes the remote head
 #      branch for same-owner PRs. Local branch/worktree cleanup is left to the
 #      post-merge runbook (see 'Post-merge runbook' below).
 #
 # Exit codes:
 #   0  PR merged.
-#   1  Invalid arguments or missing gh.
+#   1  Invalid arguments (including --squash together with --merge) or missing gh.
 #   2  Required check FAILED, was CANCELLED, or SKIPPED.
 #   3  All checks green but merge state is not mergeable (e.g. BEHIND — rebase first).
 #   4  gh command failure (network, auth, etc.) or a required context that never
 #      reported before the deadline.
 #
 # Notes:
-#   - Respects branch protection: uses `gh pr merge --squash` (NOT --admin, NOT
-#     the synchronous PUT bypass). Required checks must be green before merge.
+#   - Respects branch protection: uses `gh pr merge --squash` (or `--merge`), NOT
+#     --admin, NOT the synchronous PUT bypass. Required checks must be green before
+#     merge.
+#   - `--merge` exists for batch PRs (see AGENTS.md "Batch merge of multiple green
+#     PRs"): squashing N independent fixes into one commit destroys per-fix revert
+#     granularity, so a batch needs a merge commit. It is the same merge with a
+#     different strategy flag — every guard above still applies. `--squash` stays
+#     the default so no existing invocation changes behaviour.
 #   - Never passes `--delete-branch`: in the worktree flow the head branch is
 #     checked out in a sibling worktree, and Git refuses to delete a branch that
 #     is any worktree's HEAD (linked-worktree invariant). `gh` would return
@@ -68,20 +77,29 @@ set -euo pipefail
 
 pr_number=""
 dry_run=0
+# Merge strategy passed to `gh pr merge`: "squash" (default) or "merge".
+# `strategy_explicit` records that the user named one, so passing both flags can
+# be rejected instead of silently letting the last one win.
+merge_strategy="squash"
+strategy_explicit=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/merge-when-green.sh <PR-NUMBER> [--dry-run]
+Usage: scripts/merge-when-green.sh <PR-NUMBER> [--dry-run] [--squash | --merge]
 
-Waits for all required CI checks on the PR to pass, then squash-merges.
+Waits for all required CI checks on the PR to pass, then merges.
 
 Flags:
   --dry-run   Poll and report status, but do not merge.
+  --squash    Squash-merge into one commit. This is the default.
+  --merge     Merge commit instead of squash. Use for batch PRs, where squashing
+              N independent fixes would destroy per-fix revert granularity.
+              Mutually exclusive with --squash.
   -h, --help  Show this help.
 
 Exit codes:
   0  Merged (or dry-run reports green).
-  1  Bad args.
+  1  Bad args (including --squash together with --merge).
   2  A required check failed/cancelled.
   3  Checks green but PR is BEHIND or BLOCKED — rebase first.
   4  gh network/auth failure.
@@ -92,6 +110,17 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --dry-run) dry_run=1; shift ;;
+    --squash|--merge)
+      requested="${1#--}"
+      if [[ -n "$strategy_explicit" && "$strategy_explicit" != "$requested" ]]; then
+        echo "error: --$strategy_explicit and --$requested are mutually exclusive" >&2
+        usage >&2
+        exit 1
+      fi
+      strategy_explicit="$requested"
+      merge_strategy="$requested"
+      shift
+    ;;
     *)
       if [[ -z "$pr_number" ]]; then
         pr_number="$1"
@@ -254,7 +283,8 @@ if [[ -n "$head_branch" && "$head_owner" == "$base_owner" ]]; then
 fi
 
 if [[ $dry_run -eq 1 ]]; then
-  echo "==> [DRY RUN] would run: gh pr merge ${pr_number} --squash"
+  echo "==> [DRY RUN] strategy: ${merge_strategy}"
+  echo "==> [DRY RUN] would run: gh pr merge ${pr_number} --${merge_strategy}"
   if [[ $delete_remote -eq 1 ]]; then
     echo "==> [DRY RUN] would delete remote branch: ${head_branch}"
   fi
@@ -262,9 +292,9 @@ if [[ $dry_run -eq 1 ]]; then
   exit 0
 fi
 
-echo "==> Merging PR #${pr_number} (squash)..."
+echo "==> Merging PR #${pr_number} (${merge_strategy})..."
 rc=0
-gh pr merge "$pr_number" --squash || rc=$?
+gh pr merge "$pr_number" "--${merge_strategy}" || rc=$?
 if [[ $rc -ne 0 ]]; then
   echo "error: gh pr merge failed (rc=${rc})" >&2
   exit 4
