@@ -12,7 +12,7 @@
 #   2) Inline qualified-path scan — matches `crate::<layer>::...` in any position
 #      of any non-comment line (function bodies, struct fields, trait bounds, etc.).
 #
-# === Record merge and dedupe (issue #1067, blocker B1) ===
+# === Record merge and dedupe (issue #1068, blocker B1) ===
 # The inline pass scans every non-comment line, so it also sees the `use` lines
 # that the `use` pass reports. Both passes therefore emit records into one merged
 # stream that is deduped on `(file, line, path)` BEFORE anything is counted or
@@ -25,7 +25,7 @@
 # single `use` line carrying a brace group legitimately yields several distinct
 # sites on one line (see `Brace expansion` below).
 #
-# === Brace expansion (issue #1067, blocker B2) ===
+# === Brace expansion (issue #1068, blocker B2) ===
 # `use crate::infrastructure::crawler::{A, B, C};` used to yield the single
 # truncated match `crate::infrastructure::crawler`, because the layer regex stops
 # at `{`. No per-symbol allowlist entry can ever match that bare form, which makes
@@ -66,7 +66,7 @@
 # flow through the same allowlist. ALIAS_NAMES is the single source of truth for
 # the list; the awk `use` pass and the bash classifier both consume it.
 #
-# === Allowlist matching (issue #1067, blocker B3) ===
+# === Allowlist matching (issue #1068, blocker B3) ===
 # A pattern absorbs a MODULE PATH only at `::` segment boundaries: the character
 # immediately before the occurrence must be `:` or the occurrence must start at
 # position 0, and the character immediately after it must be `:` or end-of-string.
@@ -167,7 +167,7 @@ if [[ -f "$ALLOWLIST" ]]; then
   fi
 fi
 
-# Segment-aware containment for MODULE PATHS (issue #1067, blocker B3).
+# Segment-aware containment for MODULE PATHS (issue #1068, blocker B3).
 # `pat` may absorb `hay` only when it occurs at `::` segment boundaries: the
 # character immediately before the occurrence must be ':' (the tail of a `::`
 # separator, or of the leading `crate::` prefix) or the occurrence must start at
@@ -253,7 +253,7 @@ is_allowlisted() {
 # the whole line. Rust string literals are NOT parsed — residual false positives
 # are absorbed by the allowlist, not the regex (ADR-0010-A).
 #
-# Brace groups are EXPANDED (issue #1067, blocker B2): a match immediately followed
+# Brace groups are EXPANDED (issue #1068, blocker B2): a match immediately followed
 # by `{` yields one record per symbol with the group prefix joined back on, so
 # `use crate::infrastructure::crawler::{A, B};` emits
 # `crate::infrastructure::crawler::A` and `…::B` instead of the single bare
@@ -507,7 +507,7 @@ process_match() {
 violations=0
 allowlisted_count=0
 
-# Dedupe set for (file, line, match) — issue #1067, blocker B1. The two scan
+# Dedupe set for (file, line, match) — issue #1068, blocker B1. The two scan
 # passes overlap on every `use` line, so without this the reported number is regex
 # hits rather than distinct violation sites.
 declare -A SEEN_SITE=()
