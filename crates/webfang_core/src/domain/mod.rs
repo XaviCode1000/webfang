@@ -119,7 +119,7 @@ pub use semantic_inspector::{
 pub use text_chunker::TextChunker;
 
 pub use axtree_port::AxTreePort;
-pub use cpu_executor::CpuExecutorPort;
+pub use cpu_executor::{CpuExecutorPort, ProcessedChunk};
 pub use entities::{
     DocumentChunk, DocumentChunkExported, DocumentChunkUnvalidated, DocumentChunkValidated,
     DownloadedAsset, Draft, ExportState, Exported, ScrapedContent, Validated, ValidationError,
