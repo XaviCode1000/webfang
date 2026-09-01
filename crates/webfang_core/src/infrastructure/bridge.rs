@@ -7,21 +7,15 @@ use tokio::sync::oneshot;
 use tracing::{warn, Instrument};
 
 use crate::domain::content_processor::ContentProcessor;
+use crate::domain::cpu_executor::CpuExecutorPort;
 use crate::error::ScraperError;
 use crate::infrastructure::cpu_pool::RayonCpuPool;
 use crate::infrastructure::crawler::resource_downloader::DownloadedResource;
 
-/// One chunk of cleaned content produced by the bridge.
-///
-/// `embedding` is `None` until PR5 wires the ONNX inference engine
-/// (frozen: PR3 ships the CPU-bound isolation mechanism, not the model).
-#[derive(Debug, Clone, PartialEq)]
-pub struct ProcessedChunk {
-    /// Cleaned, visible text for this chunk.
-    pub content: String,
-    /// 384-dim embedding once PR5 ONNX inference is wired; `None` for the stub.
-    pub embedding: Option<Vec<f32>>,
-}
+/// Domain-owned chunk DTO (ADR-0012-B 3.E): the type now lives in
+/// `domain::cpu_executor`; this re-export shim keeps infra-internal users
+/// (`dispatch_resource`, `ProcessedResource`, tests) compiling unchanged.
+pub use crate::domain::cpu_executor::ProcessedChunk;
 
 /// Result of dispatching a [`DownloadedResource`] through the CPU bridge.
 #[derive(Debug, Clone)]
@@ -42,10 +36,17 @@ pub struct ProcessedResource {
 /// a generic [`dispatch`](CpuBridge::dispatch) that moves any CPU-bound
 /// closure off the event loop, and a typed
 /// [`dispatch_resource`](CpuBridge::dispatch_resource) that cleans
-/// `DownloadedResource` → `ProcessedResource` via the injected processor.
+/// [`DownloadedResource`] → [`ProcessedResource`] via the injected processor.
 ///
 /// `CpuBridge` is `Send + Sync` (spec: "dispatch gateway MUST be Send + Sync"),
 /// so it can be shared across Tokio tasks via `Arc<CpuBridge>`.
+///
+/// `CpuBridge` also implements the domain port
+/// [`CpuExecutorPort`] so `application::elastic_ingestion` can hold it as
+/// `Arc<dyn CpuExecutorPort>` (ADR-0012-B 3.E); the port's primitive
+/// `dispatch_resource(url, content, size)` adapts to the inherent typed
+/// dispatch and remaps the resource-level result to the port's
+/// chunk-level result (the only part the orchestrator consumes).
 pub struct CpuBridge {
     pool: RayonCpuPool,
     processor: Arc<dyn ContentProcessor>,
@@ -151,6 +152,65 @@ impl CpuBridge {
     }
 }
 
+/// Domain port shim (ADR-0012-B 3.E): lets `application::elastic_ingestion`
+/// hold `Arc<dyn CpuExecutorPort>` without importing `infrastructure::bridge`.
+/// Passthrough — no new observability fields; the existing `warn!` in
+/// [`CpuBridge::dispatch`] remains the hot-path trace.
+impl CpuExecutorPort for CpuBridge {
+    /// Delegates to the inherent generic [`CpuBridge::dispatch`]. Explicit
+    /// UFCS call disambiguates the method from the trait's same-name member.
+    fn dispatch(
+        &self,
+        work: Box<dyn FnOnce() -> String + Send + 'static>,
+    ) -> oneshot::Receiver<Result<String, ScraperError>> {
+        CpuBridge::dispatch(self, work)
+    }
+
+    /// Adapts the port's primitives to the inherent typed dispatch by
+    /// rebuilding the `DownloadedResource` infra-internally (the processor
+    /// path consumes only url/content/size — verified: `content_type` is
+    /// never read — so `None` here is behavior-neutral), then remaps the
+    /// resource-level oneshot to the port's chunk-level oneshot. The remap
+    /// needs a forwarding task because a `oneshot::Receiver` cannot be
+    /// mapped synchronously; the runtime-context assumption matches the
+    /// existing `spawn_blocking` path.
+    fn dispatch_resource(
+        &self,
+        url: String,
+        content: String,
+        size: u64,
+    ) -> oneshot::Receiver<Result<Vec<ProcessedChunk>, ScraperError>> {
+        let payload = DownloadedResource {
+            url,
+            bytes: content.into_bytes(),
+            content_type: None,
+            size_bytes: size,
+        };
+        let inner = CpuBridge::dispatch_resource(self, payload);
+        let (tx, rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let mapped = match inner.await {
+                Ok(Ok(processed)) => Ok(processed.chunks),
+                Ok(Err(e)) => Err(e),
+                // LCOV_EXCL_START defensive: inner receiver closed before the result arrived
+                Err(_) => Err(ScraperError::ingestion(
+                    "canal CPU bridge cerrado prematuramente",
+                )),
+                // LCOV_EXCL_STOP
+            };
+            // LCOV_EXCL_START defensive: oneshot-receiver-dropped — the Tokio task was aborted before consuming the result
+            if tx.send(mapped).is_err() {
+                warn!(
+                    reason = "receptor oneshot descartado",
+                    "canal CPU bridge shim descartado: tarea Tokio abortada antes de recibir el resultado"
+                );
+            }
+            // LCOV_EXCL_STOP
+        });
+        rx
+    }
+}
+
 /// Extract a human-readable message from a captured panic payload.
 ///
 /// Panics raised with `&str` / `String` (the common case, including
@@ -168,7 +228,7 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{CpuBridge, ProcessedChunk, ProcessedResource};
+    use super::{CpuBridge, CpuExecutorPort, ProcessedChunk, ProcessedResource};
     use crate::error::ScraperError;
     use crate::infrastructure::content_processing::AggressiveProcessor;
     use crate::infrastructure::cpu_pool::RayonCpuPool;
@@ -442,6 +502,58 @@ mod tests {
             Some("aggressive"),
             "metadata must record the processor name"
         );
+    }
+
+    // ---- Task 3.E: domain port shim (CpuBridge implements CpuExecutorPort) ----
+
+    #[cfg_attr(miri, ignore)] // lol_html/servo_arc aliasing incompatible with Tree Borrows
+    #[tokio::test]
+    async fn test_port_dispatch_resource_returns_chunks_via_shim() {
+        // Behavioral proof of the port path: call dispatch_resource through
+        // the trait object (Arc<dyn CpuExecutorPort>) and verify the shim's
+        // primitive→DownloadedResource adaptation and chunk remap.
+        let bridge: Arc<dyn CpuExecutorPort> = Arc::new(make_bridge(2));
+        let html = "<p>shim cleaning works</p>";
+        let rx = bridge.dispatch_resource(
+            "https://example.com/shim".to_string(),
+            html.to_string(),
+            html.len() as u64,
+        );
+        let chunks = rx
+            .await
+            .expect("oneshot must not be closed")
+            .expect("shim dispatch_resource must succeed");
+        assert_eq!(
+            chunks.len(),
+            1,
+            "shim produces one chunk, like the inherent path"
+        );
+        let text = chunks[0].content.as_str();
+        assert!(
+            text.contains("shim cleaning works"),
+            "visible text must survive the shim: {text}"
+        );
+        assert!(
+            !text.contains('<'),
+            "lol_html cleaning must still run through the shim: {text}"
+        );
+        assert!(
+            chunks[0].embedding.is_none(),
+            "shim must leave embedding None (ONNX wired in the orchestrator)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_port_dispatch_delegates_via_trait_object() {
+        // Object-safety + dispatch delegation proof: the impl must compile
+        // as Arc<dyn CpuExecutorPort> and route work to the pool.
+        let bridge: Arc<dyn CpuExecutorPort> = Arc::new(make_bridge(2));
+        let rx = bridge.dispatch(Box::new(|| "via-port".to_string()));
+        let result = rx
+            .await
+            .expect("oneshot must not be closed")
+            .expect("work must return Ok");
+        assert_eq!(result, "via-port");
     }
 
     // ---- Static Send + Sync assertion (spec: "gateway MUST be Send + Sync") ----
