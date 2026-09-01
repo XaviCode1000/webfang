@@ -374,10 +374,13 @@ commit.
 - **Domain stays testable** — every new trait is `Arc<dyn Trait>`-ready,
   `Send+Sync` where the runtime requires it, dyn-compatible (no generics on
   method, no `Self` in return). `Container` is the single DI seam.
-- **Prose removal-conditions fixed** (partial for #1032, full closure per removing PR): every allowlist comment
-  now cites a **symbol** (`engine.rs: RamProbePort`,
-  `asset_download::Downloader::new`, `elastic_ingestion.rs: CpuBridge`) not a
-  line number. Line numbers rot when sibling slices edit above them (e.g.
+- **Prose removal-conditions fixed** (#1032 — now corrected in the file itself, not
+  deferred): every allowlist comment cites a **symbol** (`DomainSessionPool`,
+  `SessionPoolConfig`, `SystemRamProbe`, `asset_download::Downloader::new`,
+  `elastic_ingestion.rs: CpuBridge`) and never a line number. This was claimed
+  before it was true — `application/crawler/engine.rs` still carried an
+  `engine.rs:57` line cite until the tooling-hygiene PR that closes #1032.
+  Line numbers rot when sibling slices edit above them (e.g.
   `engine.rs:377` → `engine.rs:423` after 3.B-1b inserted the factory seam).
 
 ### Negative / costs
@@ -450,9 +453,10 @@ commit.
   document.
 - **No migration needed for consumers:** ADRs are planning artifacts; the only
   machine-readable artifact is `scripts/check_intra_crate_direction_allowlist.txt`
-  (10 entries). Its per-line `Remove after sub-slice …` comments will be
-  updated to symbol-citations (fix #1032) in the PR that removes each entry —
-  not retroactively in this ADR.
+  (10 entries). Its per-line removal-conditions were rewritten to symbol-citations
+  and migration-statements in the tooling-hygiene PR closing #1032 — absorbed count
+  verified byte-identical at `allowlisted 71` before and after, patterns untouched.
+  Future entries added by the 10→2 slices follow the same rule from the start.
 
 ---
 
