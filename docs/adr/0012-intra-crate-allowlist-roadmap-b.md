@@ -1,6 +1,7 @@
 # ADR 0012-B: Intra-Crate Allowlist 10→2 — Corrected Plan 2026-09-01
 
-- **Status:** Accepted
+- **Status:** Proposed
+> **Note:** Accepted upon merge of #1067. Until then, Proposed.
 - **Date:** 2026-09-01
 - **Deciders:** Project Architect, webfang maintainers
 - **Related:** ADR-0010, ADR-0010-A, ADR-0011, ADR-0012 (superseded for numbers)
@@ -62,7 +63,7 @@ ls crates/webfang_core/src/domain/ | wc -l
 |---|---|---|---|
 | **Sub-slice 1** — `domain::config` (`ScraperConfig` family) | #998 | Moved `ScraperConfig`/`AutotuningConfig`/etc. VOs to `domain::config`; infra shim | 19 → 18 |
 | **3.A / 3.A.2 / 3.B-0 / 3.B-1a / 3.B-1b / 3.B-1c / 3.C** | #1002, #1005 (`e9d9f2da`), #1023 (`e428dcdf`), #1042, #1059 | 3.B decomposed into 4 PRs (see §2.3); 3.C created `domain::ssrf_guard` (`is_forbidden_ip`, `redirect_policy`, `SsrfGuard`/`DefaultSsrfGuard` + `OnceLock` registry) and `domain::ram_probe_port` (`RamProbePort`, `SystemRamProbe` shim) | 18 → 16 → 10 |
-| **3.D (partial)** | #1055 (partial), #1064/#1065/#1066 (sequential, landing now) | `domain::scraper_port` / `domain::html_cleaner` / `domain::content_processor` extraction | 10 → (shrinking; see §2.3) |
+| **3.D (partial)** | #1055 (partial), #1064/#1065/#1066 (sequential, MERGED) | `domain::scraper_port` / `domain::html_cleaner` / `domain::content_processor` extraction | 10 → (shrinking; see §2.3) |
 | **Gate flip** | `a6b931ab` | `INTRA_CRATE_MODE` default `warn` → `strict`; CI `toolchain` job runs `INTRA_CRATE_MODE=strict bash scripts/check_intra_crate_direction.sh` | Strict is permanent |
 
 Current allowlist (`scripts/check_intra_crate_direction_allowlist.txt`, 10 entries, 84 sites, 2026-09-01):
@@ -80,15 +81,16 @@ application/elastic_ingestion.rs                  # CpuBridge
 application/vault_search.rs                       # read_vault_notes
 ```
 
-### 1.3 Preconditions already in flight
+### 1.3 Preconditions — UNBLOCKED (updated 2026-09-01)
 
-Two preconditions cited as critical in #994 are **in flight as sequential PRs
-#1066 (EnvGuard, issue #1063) / #1065 (Miri pin, issue #1058) — landing now, strict gate green per PR** (plus #1064 choke-point #1060):
+> **Note:** Worktree 360faec1 behind origin/main by a32b2607; counts re-verified on a32b2607: 10/84/57, strict, CAP22.
+
+Two preconditions cited as critical in #994 were **UNBLOCKED (EnvGuard #1066 MERGED at a32b2607 2026-09-01T00:55:45Z, Miri #1065 MERGED at 179be72a 00:49:00Z)** (plus #1064 choke-point #1060 MERGED):
 
 - **#1066 — `EnvGuard` unification (issue #1063)** (`crates/webfang_test_utils/src/lib.rs:EnvGuard`): centralizes `WEBFANG_DISABLE_SSRF_*` and other env-var test guards. Blocks `3.E`/`3.E.2` (`domain::bridge`/`CpuBridge`) which needs deterministic env isolation for `CpuExecutorPort` wiring.
 - **#1065 — Miri pin (issue #1058)** (`nightly-2026-08-27` in `.github/workflows/ci.yml`, `MIRIFLAGS=-Zmiri-tree-borrows`): pins the nightly that produces green `miri-infra-*`. Without it, `CpuBridge`/`ResourceGovernor` thread-pool tests are flaky under Tree Borrows.
 
-Both are **not deferred** — they gate `3.E` and must be green before the bridge slice lands. This ADR freezes the dependency as explicit.
+Both were gating `3.E` and required green before the bridge slice landed — now **MERGED and green**, so 3.E/3.E.2 are **UNBLOCKED**. This ADR freezes the dependency as explicit (now satisfied).
 
 ### 1.4 Domain purity is aspirational — document the known leaks
 
@@ -160,24 +162,24 @@ Gate condition for every row: `INTRA_CRATE_MODE=strict bash scripts/check_intra_
 | **3.B-1a** | `CookieBridge` → `domain::cookie_bridge` (`git mv` + `pub use` shim) | 3 | ~180 (`-C`: 354 counted as 180 logical) | **YES** | — | 3.B-0 | **DONE** (#1005) |
 | **3.B-1b** | `DownloaderFactory` (`DownloaderSpec` + `DownloaderFactory::build`) + `fetch_router::DefaultDownloaderFactory` seam `EngineOptions::downloader_factory` | 23 | ~320 (`-M` would report ~460) | **YES** | `infrastructure::downloader` (broad, first in chain) | 3.B-1a | **DONE** (#1023) |
 | **3.B-1c** | `RamProbePort` (`RamProbePercent`, `ram_usage_percent()`) + `Engine::with_ram_probe()` injection; default `SystemRamProbe` stays in infra | 1 prod + 1 `use SystemRamProbe` default | ~120 | **YES** | — (autoscale loop now reads `RamProbePort`; `engine.rs: RamProbePort` symbol, not `engine.rs:377`) | 3.B-1b | **DONE** (#1042) |
-| **3.C** | `domain::ssrf_guard` (`is_forbidden_ip`, `is_forbidden_literal_host`, `redirect_policy()`, `SsrfGuard`/`DefaultSsrfGuard` + `OnceLock` registry) | 17 | ~250 | **YES** | `infrastructure::ssrf` residuals absorbed; `application/*` SSRF sites | — | **DONE** (#1059) |
-| **3.D** | `domain::scraper_port` / `domain::html_cleaner` / `domain::content_processor` (pure) — `ScraperPort`, `AuthorExtractor`, `DomPruner`, `clean_html`, `ContentProcessor` | ~10 residual (`elastic_ingestion.rs: ContentProcessor` still infra-bound via bridge) | ~180 | NO (reuse) | — (partial; `scraper`/`converter` broad residuals) | — | **DONE partial** (#1055) |
-| **3.E** | `domain::cpu_executor::CpuExecutorPort` trait + `ProcessedChunk` DTO + `infrastructure::bridge` shim (`CpuBridge` implements `CpuExecutorPort`) | 8 | ~180 | **YES** (trait) | — | **#1063 EnvGuard green** | **BLOCKED until EnvGuard** |
-| **3.E.2** | `application/elastic_ingestion.rs: ElasticIngestion { bridge: Arc<dyn CpuExecutorPort> }` field rewrite + `Container` wiring + call sites | 0 new (rewrite) | ~200 | NO (uses 3.E) | `application/elastic_ingestion.rs: CpuBridge` (symbol, not line) | 3.E | **BLOCKED until EnvGuard** |
-| **3.F** | `domain::session_port` (`SessionPort`, `SessionId`, `SessionPoolConfig`, `DomainSessionPool` trait) | 3 (`engine.rs: DomainSessionPool`) | ~120 | NO | `application/crawler/engine.rs: DomainSessionPool` (narrow, not broad) | — | TODO |
-| **3.G** | `domain::config::AutotuningConfig::from_elastic` / `resolve` impls moved from `infrastructure::autotuning` shim into `domain::config` | 8 | ~120 | NO (move impls) | — (post-1 cleanup) | Sub-slice 1 (#998) | TODO |
-| **3.H** | `domain::exporter` / `domain::export` port (`ExportState`, `Exporter`, `DomainRecords`, `RawRecord` — partial, state-store stays infra) | 5 | ~150 | **YES (partial)** | `infrastructure::export` (narrowed first: `infrastructure::export::state_store` etc., then removed) | — | TODO |
-| **3.I** | `domain::note_repository::VaultNoteReader` + `domain::content_processor` already covers; `infrastructure::obsidian::read_vault_notes` → port | 1 (`vault_search.rs: read_vault_notes`) | ~120 | **YES** (`VaultNoteReader`) | `application/vault_search.rs: read_vault_notes` (symbol) | — | TODO |
-| **3.J** | `domain::http_port` / `domain::user_agent` misc (`HttpClientPort`, `UserAgentProvider`) | ~3 | ~100 | NO | `infrastructure::http` residuals | — | TODO |
-| **3.K** | `domain::persistence` (`PersistenceMode`, `ResumeConfig`) | ~2 | ~120 | NO | `infrastructure::persistence` residuals | — | TODO |
-| **4** | `domain::waf` full port — move `infrastructure::http::waf_engine` AC automaton into `domain::waf` (`WafInspectorPort`, `WafVerdict`, `EvidenceSource`); infra becomes `pub use` shim | 7 | ~250 | — (intra-domain logic move) | `domain/waf.rs` shim delegation removed; `infrastructure::http::waf_engine` entry deleted (narrow, not `infrastructure::http` broad) | — | TODO |
+| **3.C** | `domain::ssrf_guard` (`is_forbidden_ip`, `is_forbidden_literal_host`, `redirect_policy()`, `SsrfGuard`/`DefaultSsrfGuard` + `OnceLock` registry) | 17 | ~250 (estimate — no -C provenance yet) | **YES** | 3 per-file entries removed: `application/http_client/factory.rs`, `application/llm_extraction.rs`, `adapters/downloader/mod.rs` (verified: `git diff 117863c9^..117863c9 -- allowlist.txt`) | — | **DONE** (#1059) |
+| **3.D** | `domain::scraper_port` / `domain::html_cleaner` / `domain::content_processor` (pure) — `ScraperPort`, `AuthorExtractor`, `DomPruner`, `clean_html`, `ContentProcessor` | ~10 residual (`pipeline/stages/clean.rs:9 use crate::domain::content_processor::ContentProcessor`, `infrastructure::bridge::CpuBridge` — grep verified) | ~180 (estimate — no -C provenance yet) | NO (reuse) | — (partial; `scraper`/`converter` broad residuals) | — | **DONE partial** (#1055) |
+| **3.E** | `domain::cpu_executor::CpuExecutorPort` trait + `ProcessedChunk` DTO + `infrastructure::bridge` shim (`CpuBridge` implements `CpuExecutorPort`) | 8 | ~180 (estimate — no -C provenance yet) | **YES** (trait) | — | **— (was #1063, now unblocked)** | **UNBLOCKED (EnvGuard #1066 MERGED at a32b2607 2026-09-01T00:55:45Z, Miri #1065 MERGED at 179be72a 00:49:00Z)** |
+| **3.E.2** | `application/elastic_ingestion.rs: ElasticIngestion { bridge: Arc<dyn CpuExecutorPort> }` field rewrite + `Container` wiring + call sites | 0 new (rewrite) | ~200 (estimate — no -C provenance yet) | NO (uses 3.E) | `application/elastic_ingestion.rs: CpuBridge` (symbol, not line) | 3.E | **UNBLOCKED (EnvGuard #1066 MERGED at a32b2607 2026-09-01T00:55:45Z, Miri #1065 MERGED at 179be72a 00:49:00Z)** |
+| **3.F** | `domain::session_port` (`SessionPort`, `SessionId`, `SessionPoolConfig`, `DomainSessionPool` trait) | 3 (`engine.rs: DomainSessionPool`) | ~120 (estimate — no -C provenance yet) | NO | `application/crawler/engine.rs: DomainSessionPool` (narrow, not broad) | — | TODO |
+| **3.G** | `domain::config::AutotuningConfig::from_elastic` / `resolve` impls moved from `infrastructure::autotuning` shim into `domain::config` | 8 | ~120 (estimate — no -C provenance yet) | NO (move impls) | — (post-1 cleanup) | Sub-slice 1 (#998) | TODO |
+| **3.H** | `domain::exporter` / `domain::export` port (`ExportState`, `Exporter`, `DomainRecords`, `RawRecord` — partial, state-store stays infra) | 5 | ~150 (estimate — no -C provenance yet) | **YES (partial)** | `infrastructure::export` (narrowed first: `infrastructure::export::state_store` etc., then removed) | — | TODO |
+| **3.I** | `domain::note_repository::VaultNoteReader` + `domain::content_processor` already covers; `infrastructure::obsidian::read_vault_notes` → port | 1 (`vault_search.rs: read_vault_notes`) | ~120 (estimate — no -C provenance yet) | **YES** (`VaultNoteReader`) | `application/vault_search.rs: read_vault_notes` (symbol) | — | TODO |
+| **3.J** | `domain::http_port` / `domain::user_agent` misc (`HttpClientPort`, `UserAgentProvider`) | ~3 | ~100 (estimate — no -C provenance yet) | NO | `infrastructure::http` residuals | — | TODO |
+| **3.K** | `domain::persistence` (`PersistenceMode`, `ResumeConfig`) | ~2 | ~120 (estimate — no -C provenance yet) | NO | `infrastructure::persistence` residuals | — | TODO |
+| **4** | `domain::waf` full port — move `infrastructure::http::waf_engine` AC automaton into `domain::waf` (`WafInspectorPort`, `WafVerdict`, `EvidenceSource`); infra becomes `pub use` shim | 7 | ~250 (estimate — no -C provenance yet) | — (intra-domain logic move) | `domain/waf.rs` shim delegation removed; `infrastructure::http::waf_engine` entry deleted (narrow, not `infrastructure::http` broad) | — | TODO |
 | **Perm** | `application/container.rs` + `infrastructure::observability` remain | 0 | 0 | — | **Never removed** | — | Permanent |
 
 **How the 8 removable entries map to slices:**
 
 | Allowlist entry | Removal slice | Removal-condition (symbol, not line) | Sites |
 |---|---|---|---|
-| `infrastructure::crawler` (broad) | **Narrow then 3.F/3.D** | `engine.rs: DomainSessionPool` + `discovery.rs: crawl_task_ctx::CrawlTaskCtx` → `domain::session_port` / `domain::crawler_port` | broad covers ~13 |
+| `infrastructure::crawler` (broad) | **Narrow then 3.F/3.D** | `engine.rs: DomainSessionPool` + `discovery.rs: crawl_task_ctx::CrawlTaskCtx` → `domain::session_port` / `domain::crawler_port` | broad crawler: history 15→13 entries (PR #1055: allowlisted 99→89, 10 sites) — exact broad-only count not isolated without full checkout |
 | `infrastructure::export` (broad) | **3.H** | `export: ExportState` / `DomainRecords` → `domain::exporter` (narrowed first) | 5 |
 | `application/asset_download.rs` | **Follow-up to 3.B-1b** | `asset_download::Downloader::new` → `DownloaderFactory::build` via injected `Arc<dyn DownloaderFactory>` | 1 (`crate::adapters::downloader::Downloader::new`) |
 | `application/crawler/discovery.rs` | **3.F** | `discovery.rs: CrawlTaskCtx` residuals → `domain::session_port` / `domain::crawler_port` | broad residual |
@@ -191,13 +193,15 @@ Gate condition for every row: `INTRA_CRATE_MODE=strict bash scripts/check_intra_
 - 3.E → 3.E.2 is sequential (trait must exist before field rewrite).
 - 3.F, 3.G, 3.H, 3.I, 3.J/K can land in any order **except** they must serialize
   through `domain/mod.rs` (each adds a `pub mod`). PRs #1064/#1065/#1066
-  demonstrate the pattern: **sequential merge, one at a time, strict green per
-  PR** — batch-merge via `fix/batch-3-*` is forbidden because `domain/mod.rs`
+  demonstrated the pattern: **sequential merge, one at a time, strict green per
+  PR (MERGED at a32b2607/179be72a)** — batch-merge via `fix/batch-3-*` is forbidden because `domain/mod.rs`
   conflicts silently shadow each other.
 - 4 (`waf`) can land anytime; it touches `domain/waf.rs` and
   `infrastructure/http/waf_engine.rs` only.
 
 ### 2.4 Sizing and CI rule per PR
+
+> **Note:** LOC figures in §2.3 are estimates — no -C provenance yet, except 3.B-1a/1b (measured at e9d9f2da / e428dcdf).
 
 Every PR in §2.3 must satisfy **all four** before merge:
 
@@ -222,8 +226,7 @@ commit.
 
 ### Positive
 
-- **Allowlist 10 → 2** over ~8 PRs post-2026-09-01 (plus #1064 choke-point, #1065 Miri pin, #1066 EnvGuard landing now
-  already sequential). Each PR is independently reviewable (≤400L by `-C`).
+- **Allowlist 10 → 2** over ~5 PRs remaining post-2026-09-01 (3.F, 3.G, 3.H, 3.I, 3.J/K, 4) — ~8 total before excluding 3 MERGED (#1064, #1065, #1066); plus #1055 partial. Each PR is independently reviewable (≤400L by `-C`).
 - **Gate `strict` permanent** — flipped at `a6b931ab`, never reverts to `warn`.
   `ALLOWLIST_CAP=22` stays until 10→2 lands, then ratchets to `10` (warn at
   `8`), then `5` (warn at `3`) once only the two permanent entries remain.
@@ -282,10 +285,11 @@ commit.
 - `crates/webfang_core/src/domain/ram_probe_port.rs` — `RamProbePort`, `RamUsagePercent`
 - `crates/webfang_core/src/domain/cpu_executor.rs` — `CpuExecutorPort` (`oneshot` leak)
 - ADRs: `docs/adr/0010-intra-crate-direction-allowlist.md`, `docs/adr/0011-tighten-intra-crate-allowlist.md`, `docs/adr/0012-intra-crate-allowlist-roadmap.md` (frozen historical)
-- PRs: #998 (sub-slice 1), #1002, #1005 (`e9d9f2da`, 3.B-0+1a), #1023 (`e428dcdf`, 3.B-1b), #1042 (3.B-1c `RamProbePort`), #1059 (3.C `ssrf_guard`), #1055 (3.D partial), **#1064 (choke-point #1060) / #1065 (Miri #1058) / #1066 (EnvGuard #1063) (sequential, landing now)**
+- PRs: #998 (sub-slice 1), #1002, #1005 (`e9d9f2da`, 3.B-0+1a), #1023 (`e428dcdf`, 3.B-1b), #1042 (3.B-1c `RamProbePort`), #1059 (3.C `ssrf_guard`), #1055 (3.D partial), **#1064 (choke-point #1060) / #1065 (Miri #1058) / #1066 (EnvGuard #1063) (sequential, MERGED at a32b2607/179be72a)**
 - Issues: #994 (umbrella), **#1063 (EnvGuard — blocks 3.E)**, **#1058 (Miri pin — blocks 3.E)**, #1060 / #1061 (choke-point: broad `crawler`/`export` shadowing), **#1032 (prose removal-conditions rot — line→symbol)**, #1045 (pure-domain leak newtypes, out of scope for 10→2), #1012 (3.B erratum), #1022/#1024 (3.B-1b coverage gap)
 - `.github/workflows/ci.yml` `toolchain` job — `INTRA_CRATE_MODE=strict bash scripts/check_intra_crate_direction.sh` (strict since `a6b931ab`)
 - `crates/webfang_test_utils/src/lib.rs:EnvGuard` — unified env guard (issue #1063)
+- Gate 0 drain #1015 (issue) / #1016 (PR, MERGED) — enabled breaking PR #1023 (FetchRouter removal) under freeze
 
 ---
 
@@ -301,7 +305,7 @@ commit.
   rule are now normative in §2, not errata. No separate erratum file is needed
   — future corrections to 0012-B will be versioned as 0012-C or a successor ADR.
 - **Numbers superseded:** wherever ADR-0012 says `19`/`133`/`warn`/`14 PRs`,
-  read `10`/`84`/`strict`/`~10 PRs (5 done + ~8 remaining to 2)` from this
+  read `10`/`84`/`strict`/`~10 PRs (5 done + ~5 remaining to 2, 3 MERGED excluded)` from this
   document.
 - **No migration needed for consumers:** ADRs are planning artifacts; the only
   machine-readable artifact is `scripts/check_intra_crate_direction_allowlist.txt`
@@ -334,7 +338,5 @@ commit.
   `-C` vs. `-M`: chosen `-C` — reports logical churn, avoids 1.9× over-report.
   (3) Sequential `domain/mod.rs` merges vs. batch: chosen sequential — avoids
   silent `mod.rs` conflicts, costs more CI runs.
-- **Next step:** Land #1064 (choke-point #1060) / #1065 (Miri #1058) / #1066 (EnvGuard #1063) sequential (strict green per
-  PR), then unblock 3.E/3.E.2 after #1063/#1058 green, then 3.F/3.H/3.I/4 in
-  any order via sequential PRs.
+- **Next step:** #1064 (choke-point #1060) / #1065 (Miri #1058) / #1066 (EnvGuard #1063) sequential MERGED (strict green per PR at a32b2607/179be72a), then 3.E/3.E.2 UNBLOCKED, then 3.F/3.H/3.I/4 in any order via sequential PRs.
 
