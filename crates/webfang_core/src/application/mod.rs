@@ -15,7 +15,6 @@ pub mod diagnostic;
 pub mod elastic_ingestion;
 pub mod error_mapping;
 pub mod export_factory;
-pub mod export_utils;
 pub mod extraction;
 pub mod http_client;
 pub mod llm_extraction;
