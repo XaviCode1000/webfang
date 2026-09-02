@@ -30,13 +30,13 @@ use crate::application::adaptive_engine::AdaptiveSelectorEngine;
 #[cfg(not(feature = "adaptive-selectors"))]
 type AdaptiveSelectorEngine = ();
 
-// Sitemap discovery was extracted to `sitemap_discovery.rs` and sitemap XML
-// parsing moved to the infrastructure layer (#442). Both are re-exported here so
-// `discovery::crawl_with_sitemap` / `discovery::parse_sitemap` (and the `crawler`
-// facade that imports them from this module) keep resolving unchanged.
+// Sitemap discovery was extracted to `sitemap_discovery.rs` (and sitemap XML
+// parsing stays in the infrastructure layer per #442 / ADR-0012-B). The
+// `parse_sitemap` re-export was dismantled in favor of direct consumer
+// repoints — no application symbol may reach `infrastructure::crawler` through
+// a shim (ADR-0012-B).
 pub use crate::application::crawler::sitemap_discovery::crawl_with_sitemap;
 pub use crate::application::extraction::extract_content;
-pub use crate::infrastructure::crawler::parse_sitemap;
 
 // ============================================================================
 // TUI Support — Discover/Scrape Use Cases
@@ -412,6 +412,9 @@ fn headers_to_header_map(
 mod tests {
     use super::*;
     use crate::domain::CrawlError;
+    // parse_sitemap stays an infrastructure fn (quick_xml machinery);
+    // the application re-export was dismantled (ADR-0012-B unit 2).
+    use crate::infrastructure::crawler::parse_sitemap;
     #[cfg(not(miri))]
     use std::time::Duration;
 
