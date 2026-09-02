@@ -293,10 +293,11 @@ async fn scrape_single_url_for_tui_inner(
         debug!("Binary content type detected: {} for {}", content_type, url);
 
         // Save binary file when download_documents is enabled. Filesystem I/O is
-        // routed through the injected BinaryWriterPort (or the FsBinaryWriter
-        // fallback) so the application layer never touches std::fs directly
-        // (#442 layer-violation fix). Observable behavior is unchanged: the same
-        // bytes land in the same file under `config.output_dir`.
+        // routed through the injected BinaryWriterPort (falling back to the
+        // composition-root default writer) so the application layer never
+        // touches std::fs directly (#442 layer-violation fix). Observable
+        // behavior is unchanged: the same bytes land in the same file under
+        // `config.output_dir`.
         let saved_path = if config.download_documents {
             let filename = derive_filename_from_content_disposition(
                 page.headers.get("content-disposition").map(String::as_str),
@@ -306,7 +307,7 @@ async fn scrape_single_url_for_tui_inner(
             let output_path = config.output_dir.join(&filename);
 
             let bytes = page.html.as_bytes();
-            let fallback_writer = crate::infrastructure::crawler::FsBinaryWriter::new();
+            let fallback_writer = crate::application::container::build_binary_writer();
             let writer: &dyn crate::domain::ports::BinaryWriterPort =
                 binary_writer.unwrap_or(&fallback_writer);
             match writer.write_bytes(&output_path, bytes) {

@@ -223,6 +223,18 @@ pub(crate) fn build_robots_fetcher(
     ))
 }
 
+/// Build the default filesystem binary writer as the [`BinaryWriterPort`]
+/// fallback seam.
+///
+/// Composition-root helper (ADR-0012-B unit 4, mirroring
+/// [`build_robots_fetcher`]): the concrete
+/// `infrastructure::crawler::binary_writer::FsBinaryWriter` is named only
+/// here; `application::crawler::discovery` consumes the returned concrete
+/// through the domain `BinaryWriterPort` trait when no writer is injected.
+pub(crate) fn build_binary_writer() -> crate::infrastructure::crawler::FsBinaryWriter {
+    crate::infrastructure::crawler::FsBinaryWriter::new()
+}
+
 impl Container {
     /// Create a new container with the given configurations.
     ///
