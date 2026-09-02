@@ -30,7 +30,6 @@ use crate::application::resume::{canonical_key, load_preserving, RunId};
 use crate::domain::exporter::{DomainRecords, LastError, RawRecord, RecordStorePort};
 use crate::domain::page_state::{PageStatus, Stateful};
 use crate::domain::{entities::ExportFormat, exporter::ExporterError, Exporter, ExporterConfig};
-use crate::infrastructure::export::state_store::StateStore;
 
 /// Per-run resume/commit context handed to the export functions (D5 seams).
 ///
@@ -590,35 +589,6 @@ fn create_default_jsonl(output_dir: PathBuf, filename: &str) -> Box<dyn Exporter
     create_jsonl_exporter(output_dir, filename)
 }
 
-/// Create a new StateStore for tracking processed URLs
-///
-/// # Arguments
-///
-/// * `state_dir` - Directory to store state files
-/// * `domain` - Domain name for state file (e.g., "example.com")
-///
-/// # Returns
-///
-/// * `Ok(StateStore)` - Created state store
-/// * `Err(ScraperError)` - Failed to create state store
-///
-/// # Errors
-///
-/// Returns error if:
-/// - State directory cannot be created
-/// - State file cannot be read/written
-pub fn create_state_store(
-    state_dir: PathBuf,
-    domain: &str,
-) -> Result<StateStore, crate::error::ScraperError> {
-    use crate::infrastructure::export::state_store::StateStore;
-
-    info!("Creating StateStore in {:?}", state_dir);
-    let mut store = StateStore::new(domain);
-    store.set_cache_dir(state_dir);
-    Ok(store)
-}
-
 /// Outcome of one item through the export phase.
 enum SingleItemOutcome {
     /// Counted as processed this run.
@@ -933,21 +903,6 @@ mod tests {
     }
 
     // =========================================================================
-    // create_state_store tests
-    // =========================================================================
-
-    #[test]
-    fn test_create_state_store_creates_directory() {
-        let temp_dir = TempDir::new().unwrap();
-        let domain = "example.com";
-        let store = create_state_store(temp_dir.path().to_path_buf(), domain);
-        assert!(store.is_ok());
-        let state_file = temp_dir.path().join("example.com.json");
-        let store = store.unwrap();
-        assert_eq!(store.get_state_path(), state_file);
-    }
-
-    // =========================================================================
     // process_results tests (T2.2)
     // =========================================================================
 
@@ -1166,8 +1121,6 @@ mod tests {
     #[test]
     fn test_process_results_resume_mode_tracks_urls() {
         let temp_dir = TempDir::new().unwrap();
-        let _store = create_state_store(temp_dir.path().to_path_buf(), "example.com").unwrap();
-
         let content = make_scraped_content("https://example.com/page", "Page", "Body");
 
         let processed = process_results(
@@ -1180,39 +1133,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(processed.len(), 1);
-    }
-
-    // =========================================================================
-    // create_state_store failure-path characterization (#393)
-    // =========================================================================
-
-    /// Pins the current contract of [`create_state_store`]: it is lazy and
-    /// infallible. `StateStore::new` and `set_cache_dir` perform no I/O, so the
-    /// store is created successfully even when `state_dir` is a regular file
-    /// where no directory could ever be created.
-    ///
-    /// Consequence: the `CliExit::IoError` branch in `apply_resume_mode`
-    /// (`cli/scrape_flow.rs`) is currently unreachable dead code, because the
-    /// state directory is only created later, on `StateStore::save`. If
-    /// `create_state_store` is ever made eager (e.g. `create_dir_all` up front),
-    /// this test must be updated and the `IoError` path becomes coverable.
-    #[test]
-    fn test_create_state_store_returns_ok_even_when_state_dir_is_a_file() {
-        // Arrange: a regular file where a state directory would need to be —
-        // an impossible location for any real directory creation.
-        let temp_dir = TempDir::new().expect("tempdir should be created");
-        let blocker = temp_dir.path().join("not_a_dir");
-        std::fs::write(&blocker, "i am a file, not a directory")
-            .expect("blocker file should be written");
-
-        // Act
-        let result = create_state_store(blocker, "example.com");
-
-        // Assert: creation is lazy/infallible — no I/O is attempted yet.
-        assert!(
-            result.is_ok(),
-            "create_state_store must be infallible (lazy): it performs no I/O at creation time"
-        );
     }
 
     // =========================================================================

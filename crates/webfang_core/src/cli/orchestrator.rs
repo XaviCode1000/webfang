@@ -1021,7 +1021,7 @@ fn build_batch_resume_store(opts: &CrawlOptions) -> Result<Option<StateStore>, C
         .clone()
         .unwrap_or_else(crate::cli::scrape_flow::resolve_default_state_dir);
     let domain = opts.url.host_str().unwrap_or("batch").to_string();
-    crate::application::export_factory::create_state_store(state_dir, &domain)
+    crate::cli::scrape_flow::create_state_store(state_dir, &domain)
         .map(Some)
         .map_err(|e| {
             CliExit::IoError(format!(
