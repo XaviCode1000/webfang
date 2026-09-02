@@ -6,11 +6,12 @@
 //! infrastructure concern from DOM-link discovery.
 
 use crate::application::url_filter::is_allowed;
+use crate::domain::crawler_port::SitemapConfig;
 use crate::domain::error::WafDetectionKind;
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::waf::{waf_inspector, InspectionContext};
 use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl};
-use crate::infrastructure::crawler::{SitemapConfig, SitemapError, SitemapParser, SitemapUrl};
+use crate::infrastructure::crawler::{SitemapError, SitemapParser, SitemapUrl};
 use tracing::{info, instrument};
 use url::Url;
 
