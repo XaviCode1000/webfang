@@ -2,7 +2,7 @@
 
 - **Companion to:** `docs/adr/0012-intra-crate-allowlist-roadmap-b.md` (normative plan — not repeated here).
 - **Purpose:** executable state of the 10→2 allowlist path as measured today. When this file and the ADR disagree on a number, this file's measurement wins until the next re-measure; the ADR's *rules* (§2.1 ports, §2.4 DoD, §1.2.2 one-module-at-a-time) still govern.
-- **Measured on:** `main` @ `42b06421`, 2026-09-02. Every number below was produced by the commands in §1/§4 — do not trust any of them after a merge that touches `crates/webfang_core/src` or the allowlist.
+- **Measured on:** `main` @ `98273348`, 2026-09-02 (re-verified: 18 entries / `allowlisted 56` / strict exit 0). Every number below was produced by the commands in §1/§4 — do not trust any of them after a merge that touches `crates/webfang_core/src` or the allowlist.
 
 ## 1. Allowlist state today (measured)
 
@@ -58,15 +58,16 @@ Effective state on `main` after each merge. PR bodies measured against their own
 | #1076 | `04f57a65` | 3.E — `CpuExecutorPort` grows `dispatch_resource` + `ProcessedChunk`. No allowlist change. | 7 | 67 |
 | #1080 | `3a0ec39f` | 3.E.2 — `ElasticIngestion` → `Arc<dyn CpuExecutorPort>`; entry dropped. Delta −9 (8 bridge + 1 collapsed crawler record; ADR's −8 estimate missed brace expansion). | → 6 | → 58 |
 | #1081 | `7768f23b` | Cheap wins — `asset_download` port + `engine.rs` `SystemRamProbe` → `domain::ram_probe_port::system_default()`; 2 entries dropped. Also corrected #1081's own finding: the ADR §5 removal-condition for `asset_download` was wrong (two different downloaders). | → 4 | → **56** |
-| #1082 | `42b06421` | Crawler narrow: 1 broad → 15 per-symbol (measured; ADR §1.2.2's "9" was stale at `8dc58c6e` — per-file entry drops exposed 6 more paths). Absorption-neutral by design. **Landed directly on local main; NOT pushed; no PR; issue #1082 still OPEN on GitHub.** | → **18** | 56 (flat) ✓ |
+| #1082 | `42b06421` | Crawler narrow: 1 broad → 15 per-symbol (measured; ADR §1.2.2's "9" was stale at `8dc58c6e` — per-file entry drops exposed 6 more paths). Absorption-neutral by design. Merged into local main; **origin/main still `7768f23b` — push pending; issue #1082 stays OPEN on GitHub until the push.** | → **18** | 56 (flat) ✓ |
+| — | `98273348` | Runbook merged into local main (docs-only; no allowlist/code change). | 18 | 56 (flat) |
 
 ## 4. Pending slices
 
-**Order is forced by the cap, not by preference.** After the crawler narrow, `17 + E_export_entries ≤ 22` → **E ≤ 5**. The pure 8-entry export narrow (branch `refactor/narrow-export-allowlist` @ `8b6a4277`, based on pre-#1082 main) **cannot land on today's main** — it would produce 25 entries and the gate hard-fails on entry count.
+**Order is forced by the cap, not by preference.** After the crawler narrow, `17 + E_export_entries ≤ 22` → **E ≤ 5**. The pure 8-entry export narrow (branch `refactor/narrow-export-allowlist` @ `22bb5752`, rebased onto `42b06421`) **cannot land on today's main** — its tree carries 25 entries and the gate hard-fails on entry count. It waits for 3.H.
 
-1. **#1082 follow-up (decision, not code):** push `42b06421` + open retroactive PR, or reset local main and re-land via branch. Owner: maintainer. Until pushed, origin/main and local main diverge in history depth (0 behind / 1 ahead).
-2. **#1083 — 3.H export (narrow+port in ONE PR):** rebase `8b6a4277` onto `42b06421` and grow scope until ≥3 of the 8 export symbols are ported away in the same PR. Files with the 14 sites (measured): `application/export_factory.rs` ×8, `application/resume.rs` ×5, `application/export_utils.rs` ×1. The `cli/` files cited in issue #1083 are outside the gate's `ROOT` (`crates/webfang_core/src`) — they don't move the counter. Fitting path: porting `DomainRecords` + `RawRecord` (−2 entries) and letting `Container` absorb a `StateStore`-family site into the permanent file entry (−1) reaches E=5 at exactly cap 22 (warn fires at 20 — allowed, non-blocking).
-3. **Crawler port slices (post-#1082):** one symbol-group per PR, cheapest first (§2 grouping). Each PR: repoint sites to the `domain::crawler_port` surface, delete exactly its entries, count drops by that group's sites. Re-measure absorption per group before claiming a delta — double-covering makes columns non-additive (ADR §1.2.1 warning still true).
+1. **#1082 follow-up (decision, not code):** the narrow is merged on local main (`42b06421`, runbook on top at `98273348`); **the push is still pending** — origin/main is `7768f23b`, so #1082 stays OPEN on GitHub until `git push`.
+2. **#1083 — 3.H export (narrow+port in ONE PR):** grow the parked `22bb5752` narrow until ≥3 of the 8 export symbols are ported away in the same PR. Files with the 14 sites (measured): `application/export_factory.rs` ×8, `application/resume.rs` ×5, `application/export_utils.rs` ×1. The `cli/` files cited in issue #1083 are outside the gate's `ROOT` (`crates/webfang_core/src`) — they don't move the counter. Fitting path: porting `DomainRecords` + `RawRecord` (−2 entries) and letting `Container` absorb a `StateStore`-family site into the permanent file entry (−1) reaches E=5 at exactly cap 22 (warn fires at 20 — allowed, non-blocking).
+3. **Crawler port slices (post-#1082):** one symbol-group per PR, cheapest first (§2 grouping). **In flight:** `refactor/sitemap-port` @ `42b06421` (sitemap group: `SitemapParser`/`SitemapUrl`/`SitemapError`/`parse_sitemap` — 5 sites measured). Each PR: repoint sites to the `domain::crawler_port` surface, delete exactly its entries, count drops by that group's sites. Re-measure absorption per group before claiming a delta — double-covering makes columns non-additive (ADR §1.2.1 warning still true).
 4. **Off-path purity backlog (NOT on the 10→2 path):** 3.G / 3.J / 3.K / 4 — zero gate delta, no entry to remove (ADR §5.1). Do not attach allowlist acceptance tests to them.
 5. **Cap ratchet (after 10→2 lands):** 22 → 10 → 5 with warn at cap−2 (ADR §2.2). Until then cap stays 22.
 
@@ -93,14 +94,12 @@ git worktree list   # candidate-views omitted; they are gentle-ai RDD internals 
 
 | Worktree | Branch / HEAD | Role | State |
 |---|---|---|---|
-| `~/Projects/Rust/webfang` | `main` @ `42b06421` | 1 ahead / 0 behind origin | #1082 landed here, unpushed (§4.1) |
-| `webfang-worktrees/refactor-narrow-export-allowlist` | detached @ `42b06421`; branch `refactor/narrow-export-allowlist` @ `8b6a4277` | export narrow agent | Branch is on the **pre-#1082 base**; rebase + scope growth required (§4.2) |
-| `webfang-worktrees/feat-3h-export-port` | `refactor/3h-export-port` @ `7768f23b` | 3.H port work | Old base; overlaps #1083 scope — coordinate before either launches |
-| `webfang-worktrees/fix-1062-rustdoc` | `fix/rustdoc-doc-scope` @ `f14d2c86` | unrelated | — |
-| `webfang-worktrees/fix-rust-analyzer-boxfuture` | `fix/rust-analyzer-boxfuture` @ `7768f23b` | unrelated | — |
-| `webfang-worktrees/wip-1034-partial` | `wip/1034-partial` @ `5f571e02` | unrelated | — |
+| `~/Projects/Rust/webfang` | `main` @ `98273348` | 3 ahead / 0 behind origin | #1082 + runbook merged locally, unpushed (§4.1) |
+| `webfang-worktrees/feat-3h-export-port` | `refactor/3h-export-port` @ `7768f23b` | 3.H port work | **Stale base** (predates the #1082 narrow); overlaps #1083 scope — coordinate before either launches |
+| `webfang-worktrees/refactor-narrow-export-allowlist` | `refactor/narrow-export-allowlist` @ `22bb5752` | export narrow | Rebased onto `42b06421`; pure narrow = 25 entries > cap → **parked, waiting on 3.H** (§4.2) |
+| `webfang-worktrees/refactor-sitemap-port` | `refactor/sitemap-port` @ `42b06421` | sitemap crawler port (§4.3) | **Working** (0 commits ahead of its base so far) |
 
-Cleanup note: the `refactor-narrow-crawler-allowlist` worktree and branch were removed when #1082 landed on local main. Post-merge runbook (AGENTS.md) applies per slice as each lands.
+Cleanup note: the crawler-narrow worktree/branch and the unrelated worktrees (`fix-1062-rustdoc`, `fix-rust-analyzer-boxfuture`, `wip-1034-partial`) were removed after landing. Post-merge runbook (AGENTS.md) applies per slice as each lands.
 
 ---
 
