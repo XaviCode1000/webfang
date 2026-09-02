@@ -27,11 +27,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::application::resume::{canonical_key, load_preserving, RunId};
+use crate::domain::exporter::{DomainRecords, LastError, RawRecord};
 use crate::domain::page_state::{PageStatus, Stateful};
 use crate::domain::{entities::ExportFormat, exporter::ExporterError, Exporter, ExporterConfig};
 use crate::infrastructure::export::{
-    jsonl_exporter, state_store::StateStore, vector_exporter::VectorExporter, DomainRecords,
-    LastError, RawRecord, RecordStore,
+    jsonl_exporter, state_store::StateStore, vector_exporter::VectorExporter, RecordStore,
 };
 
 /// Per-run resume/commit context handed to the export functions (D5 seams).

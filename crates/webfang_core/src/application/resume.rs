@@ -13,10 +13,11 @@
 
 use url::Url;
 
+use crate::domain::exporter::{DomainRecords, RawRecord};
 use crate::domain::page_state::Committed;
 use crate::domain::page_state::Stateful;
 use crate::domain::url_validation::{normalize_url, NormalizeConfig};
-use crate::infrastructure::export::{DomainRecords, RawRecord, RecordStore};
+use crate::infrastructure::export::RecordStore;
 
 /// Canonical dedup form: strip fragments/queries, unify `www.` with apex.
 /// This is THE key every record is stored and looked up under.
