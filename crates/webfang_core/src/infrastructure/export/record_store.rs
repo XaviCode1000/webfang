@@ -15,7 +15,6 @@
 //! Process-crash durability is the contract; power-loss durability is not.
 //!
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -24,125 +23,18 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use crate::domain::error::ErrorClass;
+use crate::domain::exporter::{DomainRecords, RawRecord};
 use crate::domain::page_state::PageStatus;
+
+// Backwards-compat shim (ADR-0012-B 3.H): the record DTOs and their error
+// moved to `domain::exporter`; re-export them so `infrastructure::export::*`
+// paths keep resolving until the one-minor-version shim window closes.
+pub use crate::domain::exporter::RecordStorePort;
 
 /// Envelope format version this module reads and writes.
 pub(crate) const CURRENT_VERSION: u32 = 2;
 
 pub use crate::domain::page_state::MIGRATED_V1_RUN_ID;
-
-/// Keyed by canonical URL; deterministic serialization order.
-pub type DomainRecords = BTreeMap<String, RawRecord>;
-
-/// A classified error attached to a persisted record (SC6 taxonomy).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LastError {
-    /// Operational classification of the failure.
-    pub class: ErrorClass,
-    /// Human-readable failure message.
-    pub message: String,
-}
-
-/// The persisted per-URL record — exactly the nine spec fields, no more,
-/// no less (frozen contract; unknown fields are rejected on load).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RawRecord {
-    /// Original URL as discovered.
-    pub url: String,
-    /// Resolved canonical URL; www/apex unify here.
-    pub canonical_url: String,
-    /// uuid v4 of the run that last touched this record; `"migrated-v1"`
-    /// for migrated legacy entries.
-    pub run_id: String,
-    /// Hash of the serialized payload; dedup/reconciliation key (D3).
-    pub content_hash: Option<String>,
-    /// Persisted attempt count. NOT actuated — retry policy is a non-goal.
-    pub attempts: u32,
-    /// Lifecycle position (the ONLY machine state that serializes).
-    pub status: PageStatus,
-    /// Last classified failure, cleared on success.
-    pub last_error: Option<LastError>,
-    /// Output path recorded at the EXPORTED checkpoint.
-    pub output_location: Option<String>,
-    /// Unix millis UTC of the last persist.
-    pub updated_at: i64,
-}
-
-impl RawRecord {
-    /// Validated constructor for a fresh DISCOVERED lifecycle (#876).
-    ///
-    /// This is the choke point every writer of new records MUST pass through:
-    /// an empty or whitespace-only URL is structurally meaningless identity
-    /// and is rejected with [`RecordStoreError::InvalidRecord`] instead of
-    /// ever becoming retrievable state. Fields default to the honest fresh
-    /// shape (`attempts = 0`, no hash, no output location, no error); callers
-    /// mutate from there via the typestate lifecycle.
-    ///
-    /// # Errors
-    ///
-    /// [`RecordStoreError::InvalidRecord`] when `url` or `canonical_url` is
-    /// empty after trimming.
-    pub fn new_discovered(
-        url: &str,
-        canonical_url: &str,
-        run_id: &str,
-        updated_at: i64,
-    ) -> Result<Self, RecordStoreError> {
-        if url.trim().is_empty() {
-            return Err(RecordStoreError::InvalidRecord {
-                reason: "url must not be empty",
-            });
-        }
-        if canonical_url.trim().is_empty() {
-            return Err(RecordStoreError::InvalidRecord {
-                reason: "canonical_url must not be empty",
-            });
-        }
-        Ok(Self {
-            url: url.to_string(),
-            canonical_url: canonical_url.to_string(),
-            run_id: run_id.to_string(),
-            content_hash: None,
-            attempts: 0,
-            status: PageStatus::Discovered,
-            last_error: None,
-            output_location: None,
-            updated_at,
-        })
-    }
-}
-
-impl crate::domain::page_state::PersistedRecord for RawRecord {
-    fn status(&self) -> PageStatus {
-        self.status
-    }
-
-    fn output_location(&self) -> Option<&str> {
-        self.output_location.as_deref()
-    }
-
-    fn content_hash(&self) -> Option<&str> {
-        self.content_hash.as_deref()
-    }
-
-    fn has_last_error(&self) -> bool {
-        self.last_error.is_some()
-    }
-
-    fn attempts(&self) -> u32 {
-        self.attempts
-    }
-
-    fn set_status(&mut self, status: PageStatus) {
-        self.status = status;
-    }
-
-    fn is_migrated_v1(&self) -> bool {
-        self.run_id == MIGRATED_V1_RUN_ID
-    }
-}
 
 /// Versioned on-disk envelope (D2, frozen).
 #[derive(Debug, Serialize, Deserialize)]
@@ -157,50 +49,11 @@ struct StoreFile {
 /// Typed failures of the record store. Callers apply the named-path
 /// fresh-start policy (`load_or_init`) on [`RecordStoreError::Corrupt`] and
 /// [`RecordStoreError::UnsupportedVersion`] — never silently (Gate 2).
-#[derive(Debug, thiserror::Error)]
-pub enum RecordStoreError {
-    /// Filesystem failure at a known path.
-    #[error("record store I/O error at {path}: {source}")]
-    Io {
-        /// Path the failing operation targeted.
-        path: PathBuf,
-        /// Underlying OS error.
-        #[source]
-        source: std::io::Error,
-    },
-    /// The state file exists but is not valid JSON / not a valid store.
-    #[error("record store file is corrupt or not valid JSON: {path}")]
-    Corrupt {
-        /// Path of the unreadable file.
-        path: PathBuf,
-    },
-    /// The state file carries a version neither 1 nor 2.
-    #[error("record store file has unsupported version {found}: {path}")]
-    UnsupportedVersion {
-        /// Path of the offending file.
-        path: PathBuf,
-        /// Version found in the envelope.
-        found: u32,
-    },
-    /// Creating the pre-migration backup failed; migration aborted.
-    #[error("failed to create v1 backup at {path}: {source}")]
-    Backup {
-        /// Intended backup path.
-        path: PathBuf,
-        /// Underlying OS error.
-        #[source]
-        source: std::io::Error,
-    },
-    /// A writer attempted to create a record whose identity is structurally
-    /// meaningless (#876): an empty URL can never address a fetched page, so
-    /// it is rejected at the domain boundary instead of becoming persisted
-    /// state (fail-closed, same class as unparseable legacy input).
-    #[error("invalid record rejected at domain boundary: {reason}")]
-    InvalidRecord {
-        /// The invariant that failed (English, log-oriented).
-        reason: &'static str,
-    },
-}
+///
+/// The enum itself lives in `domain::exporter` next to the port it guards;
+/// this re-export keeps the historical `record_store::RecordStoreError` path
+/// resolving during the shim window (ADR-0012-B 3.H).
+pub use crate::domain::exporter::RecordStoreError;
 
 /// Injectable filesystem surface so unit tests can fault-inject typed-error
 /// plumbing without real disk state (D6: integration fidelity comes from the
@@ -673,9 +526,25 @@ impl RecordStore {
     }
 }
 
+impl RecordStorePort for RecordStore {
+    fn save(&self, records: &DomainRecords) -> Result<(), RecordStoreError> {
+        RecordStore::save(self, records)
+    }
+
+    fn load(&self) -> Result<DomainRecords, RecordStoreError> {
+        RecordStore::load(self)
+    }
+
+    fn load_or_init(&self) -> DomainRecords {
+        RecordStore::load_or_init(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::error::ErrorClass;
+    use crate::domain::exporter::LastError;
     use std::fs;
     use tempfile::tempdir;
 
