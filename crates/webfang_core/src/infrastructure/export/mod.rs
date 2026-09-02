@@ -19,6 +19,9 @@ pub mod vector_exporter;
 pub use file_exporter::FileExporter;
 pub use jsonl_exporter::JsonlExporter;
 pub use jsonl_writer::JsonlSession;
-pub use record_store::{DomainRecords, LastError, RawRecord, RecordStore, RecordStoreError};
+pub use record_store::RecordStore;
 pub use state_store::StateStore;
 pub use vector_exporter::VectorExporter;
+// Record DTOs + error moved to `domain::exporter` (ADR-0012-B 3.H); the
+// infra paths below keep resolving during the shim window.
+pub use crate::domain::exporter::{DomainRecords, LastError, RawRecord, RecordStoreError};
