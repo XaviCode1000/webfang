@@ -11,6 +11,7 @@
 pub use super::url_filter::is_allowed;
 pub use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 pub use crate::domain::config::ScraperConfig;
+pub use crate::domain::crawler_port::sitemap::SitemapParserPort;
 pub use crate::domain::crawler_port::{is_internal_link, normalize_url, SitemapConfig, UrlSource};
 pub use crate::domain::scraper_port::{fallback, readability};
 pub use crate::domain::{
@@ -18,7 +19,6 @@ pub use crate::domain::{
 };
 pub use crate::error::{Result as ScraperResult, ScraperError};
 pub use crate::infrastructure::crawler::fetch_url;
-pub use crate::infrastructure::crawler::SitemapParser;
 pub use crate::infrastructure::crawler::UrlQueue;
 
 // --- Crawler sub-module re-exports (canonical paths) ---

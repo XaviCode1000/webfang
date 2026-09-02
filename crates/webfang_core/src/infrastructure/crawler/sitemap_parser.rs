@@ -31,126 +31,26 @@ use super::memory_manager::MemoryManager;
 use super::retry_policy::RetryPolicy;
 use super::sitemap_config::SitemapConfig;
 use super::url_validator::UrlValidator;
+use crate::domain::crawler_port::sitemap::SitemapParserPort;
 use crate::domain::url_validation::is_internal_link;
 use crate::domain::waf::InspectionContext;
 use crate::domain::{CrawlError, UrlValidatorTrait};
 use crate::infrastructure::http::waf_engine::WafInspector;
 #[allow(unused_imports)]
 use async_compression::tokio::bufread::GzipDecoder;
+use futures::future::BoxFuture;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use thiserror::Error;
 use url::Url;
 
-/// Sitemap parser errors
-///
-/// Following err-thiserror-for-libraries: typed, matchable errors
-#[derive(Debug, Error)]
-pub enum SitemapError {
-    /// URL could not be parsed
-    #[error("invalid URL: {0}")]
-    InvalidUrl(#[from] url::ParseError),
-
-    /// HTTP request to fetch the sitemap failed
-    #[error("http request failed: {status}: {message}")]
-    HttpError {
-        /// HTTP status code
-        status: u16,
-        /// Error message
-        message: String,
-    },
-
-    /// XML parsing of sitemap content failed
-    #[error("XML parsing failed: {0}")]
-    XmlError(#[from] quick_xml::Error),
-
-    /// I/O error reading or writing sitemap data
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
-
-    /// Sitemap contained no URL entries
-    #[error("no URLs found in sitemap")]
-    NoUrlsFound,
-
-    /// Sitemap XML structure does not match expected format
-    #[error("invalid sitemap structure")]
-    InvalidStructure,
-
-    /// Sitemap index depth exceeded the configured maximum
-    #[error("maximum recursion depth exceeded")]
-    MaxDepthExceeded,
-
-    /// URL scheme is not http or https
-    #[error("invalid scheme: {0} (only http/https allowed)")]
-    InvalidScheme(String),
-
-    /// HTTP response body exceeds the size limit
-    #[error("response too large: exceeds {0} bytes")]
-    ResponseTooLarge(usize),
-
-    /// Decompressed sitemap data exceeds the size limit
-    #[error("decompressed data too large: exceeds {0} bytes")]
-    DecompressedTooLarge(usize),
-
-    /// No sitemap found at the expected URL
-    #[error("no sitemap found at {0}")]
-    SitemapNotFound(String),
-
-    /// Response Content-Type is not XML
-    #[error("invalid content type: expected XML, got {0}")]
-    InvalidContentType(String),
-
-    /// Decompression of compressed sitemap failed
-    #[error("decompression failed: {0}")]
-    DecompressionError(String),
-
-    /// All child sitemaps in an index failed to parse
-    #[error("all {0} child sitemaps failed: {1}")]
-    AllChildrenFailed(usize, String),
-
-    /// A WAF/CAPTCHA challenge page was served instead of sitemap content
-    /// (issue #879). `provider` carries the formatted Spanish evidence chain.
-    #[error("waf challenge detected at {url}: {provider}")]
-    WafChallenge {
-        /// URL that served the challenge page.
-        url: String,
-        /// Formatted Spanish evidence chain (REQ-WAF-08).
-        provider: String,
-    },
-}
-
-/// Sitemap URL entry with metadata per sitemaps.org spec
-///
-/// Includes optional `<lastmod>`, `<priority>`, and `<changefreq>` fields.
-/// Following **api-common-traits**: implements Debug, Clone, PartialEq, Eq, Hash.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SitemapUrl {
-    /// The URL location (required)
-    pub url: Url,
-    /// Last modification date (RFC 3339 / W3C datetime)
-    pub lastmod: Option<String>,
-    /// Priority 0.0 - 1.0
-    pub priority: Option<f32>,
-    /// Change frequency: always, hourly, daily, weekly, monthly, yearly, never
-    pub changefreq: Option<String>,
-}
-
-impl SitemapUrl {
-    /// Create a new SitemapUrl with just the required URL field
-    pub fn new(url: Url) -> Self {
-        Self {
-            url,
-            lastmod: None,
-            priority: None,
-            changefreq: None,
-        }
-    }
-}
-
-/// Result type for sitemap operations
-pub type Result<T> = std::result::Result<T, SitemapError>;
+// SitemapError, SitemapUrl and the sitemap `Result` alias moved to
+// `domain::crawler_port::sitemap` in the sitemap port slice (ADR-0012-B,
+// follow-up of #1082). Re-exported here so the `infrastructure::crawler`
+// root paths keep resolving unchanged — the repo's blessed move+shim
+// migration (ADR-0012 §6 tradeoff 2).
+pub use crate::domain::crawler_port::sitemap::{Result, SitemapError, SitemapUrl};
 
 /// Safely resolve a potentially-relative URL against a base URL.
 ///
@@ -325,10 +225,12 @@ impl SitemapParser {
     /// # Errors
     ///
     /// Returns `SitemapError` if parsing fails or no URLs found
+    ///
+    /// Thin inherent wrapper over the [`SitemapParserPort`] impl (the logic
+    /// moved there in the sitemap port slice, ADR-0012-B); infrastructure
+    /// internals and integration-test call sites keep using this name.
     pub async fn parse_from_url(&self, url: &str) -> Result<Vec<SitemapUrl>> {
-        let visited = Arc::new(Mutex::new(HashSet::new()));
-        self.parse_with_depth(url, self.config.max_depth, &visited)
-            .await
+        SitemapParserPort::parse_from_url(self, url).await
     }
 
     /// Validate a sitemap HTTP response: status MUST be checked before
@@ -685,6 +587,23 @@ impl SitemapParser {
     }
 }
 
+/// Domain-port implementation (ADR-0012-B sitemap port). The `parse_from_url`
+/// logic moved here from the inherent method; the inherent `parse_from_url`
+/// is now a thin wrapper so infrastructure internals and integration-test
+/// call sites keep compiling unchanged.
+impl SitemapParserPort for SitemapParser {
+    fn parse_from_url<'a>(
+        &'a self,
+        sitemap_url: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<SitemapUrl>>> {
+        Box::pin(async move {
+            let visited = Arc::new(Mutex::new(HashSet::new()));
+            self.parse_with_depth(sitemap_url, self.config.max_depth, &visited)
+                .await
+        })
+    }
+}
+
 /// Shared core streaming parser for sitemap XML.
 ///
 /// Extracts `<loc>`, `<lastmod>`, `<priority>`, and `<changefreq>` from `<url>`
@@ -798,7 +717,7 @@ where
                 // Fallback for text content not captured by read_text_into
                 let text = e
                     .decode()
-                    .map_err(|e| SitemapError::XmlError(quick_xml::Error::Encoding(e)))?;
+                    .map_err(|e| SitemapError::XmlError(e.to_string()))?;
                 let url_str = text.trim();
                 if !url_str.is_empty() {
                     if let Some(url) = resolve_url(base_url, url_str) {
@@ -833,7 +752,7 @@ where
                 }
             },
             Ok(Event::Eof) => break,
-            Err(e) => return Err(SitemapError::XmlError(e)),
+            Err(e) => return Err(SitemapError::XmlError(e.to_string())),
             _ => {},
         }
         buf.clear();
@@ -1406,10 +1325,11 @@ mod tests {
 
     #[test]
     fn test_parse_sitemap_max_depth_exceeded() {
+        // The `SitemapError::MaxDepthExceeded` Display assertion moved with the
+        // error type to `domain::crawler_port::sitemap::tests` (ADR-0012-B);
+        // the config-side invariant (depth 0 is representable) stays here.
         let config = SitemapConfig::builder().max_depth(0).build();
         assert_eq!(config.max_depth, 0);
-        let err = SitemapError::MaxDepthExceeded;
-        assert_eq!(format!("{err}"), "maximum recursion depth exceeded");
     }
 
     #[test]

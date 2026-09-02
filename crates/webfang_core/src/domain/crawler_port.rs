@@ -10,12 +10,21 @@
 //!
 //! Moves the `UrlSource` enum from `infrastructure::crawler::url_queue`
 //! into domain. The remaining `infrastructure::crawler` types
-//! (`UrlQueue`, `RobotsFetcher`, `SitemapParser`, `FsBinaryWriter`,
+//! (`UrlQueue`, `RobotsFetcher`, `FsBinaryWriter`,
 //! `extract_links`, `parse_sitemap`, `binary_utils::*`) are
 //! infrastructure concerns and will be addressed in dedicated
-//! sub-slices — `RobotsFetcher` and `SitemapParser` need domain
-//! traits (3.C, 3.A-trait), the rest are pure re-exports to be
-//! bundled in 3.A+ (DTO migration).
+//! sub-slices — `RobotsFetcher` needs a domain trait (3.C), the rest
+//! are pure re-exports to be bundled in 3.A+ (DTO migration).
+//!
+//! # Sitemap port (ADR-0012-B, follow-up of #1082)
+//!
+//! The sitemap surface (`SitemapUrl` VO, `SitemapError`, and the new
+//! `SitemapParserPort` trait) moved into [`sitemap`](crate::domain::crawler_port::sitemap) (this module's
+//! `crawler_port/sitemap.rs`); the concrete `SitemapParser` stays in
+//! `infrastructure::crawler` behind a `pub use` shim, wired through the
+//! `application::container::build_sitemap_parser` seam.
+
+pub mod sitemap;
 
 use crate::domain::CompressionType;
 

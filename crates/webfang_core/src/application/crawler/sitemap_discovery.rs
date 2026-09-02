@@ -6,12 +6,13 @@
 //! infrastructure concern from DOM-link discovery.
 
 use crate::application::url_filter::is_allowed;
+use crate::domain::crawler_port::sitemap::{SitemapError, SitemapParserPort, SitemapUrl};
 use crate::domain::crawler_port::SitemapConfig;
 use crate::domain::error::WafDetectionKind;
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::waf::{waf_inspector, InspectionContext};
 use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl};
-use crate::infrastructure::crawler::{SitemapError, SitemapParser, SitemapUrl};
+use std::sync::Arc;
 use tracing::{info, instrument};
 use url::Url;
 
@@ -97,7 +98,7 @@ async fn crawl_with_sitemap_internal(
     let parser = build_sitemap_parser(config, DEFAULT_BATCH_SIZE)?;
 
     // Parse sitemap
-    let urls = parse_sitemap(&parser, &sitemap_url).await?;
+    let urls = parse_sitemap(parser.as_ref(), &sitemap_url).await?;
 
     // Validate sitemap relevance: check if any URLs share a path prefix
     // with the target URL. This handles cases where robots.txt points to
@@ -116,7 +117,7 @@ async fn crawl_with_sitemap_internal(
         return crawl_with_subpath_sitemaps(
             base_url,
             &base,
-            &parser,
+            parser.as_ref(),
             3,
             0,
             config.max_depth,
@@ -197,11 +198,16 @@ async fn discover_sitemap_url_for(
 
 /// Build the sitemap parser with pagination settings and the configured TLS
 /// profile.
+///
+/// Config-shaping wrapper over the composition-root seam
+/// [`crate::application::container::build_sitemap_parser`] (ADR-0012-B): the
+/// concrete `SitemapParser` is named only there; this layer receives it
+/// erased to the domain [`SitemapParserPort`].
 fn build_sitemap_parser(
     config: &CrawlerConfig,
     batch_size: usize,
-) -> Result<SitemapParser, CrawlError> {
-    SitemapParser::with_config_and_profile(
+) -> Result<Arc<dyn SitemapParserPort>, CrawlError> {
+    crate::application::container::build_sitemap_parser(
         SitemapConfig::builder()
             .gzip_enabled(true)
             .max_depth(3)
@@ -215,7 +221,7 @@ fn build_sitemap_parser(
 
 /// Parse a sitemap URL, mapping parse failures to a [`CrawlError`].
 async fn parse_sitemap(
-    parser: &SitemapParser,
+    parser: &dyn SitemapParserPort,
     sitemap_url: &str,
 ) -> Result<Vec<SitemapUrl>, CrawlError> {
     let urls = parser.parse_from_url(sitemap_url).await.map_err(|e| {
@@ -226,6 +232,12 @@ async fn parse_sitemap(
                 status,
                 url: message,
             },
+            // ADR-0012-B: the XmlError payload is now a String carrying the
+            // bare `quick_xml::Error` Display text (the prefix lives on the
+            // enum's own Display). Re-adding the prefix here keeps the
+            // user-visible message byte-identical to the pre-port behavior
+            // (pinned by behavioral__malformed_xml_stderr.snap) and the
+            // exit-code mapping unchanged (Parse → exit 69).
             SitemapError::XmlError(e) => CrawlError::Parse(format!("XML parsing failed: {e}")),
             SitemapError::InvalidContentType(ct) => CrawlError::InvalidContentType(ct),
             SitemapError::SitemapNotFound(url) => CrawlError::SitemapNotFound(url),
@@ -314,7 +326,7 @@ fn build_discovered_urls(
 async fn crawl_with_subpath_sitemaps(
     base_url: &str,
     base: &Url,
-    parser: &SitemapParser,
+    parser: &dyn SitemapParserPort,
     sitemap_max_depth: usize,
     sitemap_current_depth: usize,
     crawl_max_depth: u8,
@@ -358,7 +370,7 @@ async fn crawl_with_subpath_sitemaps(
 async fn probe_subpath_sitemaps_for_crawl(
     base: &Url,
     client: &wreq::Client,
-    parser: &SitemapParser,
+    parser: &dyn SitemapParserPort,
 ) -> Vec<SitemapUrl> {
     let segments: Vec<_> = base.path().split('/').filter(|s| !s.is_empty()).collect();
     let mut all_urls = Vec::new();
@@ -381,7 +393,7 @@ async fn probe_subpath_sitemaps_for_crawl(
 async fn try_subpath_sitemap(
     base: &Url,
     client: &wreq::Client,
-    parser: &SitemapParser,
+    parser: &dyn SitemapParserPort,
     candidate: &str,
 ) -> Option<Vec<SitemapUrl>> {
     let sitemap_url = base.join(candidate).ok()?;
@@ -397,7 +409,7 @@ async fn try_subpath_sitemap(
 
 /// Parse a discovered sub-path sitemap, logging the URL count on success.
 async fn parse_subpath_sitemap(
-    parser: &SitemapParser,
+    parser: &dyn SitemapParserPort,
     sitemap_str: &str,
 ) -> Option<Vec<SitemapUrl>> {
     match parser.parse_from_url(sitemap_str).await {

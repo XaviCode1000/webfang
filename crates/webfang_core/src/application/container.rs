@@ -175,6 +175,35 @@ pub(crate) fn build_crawl_session_pool(config: SessionPoolConfig) -> Arc<dyn Ses
     Arc::new(pool)
 }
 
+/// Composition-root factory for the sitemap parser port (ADR-0012-B sitemap
+/// port, follow-up of #1082).
+///
+/// `application::crawler::sitemap_discovery` must not construct the
+/// infrastructure concrete `SitemapParser` — the layering rule is
+/// trait-in-domain, concrete-in-infra, DI-via-Container (ADR-0012-B §2.1),
+/// and this file is the permanent allowlist entry that owns the
+/// `application → infrastructure` edge. Callers pass the domain
+/// [`SitemapConfig`](crate::domain::crawler_port::SitemapConfig) DTO and a
+/// TLS/H2 profile, and receive the parser erased to the domain
+/// [`SitemapParserPort`](crate::domain::crawler_port::sitemap::SitemapParserPort)
+/// — mirroring [`build_crawl_session_pool`] (#1077).
+///
+/// # Errors
+///
+/// Returns `CrawlError::Internal` if the URL validator's HTTP client or the
+/// sitemap fetch client fails to build.
+pub(crate) fn build_sitemap_parser(
+    config: crate::domain::crawler_port::SitemapConfig,
+    profile: wreq_util::Profile,
+) -> std::result::Result<
+    Arc<dyn crate::domain::crawler_port::sitemap::SitemapParserPort>,
+    crate::domain::error::CrawlError,
+> {
+    Ok(Arc::new(
+        crate::infrastructure::crawler::SitemapParser::with_config_and_profile(config, profile)?,
+    ))
+}
+
 impl Container {
     /// Create a new container with the given configurations.
     ///
@@ -725,6 +754,32 @@ mod tests {
             pool.acquire("example.com").is_some(),
             "the port built by the composition-root seam must serve a healthy acquire"
         );
+    }
+
+    // --- Sitemap-parser composition-root seam (ADR-0012-B, #1082 follow-up) ---
+
+    /// `build_sitemap_parser` is the sanctioned place where the domain
+    /// `SitemapConfig` DTO + TLS profile become an `Arc<dyn SitemapParserPort>`.
+    /// Unlike the session-pool seam, construction builds the wreq fetch client
+    /// (boring-sys2 FFI), so this test follows the established Miri-ignore
+    /// pattern of every other client-building container test. The assertion is
+    /// that the seam succeeds and the erased port type is constructible; no
+    /// network call is made.
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[test]
+    fn build_sitemap_parser_returns_usable_port() {
+        let parser = build_sitemap_parser(
+            crate::domain::crawler_port::SitemapConfig::default(),
+            wreq_util::Profile::Chrome145,
+        );
+        assert!(
+            parser.is_ok(),
+            "the composition-root seam must build an erased sitemap port"
+        );
+        // The explicit binding proves the erased `Arc<dyn SitemapParserPort>`
+        // return is usable (Send + Sync come with the trait's supertraits).
+        let _port: Arc<dyn crate::domain::crawler_port::sitemap::SitemapParserPort> =
+            parser.unwrap();
     }
 
     // --- Tests for expanded Container (Phase 3: DI with port/adapter) ---
