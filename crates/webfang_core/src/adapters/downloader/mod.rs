@@ -14,6 +14,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Entries retained per Asset-tier permit in the dedup cache (Q3 MEASURE
@@ -798,6 +799,24 @@ impl crate::domain::ports::AssetDownloaderPort for Downloader {
                 .collect();
             Ok(assets)
         })
+    }
+}
+
+/// The seam that lets `application` stop naming [`Downloader`] directly.
+///
+/// `domain::asset_downloader_factory` owns the trait and the
+/// [`DefaultAssetDownloaderFactory`] type; this is its only implementation.
+/// `ScraperConfig::to_download_config` stays the single mapping source, so
+/// the factory path and the historical inline path build byte-identical
+/// clients.
+impl crate::domain::asset_downloader_factory::AssetDownloaderFactory
+    for crate::domain::asset_downloader_factory::DefaultAssetDownloaderFactory
+{
+    fn build(
+        &self,
+        config: &crate::domain::config::ScraperConfig,
+    ) -> crate::error::Result<Arc<dyn crate::domain::ports::AssetDownloaderPort>> {
+        Ok(Arc::new(Downloader::new(config.to_download_config())?))
     }
 }
 

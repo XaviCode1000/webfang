@@ -5,11 +5,16 @@
 //! [`download_assets_if_enabled`] is application-layer orchestration, not
 //! adapter logic: it reads [`ScraperConfig`], extracts
 //! asset URLs from the HTML via [`crate::extractor`], deduplicates them, and
-//! delegates the actual transfer to the [`AssetDownloaderPort`](crate::domain::ports::AssetDownloaderPort) adapter
-//! (`adapters::downloader::Downloader` implements the port). Pushing this into
+//! delegates the actual transfer to the [`AssetDownloaderPort`](crate::domain::ports::AssetDownloaderPort) adapter.
+//! Pushing this into
 //! the adapter would invert the Clean Architecture dependency direction
 //! (adapters implement domain ports; they do not orchestrate application
 //! config), so the function lives here and delegates downward through the port.
+//!
+//! When no shared downloader is supplied, the fallback is built through
+//! [`AssetDownloaderFactory`](crate::domain::asset_downloader_factory::AssetDownloaderFactory)
+//! rather than by naming an adapter concrete — the `application -> adapters`
+//! edge this module used to carry (ADR-0012-B cheap wins).
 
 use crate::domain::config::ScraperConfig;
 use crate::domain::DownloadedAsset;
@@ -88,23 +93,26 @@ pub fn extract_asset_urls(
 /// Download previously extracted asset URLs through the
 /// [`AssetDownloaderPort`](crate::domain::ports::AssetDownloaderPort).
 ///
-/// Uses the shared downloader when provided; constructs a fallback concrete
-/// `Downloader` otherwise. Operation order mirrors the historical
-/// implementation exactly: downloader construction, empty short-circuit,
-/// progress log, then the batch transfer.
+/// Uses the shared downloader when provided; builds a fallback one through
+/// the domain [`AssetDownloaderFactory`](crate::domain::asset_downloader_factory::AssetDownloaderFactory)
+/// otherwise. Operation order mirrors the historical implementation exactly:
+/// downloader construction, empty short-circuit, progress log, then the batch
+/// transfer.
 pub async fn download_asset_urls(
     urls: &[String],
     _config: &ScraperConfig,
     _shared_downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
 ) -> Result<Vec<DownloadedAsset>> {
-    // Use shared downloader when provided; create a fallback one otherwise
+    // Use shared downloader when provided; build a fallback one through the
+    // domain factory otherwise. `application` never names the adapter type
+    // (ADR-0012-B cheap win).
     let owned_downloader;
     let downloader: &dyn crate::domain::ports::AssetDownloaderPort = match _shared_downloader {
         Some(dl) => dl,
         None => {
             owned_downloader =
-                crate::adapters::downloader::Downloader::new(_config.to_download_config())?;
-            &owned_downloader
+                crate::domain::asset_downloader_factory::default_factory().build(_config)?;
+            &*owned_downloader
         },
     };
 
@@ -113,8 +121,9 @@ pub async fn download_asset_urls(
     }
 
     tracing::info!(
-        "📦 Downloading {} assets via adapters::Downloader",
-        urls.len()
+        assets = urls.len(),
+        shared = _shared_downloader.is_some(),
+        "📦 Downloading assets via AssetDownloaderPort"
     );
 
     downloader.download_batch(urls).await
