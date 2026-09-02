@@ -30,9 +30,7 @@ use crate::application::resume::{canonical_key, load_preserving, RunId};
 use crate::domain::exporter::{DomainRecords, LastError, RawRecord, RecordStorePort};
 use crate::domain::page_state::{PageStatus, Stateful};
 use crate::domain::{entities::ExportFormat, exporter::ExporterError, Exporter, ExporterConfig};
-use crate::infrastructure::export::{
-    jsonl_exporter, state_store::StateStore, vector_exporter::VectorExporter,
-};
+use crate::infrastructure::export::state_store::StateStore;
 
 /// Per-run resume/commit context handed to the export functions (D5 seams).
 ///
@@ -535,14 +533,14 @@ pub fn create_exporter(
 fn create_jsonl_exporter(output_dir: PathBuf, filename: &str) -> Box<dyn Exporter> {
     let config = ExporterConfig::new(output_dir, ExportFormat::Jsonl, filename).with_append(true);
     info!("Creating JSONL exporter: {:?}", config.output_path());
-    Box::new(jsonl_exporter::JsonlExporter::new(config))
+    crate::application::container::build_jsonl_exporter(config)
 }
 
 /// Build a Vector exporter with append mode enabled.
 fn create_vector_exporter(output_dir: PathBuf, filename: &str) -> Box<dyn Exporter> {
     let config = ExporterConfig::new(output_dir, ExportFormat::Vector, filename).with_append(true);
     info!("Creating Vector exporter: {:?}", config.output_path());
-    Box::new(VectorExporter::new(config))
+    crate::application::container::build_vector_exporter(config)
 }
 
 /// Auto-detect the export format from existing files (`export.jsonl` /
