@@ -47,13 +47,12 @@ use crate::domain::downloader_factory::{
     DownloaderFactory, DownloaderSpec, DEFAULT_OBSCURA_BINARY,
 };
 use crate::domain::downloader_port::{DownloadError, Downloader};
-use crate::domain::ram_probe_port::RamProbePort;
+use crate::domain::ram_probe_port::{system_default, RamProbePort};
 use crate::domain::session_port::{SessionPoolConfig, SessionPort};
 use crate::domain::{
     CorrelationId, CrawlError, CrawlErrorCategory, CrawlResult, CrawlerConfig, JsStrategy,
 };
 use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
-use crate::infrastructure::downloader::system_ram_probe::SystemRamProbe;
 
 /// Shared shutdown signal — set to `true` when SIGINT/SIGTERM received.
 type ShutdownSignal = Arc<AtomicBool>;
@@ -241,7 +240,9 @@ impl Engine {
             // Default to the sysinfo-backed probe so the autoscale loop is
             // wired without any extra setup. Tests inject a fake via
             // `Engine::with_ram_probe` (no real sysinfo reads in unit tests).
-            ram_probe: Arc::new(SystemRamProbe::new()),
+            // The factory is domain-side: `application` must not name the
+            // infrastructure concrete (ADR-0012-B cheap win).
+            ram_probe: system_default(),
         })
     }
 
@@ -449,7 +450,10 @@ impl Engine {
     ///
     /// Tests inject a deterministic fake so the autoscale loop's threshold
     /// branches can be exercised without real sysinfo reads. Production
-    /// code can leave the default ([`SystemRamProbe`]) in place.
+    /// code can leave the default
+    /// ([`SystemRamProbe`](crate::domain::ram_probe_port::SystemRamProbe), built
+    /// by [`system_default`](crate::domain::ram_probe_port::system_default)) in
+    /// place.
     #[must_use]
     pub fn with_ram_probe(mut self, probe: Arc<dyn RamProbePort>) -> Self {
         self.ram_probe = probe;

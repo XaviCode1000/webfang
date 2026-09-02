@@ -1,11 +1,21 @@
-//! Sysinfo-backed implementation of [`crate::domain::ram_probe_port::RamProbePort`].
+//! Sysinfo-backed [`RamProbePort`] implementation.
 //!
 //! ADR-0012 sub-slice 3.B-1c: ports the autoscale loop in
 //! [`crate::application::crawler::engine::Engine::with_autoscale`] to a
 //! domain-owned seam. The loop no longer reaches into
 //! `infrastructure::downloader::ResourceGovernor` directly; it holds an
 //! `Arc<dyn RamProbePort>` and the production wiring (`cli`, gate-exempt)
-//! injects the `SystemRamProbe` defined in this module.
+//! injects the probe defined here.
+//!
+//! ADR-0012-B cheap win: the `SystemRamProbe` **type** moved to
+//! [`crate::domain::ram_probe_port`], so `Engine::new` can supply its default
+//! probe through [`system_default`](crate::domain::ram_probe_port::system_default)
+//! without naming an infrastructure concrete. This module keeps what actually
+//! needs infrastructure — the `sysinfo` I/O behind `impl RamProbePort` — and
+//! re-exports the type so the historical public path
+//! `crate::infrastructure::downloader::system_ram_probe::SystemRamProbe` still
+//! resolves. Same split as [`crate::infrastructure::ssrf`], which supplies the
+//! trait impl for the domain-owned `DefaultSsrfGuard`.
 //!
 //! The conversion from `ResourceGovernor::ram_usage_percent`'s `u8` to
 //! the new port's `f32` happens here once; the autoscale loop reads `f32`
@@ -13,38 +23,13 @@
 //! `RamThresholds` — the comparison is well-defined because `f32::from(u8)`
 //! is exact).
 
-use std::fmt;
-
 use sysinfo::System;
 
 use crate::domain::ram_probe_port::{RamProbePort, RamUsagePercent, Sealed};
 
-/// Production [`RamProbePort`] — reads `used_memory / total_memory` via
-/// `sysinfo` on every call. The probe is intentionally stateless: each
-/// `ram_usage_percent()` call creates a fresh `System` and refreshes it,
-/// mirroring the existing `ResourceGovernor::ram_usage_percent()` static
-/// method so behaviour is preserved end-to-end.
-#[derive(Default)]
-pub struct SystemRamProbe {
-    // Reserved for future caching/state. Empty for now so the type stays
-    // trivially constructible — the autoscale loop polls at 5s and a
-    // cached value would add staleness for no measurable win.
-    _private: (),
-}
-
-impl SystemRamProbe {
-    /// Create a fresh probe. Zero-cost; the type currently carries no state.
-    #[must_use]
-    pub fn new() -> Self {
-        Self { _private: () }
-    }
-}
-
-impl fmt::Debug for SystemRamProbe {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SystemRamProbe").finish_non_exhaustive()
-    }
-}
+// The type is domain-owned since ADR-0012-B; only its behaviour lives here.
+// Re-exported so every pre-existing public path and doc link keeps resolving.
+pub use crate::domain::ram_probe_port::SystemRamProbe;
 
 impl Sealed for SystemRamProbe {}
 
@@ -88,8 +73,8 @@ mod tests {
 
     #[test]
     fn debug_is_implemented() {
-        // Sanity: `#[derive(Default)]` plus the manual `Debug` impl must
-        // both compile. The trait bound `RamProbePort: Debug` enforces this.
+        // Sanity: the domain-owned type's manual `Debug` impl must be reachable
+        // through this module's re-export. `RamProbePort: Debug` enforces it.
         let _ = format!("{:?}", SystemRamProbe::new());
     }
 }

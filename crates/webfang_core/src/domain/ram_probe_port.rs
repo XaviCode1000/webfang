@@ -6,7 +6,12 @@
 //! builder method; this module owns only the trait and the sealed-implementor
 //! pattern.
 //!
-//! ADR-0012 sub-slice 3.B-1c.
+//! ADR-0012 sub-slice 3.B-1c. The [`system_default`] seam is ADR-0012-B
+//! (cheap wins): it lets `Engine::new` wire a production probe without naming
+//! an `infrastructure` concrete.
+
+use std::fmt;
+use std::sync::Arc;
 
 /// RAM-usage reading as a percentage of total system memory, 0.0..=100.0.
 ///
@@ -60,6 +65,56 @@ pub trait RamProbePort: std::fmt::Debug + Send + Sync + Sealed {
     fn ram_usage_percent(&self) -> RamUsagePercent;
 }
 
+/// The production probe type, owned by the domain layer.
+///
+/// ADR-0012-B cheap win. `Engine::new` used to name
+/// `crate::infrastructure::downloader::system_ram_probe::SystemRamProbe` to
+/// supply its default `ram_probe`, which is an `application ->
+/// infrastructure` edge. The type now lives here and the sysinfo-backed
+/// `impl RamProbePort` lives in that infrastructure module: the domain
+/// declares the shape, the infrastructure layer supplies the I/O. This is
+/// the same split as the existing
+/// [`DefaultSsrfGuard`](crate::domain::ssrf_guard::DefaultSsrfGuard), whose
+/// trait impl likewise lives in `infrastructure::ssrf`.
+///
+/// Intentionally stateless: each [`RamProbePort::ram_usage_percent`] call
+/// builds a fresh `System` and refreshes it, mirroring the historical
+/// `ResourceGovernor::ram_usage_percent()` static so behaviour is preserved
+/// end-to-end. The autoscale loop polls at 5s, so a cached value would add
+/// staleness for no measurable win.
+#[derive(Default)]
+pub struct SystemRamProbe {
+    /// Reserved for future caching/state. Keeps the type non-exhaustive so
+    /// adding a field later is not a breaking change to [`Self::new`].
+    _private: (),
+}
+
+impl SystemRamProbe {
+    /// Create a fresh probe. Zero-cost; the type currently carries no state.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { _private: () }
+    }
+}
+
+impl fmt::Debug for SystemRamProbe {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SystemRamProbe").finish_non_exhaustive()
+    }
+}
+
+/// Domain-side factory for the default production probe.
+///
+/// The whole point is that `application` can wire a working autoscale loop
+/// without reaching into `infrastructure`. The historical public path
+/// `crate::infrastructure::downloader::system_ram_probe::SystemRamProbe`
+/// still resolves, because that module re-exports this type — the repo's
+/// blessed "move + shim" migration (ADR-0012 §6 tradeoff 2).
+#[must_use]
+pub fn system_default() -> Arc<dyn RamProbePort> {
+    Arc::new(SystemRamProbe::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,5 +160,25 @@ mod tests {
     fn fake_probe_returns_configured_value() {
         let probe = FakeProbe(RamUsagePercent(85.5));
         assert_eq!(probe.ram_usage_percent().as_percent(), 85.5);
+    }
+
+    /// The domain must be able to hand `application` a working default
+    /// probe on its own. Before this seam the only way was to name the
+    /// infrastructure concrete, which is the edge ADR-0012-B removes.
+    #[test]
+    fn system_default_returns_a_usable_dyn_probe() {
+        let probe = system_default();
+        let reading = probe.ram_usage_percent();
+        assert!(
+            (0.0..=100.0).contains(&reading.as_percent()),
+            "default probe must return 0.0..=100.0, got {reading:?}",
+        );
+    }
+
+    #[test]
+    fn system_default_probe_is_debug() {
+        // `RamProbePort: Debug` — whatever the factory hands back must print.
+        let text = format!("{:?}", system_default());
+        assert!(text.contains("SystemRamProbe"), "got {text}");
     }
 }
