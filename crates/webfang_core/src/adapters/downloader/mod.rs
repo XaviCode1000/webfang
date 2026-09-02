@@ -805,7 +805,8 @@ impl crate::domain::ports::AssetDownloaderPort for Downloader {
 /// The seam that lets `application` stop naming [`Downloader`] directly.
 ///
 /// `domain::asset_downloader_factory` owns the trait and the
-/// [`DefaultAssetDownloaderFactory`] type; this is its only implementation.
+/// [`DefaultAssetDownloaderFactory`](crate::domain::asset_downloader_factory::DefaultAssetDownloaderFactory)
+/// type; this is its only implementation.
 /// `ScraperConfig::to_download_config` stays the single mapping source, so
 /// the factory path and the historical inline path build byte-identical
 /// clients.

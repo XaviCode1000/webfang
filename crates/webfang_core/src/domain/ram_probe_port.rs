@@ -6,9 +6,9 @@
 //! builder method; this module owns only the trait and the sealed-implementor
 //! pattern.
 //!
-//! ADR-0012 sub-slice 3.B-1c. The [`system_default`] seam is ADR-0012-B
-//! (cheap wins): it lets `Engine::new` wire a production probe without naming
-//! an `infrastructure` concrete.
+//! ADR-0012 sub-slice 3.B-1c. The [`system_default`](crate::domain::ram_probe_port::system_default)
+//! seam is ADR-0012-B (cheap wins): it lets `Engine::new` wire a production
+//! probe without naming an `infrastructure` concrete.
 
 use std::fmt;
 use std::sync::Arc;

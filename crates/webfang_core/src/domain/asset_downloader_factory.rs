@@ -18,13 +18,13 @@
 //! factory for a ready-to-use trait object, while the concrete client stack
 //! stays in `adapters::downloader`.
 //!
-//! # Why this is NOT [`DownloaderFactory`]
+//! # Why this is NOT [`DownloaderFactory`](crate::domain::downloader_factory::DownloaderFactory)
 //!
 //! The ADR-0012-B roadmap first recorded this site as "rewrite the call to
 //! `DownloaderFactory::build`". That was wrong, and the two ports are not
 //! interchangeable:
 //!
-//! - [`DownloaderFactory`] builds the **page-fetch** downloader
+//! - [`DownloaderFactory`](crate::domain::downloader_factory::DownloaderFactory) builds the **page-fetch** downloader
 //!   ([`downloader_port::Downloader`](crate::domain::downloader_port::Downloader):
 //!   `fetch`, `supports_interactions`, `memory_cost`). The asset path needs
 //!   [`AssetDownloaderPort::download_batch`], which the fetch router does not

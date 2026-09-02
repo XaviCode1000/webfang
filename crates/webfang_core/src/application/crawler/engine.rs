@@ -452,7 +452,7 @@ impl Engine {
     /// branches can be exercised without real sysinfo reads. Production
     /// code can leave the default
     /// ([`SystemRamProbe`](crate::domain::ram_probe_port::SystemRamProbe), built
-    /// by [`system_default`](crate::domain::ram_probe_port::system_default)) in
+    /// by [`system_default`]) in
     /// place.
     #[must_use]
     pub fn with_ram_probe(mut self, probe: Arc<dyn RamProbePort>) -> Self {

@@ -1,4 +1,5 @@
-//! Sysinfo-backed [`RamProbePort`] implementation.
+//! Sysinfo-backed [`RamProbePort`](crate::domain::ram_probe_port::RamProbePort)
+//! implementation.
 //!
 //! ADR-0012 sub-slice 3.B-1c: ports the autoscale loop in
 //! [`crate::application::crawler::engine::Engine::with_autoscale`] to a
