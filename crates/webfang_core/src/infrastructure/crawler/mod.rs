@@ -17,7 +17,6 @@ pub mod memory_manager;
 pub mod resource_downloader;
 pub mod retry_policy;
 pub mod robots_utils;
-pub mod sitemap_config;
 pub mod sitemap_parser;
 pub mod url_queue;
 pub mod url_validator;
@@ -30,7 +29,6 @@ pub use resource_downloader::{
     DownloadConfig, DownloadedResource, PermitGuard, ResourceDownloader,
 };
 pub use robots_utils::{RobotsFetcher, RobotsRules};
-pub use sitemap_config::{SitemapConfig, SitemapConfigBuilder};
 pub use sitemap_parser::{parse_sitemap, resolve_url, SitemapError, SitemapParser, SitemapUrl};
 pub use url_queue::UrlQueue;
 // UrlSource moved to domain::crawler_port in sub-slice 3.A; infra keeps
