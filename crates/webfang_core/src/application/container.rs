@@ -28,6 +28,7 @@ use crate::domain::clock::SystemClock;
 use crate::domain::config::ScraperConfig;
 use crate::domain::credentials::CredentialStore;
 use crate::domain::embedding_port::EmbeddingPort;
+use crate::domain::exporter::{Exporter, ExporterConfig};
 use crate::domain::llm_port::LlmPort;
 use crate::domain::note_repository::{NoteRepository, VaultNoteReader};
 use crate::domain::ports::HttpClientPort;
@@ -40,7 +41,9 @@ use crate::infrastructure::autotuning::ElasticConfig;
 use crate::infrastructure::bridge::CpuBridge;
 use crate::infrastructure::cpu_pool::RayonCpuPool;
 use crate::infrastructure::crawler::resource_downloader::{DownloadConfig, ResourceDownloader};
+use crate::infrastructure::export::jsonl_exporter::JsonlExporter;
 use crate::infrastructure::export::state_store::StateStore;
+use crate::infrastructure::export::vector_exporter::VectorExporter;
 use crate::infrastructure::http::waf_engine::WafInspector;
 use crate::infrastructure::network::session_pool::DomainSessionPool;
 // SQLite persistence layer — only compiled under the `persistence` feature.
@@ -221,6 +224,26 @@ pub(crate) fn build_robots_fetcher(
     Ok(Arc::new(
         crate::infrastructure::crawler::robots_utils::RobotsFetcher::new(profile, timeout_secs)?,
     ))
+}
+
+/// Composition-root factories for the concrete exporters (ADR-0012-B 3.H).
+///
+/// `application::export_factory` must not construct the infrastructure
+/// concretes `jsonl_exporter::JsonlExporter` / `vector_exporter::VectorExporter`
+/// — this file is the permanent allowlist entry that owns the
+/// `application → infrastructure` edge (same pattern as
+/// [`build_crawl_session_pool`]). Format selection itself stays in
+/// `export_factory::create_exporter`.
+#[must_use]
+pub(crate) fn build_jsonl_exporter(config: ExporterConfig) -> Box<dyn Exporter> {
+    Box::new(JsonlExporter::new(config))
+}
+
+/// Composition-root factory for the vector exporter concrete
+/// (ADR-0012-B 3.H). Mirrors [`build_jsonl_exporter`].
+#[must_use]
+pub(crate) fn build_vector_exporter(config: ExporterConfig) -> Box<dyn Exporter> {
+    Box::new(VectorExporter::new(config))
 }
 
 impl Container {

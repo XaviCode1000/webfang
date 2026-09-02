@@ -27,12 +27,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::application::resume::{canonical_key, load_preserving, RunId};
+use crate::domain::exporter::{DomainRecords, LastError, RawRecord, RecordStorePort};
 use crate::domain::page_state::{PageStatus, Stateful};
 use crate::domain::{entities::ExportFormat, exporter::ExporterError, Exporter, ExporterConfig};
-use crate::infrastructure::export::{
-    jsonl_exporter, state_store::StateStore, vector_exporter::VectorExporter, DomainRecords,
-    LastError, RawRecord, RecordStore,
-};
 
 /// Per-run resume/commit context handed to the export functions (D5 seams).
 ///
@@ -40,7 +37,7 @@ use crate::infrastructure::export::{
 /// With `resume = false` the gate never consults prior history (fresh run
 /// re-drives everything while old records stay preserved — A2/E10).
 pub struct ResumeContext<'a> {
-    pub(crate) store: &'a RecordStore,
+    pub(crate) store: &'a dyn RecordStorePort,
     pub(crate) run_id: RunId,
     pub(crate) resume: bool,
     pub(crate) cancel: Option<&'a CancellationToken>,
@@ -52,7 +49,7 @@ pub struct ResumeContext<'a> {
 impl<'a> ResumeContext<'a> {
     /// A context for `store` with a fresh [`RunId`] and no skipping.
     #[must_use]
-    pub fn new(store: &'a RecordStore) -> Self {
+    pub fn new(store: &'a dyn RecordStorePort) -> Self {
         Self {
             store,
             run_id: RunId::new(),
@@ -535,14 +532,14 @@ pub fn create_exporter(
 fn create_jsonl_exporter(output_dir: PathBuf, filename: &str) -> Box<dyn Exporter> {
     let config = ExporterConfig::new(output_dir, ExportFormat::Jsonl, filename).with_append(true);
     info!("Creating JSONL exporter: {:?}", config.output_path());
-    Box::new(jsonl_exporter::JsonlExporter::new(config))
+    crate::application::container::build_jsonl_exporter(config)
 }
 
 /// Build a Vector exporter with append mode enabled.
 fn create_vector_exporter(output_dir: PathBuf, filename: &str) -> Box<dyn Exporter> {
     let config = ExporterConfig::new(output_dir, ExportFormat::Vector, filename).with_append(true);
     info!("Creating Vector exporter: {:?}", config.output_path());
-    Box::new(VectorExporter::new(config))
+    crate::application::container::build_vector_exporter(config)
 }
 
 /// Auto-detect the export format from existing files (`export.jsonl` /
@@ -590,35 +587,6 @@ fn create_detected_vector(
 fn create_default_jsonl(output_dir: PathBuf, filename: &str) -> Box<dyn Exporter> {
     info!("No existing export, using default Jsonl format");
     create_jsonl_exporter(output_dir, filename)
-}
-
-/// Create a new StateStore for tracking processed URLs
-///
-/// # Arguments
-///
-/// * `state_dir` - Directory to store state files
-/// * `domain` - Domain name for state file (e.g., "example.com")
-///
-/// # Returns
-///
-/// * `Ok(StateStore)` - Created state store
-/// * `Err(ScraperError)` - Failed to create state store
-///
-/// # Errors
-///
-/// Returns error if:
-/// - State directory cannot be created
-/// - State file cannot be read/written
-pub fn create_state_store(
-    state_dir: PathBuf,
-    domain: &str,
-) -> Result<StateStore, crate::error::ScraperError> {
-    use crate::infrastructure::export::state_store::StateStore;
-
-    info!("Creating StateStore in {:?}", state_dir);
-    let mut store = StateStore::new(domain);
-    store.set_cache_dir(state_dir);
-    Ok(store)
 }
 
 /// Outcome of one item through the export phase.
@@ -899,6 +867,7 @@ mod tests {
     use super::*;
     use crate::domain::entities::ScrapedContent;
     use crate::domain::ValidUrl;
+    use crate::infrastructure::export::RecordStore;
     use tempfile::TempDir;
 
     fn make_scraped_content(url: &str, title: &str, content: &str) -> ScrapedContent {
@@ -931,21 +900,6 @@ mod tests {
     fn test_domain_from_url_invalid_url_returns_unknown() {
         let domain = domain_from_url("not-a-url");
         assert_eq!(domain, "unknown");
-    }
-
-    // =========================================================================
-    // create_state_store tests
-    // =========================================================================
-
-    #[test]
-    fn test_create_state_store_creates_directory() {
-        let temp_dir = TempDir::new().unwrap();
-        let domain = "example.com";
-        let store = create_state_store(temp_dir.path().to_path_buf(), domain);
-        assert!(store.is_ok());
-        let state_file = temp_dir.path().join("example.com.json");
-        let store = store.unwrap();
-        assert_eq!(store.get_state_path(), state_file);
     }
 
     // =========================================================================
@@ -1167,8 +1121,6 @@ mod tests {
     #[test]
     fn test_process_results_resume_mode_tracks_urls() {
         let temp_dir = TempDir::new().unwrap();
-        let _store = create_state_store(temp_dir.path().to_path_buf(), "example.com").unwrap();
-
         let content = make_scraped_content("https://example.com/page", "Page", "Body");
 
         let processed = process_results(
@@ -1181,39 +1133,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(processed.len(), 1);
-    }
-
-    // =========================================================================
-    // create_state_store failure-path characterization (#393)
-    // =========================================================================
-
-    /// Pins the current contract of [`create_state_store`]: it is lazy and
-    /// infallible. `StateStore::new` and `set_cache_dir` perform no I/O, so the
-    /// store is created successfully even when `state_dir` is a regular file
-    /// where no directory could ever be created.
-    ///
-    /// Consequence: the `CliExit::IoError` branch in `apply_resume_mode`
-    /// (`cli/scrape_flow.rs`) is currently unreachable dead code, because the
-    /// state directory is only created later, on `StateStore::save`. If
-    /// `create_state_store` is ever made eager (e.g. `create_dir_all` up front),
-    /// this test must be updated and the `IoError` path becomes coverable.
-    #[test]
-    fn test_create_state_store_returns_ok_even_when_state_dir_is_a_file() {
-        // Arrange: a regular file where a state directory would need to be —
-        // an impossible location for any real directory creation.
-        let temp_dir = TempDir::new().expect("tempdir should be created");
-        let blocker = temp_dir.path().join("not_a_dir");
-        std::fs::write(&blocker, "i am a file, not a directory")
-            .expect("blocker file should be written");
-
-        // Act
-        let result = create_state_store(blocker, "example.com");
-
-        // Assert: creation is lazy/infallible — no I/O is attempted yet.
-        assert!(
-            result.is_ok(),
-            "create_state_store must be infallible (lazy): it performs no I/O at creation time"
-        );
     }
 
     // =========================================================================
