@@ -135,19 +135,20 @@ fn record_store_bridge(state_store: &StateStore) -> RecordStore {
 ///
 /// # Returns
 ///
-/// * `Ok(StateStore)` - Created state store
-/// * `Err(ScraperError)` - Failed to create state store
+/// * `Ok(StateStore)` - Created state store (lazy: no I/O performed yet)
+/// * `Err(ScraperError)` - Reserved signature; creation does not fail today
 ///
 /// # Errors
 ///
-/// Returns error if:
-/// - State directory cannot be created
-/// - State file cannot be read/written
+/// Currently never fails: creation is lazy and infallible — `StateStore::new`
+/// and `set_cache_dir` perform no I/O, and the state directory is only
+/// created later, on `StateStore::save`. Pinned by
+/// `test_create_state_store_returns_ok_even_when_state_dir_is_a_file`.
 pub(crate) fn create_state_store(
     state_dir: PathBuf,
     domain: &str,
 ) -> Result<StateStore, crate::error::ScraperError> {
-    info!("Creating StateStore in {:?}", state_dir);
+    info!(state_dir = %state_dir.display(), "creating_state_store");
     let mut store = StateStore::new(domain);
     store.set_cache_dir(state_dir);
     Ok(store)
