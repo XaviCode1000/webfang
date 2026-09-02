@@ -11,6 +11,7 @@ use url::Url;
 
 use crate::application::url_filter::is_allowed;
 use crate::domain::config::ScraperConfig;
+use crate::domain::crawler_port::derive_filename_from_content_disposition;
 use crate::domain::downloader_port::{DownloadError, Downloader};
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::url_validation::{
@@ -19,7 +20,6 @@ use crate::domain::url_validation::{
 use crate::domain::waf::{waf_inspector, InspectionContext};
 use crate::domain::{CorrelationId, CrawlerConfig, ScrapedContent, ValidUrl};
 use crate::error::{Result as ScraperResult, ScraperError};
-use crate::infrastructure::crawler::binary_utils::derive_filename_from_response;
 use crate::infrastructure::crawler::extract_links;
 use crate::infrastructure::observability::log_scrape_error;
 
@@ -298,8 +298,11 @@ async fn scrape_single_url_for_tui_inner(
         // (#442 layer-violation fix). Observable behavior is unchanged: the same
         // bytes land in the same file under `config.output_dir`.
         let saved_path = if config.download_documents {
-            let header_map = headers_to_header_map(&page.headers);
-            let filename = derive_filename_from_response(&header_map, url, &content_type);
+            let filename = derive_filename_from_content_disposition(
+                page.headers.get("content-disposition").map(String::as_str),
+                url,
+                &content_type,
+            );
             let output_path = config.output_dir.join(&filename);
 
             let bytes = page.html.as_bytes();
@@ -384,28 +387,6 @@ async fn scrape_single_url_for_tui_inner(
     // Crash-injection: extraction returned ScrapedContent; nothing persisted yet.
     crate::cli::crash_points::hit(crate::cli::crash_points::POST_EXTRACTION_PRE_PIPELINE);
     Ok(content)
-}
-
-/// Convert lowercased string headers into a wreq [`wreq::header::HeaderMap`]
-/// for helpers that expect the native header type (e.g.
-/// [`derive_filename_from_response`]).
-///
-/// Invalid header names/values are skipped. They cannot occur for headers
-/// captured by the downloaders (already validated via `to_str`), but the guard
-/// keeps this conversion infallible.
-fn headers_to_header_map(
-    headers: &std::collections::HashMap<String, String>,
-) -> wreq::header::HeaderMap {
-    let mut map = wreq::header::HeaderMap::new();
-    for (name, value) in headers {
-        if let (Ok(name), Ok(value)) = (
-            wreq::header::HeaderName::from_bytes(name.as_bytes()),
-            wreq::header::HeaderValue::from_str(value),
-        ) {
-            map.insert(name, value);
-        }
-    }
-    map
 }
 
 #[cfg(test)]

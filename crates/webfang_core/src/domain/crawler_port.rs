@@ -24,7 +24,13 @@
 //! `infrastructure::crawler` behind a `pub use` shim, wired through the
 //! `application::container::build_sitemap_parser` seam.
 
+pub mod filename;
 pub mod sitemap;
+
+pub use filename::{
+    derive_filename_from_content_disposition, parse_content_disposition, percent_decode,
+    sanitize_filename_component,
+};
 
 use futures::future::BoxFuture;
 
