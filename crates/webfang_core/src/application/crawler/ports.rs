@@ -23,9 +23,10 @@ use url::Url;
 
 use crate::application::crawler::collector::{CrawlMessage, ResultsCollector};
 use crate::application::pipeline::{PipelineExecutor, ScrapedItem, StageOutcome};
+use crate::domain::crawler_port::RobotsPort;
 use crate::domain::downloader_port::{Cookie, DownloadError, Downloader};
 use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl};
-use crate::infrastructure::crawler::{extract_links, fetch_url, RobotsFetcher};
+use crate::infrastructure::crawler::{extract_links, fetch_url};
 
 /// Outcome of fetching a single page.
 ///
@@ -139,15 +140,18 @@ impl PageFetcher for ProductionPageFetcher {
     }
 }
 
-/// Production [`RobotsChecker`] backed by [`RobotsFetcher`].
+/// Production [`RobotsChecker`] delegating to the domain [`RobotsPort`] seam.
+/// The concrete `RobotsFetcher` behind the port is built by the
+/// composition-root helper `application::container::build_robots_fetcher`.
 pub(crate) struct ProductionRobotsChecker {
-    /// Shared robots.txt fetcher with per-domain cache.
-    pub(crate) fetcher: Arc<RobotsFetcher>,
+    /// Shared robots.txt port with per-domain cache.
+    pub(crate) fetcher: Arc<dyn RobotsPort>,
 }
 
 impl RobotsChecker for ProductionRobotsChecker {
     fn is_robots_allowed<'a>(&'a self, url: &'a str, domain: &'a str) -> BoxFuture<'a, bool> {
-        Box::pin(async move { self.fetcher.is_allowed(url, domain).await })
+        // The domain port already returns a boxed future — delegate directly.
+        self.fetcher.is_allowed(url, domain)
     }
 }
 

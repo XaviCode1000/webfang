@@ -43,6 +43,7 @@ use crate::application::pipeline::{OutputStage, PipelineExecutor};
 use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::domain::budget::{BudgetModel, BudgetOverrides};
 use crate::domain::cookie_bridge::CookieBridge;
+use crate::domain::crawler_port::RobotsPort;
 use crate::domain::downloader_factory::{
     DownloaderFactory, DownloaderSpec, DEFAULT_OBSCURA_BINARY,
 };
@@ -52,7 +53,6 @@ use crate::domain::session_port::{SessionPoolConfig, SessionPort};
 use crate::domain::{
     CorrelationId, CrawlError, CrawlErrorCategory, CrawlResult, CrawlerConfig, JsStrategy,
 };
-use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
 
 /// Shared shutdown signal — set to `true` when SIGINT/SIGTERM received.
 type ShutdownSignal = Arc<AtomicBool>;
@@ -90,8 +90,10 @@ pub struct Engine {
     checkpoint_interval: u64,
     /// Skip robots.txt enforcement.
     ignore_robots: bool,
-    /// Shared robots.txt fetcher for the crawl session (TLS-fingerprinted, #337).
-    robots_fetcher: Arc<RobotsFetcher>,
+    /// Shared robots.txt port for the crawl session (TLS-fingerprinted, #337).
+    /// The concrete `RobotsFetcher` is built by the composition-root helper
+    /// `application::container::build_robots_fetcher` (ADR-0012-B post-narrow).
+    robots_fetcher: Arc<dyn RobotsPort>,
     /// Optional domain session pool for per-domain rate limiting.
     ///
     /// Stored as the domain port `Arc<dyn SessionPort>` — the concrete
@@ -201,13 +203,16 @@ impl Engine {
         let pages_crawled = Arc::new(AtomicU64::new(0));
         let shutdown = Arc::new(AtomicBool::new(false));
 
-        // Robots.txt fetcher — shares the crawl's TLS fingerprint so the
+        // Robots.txt port — shares the crawl's TLS fingerprint so the
         // robots.txt request is indistinguishable from a page fetch (#337).
-        let robots_fetcher = Arc::new(
-            RobotsFetcher::new(config_clone.tls_emulation, config_clone.timeout_secs)
-                // LCOV_EXCL_LINE defensive: wreq-client-build — client construction fails only on invalid TLS profile, an invariant
-                .map_err(|e| CrawlError::Internal(e.to_string()))?,
-        );
+        // Built through the composition-root helper (trait in domain,
+        // concrete in infra — ADR-0012-B post-narrow robots slice).
+        let robots_fetcher = crate::application::container::build_robots_fetcher(
+            config_clone.tls_emulation,
+            config_clone.timeout_secs,
+        )
+        // LCOV_EXCL_LINE defensive: wreq-client-build — client construction fails only on invalid TLS profile, an invariant
+        .map_err(|e| CrawlError::Internal(e.to_string()))?;
 
         Ok(Self {
             config,

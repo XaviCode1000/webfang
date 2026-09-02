@@ -14,13 +14,13 @@
 use crate::application::error_mapping::scraper_error_from_http;
 use crate::application::http_client::HttpClientPort;
 use crate::domain::config::ScraperConfig;
+use crate::domain::crawler_port::RobotsPort;
 use crate::domain::html_cleaner::clean_html;
 use crate::domain::http_port::HttpResponse;
 use crate::domain::scraper_port::{author_extractor, fallback, readability};
 use crate::domain::waf::{waf_inspector, InspectionContext};
 use crate::domain::{CorrelationId, DomInspectorPort, ExtractResult, ScrapedContent, ValidUrl};
 use crate::error::{Result, ScraperError};
-use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
 use crate::infrastructure::observability::log_scrape_error;
 use futures::stream::{self, StreamExt};
 use tracing::{debug, info, instrument, warn};
@@ -165,7 +165,7 @@ pub async fn scrape_with_config(
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
     inspector: Option<&dyn DomInspectorPort>,
     engine: Option<&AdaptiveSelectorEngine>,
-    robots: Option<&RobotsFetcher>,
+    robots: Option<&dyn RobotsPort>,
     ignore_robots: bool,
     root_correlation: &CorrelationId,
 ) -> Result<ScrapeOutcome> {
@@ -200,12 +200,12 @@ pub async fn scrape_with_config(
 /// variant is deliberately reused for robots.txt denials per the #705 audit
 /// decision (`ScraperError` has no dedicated robots variant).
 ///
-/// [`RobotsFetcher::is_allowed`] is FAIL-OPEN: if the robots.txt fetch itself
+/// [`RobotsPort::is_allowed`] is FAIL-OPEN: if the robots.txt fetch itself
 /// fails (network error, non-2xx, timeout), the URL is treated as allowed —
 /// matching the production crawl behavior.
 pub async fn enforce_robots_policy(
     url: &url::Url,
-    robots: Option<&RobotsFetcher>,
+    robots: Option<&dyn RobotsPort>,
     ignore_robots: bool,
 ) -> Result<()> {
     if ignore_robots {
@@ -653,7 +653,7 @@ pub async fn scrape_multiple_with_limit(
     urls: &[url::Url],
     config: &ScraperConfig,
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
-    robots: Option<&RobotsFetcher>,
+    robots: Option<&dyn RobotsPort>,
     ignore_robots: bool,
 ) -> Result<ScrapeBatchOutcome> {
     if urls.is_empty() {
