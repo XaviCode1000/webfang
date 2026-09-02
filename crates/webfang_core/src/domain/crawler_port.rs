@@ -26,6 +26,8 @@
 
 pub mod sitemap;
 
+use futures::future::BoxFuture;
+
 use crate::domain::CompressionType;
 
 // Re-export pure helpers that already live in domain (inward-only surface).
@@ -231,6 +233,31 @@ impl SitemapConfigBuilder {
             crawl_budget_enabled: self.crawl_budget_enabled,
         }
     }
+}
+
+// ============================================================================
+// RobotsPort — domain seam over robots.txt enforcement (ADR-0012-B post-narrow)
+// ============================================================================
+
+/// Domain-owned seam for robots.txt enforcement.
+///
+/// `application` (`scraper_service`, `crawler::engine`, `llm_extraction`)
+/// consumes this trait; the concrete
+/// `infrastructure::crawler::robots_utils::RobotsFetcher` — TLS-fingerprinted
+/// `wreq` client (#337) + per-domain cache with negative caching (#794) —
+/// implements it and stays in infrastructure (ADR-0012-B §2.1: trait in
+/// domain, concrete in infra, DI via the `Container` composition root).
+///
+/// Fail-open contract: when robots.txt cannot be fetched, the URL is allowed
+/// and the negative decision is cached for the fetcher's lifetime (#794),
+/// matching the production crawl behavior documented on the concrete.
+pub trait RobotsPort: Send + Sync {
+    /// Check whether `url` is allowed by `domain`'s robots.txt.
+    ///
+    /// Fetches robots.txt on first encounter (cached per domain, including
+    /// failed outcomes — exactly one fetch per domain per fetcher lifetime).
+    /// Fail-open: an unavailable robots.txt allows the URL (#697).
+    fn is_allowed<'a>(&'a self, url: &'a str, domain: &'a str) -> BoxFuture<'a, bool>;
 }
 
 #[cfg(test)]

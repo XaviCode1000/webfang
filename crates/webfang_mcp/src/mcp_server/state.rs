@@ -15,6 +15,7 @@ use rmcp::ErrorData as McpError;
 use serde_json::Value;
 use webfang_core::adapters::downloader::Downloader;
 use webfang_core::di::Container;
+use webfang_core::domain::crawler_port::RobotsPort;
 use webfang_core::domain::DomInspectorPort;
 use webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher;
 
@@ -74,7 +75,7 @@ pub struct McpState {
     /// Shared robots.txt fetcher for the scrape tools (#697). Construction
     /// failure is non-fatal: `None` leaves enforcement disabled, mirroring
     /// the rate-limiter pattern in the core container.
-    pub robots_fetcher: Option<Arc<RobotsFetcher>>,
+    pub robots_fetcher: Option<Arc<dyn RobotsPort>>,
     /// Process-lifetime scrape metrics, shared across all per-session clones
     /// (REQ-06). Locked only in short synchronous sections (REQ-07).
     pub metrics: Arc<Mutex<ScrapeMetrics>>,
@@ -180,7 +181,7 @@ impl McpState {
     /// [`with_inspector`](Self::with_inspector): lets tests and composition
     /// roots wire a deterministic or pre-built fetcher.
     #[must_use]
-    pub fn with_robots_fetcher(mut self, fetcher: Arc<RobotsFetcher>) -> Self {
+    pub fn with_robots_fetcher(mut self, fetcher: Arc<dyn RobotsPort>) -> Self {
         self.robots_fetcher = Some(fetcher);
         self
     }
@@ -414,7 +415,7 @@ fn warn_if_configured_output_dir_outside_roots(output_dir: &Path, roots: &[PathB
 /// NON-FATAL — the fetcher stays `None` and robots enforcement degrades to
 /// "no fetcher available", mirroring the rate-limiter pattern in the core
 /// container.
-fn build_robots_fetcher(container: &Container) -> Option<Arc<RobotsFetcher>> {
+fn build_robots_fetcher(container: &Container) -> Option<Arc<dyn RobotsPort>> {
     match RobotsFetcher::with_default_profile(container.config().download_timeout_secs) {
         Ok(fetcher) => Some(Arc::new(fetcher)),
         Err(e) => {

@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::application::scraper_service::enforce_robots_policy;
+use crate::domain::crawler_port::RobotsPort;
 use crate::domain::credentials::ApiKey;
 use crate::domain::http_port::HttpClientPort;
 use crate::domain::llm::validation::{validate_record, validate_schema};
@@ -12,7 +13,6 @@ use crate::domain::llm_port::{ChatMessage, LlmPort, LlmRequest, LlmResponse};
 use crate::domain::semantic_cleaner::SemanticCleaner;
 use crate::domain::text_chunker::TextChunker;
 use crate::error::{Result, ScraperError};
-use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
 use serde_json::Value;
 use url::Url;
 
@@ -45,7 +45,7 @@ pub struct LlmExtractionService {
     http: Arc<dyn HttpClientPort>,
     cleaner: Arc<dyn SemanticCleaner>,
     chunker: Arc<dyn TextChunker>,
-    robots: Option<Arc<RobotsFetcher>>,
+    robots: Option<Arc<dyn RobotsPort>>,
     llm_port: Option<Arc<dyn LlmPort>>,
 }
 
@@ -57,7 +57,7 @@ impl LlmExtractionService {
         http: Arc<dyn HttpClientPort>,
         cleaner: Arc<dyn SemanticCleaner>,
         chunker: Arc<dyn TextChunker>,
-        robots: Option<Arc<RobotsFetcher>>,
+        robots: Option<Arc<dyn RobotsPort>>,
         llm_port: Option<Arc<dyn LlmPort>>,
     ) -> Self {
         Self {

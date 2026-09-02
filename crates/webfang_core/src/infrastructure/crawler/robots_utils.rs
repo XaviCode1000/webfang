@@ -27,7 +27,9 @@ use url::Url;
 use wreq::Client;
 use wreq_util::Profile;
 
+use crate::domain::crawler_port::RobotsPort;
 use crate::infrastructure::error::InfraError;
+use futures::future::BoxFuture;
 
 /// Parsed robots.txt rules for a domain.
 ///
@@ -418,6 +420,14 @@ impl RobotsFetcher {
                 RobotsCacheEntry::Rules(rules) => rules.crawl_delay_secs,
                 RobotsCacheEntry::AllowAll => None,
             })
+    }
+}
+
+impl RobotsPort for RobotsFetcher {
+    fn is_allowed<'a>(&'a self, url: &'a str, domain: &'a str) -> BoxFuture<'a, bool> {
+        // UFCS selects the inherent async method (inherent impls take
+        // precedence over trait methods), avoiding trait recursion.
+        Box::pin(RobotsFetcher::is_allowed(self, url, domain))
     }
 }
 

@@ -204,6 +204,25 @@ pub(crate) fn build_sitemap_parser(
     ))
 }
 
+/// Build the crawl robots.txt fetcher as the domain [`RobotsPort`] seam.
+///
+/// Composition-root helper (ADR-0012-B post-narrow robots slice, mirroring
+/// [`build_crawl_session_pool`]): the concrete
+/// `infrastructure::crawler::robots_utils::RobotsFetcher` is named only here
+/// (and at the `cli/` construction sites, which are outside the layer gate);
+/// `application::crawler::engine` consumes the returned `Arc<dyn RobotsPort>`.
+pub(crate) fn build_robots_fetcher(
+    profile: wreq_util::Profile,
+    timeout_secs: u64,
+) -> Result<
+    Arc<dyn crate::domain::crawler_port::RobotsPort>,
+    crate::infrastructure::error::InfraError,
+> {
+    Ok(Arc::new(
+        crate::infrastructure::crawler::robots_utils::RobotsFetcher::new(profile, timeout_secs)?,
+    ))
+}
+
 impl Container {
     /// Create a new container with the given configurations.
     ///
