@@ -27,11 +27,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::application::resume::{canonical_key, load_preserving, RunId};
-use crate::domain::exporter::{DomainRecords, LastError, RawRecord};
+use crate::domain::exporter::{DomainRecords, LastError, RawRecord, RecordStorePort};
 use crate::domain::page_state::{PageStatus, Stateful};
 use crate::domain::{entities::ExportFormat, exporter::ExporterError, Exporter, ExporterConfig};
 use crate::infrastructure::export::{
-    jsonl_exporter, state_store::StateStore, vector_exporter::VectorExporter, RecordStore,
+    jsonl_exporter, state_store::StateStore, vector_exporter::VectorExporter,
 };
 
 /// Per-run resume/commit context handed to the export functions (D5 seams).
@@ -40,7 +40,7 @@ use crate::infrastructure::export::{
 /// With `resume = false` the gate never consults prior history (fresh run
 /// re-drives everything while old records stay preserved — A2/E10).
 pub struct ResumeContext<'a> {
-    pub(crate) store: &'a RecordStore,
+    pub(crate) store: &'a dyn RecordStorePort,
     pub(crate) run_id: RunId,
     pub(crate) resume: bool,
     pub(crate) cancel: Option<&'a CancellationToken>,
@@ -52,7 +52,7 @@ pub struct ResumeContext<'a> {
 impl<'a> ResumeContext<'a> {
     /// A context for `store` with a fresh [`RunId`] and no skipping.
     #[must_use]
-    pub fn new(store: &'a RecordStore) -> Self {
+    pub fn new(store: &'a dyn RecordStorePort) -> Self {
         Self {
             store,
             run_id: RunId::new(),
@@ -899,6 +899,7 @@ mod tests {
     use super::*;
     use crate::domain::entities::ScrapedContent;
     use crate::domain::ValidUrl;
+    use crate::infrastructure::export::RecordStore;
     use tempfile::TempDir;
 
     fn make_scraped_content(url: &str, title: &str, content: &str) -> ScrapedContent {

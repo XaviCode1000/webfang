@@ -10,7 +10,7 @@ use url::Url;
 use crate::application::crawl_options::CrawlOptions;
 use crate::application::export_factory;
 use crate::application::progress_observer::ProgressObserver;
-use crate::application::resume::{filter_committed, record_store_bridge};
+use crate::application::resume::filter_committed;
 use crate::application::scrape_single_url_for_tui;
 use crate::cli::error::CliExit;
 use crate::domain::config::ScraperConfig;
@@ -21,7 +21,7 @@ use crate::domain::{CorrelationId, ScrapedContent};
 use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
 use crate::infrastructure::downloader::fetch_router::build_fetch_router;
 use crate::infrastructure::downloader::Downloader;
-use crate::infrastructure::export::state_store::StateStore;
+use crate::infrastructure::export::{state_store::StateStore, RecordStore};
 use crate::infrastructure::observability::log_scrape_error;
 use crate::HttpClientConfig;
 
@@ -87,7 +87,7 @@ pub async fn apply_resume_mode(
         },
     };
 
-    let filtered = match (&state_store, mode.is_resume()) {
+    let filtered = match (state_store.as_ref(), mode.is_resume()) {
         (Some(store), true) => {
             let record_store = record_store_bridge(store);
             filter_committed(urls_to_scrape, &record_store).0
@@ -98,6 +98,26 @@ pub async fn apply_resume_mode(
     crate::cli::crash_points::hit(crate::cli::crash_points::PRE_FIRST_PERSIST);
 
     Ok((filtered, state_store))
+}
+
+/// Bridge a legacy `StateStore` handle onto the v2 `RecordStore` seam:
+/// same directory + domain, so a legacy v1 state file migrates in place
+/// on first load (Gate 2 policy lives inside `RecordStore`).
+///
+/// Lives in `cli` (ADR-0010): the composition edge constructs infrastructure
+/// concretes; `application` consumes them through `RecordStorePort` only.
+fn record_store_bridge(state_store: &StateStore) -> RecordStore {
+    let path = state_store.get_state_path();
+    let dir = path.parent().map_or_else(
+        || std::path::PathBuf::from("."),
+        std::path::Path::to_path_buf,
+    );
+    let domain = path
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("unknown")
+        .to_string();
+    RecordStore::new(domain).with_state_dir(dir)
 }
 
 /// Seed operator `--cookie` values (#890) into a shared wreq jar so the

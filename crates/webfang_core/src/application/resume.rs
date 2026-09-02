@@ -13,11 +13,10 @@
 
 use url::Url;
 
-use crate::domain::exporter::{DomainRecords, RawRecord};
+use crate::domain::exporter::{DomainRecords, RawRecord, RecordStorePort};
 use crate::domain::page_state::Committed;
 use crate::domain::page_state::Stateful;
 use crate::domain::url_validation::{normalize_url, NormalizeConfig};
-use crate::infrastructure::export::RecordStore;
 
 /// Canonical dedup form: strip fragments/queries, unify `www.` with apex.
 /// This is THE key every record is stored and looked up under.
@@ -76,8 +75,8 @@ impl std::fmt::Display for RunId {
 
 /// Load this store's records without ever discarding prior history (A2):
 /// unreadable files degrade to an empty in-memory view WITH a named-path
-/// warning (`RecordStore::load_or_init`) — the original bytes stay on disk.
-pub(crate) fn load_preserving(store: &RecordStore) -> DomainRecords {
+/// warning (`RecordStorePort::load_or_init`) — the original bytes stay on disk.
+pub(crate) fn load_preserving(store: &dyn RecordStorePort) -> DomainRecords {
     store.load_or_init()
 }
 
@@ -92,7 +91,7 @@ pub(crate) fn load_preserving(store: &RecordStore) -> DomainRecords {
 /// committed page share one entry (spec www/apex scenario).
 pub fn filter_committed(
     urls: impl IntoIterator<Item = Url>,
-    store: &RecordStore,
+    store: &dyn RecordStorePort,
 ) -> (Vec<Url>, RunId) {
     let records = load_preserving(store);
     let original = urls.into_iter().collect::<Vec<_>>();
@@ -112,27 +111,6 @@ pub fn filter_committed(
     (pending, RunId::new())
 }
 
-/// Bridge a legacy `StateStore` handle onto the v2 `RecordStore` seam:
-/// same directory + domain, so a legacy v1 state file migrates in place
-/// on first load (Gate 2 policy lives inside `RecordStore`).
-pub(crate) fn record_store_bridge(
-    state_store: &crate::infrastructure::export::state_store::StateStore,
-) -> RecordStore {
-    use crate::infrastructure::export::RecordStore;
-
-    let path = state_store.get_state_path();
-    let dir = path.parent().map_or_else(
-        || std::path::PathBuf::from("."),
-        std::path::Path::to_path_buf,
-    );
-    let domain = path
-        .file_stem()
-        .and_then(std::ffi::OsStr::to_str)
-        .unwrap_or("unknown")
-        .to_string();
-    RecordStore::new(domain).with_state_dir(dir)
-}
-
 /// Type-level skip decision: true iff the record for `url` reconstructs as
 /// `Stateful<_, Committed>` (status match + D2 invariant table pass).
 fn is_committed_proven(url: &str, records: &DomainRecords) -> bool {
@@ -146,6 +124,8 @@ fn is_committed_proven(url: &str, records: &DomainRecords) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::infrastructure::export::RecordStore;
 
     #[test]
     fn canonical_key_unifies_www_and_strips_queries() {
