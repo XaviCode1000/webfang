@@ -5,7 +5,7 @@
 - **Date:** 2026-09-01
 - **Deciders:** Project Architect, webfang maintainers
 - **Related:** ADR-0010, ADR-0010-A, ADR-0011, ADR-0012 (superseded for numbers), #1068/#1069 (scanner semantics this plan depends on)
-- **Closes:** nothing (planning artifact — execution happens in sub-slices 3.D–3.K and 4)
+- **Closes:** nothing (planning artifact — execution happens in the actionable sub-slices of §2.3; rows 3.G, 3.J, 3.K and 4 were retired as non-actionable on 2026-09-02 (#1093) — see §2.5 and §5.1)
 - **Supersedes:** ADR-0012 for all counts, mode, and breakdown (0012 remains historical)
 
 > **Normative status.** This document is the single normative plan for the
@@ -106,6 +106,15 @@ application/crawler_service.rs                    # broad crawler residual
 application/elastic_ingestion.rs                  # CpuBridge
 application/vault_search.rs                       # read_vault_notes
 ```
+
+> **Re-measured 2026-09-02 on `980f68db`: 18 entries / `allowlisted 48` / strict
+> gate exit `0`.** The list above is the `8dc58c6e` baseline, preserved as
+> historical record. The entry count grew from 10 to 18 exactly as §1.2.2
+> predicted — a broad entry replaced by its per-symbol list costs net entries —
+> while the absorbed-site count fell from 71 to 48 as slices landed. Every
+> `10`/`71` figure elsewhere in this document carries its measurement commit;
+> treat `18`/`48` as the current reality and the target of **2 permanent
+> entries** (§2.2) as unchanged.
 
 #### 1.2.1 Per-entry absorption (measured, new scanner unit)
 
@@ -231,6 +240,11 @@ compat for one minor version, then the infra path is deleted. Every port keeps
 | `infrastructure::observability` | **Permanent** | Transversal `tracing` concern (`log_scrape_error`, `memory_probe::rss_bytes`). A `domain::observability` port adds indirection with no business value. |
 | All other 8 entries | **Remove** | Each has a concrete port target below. |
 
+> **"8 entries" is the `8dc58c6e` baseline** (10 total − 2 permanent). Re-measured
+> on `980f68db` the allowlist stands at 18 entries (§1.2 note) — the target is
+> unchanged: exactly the two permanent entries above remain; every other entry,
+> broad or narrow, is removable.
+
 Broad entries `infrastructure::crawler` and `infrastructure::export` are
 **narrowed before deletion** — replaced by per-symbol entries (e.g.
 `infrastructure::crawler::resource_downloader`) so shadowing never hides a new
@@ -270,75 +284,92 @@ Gate condition for every row: `INTRA_CRATE_MODE=strict bash scripts/check_intra_
 | **3.E** | `domain::cpu_executor::CpuExecutorPort` trait + `ProcessedChunk` DTO + `infrastructure::bridge` shim (`CpuBridge` implements `CpuExecutorPort`) | 8 | ~180 (estimate — no -C provenance yet) | **YES** (trait) | — | **— (was #1063, now unblocked)** | **UNBLOCKED (EnvGuard #1066 MERGED at a32b2607 2026-09-01T00:55:45Z, Miri #1065 MERGED at 179be72a 00:49:00Z)** |
 | **3.E.2** | `application/elastic_ingestion.rs: ElasticIngestion { bridge: Arc<dyn CpuExecutorPort> }` field rewrite + `Container` wiring + call sites | 0 new (rewrite) | ~200 (estimate — no -C provenance yet) | NO (uses 3.E) | `application/elastic_ingestion.rs: CpuBridge` (symbol, not line) | 3.E | **UNBLOCKED (EnvGuard #1066 MERGED at a32b2607 2026-09-01T00:55:45Z, Miri #1065 MERGED at 179be72a 00:49:00Z)** |
 | **3.F** | `domain::session_port` (`SessionPort`, `SessionId`, `SessionPoolConfig`, `DomainSessionPool` trait) | 3 of the 4 exclusive sites of `application/crawler/engine.rs` — **verified** `engine.rs:98` + `:322` `DomainSessionPool`, `:314` `SessionPoolConfig`; the 4th (`:57` `SystemRamProbe` default) is **not** in scope | ~120 (estimate — no -C provenance yet) | NO | `application/crawler/engine.rs: DomainSessionPool` (narrow, not broad) | — | TODO |
-| **3.G** | `domain::config::AutotuningConfig::from_elastic` / `resolve` impls moved from `infrastructure::autotuning` shim into `domain::config` | **0 — see §5.1** | ~120 (estimate — no -C provenance yet) | NO (move impls) | **none — no `infrastructure::autotuning` entry exists** | Sub-slice 1 (#998) | TODO |
 | **3.H** | `domain::exporter` / `domain::export` port (`ExportState`, `Exporter`, `DomainRecords`, `RawRecord` — partial, state-store stays infra) | 14 exclusive to `infrastructure::export` (**not** 5 — the row undercounted; the module is the single largest absorber) | ~150 (estimate — no -C provenance yet) | **YES (partial)** | `infrastructure::export` (narrowed first: 8 per-symbol entries, then removed) — **cap-bound, see §1.2.2** | — | TODO |
 | **3.I** | `domain::note_repository::VaultNoteReader` + `domain::content_processor` already covers; `infrastructure::obsidian::read_vault_notes` → port | 1 (`vault_search.rs: read_vault_notes`) — **verified** | ~120 (estimate — no -C provenance yet) | **YES** (`VaultNoteReader`) | `application/vault_search.rs: read_vault_notes` (symbol) | — | TODO |
-| **3.J** | `domain::http_port` / `domain::user_agent` misc (`HttpClientPort`, `UserAgentProvider`) | **0 — see §5.1** | ~100 (estimate — no -C provenance yet) | NO | **none — no `infrastructure::http` entry exists** | — | TODO |
-| **3.K** | `domain::persistence` (`PersistenceMode`, `ResumeConfig`) | **0 — see §5.1** | ~120 (estimate — no -C provenance yet) | NO | **none — no `infrastructure::persistence` entry exists** | — | TODO |
-| **4** | `domain::waf` full port — move `infrastructure::http::waf_engine` AC automaton into `domain::waf` (`WafInspectorPort`, `WafVerdict`, `EvidenceSource`); infra becomes `pub use` shim | **0 — see §5.1** | ~250 (estimate — no -C provenance yet) | — (intra-domain logic move) | **none — no `infrastructure::http::waf_engine` entry exists** | — | TODO |
 | **Perm** | `application/container.rs` + `infrastructure::observability` remain | 0 | 0 | — | **Never removed** | — | Permanent |
 
-    **How the 8 removable entries map to slices** (Sites column = exclusive absorption measured on `8dc58c6e`, §1.2.1):
-    
-    | Allowlist entry | Removal slice | Removal-condition (symbol, not line) | Sites |
-    |---|---|---|---:|
-    | `infrastructure::crawler` (broad) | **Narrow then 3.F/3.D** | `engine.rs: DomainSessionPool` + `discovery.rs: crawl_task_ctx::CrawlTaskCtx` → `domain::session_port` / `domain::crawler_port` | **11** (9 symbols, see §1.2.2) |
-    | `infrastructure::export` (broad) | **3.H** | `export: ExportState` / `DomainRecords` → `domain::exporter` (narrowed first) | **14** (was written as 5) |
-    | `application/asset_download.rs` | **cheap wins — DONE** | `asset_download::Downloader::new` → `AssetDownloaderFactory::build` via `domain::asset_downloader_factory::default_factory()`. The originally recorded condition (`DownloaderFactory::build`) was **wrong**: that port builds the page-fetch `domain::downloader_port::Downloader` (`fetch`/`supports_interactions`/`memory_cost`) and needs a run-scoped `CookieBridge` + `CancellationToken`, while this site needs `AssetDownloaderPort::download_batch` built from a bare `ScraperConfig`. Two different downloaders, so the asset side got its own port. | 1 |
-    | `application/crawler/discovery.rs` | **free — no slice needed** | absorbs 0 exclusively; every site already covered by `infrastructure::crawler` | **0** |
-    | `application/crawler/engine.rs` | **3.F** (session sites) + **cheap wins — DONE** (probe default) | `engine.rs: DomainSessionPool` + `engine.rs: SessionPoolConfig` → `domain::session_port` (3.F, #1075); `engine.rs: SystemRamProbe` default → `domain::ram_probe_port::system_default()`, with the type moved to `domain` and its sysinfo `impl RamProbePort` left in `infrastructure::downloader::system_ram_probe` (the `DefaultSsrfGuard` split). No `Container` hoist was needed. | 4 (3 + 1 default) |
-    | `application/crawler_service.rs` | **free — no slice needed** | absorbs 0 exclusively; every site already covered by `infrastructure::crawler` | **0** |
-    | `application/elastic_ingestion.rs` | **3.E + 3.E.2** | `elastic_ingestion.rs: CpuBridge` → `domain::cpu_executor::CpuExecutorPort` | 8 |
-    | `application/vault_search.rs` | **3.I** | `vault_search.rs: read_vault_notes` → `domain::note_repository::VaultNoteReader` | 1 |
-    
-    ### 5.1 Four rows are not on the 10→2 path at all (3.G, 3.J, 3.K, 4)
-    
-    These rows were written against allowlist entries that **no longer exist**. The
-    current allowlist has 10 entries (§1.2); none of them names
-    `infrastructure::autotuning`, `infrastructure::http`,
-    `infrastructure::persistence`, or `infrastructure::http::waf_engine`.
-    
-    Measured, not inferred: with only `application/container.rs` allowlisted, the
-    gate reports sites in exactly seven infrastructure modules — `crawler` (23),
-    `export` (14), `bridge` (8), `observability` (6), `network` (3), `obsidian` (1),
-    `downloader` (1). The four modules above contribute **zero**.
-    
-    They are not dead code — they are referenced. But every reference from the
-    scanned tree is either:
-    
-    - inside `application/container.rs`, which is the **permanent** DI-root entry and
-      is never removed (so the site is absorbed there regardless of these slices);
-    - inside `#[cfg(test)] mod tests` — verified for
-      `crawler/discovery.rs:421`, `crawler/sitemap_discovery.rs:647`,
-      `http_client/client.rs:801`, all three `infrastructure::http::waf_engine`;
-    - or in the `webfang_cli` crate (`cli/scrape_flow.rs:460`,
-      `cli/args/export.rs:116`), which this gate does not scan — `ROOT` is
-      `crates/webfang_core/src`.
-    
-    **Consequence:** these four rows claim 8 + 3 + 2 + 7 = **20 sites** and name
-    entry deletions that cannot happen. Their real gate delta is `0`, and there is
-    no entry to remove. They are legitimate *purity* refactors — moving logic into
-    `domain` so the DI root stops knowing concretes — but they must not be counted
-    as steps on the 10→2 path, and no acceptance test of the form "the count drops
-    by N" can pass for them.
-    
-    The honest restatement of the remaining path is therefore **10 → 2 via six
-    entries, not eight**: two are free (§1.2.1 dead weight), four need real porting
-    work (`crawler`, `export`, `engine.rs`, `elastic_ingestion.rs`,
-    `asset_download.rs`, `vault_search.rs` — six entries across five slices), and
-    two are permanent. 3.G / 3.J / 3.K / 4 move to a separate purity backlog with no
-    allowlist acceptance criterion attached.
+> **⚠️ Rows 3.G, 3.J, 3.K and 4 were retired from this table on 2026-09-02
+> (#1093).** They are **not delivery work**: none names an allowlist entry that
+> exists, none can claim a gate delta, and §5.1 rules them off the 10→2 path.
+> Their content is preserved verbatim in **§2.5 — non-actionable historical
+> record**. Do not plan, size, or open slices against them.
+
+**How the 8 removable entries map to slices** (Sites column = exclusive absorption measured on `8dc58c6e`, §1.2.1):
+
+| Allowlist entry | Removal slice | Removal-condition (symbol, not line) | Sites |
+|---|---|---|---:|
+| `infrastructure::crawler` (broad) | **Narrow then 3.F/3.D** | `engine.rs: DomainSessionPool` + `discovery.rs: crawl_task_ctx::CrawlTaskCtx` → `domain::session_port` / `domain::crawler_port` | **11** (9 symbols, see §1.2.2) |
+| `infrastructure::export` (broad) | **3.H** | `export: ExportState` / `DomainRecords` → `domain::exporter` (narrowed first) | **14** (was written as 5) |
+| `application/asset_download.rs` | **cheap wins — DONE** | `asset_download::Downloader::new` → `AssetDownloaderFactory::build` via `domain::asset_downloader_factory::default_factory()`. The originally recorded condition (`DownloaderFactory::build`) was **wrong**: that port builds the page-fetch `domain::downloader_port::Downloader` (`fetch`/`supports_interactions`/`memory_cost`) and needs a run-scoped `CookieBridge` + `CancellationToken`, while this site needs `AssetDownloaderPort::download_batch` built from a bare `ScraperConfig`. Two different downloaders, so the asset side got its own port. | 1 |
+| `application/crawler/discovery.rs` | **free — no slice needed** | absorbs 0 exclusively; every site already covered by `infrastructure::crawler` | **0** |
+| `application/crawler/engine.rs` | **3.F** (session sites) + **cheap wins — DONE** (probe default) | `engine.rs: DomainSessionPool` + `engine.rs: SessionPoolConfig` → `domain::session_port` (3.F, #1075); `engine.rs: SystemRamProbe` default → `domain::ram_probe_port::system_default()`, with the type moved to `domain` and its sysinfo `impl RamProbePort` left in `infrastructure::downloader::system_ram_probe` (the `DefaultSsrfGuard` split). No `Container` hoist was needed. | 4 (3 + 1 default) |
+| `application/crawler_service.rs` | **free — no slice needed** | absorbs 0 exclusively; every site already covered by `infrastructure::crawler` | **0** |
+| `application/elastic_ingestion.rs` | **3.E + 3.E.2** | `elastic_ingestion.rs: CpuBridge` → `domain::cpu_executor::CpuExecutorPort` | 8 |
+| `application/vault_search.rs` | **3.I** | `vault_search.rs: read_vault_notes` → `domain::note_repository::VaultNoteReader` | 1 |
+
+### 5.1 Ruling — rows 3.G, 3.J, 3.K and 4 are not on the 10→2 path: RETIRED, non-actionable
+
+> **RULING (2026-09-02, #1093).** These four rows are **retired from the
+> actionable planning table in §2.3**. They are **not delivery work**: no
+> allowlist entry names their modules, their real gate delta is `0`, and no
+> acceptance test of the form "the `allowlisted` count drops by N" can ever pass
+> for them. Their content is preserved verbatim in **§2.5 — non-actionable
+> historical record**. If the purity value alone justifies one of these moves,
+> it may be proposed as a standalone refactor with its own rationale — but it
+> must never be counted, sized, or claimed as a step on the 10→2 path.
+
+These rows were written against allowlist entries that **no longer exist**. The
+allowlist had 10 entries at the `8dc58c6e` baseline (§1.2) and stands at 18
+entries as re-measured on `980f68db` (§1.2 note); in neither state does any
+entry name `infrastructure::autotuning`, `infrastructure::http`,
+`infrastructure::persistence`, or `infrastructure::http::waf_engine`.
+
+Measured, not inferred: with only `application/container.rs` allowlisted, the
+gate reports sites in exactly seven infrastructure modules — `crawler` (23),
+`export` (14), `bridge` (8), `observability` (6), `network` (3), `obsidian` (1),
+`downloader` (1). The four modules above contribute **zero**.
+
+They are not dead code — they are referenced. But every reference from the
+scanned tree is either:
+
+- inside `application/container.rs`, which is the **permanent** DI-root entry and
+  is never removed (so the site is absorbed there regardless of these slices);
+- inside `#[cfg(test)] mod tests` — verified for
+  `crawler/discovery.rs:421`, `crawler/sitemap_discovery.rs:647`,
+  `http_client/client.rs:801`, all three `infrastructure::http::waf_engine`;
+- or in the `webfang_cli` crate (`cli/scrape_flow.rs:460`,
+  `cli/args/export.rs:116`), which this gate does not scan — `ROOT` is
+  `crates/webfang_core/src`.
+
+**Consequence:** these four rows claim 8 + 3 + 2 + 7 = **20 sites** and name
+entry deletions that cannot happen. Their real gate delta is `0`, and there is
+no entry to remove. They are legitimate *purity* refactors — moving logic into
+`domain` so the DI root stops knowing concretes — but they must not be counted
+as steps on the 10→2 path, and no acceptance test of the form "the count drops
+by N" can pass for them.
+
+The honest restatement of the remaining path is therefore **10 → 2 via six
+entries, not eight**: two are free (§1.2.1 dead weight), four need real porting
+work (`crawler`, `export`, `engine.rs`, `elastic_ingestion.rs`,
+`asset_download.rs`, `vault_search.rs` — six entries across five slices), and
+two are permanent. (Re-measured on `980f68db` the allowlist holds 18 entries
+because narrowing replaced broad entries with per-symbol lists exactly as
+§1.2.2 anticipated; neither the ruling nor the two-permanent-entry target
+changes.) 3.G / 3.J / 3.K / 4 move to a separate purity backlog with no
+allowlist acceptance criterion attached; their rows are preserved verbatim in
+**§2.5**.
 
 **Ordering constraints (why not all in parallel):**
 
 - 3.E → 3.E.2 is sequential (trait must exist before field rewrite).
-- 3.F, 3.G, 3.H, 3.I, 3.J/K can land in any order **except** they must serialize
+- 3.F, 3.H, 3.I can land in any order **except** they must serialize
   through `domain/mod.rs` (each adds a `pub mod`). PRs #1064/#1065/#1066
   demonstrated the pattern: **sequential merge, one at a time, strict green per
   PR (MERGED at a32b2607/179be72a)** — batch-merge via `fix/batch-3-*` is forbidden because `domain/mod.rs`
   conflicts silently shadow each other.
-- 4 (`waf`) can land anytime; it touches `domain/waf.rs` and
-  `infrastructure/http/waf_engine.rs` only.
+- The retired rows 3.G, 3.J, 3.K and 4 (§2.5, §5.1) carry **no ordering
+  constraint because they are not scheduled work**. If the purity backlog ever
+  takes one up, the `domain/mod.rs` serialization rule above still applies.
 
 ### 2.4 Sizing and CI rule per PR
 
@@ -361,13 +392,35 @@ A PR that leaves its cited allowlist entry rotting (merged but entry still
 present) is a **leak**, not a slice — DoD requires the entry removal in the same
 commit.
 
+### 2.5 Retired rows — non-actionable historical record (3.G, 3.J, 3.K, 4)
+
+> **NON-ACTIONABLE. Do not schedule, size, or deliver these rows as part of the
+> allowlist campaign.** They were removed from the §2.3 actionable table on
+> 2026-09-02 (#1093) and are preserved here **verbatim** for historical record.
+> The full ruling is §5.1: none of these rows names an allowlist entry that
+> exists, every row's real gate delta is `0`, and no "count drops by N"
+> acceptance test can pass for them. At most they are standalone *purity*
+> refactors, each needing its own rationale and its own issue — never a claimed
+> step on the 10→2 path.
+
+| Slice | Symbol / Port (cite, not line) | Sites | Est. LOC (`-C`) | New port? | Allowlist entries removed / narrowed | Depends | Status |
+|---|---|---:|---:|---|---|---|---|
+| **3.G** | `domain::config::AutotuningConfig::from_elastic` / `resolve` impls moved from `infrastructure::autotuning` shim into `domain::config` | **0 — see §5.1** | ~120 (estimate — no -C provenance yet) | NO (move impls) | **none — no `infrastructure::autotuning` entry exists** | Sub-slice 1 (#998) | **RETIRED — non-actionable (§5.1)** |
+| **3.J** | `domain::http_port` / `domain::user_agent` misc (`HttpClientPort`, `UserAgentProvider`) | **0 — see §5.1** | ~100 (estimate — no -C provenance yet) | NO | **none — no `infrastructure::http` entry exists** | — | **RETIRED — non-actionable (§5.1)** |
+| **3.K** | `domain::persistence` (`PersistenceMode`, `ResumeConfig`) | **0 — see §5.1** | ~120 (estimate — no -C provenance yet) | NO | **none — no `infrastructure::persistence` entry exists** | — | **RETIRED — non-actionable (§5.1)** |
+| **4** | `domain::waf` full port — move `infrastructure::http::waf_engine` AC automaton into `domain::waf` (`WafInspectorPort`, `WafVerdict`, `EvidenceSource`); infra becomes `pub use` shim | **0 — see §5.1** | ~250 (estimate — no -C provenance yet) | — (intra-domain logic move) | **none — no `infrastructure::http::waf_engine` entry exists** | — | **RETIRED — non-actionable (§5.1)** |
+
 ---
 
 ## 3. Consequences
 
 ### Positive
 
-- **Allowlist 10 → 2** over ~5 PRs remaining post-2026-09-01 (3.F, 3.G, 3.H, 3.I, 3.J/K, 4) — ~8 total before excluding 3 MERGED (#1064, #1065, #1066); plus #1055 partial. Each PR is independently reviewable (≤400L by `-C`).
+- **Allowlist 10 → 2** — remaining actionable slices as of 2026-09-02: 3.E,
+  3.E.2, 3.F, 3.H, 3.I (rows 3.G, 3.J, 3.K and 4 retired as non-actionable —
+  §2.5, §5.1, #1093). Re-measured on `980f68db`: **18 entries / `allowlisted
+  48` / strict gate exit `0`** (§1.2 note); the target remains the two
+  permanent entries (§2.2). Each PR is independently reviewable (≤400L by `-C`).
 - **Gate `strict` permanent** — flipped at `a6b931ab`, never reverts to `warn`.
   `ALLOWLIST_CAP=22` stays until 10→2 lands, then ratchets to `10` (warn at
   `8`), then `5` (warn at `3`) once only the two permanent entries remain.
@@ -422,7 +475,7 @@ commit.
 ## 5. References
 
 - `scripts/check_intra_crate_direction.sh` — intra-crate gate (ADR-0010 + ADR-0010-A hardened, `ALLOWLIST_CAP=22`, `ALLOWLIST_WARN_AT=20`, default `strict` since `a6b931ab`)
-- `scripts/check_intra_crate_direction_allowlist.txt` — **10 entries, 71 absorbed sites measured on `8dc58c6e`** (was 19/133 in ADR-0012; the 84 in earlier drafts of this document was the pre-#1069 regex-hit unit — see §1.1)
+- `scripts/check_intra_crate_direction_allowlist.txt` — **10 entries, 71 absorbed sites measured on `8dc58c6e`** (was 19/133 in ADR-0012; the 84 in earlier drafts of this document was the pre-#1069 regex-hit unit — see §1.1). Re-measured 2026-09-02 on `980f68db`: **18 entries / `allowlisted 48` / strict gate exit `0`** (§1.2 note)
 - `crates/webfang_core/src/domain/mod.rs` — 57 entries, re-exports, accepted-leak disclosures
 - `crates/webfang_core/src/domain/downloader_factory.rs` — `DownloaderSpec` + `DownloaderFactory::build` (`wreq::Jar`, `CancellationToken` leak — precedent)
 - `crates/webfang_core/src/domain/ssrf_guard.rs` — `is_forbidden_ip`, `redirect_policy`, `SsrfGuard`/`DefaultSsrfGuard` (`ClientBuilder`/`Policy` leak)
@@ -453,7 +506,8 @@ commit.
   document.
 - **No migration needed for consumers:** ADRs are planning artifacts; the only
   machine-readable artifact is `scripts/check_intra_crate_direction_allowlist.txt`
-  (10 entries). Its per-line removal-conditions were rewritten to symbol-citations
+  (10 entries at the `8dc58c6e` baseline; 18 as re-measured on `980f68db` —
+  §1.2 note). Its per-line removal-conditions were rewritten to symbol-citations
   and migration-statements in the tooling-hygiene PR closing #1032 — absorbed count
   verified byte-identical at `allowlisted 71` before and after, patterns untouched.
   Future entries added by the 10→2 slices follow the same rule from the start.
@@ -483,5 +537,5 @@ commit.
   `-C` vs. `-M`: chosen `-C` — reports logical churn, avoids 1.9× over-report.
   (3) Sequential `domain/mod.rs` merges vs. batch: chosen sequential — avoids
   silent `mod.rs` conflicts, costs more CI runs.
-- **Next step:** 3.E/3.E.2 are unblocked (EnvGuard #1066 + Miri #1065 merged) and `application/elastic_ingestion.rs` is the single largest removable entry that needs no narrowing (8 exclusive sites, one module, no cap pressure) — start there. Then 3.I (1 site) and the `asset_download.rs` follow-up (1 site) as cheap wins. `infrastructure::export` (3.H) and `infrastructure::crawler` (narrow-then-3.F) are cap-bound and must be strictly sequential, one module per PR (§1.2.2). Entries 6 and 8 are free to drop today (§1.2.1). 3.G / 3.J / 3.K / 4 are off the 10→2 path (§5.1).
+- **Next step:** 3.E/3.E.2 are unblocked (EnvGuard #1066 + Miri #1065 merged) and `application/elastic_ingestion.rs` is the single largest removable entry that needs no narrowing (8 exclusive sites, one module, no cap pressure) — start there. Then 3.I (1 site) and the `asset_download.rs` follow-up (1 site) as cheap wins. `infrastructure::export` (3.H) and `infrastructure::crawler` (narrow-then-3.F) are cap-bound and must be strictly sequential, one module per PR (§1.2.2). Entries 6 and 8 are free to drop today (§1.2.1). 3.G / 3.J / 3.K / 4 are **retired as non-actionable** — off the 10→2 path and not delivery work (§2.5, §5.1, #1093).
 
