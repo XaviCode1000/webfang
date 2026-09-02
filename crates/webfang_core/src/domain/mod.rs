@@ -61,6 +61,11 @@ pub mod waf;
 /// Downloader port — domain-owned trait for page fetching (ADR-0010).
 pub mod downloader_port;
 
+/// Asset downloader factory port — domain-owned seam for building the batch
+/// asset downloader, so `application` stops constructing the adapter concrete
+/// (ADR-0012-B cheap wins).
+pub mod asset_downloader_factory;
+
 /// Downloader factory port — domain-owned seam for building the strategy
 /// fetch downloader, so `application` stops constructing infrastructure
 /// concretes (ADR-0012 sub-slice 3.B-1b).
