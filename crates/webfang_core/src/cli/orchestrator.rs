@@ -140,8 +140,21 @@ pub async fn run(
     // PersistenceMode unified control-plane — pure resolver with default dir.
     // Built BEFORE prepare_phase so discovery Engine can be wired with
     // `with_persistence` (checkpoint interval flows from the mode, not hardcoded).
+    // The resolver itself never logs (#1045): `--state-dir` without `--resume`
+    // is reported via `ResolverNotes` and warned about here, the one call
+    // site that knows about user flags.
     let default_state_dir = crate::cli::scrape_flow::resolve_default_state_dir();
-    let persistence_mode = opts.crawl.persistence_mode(&default_state_dir);
+    let (persistence_mode, resolver_notes) =
+        crate::domain::persistence::PersistenceMode::from_config_with_notes(
+            &opts.crawl.resume_config(),
+            &default_state_dir,
+        );
+    if let Some(ignored_state_dir) = resolver_notes.ignored_state_dir {
+        warn!(
+            state_dir = ?ignored_state_dir,
+            "ignoring --state-dir without --resume"
+        );
+    }
 
     let prepare = match prepare_phase(&opts, &persistence_mode).await {
         Err(e) => return e,

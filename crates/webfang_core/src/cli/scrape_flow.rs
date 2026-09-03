@@ -37,7 +37,7 @@ type AdaptiveSelectorEngine = ();
 
 /// Resolve the default state directory (XDG_CACHE_HOME or `~/.cache/webfang/state`).
 ///
-/// Pure helper extracted for `PersistenceMode::from_limits` callers.
+/// Pure helper extracted for `PersistenceMode::from_config` callers.
 #[must_use]
 pub fn resolve_default_state_dir() -> PathBuf {
     let cache_base = std::env::var("XDG_CACHE_HOME")
