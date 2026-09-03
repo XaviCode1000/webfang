@@ -93,6 +93,19 @@ INTRA_CRATE_MODE=strict bash scripts/check_intra_crate_direction.sh; echo "exit=
 - **`rust-analyzer` E0308/E0605 are noise** (spurious, tracked in #1034). `cargo check` is the authority.
 - **The pi-lens automated runner's 60s timeout kills cargo on this repo** and reports it as test failure;
   no test ever ran. Run gates explicitly instead.
+- **A local check that is not CI's exact invocation is not evidence.** The consolidation PR passed `cargo
+  check`, CI-exact `clippy` and 3427 tests, then failed `Documentation quality` on two rustdoc lints. CI runs
+  `cargo doc --workspace --all-features --no-deps` with `RUSTDOCFLAGS: -D warnings`; the local run omitted
+  `-D warnings`, `--all-features` and the workspace scope, and a grep for one lint name hid the two that
+  actually blocked (`private_intra_doc_links`, `redundant_explicit_links`). Copy the `run:` line *and* the
+  `env:` block from the workflow file. `cargo doc` is a separate axis from check/clippy/nextest.
+- **Porting a type into `domain/` can break doc links that were fine in `infrastructure`.** A link from a
+  private item to a `pub(crate)` const is legal; the same link from a now-`pub` domain port is a
+  `private_intra_doc_links` error. Run CI-exact rustdoc at each port slice, not only at consolidation.
+- **The gate does not see `cli/`.** `LAYER_RANK` ranks only `infrastructure|adapters|application|domain`, so
+  moving code to `cli/` removes an allowlist entry without creating the port the entry's removal condition
+  demanded. A green count is not the same as an architectural finish; #1097 tracks both the deferred port and
+  the question of whether `cli/` should be ranked at all.
 
 ---
 
