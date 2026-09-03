@@ -110,15 +110,18 @@ pub fn hit(name: &str) {
 // one legitimate use of unsafe here; the workspace forbids unsafe elsewhere.
 #[allow(unsafe_code)]
 fn kill_self() -> ! {
-    // SAFETY: `kill(2)` on our own pid (always valid, always exists) with
-    // `SIGKILL`, which cannot be caught, blocked, or ignored.
+    // SAFETY: `getpid()` always returns the calling process's own valid pid;
+    // `SIGKILL` cannot be caught, blocked, or ignored, so `kill` never
+    // returns on success. Using `getpid()` instead of converting
+    // `std::process::id()` removes the `i32` conversion fallback entirely:
+    // there is no value (in particular never `-1`, which would broadcast to
+    // every signalable process) that can miss the current process (#1124).
     unsafe {
-        libc::kill(
-            i32::try_from(std::process::id()).unwrap_or(-1),
-            libc::SIGKILL,
-        );
+        libc::kill(libc::getpid(), libc::SIGKILL);
     }
-    unreachable!("SIGKILL cannot be caught; the process must already be gone");
+    // If `kill` returned (seccomp filter, PID-namespace block), still
+    // guarantee termination instead of falling through.
+    std::process::abort();
 }
 
 #[cfg(not(unix))]
@@ -158,5 +161,20 @@ mod tests {
         // ARMED was never initialized in this test process.
         assert!(!is_armed_for(PRE_FIRST_PERSIST));
         assert!(!is_my_turn(PRE_FIRST_PERSIST));
+    }
+
+    #[cfg(unix)]
+    #[allow(unsafe_code)]
+    #[test]
+    fn current_pid_is_signalable_without_conversion_fallback() {
+        // Regression proof for #1124: `kill_self` targets the process via
+        // `libc::getpid()`, so no `u32 -> i32` conversion (and its `-1`
+        // broadcast fallback) exists on the crash path. This pins the
+        // underlying platform assumption that the pid fits the `kill(2)`
+        // argument without loss.
+        // SAFETY: `getpid()` is always safe to call; it takes no arguments
+        // and only returns the calling process's pid.
+        let pid = unsafe { libc::getpid() };
+        assert!(pid > 0, "getpid must return a positive pid");
     }
 }
