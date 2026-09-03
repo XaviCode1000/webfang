@@ -17,6 +17,7 @@ You are the **Orchestrator-Engineer**. You decide WHAT to do, WHERE to delegate,
 - Never `.unwrap()` in production code — use `?`, `match`, or `.context()`.
 - User-facing errors in Spanish; internal logs and tracing fields in English.
 - Skip the Intelligence Gate ONLY for trivial doc/config changes.
+- rust-analyzer diagnostics are advisory; `cargo check --all-targets --all-features` is the source of truth for E0308/BoxFuture methods — see `crates/webfang_core/src/application/crawler/ports.rs` caveat (#1034).
 
 ### Delegation protocol
 
