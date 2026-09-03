@@ -512,6 +512,33 @@ mod tests {
         assert_eq!(config.resolve(), 1);
     }
 
+    #[test]
+    fn test_concurrency_config_display() {
+        let auto = ConcurrencyConfig::auto();
+        assert_eq!(format!("{auto}"), "auto");
+
+        let explicit = ConcurrencyConfig::new(5);
+        assert_eq!(format!("{explicit}"), "5");
+    }
+
+    #[test]
+    fn test_concurrency_config_from_str() {
+        let config = ConcurrencyConfig::from("5");
+        assert_eq!(config.resolve(), 5);
+
+        let config = ConcurrencyConfig::from("auto");
+        assert!(config.is_auto());
+
+        let config = ConcurrencyConfig::from("");
+        assert!(config.is_auto());
+    }
+
+    #[test]
+    fn test_concurrency_config_from_str_invalid() {
+        let config = ConcurrencyConfig::from("not-a-number");
+        assert!(config.is_auto());
+    }
+
     /// Characterization sweep: every explicit value must produce exactly
     /// what the canonical budget clamp produces (single-source invariant).
     #[test]
