@@ -346,8 +346,11 @@ mod tests {
             // already-built resolver must keep enforcing (the flag is read
             // once, at construction time, so long-lived clients cannot be
             // disarmed mid-flight by an env mutation).
-            let (_guard, resolver) = validation_on();
-            std::env::set_var(DISABLE_VALIDATING_RESOLVER_ENV, "1");
+            let (mut guard, resolver) = validation_on();
+            // Flip the escape hatch while the guard already holds ENV_LOCK —
+            // `set` mutates under the held lock and restores on drop, so no
+            // raw `env::set_var` is needed here (issue #1126).
+            guard.set(DISABLE_VALIDATING_RESOLVER_ENV, "1");
 
             let outcome = resolver.resolve(Name::from("127.0.0.1")).await;
             assert!(

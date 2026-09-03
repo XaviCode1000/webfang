@@ -29,3 +29,4 @@ path = "src/bin/bench_live.rs"
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
 url = { workspace = true }
+webfang_test_utils = { workspace = true }

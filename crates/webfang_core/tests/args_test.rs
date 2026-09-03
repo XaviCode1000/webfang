@@ -8,6 +8,10 @@ use webfang_core::infrastructure::autotuning::ElasticOverrides;
 static ENV_GUARD: std::sync::Once = std::sync::Once::new();
 fn clean_env() {
     ENV_GUARD.call_once(|| {
+        // Permanent, process-wide removal (no restore-on-drop), so this uses
+        // `env_lock` directly instead of `EnvGuard` — but the lock invariant
+        // still holds: every mutation is serialized (#1126).
+        let _lock = webfang_test_utils::env_lock();
         let poisoned: Vec<String> = std::env::vars()
             .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")
             .map(|(k, _)| k)

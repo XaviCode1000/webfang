@@ -1005,10 +1005,10 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn scrape_url_rejects_loopback() {
-        // Defensive under shared-process harnesses: the escape hatch must be
-        // unset for this process so the guard is active. (nextest isolates
-        // each test in its own process, so this is a no-op there.)
-        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
+        // The escape hatch must be unset so the guard is active for this
+        // test; EnvGuard restores the original on drop, so the removal can
+        // no longer leak into sibling tests in a shared process (#1126).
+        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_MCP_DISABLE_SSRF"]);
         // SSRF protection must block requests to internal/loopback addresses
         // before any fetch happens (Bug #673).
         let (handler, _tmp) = test_handler().await;
@@ -1034,10 +1034,10 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn scrape_with_options_rejects_loopback() {
-        // Defensive under shared-process harnesses: the escape hatch must be
-        // unset for this process so the guard is active. (nextest isolates
-        // each test in its own process, so this is a no-op there.)
-        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
+        // The escape hatch must be unset so the guard is active for this
+        // test; EnvGuard restores the original on drop, so the removal can
+        // no longer leak into sibling tests in a shared process (#1126).
+        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_MCP_DISABLE_SSRF"]);
         // SSRF protection must block internal/loopback addresses (Bug #673).
         let (handler, _tmp) = test_handler().await;
         let res = handler
@@ -1072,10 +1072,10 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn scrape_batch_rejects_loopback() {
-        // Defensive under shared-process harnesses: the escape hatch must be
-        // unset for this process so the guard is active. (nextest isolates
-        // each test in its own process, so this is a no-op there.)
-        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
+        // The escape hatch must be unset so the guard is active for this
+        // test; EnvGuard restores the original on drop, so the removal can
+        // no longer leak into sibling tests in a shared process (#1126).
+        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_MCP_DISABLE_SSRF"]);
         // SSRF protection must block internal/loopback addresses in a batch (Bug #673).
         let (handler, _tmp) = test_handler().await;
         let res = handler
@@ -1130,10 +1130,10 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn discover_urls_rejects_loopback() {
-        // Defensive under shared-process harnesses: the escape hatch must be
-        // unset for this process so the guard is active. (nextest isolates
-        // each test in its own process, so this is a no-op there.)
-        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
+        // The escape hatch must be unset so the guard is active for this
+        // test; EnvGuard restores the original on drop, so the removal can
+        // no longer leak into sibling tests in a shared process (#1126).
+        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_MCP_DISABLE_SSRF"]);
         // SSRF protection must block internal/loopback addresses (Bug #673).
         let (handler, _tmp) = test_handler().await;
         let res = handler
@@ -1162,10 +1162,10 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn detect_spa_rejects_loopback() {
-        // Defensive under shared-process harnesses: the escape hatch must be
-        // unset for this process so the guard is active. (nextest isolates
-        // each test in its own process, so this is a no-op there.)
-        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
+        // The escape hatch must be unset so the guard is active for this
+        // test; EnvGuard restores the original on drop, so the removal can
+        // no longer leak into sibling tests in a shared process (#1126).
+        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_MCP_DISABLE_SSRF"]);
         // SSRF protection must block internal/loopback addresses (Bug #673).
         let (handler, _tmp) = test_handler().await;
         let res = handler
@@ -1199,7 +1199,10 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn scrape_url_robots_disallowed_returns_error_and_zero_page_hits() {
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1"); // wiremock binds 127.0.0.1
+        // Lift the guard for this test only (wiremock binds 127.0.0.1);
+        // EnvGuard restores the original on drop, so the "1" cannot leak
+        // into sibling tests in a shared process (#1126).
+        let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_MCP_DISABLE_SSRF", "1")]);
         let (handler, _tmp) = test_handler_with_robots().await;
         let server = MockServer::start().await;
         mount_robots_site(&server, "private/page").await;
@@ -1226,7 +1229,10 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn scrape_url_robots_allowed_still_scrapes_page() {
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1"); // wiremock binds 127.0.0.1
+        // Lift the guard for this test only (wiremock binds 127.0.0.1);
+        // EnvGuard restores the original on drop, so the "1" cannot leak
+        // into sibling tests in a shared process (#1126).
+        let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_MCP_DISABLE_SSRF", "1")]);
         let (handler, _tmp) = test_handler_with_robots().await;
         let server = MockServer::start().await;
         mount_robots_site(&server, "public/page").await;
@@ -1259,7 +1265,10 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn discover_urls_robots_disallowed_returns_error_and_zero_page_hits() {
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1"); // wiremock binds 127.0.0.1
+        // Lift the guard for this test only (wiremock binds 127.0.0.1);
+        // EnvGuard restores the original on drop, so the "1" cannot leak
+        // into sibling tests in a shared process (#1126).
+        let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_MCP_DISABLE_SSRF", "1")]);
         let (handler, _tmp) = test_handler_with_robots().await;
         let server = MockServer::start().await;
         mount_robots_site(&server, "private/list").await;
@@ -1285,7 +1294,10 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn detect_spa_robots_disallowed_returns_error_and_zero_page_hits() {
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1"); // wiremock binds 127.0.0.1
+        // Lift the guard for this test only (wiremock binds 127.0.0.1);
+        // EnvGuard restores the original on drop, so the "1" cannot leak
+        // into sibling tests in a shared process (#1126).
+        let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_MCP_DISABLE_SSRF", "1")]);
         let (handler, _tmp) = test_handler_with_robots().await;
         let server = MockServer::start().await;
         mount_robots_site(&server, "private/app").await;
@@ -1381,10 +1393,10 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn crawl_with_sitemap_rejects_internal_sitemap_url() {
-        // Defensive under shared-process harnesses: the escape hatch must be
-        // unset for this process so the guard is active. (nextest isolates
-        // each test in its own process, so this is a no-op there.)
-        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
+        // The escape hatch must be unset so the guard is active for this
+        // test; EnvGuard restores the original on drop, so the removal can
+        // no longer leak into sibling tests in a shared process (#1126).
+        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_MCP_DISABLE_SSRF"]);
 
         let (handler, _tmp) = test_handler().await;
         let res = handler

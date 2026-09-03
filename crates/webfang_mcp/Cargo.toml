@@ -72,6 +72,7 @@ scraper = { workspace = true }
 wiremock = { workspace = true }
 proptest = { workspace = true }
 serial_test = { workspace = true }
+webfang_test_utils = { workspace = true }
 
 
 

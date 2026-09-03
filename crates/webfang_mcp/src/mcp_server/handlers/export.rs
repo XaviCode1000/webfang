@@ -898,10 +898,11 @@ mod handler_tests {
     #[tokio::test]
     #[serial] // WEBFANG_MCP_DISABLE_SSRF is process-global — see scraping.rs
     async fn process_export_pipeline_url_robots_disallowed_errors_before_scrape() {
-        // Wiremock binds 127.0.0.1 — lift the SSRF guard for this test
-        // process (nextest isolates each test in its own process). The SSRF
-        // guard itself is asserted by the dedicated regression test below.
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+        // Wiremock binds 127.0.0.1 — lift the SSRF guard for this test only;
+        // EnvGuard restores the original on drop, so the "1" cannot leak into
+        // sibling tests in a shared process (#1126). The SSRF guard itself is
+        // asserted by the dedicated regression test below.
+        let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_MCP_DISABLE_SSRF", "1")]);
         let (handler, _tmp) = test_handler_with_robots().await;
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -948,10 +949,10 @@ mod handler_tests {
     #[tokio::test]
     #[serial]
     async fn process_export_pipeline_url_ssrf_guard_blocks_loopback() {
-        // Defensive under shared-process harnesses: the escape hatch must be
-        // unset for this process so the guard is active. (nextest isolates
-        // each test in its own process, so this is a no-op there.)
-        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
+        // The escape hatch must be unset so the guard is active for this
+        // test; EnvGuard restores the original on drop, so the removal can
+        // no longer leak into sibling tests in a shared process (#1126).
+        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_MCP_DISABLE_SSRF"]);
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .process_export_pipeline(Parameters(ProcessExportPipelineParams {

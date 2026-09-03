@@ -384,8 +384,10 @@ mod tests {
     async fn semantic_cleaner_no_cleaner_is_honest_feature_error() {
         // #749 made SSRF/robots gates run before the cleaner check; keep this
         // feature-gated test hermetic (offline) by disabling the SSRF probe —
-        // the robots gate is already a no-op in `test_handler`.
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+        // the robots gate is already a no-op in `test_handler`. EnvGuard
+        // restores the original on drop, so the "1" cannot leak into sibling
+        // tests in a shared process (#1126).
+        let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_MCP_DISABLE_SSRF", "1")]);
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .semantic_cleaner(Parameters(ScrapeUrlParams {
@@ -414,7 +416,10 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn semantic_cleaner_robots_disallowed_errors_before_fetch_and_cleaner_check() {
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1"); // wiremock binds 127.0.0.1
+        // Lift the guard for this test only (wiremock binds 127.0.0.1);
+        // EnvGuard restores the original on drop, so the "1" cannot leak
+        // into sibling tests in a shared process (#1126).
+        let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_MCP_DISABLE_SSRF", "1")]);
         let (handler, _tmp) = test_handler_with_robots().await;
         let server = MockServer::start().await;
         Mock::given(method("GET"))
