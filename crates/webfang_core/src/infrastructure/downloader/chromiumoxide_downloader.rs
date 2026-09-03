@@ -161,7 +161,7 @@ impl Downloader for ChromiumoxideDownloader {
 impl Downloader for ChromiumoxideDownloader {
     fn fetch<'a>(&'a self, _url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
         Box::pin(async move {
-            Err(DownloadError::Internal(
+            Err(DownloadError::FeatureGated(
                 "Chromiumoxide not enabled (compile with --features chromium)".to_string(),
             ))
         })
@@ -187,8 +187,8 @@ mod tests {
         let url: Url = "https://example.com".parse().unwrap();
         let err = dl.fetch(&url).await.unwrap_err();
         assert!(
-            matches!(err, DownloadError::Internal(ref msg) if msg.contains("not enabled")),
-            "expected stub error, got: {err}"
+            matches!(err, DownloadError::FeatureGated(ref msg) if msg.contains("not enabled")),
+            "expected FeatureGated stub error (PermanentFatal, no retry), got: {err}"
         );
     }
 
