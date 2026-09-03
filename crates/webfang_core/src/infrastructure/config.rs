@@ -2,10 +2,12 @@
 //!
 //! `ScraperConfig` family now lives in `crate::domain::config` (ADR-0010).
 //! This module keeps a `pub use` shim so `crate::infrastructure::config::ScraperConfig`
-//! and `webfang_core::ScraperConfig` remain valid, and adds the
-//! infrastructure-specific extension `to_download_config()` that builds the
-//! adapters `DownloadConfig` (which would be an outward `domain→adapters`
-//! dependency if it lived in `domain`).
+//! and `webfang_core::ScraperConfig` remain valid.
+//!
+//! Infrastructure-specific extensions now live next to their targets:
+//! - `ScraperConfig::to_download_config` → adapters::downloader
+//! - `AutotuningConfig::{resolve, from_elastic}` → infrastructure::autotuning
+//! (retired by issue #1099; this shim will be deleted).
 
 // Domain-owned VOs — canonical definitions
 pub use crate::domain::config::{
@@ -16,31 +18,8 @@ pub use crate::domain::config::ConcurrencyConfig;
 // OutputFormat shim (domain owns it; keep infra path working)
 pub use crate::domain::config::OutputFormat;
 
-// ============================================================================
-// Extension: ScraperConfig → adapters DownloadConfig
-// ============================================================================
-
-impl ScraperConfig {
-    /// Build a `DownloadConfig` from this scraper configuration.
-    ///
-    /// This is the single source of truth for mapping ScraperConfig → DownloadConfig,
-    /// eliminating duplication between the orchestrator and fallback paths.
-    /// Lives in `infrastructure` so `domain::config` does not depend on `adapters`
-    /// (inward-only).
-    pub fn to_download_config(&self) -> crate::adapters::downloader::DownloadConfig {
-        crate::adapters::downloader::DownloadConfig {
-            output_dir: self.output_dir.clone(),
-            timeout_secs: self.download_timeout_secs,
-            max_file_size: self.max_file_size.unwrap_or(50 * 1024 * 1024),
-            concurrency_limit: self.download_concurrency,
-            include_patterns: self.asset_include_patterns.clone(),
-            exclude_patterns: self.asset_exclude_patterns.clone(),
-            h2_profile: self.asset_h2_profile,
-            asset_naming: self.asset_naming,
-            ..Default::default()
-        }
-    }
-}
+// NOTE (issue #1099): `ScraperConfig::to_download_config` now lives in
+// adapters::downloader next to `DownloadConfig` (the single mapping source).
 
 // ============================================================================
 // Extension: AutotuningConfig resolve helpers (infra-owned logic)
@@ -204,16 +183,5 @@ mod tests {
         let snap = AutotuningConfig::from_elastic(&elastic);
         assert_eq!(snap.cpu_cores, 6);
         assert_eq!(snap.ram_budget_bytes, 12 * 1024 * 1024 * 1024);
-    }
-
-    #[test]
-    fn test_to_download_config_maps_fields() {
-        let scraper = ScraperConfig::default()
-            .with_images()
-            .with_download_concurrency(7)
-            .with_asset_naming(AssetNamingStrategy::Slug);
-        let dl = scraper.to_download_config();
-        assert_eq!(dl.concurrency_limit, 7);
-        assert_eq!(dl.asset_naming, AssetNamingStrategy::Slug);
     }
 }
