@@ -223,6 +223,18 @@ pub(crate) fn build_robots_fetcher(
     ))
 }
 
+/// Build the HTML link extractor as the domain [`LinkExtractor`] seam.
+///
+/// Composition-root helper (ADR-0012-B unit 6, mirroring
+/// [`build_binary_writer`]): the concrete
+/// `infrastructure::crawler::link_extractor::HtmlLinkExtractor` (scraper
+/// DOM parsing) is named only here; application code consumes the erased
+/// domain trait object.
+pub(crate) fn build_link_extractor(
+) -> std::sync::Arc<dyn crate::domain::link_extractor::LinkExtractor> {
+    std::sync::Arc::new(crate::infrastructure::crawler::link_extractor::HtmlLinkExtractor)
+}
+
 /// Build the default filesystem binary writer as the [`BinaryWriterPort`]
 /// fallback seam.
 ///

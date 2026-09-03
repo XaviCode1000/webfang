@@ -25,8 +25,9 @@ use crate::application::crawler::collector::{CrawlMessage, ResultsCollector};
 use crate::application::pipeline::{PipelineExecutor, ScrapedItem, StageOutcome};
 use crate::domain::crawler_port::RobotsPort;
 use crate::domain::downloader_port::{Cookie, DownloadError, Downloader};
+use crate::domain::link_extractor::LinkExtractor;
 use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl};
-use crate::infrastructure::crawler::{extract_links, fetch_url};
+use crate::infrastructure::crawler::fetch_url;
 
 /// Outcome of fetching a single page.
 ///
@@ -155,12 +156,24 @@ impl RobotsChecker for ProductionRobotsChecker {
     }
 }
 
-/// Production [`LinkExtractorPort`] delegating to the free function.
-pub(crate) struct ProductionLinkExtractor;
+/// Production [`LinkExtractorPort`] delegating to the composition-root
+/// [`LinkExtractor`] seam (ADR-0012-B unit 6): the scraper-backed concrete
+/// stays in infrastructure; this wrapper erases it behind the domain
+/// trait object built by `application::container::build_link_extractor`.
+pub(crate) struct ProductionLinkExtractor {
+    inner: std::sync::Arc<dyn LinkExtractor>,
+}
+
+impl ProductionLinkExtractor {
+    /// Wrap a domain link-extractor port object.
+    pub(crate) fn new(inner: std::sync::Arc<dyn LinkExtractor>) -> Self {
+        Self { inner }
+    }
+}
 
 impl LinkExtractorPort for ProductionLinkExtractor {
     fn extract_links(&self, html: &str, base_url: &str) -> Result<Vec<String>, CrawlError> {
-        extract_links(html, base_url)
+        self.inner.extract_links(html, base_url)
     }
 }
 

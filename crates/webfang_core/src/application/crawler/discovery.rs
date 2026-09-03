@@ -20,7 +20,6 @@ use crate::domain::url_validation::{
 use crate::domain::waf::{waf_inspector, InspectionContext};
 use crate::domain::{CorrelationId, CrawlerConfig, ScrapedContent, ValidUrl};
 use crate::error::{Result as ScraperResult, ScraperError};
-use crate::infrastructure::crawler::extract_links;
 use crate::infrastructure::observability::log_scrape_error;
 
 #[cfg(feature = "adaptive-selectors")]
@@ -144,8 +143,10 @@ pub async fn discover_urls_for_tui(
 
         let base = Url::parse(base_url)?;
 
-        // Extract links
-        let links = extract_links(&html, base_url)?;
+        // Extract links — through the composition-root seam (ADR-0012-B
+        // unit 6): the scraper-backed concrete stays in infrastructure.
+        let links =
+            crate::application::container::build_link_extractor().extract_links(&html, base_url)?;
 
         // Filter and normalize URLs
         let mut urls = Vec::new();

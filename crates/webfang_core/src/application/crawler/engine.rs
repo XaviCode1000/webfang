@@ -756,7 +756,9 @@ impl Engine {
             fetcher: Arc::new(ports::ProductionPageFetcher {
                 router: self.fetch_router.clone(),
             }),
-            link_extractor: Arc::new(ports::ProductionLinkExtractor),
+            link_extractor: Arc::new(ports::ProductionLinkExtractor::new(
+                crate::application::container::build_link_extractor(),
+            )),
             content_sink: self.content_sink.clone(),
             pipeline: self.pipeline.as_ref().map(|p| {
                 Arc::new(ports::ProductionPipeline {
