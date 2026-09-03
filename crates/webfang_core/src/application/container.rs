@@ -244,6 +244,15 @@ pub(crate) fn build_static_fetcher(
     std::sync::Arc::new(crate::infrastructure::crawler::http_client::StaticHttpFetcher)
 }
 
+/// Build the discovery queue as the [`UrlQueuePort`] seam.
+///
+/// Composition-root helper (ADR-0012-B unit 8, mirroring
+/// [`build_static_fetcher`]): the dedup+priority concrete is named only
+/// here; scheduler and per-page tasks share the erased port object.
+pub(crate) fn build_url_queue() -> std::sync::Arc<dyn crate::domain::crawler_port::UrlQueuePort> {
+    std::sync::Arc::new(crate::infrastructure::crawler::url_queue::UrlQueue::new())
+}
+
 /// Build the default filesystem binary writer as the [`BinaryWriterPort`]
 /// fallback seam.
 ///

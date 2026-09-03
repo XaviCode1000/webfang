@@ -46,9 +46,9 @@ use url::Url;
 use super::concurrency_level::SharedConcurrencyLevel;
 use crate::application::deduplicator::UrlDeduplicator;
 use crate::domain::budget::CrawlConcurrency;
+use crate::domain::crawler_port::UrlQueuePort;
 use crate::domain::crawler_port::UrlSource;
 use crate::domain::DiscoveredUrl;
-use crate::infrastructure::crawler::UrlQueue;
 
 /// Scheduling policy for a crawl: visited dedup, pending-work buffer, and
 /// concurrency limits.
@@ -63,8 +63,10 @@ pub(crate) struct CrawlScheduler {
     visited: Arc<UrlDeduplicator>,
     /// String mirror of visited URLs for checkpoint persistence.
     visited_urls: Arc<RwLock<Vec<String>>>,
-    /// Shared discovery queue — tasks push discovered links here.
-    queue: Arc<UrlQueue>,
+    /// Shared discovery queue — tasks push discovered links here. Erased
+    /// behind the domain port (ADR-0012-B unit 8); `Arc`-shared with the
+    /// per-page tasks so enqueue-time dedup stays global.
+    queue: Arc<dyn UrlQueuePort>,
     /// Local work buffer drained from `queue`; the scheduler pops from here.
     pending: VecDeque<DiscoveredUrl>,
     /// Base concurrency — the budget model's `Operation.crawl` tier.
@@ -86,7 +88,7 @@ impl CrawlScheduler {
         Self {
             visited: Arc::new(UrlDeduplicator::new()),
             visited_urls: Arc::new(RwLock::new(Vec::new())),
-            queue: Arc::new(UrlQueue::new()),
+            queue: crate::application::container::build_url_queue(),
             pending: VecDeque::new(),
             base_concurrency,
             autoscale_level: None,
@@ -106,7 +108,7 @@ impl CrawlScheduler {
     }
 
     /// Clone the discovery queue for the shared task context.
-    pub(crate) fn queue(&self) -> Arc<UrlQueue> {
+    pub(crate) fn queue(&self) -> Arc<dyn UrlQueuePort> {
         Arc::clone(&self.queue)
     }
 

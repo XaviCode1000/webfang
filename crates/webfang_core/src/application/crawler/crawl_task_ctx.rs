@@ -18,9 +18,9 @@ use crate::application::crawler::ports::{
 use crate::application::pipeline::OutputStage;
 use crate::application::rate_limiter::SharedRateLimiter;
 use crate::domain::cookie_bridge::CookieBridge;
+use crate::domain::crawler_port::UrlQueuePort;
 use crate::domain::session_port::SessionPort;
 use crate::domain::{CorrelationId, CrawlerConfig};
-use crate::infrastructure::crawler::UrlQueue;
 
 /// Shared context for all crawl tasks spawned by the engine.
 ///
@@ -32,7 +32,10 @@ pub struct CrawlTaskCtx {
     /// Root correlation ID for the crawl — every task derives a child from it
     /// so all pages share one `trace_id` (issue #356).
     pub(crate) correlation_id: CorrelationId,
-    pub(crate) queue: Arc<UrlQueue>,
+    /// Shared discovery queue — tasks push discovered links here. Erased
+    /// behind the domain port (ADR-0012-B unit 8); `Arc`-shared with the
+    /// scheduler so dedup state stays global.
+    pub(crate) queue: Arc<dyn UrlQueuePort>,
     pub(crate) rate_limiter: SharedRateLimiter,
     /// Engine-wide cancellation token (#509) — fired on shutdown so tasks
     /// blocked on rate-limit or resource waits abort promptly.
