@@ -191,8 +191,8 @@ impl Default for DownloadConfig {
 }
 
 // ============================================================================
-// Extension: ScraperConfig → DownloadConfig (moved from
-// `crate::infrastructure::config`, now retired — issue #1099)
+// Extension: ScraperConfig → DownloadConfig (moved from the retired
+// infrastructure config shim — issue #1099)
 // ============================================================================
 
 impl crate::domain::config::ScraperConfig {

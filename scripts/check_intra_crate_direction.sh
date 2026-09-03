@@ -8,7 +8,7 @@
 # === Scope ===
 # Two scan passes per file:
 #   1) `use` line scan — matches `use crate::<layer>::...;` and `pub use ...`
-#      lines, plus the PascalCase re-export aliases (see `Aliases` below).
+#      lines.
 #   2) Inline qualified-path scan — matches `crate::<layer>::...` in any position
 #      of any non-comment line (function bodies, struct fields, trait bounds, etc.).
 #
@@ -70,12 +70,6 @@
 # Both passes share the same `#[cfg(test)]` / `mod tests` skip heuristic
 # (line is after the first occurrence in the file).
 #
-# === Aliases ===
-# `use crate::ScraperConfig` (and the other PascalCase re-exports in ALIAS_NAMES)
-# are canonicalized as `infrastructure` for layering purposes (ADR-0010). They
-# flow through the same allowlist. ALIAS_NAMES is the single source of truth for
-# the list; the awk `use` pass and the bash classifier both consume it.
-#
 # === Allowlist matching (issue #1068, blocker B3) ===
 # A pattern absorbs a MODULE PATH only at `::` segment boundaries: the character
 # immediately before the occurrence must be `:` or the occurrence must start at
@@ -107,20 +101,13 @@ declare -A LAYER_RANK=(
   [domain]=3
 )
 
-# Known PascalCase re-export aliases that bypass the `crate::<layer>::` regex.
-# `crate::ScraperConfig` etc. are `lib.rs` re-exports of `infrastructure::config::*`
-# (ADR-0010). They must be treated as `infrastructure` for layering purposes.
-ALIAS_NAMES='ScraperConfig|AutotuningConfig|SitemapConfig|ElasticConfig|ElasticOverrides'
-# awk/ERE form: matches the alias PATH itself inside a `use` line.
-ALIAS_AWK_REGEX="crate::(${ALIAS_NAMES})"
-
 # Layer regex for the qualified-path extractor (consumed by filter_and_match via
 # `awk -v`). Matches the FULL path `crate::<layer>::seg(::seg)*` in ANY position
 # of non-comment code, EVERY occurrence per line. Full-path capture is what makes
 # narrow allowlist entries (e.g. `infrastructure::http::waf_engine`) match the
 # recorded violation on segment boundaries instead of forcing a broad
 # `infrastructure::http` entry. Does NOT match `crate::domain::` (innermost, never
-# outward) or `crate::<PascalCase>` (aliases handled separately).
+# outward).
 INLINE_LAYER_REGEX='crate::(infrastructure|adapters|application)::[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*'
 
 layer_of_file() {
@@ -254,8 +241,7 @@ is_allowlisted() {
 # qualified-path SITE found in non-comment code. Both scan passes run this same
 # extractor so their records are directly comparable, which is what makes the
 # (file, line, path) dedupe possible:
-#   - `use`    → only `use`/`pub use` statements, plus the PascalCase alias
-#                re-exports that the layer regex cannot see by construction.
+#   - `use`    → only `use`/`pub use` statements.
 #   - `inline` → every non-comment line, every occurrence (a superset that also
 #                covers the `use` lines; the dedupe collapses the overlap).
 # Each mode is ONE awk process per file, so the whole scan stays at O(1) processes
@@ -274,7 +260,7 @@ is_allowlisted() {
 # later line are all handled.
 filter_and_match() {
   local mode="$1"
-  awk -v re="$INLINE_LAYER_REGEX" -v alias_re="$ALIAS_AWK_REGEX" -v mode="$mode" '
+  awk -v re="$INLINE_LAYER_REGEX" -v mode="$mode" '
     function trim(s) {
       gsub(/^[[:space:]]+/, "", s)
       gsub(/[[:space:]]+$/, "", s)
@@ -408,18 +394,6 @@ filter_and_match() {
       is_use = (line ~ /^[[:space:]]*(pub[[:space:]]+)?use[[:space:]]+crate::[A-Za-z_]+(::|;|[{])/)
       if (mode == "use" && !is_use) next
 
-      # PascalCase re-export aliases (`use crate::ScraperConfig;`) bypass the layer
-      # regex entirely; canonicalize them as their own records so they flow
-      # through the same allowlist (ADR-0010 §3). The inline pass skips them,
-      # exactly as before.
-      if (mode == "use") {
-        tmp = out
-        while (match(tmp, alias_re)) {
-          printf("%d\t%s\n", NR, substr(tmp, RSTART, RLENGTH))
-          tmp = substr(tmp, RSTART + RLENGTH)
-        }
-      }
-
       # Emit EVERY regex match on the surviving code (not just the first).
       # A trailing `// comment` on a code line is not stripped: an idiomatic
       # `crate::layer::...` path cannot legally live inside a comment, so any hit
@@ -469,11 +443,6 @@ classify_target() {
   local match="$1"
   if [[ "$match" =~ ^crate::([a-z_]+):: ]]; then
     printf '%s' "${BASH_REMATCH[1]}"
-    return 0
-  fi
-  # Alias form: `crate::ScraperConfig` etc. map to `infrastructure` (ADR-0010 §3).
-  if [[ "$match" =~ ^crate::(${ALIAS_NAMES})$ ]]; then
-    printf 'infrastructure'
     return 0
   fi
 }

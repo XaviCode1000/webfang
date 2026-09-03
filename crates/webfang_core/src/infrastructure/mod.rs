@@ -10,7 +10,6 @@
 //!
 //! Following Clean Architecture: infrastructure depends on domain, not vice versa.
 
-pub mod config;
 pub mod converter;
 pub mod crawler;
 pub mod downloader;

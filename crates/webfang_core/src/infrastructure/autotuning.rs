@@ -277,8 +277,8 @@ impl ElasticConfig {
 }
 
 // ============================================================================
-// AutotuningConfig resolve helpers (moved from `crate::infrastructure::config`,
-// now retired — issue #1099). Infra-owned logic next to `ElasticConfig::resolve`
+// AutotuningConfig resolve helpers (moved from the retired infrastructure
+// config shim — issue #1099). Infra-owned logic next to `ElasticConfig::resolve`
 // and the env_*/resolve_* helpers so `domain` stays free of
 // `infrastructure::autotuning` imports (inward-only).
 // ============================================================================
@@ -445,7 +445,7 @@ mod tests {
     }
 
     // ---- AutotuningConfig resolve/from_elastic (moved from the retired
-    // `infrastructure::config` shim — issue #1099) ----
+    // infrastructure config shim — issue #1099) ----
 
     #[test]
     fn test_autotuning_config_resolve_with_overrides() {
