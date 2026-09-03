@@ -5,7 +5,7 @@
 
 use webfang_core::application::container::Container;
 use webfang_core::domain::CrawlerConfig;
-use webfang_core::infrastructure::config::ScraperConfig;
+use webfang_core::domain::config::ScraperConfig;
 use webfang_mcp::mcp_server::state::{CategoryLimits, CategorySemaphores, McpState};
 use webfang_mcp::mcp_server::McpHandler;
 

@@ -117,7 +117,7 @@ pub async fn start_seeded_server(
     n: usize,
 ) -> (String, tokio::task::JoinHandle<()>, tempfile::TempDir) {
     use webfang_core::domain::{CrawlerConfig, ScrapedContent, ValidUrl};
-    use webfang_core::infrastructure::config::ScraperConfig;
+    use webfang_core::domain::config::ScraperConfig;
 
     let container_tmp = tempfile::TempDir::new().expect("create container temp dir");
     let crawler_config =

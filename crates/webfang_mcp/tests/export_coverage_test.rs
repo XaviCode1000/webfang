@@ -19,7 +19,7 @@ use wreq::Client;
 
 use webfang_core::di::Container;
 use webfang_core::domain::{CrawlerConfig, ScrapedContent, ValidUrl};
-use webfang_core::infrastructure::config::ScraperConfig;
+use webfang_core::domain::config::ScraperConfig;
 use webfang_mcp::mcp_server::server::build_mcp_router;
 use webfang_mcp::mcp_server::server::ServerOptions;
 use webfang_mcp::mcp_server::state::McpState;

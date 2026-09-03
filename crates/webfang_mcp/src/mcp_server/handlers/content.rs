@@ -201,7 +201,7 @@ mod tests {
     use tempfile::TempDir;
     use webfang_core::di::Container;
     use webfang_core::domain::CrawlerConfig;
-    use webfang_core::infrastructure::config::ScraperConfig;
+    use webfang_core::domain::config::ScraperConfig;
 
     /// Build an `McpHandler` backed by a real `Container` (no network, no MCP
     /// server). The temp dir is returned so it stays alive for the test.

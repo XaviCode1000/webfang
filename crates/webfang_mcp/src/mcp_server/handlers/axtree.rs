@@ -214,7 +214,7 @@ mod tests {
     use tempfile::TempDir;
     use webfang_core::di::Container;
     use webfang_core::domain::CrawlerConfig;
-    use webfang_core::infrastructure::config::ScraperConfig;
+    use webfang_core::domain::config::ScraperConfig;
 
     /// Build a default handler (no chromium — unit tests run with default
     /// features) backed by a real DI container. Offline: construction never

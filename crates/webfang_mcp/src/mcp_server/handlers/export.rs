@@ -473,7 +473,7 @@ mod handler_tests {
     use tempfile::TempDir;
     use webfang_core::di::Container;
     use webfang_core::domain::{CrawlerConfig, ScrapedContent, ValidUrl};
-    use webfang_core::infrastructure::config::ScraperConfig;
+    use webfang_core::domain::config::ScraperConfig;
     use webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
