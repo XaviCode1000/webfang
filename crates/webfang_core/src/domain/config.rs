@@ -57,14 +57,15 @@ pub enum AssetNamingStrategy {
 }
 
 // ============================================================================
-// ScraperConfig — moved from infrastructure::config (VO, domain owns)
+// ScraperConfig — canonical owner: domain::config (ADR-0010)
 // ============================================================================
 
 /// Scraper configuration for download and output behavior. Domain-owned VO.
 ///
-/// Mirrors `infrastructure::config::ScraperConfig` but lives in `domain::config`
-/// so `application::*` can depend on it without outward `application→infrastructure`
-/// violations (ADR-0010). Infrastructure keeps a `pub use` shim.
+/// This is the canonical definition: `application::*` depends on it directly
+/// with no outward layering violation (ADR-0010). The `ScraperConfig →
+/// DownloadConfig` mapping is NOT here — it lives in adapters::downloader
+/// next to `DownloadConfig`, so domain never depends on adapters.
 #[derive(Debug, Clone)]
 pub struct ScraperConfig {
     /// Enable image downloading (PNG, JPG, GIF, WEBP, SVG, BMP)
@@ -262,9 +263,9 @@ pub struct ElasticOverrides {
 
 /// Hardware-autotuning snapshot — domain-owned VO for `ElasticIngestion` wiring.
 ///
-/// Pure DTO; `resolve`/`from_elastic` live in `infrastructure::config` as an
-/// `impl AutotuningConfig` for the domain type so `domain` stays free of
-/// `infrastructure::autotuning` imports (inward-only).
+/// Pure DTO. The `resolve`/`from_elastic` constructors live in
+/// infrastructure::autotuning next to `ElasticConfig::resolve`, so domain
+/// stays free of infrastructure imports (inward-only).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AutotuningConfig {
     /// Detected/overridden CPU core count.
