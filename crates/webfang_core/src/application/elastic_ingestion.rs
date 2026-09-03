@@ -36,10 +36,10 @@ use sha2::{Digest, Sha256};
 use tracing::{error, info, warn};
 
 use crate::domain::cpu_executor::{CpuExecutorPort, ProcessedChunk};
+use crate::domain::crawler_port::ResourceDownloadPort;
 use crate::domain::repository::VectorRepository;
 use crate::domain::url_validation::{normalize_url, NormalizeConfig, RemoveQueryParameters};
 use crate::error::ScraperError;
-use crate::infrastructure::crawler::resource_downloader::ResourceDownloader;
 
 /// Elastic ingestion pipeline orchestrator (frozen Decision 1).
 ///
@@ -53,7 +53,7 @@ use crate::infrastructure::crawler::resource_downloader::ResourceDownloader;
 ///
 /// [`SemanticCleaner`]: crate::domain::semantic_cleaner::SemanticCleaner
 pub struct ElasticIngestion<R: VectorRepository + Send + Sync> {
-    downloader: ResourceDownloader,
+    downloader: std::sync::Arc<dyn ResourceDownloadPort>,
     bridge: std::sync::Arc<dyn CpuExecutorPort>,
     repository: R,
     config: crate::domain::config::AutotuningConfig,
@@ -80,7 +80,7 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
     /// borrowed by `&self` across all futures — no `Arc` sharing is needed.
     #[must_use]
     pub fn new(
-        downloader: ResourceDownloader,
+        downloader: std::sync::Arc<dyn ResourceDownloadPort>,
         bridge: std::sync::Arc<dyn CpuExecutorPort>,
         repository: R,
         config: crate::domain::config::AutotuningConfig,
@@ -556,13 +556,14 @@ mod tests {
     #[cfg(not(miri))]
     mod wreq {
         use super::*;
+        use crate::infrastructure::crawler::resource_downloader::ResourceDownloader;
 
         fn make_orchestrator(repo: InMemoryRepo) -> ElasticIngestion<InMemoryRepo> {
             let client = ::wreq::Client::builder()
                 .build()
                 .expect("fallo construyendo cliente wreq de prueba");
             let semaphore = Arc::new(tokio::sync::Semaphore::new(1 << 20));
-            let downloader = ResourceDownloader::with_config(
+            let downloader = Arc::new(ResourceDownloader::with_config(
                 semaphore,
                 client,
                 DownloadConfig {
@@ -571,7 +572,7 @@ mod tests {
                     max_size_bytes: 1024 * 1024,
                     ..DownloadConfig::default()
                 },
-            );
+            ));
             let pool = RayonCpuPool::new(2).expect("pool de 2 hilos");
             let bridge = Arc::new(crate::infrastructure::bridge::CpuBridge::new(
                 pool,

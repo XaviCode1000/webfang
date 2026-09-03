@@ -25,12 +25,14 @@
 //! `application::container::build_sitemap_parser` seam.
 
 pub mod filename;
+pub mod resource_download;
 pub mod sitemap;
 
 pub use filename::{
     derive_filename_from_content_disposition, parse_content_disposition, percent_decode,
     sanitize_filename_component,
 };
+pub use resource_download::ResourceDownloadPort;
 
 use futures::future::BoxFuture;
 

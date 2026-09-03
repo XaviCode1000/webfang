@@ -583,14 +583,14 @@ impl Container {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(permits));
 
         // 4. Resource downloader with elastic semaphore (byte-weighted backpressure)
-        let downloader = ResourceDownloader::with_config(
+        let downloader = Arc::new(ResourceDownloader::with_config(
             semaphore,
             client,
             DownloadConfig {
                 max_size_bytes: config.max_resource_bytes,
                 ..Default::default()
             },
-        );
+        ));
 
         // 5. Assemble pipeline — ElasticIngestion erased to DynVectorRepository
         let autotune = crate::infrastructure::config::AutotuningConfig::from_elastic(config);
