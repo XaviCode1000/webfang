@@ -16,7 +16,7 @@ use url::Url;
 /// Derive a filename from a wreq response's headers or URL path.
 ///
 /// Adapter over
-/// [`derive_filename_from_content_disposition`](crate::domain::crawler_port::filename::derive_filename_from_content_disposition):
+/// [`derive_filename_from_content_disposition`]:
 /// extracts the `Content-Disposition` header value (wreq canonicalizes header
 /// names to lowercase) and delegates. Priority: header `filename` > URL path
 /// basename > content-type fallback.

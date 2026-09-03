@@ -72,7 +72,7 @@ pub fn parse_content_disposition(value: &str) -> Option<String> {
 /// Sanitize an untrusted derived filename into a safe single path component.
 ///
 /// Strips `/` and `\` separators, drops `.` / `..` segments, removes control
-/// characters, and caps the length at [`MAX_FILENAME_LEN`] (255) bytes. When
+/// characters, and caps the length at `MAX_FILENAME_LEN` (255) bytes. When
 /// the cap fires, a deterministic `DefaultHasher`-based suffix keeps distinct
 /// over-long names distinct (#914); inputs under the cap are byte-identical
 /// to their input. Returns `None` when nothing safe remains (`.` / `..`).
