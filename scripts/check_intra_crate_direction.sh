@@ -78,6 +78,36 @@
 # also absorbed `crate::infrastructure::crawler::resource_downloader_v2::EvilThing`
 # and `…::resource_downloader_legacy::X`, and `infrastructure::export::state_store`
 # absorbed `crate::infrastructure::export::state_store_backup::X`.
+#
+# === Inline site rule + greenness taxonomy (issue #1100, ADR-0010-B) ===
+# A SITE is every non-comment `crate::infrastructure|adapters|application::...`
+# occurrence in a layer body — `use` lines AND inline qualified paths in function
+# bodies, struct fields, trait bounds, etc. Both passes emit records into one
+# merged stream deduped on `(file, line, full-path)` BEFORE anything is counted
+# or reported, so the gate prints distinct sites, never regex hits.
+#
+# Greenness taxonomy (the not-accidental-greenness guarantee):
+#   - PERMANENT, counted: a production site goes green ONLY via a named,
+#     ADR-reasoned allowlist entry (today exactly the 2 permanent ADR-0011
+#     entries: the `application/container.rs` DI root and the
+#     `infrastructure::observability` transversal). Each entry cites its removal
+#     condition by SYMBOL, never by line number.
+#   - DOCUMENTED EXCLUSIONS, never counted: test-only code (past the first
+#     `#[cfg(test)]` / `mod tests` marker), doc/block comments (dropped by the
+#     awk filter), lateral same-layer references (the rule fires outward only),
+#     and the `cli/` composition edge below (rank -1, consumed from #1097,
+#     re-decided nothing here). These stay green by documented rule and are
+#     pinned by scripts/test_intra_crate_gate.sh, never by allowlist entries.
+# A new inline path in production code that matches neither class fails closed
+# (`::error::`, exit 1 in strict mode) — that is the acceptance proof of #1100.
+#
+# === Post-#1099 note (config shim + alias machinery deleted) ===
+# The `crate::<PascalCase>` alias shim (`lib.rs` re-export of
+# `infrastructure::config`) and its `ALIAS_*` regex machinery are deleted; the
+# layer regex above is the single source of truth for path matching. The scan
+# stays at one awk process per file per pass (ADR-0010-A forbids the per-line
+# subshell variant). Rust string literals are still NOT parsed — a path inside
+# `"..."` is residual noise routed to the allowlist, never to regex carve-outs.
 
 set -euo pipefail
 
