@@ -54,8 +54,8 @@ Two complementary tools. Pick by mission, not by habit. **Load the matching skil
 | "Where is X defined?" — instant lookup | **CodeDB** `word` / `symbol` | O(1) inverted index. Fastest possible. |
 | "Who calls X?" — tactical check | **CodeDB** `callers` | 1 round-trip, fuses word-index + outline scope. |
 | "How does X flow through the code?" — deeper view | **CodeGraph** `explore` / `impact` | Call paths + blast-radius summary from the source-graph index. |
-| Post-edit linter diagnostics | **CodeDB** `diagnostics` | Surfaces real errors after a change. |
-| Query a public GitHub repo (no clone) | **CodeDB** `remote` | CodeGraph cannot do this. |
+| Post-edit diagnostics | `cargo check` / `cargo clippy` | codedb has NO diagnostics tool (removed upstream) — the compiler is the gate (§2.2). |
+| Query a public GitHub repo (no clone) | **DeepWiki** MCP (`read_wiki_structure`, `ask_question`) | Separate remote MCP registered by the codedb installer. codedb itself is local-only. |
 
 **Rule of thumb:** CodeDB for *finding and reading* (fast, tactical, O(1)). CodeGraph for *exploring and understanding* (returns source directly, call paths, blast radius).
 
@@ -76,6 +76,8 @@ In worktrees, BOTH tools need the **absolute worktree path** or they silently re
 | CodeGraph MCP | `projectPath=` | `projectPath="/home/xavi/Projects/Rust/webfang-worktrees/<dir>"` |
 
 **NEVER use** bare project names in worktrees — ambiguous between main + all worktrees (#360). The absolute path is the official upstream disambiguation.
+
+**CodeDB CLI root is POSITIONAL-FIRST:** `codedb <abs-root> <cmd>` (`src/cli_args.zig:parsePositional`, `usage: codedb [root] <command> [args...]`). ONLY `mcp` accepts the reversed order (`codedb mcp <path>`, upstream #503). `codedb status <path>` and `codedb reindex <path>` IGNORE the trailing path with exit 0 and silently operate on the cwd project — always verify with `codedb <abs-root> status`: `root` must equal the worktree path and `head` must equal `git -C <abs-root> rev-parse --short HEAD`.
 
 ---
 
@@ -294,11 +296,13 @@ Branch `feat/auth` → directory `feat-auth` (`/` → `-`). Worktree/branch matc
 git worktree add ~/Projects/Rust/webfang-worktrees/feat-auth -b feat/auth
 cd ~/Projects/Rust/webfang-worktrees/feat-auth
 
-# Per-worktree bootstrap (NONE of these are shared):
+# Per-worktree bootstrap (NONE of these are shared), run INSIDE the worktree:
 cp ~/Projects/Rust/webfang/.envrc . && direnv allow     # shared CARGO_TARGET_DIR (gitignored)
 cp ~/Projects/Rust/webfang/.env .                       # .env is gitignored
 codegraph init                                     # CodeGraph: source exploration index
-codedb index .                                     # CodeDB: inverted index + outlines
+codedb reindex && codedb status                    # CodeDB: root MUST be $PWD, head MUST match git rev-parse --short HEAD
+# — same without cd: codedb "$PWD" reindex && codedb "$PWD" status
+# Index lives in BOTH ./codedb.snapshot AND ~/.codedb/projects/<hash>/ (see data: in status).
 cargo build                                        # fast: reuses shared target via direnv
 ```
 
@@ -345,7 +349,7 @@ restore the description here with its actual scope.
 | `.envrc` | ❌ Per-worktree | `cp` from main + `direnv allow` |
 | `.env` | ❌ Per-worktree | Manual `cp` from main |
 | `.codegraph/` index | ❌ Per-worktree | `codegraph init` |
-| `codedb.snapshot` | ❌ Per-worktree | `codedb index .` |
+| `codedb.snapshot` + `~/.codedb/projects/<hash>/` | ❌ Per-worktree | `codedb reindex` inside the worktree |
 | Git stash (`refs/stash`) | ⚠️ Shared (DANGER) | **NEVER use `git stash`** |
 
 ### CodeDB/CodeGraph in worktrees
