@@ -302,3 +302,54 @@ owns it), and does NOT modify any production file beyond the comment fix.
   (`infrastructure::http::waf_engine`, not broad `infrastructure::http`),
   and the cap text in this document synchronized with the script
   (`ALLOWLIST_CAP=22`, warn at 20).
+
+## Addendum 0010-B: Inline-Path Greenness Taxonomy (issue #1100)
+
+### Context
+
+The `use`-only lint missed `crate::` qualified paths inside function bodies;
+Addendum 0010-A closed that hole with a second inline scan pass. Issue #1099
+then deleted the legacy config shim (`lib.rs` re-export of
+`infrastructure::config`) together with the alias regex machinery, so the
+inline layer regex is now the single source of truth for path matching. What
+remained undocumented was the greenness contract itself: which green states
+are permanent, which are exclusions, and what a new inline path does. This
+addendum pins that taxonomy so a green strict run is never accidental.
+
+### Decision
+
+- **Site definition.** Every non-comment occurrence of
+  `crate::infrastructure|adapters|application::...` in a layer body is one
+  site. Both scan passes emit records into a single stream deduped on the key
+  (file, line, full-path) before anything is counted or reported.
+- **Production green only via named entries.** A production site goes green
+  ONLY through a named, ADR-reasoned, counted allowlist entry — today exactly
+  the two permanent ADR-0011 entries (the `application/container.rs` DI root
+  and the `infrastructure::observability` transversal). Each entry cites its
+  removal condition by symbol, never by line number.
+- **Exclusions are documented, never counted.** Test-only code (past the first
+  `#[cfg(test)]` / `mod tests` marker), doc and block comments (dropped by the
+  awk filter), lateral same-layer references (the rule fires outward only),
+  and the `cli/` composition edge (rank -1, consumed from #1097, re-decided
+  nothing here) stay green by documented rule and are pinned by
+  `scripts/test_intra_crate_gate.sh`, never by allowlist entries.
+- **Scanner shape retained.** One awk process per file per pass; Rust string
+  literals are still not parsed — a path inside quotes is residual noise
+  routed to the allowlist, never to a regex carve-out.
+- `scripts/check_dependency_direction.sh` (inter-crate gate) is untouched.
+
+### Consequences
+
+- Strict mode is green with exactly the 2 permanent entries; the allowlist
+  count is unchanged by this slice (scripts and docs only, zero production
+  changes).
+- Any new inline path in production code fails closed (`::error::`, exit 1);
+  the four harness cases (body probe, lateral shim, `cli/` edge, doc comment)
+  pin each taxonomy class.
+- Future entries need their own ADR note with a symbol-cited removal
+  condition; exclusions must gain a harness case, not an entry.
+
+### Update history
+
+- **2026-09-03** — Addendum 0010-B issued (issue #1100). Header taxonomy in
+  the gate script, four harness cases, no logic or production change.
