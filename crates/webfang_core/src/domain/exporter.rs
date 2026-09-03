@@ -433,7 +433,7 @@ pub trait RecordStorePort: Send + Sync {
 ///
 /// `cli` constructs the concrete
 /// `infrastructure::export::state_store::StateStore` through
-/// [`crate::application::container::build_state_store`]; `cli` consumes it
+/// `application::container::build_state_store`; `cli` consumes it
 /// through this port only. Seam covers the four state-file methods in live
 /// use (`get_state_path`, `load`, `save`, `load_or_default`);
 /// `mark_processed`/`is_processed` are excluded — zero production callers.
