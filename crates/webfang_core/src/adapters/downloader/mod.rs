@@ -190,6 +190,33 @@ impl Default for DownloadConfig {
     }
 }
 
+// ============================================================================
+// Extension: ScraperConfig → DownloadConfig (moved from the retired
+// infrastructure config shim — issue #1099)
+// ============================================================================
+
+impl crate::domain::config::ScraperConfig {
+    /// Build a `DownloadConfig` from this scraper configuration.
+    ///
+    /// This is the single source of truth for mapping ScraperConfig → DownloadConfig,
+    /// eliminating duplication between the orchestrator and fallback paths.
+    /// Lives in `adapters::downloader` next to `DownloadConfig` so `domain::config`
+    /// does not depend on `adapters` (inward-only).
+    pub fn to_download_config(&self) -> DownloadConfig {
+        DownloadConfig {
+            output_dir: self.output_dir.clone(),
+            timeout_secs: self.download_timeout_secs,
+            max_file_size: self.max_file_size.unwrap_or(50 * 1024 * 1024),
+            concurrency_limit: self.download_concurrency,
+            include_patterns: self.asset_include_patterns.clone(),
+            exclude_patterns: self.asset_exclude_patterns.clone(),
+            h2_profile: self.asset_h2_profile,
+            asset_naming: self.asset_naming,
+            ..Default::default()
+        }
+    }
+}
+
 /// Asset downloader
 pub struct Downloader {
     client: Client,
@@ -807,7 +834,8 @@ impl crate::domain::ports::AssetDownloaderPort for Downloader {
 /// `domain::asset_downloader_factory` owns the trait and the
 /// [`DefaultAssetDownloaderFactory`](crate::domain::asset_downloader_factory::DefaultAssetDownloaderFactory)
 /// type; this is its only implementation.
-/// `ScraperConfig::to_download_config` stays the single mapping source, so
+/// `ScraperConfig::to_download_config` (in adapters::downloader, next to
+/// `DownloadConfig`) stays the single mapping source, so
 /// the factory path and the historical inline path build byte-identical
 /// clients.
 impl crate::domain::asset_downloader_factory::AssetDownloaderFactory
@@ -1005,9 +1033,21 @@ pub async fn quick_download(url: &str, output_dir: &Path) -> Result<DownloadedAs
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::config::ScraperConfig;
     use tempfile::TempDir;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn test_to_download_config_maps_fields() {
+        let scraper = ScraperConfig::default()
+            .with_images()
+            .with_download_concurrency(7)
+            .with_asset_naming(AssetNamingStrategy::Slug);
+        let dl = scraper.to_download_config();
+        assert_eq!(dl.concurrency_limit, 7);
+        assert_eq!(dl.asset_naming, AssetNamingStrategy::Slug);
+    }
 
     #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
     #[tokio::test]

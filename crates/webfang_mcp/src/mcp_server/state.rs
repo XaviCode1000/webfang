@@ -455,8 +455,8 @@ mod tests {
     use tracing::Level;
     use tracing_subscriber::layer::{Context, Layer};
     use tracing_subscriber::prelude::*;
+    use webfang_core::domain::config::ScraperConfig;
     use webfang_core::domain::CrawlerConfig;
-    use webfang_core::infrastructure::config::ScraperConfig;
     use webfang_core::infrastructure::scraper::dom_inspector::NoOpInspector;
 
     /// Build a minimal Container for testing (async, needs a temp output dir).

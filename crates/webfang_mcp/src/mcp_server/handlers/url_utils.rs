@@ -308,8 +308,8 @@ mod handler_tests {
     use rmcp::model::CallToolResult;
     use tempfile::TempDir;
     use webfang_core::di::Container;
+    use webfang_core::domain::config::ScraperConfig;
     use webfang_core::domain::CrawlerConfig;
-    use webfang_core::infrastructure::config::ScraperConfig;
 
     async fn test_handler() -> (McpHandler, TempDir) {
         let tmp = TempDir::new().expect("create temp dir");

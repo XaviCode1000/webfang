@@ -227,7 +227,7 @@ pub fn parse_ram_bytes(s: &str) -> Option<u64> {
 ///
 /// Re-exported from `crate::domain::config` so `application::crawl_options`
 /// can depend on it without `application→infrastructure` (ADR-0010).
-pub use crate::domain::config::ElasticOverrides;
+pub use crate::domain::config::{AutotuningConfig, ElasticOverrides};
 
 /// Resolved elastic ingestion configuration.
 ///
@@ -272,6 +272,35 @@ impl ElasticConfig {
             max_resource_bytes,
             db_pool_size,
             db_path,
+        }
+    }
+}
+
+// ============================================================================
+// AutotuningConfig resolve helpers (moved from the retired infrastructure
+// config shim — issue #1099). Infra-owned logic next to `ElasticConfig::resolve`
+// and the env_*/resolve_* helpers so `domain` stays free of
+// `infrastructure::autotuning` imports (inward-only).
+// ============================================================================
+
+impl AutotuningConfig {
+    /// Resolve the autotuning snapshot.
+    ///
+    /// Priority: `cpu_override`/`ram_override` > `WEBFANG_*` env > auto-detected.
+    #[must_use]
+    pub fn resolve(cpu_override: Option<usize>, ram_override: Option<u64>) -> Self {
+        Self {
+            cpu_cores: resolve_cpu_cores(cpu_override, env_cpu_cores()),
+            ram_budget_bytes: resolve_ram_budget(ram_override, env_ram_budget()),
+        }
+    }
+
+    /// Build a snapshot from a resolved `ElasticConfig`.
+    #[must_use]
+    pub fn from_elastic(elastic: &ElasticConfig) -> Self {
+        Self {
+            cpu_cores: elastic.cpu_cores,
+            ram_budget_bytes: elastic.ram_budget_bytes,
         }
     }
 }
@@ -413,6 +442,53 @@ mod tests {
         };
         let cfg = ElasticConfig::resolve(&overrides);
         assert_eq!(cfg.db_pool_size, 8);
+    }
+
+    // ---- AutotuningConfig resolve/from_elastic (moved from the retired
+    // infrastructure config shim — issue #1099) ----
+
+    #[test]
+    fn test_autotuning_config_resolve_with_overrides() {
+        let cfg = AutotuningConfig::resolve(Some(4), Some(8 * 1024 * 1024 * 1024));
+        assert_eq!(cfg.cpu_cores, 4);
+        assert_eq!(cfg.ram_budget_bytes, 8 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_autotuning_config_resolve_without_overrides_is_sane() {
+        let cfg = AutotuningConfig::resolve(None, None);
+        assert!(cfg.cpu_cores > 0, "cpu_cores must be positive");
+        assert!(
+            cfg.ram_budget_bytes > 0,
+            "ram_budget_bytes must be positive"
+        );
+    }
+
+    #[test]
+    fn test_autotuning_config_serializes_roundtrip() {
+        let cfg = AutotuningConfig {
+            cpu_cores: 8,
+            ram_budget_bytes: 16 * 1024 * 1024 * 1024,
+        };
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        assert!(json.contains("\"cpu_cores\":8"), "json: {json}");
+        assert!(json.contains("\"ram_budget_bytes\":"));
+        let back: AutotuningConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, cfg);
+    }
+
+    #[test]
+    fn test_autotuning_config_from_elastic() {
+        let elastic = ElasticConfig {
+            cpu_cores: 6,
+            ram_budget_bytes: 12 * 1024 * 1024 * 1024,
+            max_resource_bytes: 25 * 1024 * 1024,
+            db_pool_size: 6,
+            db_path: std::path::PathBuf::from("/tmp/elastic.db"),
+        };
+        let snap = AutotuningConfig::from_elastic(&elastic);
+        assert_eq!(snap.cpu_cores, 6);
+        assert_eq!(snap.ram_budget_bytes, 12 * 1024 * 1024 * 1024);
     }
 
     // ---- parse_ram_bytes (env/CLI suffix parsing) ----
