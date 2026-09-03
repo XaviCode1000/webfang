@@ -24,10 +24,10 @@ use url::Url;
 use crate::application::crawler::collector::{CrawlMessage, ResultsCollector};
 use crate::application::pipeline::{PipelineExecutor, ScrapedItem, StageOutcome};
 use crate::domain::crawler_port::RobotsPort;
+use crate::domain::crawler_port::StaticFetchPort;
 use crate::domain::downloader_port::{Cookie, DownloadError, Downloader};
 use crate::domain::link_extractor::LinkExtractor;
 use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl};
-use crate::infrastructure::crawler::fetch_url;
 
 /// Outcome of fetching a single page.
 ///
@@ -105,10 +105,13 @@ pub(crate) trait CrawlResultCollector: Send + Sync {
 /// Production [`PageFetcher`] that wraps an optional [`Downloader`].
 ///
 /// When a downloader is present, delegates to [`Downloader::fetch`]; otherwise
-/// falls back to the static [`fetch_url`] helper.
+/// falls back to the composition-root-injected [`StaticFetchPort`].
 pub(crate) struct ProductionPageFetcher {
     /// Optional fetch downloader for hybrid/full JS rendering.
     pub(crate) router: Option<Arc<dyn Downloader>>,
+    /// Static-fetch fallback (no JS rendering); built at the composition
+    /// root (ADR-0012-B unit 7).
+    pub(crate) fallback: Arc<dyn StaticFetchPort>,
 }
 
 impl PageFetcher for ProductionPageFetcher {
@@ -129,7 +132,7 @@ impl PageFetcher for ProductionPageFetcher {
                     Err(e) => Err(e.into()),
                 }
             } else {
-                let result = fetch_url(url.as_str(), config).await?;
+                let result = self.fallback.fetch_url(url.as_str(), config).await?;
                 Ok(FetchOutcome {
                     body: result.body,
                     final_url: result.final_url,
@@ -347,6 +350,7 @@ mod tests {
                 status: 203,
                 cookies: vec![session_cookie()],
             })),
+            fallback: crate::application::container::build_static_fetcher(),
         };
 
         let outcome = fetcher
@@ -383,7 +387,10 @@ mod tests {
     async fn fallback_branch_propagates_status_and_cookies() {
         let (_server, url) = mock_203_with_cookie().await;
         let config = config_for(&url);
-        let fetcher = ProductionPageFetcher { router: None };
+        let fetcher = ProductionPageFetcher {
+            router: None,
+            fallback: crate::application::container::build_static_fetcher(),
+        };
 
         let outcome = fetcher
             .fetch_page(&url, &config)
@@ -430,8 +437,12 @@ mod tests {
                 status: 203,
                 cookies: vec![session_cookie()],
             })),
+            fallback: crate::application::container::build_static_fetcher(),
         };
-        let fallback = ProductionPageFetcher { router: None };
+        let fallback = ProductionPageFetcher {
+            router: None,
+            fallback: crate::application::container::build_static_fetcher(),
+        };
 
         let with_router = routed
             .fetch_page(&url, &config)
@@ -495,7 +506,10 @@ mod tests {
 
         let requested = Url::parse(&format!("{}/redirect", server.uri())).expect("valid mock URL");
         let config = config_for(&requested);
-        let fetcher = ProductionPageFetcher { router: None };
+        let fetcher = ProductionPageFetcher {
+            router: None,
+            fallback: crate::application::container::build_static_fetcher(),
+        };
 
         let outcome = fetcher
             .fetch_page(&requested, &config)

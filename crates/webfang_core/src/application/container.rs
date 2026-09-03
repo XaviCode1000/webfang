@@ -235,6 +235,15 @@ pub(crate) fn build_link_extractor(
     std::sync::Arc::new(crate::infrastructure::crawler::link_extractor::HtmlLinkExtractor)
 }
 
+/// Build the static (non-JS) HTTP fetcher as the [`StaticFetchPort`] seam.
+///
+/// Composition-root helper (ADR-0012-B unit 7, mirroring
+/// [`build_link_extractor`]): the wreq-backed concrete is named only here.
+pub(crate) fn build_static_fetcher(
+) -> std::sync::Arc<dyn crate::domain::crawler_port::StaticFetchPort> {
+    std::sync::Arc::new(crate::infrastructure::crawler::http_client::StaticHttpFetcher)
+}
+
 /// Build the default filesystem binary writer as the [`BinaryWriterPort`]
 /// fallback seam.
 ///

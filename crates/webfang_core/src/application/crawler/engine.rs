@@ -755,6 +755,7 @@ impl Engine {
             banned_domains: Arc::clone(&self.banned_domains),
             fetcher: Arc::new(ports::ProductionPageFetcher {
                 router: self.fetch_router.clone(),
+                fallback: crate::application::container::build_static_fetcher(),
             }),
             link_extractor: Arc::new(ports::ProductionLinkExtractor::new(
                 crate::application::container::build_link_extractor(),
