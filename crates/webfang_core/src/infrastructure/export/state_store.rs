@@ -15,6 +15,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::domain::ExportState;
+use crate::domain::exporter::StateStorePort;
 use crate::error::ScraperError;
 use dirs::cache_dir;
 use fs2::FileExt;
@@ -318,8 +319,7 @@ impl StateStore {
 
     const CURRENT_VERSION: u32 = 1;
 
-    /// Load existing state or create a new one if it doesn't exist
-    ///
+    /// Load existing state or create a new one if it doesn't exist    ///
     /// Version-aware: if the persisted file has a different `version` than
     /// `CURRENT_VERSION`, it is discarded, an `info!` is emitted, and a fresh
     /// `ExportState::new(domain)` (version `CURRENT_VERSION`) is returned.
@@ -370,6 +370,26 @@ impl StateStore {
             },
         }
     }
+}
+
+/// Domain seam implementation (#1097): delegates to the inherent methods.
+/// No signature changes to the concrete; `CURRENT_VERSION` stays private.
+impl StateStorePort for StateStore {
+fn get_state_path(&self) -> PathBuf {
+    StateStore::get_state_path(self)
+}
+
+fn load(&self) -> crate::error::Result<ExportState> {
+    StateStore::load(self)
+}
+
+fn save(&self, state: &ExportState) -> crate::error::Result<()> {
+    StateStore::save(self, state)
+}
+
+fn load_or_default(&self) -> crate::error::Result<ExportState> {
+    StateStore::load_or_default(self)
+}
 }
 
 #[cfg(test)]

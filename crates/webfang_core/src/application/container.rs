@@ -15,8 +15,10 @@
 //! abstractions. The Container creates real infrastructure implementations
 //! and stores them as `Arc<dyn Port>`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
+use tracing::instrument;
 
 use crate::application::crawl_options::CrawlOptions;
 use crate::application::crawl_result_repository::CrawlResultRepositoryImpl;
@@ -28,7 +30,7 @@ use crate::domain::clock::SystemClock;
 use crate::domain::config::ScraperConfig;
 use crate::domain::credentials::CredentialStore;
 use crate::domain::embedding_port::EmbeddingPort;
-use crate::domain::exporter::{Exporter, ExporterConfig};
+use crate::domain::exporter::{Exporter, ExporterConfig, StateStorePort};
 use crate::domain::llm_port::LlmPort;
 use crate::domain::note_repository::{NoteRepository, VaultNoteReader};
 use crate::domain::ports::HttpClientPort;
@@ -286,6 +288,26 @@ pub(crate) fn build_url_queue() -> std::sync::Arc<dyn crate::domain::crawler_por
 /// through the domain `BinaryWriterPort` trait when no writer is injected.
 pub(crate) fn build_binary_writer() -> crate::infrastructure::crawler::FsBinaryWriter {
     crate::infrastructure::crawler::FsBinaryWriter::new()
+}
+
+/// Build the resume state store as the domain [`StateStorePort`] seam.
+///
+/// Composition-root factory (ADR-0012-B 3.H, #1097, mirroring
+/// [`build_binary_writer`]): the legacy `StateStore` concrete is named only
+/// here (and at the `cli/` construction sites, which sit outside the layer
+/// gate); `cli` consumes the returned `Arc<dyn StateStorePort>`.
+///
+/// Creation is lazy and infallible — `StateStore::new` and `set_cache_dir`
+/// perform no I/O; the state directory is created later, on `save`.
+#[instrument]
+pub(crate) fn build_state_store(
+    state_dir: PathBuf,
+    domain: &str,
+) -> Arc<dyn StateStorePort> {
+    tracing::info!(state_dir = %state_dir.display(), "creating_state_store");
+    let mut store = StateStore::new(domain);
+    store.set_cache_dir(state_dir);
+    Arc::new(store)
 }
 
 impl Container {
