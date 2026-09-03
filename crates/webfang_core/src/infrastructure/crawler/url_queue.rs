@@ -20,7 +20,7 @@ use dashmap::DashSet;
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use crate::domain::crawler_port::UrlSource;
+use crate::domain::crawler_port::{UrlQueuePort, UrlSource};
 use crate::domain::url_validation::{normalize_url, NormalizeConfig, RemoveQueryParameters};
 use crate::domain::DiscoveredUrl;
 
@@ -297,6 +297,38 @@ impl UrlQueue {
 impl Default for UrlQueue {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Port-slice adapter (ADR-0012-B unit 8): the concrete's scheduling surface
+/// exposed as the domain [`UrlQueuePort`]. Dedup state, priority ordering,
+/// and the `DashSet`/heap machinery stay here; the composition root erases
+/// the concrete so scheduler and per-page tasks share the port object.
+impl UrlQueuePort for UrlQueue {
+    fn push_prioritized<'a>(
+        &'a self,
+        url: DiscoveredUrl,
+        source: UrlSource,
+    ) -> futures::future::BoxFuture<'a, bool> {
+        Box::pin(UrlQueue::push_prioritized(self, url, source))
+    }
+
+    fn snapshot_urls<'a>(&'a self) -> futures::future::BoxFuture<'a, Vec<String>> {
+        Box::pin(UrlQueue::snapshot_urls(self))
+    }
+
+    fn drain_all<'a>(
+        &'a self,
+    ) -> futures::future::BoxFuture<'a, std::collections::VecDeque<DiscoveredUrl>> {
+        Box::pin(UrlQueue::drain_all(self))
+    }
+
+    fn len<'a>(&'a self) -> futures::future::BoxFuture<'a, usize> {
+        Box::pin(UrlQueue::len(self))
+    }
+
+    fn is_empty<'a>(&'a self) -> futures::future::BoxFuture<'a, bool> {
+        Box::pin(UrlQueue::is_empty(self))
     }
 }
 

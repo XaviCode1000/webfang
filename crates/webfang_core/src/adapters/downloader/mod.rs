@@ -903,14 +903,13 @@ fn percent_decode_utf8(input: &str) -> String {
 /// Sanitize an untrusted filename into a safe single path component.
 ///
 /// Thin delegate over
-/// [`crate::infrastructure::crawler::binary_utils::sanitize_filename_component`]
+/// [`crate::domain::crawler_port::filename::sanitize_filename_component`]
 /// — the single source of truth for filename sanitization. Returns an
 /// empty string when nothing safe remains (fully hostile input such as
 /// `.` / `..`), so callers like [`Self::generate_filename`] fall back to
 /// hash-based naming.
 fn sanitize_filename(name: &str) -> String {
-    crate::infrastructure::crawler::binary_utils::sanitize_filename_component(name)
-        .unwrap_or_default()
+    crate::domain::crawler_port::filename::sanitize_filename_component(name).unwrap_or_default()
 }
 
 /// Parse `filename=` from a Content-Disposition header value.

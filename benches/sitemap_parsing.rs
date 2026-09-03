@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use url::Url;
-use webfang_core::application::crawler::parse_sitemap;
+use webfang_core::infrastructure::crawler::parse_sitemap;
 
 fn generate_sitemap_xml(url_count: usize) -> String {
     let mut xml = String::from(

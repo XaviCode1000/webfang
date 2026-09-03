@@ -24,7 +24,19 @@
 //! `infrastructure::crawler` behind a `pub use` shim, wired through the
 //! `application::container::build_sitemap_parser` seam.
 
+pub mod filename;
+pub mod http_fetch;
+pub mod resource_download;
 pub mod sitemap;
+pub mod url_queue;
+
+pub use filename::{
+    derive_filename_from_content_disposition, parse_content_disposition, percent_decode,
+    sanitize_filename_component,
+};
+pub use http_fetch::{HttpFetchResult, StaticFetchPort};
+pub use resource_download::ResourceDownloadPort;
+pub use url_queue::UrlQueuePort;
 
 use futures::future::BoxFuture;
 

@@ -246,6 +246,48 @@ pub(crate) fn build_vector_exporter(config: ExporterConfig) -> Box<dyn Exporter>
     Box::new(VectorExporter::new(config))
 }
 
+/// Build the HTML link extractor as the domain [`LinkExtractor`] seam.
+///
+/// Composition-root helper (ADR-0012-B unit 6, mirroring
+/// [`build_binary_writer`]): the concrete
+/// `infrastructure::crawler::link_extractor::HtmlLinkExtractor` (scraper
+/// DOM parsing) is named only here; application code consumes the erased
+/// domain trait object.
+pub(crate) fn build_link_extractor(
+) -> std::sync::Arc<dyn crate::domain::link_extractor::LinkExtractor> {
+    std::sync::Arc::new(crate::infrastructure::crawler::link_extractor::HtmlLinkExtractor)
+}
+
+/// Build the static (non-JS) HTTP fetcher as the [`StaticFetchPort`] seam.
+///
+/// Composition-root helper (ADR-0012-B unit 7, mirroring
+/// [`build_link_extractor`]): the wreq-backed concrete is named only here.
+pub(crate) fn build_static_fetcher(
+) -> std::sync::Arc<dyn crate::domain::crawler_port::StaticFetchPort> {
+    std::sync::Arc::new(crate::infrastructure::crawler::http_client::StaticHttpFetcher)
+}
+
+/// Build the discovery queue as the [`UrlQueuePort`] seam.
+///
+/// Composition-root helper (ADR-0012-B unit 8, mirroring
+/// [`build_static_fetcher`]): the dedup+priority concrete is named only
+/// here; scheduler and per-page tasks share the erased port object.
+pub(crate) fn build_url_queue() -> std::sync::Arc<dyn crate::domain::crawler_port::UrlQueuePort> {
+    std::sync::Arc::new(crate::infrastructure::crawler::url_queue::UrlQueue::new())
+}
+
+/// Build the default filesystem binary writer as the [`BinaryWriterPort`]
+/// fallback seam.
+///
+/// Composition-root helper (ADR-0012-B unit 4, mirroring
+/// [`build_robots_fetcher`]): the concrete
+/// `infrastructure::crawler::binary_writer::FsBinaryWriter` is named only
+/// here; `application::crawler::discovery` consumes the returned concrete
+/// through the domain `BinaryWriterPort` trait when no writer is injected.
+pub(crate) fn build_binary_writer() -> crate::infrastructure::crawler::FsBinaryWriter {
+    crate::infrastructure::crawler::FsBinaryWriter::new()
+}
+
 impl Container {
     /// Create a new container with the given configurations.
     ///
@@ -594,14 +636,14 @@ impl Container {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(permits));
 
         // 4. Resource downloader with elastic semaphore (byte-weighted backpressure)
-        let downloader = ResourceDownloader::with_config(
+        let downloader = Arc::new(ResourceDownloader::with_config(
             semaphore,
             client,
             DownloadConfig {
                 max_size_bytes: config.max_resource_bytes,
                 ..Default::default()
             },
-        );
+        ));
 
         // 5. Assemble pipeline — ElasticIngestion erased to DynVectorRepository
         let autotune = crate::infrastructure::config::AutotuningConfig::from_elastic(config);

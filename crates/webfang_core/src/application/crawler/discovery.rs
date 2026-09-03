@@ -11,6 +11,7 @@ use url::Url;
 
 use crate::application::url_filter::is_allowed;
 use crate::domain::config::ScraperConfig;
+use crate::domain::crawler_port::derive_filename_from_content_disposition;
 use crate::domain::downloader_port::{DownloadError, Downloader};
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::url_validation::{
@@ -19,8 +20,6 @@ use crate::domain::url_validation::{
 use crate::domain::waf::{waf_inspector, InspectionContext};
 use crate::domain::{CorrelationId, CrawlerConfig, ScrapedContent, ValidUrl};
 use crate::error::{Result as ScraperResult, ScraperError};
-use crate::infrastructure::crawler::binary_utils::derive_filename_from_response;
-use crate::infrastructure::crawler::extract_links;
 use crate::infrastructure::observability::log_scrape_error;
 
 #[cfg(feature = "adaptive-selectors")]
@@ -30,13 +29,13 @@ use crate::application::adaptive_engine::AdaptiveSelectorEngine;
 #[cfg(not(feature = "adaptive-selectors"))]
 type AdaptiveSelectorEngine = ();
 
-// Sitemap discovery was extracted to `sitemap_discovery.rs` and sitemap XML
-// parsing moved to the infrastructure layer (#442). Both are re-exported here so
-// `discovery::crawl_with_sitemap` / `discovery::parse_sitemap` (and the `crawler`
-// facade that imports them from this module) keep resolving unchanged.
+// Sitemap discovery was extracted to `sitemap_discovery.rs` (and sitemap XML
+// parsing stays in the infrastructure layer per #442 / ADR-0012-B). The
+// `parse_sitemap` re-export was dismantled in favor of direct consumer
+// repoints — no application symbol may reach `infrastructure::crawler` through
+// a shim (ADR-0012-B).
 pub use crate::application::crawler::sitemap_discovery::crawl_with_sitemap;
 pub use crate::application::extraction::extract_content;
-pub use crate::infrastructure::crawler::parse_sitemap;
 
 // ============================================================================
 // TUI Support — Discover/Scrape Use Cases
@@ -144,8 +143,10 @@ pub async fn discover_urls_for_tui(
 
         let base = Url::parse(base_url)?;
 
-        // Extract links
-        let links = extract_links(&html, base_url)?;
+        // Extract links — through the composition-root seam (ADR-0012-B
+        // unit 6): the scraper-backed concrete stays in infrastructure.
+        let links =
+            crate::application::container::build_link_extractor().extract_links(&html, base_url)?;
 
         // Filter and normalize URLs
         let mut urls = Vec::new();
@@ -293,17 +294,21 @@ async fn scrape_single_url_for_tui_inner(
         debug!("Binary content type detected: {} for {}", content_type, url);
 
         // Save binary file when download_documents is enabled. Filesystem I/O is
-        // routed through the injected BinaryWriterPort (or the FsBinaryWriter
-        // fallback) so the application layer never touches std::fs directly
-        // (#442 layer-violation fix). Observable behavior is unchanged: the same
-        // bytes land in the same file under `config.output_dir`.
+        // routed through the injected BinaryWriterPort (falling back to the
+        // composition-root default writer) so the application layer never
+        // touches std::fs directly (#442 layer-violation fix). Observable
+        // behavior is unchanged: the same bytes land in the same file under
+        // `config.output_dir`.
         let saved_path = if config.download_documents {
-            let header_map = headers_to_header_map(&page.headers);
-            let filename = derive_filename_from_response(&header_map, url, &content_type);
+            let filename = derive_filename_from_content_disposition(
+                page.headers.get("content-disposition").map(String::as_str),
+                url,
+                &content_type,
+            );
             let output_path = config.output_dir.join(&filename);
 
             let bytes = page.html.as_bytes();
-            let fallback_writer = crate::infrastructure::crawler::FsBinaryWriter::new();
+            let fallback_writer = crate::application::container::build_binary_writer();
             let writer: &dyn crate::domain::ports::BinaryWriterPort =
                 binary_writer.unwrap_or(&fallback_writer);
             match writer.write_bytes(&output_path, bytes) {
@@ -386,32 +391,13 @@ async fn scrape_single_url_for_tui_inner(
     Ok(content)
 }
 
-/// Convert lowercased string headers into a wreq [`wreq::header::HeaderMap`]
-/// for helpers that expect the native header type (e.g.
-/// [`derive_filename_from_response`]).
-///
-/// Invalid header names/values are skipped. They cannot occur for headers
-/// captured by the downloaders (already validated via `to_str`), but the guard
-/// keeps this conversion infallible.
-fn headers_to_header_map(
-    headers: &std::collections::HashMap<String, String>,
-) -> wreq::header::HeaderMap {
-    let mut map = wreq::header::HeaderMap::new();
-    for (name, value) in headers {
-        if let (Ok(name), Ok(value)) = (
-            wreq::header::HeaderName::from_bytes(name.as_bytes()),
-            wreq::header::HeaderValue::from_str(value),
-        ) {
-            map.insert(name, value);
-        }
-    }
-    map
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::CrawlError;
+    // parse_sitemap stays an infrastructure fn (quick_xml machinery);
+    // the application re-export was dismantled (ADR-0012-B unit 2).
+    use crate::infrastructure::crawler::parse_sitemap;
     #[cfg(not(miri))]
     use std::time::Duration;
 
