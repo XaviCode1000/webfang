@@ -3,23 +3,18 @@
 //! Defines the interface for exporting scraped content to various formats
 //! suitable for retrieval-augmented generation systems.
 //!
-//! Also hosts the resume/record port (ADR-0012-B 3.H): the persisted per-URL
-//! record DTOs ([`RawRecord`], [`LastError`], [`DomainRecords`]) and the
-//! [`RecordStorePort`] seam. The JSON-per-domain concrete store stays in
-//! `infrastructure::export::record_store` and implements the port here.
+//! The persistence ports and record DTOs moved to [`crate::domain::persistence`]
+//! (ADR-0014, Decision 1); this module re-exports them below so the merged
+//! public paths (ADR-0012-B 3.H, ADR-0013 consumers) keep compiling for at
+//! least one release cycle.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::domain::crawler_port::filename::confine_filename_component;
-use crate::domain::entities::{
-    DocumentChunkUnvalidated, DocumentChunkValidated, ExportFormat, ExportState,
-};
-use crate::domain::error::ErrorClass;
-use crate::domain::page_state::{PageStatus, PersistedRecord, MIGRATED_V1_RUN_ID};
+use crate::domain::entities::{DocumentChunkUnvalidated, DocumentChunkValidated, ExportFormat};
 
 /// Errors that can occur during export operations
 #[derive(Error, Debug)]
@@ -247,248 +242,17 @@ pub trait ExporterExt: Exporter {
 impl<T: Exporter> ExporterExt for T {}
 
 // ---------------------------------------------------------------------------
-// Resume record port (ADR-0012-B 3.H)
+// Persistence ports + record DTOs — re-exports (ADR-0014, Decision 1)
 //
-// The persisted per-URL record DTOs live in the domain because both the
-// application layer (`export_factory`, `resume`) and the infra store mutate
-// them through the typestate lifecycle. The JSON-per-domain store itself
-// stays in `infrastructure::export::record_store` and implements the port
-// below (WafInspectorPort pattern, #993): concrete in infra, seam in domain.
+// The canonical definitions now live in `crate::domain::persistence`. These
+// `pub use` re-exports keep the old public paths valid for at least one
+// release cycle (ADR-0014 consequence: churn paid once, merged ADR-0012-B
+// 3.H / ADR-0013 consumers keep compiling).
 // ---------------------------------------------------------------------------
 
-/// Keyed by canonical URL; deterministic serialization order.
-pub type DomainRecords = BTreeMap<String, RawRecord>;
-
-/// A classified error attached to a persisted record (SC6 taxonomy).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LastError {
-    /// Operational classification of the failure.
-    pub class: ErrorClass,
-    /// Human-readable failure message.
-    pub message: String,
-}
-
-/// The persisted per-URL record — exactly the nine spec fields, no more,
-/// no less (frozen contract; unknown fields are rejected on load).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RawRecord {
-    /// Original URL as discovered.
-    pub url: String,
-    /// Resolved canonical URL; www/apex unify here.
-    pub canonical_url: String,
-    /// uuid v4 of the run that last touched this record; `"migrated-v1"`
-    /// for migrated legacy entries.
-    pub run_id: String,
-    /// Hash of the serialized payload; dedup/reconciliation key (D3).
-    pub content_hash: Option<String>,
-    /// Persisted attempt count. NOT actuated — retry policy is a non-goal.
-    pub attempts: u32,
-    /// Lifecycle position (the ONLY machine state that serializes).
-    pub status: PageStatus,
-    /// Last classified failure, cleared on success.
-    pub last_error: Option<LastError>,
-    /// Output path recorded at the EXPORTED checkpoint.
-    pub output_location: Option<String>,
-    /// Unix millis UTC of the last persist.
-    pub updated_at: i64,
-}
-
-impl RawRecord {
-    /// Validated constructor for a fresh DISCOVERED lifecycle (#876).
-    ///
-    /// This is the choke point every writer of new records MUST pass through:
-    /// an empty or whitespace-only URL is structurally meaningless identity
-    /// and is rejected with [`RecordStoreError::InvalidRecord`] instead of
-    /// ever becoming retrievable state. Fields default to the honest fresh
-    /// shape (`attempts = 0`, no hash, no output location, no error); callers
-    /// mutate from there via the typestate lifecycle.
-    ///
-    /// # Errors
-    ///
-    /// [`RecordStoreError::InvalidRecord`] when `url` or `canonical_url` is
-    /// empty after trimming.
-    pub fn new_discovered(
-        url: &str,
-        canonical_url: &str,
-        run_id: &str,
-        updated_at: i64,
-    ) -> Result<Self, RecordStoreError> {
-        if url.trim().is_empty() {
-            return Err(RecordStoreError::InvalidRecord {
-                reason: "url must not be empty",
-            });
-        }
-        if canonical_url.trim().is_empty() {
-            return Err(RecordStoreError::InvalidRecord {
-                reason: "canonical_url must not be empty",
-            });
-        }
-        Ok(Self {
-            url: url.to_string(),
-            canonical_url: canonical_url.to_string(),
-            run_id: run_id.to_string(),
-            content_hash: None,
-            attempts: 0,
-            status: PageStatus::Discovered,
-            last_error: None,
-            output_location: None,
-            updated_at,
-        })
-    }
-}
-
-impl PersistedRecord for RawRecord {
-    fn status(&self) -> PageStatus {
-        self.status
-    }
-
-    fn output_location(&self) -> Option<&str> {
-        self.output_location.as_deref()
-    }
-
-    fn content_hash(&self) -> Option<&str> {
-        self.content_hash.as_deref()
-    }
-
-    fn has_last_error(&self) -> bool {
-        self.last_error.is_some()
-    }
-
-    fn attempts(&self) -> u32 {
-        self.attempts
-    }
-
-    fn set_status(&mut self, status: PageStatus) {
-        self.status = status;
-    }
-
-    fn is_migrated_v1(&self) -> bool {
-        self.run_id == MIGRATED_V1_RUN_ID
-    }
-}
-
-/// Typed failures of the record store. Callers apply the named-path
-/// fresh-start policy (`load_or_init`) on [`RecordStoreError::Corrupt`] and
-/// [`RecordStoreError::UnsupportedVersion`] — never silently (Gate 2).
-#[derive(Debug, thiserror::Error)]
-pub enum RecordStoreError {
-    /// Filesystem failure at a known path.
-    #[error("record store I/O error at {path}: {source}")]
-    Io {
-        /// Path the failing operation targeted.
-        path: PathBuf,
-        /// Underlying OS error.
-        #[source]
-        source: std::io::Error,
-    },
-    /// The state file exists but is not valid JSON / not a valid store.
-    #[error("record store file is corrupt or not valid JSON: {path}")]
-    Corrupt {
-        /// Path of the unreadable file.
-        path: PathBuf,
-    },
-    /// The state file carries a version neither 1 nor 2.
-    #[error("record store file has unsupported version {found}: {path}")]
-    UnsupportedVersion {
-        /// Path of the offending file.
-        path: PathBuf,
-        /// Version found in the envelope.
-        found: u32,
-    },
-    /// Creating the pre-migration backup failed; migration aborted.
-    #[error("failed to create v1 backup at {path}: {source}")]
-    Backup {
-        /// Intended backup path.
-        path: PathBuf,
-        /// Underlying OS error.
-        #[source]
-        source: std::io::Error,
-    },
-    /// A writer attempted to create a record whose identity is structurally
-    /// meaningless (#876): an empty URL can never address a fetched page, so
-    /// it is rejected at the domain boundary instead of becoming persisted
-    /// state (fail-closed, same class as unparseable legacy input).
-    #[error("invalid record rejected at domain boundary: {reason}")]
-    InvalidRecord {
-        /// The invariant that failed (English, log-oriented).
-        reason: &'static str,
-    },
-}
-
-/// Domain-owned seam over the JSON-per-domain record store (ADR-0012-B 3.H).
-///
-/// `application` consumes this trait; the concrete
-/// `infrastructure::export::record_store::RecordStore` implements it. Object
-/// safe: call sites hold `&dyn RecordStorePort`.
-pub trait RecordStorePort: Send + Sync {
-    /// Persist `records` atomically (temp file + rename(2), no fsync).
-    ///
-    /// # Errors
-    /// [`RecordStoreError`] on filesystem failure or serialization error.
-    fn save(&self, records: &DomainRecords) -> Result<(), RecordStoreError>;
-
-    /// Load the persisted records for this domain.
-    ///
-    /// # Errors
-    /// [`RecordStoreError::Corrupt`] / [`RecordStoreError::UnsupportedVersion`]
-    /// for unreadable state; callers apply the named-path fresh-start policy.
-    fn load(&self) -> Result<DomainRecords, RecordStoreError>;
-
-    /// Load without ever discarding prior history: unreadable files degrade
-    /// to an empty in-memory view (the original bytes stay on disk).
-    fn load_or_init(&self) -> DomainRecords;
-}
-
-/// Domain-owned seam over the legacy JSON-per-domain state store (#1097).
-///
-/// `cli` constructs the concrete
-/// `infrastructure::export::state_store::StateStore` through
-/// `application::container::build_state_store`; `cli` consumes it
-/// through this port only. Seam covers the four state-file methods in live
-/// use (`get_state_path`, `load`, `save`, `load_or_default`);
-/// `mark_processed`/`is_processed` are excluded — zero production callers.
-/// Object safe: call sites hold `&dyn StateStorePort` or
-/// `Arc<dyn StateStorePort>`.
-///
-/// Errors surface as [`crate::error::ScraperError`]; [`load_for_export`](Self::load_for_export)
-/// maps them into [`ExporterError::StateStore`] via `?` (the variant's first
-/// honest use, #1097).
-pub trait StateStorePort: Send + Sync {
-    /// Full path to the domain state JSON file.
-    fn get_state_path(&self) -> PathBuf;
-
-    /// Load existing export state from disk.
-    ///
-    /// # Errors
-    /// [`crate::error::ScraperError`] if the file is missing or unparsable.
-    fn load(&self) -> crate::error::Result<ExportState>;
-
-    /// Persist export state to disk atomically.
-    ///
-    /// # Errors
-    /// [`crate::error::ScraperError`] on directory, write, or rename failure.
-    fn save(&self, state: &ExportState) -> crate::error::Result<()>;
-
-    /// Load existing state or return a fresh one when absent or stale-versioned.
-    ///
-    /// # Errors
-    /// [`crate::error::ScraperError`] on corrupt JSON or non-NotFound I/O.
-    fn load_or_default(&self) -> crate::error::Result<ExportState>;
-
-    /// Load state into the exporter error domain.
-    ///
-    /// Provided convenience so export callers propagate store failures with
-    /// `?` as [`ExporterError::StateStore`] instead of matching on
-    /// [`crate::error::ScraperError`] at every site.
-    ///
-    /// # Errors
-    /// [`ExporterError::StateStore`] when the underlying [`load`](Self::load)
-    /// fails.
-    fn load_for_export(&self) -> ExportResult<ExportState> {
-        self.load().map_err(ExporterError::StateStore)
-    }
-}
+pub use crate::domain::persistence::{
+    DomainRecords, LastError, RawRecord, RecordStoreError, RecordStorePort, StateStorePort,
+};
 
 #[cfg(test)]
 #[allow(clippy::io_other_error)]

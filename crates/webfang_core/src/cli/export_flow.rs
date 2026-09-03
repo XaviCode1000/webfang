@@ -5,7 +5,7 @@ use tracing::warn;
 
 use crate::cli::error::CliExit;
 use crate::cli::scrape_flow::record_store_bridge;
-use crate::domain::exporter::StateStorePort;
+use crate::domain::persistence::StateStorePort;
 use crate::domain::ScrapedContent;
 use crate::infrastructure::output::file_saver::ObsidianOptions;
 use crate::{
