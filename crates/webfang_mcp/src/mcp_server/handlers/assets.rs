@@ -44,7 +44,7 @@ impl McpHandler {
         // (guard ON unless disabled via env for tests).
         crate::mcp_server::ssrf::validate_url_no_ssrf(&base_url).await?;
 
-        let mut config = webfang_core::infrastructure::config::ScraperConfig {
+        let mut config = webfang_core::domain::config::ScraperConfig {
             download_images: params.images.unwrap_or(true),
             download_documents: params.documents.unwrap_or(false),
             ..Default::default()
@@ -108,7 +108,7 @@ mod tests {
     use tempfile::TempDir;
     use webfang_core::di::Container;
     use webfang_core::domain::CrawlerConfig;
-    use webfang_core::infrastructure::config::ScraperConfig;
+    use webfang_core::domain::config::ScraperConfig;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

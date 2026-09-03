@@ -126,7 +126,7 @@ impl McpHandler {
 
         crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
 
-        let mut config = webfang_core::infrastructure::config::ScraperConfig::default();
+        let mut config = webfang_core::domain::config::ScraperConfig::default();
         if let Some(max) = params.max_pages {
             config.max_pages = Some(max as usize);
         }
@@ -244,7 +244,7 @@ impl McpHandler {
             .unwrap_or_else(|| "unknown".to_string());
         let count = urls.len();
 
-        let mut config = webfang_core::infrastructure::config::ScraperConfig::default();
+        let mut config = webfang_core::domain::config::ScraperConfig::default();
         if let Some(c) = params.concurrency {
             config.scraper_concurrency = c;
         }
@@ -867,7 +867,7 @@ mod tests {
     use tempfile::TempDir;
     use webfang_core::di::Container;
     use webfang_core::domain::CrawlerConfig;
-    use webfang_core::infrastructure::config::ScraperConfig;
+    use webfang_core::domain::config::ScraperConfig;
     use webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
