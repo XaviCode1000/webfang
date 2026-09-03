@@ -168,6 +168,64 @@ else
   ok "crate::domain imports are not flagged"
 fi
 
+# ---------------------------------------------------------------------------
+# 9. Inline qualified path in a function body fails closed in strict mode
+# ---------------------------------------------------------------------------
+printf 'pub fn probe() { let _ = crate::infrastructure::probe::Probe; }\n' \
+  > "$T/application/body_probe.rs"
+if INTRA_CRATE_ROOT="$T" INTRA_CRATE_ALLOWLIST="$EMPTY_ALLOW" INTRA_CRATE_MODE=strict \
+bash "$GATE" >"$T/body_probe.out" 2>&1; then
+  rc=0
+else
+  rc=1
+fi
+if [ "$rc" = "1" ] && grep -qE "::error::.*application/body_probe\.rs:[0-9]+" "$T/body_probe.out"; then
+  ok "inline body path fails closed in strict mode (exit 1, names file:line)"
+else
+  bad "inline body path did not fail closed: exit=$rc"
+fi
+rm -f "$T/application/body_probe.rs"
+
+# ---------------------------------------------------------------------------
+# 10. Lateral `pub use` shim inside application/ stays green
+# ---------------------------------------------------------------------------
+printf 'pub use crate::application::ports::Thing;\n' \
+  > "$T/application/shim.rs"
+out="$(run_gate "$EMPTY_ALLOW")"
+if printf '%s\n' "$out" | grep -q "shim.rs"; then
+  bad "lateral application -> application pub use shim got flagged"
+else
+  ok "lateral pub use shim stays green"
+fi
+rm -f "$T/application/shim.rs"
+
+# ---------------------------------------------------------------------------
+# 11. The same probe path under cli/ stays green (composition edge, #1097)
+# ---------------------------------------------------------------------------
+mkdir -p "$T/cli"
+printf 'pub fn probe() { let _ = crate::infrastructure::probe::Probe; }\n' \
+  > "$T/cli/compose.rs"
+out="$(run_gate "$EMPTY_ALLOW")"
+if printf '%s\n' "$out" | grep -q "compose.rs"; then
+  bad "cli/ composition edge got flagged — rank -1 must never flag"
+else
+  ok "same probe path under cli/ stays green (consumes #1097, re-decides nothing)"
+fi
+rm -f "$T/cli/compose.rs"
+
+# ---------------------------------------------------------------------------
+# 12. Doc-comment paths are ignored
+# ---------------------------------------------------------------------------
+printf '/// See crate::infrastructure::probe::Probe for details.\n// crate::infrastructure::probe::Probe\npub fn documented() {}\n' \
+  > "$T/application/docced.rs"
+out="$(run_gate "$EMPTY_ALLOW")"
+if printf '%s\n' "$out" | grep -q "docced.rs"; then
+  bad "doc-comment path got flagged — // lines must be dropped by the awk filter"
+else
+  ok "doc-comment path ignored"
+fi
+rm -f "$T/application/docced.rs"
+
 echo
 if [ "$fail" = "0" ]; then
   echo "All intra-crate gate semantics checks passed."
