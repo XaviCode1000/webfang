@@ -14,8 +14,8 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::domain::ExportState;
 use crate::domain::exporter::StateStorePort;
+use crate::domain::ExportState;
 use crate::error::ScraperError;
 use dirs::cache_dir;
 use fs2::FileExt;
@@ -375,21 +375,21 @@ impl StateStore {
 /// Domain seam implementation (#1097): delegates to the inherent methods.
 /// No signature changes to the concrete; `CURRENT_VERSION` stays private.
 impl StateStorePort for StateStore {
-fn get_state_path(&self) -> PathBuf {
-    StateStore::get_state_path(self)
-}
+    fn get_state_path(&self) -> PathBuf {
+        StateStore::get_state_path(self)
+    }
 
-fn load(&self) -> crate::error::Result<ExportState> {
-    StateStore::load(self)
-}
+    fn load(&self) -> crate::error::Result<ExportState> {
+        StateStore::load(self)
+    }
 
-fn save(&self, state: &ExportState) -> crate::error::Result<()> {
-    StateStore::save(self, state)
-}
+    fn save(&self, state: &ExportState) -> crate::error::Result<()> {
+        StateStore::save(self, state)
+    }
 
-fn load_or_default(&self) -> crate::error::Result<ExportState> {
-    StateStore::load_or_default(self)
-}
+    fn load_or_default(&self) -> crate::error::Result<ExportState> {
+        StateStore::load_or_default(self)
+    }
 }
 
 #[cfg(test)]

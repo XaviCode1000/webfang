@@ -1,12 +1,14 @@
 //! Scraping flow logic extracted from orchestrator.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use futures::stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use url::Url;
 
+use crate::application::container;
 use crate::application::crawl_options::CrawlOptions;
 use crate::application::export_factory;
 use crate::application::progress_observer::ProgressObserver;
@@ -16,12 +18,13 @@ use crate::cli::error::CliExit;
 use crate::domain::config::ScraperConfig;
 use crate::domain::cookie_bridge::CookieBridge;
 use crate::domain::entities::progress::{ScrapeError, ScrapeStatus};
+use crate::domain::exporter::StateStorePort;
 use crate::domain::persistence::PersistenceMode;
 use crate::domain::{CorrelationId, ScrapedContent};
 use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
 use crate::infrastructure::downloader::fetch_router::build_fetch_router;
 use crate::infrastructure::downloader::Downloader;
-use crate::infrastructure::export::{state_store::StateStore, RecordStore};
+use crate::infrastructure::export::RecordStore;
 use crate::infrastructure::observability::log_scrape_error;
 use crate::HttpClientConfig;
 
@@ -51,20 +54,21 @@ pub fn resolve_default_state_dir() -> PathBuf {
 ///
 /// `mode` is the unified control-plane — exhaustive `match` on
 /// `Disabled|Resume|Checkpoint|Full`. Only `Resume` and `Full` create a
-/// `StateStore` and filter committed URLs; `Checkpoint` and `Disabled` pass
+/// state store and filter committed URLs; `Checkpoint` and `Disabled` pass
 /// all URLs through.
 ///
 /// # Errors
 ///
-/// Returns `CliExit::IoError` when resume is active and the state store
-/// cannot be created.
+/// Currently never fails: state-store creation is lazy and infallible, so
+/// the `Ok` arm always carries the outcome. The `Result` is kept so callers
+/// (and a future eager factory) keep the `CliExit::IoError` route.
 pub async fn apply_resume_mode(
     urls_to_scrape: Vec<Url>,
     mode: &PersistenceMode,
     target_url: &str,
     _root_correlation: &CorrelationId,
-) -> Result<(Vec<Url>, Option<StateStore>), CliExit> {
-    let state_store: Option<StateStore> = match mode {
+) -> Result<(Vec<Url>, Option<Arc<dyn StateStorePort>>), CliExit> {
+    let state_store: Option<Arc<dyn StateStorePort>> = match mode {
         PersistenceMode::Disabled | PersistenceMode::Checkpoint { .. } => None,
         PersistenceMode::Resume { dir }
         | PersistenceMode::Full {
@@ -73,23 +77,18 @@ pub async fn apply_resume_mode(
             info!("Resume mode enabled - tracking processed URLs");
             let domain = export_factory::domain_from_url(target_url);
             info!("State store domain: {}", domain);
-            match create_state_store(dir.clone(), &domain) {
-                Ok(store) => Some(store),
-                // LCOV_EXCL_START defensive: state-store-creation
-                Err(e) => {
-                    tracing::error!(error = %e, "state store creation failed with --resume active");
-                    return Err(CliExit::IoError(format!(
-                        "No se pudo crear el almacén de estado para --resume: {e}"
-                    )));
-                },
-                // LCOV_EXCL_STOP
-            }
+            // Lazy and infallible: `build_state_store` performs no I/O — the
+            // state directory is created later, on `save`. The former
+            // `CliExit::IoError` creation-failure branch was unreachable dead
+            // code (pinned by
+            // `test_build_state_store_returns_ok_even_when_state_dir_is_a_file`).
+            Some(container::build_state_store(dir.clone(), &domain))
         },
     };
 
     let filtered = match (state_store.as_ref(), mode.is_resume()) {
         (Some(store), true) => {
-            let record_store = record_store_bridge(store);
+            let record_store = record_store_bridge(store.as_ref());
             filter_committed(urls_to_scrape, &record_store).0
         },
         _ => urls_to_scrape,
@@ -100,13 +99,14 @@ pub async fn apply_resume_mode(
     Ok((filtered, state_store))
 }
 
-/// Bridge a legacy `StateStore` handle onto the v2 `RecordStore` seam:
+/// Bridge a state-store port handle onto the v2 `RecordStore` seam:
 /// same directory + domain, so a legacy v1 state file migrates in place
 /// on first load (Gate 2 policy lives inside `RecordStore`).
 ///
 /// Lives in `cli` (ADR-0010): the composition edge constructs infrastructure
 /// concretes; `application` consumes them through `RecordStorePort` only.
-fn record_store_bridge(state_store: &StateStore) -> RecordStore {
+/// Shared with `export_flow` so both resume paths derive the same bridge.
+pub(crate) fn record_store_bridge(state_store: &dyn StateStorePort) -> RecordStore {
     let path = state_store.get_state_path();
     let dir = path.parent().map_or_else(
         || std::path::PathBuf::from("."),
@@ -118,40 +118,6 @@ fn record_store_bridge(state_store: &StateStore) -> RecordStore {
         .unwrap_or("unknown")
         .to_string();
     RecordStore::new(domain).with_state_dir(dir)
-}
-
-/// Create a new StateStore for tracking processed URLs.
-///
-/// Composition-edge helper (ADR-0010, ADR-0012-B 3.H): the legacy
-/// `StateStore` concrete is named only in `cli` (and
-/// `application/container.rs`, the permanent DI-root entry);
-/// `application` consumes stores through `RecordStorePort` and the
-/// `Container`.
-///
-/// # Arguments
-///
-/// * `state_dir` - Directory to store state files
-/// * `domain` - Domain name for state file (e.g., "example.com")
-///
-/// # Returns
-///
-/// * `Ok(StateStore)` - Created state store (lazy: no I/O performed yet)
-/// * `Err(ScraperError)` - Reserved signature; creation does not fail today
-///
-/// # Errors
-///
-/// Currently never fails: creation is lazy and infallible — `StateStore::new`
-/// and `set_cache_dir` perform no I/O, and the state directory is only
-/// created later, on `StateStore::save`. Pinned by
-/// `test_create_state_store_returns_ok_even_when_state_dir_is_a_file`.
-pub(crate) fn create_state_store(
-    state_dir: PathBuf,
-    domain: &str,
-) -> Result<StateStore, crate::error::ScraperError> {
-    info!(state_dir = %state_dir.display(), "creating_state_store");
-    let mut store = StateStore::new(domain);
-    store.set_cache_dir(state_dir);
-    Ok(store)
 }
 
 /// Seed operator `--cookie` values (#890) into a shared wreq jar so the
@@ -628,9 +594,7 @@ fn build_http_client_config(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        apply_resume_mode, build_http_client_config, create_state_store, scrape_urls, RobotsFetcher,
-    };
+    use super::{apply_resume_mode, build_http_client_config, scrape_urls, RobotsFetcher};
     use crate::application::crawl_options::CrawlOptions;
     use std::num::NonZeroUsize;
     use tempfile::TempDir;
@@ -638,51 +602,6 @@ mod tests {
     use url::Url;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, ResponseTemplate};
-
-    // =========================================================================
-    // create_state_store tests (moved from application/export_factory with the
-    // function — ADR-0012-B 3.H composition-edge move)
-    // =========================================================================
-
-    #[test]
-    fn test_create_state_store_creates_directory() {
-        let temp_dir = TempDir::new().unwrap();
-        let domain = "example.com";
-        let store = create_state_store(temp_dir.path().to_path_buf(), domain);
-        assert!(store.is_ok());
-        let state_file = temp_dir.path().join("example.com.json");
-        let store = store.unwrap();
-        assert_eq!(store.get_state_path(), state_file);
-    }
-
-    /// Pins the current contract of [`create_state_store`]: it is lazy and
-    /// infallible. `StateStore::new` and `set_cache_dir` perform no I/O, so the
-    /// store is created successfully even when `state_dir` is a regular file
-    /// where no directory could ever be created.
-    ///
-    /// Consequence: the `CliExit::IoError` branch in `apply_resume_mode` is
-    /// currently unreachable dead code, because the state directory is only
-    /// created later, on `StateStore::save`. If `create_state_store` is ever
-    /// made eager (e.g. `create_dir_all` up front), this test must be updated
-    /// and the `IoError` path becomes coverable.
-    #[test]
-    fn test_create_state_store_returns_ok_even_when_state_dir_is_a_file() {
-        // Arrange: a regular file where a state directory would need to be —
-        // an impossible location for any real directory creation.
-        let temp_dir = TempDir::new().expect("tempdir should be created");
-        let blocker = temp_dir.path().join("not_a_dir");
-        std::fs::write(&blocker, "i am a file, not a directory")
-            .expect("blocker file should be written");
-
-        // Act
-        let result = create_state_store(blocker, "example.com");
-
-        // Assert: creation is lazy/infallible — no I/O is attempted yet.
-        assert!(
-            result.is_ok(),
-            "create_state_store must be infallible (lazy): it performs no I/O at creation time"
-        );
-    }
 
     // ===== scrape-path concurrency derives from the budget model (task 2.5a) =====
 

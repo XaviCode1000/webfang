@@ -300,10 +300,7 @@ pub(crate) fn build_binary_writer() -> crate::infrastructure::crawler::FsBinaryW
 /// Creation is lazy and infallible — `StateStore::new` and `set_cache_dir`
 /// perform no I/O; the state directory is created later, on `save`.
 #[instrument]
-pub(crate) fn build_state_store(
-    state_dir: PathBuf,
-    domain: &str,
-) -> Arc<dyn StateStorePort> {
+pub(crate) fn build_state_store(state_dir: PathBuf, domain: &str) -> Arc<dyn StateStorePort> {
     tracing::info!(state_dir = %state_dir.display(), "creating_state_store");
     let mut store = StateStore::new(domain);
     store.set_cache_dir(state_dir);
@@ -859,6 +856,53 @@ mod tests {
         assert!(
             pool.acquire("example.com").is_some(),
             "the port built by the composition-root seam must serve a healthy acquire"
+        );
+    }
+
+    // --- State-store composition-root seam (ADR-0012-B 3.H, #1097) ---
+
+    /// `build_state_store` derives `<state_dir>/<domain>.json` without I/O.
+    ///
+    /// Moved with the factory from `cli::scrape_flow::create_state_store`
+    /// (#1097): the path contract is unchanged, only the return is erased to
+    /// `Arc<dyn StateStorePort>`.
+    #[test]
+    fn test_build_state_store_derives_domain_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let domain = "example.com";
+        let store = build_state_store(temp_dir.path().to_path_buf(), domain);
+        let state_file = temp_dir.path().join("example.com.json");
+        assert_eq!(store.get_state_path(), state_file);
+    }
+
+    /// Pins the factory's lazy/infallible contract (#1097): construction
+    /// performs no I/O, so it succeeds even when `state_dir` is a regular
+    /// file where no directory could ever be created.
+    ///
+    /// Moved with the factory from
+    /// `test_create_state_store_returns_ok_even_when_state_dir_is_a_file` —
+    /// not weakened: the state directory is still created only later, on
+    /// `save`. If the factory ever becomes eager (e.g. `create_dir_all` up
+    /// front), this test must fail and the callers regain an error route.
+    #[test]
+    fn test_build_state_store_succeeds_even_when_state_dir_is_a_file() {
+        // Arrange: a regular file where a state directory would need to be —
+        // an impossible location for any real directory creation.
+        let temp_dir = TempDir::new().expect("tempdir should be created");
+        let blocker = temp_dir.path().join("not_a_dir");
+        std::fs::write(&blocker, "i am a file, not a directory")
+            .expect("blocker file should be written");
+
+        // Act: infallible by contract — no Result to unwrap, a panic here
+        // would be the failure.
+        let store = build_state_store(blocker.clone(), "example.com");
+
+        // Assert: the path still derives under the (unusable) dir; no I/O
+        // was attempted at creation time.
+        assert_eq!(
+            store.get_state_path(),
+            blocker.join("example.com.json"),
+            "build_state_store must be infallible (lazy): it performs no I/O at creation time"
         );
     }
 

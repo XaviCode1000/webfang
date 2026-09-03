@@ -19,7 +19,7 @@ use crate::domain::persistence::PersistenceMode;
 use crate::CrawlerConfig;
 
 use crate::domain;
-use crate::infrastructure::export::state_store::StateStore;
+use crate::domain::exporter::StateStorePort;
 use crate::infrastructure::output::file_saver::ObsidianOptions;
 
 pub use crate::cli::parse::handle_completions;
@@ -227,9 +227,9 @@ pub async fn run(
     // partial-success crawl silently discarded all its content (exit 69 with an
     // empty output directory), unlike batch mode which always exports.
     #[cfg(feature = "ai")]
-    let export_exit = export_phase(&results, &opts, state_store.as_ref(), ai_cleaner).await;
+    let export_exit = export_phase(&results, &opts, state_store.as_deref(), ai_cleaner).await;
     #[cfg(not(feature = "ai"))]
-    let export_exit = export_phase(&results, &opts, state_store.as_ref()).await;
+    let export_exit = export_phase(&results, &opts, state_store.as_deref()).await;
 
     // Special cell — Cancelled (error-classification-matrix): cooperative
     // cancellation is a control signal, not an operational failure, so it
@@ -332,7 +332,7 @@ fn resolve_export_dir(opts: &CrawlOptions) -> std::path::PathBuf {
 async fn export_phase(
     results: &[domain::ScrapedContent],
     opts: &CrawlOptions,
-    state_store: Option<&StateStore>,
+    state_store: Option<&dyn StateStorePort>,
     #[cfg(feature = "ai")] ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
 ) -> CliExit {
     if opts.export.output_dir == std::path::Path::new("-") {
@@ -869,11 +869,11 @@ async fn run_batch(
 
     #[cfg(feature = "ai")]
     {
-        export_phase(&results, &opts, state_store.as_ref(), ai_cleaner).await;
+        export_phase(&results, &opts, state_store.as_deref(), ai_cleaner).await;
     }
     #[cfg(not(feature = "ai"))]
     {
-        export_phase(&results, &opts, state_store.as_ref()).await;
+        export_phase(&results, &opts, state_store.as_deref()).await;
     }
 
     // Final exit code aggregates BOTH crawl-level and extraction-level outcomes
@@ -1008,10 +1008,16 @@ async fn discard_batch_spool(sink: &BoundedFileSink) {
     }
 }
 
-/// Build the resume [`StateStore`] for `--resume` (#637) so `export_phase`
+/// Build the resume state store for `--resume` (#637) so `export_phase`
 /// can mark each already-crawled URL as processed. Returns `None` when
 /// `--resume` is off.
-fn build_batch_resume_store(opts: &CrawlOptions) -> Result<Option<StateStore>, CliExit> {
+///
+/// The factory is lazy and infallible, so this always succeeds when resume
+/// is on; the `Result` keeps the `CliExit::IoError` route for a future
+/// eager factory.
+fn build_batch_resume_store(
+    opts: &CrawlOptions,
+) -> Result<Option<std::sync::Arc<dyn StateStorePort>>, CliExit> {
     if !opts.crawl.resume {
         return Ok(None);
     }
@@ -1021,13 +1027,9 @@ fn build_batch_resume_store(opts: &CrawlOptions) -> Result<Option<StateStore>, C
         .clone()
         .unwrap_or_else(crate::cli::scrape_flow::resolve_default_state_dir);
     let domain = opts.url.host_str().unwrap_or("batch").to_string();
-    crate::cli::scrape_flow::create_state_store(state_dir, &domain)
-        .map(Some)
-        .map_err(|e| {
-            CliExit::IoError(format!(
-                "No se pudo crear el almacén de estado para --resume: {e}"
-            ))
-        })
+    Ok(Some(crate::application::container::build_state_store(
+        state_dir, &domain,
+    )))
 }
 
 /// Run the elastic / output-vectors ingestion for the batch pipeline (#636,

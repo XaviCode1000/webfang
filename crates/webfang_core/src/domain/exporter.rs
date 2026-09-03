@@ -14,7 +14,9 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::domain::entities::{DocumentChunkUnvalidated, DocumentChunkValidated, ExportFormat, ExportState};
+use crate::domain::entities::{
+    DocumentChunkUnvalidated, DocumentChunkValidated, ExportFormat, ExportState,
+};
 use crate::domain::error::ErrorClass;
 use crate::domain::page_state::{PageStatus, PersistedRecord, MIGRATED_V1_RUN_ID};
 
