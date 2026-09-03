@@ -143,18 +143,7 @@ pub async fn run(
     // The resolver itself never logs (#1045): `--state-dir` without `--resume`
     // is reported via `ResolverNotes` and warned about here, the one call
     // site that knows about user flags.
-    let default_state_dir = crate::cli::scrape_flow::resolve_default_state_dir();
-    let (persistence_mode, resolver_notes) =
-        crate::domain::persistence::PersistenceMode::from_config_with_notes(
-            &opts.crawl.resume_config(),
-            &default_state_dir,
-        );
-    if let Some(ignored_state_dir) = resolver_notes.ignored_state_dir {
-        warn!(
-            state_dir = ?ignored_state_dir,
-            "ignoring --state-dir without --resume"
-        );
-    }
+    let persistence_mode = resolve_persistence_mode(&opts);
 
     let prepare = match prepare_phase(&opts, &persistence_mode).await {
         Err(e) => return e,
@@ -488,6 +477,27 @@ fn build_crawler_config_for_discovery(
         crawler_config = crawler_config.sitemap_url(sitemap_url);
     }
     crawler_config.build()
+}
+
+/// Resolve the persistence mode and warn about ignored CLI flags.
+///
+/// The domain resolver is pure (#1045): it never logs. `--state-dir`
+/// without `--resume` is reported via `ResolverNotes` and warned about
+/// here, the one call site that knows about user flags.
+fn resolve_persistence_mode(opts: &CrawlOptions) -> PersistenceMode {
+    let default_state_dir = crate::cli::scrape_flow::resolve_default_state_dir();
+    let (persistence_mode, resolver_notes) =
+        crate::domain::persistence::PersistenceMode::from_config_with_notes(
+            &opts.crawl.resume_config(),
+            &default_state_dir,
+        );
+    if let Some(ignored_state_dir) = resolver_notes.ignored_state_dir {
+        warn!(
+        state_dir = ?ignored_state_dir,
+        "ignoring --state-dir without --resume"
+        );
+    }
+    persistence_mode
 }
 
 /// Prepare scraper config and discover URLs.
