@@ -511,8 +511,8 @@ mod tests {
     use rmcp::model::CallToolResult;
     use tempfile::TempDir;
     use webfang_core::di::Container;
-    use webfang_core::domain::CrawlerConfig;
     use webfang_core::domain::config::ScraperConfig;
+    use webfang_core::domain::CrawlerConfig;
 
     async fn super_test_container() -> (TempDir, Container) {
         let tmp = TempDir::new().expect("create temp dir");

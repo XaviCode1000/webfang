@@ -107,8 +107,8 @@ mod tests {
     use serial_test::serial;
     use tempfile::TempDir;
     use webfang_core::di::Container;
-    use webfang_core::domain::CrawlerConfig;
     use webfang_core::domain::config::ScraperConfig;
+    use webfang_core::domain::CrawlerConfig;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
