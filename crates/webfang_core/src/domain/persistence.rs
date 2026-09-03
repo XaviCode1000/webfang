@@ -2,7 +2,12 @@
 //! and `--checkpoint-interval`/`--no-checkpoint` without changing persisted formats.
 //!
 //! Pure resolver: `PersistenceMode::from_config(&ResumeConfig, &Path)` maps four
-//! CLI flags to an exhaustive enum. No IO, no async, deterministic.
+//! CLI flags to an exhaustive enum. No IO, no async, no logging, deterministic.
+//! When the caller needs to know whether `--state-dir` was silently ignored,
+//! use `from_config_with_notes` and act on the returned [`ResolverNotes`]
+//! (the CLI layer re-emits the `warn!` from there; batch/MCP callers drop it).
+//!
+//! [`ResolverNotes`]: crate::domain::persistence::ResolverNotes
 //!
 //! The `ResumeConfig` value object is owned by domain (it is the input the
 //! resolver consumes); the application layer (`CrawlLimits::resume_config`)
@@ -11,8 +16,6 @@
 //! `infrastructure → adapters → application → domain` is inward only.
 
 use std::path::{Path, PathBuf};
-
-use tracing::warn;
 
 /// Input for [`PersistenceMode::from_config`].
 ///
@@ -72,23 +75,50 @@ pub enum PersistenceMode {
     },
 }
 
+/// Side-channel notes returned by [`PersistenceMode::from_config_with_notes`].
+///
+/// The resolver stays pure (no IO, no logging): every decision the caller
+/// might need to surface is returned as data. Today that is exactly one
+/// case — `--state-dir` without `--resume` is ignored. The CLI layer
+/// re-emits the `warn!` from `ignored_state_dir`; callers without user
+/// flags (batch, MCP, tests) drop the notes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResolverNotes {
+    /// The `--state-dir` value that was ignored (`Some` only when
+    /// `state_dir.is_some() && !resume`), to be logged by the caller.
+    pub ignored_state_dir: Option<PathBuf>,
+}
+
 impl PersistenceMode {
-    /// Pure resolver — no IO.
+    /// Pure resolver — no IO, no logging.
     ///
     /// `default_state_dir` is the caller-supplied fallback (XDG_CACHE_HOME or
-    /// `~/.cache/webfang/state`). `state_dir` without `--resume` is ignored
-    /// (caller emits `warn!`).
+    /// `~/.cache/webfang/state`). `state_dir` without `--resume` is ignored;
+    /// callers that owe the operator a `warn!` must use
+    /// [`from_config_with_notes`](Self::from_config_with_notes) instead.
     pub fn from_config(cfg: &ResumeConfig, default_state_dir: &Path) -> Self {
-        if cfg.state_dir.is_some() && !cfg.resume {
-            warn!(
-                state_dir = ?cfg.state_dir,
-                "ignoring --state-dir without --resume"
-            );
-        }
+        Self::from_config_with_notes(cfg, default_state_dir).0
+    }
+
+    /// Pure resolver with side-channel notes — no IO, no logging.
+    ///
+    /// Returns the resolved mode plus [`ResolverNotes`]: `ignored_state_dir`
+    /// is `Some` exactly when `--state-dir` was passed without `--resume`
+    /// and therefore ignored. The caller that knows about user flags emits
+    /// `warn!(state_dir = ?notes.ignored_state_dir, "ignoring --state-dir
+    /// without --resume")` from it; all other callers ignore the notes.
+    pub fn from_config_with_notes(
+        cfg: &ResumeConfig,
+        default_state_dir: &Path,
+    ) -> (Self, ResolverNotes) {
+        let ignored_state_dir = if cfg.state_dir.is_some() && !cfg.resume {
+            cfg.state_dir.clone()
+        } else {
+            None
+        };
         let checkpoint_enabled = cfg.checkpoint_interval != 0 && !cfg.no_checkpoint;
         let resume_enabled = cfg.resume;
-
-        match (resume_enabled, checkpoint_enabled) {
+        let mode = match (resume_enabled, checkpoint_enabled) {
             (false, false) => Self::Disabled,
             (true, false) => {
                 let dir = cfg
@@ -119,7 +149,8 @@ impl PersistenceMode {
                     checkpoint,
                 }
             },
-        }
+        };
+        (mode, ResolverNotes { ignored_state_dir })
     }
 
     /// `true` for `Resume` and `Full`.
@@ -304,6 +335,48 @@ mod tests {
         let m =
             PersistenceMode::from_config(&cfg(false, Some("/tmp/cache"), 0, false), &default_dir());
         assert_eq!(m, PersistenceMode::Disabled);
+    }
+
+    // ——— ResolverNotes side-channel (#1045) ———
+
+    #[test]
+    fn notes_report_ignored_state_dir_only_without_resume() {
+        let (_, notes) = PersistenceMode::from_config_with_notes(
+            &cfg(false, Some("/tmp/cache"), 100, false),
+            &default_dir(),
+        );
+        assert_eq!(notes.ignored_state_dir, Some(PathBuf::from("/tmp/cache")));
+    }
+
+    #[test]
+    fn notes_empty_when_resume_consumes_state_dir() {
+        let (_, notes) = PersistenceMode::from_config_with_notes(
+            &cfg(true, Some("/tmp/cache"), 0, false),
+            &default_dir(),
+        );
+        assert_eq!(notes, ResolverNotes::default());
+    }
+
+    #[test]
+    fn notes_empty_when_no_state_dir_given() {
+        let (_, notes) =
+            PersistenceMode::from_config_with_notes(&cfg(false, None, 100, false), &default_dir());
+        assert_eq!(notes, ResolverNotes::default());
+    }
+
+    #[test]
+    fn from_config_agrees_with_notes_variant_on_full_matrix() {
+        // `from_config` is the notes-dropping façade: same mode, no notes.
+        for (resume, state_dir, interval, no_checkpoint) in [
+            (false, None, 0, false),
+            (false, Some("/tmp/cache"), 100, false),
+            (true, Some("/tmp/cache"), 50, false),
+            (true, None, 100, true),
+        ] {
+            let c = cfg(resume, state_dir, interval, no_checkpoint);
+            let (mode, _) = PersistenceMode::from_config_with_notes(&c, &default_dir());
+            assert_eq!(PersistenceMode::from_config(&c, &default_dir()), mode);
+        }
     }
 
     // ——— helpers ———
