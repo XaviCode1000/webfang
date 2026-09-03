@@ -114,8 +114,9 @@ pub struct Engine {
     /// Built through the injected [`DownloaderFactory`] — never constructed
     /// here. `None` means "no factory was injected", which is a fully
     /// supported state: [`ports::ProductionPageFetcher`] then falls back to
-    /// the static [`fetch_url`](crate::infrastructure::crawler::fetch_url)
-    /// helper.
+    /// the composition-root-injected [`StaticFetchPort`](crate::domain::crawler_port::StaticFetchPort),
+    /// whose infrastructure implementation delegates to the static `fetch_url`
+    /// free fn.
     fetch_router: Option<Arc<dyn Downloader>>,
     /// Factory that builds [`Self::fetch_router`]. `None` disables the
     /// dynamic fetch path for this engine.
@@ -755,8 +756,11 @@ impl Engine {
             banned_domains: Arc::clone(&self.banned_domains),
             fetcher: Arc::new(ports::ProductionPageFetcher {
                 router: self.fetch_router.clone(),
+                fallback: crate::application::container::build_static_fetcher(),
             }),
-            link_extractor: Arc::new(ports::ProductionLinkExtractor),
+            link_extractor: Arc::new(ports::ProductionLinkExtractor::new(
+                crate::application::container::build_link_extractor(),
+            )),
             content_sink: self.content_sink.clone(),
             pipeline: self.pipeline.as_ref().map(|p| {
                 Arc::new(ports::ProductionPipeline {

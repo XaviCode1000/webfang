@@ -10,7 +10,11 @@ use crate::domain::CrawlError;
 /// This trait defines the contract for extracting and normalizing
 /// links from HTML content. The infrastructure layer provides
 /// the implementation using external libraries like scraper.
-pub trait LinkExtractor {
+///
+/// `Send + Sync` because crawl tasks poll extractors from
+/// `tokio::spawn`-ed tasks on the multi-threaded runtime (the
+/// application-layer port that wraps this trait requires it).
+pub trait LinkExtractor: Send + Sync {
     /// Extract all links from HTML content
     ///
     /// # Arguments

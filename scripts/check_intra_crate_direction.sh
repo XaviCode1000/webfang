@@ -83,10 +83,11 @@ set -euo pipefail
 ROOT="${INTRA_CRATE_ROOT:-crates/webfang_core/src}"
 MODE="${INTRA_CRATE_MODE:-strict}"
 ALLOWLIST="${INTRA_CRATE_ALLOWLIST:-scripts/check_intra_crate_direction_allowlist.txt}"
-# Hard cap. 18 current entries + headroom, so a NEW one-file violation does not
-# force an ADR edit on every PR. Warn (do not fail) when within 2 of the cap.
-ALLOWLIST_CAP=22
-ALLOWLIST_WARN_AT=20
+# Hard cap. ADR-0012-B's 10→2 path has landed: the only entries expected now are
+# the two permanent ADR-0011 exemptions (DI root + transversal tracing), so this
+# is §2.2's terminal cap, not a temporary one. Warn (do not fail) within 2 of cap.
+ALLOWLIST_CAP=5
+ALLOWLIST_WARN_AT=3
 
 declare -A LAYER_RANK=(
   [infrastructure]=0
@@ -159,11 +160,11 @@ if [[ -f "$ALLOWLIST" ]]; then
     ALLOW_PATTERNS+=("$pattern")
   done < "$ALLOWLIST"
   if (( ${#ALLOW_PATTERNS[@]} > ALLOWLIST_CAP )); then
-    echo "::error::allowlist $ALLOWLIST has ${#ALLOW_PATTERNS[@]} entries, max is $ALLOWLIST_CAP (ADR-0010-A temporary cap; entries drop incrementally as #994 sub-slices 1, 3 and 4 land)"
+    echo "::error::allowlist $ALLOWLIST has ${#ALLOW_PATTERNS[@]} entries, max is $ALLOWLIST_CAP (ADR-0012-B terminal cap — only the two permanent ADR-0011 entries are expected. A new entry needs a removal condition cited by SYMBOL, never by line number, per #1032.)"
     exit 1
   fi
   if (( ${#ALLOW_PATTERNS[@]} >= ALLOWLIST_WARN_AT )); then
-    echo "::warning::allowlist has ${#ALLOW_PATTERNS[@]} entries (warn threshold $ALLOWLIST_WARN_AT, hard cap $ALLOWLIST_CAP) — prune entries as #994 sub-slices land before raising the cap"
+    echo "::warning::allowlist has ${#ALLOW_PATTERNS[@]} entries (warn threshold $ALLOWLIST_WARN_AT, hard cap $ALLOWLIST_CAP) — steady state is the 2 permanent ADR-0011 entries; prune before adding, and never re-add a broad module entry (narrow per-symbol entries fail closed, broad ones silently absorb)"
   fi
 fi
 

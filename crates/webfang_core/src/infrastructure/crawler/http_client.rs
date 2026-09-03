@@ -15,36 +15,28 @@ use url::Url;
 use wreq::Client;
 use wreq_util::Profile;
 
+use crate::domain::crawler_port::{HttpFetchResult, StaticFetchPort};
 use crate::domain::downloader_port::Cookie;
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::{CrawlError, CrawlerConfig};
 use crate::error::Result as ScraperResult;
 use crate::infrastructure::http::create_http_client_with_config;
 
-/// Result of a plain HTTP fetch via [`fetch_url`].
-///
-/// Carries the body plus the response metadata the static-fetch fallback
-/// must propagate — status, post-redirect final URL and cookies — so the
-/// crawl fallback reports the real response instead of fabricating values
-/// (#1027). The infrastructure layer is the sole constructor; consumers
-/// read the fields outward (infrastructure → application direction is
-/// allowed: domain/application types flow inward, this DTO flows out).
-///
-/// `cookies` reuses the domain [`Cookie`] type rather than wreq's internal
-/// `wreq::cookie::Cookie<'a>` to keep the lifetime out of this DTO and align
-/// with what every other downloader in the codebase already returns.
-#[derive(Debug, Clone)]
-pub struct HttpFetchResult {
-    /// Decoded response body.
-    pub body: String,
-    /// HTTP status code, observed before any further processing.
-    pub status: u16,
-    /// Final URL after redirects. Falls back to the requested URL when wreq
-    /// cannot parse the final `Uri` back into a `url::Url` (rare; e.g. when
-    /// a redirect chain ends at an opaque URI).
-    pub final_url: Url,
-    /// Cookies set by the server during this request.
-    pub cookies: Vec<Cookie>,
+/// Static (non-JS) fetcher over the wreq stack — the [`StaticFetchPort`]
+/// concrete named only at the composition root (ADR-0012-B unit 7).
+/// The free [`fetch_url`] implementation and [`HttpFetchResult`] DTO now
+/// live in `domain::crawler_port::http_fetch`; this adapter erases the
+/// concrete behind the domain port.
+pub struct StaticHttpFetcher;
+
+impl StaticFetchPort for StaticHttpFetcher {
+    fn fetch_url<'a>(
+        &'a self,
+        url: &'a str,
+        config: &'a CrawlerConfig,
+    ) -> futures::future::BoxFuture<'a, Result<HttpFetchResult, CrawlError>> {
+        Box::pin(fetch_url(url, config))
+    }
 }
 
 /// Create a rate-limited HTTP client

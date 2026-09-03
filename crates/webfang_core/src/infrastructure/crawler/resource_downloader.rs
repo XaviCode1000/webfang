@@ -5,7 +5,7 @@
 //! - PermitGuard for RAII permit management
 //! - 25MB hard limit with chunked encoding support
 //! - Concentric timeouts: 30s global, 5s per chunk (Anti-Slowloris)
-
+use crate::domain::crawler_port::ResourceDownloadPort;
 use crate::error::ScraperError;
 use bytes::BytesMut;
 use futures::StreamExt;
@@ -104,6 +104,19 @@ pub struct ResourceDownloader {
     semaphore: Arc<tokio::sync::Semaphore>,
     client: Client,
     config: DownloadConfig,
+}
+
+/// Port-slice adapter (ADR-0012-B unit 5): the concrete's `download` surface
+/// exposed as the domain [`ResourceDownloadPort`]. The semaphore/permit
+/// machinery stays here; `application::elastic_ingestion` consumes the
+/// erased port built at the composition root.
+impl ResourceDownloadPort for ResourceDownloader {
+    fn download<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> futures::future::BoxFuture<'a, Result<Vec<u8>, ScraperError>> {
+        Box::pin(ResourceDownloader::download(self, url))
+    }
 }
 
 impl ResourceDownloader {

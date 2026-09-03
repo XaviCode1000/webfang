@@ -18,8 +18,6 @@ pub use crate::domain::{
     CorrelationId, CrawlError, CrawlResult, CrawlerConfig, DiscoveredUrl, ScrapedContent, ValidUrl,
 };
 pub use crate::error::{Result as ScraperResult, ScraperError};
-pub use crate::infrastructure::crawler::fetch_url;
-pub use crate::infrastructure::crawler::UrlQueue;
 
 // --- Crawler sub-module re-exports (canonical paths) ---
 pub use super::crawler::collector::{ResultsAdapter, ResultsCollector};

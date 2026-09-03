@@ -57,10 +57,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Extensible Design:** Easy to add new validation rules and error variants
 - **Memory Safety:** Pure move semantics prevent accidental clones in hot paths
 
+#### Intra-crate allowlist drained to its two permanent entries (ADR-0012-B 10→2, #1083, #1095)
+- Closed the whole 10→2 path: the allowlist went from 18 entries / 48 allowlisted sites to
+  **2 entries / 30 sites**, both permanent ADR-0011 exemptions (`application/container.rs` DI root,
+  `infrastructure::observability` transversal tracing). Strict gate exit 0.
+- Export drain (#1083): repointed record-DTO imports at `domain::exporter`, made application consume
+  record storage through `RecordStorePort`, hoisted `JsonlExporter` / `VectorExporter` construction into
+  the DI root, deleted the dead `application/export_utils` module (zero callers workspace-wide), and
+  removed all eight `infrastructure::export::*` entries.
+- Crawler drain: dropped the zero-absorption `crawler::SitemapConfig` entry and its shim, dismantled the
+  `parse_sitemap` application shim, moved the filename-derivation vocabulary into
+  `domain::crawler_port::filename` keeping `binary_utils` as the wreq adapter, and put five real ports in
+  the domain — `BinaryWriterPort` routing, `ResourceDownloadPort`, `LinkExtractor`, `StaticFetchPort`,
+  `UrlQueuePort` — each with the concrete staying in infrastructure per §2.1. All eight
+  `infrastructure::crawler::*` entries removed.
+- Ratcheted the gate's hard cap from 22 to its terminal **5** (warn at 3) and replaced the stale
+  "temporary cap" message text (#1095).
+- Known deferred debt: the last `state_store::StateStore` entry was retired by relocating
+  `create_state_store` to the `cli/` composition edge, which the gate does not rank — a scope relocation,
+  not a domain port. The deferred state-store port is tracked in #1097.
+
+#### Narrowed the broad allowlist entries to per-symbol lines (ADR-0012-B, #1082, #1084, #1085, #1086)
+- Replaced the broad `infrastructure::crawler` entry with per-symbol entries (#1084, closing #1082;
+  #1085 repointed three application imports to domain) and the broad `infrastructure::export` entry with
+  eight per-symbol entries (#1086), each citing its removal condition by symbol. Narrow entries fail
+  closed where broad entries silently shadowed new violations.
+
+#### Ported record DTOs, sitemap and robots surfaces into the domain (ADR-0012-B 3.H, #1087, #1088, #1089)
+- Moved `DomainRecords`, `RawRecord`, `LastError` and the `RecordStorePort` trait into
+  `domain::exporter` (#1087, part of #1083).
+- Hosted `SitemapError`, `SitemapUrl` and `SitemapParserPort` in `domain::crawler_port::sitemap` while
+  keeping `quick_xml` machinery out of the domain (#1088).
+- Put the robots vocabulary behind `domain::crawler_port` with the concrete staying in
+  infrastructure (#1089).
+
+#### Made the intra-crate scanner measurable and its plan honest (ADR-0012-B, #1068, #1069, #1074)
+- Counted distinct code locations instead of regex hits, expanded brace imports per symbol, and matched
+  allowlist module paths at segment boundaries only — which is what made "the count drops by N"
+  acceptance tests satisfiable (#1069).
+- Rewrote every allowlist removal condition to cite a symbol, never a line number (#1074, #1032).
+
+#### Ported the CPU-executor, session and vault seams out of application (ADR-0012-B 3.E–3.I, #1073, #1076, #1077, #1079, #1080, #1081)
+- Grew `domain::cpu_executor::CpuExecutorPort` with `dispatch_resource` and `ProcessedChunk`, then
+  rewired `ElasticIngestion` to hold `Arc<dyn CpuExecutorPort>` from the container (#1076, #1080).
+- Built the crawl session pool through a `domain::session_port::SessionPort` seam (#1077), and repointed
+  vault reads at `domain::note_repository::VaultNoteReader` (#1073).
+- Deleted two zero-absorption dead-weight entries and ported the two cheap-win sites
+  (`asset_download`, engine probe default) to their domain seams (#1079, #1081).
+
 ### 📖 Documentation
 
 #### CHANGELOG policy — single-write at consolidation (#965)
 - Codify that `CHANGELOG.md` is written once in the consolidation PR — work PRs and delegated agents must not touch it, preserving the batch-merge disjoint-files optimization.
+
+#### Recorded the ADR-0012-B closing campaign as executable operational state (#1093, #1096)
+- Retired rows 3.G, 3.J, 3.K and 4 out of the actionable planning table into a clearly-marked
+  non-actionable historical section, and restated §5.1 as an explicit ruling: none of them ever targeted
+  a real allowlist entry, so none can claim a gate delta.
+- Re-measured `docs/adr/0012-B-RUNBOOK.md` for the completed path (2 entries / 30 sites / strict exit 0)
+  and recorded the campaign's method lessons, including that a commit message is not evidence: one commit
+  claimed to drop an allowlist line absent from its own diff while every numeric check passed.
 
 ### 🔧 Fixed
 

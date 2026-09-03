@@ -4,8 +4,9 @@
 //! Implements 80/20 rule: prioritize recent content (lastmod) and
 //! filter parameter-heavy URLs to maximize crawl efficiency.
 
+use crate::domain::crawler_port::SitemapConfig;
 use crate::domain::url_validation::{NormalizeConfig, RemoveQueryParameters};
-use crate::infrastructure::crawler::{normalize_url, SitemapConfig, SitemapUrl};
+use crate::infrastructure::crawler::{normalize_url, SitemapUrl};
 use std::collections::HashSet;
 #[cfg(test)]
 use url::Url;
