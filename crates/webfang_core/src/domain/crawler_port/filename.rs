@@ -119,6 +119,39 @@ pub fn sanitize_filename_component(name: &str) -> Option<String> {
     (!truncated.is_empty()).then_some(truncated)
 }
 
+/// Contain an untrusted name inside its parent directory (#1125).
+///
+/// Neutralizes separators (`/` and `\`), `.` / `..` segments and control
+/// characters through [`sanitize_filename_component`], returning `fallback`
+/// when nothing safe remains. Emits a `warn!` event whenever the input had
+/// to change, so hostile inputs stay observable. `fallback` must be a safe
+/// literal (no separators); it is returned verbatim.
+///
+/// Idempotent: confining an already-safe name returns it byte-identical.
+#[must_use]
+pub fn confine_filename_component(raw: &str, fallback: &str) -> String {
+    match sanitize_filename_component(raw) {
+        Some(safe) => {
+            if safe != raw {
+                tracing::warn!(
+                    original_len = raw.len(),
+                    sanitized = %safe,
+                    "hostile filename neutralized to prevent path traversal"
+                );
+            }
+            safe
+        },
+        None => {
+            tracing::warn!(
+                original_len = raw.len(),
+                fallback,
+                "filename fully hostile; using fallback to prevent path traversal"
+            );
+            fallback.to_string()
+        },
+    }
+}
+
 /// Derive a filename from the Content-Disposition header value or URL path.
 ///
 /// Priority: Content-Disposition `filename` > URL path basename >
@@ -196,5 +229,30 @@ fn sanitize_disposition_filename(name: String) -> Option<String> {
             );
             None
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn confine_keeps_safe_names_byte_identical() {
+        assert_eq!(confine_filename_component("export", "export"), "export");
+        assert_eq!(
+            confine_filename_component("example.com", "unknown"),
+            "example.com"
+        );
+    }
+
+    #[test]
+    fn confine_neutralizes_traversal_vectors() {
+        // Issue #1125 proof vectors: every hostile input collapses to a
+        // single safe component that cannot escape its parent directory.
+        assert_eq!(confine_filename_component("../escape", "export"), "escape");
+        assert_eq!(confine_filename_component("sub/out", "export"), "out");
+        assert_eq!(confine_filename_component("..\\escape", "export"), "escape");
+        assert_eq!(confine_filename_component("..", "export"), "export");
+        assert_eq!(confine_filename_component("a/../b", "export"), "b");
     }
 }

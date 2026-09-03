@@ -14,6 +14,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::domain::crawler_port::filename::confine_filename_component;
 use crate::domain::exporter::StateStorePort;
 use crate::domain::ExportState;
 use crate::error::ScraperError;
@@ -133,7 +134,10 @@ impl StateStore {
         self.cache_dir = cache_dir;
     }
 
-    /// Get the full path to the state file
+    /// Get the full path to the state file.
+    ///
+    /// The domain is confined to a single safe component at join time
+    /// (#1125), so a hostile domain can never escape `cache_dir`.
     ///
     /// # Returns
     ///
@@ -150,7 +154,10 @@ impl StateStore {
     #[must_use]
     pub fn get_state_path(&self) -> PathBuf {
         let mut path = self.cache_dir.clone();
-        path.push(format!("{}.json", self.domain));
+        path.push(format!(
+            "{}.json",
+            confine_filename_component(&self.domain, "unknown")
+        ));
         path
     }
 
@@ -414,6 +421,30 @@ mod tests {
         // Verify path structure
         let path_str = path.to_string_lossy();
         assert!(path_str.contains("webfang/state/test.domain.json"));
+    }
+
+    #[test]
+    fn hostile_domain_is_confined_inside_cache_dir() {
+        // Issue #1125: a hostile domain must collapse to a single safe
+        // component; the state file's parent is always `cache_dir`.
+        for hostile in ["../escape", "..\\escape", "..", "sub/escape"] {
+            let mut store = StateStore::new(hostile);
+            store.set_cache_dir(PathBuf::from("/tmp/cache"));
+            let path = store.get_state_path();
+            assert_eq!(
+                path.parent(),
+                Some(PathBuf::from("/tmp/cache").as_path()),
+                "domain {hostile:?} escaped: {}",
+                path.display()
+            );
+            assert!(
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| !n.contains('/') && !n.contains('\\') && n.ends_with(".json")),
+                "domain {hostile:?} produced unsafe file name: {}",
+                path.display()
+            );
+        }
     }
 
     #[test]

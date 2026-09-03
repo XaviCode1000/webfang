@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::domain::crawler_port::filename::confine_filename_component;
 use crate::domain::entities::{
     DocumentChunkUnvalidated, DocumentChunkValidated, ExportFormat, ExportState,
 };
@@ -79,7 +80,11 @@ pub struct ExporterConfig {
 }
 
 impl ExporterConfig {
-    /// Create a new ExporterConfig with required fields
+    /// Create a new ExporterConfig with required fields.
+    ///
+    /// The `filename` is confined to a single safe path component (#1125):
+    /// `../escape` becomes `export`. Use [`ExporterConfig::output_path`]
+    /// for the contained join.
     ///
     /// # Errors
     /// Returns InvalidConfig if output_dir is not a valid directory path
@@ -87,7 +92,7 @@ impl ExporterConfig {
         Self {
             output_dir,
             format,
-            filename: filename.into(),
+            filename: confine_filename_component(&filename.into(), "export"),
             append: false,
             batch_size: None,
         }
@@ -107,19 +112,25 @@ impl ExporterConfig {
         self
     }
 
-    /// Get the full output file path
+    /// Get the full output file path.
+    ///
+    /// The filename is confined at join time (#1125), so even a struct
+    /// literal with a hostile `filename` cannot escape `output_dir`.
     #[must_use]
     pub fn output_path(&self) -> PathBuf {
         let ext = self.format.extension();
-        self.output_dir.join(format!("{}.{}", self.filename, ext))
+        let safe = confine_filename_component(&self.filename, "export");
+        self.output_dir.join(format!("{safe}.{ext}"))
     }
 
-    /// Get the state file path for this configuration
+    /// Get the state file path for this configuration.
+    ///
+    /// Same join-time confinement as [`ExporterConfig::output_path`].
     #[must_use]
     pub fn state_path(&self) -> PathBuf {
         let state_dir = self.output_dir.join("state");
         // Extract domain from filename if possible, otherwise use filename
-        let domain = self.filename.clone();
+        let domain = confine_filename_component(&self.filename, "export");
         state_dir.join(format!("{domain}.json"))
     }
 }
@@ -519,6 +530,44 @@ mod tests {
             config.output_path(),
             PathBuf::from("/tmp/output/test_export.jsonl")
         );
+    }
+
+    #[test]
+    fn hostile_filename_is_confined_inside_output_dir() {
+        // Issue #1125 proof vectors: hostile filenames collapse to a single
+        // safe component; the join can never escape `output_dir`, whether
+        // built through `new` or through a struct literal (pub fields).
+        for hostile in ["../escape", "sub/out", "..\\escape", ".."] {
+            let config =
+                ExporterConfig::new(PathBuf::from("/tmp/output"), ExportFormat::Jsonl, hostile);
+            let path = config.output_path();
+            assert!(
+                path.starts_with("/tmp/output"),
+                "{hostile:?} escaped: {}",
+                path.display()
+            );
+            assert_eq!(path.parent(), Some(PathBuf::from("/tmp/output").as_path()));
+
+            let literal = ExporterConfig {
+                output_dir: PathBuf::from("/tmp/output"),
+                format: ExportFormat::Jsonl,
+                filename: hostile.to_string(),
+                append: false,
+                batch_size: None,
+            };
+            let literal_path = literal.output_path();
+            assert_eq!(
+                literal_path.parent(),
+                Some(PathBuf::from("/tmp/output").as_path()),
+                "struct literal {hostile:?} escaped"
+            );
+            let literal_state = literal.state_path();
+            assert_eq!(
+                literal_state.parent(),
+                Some(PathBuf::from("/tmp/output/state").as_path()),
+                "struct literal state {hostile:?} escaped"
+            );
+        }
     }
 
     #[test]
