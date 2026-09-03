@@ -440,8 +440,9 @@ pub trait RecordStorePort: Send + Sync {
 /// Object safe: call sites hold `&dyn StateStorePort` or
 /// `Arc<dyn StateStorePort>`.
 ///
-/// Errors surface as [`crate::error::ScraperError`]; export callers map them
-/// into [`ExporterError::StateStore`] via `?` (its first honest use).
+/// Errors surface as [`crate::error::ScraperError`]; [`load_for_export`](Self::load_for_export)
+/// maps them into [`ExporterError::StateStore`] via `?` (the variant's first
+/// honest use, #1097).
 pub trait StateStorePort: Send + Sync {
     /// Full path to the domain state JSON file.
     fn get_state_path(&self) -> PathBuf;
@@ -463,6 +464,19 @@ pub trait StateStorePort: Send + Sync {
     /// # Errors
     /// [`crate::error::ScraperError`] on corrupt JSON or non-NotFound I/O.
     fn load_or_default(&self) -> crate::error::Result<ExportState>;
+
+    /// Load state into the exporter error domain.
+    ///
+    /// Provided convenience so export callers propagate store failures with
+    /// `?` as [`ExporterError::StateStore`] instead of matching on
+    /// [`crate::error::ScraperError`] at every site.
+    ///
+    /// # Errors
+    /// [`ExporterError::StateStore`] when the underlying [`load`](Self::load)
+    /// fails.
+    fn load_for_export(&self) -> ExportResult<ExportState> {
+        self.load().map_err(ExporterError::StateStore)
+    }
 }
 
 #[cfg(test)]

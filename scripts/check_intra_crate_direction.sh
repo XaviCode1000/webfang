@@ -57,6 +57,16 @@
 # regex. The regex stays conservative; the allowlist absorbs noise.
 # See ADR-0010-A.
 #
+# === cli composition edge (ADR-0012-B 3.H, #1097) ===
+# `cli/` is the outermost composition edge (rank -1, below `infrastructure`):
+# it owns construction of infrastructure concretes (`StateStore`,
+# `RecordStore`, fetchers) and injects them into `application` through domain
+# ports. Because the layering rule is `target_rank < src_rank` (outward
+# only), a `cli` source (rank -1) can never flag — every inner layer ranks
+# higher. This is deliberate: the gate pins `application`/`domain` purity
+# while leaving construction to the edge. Consumed by #1100 (the remaining
+# cli concrete namings drain through the same edge, no allowlist entry).
+#
 # Both passes share the same `#[cfg(test)]` / `mod tests` skip heuristic
 # (line is after the first occurrence in the file).
 #
@@ -90,6 +100,7 @@ ALLOWLIST_CAP=5
 ALLOWLIST_WARN_AT=3
 
 declare -A LAYER_RANK=(
+  [cli]=-1
   [infrastructure]=0
   [adapters]=1
   [application]=2
@@ -121,8 +132,8 @@ layer_of_file() {
     return 1
   fi
   local best=""
-  local best_rank=-1
-  for layer in infrastructure adapters application domain; do
+  local best_rank=-2
+  for layer in infrastructure adapters application domain cli; do
     if [[ "$dir" == *"/$layer" || "$dir" == "$layer" || "$dir" == "$layer"/* ]]; then
       local r="${LAYER_RANK[$layer]}"
       if (( r > best_rank )); then
