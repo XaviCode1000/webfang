@@ -812,7 +812,7 @@ mod tests {
 
         let (results, failures, blocked) = scrape_urls(
             &urls,
-            &crate::ScraperConfig::default(),
+            &crate::domain::config::ScraperConfig::default(),
             &opts,
             &crate::application::progress_observer::NoopObserver,
             None,
@@ -854,7 +854,7 @@ mod tests {
 
         let (results, failures, blocked) = scrape_urls(
             &urls,
-            &crate::ScraperConfig::default(),
+            &crate::domain::config::ScraperConfig::default(),
             &opts,
             &crate::application::progress_observer::NoopObserver,
             None,

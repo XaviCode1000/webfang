@@ -665,7 +665,7 @@ impl Container {
         ));
 
         // 5. Assemble pipeline — ElasticIngestion erased to DynVectorRepository
-        let autotune = crate::infrastructure::config::AutotuningConfig::from_elastic(config);
+        let autotune = crate::domain::config::AutotuningConfig::from_elastic(config);
         Ok(ElasticIngestion::new(
             downloader, bridge, repository, autotune,
         ))
@@ -709,7 +709,7 @@ impl Container {
         mut self,
         opts: &CrawlOptions,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let overrides = crate::infrastructure::autotuning::ElasticOverrides {
+        let overrides = crate::domain::config::ElasticOverrides {
             cpu_cores: opts.elastic.cpu_cores,
             ram_budget_bytes: opts.elastic.ram_budget_bytes,
             max_resource_bytes: opts.elastic.max_resource_bytes,
