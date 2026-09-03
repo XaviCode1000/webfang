@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use tracing::warn;
 
 use crate::cli::error::CliExit;
+use crate::cli::scrape_flow::record_store_bridge;
+use crate::domain::exporter::StateStorePort;
 use crate::domain::ScrapedContent;
-use crate::infrastructure::export::state_store::StateStore;
 use crate::infrastructure::output::file_saver::ObsidianOptions;
 use crate::{
     application::export_factory, infrastructure::output::file_saver::save_results, ExportFormat,
@@ -42,7 +43,7 @@ pub struct ExportConfig<'a> {
     pub(crate) quick_save: bool,
     pub(crate) vault_path: Option<&'a PathBuf>,
     pub(crate) obsidian_options: ObsidianOptions,
-    pub(crate) state_store: Option<&'a StateStore>,
+    pub(crate) state_store: Option<&'a dyn StateStorePort>,
     pub(crate) resume: bool,
     /// AI settings (only used when clean_ai is true and feature is enabled)
     pub(crate) ai_threshold: f32,
@@ -87,21 +88,9 @@ pub async fn run_export(config: ExportConfig<'_>) -> Result<Vec<String>, CliExit
 
 /// Standard export path (backward compatible).
 fn run_standard_export(config: &ExportConfig<'_>) -> Result<Vec<String>, CliExit> {
-    // Bridge the legacy StateStore handle onto the v2 RecordStore seam:
-    // same directory + domain, so a legacy v1 state file migrates in place
-    // on first load (Gate 2 policy lives inside RecordStore).
-    let record_store = config.state_store.map(|ss| {
-        let path = ss.get_state_path();
-        let dir = path
-            .parent()
-            .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
-        let domain = path
-            .file_stem()
-            .and_then(std::ffi::OsStr::to_str)
-            .unwrap_or("unknown")
-            .to_string();
-        crate::infrastructure::export::RecordStore::new(domain).with_state_dir(dir)
-    });
+    // Bridge the state-store port onto the v2 RecordStore seam (shared
+    // helper — same directory + domain derivation as the scrape path).
+    let record_store = config.state_store.map(record_store_bridge);
     let ctx = record_store
         .as_ref()
         .map(|store| export_factory::ResumeContext::new(store).with_resume(config.resume));
@@ -139,18 +128,7 @@ async fn run_ai_export(
         config.results.len()
     );
 
-    let record_store = config.state_store.map(|ss| {
-        let path = ss.get_state_path();
-        let dir = path
-            .parent()
-            .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
-        let domain = path
-            .file_stem()
-            .and_then(std::ffi::OsStr::to_str)
-            .unwrap_or("unknown")
-            .to_string();
-        crate::infrastructure::export::RecordStore::new(domain).with_state_dir(dir)
-    });
+    let record_store = config.state_store.map(record_store_bridge);
     let ctx = record_store
         .as_ref()
         .map(|store| export_factory::ResumeContext::new(store).with_resume(config.resume));
