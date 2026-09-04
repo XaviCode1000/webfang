@@ -157,6 +157,36 @@ fn error_code(result: &Value) -> Option<i64> {
         .and_then(|c| c.as_i64())
 }
 
+/// #1116: an invalid URL is now rejected at the `McpUrl` deserialization
+/// boundary. rmcp 1.8.0 surfaces tool-ARGUMENT deserialization failures as a
+/// `CallToolResult::error` (`isError:true`) rather than a JSON-RPC protocol
+/// error (see `into_tool_argument_error` in rmcp's router). This helper
+/// accepts EITHER rejection shape and asserts the reason names the scheme —
+/// the invariant is "rejected before any fetch", not the exact envelope.
+fn assert_url_argument_rejected(resp: &Value, reason_substring: &str) {
+    let rejected_as_protocol_error = error_code(resp) == Some(JSONRPC_INVALID_PARAMS);
+    let result = resp.get("result");
+    let rejected_as_tool_error = result
+        .and_then(|r| r.get("isError"))
+        .and_then(|v| v.as_bool())
+        == Some(true);
+    assert!(
+        rejected_as_protocol_error || rejected_as_tool_error,
+        "invalid URL must be rejected (protocol -32602 or tool isError), got: {resp}"
+    );
+    let text = result.map(tool_text).unwrap_or_default();
+    let protocol_msg = resp
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+        .unwrap_or("");
+    let haystack = format!("{text}{protocol_msg}").to_lowercase();
+    assert!(
+        haystack.contains(&reason_substring.to_lowercase()),
+        "rejection must mention '{reason_substring}', got: {resp}"
+    );
+}
+
 /// Extract the first content text from a tool result object.
 fn tool_text(result: &Value) -> String {
     result
@@ -198,11 +228,7 @@ async fn scrape_url_rejects_file_scheme() {
     )
     .await;
 
-    assert_eq!(
-        error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "file:// scheme must be rejected with -32602, got: {resp}"
-    );
+    assert_url_argument_rejected(&resp, "no soportado");
 }
 
 /// `scrape_url` rejects an `ftp://` URL (unsupported scheme).
@@ -221,11 +247,7 @@ async fn scrape_url_rejects_ftp_scheme() {
     )
     .await;
 
-    assert_eq!(
-        error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "ftp:// scheme must be rejected with -32602, got: {resp}"
-    );
+    assert_url_argument_rejected(&resp, "no soportado");
 }
 
 /// `validate_url` returns a tool-level result (not a protocol error) for a
@@ -278,11 +300,7 @@ async fn extract_domain_rejects_file_scheme() {
     )
     .await;
 
-    assert_eq!(
-        error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "extract_domain file:// scheme must be rejected with -32602, got: {resp}"
-    );
+    assert_url_argument_rejected(&resp, "no soportado");
 }
 
 /// `crawl_site` rejects an unsupported scheme.
@@ -301,11 +319,7 @@ async fn crawl_site_rejects_ftp_scheme() {
     )
     .await;
 
-    assert_eq!(
-        error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "crawl_site ftp:// scheme must be rejected with -32602, got: {resp}"
-    );
+    assert_url_argument_rejected(&resp, "no soportado");
 }
 
 /// `crawl_site` rejects a `max_depth` beyond the allowed bound (> 10).

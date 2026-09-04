@@ -57,21 +57,12 @@ impl McpHandler {
 
         let _permit = acquire_semaphore!(self, scraping);
 
-        let url = url::Url::parse(&params.url).map_err(|e| {
-            log_scrape_error(
-                &e,
-                &params.url,
-                "axtree.validate_url",
-                Some(&root_correlation),
-                "URL parsing failed",
-            );
-            McpError::invalid_params(
-                format!("URL inválida: {e}"),
-                Some(serde_json::Value::String("url".to_string())),
-            )
-        })?;
+        // #1116: the URL was parsed+hardened at the deserialization boundary
+        // (`McpUrl`); the old re-parse — and its now-unreachable
+        // `axtree.validate_url` error log — are gone.
+        let url = params.url.as_url();
 
-        if let Err(e) = crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await {
+        if let Err(e) = crate::mcp_server::ssrf::validate_url_no_ssrf(url).await {
             log_scrape_error(
                 &e,
                 url.as_str(),
@@ -83,7 +74,7 @@ impl McpHandler {
         }
 
         fetch_snapshot(
-            &url,
+            url,
             params.interactive_only,
             params.selector.as_deref(),
             params.format,
@@ -207,18 +198,31 @@ pub fn build_router() -> ToolRouter<McpHandler> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(feature = "chromium"))]
     use crate::mcp_server::state::McpState;
+    #[cfg(not(feature = "chromium"))]
     use rmcp::handler::server::wrapper::Parameters;
     #[cfg(not(feature = "chromium"))]
     use serial_test::serial;
+    #[cfg(not(feature = "chromium"))]
     use tempfile::TempDir;
+    #[cfg(not(feature = "chromium"))]
     use webfang_core::di::Container;
+    #[cfg(not(feature = "chromium"))]
     use webfang_core::domain::config::ScraperConfig;
+    #[cfg(not(feature = "chromium"))]
     use webfang_core::domain::CrawlerConfig;
+
+    /// Test helper: build an `McpUrl` from a KNOWN-VALID http(s) string.
+    #[cfg(not(feature = "chromium"))]
+    fn vu(s: &str) -> crate::mcp_server::params::McpUrl {
+        s.parse().expect("test url must be valid http(s)")
+    }
 
     /// Build a default handler (no chromium — unit tests run with default
     /// features) backed by a real DI container. Offline: construction never
     /// touches the network.
+    #[cfg(not(feature = "chromium"))]
     async fn test_handler() -> (McpHandler, TempDir) {
         let tmp = TempDir::new().expect("create temp dir");
         let crawler_config =
@@ -263,7 +267,7 @@ mod tests {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .get_accessibility_snapshot(Parameters(GetAccessibilitySnapshotParams {
-                url: "https://example.com/page".to_string(),
+                url: vu("https://example.com/page"),
                 selector: None,
                 interactive_only: true,
                 format: SnapshotFormatParams::Compact,
@@ -283,22 +287,16 @@ mod tests {
         );
     }
 
-    /// A malformed URL must be rejected with `McpError::invalid_params`
-    /// before any snapshot work.
-    #[tokio::test]
-    async fn get_accessibility_snapshot_invalid_url_is_invalid_params() {
-        let (handler, _tmp) = test_handler().await;
-        let res = handler
-            .get_accessibility_snapshot(Parameters(GetAccessibilitySnapshotParams {
-                url: "not a url".to_string(),
-                selector: None,
-                interactive_only: true,
-                format: SnapshotFormatParams::Compact,
-            }))
-            .await;
+    /// #1116: a malformed URL is unrepresentable — `McpUrl` rejects it at
+    /// deserialization (rmcp → -32602) before any snapshot work.
+    #[test]
+    fn get_accessibility_snapshot_invalid_url_is_unrepresentable() {
+        let res = serde_json::from_value::<GetAccessibilitySnapshotParams>(serde_json::json!({
+            "url": "not a url"
+        }));
         assert!(
             res.is_err(),
-            "invalid URL must return McpError, got: {res:?}"
+            "invalid URL must fail to deserialize: {res:?}"
         );
     }
 

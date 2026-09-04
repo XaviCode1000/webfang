@@ -17,13 +17,113 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 use webfang_core::domain::options_spec::{self as options_spec, export};
+use webfang_core::domain::ValidUrl;
 
 use crate::mcp_server::validation::{
     invalid_params, require_http_url, require_max_len, require_max_value_u64, require_non_empty,
     require_one_of, require_range_u64, require_safe_domain, require_safe_filename,
     require_safe_name, require_safe_path, require_safe_path_allow_absolute, require_safe_seed,
-    MAX_BLOB_LEN,
+    MAX_BLOB_LEN, MAX_URL_LEN,
 };
+
+/// A URL parsed and hardened EXACTLY ONCE, at the MCP deserialization
+/// boundary (#1116).
+///
+/// It wraps the domain [`ValidUrl`] newtype, so the #675 hardening runs at
+/// the edge: `data:`/`blob:`/`file:`/`ftp:` schemes are rejected and
+/// embedded `user:pass@` credentials are stripped by `ValidUrl::parse`
+/// BEFORE any handler body executes. Previously every URL field was a raw
+/// `String` validated imperatively by `params.validate()` (which used
+/// `require_http_url`, NOT `ValidUrl`), and each handler then RE-PARSED the
+/// string with `url::Url::parse` — a double parse per request that also
+/// bypassed the credential strip, so `user:pass@host` could reach logs,
+/// frontmatter and exports.
+///
+/// Deserialization runs through `TryFrom<String>` over the JSON tool
+/// arguments. On failure, rmcp 1.8.0 wraps the error in a `CallToolResult`
+/// with `isError: true` (its router's `into_tool_argument_error`), NOT a
+/// JSON-RPC `-32602`, so the Spanish `ValidUrl` reason reaches the client as
+/// content text. `params_rejection_test` pins that shape: rejected before any
+/// fetch, with a reason naming the scheme.
+///
+/// Following **api-parse-dont-validate** and the repo's own
+/// [`crate::mcp_server::validation::SanitizedFilename`] newtype.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub struct McpUrl(ValidUrl);
+
+impl McpUrl {
+    /// The parsed `url::Url` — what the SSRF guard and fetch ports consume.
+    #[must_use]
+    pub fn as_url(&self) -> &url::Url {
+        self.0.as_url()
+    }
+
+    /// The URL string (already credential-stripped by `ValidUrl`).
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    /// Consume into the inner domain newtype.
+    #[must_use]
+    pub fn into_inner(self) -> ValidUrl {
+        self.0
+    }
+}
+
+impl std::fmt::Display for McpUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl TryFrom<String> for McpUrl {
+    type Error = McpError;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        // Preserve the wire-level length cap `require_http_url` enforced,
+        // then apply the domain hardening (scheme allow-list + credential
+        // strip) — the single parse this type exists to guarantee.
+        require_max_len("url", &s, MAX_URL_LEN)?;
+        ValidUrl::parse(&s)
+            .map(McpUrl)
+            .map_err(|e| invalid_params("url", e.to_string()))
+    }
+}
+
+impl std::str::FromStr for McpUrl {
+    type Err = McpError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::try_from(s.to_string())
+    }
+}
+
+// The wire representation is a plain string; the schema stays
+// `{"type": "string"}` exactly as the `String` field advertised, so the
+// JSON-schema parity tests are unaffected by the typestate change.
+impl JsonSchema for McpUrl {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("McpUrl")
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "format": "uri",
+        })
+    }
+}
+
+impl serde::Serialize for McpUrl {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
 
 /// Accepted `format` values for the export tools, derived from the
 /// OptionsSpec SSOT (`export::EXPORT_FORMAT`) — the same closed set the CLI
@@ -70,6 +170,11 @@ pub(crate) fn validate_max_depth(value: u64) -> Result<(), McpError> {
 
 #[cfg(test)]
 mod ssot_tests {
+    /// Test helper: build an `McpUrl` from a KNOWN-VALID http(s) string.
+    fn vu(s: &str) -> super::McpUrl {
+        s.parse().expect("test url must be valid http(s)")
+    }
+
     use webfang_core::domain::options_spec;
 
     /// The SSOT accessor must yield the export variants; guards against the
@@ -84,14 +189,14 @@ mod ssot_tests {
     #[test]
     fn max_pages_bounds_are_enforced_for_both_tools() {
         let crawl = super::CrawlSiteParams {
-            url: "https://example.com".into(),
+            url: vu("https://example.com"),
             max_depth: None,
             max_pages: Some(0),
         }
         .validate();
         assert!(crawl.is_err(), "crawl_site max_pages 0 must be rejected");
         let scrape = super::ScrapeWithOptionsParams {
-            url: "https://example.com".into(),
+            url: vu("https://example.com"),
             max_pages: Some(0),
             download_images: None,
             download_documents: None,
@@ -138,7 +243,7 @@ mod ssot_tests {
         assert_eq!(super::validate_max_depth(0), Ok(()), "0 = seed-only crawl");
         assert_eq!(
             super::CrawlSiteParams {
-                url: "https://example.com".into(),
+                url: vu("https://example.com"),
                 max_depth: Some(0),
                 max_pages: None,
             }
@@ -191,7 +296,7 @@ mod ssot_tests {
 #[serde(deny_unknown_fields)]
 pub struct ScrapeUrlParams {
     /// URL to scrape (must start with http:// or https://)
-    pub url: String,
+    pub url: McpUrl,
 }
 
 impl ScrapeUrlParams {
@@ -199,7 +304,8 @@ impl ScrapeUrlParams {
     /// Returns `McpError::invalid_params` if `url` is not a valid http(s) URL
     /// or exceeds the maximum length.
     pub fn validate(&self) -> Result<(), McpError> {
-        require_http_url("url", &self.url)?;
+        // The URL is already parsed and hardened at the deserialization
+        // boundary by `McpUrl` (#1116) — nothing imperative left to check.
         Ok(())
     }
 }
@@ -209,7 +315,7 @@ impl ScrapeUrlParams {
 #[serde(deny_unknown_fields)]
 pub struct ScrapeWithOptionsParams {
     /// URL to scrape
-    pub url: String,
+    pub url: McpUrl,
     /// Maximum pages to crawl (default: 1)
     pub max_pages: Option<u32>,
     /// Download images if found (default: false)
@@ -237,7 +343,7 @@ impl ScrapeWithOptionsParams {
     /// `selector` exceeds 1024 bytes, or `max_pages` violates the shared spec
     /// bounds (`crawler::MAX_PAGES`, 1..=100_000).
     pub fn validate(&self) -> Result<(), McpError> {
-        require_http_url("url", &self.url)?;
+        // `url` is parsed+hardened at the boundary by `McpUrl` (#1116).
         if let Some(sel) = &self.selector {
             require_max_len("selector", sel, 1024)?;
         }
@@ -252,8 +358,8 @@ impl ScrapeWithOptionsParams {
 #[derive(Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ScrapeBatchParams {
-    /// List of URLs to scrape
-    pub urls: Vec<String>,
+    /// List of URLs to scrape — each parsed+hardened at the boundary (#1116)
+    pub urls: Vec<McpUrl>,
     /// Concurrency limit (default: 4)
     pub concurrency: Option<usize>,
     /// Bypass the robots.txt check for every URL in the batch (default: false).
@@ -275,9 +381,8 @@ impl ScrapeBatchParams {
                 Some(Value::String("urls".to_string())),
             ));
         }
-        for u in &self.urls {
-            require_http_url("urls[]", u)?;
-        }
+        // Each element is already a parsed `McpUrl` (#1116) — the per-url
+        // `require_http_url("urls[]", u)` loop is gone.
         if let Some(c) = self.concurrency {
             require_range_u64("concurrency", c as u64, 1, 64)?;
         }
@@ -290,7 +395,7 @@ impl ScrapeBatchParams {
 #[serde(deny_unknown_fields)]
 pub struct CrawlSiteParams {
     /// Base URL to crawl
-    pub url: String,
+    pub url: McpUrl,
     /// Maximum crawl depth (default: 3, hard cap 10)
     #[schemars(range(min = 1, max = 10))]
     pub max_depth: Option<u8>,
@@ -305,7 +410,7 @@ impl CrawlSiteParams {
     /// or `max_pages` violates the shared spec bounds
     /// (`crawler::MAX_PAGES`, 1..=100_000).
     pub fn validate(&self) -> Result<(), McpError> {
-        require_http_url("url", &self.url)?;
+        // `url` is parsed+hardened at the boundary by `McpUrl` (#1116).
         if let Some(d) = self.max_depth {
             validate_max_depth(u64::from(d))?;
         }
@@ -321,9 +426,9 @@ impl CrawlSiteParams {
 #[serde(deny_unknown_fields)]
 pub struct CrawlWithSitemapParams {
     /// Base URL of the website
-    pub url: String,
+    pub url: McpUrl,
     /// Optional explicit sitemap URL
-    pub sitemap_url: Option<String>,
+    pub sitemap_url: Option<McpUrl>,
 }
 
 impl CrawlWithSitemapParams {
@@ -331,10 +436,8 @@ impl CrawlWithSitemapParams {
     /// Returns `McpError::invalid_params` if `url` (or `sitemap_url` when
     /// present) is not a valid http(s) URL.
     pub fn validate(&self) -> Result<(), McpError> {
-        require_http_url("url", &self.url)?;
-        if let Some(s) = &self.sitemap_url {
-            require_http_url("sitemap_url", s)?;
-        }
+        // Both `url` and `sitemap_url` are parsed+hardened at the boundary
+        // by `McpUrl` (#1116).
         Ok(())
     }
 }
@@ -344,14 +447,14 @@ impl CrawlWithSitemapParams {
 #[serde(deny_unknown_fields)]
 pub struct DiscoverUrlsParams {
     /// URL to extract links from
-    pub url: String,
+    pub url: McpUrl,
 }
 
 impl DiscoverUrlsParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `url` is not a valid http(s) URL.
     pub fn validate(&self) -> Result<(), McpError> {
-        require_http_url("url", &self.url)?;
+        // `url` is parsed+hardened at the boundary by `McpUrl` (#1116).
         Ok(())
     }
 }
@@ -361,14 +464,14 @@ impl DiscoverUrlsParams {
 #[serde(deny_unknown_fields)]
 pub struct DetectSpaParams {
     /// URL to check for SPA content
-    pub url: String,
+    pub url: McpUrl,
 }
 
 impl DetectSpaParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `url` is not a valid http(s) URL.
     pub fn validate(&self) -> Result<(), McpError> {
-        require_http_url("url", &self.url)?;
+        // `url` is parsed+hardened at the boundary by `McpUrl` (#1116).
         Ok(())
     }
 }
@@ -418,7 +521,7 @@ pub struct ExtractLinksParams {
     /// HTML to extract links from
     pub html: String,
     /// Base URL for resolving relative links
-    pub base_url: String,
+    pub base_url: McpUrl,
 }
 
 impl ExtractLinksParams {
@@ -427,7 +530,7 @@ impl ExtractLinksParams {
     /// size or `base_url` is not a valid http(s) URL.
     pub fn validate(&self) -> Result<(), McpError> {
         require_max_len("html", &self.html, MAX_BLOB_LEN)?;
-        require_http_url("base_url", &self.base_url)?;
+        // `base_url` is parsed+hardened at the boundary by `McpUrl` (#1116).
         Ok(())
     }
 }
@@ -490,14 +593,14 @@ impl ValidateUrlParams {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ExtractDomainParams {
     /// URL to extract domain from
-    pub url: String,
+    pub url: McpUrl,
 }
 
 impl ExtractDomainParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `url` is not a valid http(s) URL.
     pub fn validate(&self) -> Result<(), McpError> {
-        require_http_url("url", &self.url)?;
+        // `url` is parsed+hardened at the boundary by `McpUrl` (#1116).
         Ok(())
     }
 }
@@ -506,14 +609,14 @@ impl ExtractDomainParams {
 #[serde(deny_unknown_fields)]
 pub(crate) struct NormalizeUrlParams {
     /// URL to normalize
-    pub url: String,
+    pub url: McpUrl,
 }
 
 impl NormalizeUrlParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `url` is not a valid http(s) URL.
     pub fn validate(&self) -> Result<(), McpError> {
-        require_http_url("url", &self.url)?;
+        // `url` is parsed+hardened at the boundary by `McpUrl` (#1116).
         Ok(())
     }
 }
@@ -522,7 +625,7 @@ impl NormalizeUrlParams {
 #[serde(deny_unknown_fields)]
 pub(crate) struct MatchUrlPatternParams {
     /// URL to check
-    pub url: String,
+    pub url: McpUrl,
     /// Glob pattern to match against
     pub pattern: String,
 }
@@ -532,7 +635,7 @@ impl MatchUrlPatternParams {
     /// Returns `McpError::invalid_params` if `url` is not a valid http(s) URL,
     /// `pattern` is empty, or `pattern` exceeds 1024 bytes.
     pub fn validate(&self) -> Result<(), McpError> {
-        require_http_url("url", &self.url)?;
+        // `url` is parsed+hardened at the boundary by `McpUrl` (#1116).
         require_non_empty("pattern", &self.pattern)?;
         require_max_len("pattern", &self.pattern, 1024)?;
         Ok(())
@@ -543,7 +646,7 @@ impl MatchUrlPatternParams {
 #[serde(deny_unknown_fields)]
 pub(crate) struct IsInternalLinkParams {
     /// URL to check
-    pub url: String,
+    pub url: McpUrl,
     /// Seed domain to compare against (bare domain, e.g. example.com, or a full http(s) URL)
     pub seed_domain: String,
 }
@@ -553,7 +656,7 @@ impl IsInternalLinkParams {
     /// Returns `McpError::invalid_params` if `url` is not a valid http(s) URL
     /// or `seed_domain` is not a well-formed bare domain string.
     pub fn validate(&self) -> Result<(), McpError> {
-        require_http_url("url", &self.url)?;
+        // `url` is parsed+hardened at the boundary by `McpUrl` (#1116).
         require_safe_seed("seed_domain", &self.seed_domain)?;
         Ok(())
     }
@@ -683,7 +786,7 @@ pub(crate) struct DownloadAssetsParams {
     /// HTML containing asset references
     pub html: String,
     /// Base URL for resolving relative asset paths
-    pub base_url: String,
+    pub base_url: McpUrl,
     /// Download images (default: true)
     pub images: Option<bool>,
     /// Download documents (default: false)
@@ -704,7 +807,7 @@ impl DownloadAssetsParams {
     /// present) is not a safe path (absolute paths allowed — issue #600).
     pub fn validate(&self) -> Result<(), McpError> {
         require_max_len("html", &self.html, MAX_BLOB_LEN)?;
-        require_http_url("base_url", &self.base_url)?;
+        // `base_url` is parsed+hardened at the boundary by `McpUrl` (#1116).
         if let Some(d) = &self.output_dir {
             require_safe_path_allow_absolute("output_dir", d)?;
         }
@@ -834,7 +937,7 @@ impl ExportVectorParams {
 #[serde(deny_unknown_fields)]
 pub struct ProcessExportPipelineParams {
     /// URL to scrape and export
-    pub url: Option<String>,
+    pub url: Option<McpUrl>,
     /// Export format
     #[serde(alias = "format", alias = "export_format")]
     pub pipeline_format: Option<String>,
@@ -846,9 +949,7 @@ impl ProcessExportPipelineParams {
     /// valid http(s) URL or `pipeline_format` (when present) is not one of the
     /// allowed formats.
     pub fn validate(&self) -> Result<(), McpError> {
-        if let Some(u) = &self.url {
-            require_http_url("url", u)?;
-        }
+        // `url` (when present) is parsed+hardened at the boundary (#1116).
         if let Some(f) = &self.pipeline_format {
             require_one_of("pipeline_format", f, export_formats())?;
         }
@@ -914,7 +1015,7 @@ pub enum SnapshotFormatParams {
 #[serde(deny_unknown_fields)]
 pub struct GetAccessibilitySnapshotParams {
     /// URL to snapshot (must start with http:// or https://)
-    pub url: String,
+    pub url: McpUrl,
     /// Optional case-insensitive substring to filter nodes by name or role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selector: Option<String>,
@@ -931,7 +1032,7 @@ impl GetAccessibilitySnapshotParams {
     /// Returns `McpError::invalid_params` if `url` is not a valid http(s) URL
     /// or `selector` exceeds 1024 bytes.
     pub fn validate(&self) -> Result<(), McpError> {
-        require_http_url("url", &self.url)?;
+        // `url` is parsed+hardened at the boundary by `McpUrl` (#1116).
         if let Some(sel) = &self.selector {
             require_max_len("selector", sel, 1024)?;
         }
@@ -941,6 +1042,11 @@ impl GetAccessibilitySnapshotParams {
 
 #[cfg(test)]
 mod tests {
+    /// Test helper: build an `McpUrl` from a KNOWN-VALID http(s) string.
+    fn vu(s: &str) -> super::McpUrl {
+        s.parse().expect("test url must be valid http(s)")
+    }
+
     use super::*;
 
     // ========================================================================
@@ -969,7 +1075,7 @@ mod tests {
         };
         let assets = DownloadAssetsParams {
             html: "<html></html>".to_string(),
-            base_url: "https://example.com".to_string(),
+            base_url: vu("https://example.com"),
             images: Some(true),
             documents: Some(false),
             output_dir: Some(ABS_DIR.to_string()),

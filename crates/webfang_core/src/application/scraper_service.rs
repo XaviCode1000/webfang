@@ -444,8 +444,10 @@ struct PageExtractions {
     article: crate::error::Result<readability::Article>,
     /// Author resolved against the shared DOM and the readability byline.
     author: Option<String>,
-    /// Deduplicated asset URLs extracted from the shared DOM.
-    asset_urls: Vec<String>,
+    /// Deduplicated asset URLs extracted from the shared DOM — validated
+    /// `ValidUrl` values: the port downstream only accepts the typestate
+    /// (#1117).
+    asset_urls: Vec<crate::domain::ValidUrl>,
 }
 
 /// Parse `html` once (#962) and run every document-dependent stage over the
@@ -517,7 +519,7 @@ async fn build_scraped_content(
     author: Option<String>,
     html: &str,
     extraction_html: &str,
-    asset_urls: &[String],
+    asset_urls: &[crate::domain::ValidUrl],
     url: &url::Url,
     config: &ScraperConfig,
     downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,

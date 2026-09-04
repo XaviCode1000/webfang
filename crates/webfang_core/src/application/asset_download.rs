@@ -46,12 +46,12 @@ pub async fn download_assets_if_enabled(
 /// Synchronous by design: [`scraper::Html`] contains interior mutability
 /// (`Cell`) and is neither `Send` nor `Sync`, so the DOM must be consumed
 /// entirely within this synchronous phase; the async download stage
-/// ([`download_asset_urls`]) receives owned URL strings only.
+/// ([`download_asset_urls`]) receives validated `ValidUrl` values only (#1117).
 pub fn extract_asset_urls_from_html(
     html: &str,
     _base_url: &url::Url,
     _config: &ScraperConfig,
-) -> Vec<String> {
+) -> Vec<crate::domain::ValidUrl> {
     if !_config.has_downloads() {
         return Vec::new();
     }
@@ -65,14 +65,14 @@ pub fn extract_asset_urls_from_html(
 /// Synchronous by design: [`scraper::Html`] contains interior mutability
 /// (`Cell`) and is not `Send`, so the DOM must be consumed entirely within
 /// this phase; the async download stage ([`download_asset_urls`]) receives
-/// owned URL strings only.
+/// validated `ValidUrl` values only (#1117).
 pub fn extract_asset_urls(
     document: &scraper::Html,
     _base_url: &url::Url,
     _config: &ScraperConfig,
-) -> Vec<String> {
+) -> Vec<crate::domain::ValidUrl> {
     // Extract URLs from HTML
-    let mut urls: Vec<String> = Vec::new();
+    let mut urls: Vec<crate::domain::ValidUrl> = Vec::new();
     if _config.download_images {
         let images = crate::extractor::extract_images(document, _base_url);
         urls.extend(images.into_iter().map(|a| a.url));
@@ -99,7 +99,7 @@ pub fn extract_asset_urls(
 /// downloader construction, empty short-circuit, progress log, then the batch
 /// transfer.
 pub async fn download_asset_urls(
-    urls: &[String],
+    urls: &[crate::domain::ValidUrl],
     _config: &ScraperConfig,
     _shared_downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
 ) -> Result<Vec<DownloadedAsset>> {
