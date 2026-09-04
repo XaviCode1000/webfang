@@ -43,8 +43,11 @@ static LINK_SELECTOR: LazyLock<Selector> =
 /// Represents an extracted asset URL
 #[derive(Debug, Clone)]
 pub struct AssetUrl {
-    /// The full URL of the asset
-    pub url: String,
+    /// The full URL of the asset — validated at extraction (#1117): the
+    /// `base.join(src)` result passes the `ValidUrl` hardening gate, so a
+    /// hostile `src` that changes the scheme (`data:`, `javascript:`,
+    /// `blob:`…) is dropped HERE instead of reaching the TLS pool.
+    pub url: crate::domain::ValidUrl,
     /// Asset type (image or document)
     pub asset_type: crate::adapters::detector::AssetType,
     /// Optional alt text (for images)
@@ -124,15 +127,17 @@ pub fn extract_documents(document: &Html, base_url: &url::Url) -> Vec<AssetUrl> 
     // Extract from <a> tags
     for link in document.select(&LINK_SELECTOR) {
         if let Some(href) = link.value().attr("href") {
-            if !href.is_empty() && !href.starts_with('#') && !href.starts_with("javascript:") {
-                // Skip data: and javascript: URLs
-                if href.starts_with("data:") {
-                    continue;
-                }
-
-                if let Ok(absolute_url) = base_url.join(href) {
-                    let absolute_url = absolute_url.to_string();
-                    let asset_type = crate::adapters::detector::detect_from_url(&absolute_url);
+            // Same source-shape filters as `process_asset_src`; the old
+            // `starts_with("javascript:")` / `starts_with("data:")` checks
+            // are replaced by the ValidUrl scheme gate (#1117).
+            if !href.is_empty() && !href.starts_with('#') {
+                if let Some(absolute_url) = base_url
+                    .join(href)
+                    .ok()
+                    .and_then(|u| crate::domain::ValidUrl::try_from_url(u).ok())
+                {
+                    let asset_type =
+                        crate::adapters::detector::detect_from_url(absolute_url.as_str());
 
                     if asset_type.is_document() {
                         // Get link text as description
@@ -188,18 +193,20 @@ pub fn extract_all_assets(html: &str, base_url: &url::Url) -> Vec<AssetUrl> {
 /// Some(AssetUrl) if valid, None if filtered out
 #[inline]
 fn process_asset_src(src: &str, base_url: &url::Url, alt: Option<String>) -> Option<AssetUrl> {
-    // Filter out invalid sources
-    if src.is_empty()
-        || src.starts_with("data:")
-        || src.starts_with("javascript:")
-        || src.starts_with('#')
-    {
+    // Source-shape filters that the scheme gate cannot express: an empty
+    // src joins to the base page itself, and a bare fragment is not an
+    // asset. The old `starts_with("data:")` / `starts_with("javascript:")`
+    // ad-hoc checks are GONE (#1117) — `ValidUrl::try_from_url` rejects
+    // every non-fetchable scheme, including the ones these two missed.
+    if src.is_empty() || src.starts_with('#') {
         return None;
     }
 
-    // Resolve URL using Url::join (RFC 3986 compliant)
-    let url = base_url.join(src).ok()?.to_string();
-    let asset_type = crate::adapters::detector::detect_from_url(&url);
+    // Resolve URL using Url::join (RFC 3986 compliant), then apply the
+    // single URL hardening policy (scheme allow-list + credential strip).
+    let joined = base_url.join(src).ok()?;
+    let url = crate::domain::ValidUrl::try_from_url(joined).ok()?;
+    let asset_type = crate::adapters::detector::detect_from_url(url.as_str());
     Some(AssetUrl {
         url,
         asset_type,
@@ -242,7 +249,7 @@ mod tests {
 
         assert!(asset.is_some());
         let asset = asset.unwrap();
-        assert_eq!(asset.url, "https://example.com/path/image.png");
+        assert_eq!(asset.url.as_str(), "https://example.com/path/image.png");
         assert_eq!(asset.alt, Some("test".to_string()));
     }
 
@@ -261,6 +268,28 @@ mod tests {
 
         // Fragment URLs
         assert!(process_asset_src("#section", &base, None).is_none());
+    }
+
+    /// #1117 reproduction: the old filter was a two-entry `starts_with`
+    /// list (`data:` / `javascript:`). Every other non-fetchable WHATWG
+    /// scheme — `blob:`, `file:`, `vbscript:`, `view-source:` — slipped
+    /// through as a supposedly-valid asset URL and only failed deep in the
+    /// downloader. Now the single `ValidUrl` scheme gate rejects them all
+    /// at extraction.
+    #[test]
+    fn issue_1117_scheme_gate_is_broader_than_the_old_startswith_list() {
+        let base = url::Url::parse("https://example.com/").unwrap();
+        for hostile in [
+            "blob:https://example.com/uuid",
+            "file:///etc/passwd",
+            "vbscript:msgbox(1)",
+            "view-source:https://example.com/x",
+        ] {
+            assert!(
+                process_asset_src(hostile, &base, None).is_none(),
+                "{hostile} must be dropped by the ValidUrl scheme gate (the old starts_with list let it through)"
+            );
+        }
     }
 
     #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB
@@ -316,7 +345,7 @@ mod tests {
         // Empty and fragment hrefs resolve to the base path (/report.pdf)
         // which IS a document — the line-111 guard must reject them.
         assert_eq!(docs.len(), 1);
-        assert!(docs[0].url.ends_with("valid.pdf"));
+        assert!(docs[0].url.as_str().ends_with("valid.pdf"));
     }
 
     #[cfg_attr(miri, ignore)] // scraper::Selector servo_arc UB

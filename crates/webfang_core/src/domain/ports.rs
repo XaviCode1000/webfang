@@ -25,6 +25,7 @@ use std::pin::Pin;
 use crate::domain::entities::progress::{ScrapeError, ScrapeStatus};
 use crate::domain::entities::ScrapedContent;
 use crate::domain::error::DomainError;
+use crate::domain::value_objects::ValidUrl;
 
 /// Port trait for content extraction (scraping).
 ///
@@ -79,12 +80,15 @@ pub trait PersistencePort: Send + Sync {
 /// specific download implementations. The production adapter streams
 /// to disk with ~8KB RAM; tests inject mocks that count calls.
 pub trait AssetDownloaderPort: Send + Sync {
-    /// Download a batch of assets from URLs.
+    /// Download a batch of assets from validated URLs.
     ///
     /// Returns partial results — individual failures don't abort the batch.
+    /// The element type is the domain `ValidUrl` newtype (#1117): a
+    /// non-fetchable scheme or embedded credentials cannot even be named
+    /// here — the parse lives once at the caller's edge.
     fn download_batch(
         &self,
-        urls: &[String],
+        urls: &[ValidUrl],
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<

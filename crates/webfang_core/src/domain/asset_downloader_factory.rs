@@ -132,7 +132,7 @@ mod tests {
             factory.build(&ScraperConfig::default()).expect("build");
         // A batch of zero URLs is the deterministic assertion: it must return
         // an empty Ok without touching the network.
-        let urls: Vec<String> = Vec::new();
+        let urls: Vec<crate::domain::ValidUrl> = Vec::new();
         let assets = futures::executor::block_on(downloader.download_batch(&urls));
         assert!(assets.expect("empty batch must succeed").is_empty());
     }
