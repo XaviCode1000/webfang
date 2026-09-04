@@ -5910,7 +5910,6 @@ version = "2.0.0"
 dependencies = [
  "clap",
  "dirs 5.0.1",
- "serde_json",
  "tokio",
  "tracing",
  "url",
