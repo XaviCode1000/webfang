@@ -22,7 +22,15 @@
 #   miri runs on schedule/dispatch only
 #
 # Key optimization: single runner = single compilation, single cache.
-# Swatinem/rust-cache restores ~300MB of compiled deps on warm runs.
+#
+# Cache Budget Policy (#1171, measured per-job pool weights):
+#   coverage 1419MB (trimmed — non-gate), test-full 1341, test-core 1161,
+#   test-ai 1015 (trimmed — non-gate), doc-quality 822, feature-matrix 717,
+#   mcp 628, tokio 569 (trimmed — non-gate), clippy 399, code-quality 130.
+#   Saves are main-only: PRs restore main's cache lineage and never save,
+#   so the pool does not scale with open PRs.
+#   RULE: any NEW rust-cache consumer must justify its GB in the PR and is
+#   review-blocked by default (precedent: benches.yml:55-60).
 
 name: CI
 
