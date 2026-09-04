@@ -321,10 +321,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # Distinct cache key: unstable cfg changes build fingerprints.
-          key: tokio-unstable
+      # no rust-cache (#1171): non-gate job, compiles cold — cache pool budget, benches.yml:55-60 precedent
       - uses: taiki-e/install-action@nextest
       - name: Compile proof (webfang_cli with console under unstable cfg)
         run: cargo check -p webfang_cli --features console
@@ -352,7 +349,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      # no rust-cache (#1171): non-gate job, compiles cold — cache pool budget, benches.yml:55-60 precedent
       - name: Cache ONNX model (Granite-97M)
         uses: actions/cache@v5
         with:
@@ -772,7 +769,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      # no rust-cache (#1171): non-gate job, compiles cold — cache pool budget, benches.yml:55-60 precedent
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage
         run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info -- --skip test_mcp
