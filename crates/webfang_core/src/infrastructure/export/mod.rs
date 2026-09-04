@@ -12,7 +12,6 @@ pub mod file_exporter;
 pub mod jsonl_exporter;
 pub mod jsonl_writer;
 pub mod record_store;
-pub mod record_transition;
 pub mod state_store;
 pub mod vector_exporter;
 

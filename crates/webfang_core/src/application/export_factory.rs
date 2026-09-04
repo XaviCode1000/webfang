@@ -30,8 +30,8 @@ use crate::application::resume::{canonical_key, load_preserving, RunId};
 use crate::domain::crawler_port::filename::confine_filename_component;
 use crate::domain::page_state::{PageStatus, Stateful};
 use crate::domain::persistence::{DomainRecords, LastError, RawRecord, RecordStorePort};
+use crate::domain::record_transition;
 use crate::domain::{entities::ExportFormat, exporter::ExporterError, Exporter, ExporterConfig};
-use crate::infrastructure::export::record_transition;
 
 /// Per-run resume/commit context handed to the export functions (D5 seams).
 ///

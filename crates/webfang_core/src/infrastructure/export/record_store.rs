@@ -25,6 +25,7 @@ use tracing::debug;
 
 use crate::domain::exporter::{DomainRecords, RawRecord};
 use crate::domain::page_state::PageStatus;
+use crate::domain::record_transition;
 
 // Backwards-compat shim (ADR-0012-B 3.H): the record DTOs and their error
 // moved to `domain::exporter`; re-export them so `infrastructure::export::*`
@@ -375,10 +376,10 @@ impl RecordStore {
     /// Violations are QUARANTINED (dropped from the in-memory view and
     /// re-drivable next run), never panics: `warn!` names url + invariant +
     /// file path. The rule itself lives in the pure ADR-0014 state machine
-    /// ([`crate::infrastructure::export::record_transition`]); this wrapper
+    /// ([`crate::domain::record_transition`]); this wrapper
     /// contributes only the file-path context and the `warn!` I/O.
     fn validate_and_quarantine(records: DomainRecords, path: &std::path::Path) -> DomainRecords {
-        let (kept, quarantined) = super::record_transition::partition_valid(records);
+        let (kept, quarantined) = record_transition::partition_valid(records);
         for entry in &quarantined {
             tracing::warn!(
                 url = %entry.url,
@@ -433,7 +434,7 @@ impl RecordStore {
             // (dropped + warned), never promoted to Committed state. The
             // whole-file Corrupt policy stays reserved for unparseable
             // structure, so one bad entry never discards good neighbors.
-            if super::record_transition::is_meaningless_identity(&url) {
+            if record_transition::is_meaningless_identity(&url) {
                 tracing::warn!(
                     file = %path.display(),
                     "v1 migration: dropping empty-string URL from legacy processed_urls (malformed legacy entry)"
@@ -491,7 +492,7 @@ impl RecordStore {
     /// function is a delegating alias kept for its existing callers.
     #[must_use]
     pub fn derived_total_exported(records: &DomainRecords) -> u64 {
-        super::record_transition::derived_total_exported(records)
+        record_transition::derived_total_exported(records)
     }
 }
 
@@ -1130,7 +1131,7 @@ mod tests {
         assert_eq!(loaded.len(), 1, "no record lost by the crashed save");
         assert_eq!(loaded[url].status, PageStatus::Exported);
         assert_eq!(
-            crate::infrastructure::export::record_transition::derived_total_exported(&loaded),
+            crate::domain::record_transition::derived_total_exported(&loaded),
             0,
             "nothing may count as COMMITTED after the crash"
         );
@@ -1142,7 +1143,7 @@ mod tests {
         let final_state = recovered.load().expect("post-recovery load");
         assert_eq!(final_state[url].status, PageStatus::Committed);
         assert_eq!(
-            crate::infrastructure::export::record_transition::derived_total_exported(&final_state),
+            crate::domain::record_transition::derived_total_exported(&final_state),
             1
         );
     }
@@ -1166,7 +1167,7 @@ mod tests {
         let loaded = recovered.load().expect("reload must succeed");
         assert_eq!(loaded[url].status, PageStatus::Committed);
         assert_eq!(
-            crate::infrastructure::export::record_transition::derived_total_exported(&loaded),
+            crate::domain::record_transition::derived_total_exported(&loaded),
             1,
             "the derived counter sees the committed record without any stored counter"
         );

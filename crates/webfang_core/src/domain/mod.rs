@@ -95,6 +95,10 @@ pub mod persistence;
 /// reads so `application` stops importing `infrastructure::downloader`
 /// (ADR-0012 sub-slice 3.B-1c).
 pub mod ram_probe_port;
+/// Pure ADR-0014 record state-transition machine: D2/E6 invariants, quarantine
+/// classification, and the EXPORTED→COMMITTED commit point shared with the
+/// binding loom model. Pure — no filesystem, locks, clock, or tracing.
+pub(crate) mod record_transition;
 pub mod semantic_cleaner;
 pub mod semantic_inspector;
 pub mod text_chunker;
