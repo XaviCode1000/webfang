@@ -48,6 +48,37 @@ fn spawn_stdio_server() -> tokio::process::Child {
     cmd.spawn().expect("spawn the webfang-mcp-stdio binary")
 }
 
+/// Same as [`spawn_stdio_server`] but with stderr piped, so #1108 failure-mode
+/// tests can assert the absence of a panic backtrace on the child's stderr.
+fn spawn_stdio_server_with_stderr() -> tokio::process::Child {
+    let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_webfang-mcp-stdio"));
+    cmd.arg("--enable-ai")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    cmd.spawn().expect("spawn the webfang-mcp-stdio binary")
+}
+
+/// Drain the child's stderr to a string. Call after the child has exited.
+async fn drain_stderr(child: &mut tokio::process::Child) -> String {
+    let mut buf = Vec::new();
+    if let Some(mut stderr) = child.stderr.take() {
+        tokio::io::AsyncReadExt::read_to_end(&mut stderr, &mut buf)
+            .await
+            .expect("read the child's stderr to EOF");
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// Wait for the child to exit, failing the test if it hangs.
+async fn wait_exited(child: &mut tokio::process::Child) -> std::process::ExitStatus {
+    tokio::time::timeout(EXIT_TIMEOUT, child.wait())
+        .await
+        .expect("server exited within the timeout")
+        .expect("reap the server child process")
+}
+
 /// Write one JSON-RPC message (newline-delimited) to the server.
 async fn send(stdin: &mut tokio::process::ChildStdin, message: &serde_json::Value) {
     let mut line = message.to_string();
@@ -225,5 +256,72 @@ async fn stdio_server_exits_cleanly_on_stdin_eof() {
     assert!(
         status.success(),
         "server must exit with code 0 on stdin EOF; got: {status}"
+    );
+}
+
+/// Regression guard for #1108: stdin EOF *before* the handshake used to abort
+/// the process at the `serve().expect()` site — exit 101 with a panic
+/// backtrace aimed at the MCP client. The binary must instead log a clean
+/// error and exit with the I/O error code (74), with no panic text on stderr.
+#[tokio::test]
+async fn stdio_server_exits_gracefully_on_pre_handshake_stdin_eof() {
+    let mut child = spawn_stdio_server_with_stderr();
+    // Close stdin before any JSON-RPC: serve() fails with ConnectionClosed.
+    drop(child.stdin.take().expect("piped stdin"));
+    // Nobody reads stdout; drop it so the child can never block on the pipe.
+    drop(child.stdout.take().expect("piped stdout"));
+
+    let status = wait_exited(&mut child).await;
+    let stderr = drain_stderr(&mut child).await;
+
+    assert!(
+        !stderr.contains("panicked at"),
+        "transport failure must not surface a panic backtrace to the MCP client; stderr:\n{stderr}"
+    );
+    assert_eq!(
+        status.code(),
+        Some(74),
+        "transport failure must exit with the I/O error code (74); stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Error:"),
+        "stderr must carry the user-facing error line; got:\n{stderr}"
+    );
+}
+
+/// Regression guard for #1108: a broken stdout pipe (client closes the read
+/// end mid-handshake) used to panic at the same `serve().expect()` site with
+/// `TransportError { BrokenPipe }`. The binary must exit cleanly instead.
+#[tokio::test]
+async fn stdio_server_exits_gracefully_on_broken_stdout_pipe() {
+    let mut child = spawn_stdio_server_with_stderr();
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    // Close the read end of the stdout pipe BEFORE the first server write:
+    // sending the initialize response fails with EPIPE.
+    drop(child.stdout.take().expect("piped stdout"));
+
+    let initialize = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "broken-pipe-test", "version": "1"}
+        }
+    });
+    send(&mut stdin, &initialize).await;
+
+    let status = wait_exited(&mut child).await;
+    let stderr = drain_stderr(&mut child).await;
+
+    assert!(
+        !stderr.contains("panicked at"),
+        "broken pipe must not surface a panic backtrace to the MCP client; stderr:\n{stderr}"
+    );
+    assert_eq!(
+        status.code(),
+        Some(74),
+        "broken pipe must exit with the I/O error code (74); stderr:\n{stderr}"
     );
 }

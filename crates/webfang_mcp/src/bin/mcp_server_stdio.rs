@@ -76,11 +76,18 @@ async fn main() -> CliExit {
     let handler = McpHandler::new(state);
 
     // Serve over stdio — stdin/stdout for JSON-RPC, stderr for logs.
+    // A closed stdin or broken pipe before the handshake completes fails
+    // `serve()`; panicking there would send a backtrace to the spawning MCP
+    // client (OpenCode, Claude Desktop, …). Log and exit with the I/O error
+    // code instead (#1108).
     let transport = (tokio::io::stdin(), tokio::io::stdout());
-    let server = handler
-        .serve(transport)
-        .await
-        .expect("failed to start MCP server over stdio");
+    let server = match handler.serve(transport).await {
+        Ok(server) => server,
+        Err(e) => {
+            tracing::error!(error = %e, "mcp stdio serve failed");
+            return CliExit::IoError(format!("No se pudo iniciar el servidor MCP por stdio: {e}"));
+        },
+    };
 
     // Wait for the server to finish (client disconnects or stdin closes).
     let waiting_result = server.waiting().await;
@@ -95,7 +102,13 @@ async fn main() -> CliExit {
         }
     }
 
-    waiting_result.expect("MCP server error");
+    // Normal EOF shutdown returns Ok → exit 0; a transport error mid-session
+    // gets the same clean log + exit treatment instead of a panic backtrace
+    // aimed at the spawning MCP client (#1108).
+    if let Err(e) = waiting_result {
+        tracing::error!(error = %e, "mcp server terminated with error");
+        return CliExit::IoError(format!("El servidor MCP por stdio terminó con error: {e}"));
+    }
 
     CliExit::Success
 }
