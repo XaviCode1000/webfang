@@ -182,6 +182,15 @@ pub async fn start_mcp_server(
         .with_graceful_shutdown(shutdown_signal(state.cancel_token.clone()))
         .await?;
 
+    // #1121: drain and join the crawl-result background writer before the
+    // runtime goes away, so every write acknowledged by `save` is confirmed
+    // persisted and a dead writer is reported instead of silently detached.
+    if let Some(repo) = state.container.crawl_result_repository() {
+        if let Err(e) = repo.shutdown().await {
+            tracing::warn!(error = %e, "crawl-result writer shutdown reported errors");
+        }
+    }
+
     Ok(())
 }
 
