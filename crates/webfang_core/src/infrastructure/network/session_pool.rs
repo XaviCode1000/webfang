@@ -13,6 +13,13 @@
 //!   `MAX_TRACKED_DOMAINS` cap by evicting the least-recently-seen domain,
 //!   so a long-lived MCP server cannot grow the map linearly with domain
 //!   cardinality
+//! - **Frozen cooldown (#1134)** — the ban deadline (backoff + per-slot
+//!   recovery stagger) is computed once in `apply_failure`; the read path is
+//!   a pure `now >= deadline` comparison, so a frozen state always yields the
+//!   same verdict
+//! - **Balanced slot pick (#1134)** — `find_available` starts its scan at
+//!   `hash(domain, now)` instead of always returning slot 0, spreading load
+//!   across healthy slots with zero extra state
 //! - **Zero-cost abstraction** — `impl SessionManager` not `Box<dyn SessionManager>`
 //!
 //! # D6 lock-across-await audit (task 2.3, change stabilization-concurrency-budget)
@@ -84,6 +91,46 @@ impl SessionState {
 struct DomainEntry {
     states: Vec<SessionState>,
     last_seen: Instant,
+}
+
+/// Process-lifetime anchor for [`pick_start`]'s time signal. `Instant`
+/// exposes no raw bits, so the only clock reading available is its distance
+/// from another `Instant`. This is a read-only-after-init constant, not
+/// per-domain state: any fixed anchor yields the same pick distribution.
+static PICK_ANCHOR: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// Deterministic start index for the balanced slot scan (#1134).
+///
+/// Folds the domain bytes and the clock reading (distance from the process
+/// anchor, in nanoseconds) through an FNV-1a mix plus a SplitMix64 avalanche
+/// finalizer, so the low bits used by the modulo carry entropy from both
+/// inputs and successive acquire instants land on different slots. No state
+/// is kept between calls: the same `(domain, now)` pair always resolves to
+/// the same start, keeping picks reproducible under an injected clock.
+fn pick_start(domain: &str, now: Instant, len: usize) -> usize {
+    let mut seed: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a offset basis
+    for byte in domain.bytes() {
+        seed ^= u64::from(byte);
+        seed = seed.wrapping_mul(0x0000_0100_0000_01b3); // FNV-1a prime
+    }
+    // |now - anchor| in nanos. The reverse direction covers injected clocks
+    // frozen before the anchor was captured (tests seed `Instant::now()` a
+    // few microseconds earlier than the first acquire).
+    let anchor = *PICK_ANCHOR.get_or_init(Instant::now);
+    let tick = now
+        .checked_duration_since(anchor)
+        .or_else(|| anchor.checked_duration_since(now))
+        .unwrap_or(Duration::ZERO);
+    seed ^= u64::try_from(tick.as_nanos()).unwrap_or(u64::MAX);
+    // SplitMix64 finalizer — bijective avalanche over the mixed seed.
+    let mut z = seed;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^= z >> 31;
+    // `len` is ≥ 1 by construction (DomainSlots is NonZero); the guards keep
+    // the narrowing casts infallible without introducing an unwrap.
+    let modulus = u64::try_from(len.max(1)).unwrap_or(1);
+    usize::try_from(z % modulus).unwrap_or(0)
 }
 
 /// Configuration for the session pool.
@@ -228,21 +275,32 @@ impl DomainSessionPool {
         }
     }
 
-    /// Find the first healthy or recoverable session for the domain.
+    /// Pick an available session with a hash-rotated scan (#1134).
+    ///
+    /// The scan starts at the slot derived from `hash(domain, now)` and wraps
+    /// around, so successive acquires at different instants spread across
+    /// slots instead of stampeding on `SessionId(0)`. Zero new state: the
+    /// start is recomputed per call, and the same `(domain, now)` pair always
+    /// resolves to the same slot — the pick stays reproducible under an
+    /// injected clock.
     fn find_available(
         &self,
         domain: &str,
         sessions: &[SessionState],
         now: Instant,
     ) -> Option<SessionId> {
-        for (idx, state) in sessions.iter().enumerate() {
+        let len = sessions.len();
+        let start = pick_start(domain, now, len);
+        for k in 0..len {
+            let idx = (start + k) % len;
+            let state = &sessions[idx];
             match state.status {
                 SessionStatus::Healthy => {
                     debug!(domain, session_id = idx, "acquired healthy session");
                     return Some(SessionId(idx));
                 },
                 SessionStatus::Banned => {
-                    if self.banned_session_ready(state, idx, now) {
+                    if Self::banned_session_ready(state, now) {
                         debug!(domain, session_id = idx, "acquired session after cooldown");
                         return Some(SessionId(idx));
                     }
@@ -254,17 +312,16 @@ impl DomainSessionPool {
         None
     }
 
-    /// Whether a banned session's cooldown (with jitter) has elapsed.
-    fn banned_session_ready(&self, state: &SessionState, idx: usize, now: Instant) -> bool {
-        let Some(next_retry) = state.next_retry_time else {
-            return false;
-        };
-        // Apply +0–20% dynamic jitter to prevent thundering herd recovery
-        let jitter_range = self.backoff_delay(state.consecutive_failures);
-        let jitter_ms = (jitter_range.as_millis() as f64 * 0.2) as u128;
-        let jitter_offset = Duration::from_millis((idx as u64 * 37) % (jitter_ms.max(1) as u64));
-        let effective_retry = next_retry + jitter_offset;
-        now >= effective_retry
+    /// Whether a banned session's cooldown has elapsed.
+    ///
+    /// #1134: pure comparison — the deadline (backoff + per-slot recovery
+    /// stagger) was frozen at ban time in [`Self::apply_failure`], so the
+    /// read path never draws rand and a frozen state always yields the same
+    /// verdict.
+    fn banned_session_ready(state: &SessionState, now: Instant) -> bool {
+        state
+            .next_retry_time
+            .is_some_and(|deadline| now >= deadline)
     }
 
     /// Soft cap on tracked domains (#1130): past the shared
@@ -308,12 +365,22 @@ impl DomainSessionPool {
         status_code: u16,
         should_ban: bool,
     ) {
+        let now = self.clock.now();
         state.consecutive_failures += 1;
-        state.last_failure_time = Some(self.clock.now());
+        state.last_failure_time = Some(now);
 
         if should_ban {
+            // #1134: the cooldown deadline is frozen HERE — one rand draw for
+            // the exponential backoff plus a deterministic per-slot recovery
+            // stagger (0–20% of the delay, spread by slot index). Reads never
+            // re-draw: `banned_session_ready` is a pure `now >= deadline`
+            // comparison, so the same frozen state always yields the same
+            // verdict while different slots still recover at different times.
             let delay = self.backoff_delay(state.consecutive_failures);
-            state.next_retry_time = Some(self.clock.now() + delay);
+            let stagger_window_ms = (delay.as_millis() as u64 / 5).max(1);
+            let slot = u64::try_from(session_id.0).unwrap_or(u64::MAX);
+            let stagger_ms = slot.wrapping_mul(37) % stagger_window_ms;
+            state.next_retry_time = Some(now + delay + Duration::from_millis(stagger_ms));
             state.status = SessionStatus::Banned;
             warn!(
                 domain,
@@ -321,7 +388,8 @@ impl DomainSessionPool {
                 status_code,
                 failures = state.consecutive_failures,
                 backoff_secs = delay.as_secs(),
-                "session banned with exponential backoff"
+                stagger_ms,
+                "session banned with exponential backoff (cooldown frozen)"
             );
         } else {
             // Non-ban failure: mark retiring after threshold
@@ -500,7 +568,10 @@ mod tests {
     fn new_session_is_healthy() {
         let pool = DomainSessionPool::default_pool();
         let id = pool.acquire("example.com").expect("should acquire");
-        assert_eq!(id, SessionId(0));
+        // #1134: the pick is hash-rotated, so any seeded slot is a valid
+        // answer — the invariant is "acquire returns one of the healthy
+        // slots", not "always slot 0".
+        assert!(id.0 < 8, "pick must stay inside the seeded slots");
     }
 
     #[test]
@@ -510,8 +581,8 @@ mod tests {
         pool.report_failure("example.com", id, 429);
 
         let sessions = pool.sessions.get("example.com").unwrap();
-        assert_eq!(sessions.states[0].status, SessionStatus::Banned);
-        assert_eq!(sessions.states[0].consecutive_failures, 1);
+        assert_eq!(sessions.states[id.0].status, SessionStatus::Banned);
+        assert_eq!(sessions.states[id.0].consecutive_failures, 1);
     }
 
     #[test]
@@ -522,8 +593,8 @@ mod tests {
         pool.report_success("example.com", id);
 
         let sessions = pool.sessions.get("example.com").unwrap();
-        assert_eq!(sessions.states[0].status, SessionStatus::Healthy);
-        assert_eq!(sessions.states[0].consecutive_failures, 0);
+        assert_eq!(sessions.states[id.0].status, SessionStatus::Healthy);
+        assert_eq!(sessions.states[id.0].consecutive_failures, 0);
     }
 
     #[test]
@@ -533,8 +604,8 @@ mod tests {
         pool.report_failure("example.com", id, 500);
 
         let sessions = pool.sessions.get("example.com").unwrap();
-        assert_eq!(sessions.states[0].status, SessionStatus::Healthy);
-        assert_eq!(sessions.states[0].consecutive_failures, 1);
+        assert_eq!(sessions.states[id.0].status, SessionStatus::Healthy);
+        assert_eq!(sessions.states[id.0].consecutive_failures, 1);
     }
 
     #[test]
@@ -546,7 +617,7 @@ mod tests {
         pool.report_failure("example.com", id, 500);
 
         let sessions = pool.sessions.get("example.com").unwrap();
-        assert_eq!(sessions.states[0].status, SessionStatus::Retiring);
+        assert_eq!(sessions.states[id.0].status, SessionStatus::Retiring);
     }
 
     // ── Task 3.3: Backoff doubling (with ±20% jitter) ──
@@ -908,21 +979,6 @@ mod tests {
     }
 
     #[test]
-    fn acquire_returns_different_sessions() {
-        let config = SessionPoolConfig {
-            pool_size: slots(4),
-            ..Default::default()
-        };
-        let pool = DomainSessionPool::new(config, Arc::new(SystemClock));
-        let id1 = pool.acquire("example.com").unwrap();
-        let id2 = pool.acquire("example.com").unwrap();
-
-        // Should get different session IDs (first available)
-        assert_eq!(id1, SessionId(0));
-        assert_eq!(id2, SessionId(0)); // Both get the same first healthy one
-    }
-
-    #[test]
     fn multiple_domains_independent() {
         let pool = DomainSessionPool::default_pool();
         let id1 = pool.acquire("a.com").unwrap();
@@ -931,11 +987,12 @@ mod tests {
         pool.report_failure("a.com", id1, 429);
         pool.report_success("b.com", id2);
 
-        // a.com has a banned session, b.com is healthy
+        // a.com has a banned session, b.com is healthy — checked at the
+        // slots that were actually picked (#1134: the pick is hash-rotated).
         let a = pool.sessions.get("a.com").unwrap();
         let b = pool.sessions.get("b.com").unwrap();
-        assert_eq!(a.states[0].status, SessionStatus::Banned);
-        assert_eq!(b.states[0].status, SessionStatus::Healthy);
+        assert_eq!(a.states[id1.0].status, SessionStatus::Banned);
+        assert_eq!(b.states[id2.0].status, SessionStatus::Healthy);
         assert_eq!(pool.total_domains(), 2);
     }
 
@@ -977,6 +1034,91 @@ mod tests {
 
         let id2 = pool.acquire("example.com");
         assert!(id2.is_some(), "should be available after cooldown");
+    }
+
+    // ── #1134: deterministic cooldown + balanced slot pick ──
+
+    /// Symptom 1 (cooldown window mobile): with the SAME frozen state, the
+    /// availability verdict must not flip between calls. The base code
+    /// re-drew the jitter rand inside `banned_session_ready` on every check,
+    /// so the effective deadline moved each `acquire` — the same instant
+    /// answered available/not-available at random.
+    #[test]
+    fn cooldown_verdict_is_deterministic_for_frozen_state() {
+        let clock = MockClock::new(Instant::now());
+        let pool = DomainSessionPool::new(
+            SessionPoolConfig {
+                pool_size: slots(2),
+                base_delay: Duration::from_millis(100),
+                max_delay: Duration::from_secs(10),
+                max_exp: 6,
+                ..Default::default()
+            },
+            clock.handle(),
+        );
+        // Seed the domain entry (report_failure is a no-op for unknown
+        // domains — only acquire creates the slot Vec).
+        pool.acquire("example.com").expect("seed domain slots");
+        // Ban slot 0 twice (deeper backoff) and slot 1 once, at the same
+        // instant. Slot 0's deadline ∈ [320,480]ms, slot 1's ∈ [160,240]ms.
+        pool.report_failure("example.com", SessionId(0), 429);
+        pool.report_failure("example.com", SessionId(0), 429);
+        pool.report_failure("example.com", SessionId(1), 429);
+
+        let (retry0, retry1) = {
+            let sessions = pool.sessions.get("example.com").unwrap();
+            (
+                sessions.states[0].next_retry_time.expect("slot 0 banned"),
+                sessions.states[1].next_retry_time.expect("slot 1 banned"),
+            )
+        };
+        // Freezing the clock 20ms past slot 1's base deadline lands inside
+        // the jitter band, while slot 0 is provably still banned (the
+        // doubling separates the two deadlines by ≥60ms).
+        assert!(retry0 > retry1 + Duration::from_millis(20));
+        clock.set_now(retry1 + Duration::from_millis(20));
+
+        let verdicts: Vec<bool> = (0..40)
+            .map(|_| pool.acquire("example.com").is_some())
+            .collect();
+        assert!(
+            verdicts.iter().all(|v| *v == verdicts[0]),
+            "frozen state must yield one verdict, got {verdicts:?}"
+        );
+    }
+
+    /// Symptoms 2+3 (idx-0 stampede): the base `find_available` scanned in
+    /// slot order and returned the first healthy slot, so every acquire
+    /// collapsed onto `SessionId(0)` while the other 7 slots sat idle. The
+    /// hash-based pick must spread picks across slots with zero new state.
+    #[test]
+    fn acquire_spreads_picks_across_slots() {
+        use std::collections::HashSet;
+
+        let clock = MockClock::new(Instant::now());
+        let pool = DomainSessionPool::new(
+            SessionPoolConfig {
+                pool_size: slots(8),
+                ..Default::default()
+            },
+            clock.handle(),
+        );
+        let mut picks = HashSet::new();
+        for _ in 0..32 {
+            clock.advance(Duration::from_millis(1));
+            let id = pool.acquire("example.com").expect("healthy slots");
+            assert!(id.0 < 8, "pick must stay inside the seeded slots");
+            picks.insert(id.0);
+        }
+        assert!(
+            picks.len() > 1,
+            "32 acquires collapsed onto the single slot {picks:?}"
+        );
+
+        // Determinism: the same frozen (domain, now) re-picks the same slot.
+        let a = pool.acquire("example.com");
+        let b = pool.acquire("example.com");
+        assert_eq!(a, b, "pick must be reproducible for a frozen clock");
     }
 
     #[test]
