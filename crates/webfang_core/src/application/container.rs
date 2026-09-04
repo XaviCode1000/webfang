@@ -353,10 +353,20 @@ impl Container {
 
         // 5. Crawl result repository (append-only log)
         let log_path = scraper_config.output_dir.join("crawl_results.bin");
-        let crawl_result_repo = match CrawlResultRepositoryImpl::new(log_path, 1024) {
-            Ok(repo) => Some(Arc::new(repo) as Arc<dyn CrawlResultRepository>),
-            Err(e) => {
+        // #1106: construction rebuilds the index by scanning an existing log
+        // with synchronous std::fs I/O — on the blocking pool, so a large
+        // persisted log cannot park a Tokio worker during startup.
+        let repo_build =
+            tokio::task::spawn_blocking(move || CrawlResultRepositoryImpl::new(log_path, 1024))
+                .await;
+        let crawl_result_repo = match repo_build {
+            Ok(Ok(repo)) => Some(Arc::new(repo) as Arc<dyn CrawlResultRepository>),
+            Ok(Err(e)) => {
                 tracing::warn!("failed to initialize repository: {e}");
+                None
+            },
+            Err(e) => {
+                tracing::warn!("failed to initialize repository (join): {e}");
                 None
             },
         };
@@ -722,16 +732,38 @@ impl Container {
 
         #[cfg(feature = "persistence")]
         if opts.elastic.enabled {
-            let pool = sqlite_persistence::create_pool(&config.db_path, config.db_pool_size)?;
+            // #1106: `create_pool` does a blocking `create_dir_all` on the DB
+            // parent — construct it on the blocking pool so a slow or network
+            // disk cannot stall the async startup path (the MCP handshake
+            // waits on this future).
+            let db_path = config.db_path.clone();
+            let pool_size = config.db_pool_size;
+            let pool = tokio::task::spawn_blocking(move || {
+                sqlite_persistence::create_pool(&db_path, pool_size)
+            })
+            .await
+            .map_err(|e| {
+                crate::error::ScraperError::persistence(format!("crear pool SQLite (join): {e}"))
+            })??;
             sqlite_persistence::setup_schema(&pool).await?;
             tracing::info!(db_path = %config.db_path.display(), "elastic_sqlite_sink_wired");
             repos.push(Arc::new(SqliteVectorRepository::new(pool)));
         }
 
         if let Some(ref path) = opts.elastic.output_vectors {
-            repos.push(Arc::new(
-                crate::infrastructure::stream::StreamRepository::new(path)?,
-            ));
+            // #1106: `StreamRepository::new` does create_dir_all + File::create
+            // synchronously — same reasoning, off the executor.
+            let path = path.clone();
+            let sink = tokio::task::spawn_blocking(move || {
+                crate::infrastructure::stream::StreamRepository::new(&path)
+            })
+            .await
+            .map_err(|e| {
+                crate::error::ScraperError::Io(std::io::Error::other(format!(
+                    "construir vector sink (join): {e}"
+                )))
+            })??;
+            repos.push(Arc::new(sink));
         }
 
         // No sink requested → leave the ingestion untouched (`None`).
@@ -782,6 +814,33 @@ mod tests {
         assert!(
             repo.is_some(),
             "crawl_result_repository() debe retornar Some"
+        );
+    }
+
+    /// #1106 — sink construction moved to the blocking pool inside
+    /// `with_elastic_ingestion` (`create_pool` stats/creates directories,
+    /// `StreamRepository::new` does create_dir_all + File::create). The
+    /// wiring contract must hold after the move: sink active, file created.
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[tokio::test]
+    async fn test_with_elastic_ingestion_wires_stream_sink() {
+        let (tmp, container) = make_test_container().await;
+        let vectors_path = tmp.path().join("vectors.jsonl");
+
+        let mut opts = CrawlOptions::default();
+        opts.elastic.output_vectors = Some(vectors_path.to_string_lossy().to_string());
+
+        let container = container
+            .with_elastic_ingestion(&opts)
+            .await
+            .expect("stream sink wiring must succeed");
+        assert!(
+            container.elastic_ingestion.is_some(),
+            "--output-vectors must activate elastic ingestion"
+        );
+        assert!(
+            vectors_path.exists(),
+            "StreamRepository::new must create the JSONL file"
         );
     }
 

@@ -258,7 +258,15 @@ impl VaultSearchService {
         let start = Instant::now();
 
         // Step 1: Read all notes through the injected vault reader port.
-        let notes = self.note_reader.read_vault_notes(vault_path)?;
+        // #1104: the production adapter walks the whole vault (WalkDir +
+        // std::fs read/metadata per note) — synchronous I/O that can take
+        // seconds on large vaults. Run it on the blocking pool with the port
+        // shared via Arc so the future never parks a Tokio worker.
+        let path = vault_path.to_owned();
+        let reader = Arc::clone(&self.note_reader);
+        let notes = tokio::task::spawn_blocking(move || reader.read_vault_notes(&path))
+            .await
+            .map_err(|e| ScraperError::ingestion(format!("vault read join: {e}")))??;
 
         // Step 2: Load all indexed note metadata.
         let indexed = self.repository.list_indexed_notes().await?;
@@ -629,6 +637,55 @@ mod tests {
                 "fixture: vault unreadable",
             )))
         }
+    }
+
+    /// #1104 — a reader that stalls 500 ms walking the vault: the real shape
+    /// of `WalkDir` + `fs::read` + `fs::metadata` over thousands of notes.
+    struct SlowNoteReader;
+
+    impl VaultNoteReader for SlowNoteReader {
+        fn read_vault_notes(&self, _vault_path: &Path) -> Result<Vec<VaultNote>, ScraperError> {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            Ok(Vec::new())
+        }
+    }
+
+    /// #1104 — `sync_vault` must run the vault walk on the blocking pool.
+    ///
+    /// On a current-thread runtime a synchronous walk parks the only worker:
+    /// the 100 ms timer cannot fire until the 500 ms walk ends, so the timer
+    /// timestamp lands at >=500 ms (pre-fix behaviour). With `spawn_blocking`
+    /// the walk yields the reactor and the timer fires at ~100 ms. The 400 ms
+    /// threshold separates the two modes with a wide margin.
+    #[tokio::test]
+    async fn sync_vault_runs_walk_off_the_executor() {
+        let repo = Arc::new(InMemoryNoteRepo::default());
+        let service = VaultSearchService::new(
+            Arc::new(StubEmbedding),
+            repo,
+            Arc::new(StubChunker),
+            Arc::new(SlowNoteReader),
+        );
+        let tmp = tempfile::tempdir().unwrap();
+
+        let start = std::time::Instant::now();
+        let mut timer_at: Option<std::time::Duration> = None;
+        let ((), summary) = tokio::join!(
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                timer_at = Some(start.elapsed());
+            },
+            service.sync_vault(tmp.path()),
+        );
+        summary.expect("slow walk must still succeed");
+
+        let timer_at = timer_at.expect("timer must have fired");
+        assert!(
+            timer_at < std::time::Duration::from_millis(400),
+            "#1104: the 100ms timer fired at {timer_at:?} — a synchronous walk \
+             on the executor would delay it past the 500ms read, freezing a \
+             worker for the whole vault"
+        );
     }
 
     /// Create a synthetic vault with `.obsidian/` marker and notes.

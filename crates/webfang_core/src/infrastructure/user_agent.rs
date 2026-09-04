@@ -24,7 +24,6 @@
 
 use chrono::{DateTime, Datelike, Utc};
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing;
@@ -76,9 +75,13 @@ impl UserAgentCache {
     ///
     /// Same as [`load()`](Self::load) but uses the given profile for the HTTP client
     /// when fetching fresh agents from the API.
+    ///
+    /// #1103: every filesystem touch in this module goes through `tokio::fs`
+    /// (zero `std::fs`), so a cold or stale cache never blocks a Tokio worker
+    /// on disk I/O during startup.
     pub async fn load_with_profile(profile: Profile) -> Vec<String> {
         // Fresh cache hit short-circuits the network fetch.
-        if let Some(agents) = Self::fresh_cached_agents() {
+        if let Some(agents) = Self::fresh_cached_agents().await {
             return agents;
         }
 
@@ -99,8 +102,8 @@ impl UserAgentCache {
     /// Chrome-version → calendar-year mapping: Chrome 120 = 2023,
     /// Chrome 131 = 2025, Chrome 132 = 2026
     /// (`chrome_year = 2023 + (chrome_version - 120)`).
-    fn fresh_cached_agents() -> Option<Vec<String>> {
-        let cache = Self::load_from_cache().ok()?;
+    async fn fresh_cached_agents() -> Option<Vec<String>> {
+        let cache = Self::load_from_cache().await.ok()?;
         let cache_chrome_year = 2023 + (cache.chrome_version - 120) as i32;
         let current_year = Utc::now().year();
         if cache_chrome_year >= current_year - 1 {
@@ -116,8 +119,8 @@ impl UserAgentCache {
     }
 
     /// Load user agents from cache file
-    fn load_from_cache() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let content = fs::read_to_string(Self::cache_path())?;
+    async fn load_from_cache() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let content = tokio::fs::read_to_string(Self::cache_path()).await?;
         let cache: Self = serde_json::from_str(&content)?;
         Ok(cache)
     }
@@ -173,21 +176,8 @@ impl UserAgentCache {
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(MIN_CHROME_VERSION);
 
-        // Save cache (ignore errors - read-only FS, containers, etc.)
-        let cache = UserAgentCache {
-            agents: agents.clone(),
-            chrome_version,
-            downloaded_at: Utc::now(),
-        };
-
-        if let Some(parent) = Self::cache_path().parent() {
-            let _ = fs::create_dir_all(parent); // Ignore errors
-        }
-
-        // Silently ignore write errors (read-only FS, containers, etc.)
-        if let Ok(json) = serde_json::to_string_pretty(&cache) {
-            let _ = fs::write(Self::cache_path(), json);
-        }
+        // Save cache (best-effort — see `save_cache`).
+        Self::save_cache(&agents, chrome_version).await;
 
         tracing::info!(
             "Cached {} user agents (Chrome {})",
@@ -196,6 +186,34 @@ impl UserAgentCache {
         );
 
         Ok(agents)
+    }
+
+    /// Persist the fetched agents to the cache file via `tokio::fs` (#1103).
+    ///
+    /// Best-effort by design: read-only filesystems and containers must not
+    /// fail the load — but failures are logged at debug, never silently
+    /// dropped.
+    async fn save_cache(agents: &[String], chrome_version: u32) {
+        let cache = UserAgentCache {
+            agents: agents.to_vec(),
+            chrome_version,
+            downloaded_at: Utc::now(),
+        };
+
+        if let Some(parent) = Self::cache_path().parent() {
+            if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                tracing::debug!(
+                    error = %e,
+                    "user-agent cache dir creation failed (best-effort)"
+                );
+            }
+        }
+
+        if let Ok(json) = serde_json::to_string_pretty(&cache) {
+            if let Err(e) = tokio::fs::write(Self::cache_path(), json).await {
+                tracing::debug!(error = %e, "user-agent cache write failed (best-effort)");
+            }
+        }
     }
 
     /// Fallback: hardcoded list updated 2026
@@ -327,5 +345,40 @@ mod tests {
         // Should end with webfang/user_agents.json
         assert!(path.ends_with("user_agents.json"));
         assert!(path.to_string_lossy().contains("webfang"));
+    }
+
+    /// #1103 — a fresh cache must be served from disk through `tokio::fs`
+    /// without touching the network: write a valid cache file under an
+    /// isolated `XDG_CACHE_HOME`, then `load_with_profile` must return
+    /// exactly the cached agents (a network round-trip would return the
+    /// API list or the fallback, never the marker agent).
+    #[cfg_attr(
+        miri,
+        ignore = "filesystem + env-var cache round-trip unsupported by Miri"
+    )]
+    #[tokio::test]
+    async fn test_fresh_cache_served_from_disk_off_the_executor() {
+        let tmp = tempfile::TempDir::new().expect("tmp");
+        std::env::set_var("XDG_CACHE_HOME", tmp.path());
+        let dir = tmp.path().join("webfang");
+        std::fs::create_dir_all(&dir).expect("cache dir");
+        let cache = UserAgentCache {
+            agents: vec!["Mozilla/5.0 (Test) Chrome/999.0.0.0 Safari/537.36".to_string()],
+            chrome_version: 999,
+            downloaded_at: Utc::now(),
+        };
+        std::fs::write(
+            dir.join("user_agents.json"),
+            serde_json::to_string(&cache).expect("serialize cache"),
+        )
+        .expect("write cache");
+
+        let agents = UserAgentCache::load_with_profile(Profile::Chrome145).await;
+
+        std::env::remove_var("XDG_CACHE_HOME");
+        assert_eq!(
+            agents, cache.agents,
+            "fresh cache must be served from disk, not the network"
+        );
     }
 }
