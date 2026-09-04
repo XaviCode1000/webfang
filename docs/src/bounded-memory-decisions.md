@@ -74,3 +74,20 @@ Review-driven eviction-class tests: `abandoned_failure_zombies_evicted_inflight_
 (zombies evicted FIFO-first, successes retained, in-flight never touched) and
 `eviction_terminates_when_excess_is_all_inflight` (rotation bound terminates; completed
 cells become evictable again), plus `legacy_unbounded_skips_insertion_ledger`.
+
+## Long-lived MCP server follow-ups (#1130, #1120)
+
+- **`DomainSessionPool` domain map (#1130)** — CAP. The per-domain `DashMap`
+  never removed entries (`evict_stale` only reset states), so the long-lived
+  MCP server grew linearly with domain cardinality. Now each entry carries a
+  `last_seen` stamp: `acquire()` enforces the shared `MAX_TRACKED_DOMAINS`
+  cap (500 — the same constant `ScrapeMetrics` uses, moved to
+  `domain::budget` as the single source) by evicting the least-recently-seen
+  domain, and `evict_stale()` removes domains idle past the TTL outright.
+  Soak test: 2×cap unique domains → tracked domains plateau at the cap.
+- **MCP HTTP server downloader (#1120)** — WIRING, not a new policy. The
+  binary built the shared `Downloader` through the legacy `usize::MAX` path,
+  so eviction never ran in the one process that outlives every crawl. It now
+  goes through `mcp_server::build_shared_downloader()`: the same
+  `asset_cache_capacity(budget.asset().get())` derivation the CLI
+  orchestrator uses. One policy, two composition roots.
