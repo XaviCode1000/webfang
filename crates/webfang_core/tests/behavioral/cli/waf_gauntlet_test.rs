@@ -343,7 +343,7 @@ async fn crawl_with_checkpoint(
         .max_depth(1)
         .max_pages(max_pages)
         .delay_ms(1)
-        .concurrency(1)
+        .concurrency(std::num::NonZeroUsize::new(1).expect("1 is non-zero"))
         .timeout_secs(5)
         .build();
 

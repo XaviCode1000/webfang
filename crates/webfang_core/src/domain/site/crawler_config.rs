@@ -2,11 +2,22 @@
 //!
 //! Configuration for crawling a specific site.
 
+use std::num::NonZeroUsize;
+
 use url::Url;
 use wreq_util::Profile;
 
 use crate::domain::budget::BudgetOverrides;
 use crate::domain::pattern_matching::matches_pattern;
+
+/// Default crawl concurrency (3) as a non-zero value — the literal is
+/// checked at compile time; `concurrency: 0` is unrepresentable (#1132).
+const fn default_concurrency() -> NonZeroUsize {
+    match NonZeroUsize::new(3) {
+        Some(v) => v,
+        None => panic!("default concurrency literal is non-zero"),
+    }
+}
 
 /// Crawler configuration with builder pattern
 ///
@@ -25,8 +36,11 @@ pub struct CrawlerConfig {
     pub include_patterns: Vec<String>,
     /// URL patterns to exclude (glob-style)
     pub exclude_patterns: Vec<String>,
-    /// Concurrency level (number of parallel requests)
-    pub concurrency: usize,
+    /// Concurrency level (number of parallel requests).
+    ///
+    /// `NonZeroUsize` makes a zero spawn bound — which previously hung the
+    /// crawl in `buffer_unordered(0)` — unrepresentable (#1132).
+    pub concurrency: NonZeroUsize,
     /// Delay between requests in milliseconds (rate limiting)
     pub delay_ms: u64,
     /// User agent string
@@ -68,8 +82,8 @@ impl CrawlerConfig {
             max_pages: 100,
             include_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
-            concurrency: 3, // Hardware-aware: nproc - 1 for 4C CPU
-            delay_ms: 500,  // Hardware-aware: 500ms for HDD
+            concurrency: default_concurrency(), // Hardware-aware: nproc - 1 for 4C CPU
+            delay_ms: 500,                      // Hardware-aware: 500ms for HDD
             user_agent: "webfang/2.0.0 (High-Performance Extraction)".to_string(),
             timeout_secs: 30,
             use_sitemap: false,
@@ -113,7 +127,7 @@ pub struct CrawlerConfigBuilder {
     max_pages: usize,
     include_patterns: Vec<String>,
     exclude_patterns: Vec<String>,
-    concurrency: usize,
+    concurrency: NonZeroUsize,
     delay_ms: u64,
     user_agent: String,
     timeout_secs: u64,
@@ -133,7 +147,7 @@ impl CrawlerConfigBuilder {
             max_pages: 100,
             include_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
-            concurrency: 3,
+            concurrency: default_concurrency(),
             delay_ms: 500,
             user_agent: "webfang/2.0.0 (High-Performance Extraction)".to_string(),
             timeout_secs: 30,
@@ -181,8 +195,12 @@ impl CrawlerConfigBuilder {
         self
     }
 
-    /// Set concurrency level
-    pub fn concurrency(mut self, level: usize) -> Self {
+    /// Set concurrency level.
+    ///
+    /// The parameter is a [`NonZeroUsize`]: zero — the value that used to
+    /// produce a dead `buffer_unordered(0)` spawn bound — cannot even be
+    /// named here (#1132).
+    pub fn concurrency(mut self, level: NonZeroUsize) -> Self {
         self.concurrency = level;
         self
     }
@@ -261,13 +279,19 @@ impl CrawlerConfigBuilder {
 mod tests {
     use super::*;
 
+    /// Test helper: non-zero literal (the production API is typed on
+    /// `NonZeroUsize`, so a raw `0` cannot even be named at the call site).
+    fn nz(n: usize) -> NonZeroUsize {
+        NonZeroUsize::new(n).expect("test literal is non-zero")
+    }
+
     #[test]
     fn test_crawler_config_builder() {
         let seed = Url::parse("https://example.com").unwrap();
         let config = CrawlerConfig::builder(seed)
             .max_depth(5)
             .max_pages(500)
-            .concurrency(5)
+            .concurrency(nz(5))
             .delay_ms(1000)
             .include_pattern("*.example.com/*".to_string())
             .exclude_pattern("*/admin/*".to_string())
@@ -275,7 +299,7 @@ mod tests {
 
         assert_eq!(config.max_depth, 5);
         assert_eq!(config.max_pages, 500);
-        assert_eq!(config.concurrency, 5);
+        assert_eq!(config.concurrency.get(), 5);
         assert_eq!(config.delay_ms, 1000);
         assert_eq!(config.include_patterns.len(), 1);
         assert_eq!(config.exclude_patterns.len(), 1);
@@ -290,7 +314,7 @@ mod tests {
 
         assert_eq!(config.max_depth, 3);
         assert_eq!(config.max_pages, 100);
-        assert_eq!(config.concurrency, 3);
+        assert_eq!(config.concurrency.get(), 3);
         assert_eq!(config.delay_ms, 500);
         assert_eq!(
             config.user_agent,
@@ -412,7 +436,7 @@ mod tests {
         let config = CrawlerConfig::builder(seed.clone())
             .max_depth(10)
             .max_pages(1000)
-            .concurrency(8)
+            .concurrency(nz(8))
             .delay_ms(200)
             .user_agent("custom-bot/1.0".to_string())
             .timeout_secs(60)
@@ -427,7 +451,7 @@ mod tests {
         assert_eq!(config.seed_url, seed);
         assert_eq!(config.max_depth, 10);
         assert_eq!(config.max_pages, 1000);
-        assert_eq!(config.concurrency, 8);
+        assert_eq!(config.concurrency.get(), 8);
         assert_eq!(config.delay_ms, 200);
         assert_eq!(config.user_agent, "custom-bot/1.0");
         assert_eq!(config.timeout_secs, 60);
@@ -523,5 +547,23 @@ mod tests {
         let seed = Url::parse("https://example.com").unwrap();
         let config = CrawlerConfig::builder(seed).max_pages(0).build();
         assert_eq!(config.max_pages, 1);
+    }
+
+    /// #1132 reproduction: `concurrency: 0` used to be representable —
+    /// `CrawlerConfig::builder(seed).concurrency(0).build()` compiled and
+    /// produced a config whose zero spawn bound hung the crawl (no clamp
+    /// existed for this field, unlike max_pages/timeout_secs). The field is
+    /// now `NonZeroUsize`: the only way to name the value is through a
+    /// fallible constructor, and 0 is rejected there — the invalid state
+    /// cannot reach `build()` at all.
+    #[test]
+    fn issue_1132_zero_concurrency_is_unrepresentable() {
+        assert!(
+            NonZeroUsize::new(0).is_none(),
+            "0 must not be nameable as a concurrency level"
+        );
+        // The default is non-zero by construction (compile-time literal).
+        let seed = Url::parse("https://example.com").unwrap();
+        assert_eq!(CrawlerConfig::new(seed).concurrency.get(), 3);
     }
 }

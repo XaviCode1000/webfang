@@ -266,7 +266,7 @@ mod tests {
         let config = CrawlerConfig::builder(seed_url.clone())
             .max_depth(1)
             .max_pages(10)
-            .concurrency(16) // configured value must be beaten by the override
+            .concurrency(std::num::NonZeroUsize::new(16).expect("16 is non-zero")) // configured value must be beaten by the override
             .timeout_secs(5)
             .ignore_robots(true)
             .budget_overrides(BudgetOverrides {

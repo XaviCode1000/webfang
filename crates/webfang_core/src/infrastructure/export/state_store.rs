@@ -231,7 +231,7 @@ impl StateStore {
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let store = StateStore::new("example.com");
-    /// let mut state = ExportState::new("example.com");
+    /// let mut state = ExportState::new("example.com")?;
     /// state.mark_processed("https://example.com/page1");
     /// store.save(&state)?;
     /// # Ok(())
@@ -303,7 +303,7 @@ impl StateStore {
                     domain = %self.domain,
                     "discarding stale StateStore version, returning fresh state"
                 );
-                Ok(ExportState::new(&self.domain))
+                ExportState::new(&self.domain)
             },
             Ok(state) => {
                 info!("Loaded existing state for domain: {}", self.domain);
@@ -314,7 +314,7 @@ impl StateStore {
                 // For "file not found", return a new state; otherwise propagate the error
                 if io_err.kind() == std::io::ErrorKind::NotFound {
                     info!("Creating new state for domain: {}", self.domain);
-                    Ok(ExportState::new(&self.domain))
+                    ExportState::new(&self.domain)
                 } else {
                     // Propagate other IO errors (permissions, disk full, etc.)
                     Err(ScraperError::Io(io_err))
@@ -416,7 +416,7 @@ mod tests {
         store.cache_dir = cache_dir.clone();
 
         // Create and save state
-        let mut state = ExportState::new("test.com");
+        let mut state = ExportState::new("test.com").expect("valid domain");
         state.mark_processed("https://test.com/page1");
         state.mark_processed("https://test.com/page2");
 
@@ -428,7 +428,7 @@ mod tests {
         assert!(loaded_state.is_ok());
         let loaded_state = loaded_state.unwrap();
 
-        assert_eq!(loaded_state.domain, "test.com");
+        assert_eq!(loaded_state.domain(), "test.com");
         assert_eq!(loaded_state.processed_urls.len(), 2);
         assert!(loaded_state.is_processed("https://test.com/page1"));
         assert!(loaded_state.is_processed("https://test.com/page2"));
@@ -445,7 +445,7 @@ mod tests {
         let mut store = StateStore::new("lockfile.test");
         store.cache_dir = cache_dir;
 
-        let mut state = ExportState::new("lockfile.test");
+        let mut state = ExportState::new("lockfile.test").expect("valid domain");
         state.mark_processed("https://lockfile.test/page1");
         store.save(&state).expect("save must succeed");
 
@@ -489,7 +489,7 @@ mod tests {
         store.cache_dir = cache_dir;
 
         let state = store.load_or_default().unwrap();
-        assert_eq!(state.domain, "existing.com");
+        assert_eq!(state.domain(), "existing.com");
         assert_eq!(state.processed_urls.len(), 1);
     }
 
@@ -502,7 +502,7 @@ mod tests {
         store.cache_dir = cache_dir;
 
         let state = store.load_or_default().unwrap();
-        assert_eq!(state.domain, "new.com");
+        assert_eq!(state.domain(), "new.com");
         assert_eq!(state.processed_urls.len(), 0);
     }
 
@@ -515,7 +515,7 @@ mod tests {
         let mut store = StateStore::new("atomic.com");
         store.cache_dir = cache_dir.clone();
 
-        let state = ExportState::new("atomic.com");
+        let state = ExportState::new("atomic.com").expect("valid domain");
 
         // Save should succeed
         let result = store.save(&state);
@@ -553,12 +553,12 @@ mod tests {
             state.version, 1,
             "stale v0 must be discarded and replaced with fresh v1"
         );
-        assert_eq!(state.domain, "stale-zero.com");
+        assert_eq!(state.domain(), "stale-zero.com");
         assert!(
             state.processed_urls.is_empty(),
             "stale processed_urls must be discarded"
         );
-        assert_eq!(state.total_exported, 0);
+        assert_eq!(state.total_exported(), 0);
     }
 
     #[test]
