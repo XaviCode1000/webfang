@@ -128,10 +128,7 @@ pub use entities::{
     DownloadedAsset, Draft, ExportState, Exported, ScrapedContent, Validated, ValidationError,
 };
 pub use error::{CrawlError, CrawlErrorCategory, DomainError};
-pub use exporter::{
-    DomainRecords, ExportResult, Exporter, ExporterConfig, RawRecord, RecordStoreError,
-    RecordStorePort,
-};
+pub use exporter::{ExportResult, Exporter, ExporterConfig};
 pub use html_cleaner::clean_html;
 pub use http_config::{HttpClientConfig, UnknownProfileError};
 pub use http_error::{HttpError, HttpResult};
@@ -141,6 +138,7 @@ pub use js_strategy::JsStrategy;
 pub use link_extractor::{LinkExtractor, LinkProcessor};
 pub use llm::validation::{validate_record, validate_schema, SchemaError};
 pub use pattern_matching::{match_url_pattern, matches_pattern};
+pub use persistence::{DomainRecords, RawRecord, RecordStoreError, RecordStorePort};
 pub use pipeline_item::{FilterReason, PipelineStage, RejectReason, ScrapedItem, StageOutcome};
 pub use ports::AssetDownloaderPort;
 pub use profile::{profile_from_name, valid_profile_names};

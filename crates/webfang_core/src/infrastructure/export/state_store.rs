@@ -273,57 +273,6 @@ impl StateStore {
         Ok(())
     }
 
-    /// Mark a URL as processed in the state
-    ///
-    /// # Arguments
-    ///
-    /// * `state` - Mutable reference to ExportState
-    /// * `url` - URL to mark as processed
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use webfang_core::infrastructure::export::StateStore;
-    /// use webfang_core::domain::ExportState;
-    ///
-    /// let store = StateStore::new("example.com");
-    /// let mut state = ExportState::new("example.com");
-    /// store.mark_processed(&mut state, "https://example.com/page1");
-    /// ```
-    pub fn mark_processed(&self, state: &mut ExportState, url: &str) {
-        state.mark_processed(url);
-        debug!("Marked URL as processed: {}", url);
-    }
-
-    /// Check if a URL has been processed
-    ///
-    /// # Arguments
-    ///
-    /// * `state` - Reference to ExportState
-    /// * `url` - URL to check
-    ///
-    /// # Returns
-    ///
-    /// `true` if URL was processed, `false` otherwise
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use webfang_core::infrastructure::export::StateStore;
-    /// use webfang_core::domain::ExportState;
-    ///
-    /// let store = StateStore::new("example.com");
-    /// let mut state = ExportState::new("example.com");
-    /// store.mark_processed(&mut state, "https://example.com/page1");
-    /// assert!(store.is_processed(&state, "https://example.com/page1"));
-    /// ```
-    #[must_use]
-    pub fn is_processed(&self, state: &ExportState, url: &str) -> bool {
-        let processed = state.is_processed(url);
-        debug!("URL {} processed: {}", url, processed);
-        processed
-    }
-
     const CURRENT_VERSION: u32 = 1;
 
     /// Load existing state or create a new one if it doesn't exist    ///
@@ -513,21 +462,6 @@ mod tests {
             "lockfile must be removed after load, found: {}",
             lock_path.display()
         );
-    }
-
-    #[test]
-    fn test_mark_processed() {
-        let store = StateStore::new("test.com");
-        let mut state = ExportState::new("test.com");
-
-        assert!(!store.is_processed(&state, "https://test.com/page1"));
-
-        store.mark_processed(&mut state, "https://test.com/page1");
-        assert!(store.is_processed(&state, "https://test.com/page1"));
-
-        // Test duplicate marking doesn't duplicate
-        store.mark_processed(&mut state, "https://test.com/page1");
-        assert_eq!(state.processed_urls.len(), 1);
     }
 
     #[test]

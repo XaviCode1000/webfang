@@ -19,7 +19,7 @@ use crate::domain::persistence::PersistenceMode;
 use crate::CrawlerConfig;
 
 use crate::domain;
-use crate::domain::exporter::StateStorePort;
+use crate::domain::persistence::StateStorePort;
 use crate::infrastructure::output::file_saver::ObsidianOptions;
 
 pub use crate::cli::parse::handle_completions;

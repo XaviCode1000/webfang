@@ -1,7 +1,7 @@
 //! Resume mode tests — StateStore persistence and filtering contracts.
 //!
-//! Tests `StateStore` (create, save, load, mark_processed, is_processed)
-//! and `ExportState` (mark_processed, is_processed) via their public APIs.
+//! Tests `StateStore` (create, save, load) and `ExportState`
+//! (mark_processed, is_processed) via their public APIs.
 //! `apply_resume_mode` is tested inline in `scrape_flow.rs` since the
 //! function is crate-private.
 //!
@@ -72,22 +72,6 @@ fn state_store_load_or_default_returns_existing() {
     let loaded = store.load_or_default().unwrap();
     assert_eq!(loaded.processed_urls.len(), 1);
     assert!(loaded.is_processed("https://existing.com/page1"));
-}
-
-/// StateStore marks URL as processed and checks correctly.
-#[test]
-fn state_store_mark_and_check_processed() {
-    let store = webfang_core::infrastructure::export::state_store::StateStore::new("test.com");
-    let mut state = webfang_core::domain::ExportState::new("test.com");
-
-    assert!(!store.is_processed(&state, "https://test.com/page1"));
-
-    store.mark_processed(&mut state, "https://test.com/page1");
-    assert!(store.is_processed(&state, "https://test.com/page1"));
-
-    // Duplicate marking doesn't duplicate
-    store.mark_processed(&mut state, "https://test.com/page1");
-    assert_eq!(state.processed_urls.len(), 1);
 }
 
 /// StateStore load fails with informative error for nonexistent file.

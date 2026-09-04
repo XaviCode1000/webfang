@@ -13,9 +13,9 @@
 
 use url::Url;
 
-use crate::domain::exporter::{DomainRecords, RawRecord, RecordStorePort};
 use crate::domain::page_state::Committed;
 use crate::domain::page_state::Stateful;
+use crate::domain::persistence::{DomainRecords, RawRecord, RecordStorePort};
 use crate::domain::url_validation::{normalize_url, NormalizeConfig};
 
 /// Canonical dedup form: strip fragments/queries, unify `www.` with apex.
