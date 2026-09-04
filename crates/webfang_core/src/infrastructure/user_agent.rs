@@ -239,7 +239,9 @@ impl UserAgentCache {
 ///
 /// # Returns
 ///
-/// A randomly selected user agent string
+/// `Some` with a randomly selected user agent string, or `None` when the
+/// pool is empty (#1109: the old unguarded `random_range(0..0)` + index
+/// panicked and aborted the calling task).
 ///
 /// # Examples
 ///
@@ -247,14 +249,17 @@ impl UserAgentCache {
 /// use webfang_core::infrastructure::user_agent::get_random_user_agent_from_pool;
 ///
 /// let agents = vec!["Chrome/131".to_string(), "Firefox/123".to_string()];
-/// let ua = get_random_user_agent_from_pool(&agents);
+/// let ua = get_random_user_agent_from_pool(&agents).expect("non-empty pool");
 /// assert!(ua == "Chrome/131" || ua == "Firefox/123");
 /// ```
 #[must_use]
-pub fn get_random_user_agent_from_pool(pool: &[String]) -> String {
+pub fn get_random_user_agent_from_pool(pool: &[String]) -> Option<String> {
     use rand::Rng;
+    if pool.is_empty() {
+        return None;
+    }
     let index = rand::rng().random_range(0..pool.len());
-    pool[index].clone()
+    Some(pool[index].clone())
 }
 
 /// Legacy function for backward compatibility (DEPRECATED)
@@ -265,9 +270,11 @@ pub fn get_random_user_agent_from_pool(pool: &[String]) -> String {
 #[deprecated(since = "0.4.0", note = "Use UserAgentCache::load() instead")]
 #[must_use]
 pub fn get_random_user_agent() -> String {
-    // Fallback directly (no cache)
+    // Fallback directly (no cache). The hardcoded fallback pool is non-empty,
+    // so the None arm is unreachable; `unwrap_or_default` keeps the path total
+    // without reintroducing a panic (#1109).
     let agents = UserAgentCache::fallback_agents();
-    get_random_user_agent_from_pool(&agents)
+    get_random_user_agent_from_pool(&agents).unwrap_or_default()
 }
 
 // Domain port shim — preserves `webfang_core::infrastructure::user_agent::*` API
@@ -335,8 +342,18 @@ mod tests {
     #[test]
     fn test_get_random_user_agent_from_pool() {
         let pool = vec!["Agent1".to_string(), "Agent2".to_string()];
-        let ua = get_random_user_agent_from_pool(&pool);
+        let ua = get_random_user_agent_from_pool(&pool).expect("non-empty pool");
         assert!(ua == "Agent1" || ua == "Agent2");
+    }
+
+    /// Reproduction guard for #1109: an empty pool used to panic inside
+    /// `random_range(0..0)`. The test compiles against both signatures
+    /// (`let _` binds `String` or `Option<String>` alike): it panicked on
+    /// unmodified main; the strengthened assertion pins the `None` contract.
+    #[test]
+    fn empty_pool_does_not_panic() {
+        let ua = get_random_user_agent_from_pool(&[]);
+        assert_eq!(ua, None, "empty pool must yield None, never a panic");
     }
 
     #[test]

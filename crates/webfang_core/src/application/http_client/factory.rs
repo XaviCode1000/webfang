@@ -133,7 +133,10 @@ pub(super) fn build_wreq_client(
 pub fn create_http_client_with_config(config: &HttpClientConfig) -> Result<Client, ScraperError> {
     let user_agent = match config.user_agent.clone() {
         Some(ua) => ua,
-        None => get_random_user_agent_from_pool(&fallback_agents()),
+        // The hardcoded fallback pool is non-empty, so the None arm is
+        // unreachable; `unwrap_or_default` keeps the path total without
+        // reintroducing a panic (#1109).
+        None => get_random_user_agent_from_pool(&fallback_agents()).unwrap_or_default(),
     };
 
     tracing::debug!("Using user agent: {}", user_agent);
@@ -153,9 +156,31 @@ pub fn create_http_client() -> Result<Client, ScraperError> {
 }
 
 /// Get random user agent from pool (legacy function)
-pub fn get_random_user_agent_from_pool(pool: &[String]) -> String {
+///
+/// Returns `None` for an empty pool (#1109: the old unguarded
+/// `random_range(0..0)` + index panicked and aborted the calling task).
+#[must_use]
+pub fn get_random_user_agent_from_pool(pool: &[String]) -> Option<String> {
     use rand::Rng;
+    if pool.is_empty() {
+        return None;
+    }
     let mut rng = rand::rng();
     let index = rng.random_range(0..pool.len());
-    pool[index].clone()
+    Some(pool[index].clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reproduction guard for #1109 (same panic class as the infrastructure
+    /// copy of this picker): an empty pool used to panic inside
+    /// `random_range(0..0)`. Compiles against both signatures: panicked on
+    /// unmodified main; the strengthened assertion pins the `None` contract.
+    #[test]
+    fn empty_pool_does_not_panic() {
+        let ua = get_random_user_agent_from_pool(&[]);
+        assert_eq!(ua, None, "empty pool must yield None, never a panic");
+    }
 }
