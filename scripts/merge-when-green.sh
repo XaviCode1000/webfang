@@ -50,6 +50,12 @@
 #   - Does NOT auto-rebase if BEHIND. The maintainer should rebase and re-push,
 #     then re-run the script. Single maintainer, ~30s, no automation needed.
 #   - Requires `gh` authenticated with repo scope.
+#   - After an actual merge, prints exactly ONE machine-parseable marker line on
+#     stdout: `RESULT: merged remote_branch=<deleted|absent|stale>` — deleted:
+#     remote head branch deleted; absent: head ref already gone (or fork PR — no
+#     head ref on origin to delete); stale: head ref could not be deleted, or its
+#     absence could not be verified. Every post-merge path still exits 0 (#819);
+#     automation must parse this line, not prose, to learn the cleanup outcome.
 #
 # Post-merge runbook — run from the main checkout (branch `main`) after this
 # script succeeds:
@@ -103,6 +109,13 @@ Exit codes:
   2  A required check failed/cancelled.
   3  Checks green but PR is BEHIND or BLOCKED — rebase first.
   4  gh network/auth failure.
+
+Result marker:
+  After an actual merge (not --dry-run) the script prints one final stdout line:
+    RESULT: merged remote_branch=<deleted|absent|stale>
+  deleted = remote head branch deleted; absent = head ref already gone (or fork
+  PR: no head ref on origin); stale = head ref could not be deleted or its
+  absence could not be verified. Cleanup never changes the exit code (#819).
 EOF
 }
 
@@ -301,6 +314,10 @@ if [[ $rc -ne 0 ]]; then
 fi
 echo "    merged."
 
+# Classify the remote head branch outcome for the RESULT marker: deleted
+# (we deleted it), absent (already gone before/after the delete attempt, or
+# fork PR — no head ref on origin), stale (still there, or unverifiable).
+remote_branch_state="absent"
 if [[ $delete_remote -eq 1 ]]; then
   echo "==> Deleting remote branch '${head_branch}' (local cleanup: runbook)."
   # Check BEFORE pushing: after the merge the ref may already be gone (e.g.
@@ -308,22 +325,25 @@ if [[ $delete_remote -eq 1 ]]; then
   # prints a noisy "[remote rejected]" error even though nothing is wrong.
   if ! refs="$(git ls-remote origin "refs/heads/${head_branch}")"; then
     echo "warning: merge succeeded, but remote branch cleanup could not be verified." >&2
-    exit 0
-  fi
-
-  if [[ -z "$refs" ]]; then
+    remote_branch_state="stale"
+  elif [[ -z "$refs" ]]; then
     echo "    remote branch already absent."
+    remote_branch_state="absent"
   elif git push origin --delete "refs/heads/${head_branch}"; then
     echo "    remote branch deleted."
+    remote_branch_state="deleted"
   else
     # Residual check-then-delete race: re-verify quietly before warning.
     if refs="$(git ls-remote origin "refs/heads/${head_branch}")" && [[ -z "$refs" ]]; then
       echo "    remote branch already absent."
+      remote_branch_state="absent"
     else
       echo "warning: merge succeeded but remote branch '${head_branch}' could not be deleted." >&2
-      exit 0
+      remote_branch_state="stale"
     fi
   fi
 fi
 
+# Single machine-parseable handoff line; every post-merge path exits 0 (#819).
+echo "RESULT: merged remote_branch=${remote_branch_state}"
 exit 0
