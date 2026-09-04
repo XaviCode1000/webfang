@@ -39,7 +39,8 @@ pub async fn discover_urls(
 ) -> ScraperResult<Vec<Url>> {
     let discovery_pb = build_discovery_progress_bar(opts, "Discovering URLs...");
 
-    let discovered_urls = match discover_urls_single_fetch(opts.url.as_str(), crawler_config).await {
+    let discovered_urls = match discover_urls_single_fetch(opts.url.as_str(), crawler_config).await
+    {
         Ok(urls) => urls,
         Err(e) => {
             // Treat an empty sitemap as empty discovery (technical success),

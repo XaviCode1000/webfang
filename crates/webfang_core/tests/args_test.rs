@@ -173,7 +173,6 @@ fn args_with_all_fields_set() -> Args {
         },
 
         ai: AiArgs::default(),
-
     }
 }
 

@@ -106,11 +106,10 @@ async fn __main() -> CliExit {
     let trace_file = args.crawler.trace_file.clone();
 
     // 6b. Single normalization pipeline (design D3) — replaces legacy merges
-    let normalized =
-        match preflight::normalize(&args, &arg_sources, &config_defaults) {
-            Ok(n) => n,
-            Err(e) => return e,
-        };
+    let normalized = match preflight::normalize(&args, &arg_sources, &config_defaults) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
     // Project contested fields; copy non-contested from Args via From
     let base = CrawlOptions::from(args);
     // CLI-explicit budget knobs live ONLY in `base` (--concurrency /
