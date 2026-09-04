@@ -17,9 +17,9 @@ use {
 };
 
 use std::sync::Arc;
-use std::sync::RwLock;
 
 use futures::future::BoxFuture;
+use tokio::sync::RwLock;
 use url::Url;
 
 use super::{DownloadError, Downloader, FetchedPage};
@@ -126,14 +126,15 @@ impl Downloader for ChromiumoxideDownloader {
             let handler_job = tokio::spawn(async move { while handler.next().await.is_some() {} });
             let guard = HandlerGuard(Some(handler_job));
 
-            // 4. Inject cookies from L1 cookie bridge, filtered by domain
+            // 4. Inject cookies from L1 cookie bridge, filtered by domain.
+            // #1119: `tokio::sync::RwLock` — the read lock is acquired with
+            // `.await` (a contended bridge yields the worker instead of
+            // parking an executor thread) and cannot be poisoned, so there
+            // is no panic path inside the fetch future. The guard is scoped
+            // and dropped before the next `.await`.
             let current_domain = url.host_str().unwrap_or("");
             let cdp_cookies: Vec<CookieParam> = {
-                let bridge = self
-                    .cookie_bridge
-                    .read()
-                    // LCOV_EXCL_LINE defensive: lock-poisoning — a poisoned lock leaves process state undefined
-                    .map_err(|e| DownloadError::Internal(format!("Lock poisoned: {e}")))?;
+                let bridge = self.cookie_bridge.read().await;
                 bridge
                     .to_cdp_cookies()
                     .into_iter()

@@ -42,8 +42,9 @@
 //! until then, do not read a green gate as "the domain layer is framework-free".
 
 use std::fmt;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use wreq::cookie::Jar;
 use wreq_util::Profile;
@@ -115,7 +116,11 @@ pub trait DownloaderFactory: Send + Sync {
     /// Build the downloader for `spec`.
     ///
     /// `cookie_bridge` is the run's shared bridge, injected into the
-    /// Chromiumoxide layer so CDP sessions receive crawled cookies.
+    /// Chromiumoxide layer so CDP sessions receive crawled cookies. It uses
+    /// `tokio::sync::RwLock` (#1119): the lock is acquired with `.await`
+    /// inside async fetch paths, so a contended bridge yields the worker
+    /// instead of parking an executor thread, and the async lock cannot be
+    /// poisoned — no panic path inside the downloader future.
     /// `cancel_token` is the run's shutdown token, injected into the Full
     /// strategy's resource governor so permit waits abort on shutdown (#509).
     ///
