@@ -8,6 +8,7 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::{Arc, RwLock};
 
+use tokio::sync::RwLock as AsyncRwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::application::crawler::checkpoint::BannedDomain;
@@ -52,7 +53,11 @@ pub struct CrawlTaskCtx {
 
     // --- Infrastructure (port-based) ---
     pub(crate) collector: Arc<dyn CrawlResultCollector>,
-    pub(crate) cookie_bridge: Arc<RwLock<CookieBridge>>,
+    /// Shared cookie jar — `tokio::sync::RwLock` (#1119): every acquisition
+    /// happens inside async crawl-task futures, so a contended lock yields
+    /// the worker instead of parking an executor thread, and the async lock
+    /// cannot be poisoned.
+    pub(crate) cookie_bridge: Arc<AsyncRwLock<CookieBridge>>,
     pub(crate) banned_domains: Arc<RwLock<Vec<BannedDomain>>>,
     pub(crate) fetcher: Arc<dyn PageFetcher>,
     pub(crate) link_extractor: Arc<dyn LinkExtractorPort>,

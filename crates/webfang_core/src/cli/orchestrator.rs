@@ -359,8 +359,17 @@ async fn export_phase(
 
     let file_output_dir = if opts.export.quick_save {
         let inbox = resolve_persistence_root(opts).join("_inbox");
-        if !inbox.exists() {
-            let _ = std::fs::create_dir_all(&inbox);
+        // #1107: async creation on `tokio::fs` (no blocking syscall on the
+        // executor) and the Result is propagated, not discarded — a real
+        // failure (ENOSPC, read-only vault) now stops the export with a
+        // typed CliExit instead of surfacing late and degraded inside
+        // `save_files`. `create_dir_all` is idempotent, so the old
+        // `exists()` pre-check is gone.
+        if let Err(e) = tokio::fs::create_dir_all(&inbox).await {
+            return CliExit::ConfigError(format!(
+                "no se pudo crear el inbox '{}': {e}",
+                inbox.display()
+            ));
         }
         inbox
     } else {
@@ -2159,6 +2168,62 @@ mod tests {
             matches!(exit, CliExit::UsageError(_)),
             "Expected UsageError when output_dir is '-', got: {exit:?}"
         );
+    }
+
+    /// #1107 — with `--quick-save` into an unwritable vault the inbox cannot
+    /// be created: `export_phase` must stop with a typed `CliExit::ConfigError`
+    /// naming the inbox (the old code ran a blocking `std::fs::create_dir_all`
+    /// and discarded its `Result`, so the failure surfaced late and degraded
+    /// inside `save_files`).
+    #[cfg(unix)]
+    #[cfg_attr(
+        miri,
+        ignore = "export_phase touches filesystem (create_dir_all) unsupported by Miri"
+    )]
+    #[tokio::test]
+    async fn export_phase_reports_inbox_creation_failure() {
+        use crate::cli::orchestrator::export_phase;
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::TempDir::new().expect("tmp");
+        let vault = tmp.path().join("ro-vault");
+        std::fs::create_dir(&vault).expect("vault dir");
+        std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o500)).expect("chmod");
+
+        // Root ignores the permission bits — skip honestly instead of failing.
+        if std::fs::File::create(vault.join("probe")).is_ok() {
+            let _ = std::fs::remove_file(vault.join("probe"));
+            let _ = std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o700));
+            eprintln!("skipping: effective user can write to a 0o500 directory");
+            return;
+        }
+
+        let mut opts = CrawlOptions::default();
+        opts.export.output_dir = tmp.path().join("out");
+        opts.export.quick_save = true;
+        opts.export.obsidian_vault = Some(vault.clone());
+
+        let exit = export_phase(
+            &[],
+            &opts,
+            None,
+            #[cfg(feature = "ai")]
+            None,
+        )
+        .await;
+
+        // Restore permissions so the TempDir can clean up.
+        let _ = std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o700));
+
+        match exit {
+            CliExit::ConfigError(msg) => {
+                assert!(
+                    msg.contains("no se pudo crear el inbox"),
+                    "error must name the failed inbox creation, got: {msg}"
+                );
+            },
+            other => panic!("expected ConfigError for unwritable inbox, got: {other:?}"),
+        }
     }
 
     // ===== #762 — persistence root / export dir convergence =====

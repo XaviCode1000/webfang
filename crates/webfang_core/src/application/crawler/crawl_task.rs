@@ -150,7 +150,7 @@ async fn run_crawl_task_inner(
     let response = outcome.body;
     let fetched_cookies = outcome.cookies;
 
-    ingest_cookies(&ctx, &fetched_cookies);
+    ingest_cookies(&ctx, &fetched_cookies).await;
     report_session_success(&ctx, &url_str, session_id);
 
     ctx.pages_crawled
@@ -250,14 +250,18 @@ fn ban_waf_domain(ctx: &CrawlTaskCtx, parsed_url: &Url, waf_msg: &str) {
 }
 
 /// Ingest any cookies returned by the fetch into the shared cookie bridge.
-fn ingest_cookies(ctx: &CrawlTaskCtx, fetched_cookies: &[Cookie]) {
+///
+/// #1119: the bridge is a `tokio::sync::RwLock`, so the write lock is
+/// awaited — a contended lock yields the worker instead of parking an
+/// executor thread — and the guard is dropped at the end of the block,
+/// never held across an `.await`.
+async fn ingest_cookies(ctx: &CrawlTaskCtx, fetched_cookies: &[Cookie]) {
     if fetched_cookies.is_empty() {
         return;
     }
-    if let Ok(mut bridge) = ctx.cookie_bridge.write() {
-        for cookie in fetched_cookies {
-            bridge.add(cookie.clone());
-        }
+    let mut bridge = ctx.cookie_bridge.write().await;
+    for cookie in fetched_cookies {
+        bridge.add(cookie.clone());
     }
 }
 
@@ -414,6 +418,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
     use std::time::Duration;
+    use tokio::sync::RwLock as AsyncRwLock;
 
     use url::Url;
 
@@ -767,7 +772,7 @@ mod tests {
                 ]),
                 pages_crawled: Arc::new(AtomicU64::new(0)),
                 collector: self.collector,
-                cookie_bridge: Arc::new(RwLock::new(CookieBridge::new())),
+                cookie_bridge: Arc::new(AsyncRwLock::new(CookieBridge::new())),
                 banned_domains: Arc::new(RwLock::new(Vec::new())),
                 fetcher: self.fetcher,
                 link_extractor: self.link_extractor,
@@ -1278,7 +1283,7 @@ mod tests {
         run_crawl_task(ctx, test_url("https://example.com/", 0))
             .await
             .expect("crawl should succeed");
-        let b = bridge.read().expect("lock not poisoned");
+        let b = bridge.read().await;
         assert_eq!(b.len(), 1);
     }
 
@@ -1296,7 +1301,7 @@ mod tests {
         run_crawl_task(ctx, test_url("https://example.com/", 0))
             .await
             .expect("crawl should succeed");
-        let b = bridge.read().expect("lock not poisoned");
+        let b = bridge.read().await;
         assert_eq!(b.len(), 0);
     }
 

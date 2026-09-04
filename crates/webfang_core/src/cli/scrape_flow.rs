@@ -204,7 +204,7 @@ pub async fn scrape_urls(
             }
         }
     }
-    let cookie_bridge = std::sync::Arc::new(std::sync::RwLock::new(cookie_bridge));
+    let cookie_bridge = std::sync::Arc::new(tokio::sync::RwLock::new(cookie_bridge));
     let initial_cookie_jar = seed_operator_cookie_jar(opts, urls);
     let router = build_fetch_router(
         &opts.network.js_strategy,
