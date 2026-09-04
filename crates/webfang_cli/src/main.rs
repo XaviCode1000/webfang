@@ -210,7 +210,17 @@ fn build_crawler_config_from_json(
         builder = builder.max_pages(p as usize);
     }
     if let Some(c) = config_values.get("concurrency").and_then(|v| v.as_u64()) {
-        builder = builder.concurrency(c as usize);
+        match std::num::NonZeroUsize::new(c as usize) {
+            Some(level) => builder = builder.concurrency(level),
+            // #1132: a zero spawn bound used to flow into the config and
+            // hang the crawl in `buffer_unordered(0)`. It is now rejected at
+            // this boundary — the default tier stands and the misconfig is
+            // observable instead of silent.
+            None => tracing::warn!(
+                value = c,
+                "ignoring TUI concurrency 0: must be >= 1, keeping the default tier"
+            ),
+        }
     }
     if let Some(d) = config_values.get("delay_ms").and_then(|v| v.as_u64()) {
         builder = builder.delay_ms(d);
@@ -1032,4 +1042,29 @@ async fn build_vault_ports(
     }
 
     ports
+}
+
+#[cfg(all(test, feature = "ui"))]
+mod tui_bridge_tests {
+    use super::build_crawler_config_from_json;
+
+    /// #1132 reproduction: TUI JSON with `concurrency: 0` used to flow
+    /// through the bridge into `CrawlerConfig` (zero spawn bound → hung
+    /// crawl). The bridge now rejects 0 at the boundary and keeps the
+    /// default tier; valid values still pass through.
+    #[test]
+    fn issue_1132_tui_zero_concurrency_rejected_at_bridge() {
+        let seed = url::Url::parse("https://example.com").expect("valid seed");
+        let zero = serde_json::json!({ "concurrency": 0 });
+        let config = build_crawler_config_from_json(seed.clone(), &zero);
+        assert_eq!(
+            config.concurrency.get(),
+            3,
+            "concurrency 0 must not reach the config"
+        );
+
+        let valid = serde_json::json!({ "concurrency": 6 });
+        let config = build_crawler_config_from_json(seed, &valid);
+        assert_eq!(config.concurrency.get(), 6);
+    }
 }

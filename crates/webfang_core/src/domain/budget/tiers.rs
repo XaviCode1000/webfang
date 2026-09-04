@@ -93,6 +93,14 @@ macro_rules! nonzero_usize_tier {
                 pub const fn get(self) -> usize {
                     self.0.get()
                 }
+
+                /// The underlying non-zero value — for consumers whose API
+                /// is typed on [`NonZeroUsize`] directly (e.g.
+                /// `CrawlerConfig::concurrency`, #1132).
+                #[must_use]
+                pub const fn nonzero(self) -> NonZeroUsize {
+                    self.0
+                }
             }
 
             impl From<NonZeroUsize> for $name {

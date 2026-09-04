@@ -4,6 +4,7 @@
 //! tokio::sync::Semaphore instances to limit concurrent operations
 //! per tool category, protecting the 8GB RAM / HDD hardware.
 
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -21,37 +22,47 @@ use webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher;
 
 /// Per-category semaphore limits for backpressure.
 /// Tuned for Intel i5-4590 (4C), 8GB DDR3, HDD.
+///
+/// Every permit count is a [`NonZeroUsize`] (#1132): a zero limit used to
+/// be representable and `from_limits` clamped it to 1 in silence, masking
+/// the misconfiguration that without the clamp deadlocks the semaphore.
+/// Zero is now unnameable, so the clamp is gone and the mapping is 1:1.
 #[derive(Debug)]
 pub struct CategoryLimits {
     /// AI inference tools (tract-onnx, spawn_blocking heavy)
-    pub ai: usize,
+    pub ai: NonZeroUsize,
     /// HTTP scraping tools (network I/O, WAF checks)
-    pub scraping: usize,
+    pub scraping: NonZeroUsize,
     /// Export tools (file I/O, serialization)
-    pub export: usize,
+    pub export: NonZeroUsize,
     /// Obsidian vault tools (disk scan, embeddings)
-    pub obsidian: usize,
+    pub obsidian: NonZeroUsize,
     /// Content processing tools (CPU-bound HTML parsing)
-    pub content: usize,
+    pub content: NonZeroUsize,
     /// URL utility tools (lightweight, string ops)
-    pub url_utils: usize,
+    pub url_utils: NonZeroUsize,
     /// Security tools (WAF detection, metrics)
-    pub security: usize,
+    pub security: NonZeroUsize,
     /// Asset download tools (file I/O, network)
-    pub assets: usize,
+    pub assets: NonZeroUsize,
 }
 
 impl Default for CategoryLimits {
     fn default() -> Self {
+        // The literals are non-zero by construction; the guard is the repo
+        // idiom from `domain::budget` (never `expect` in production code).
+        let nz = |v: usize| {
+            NonZeroUsize::new(v).unwrap_or_else(|| unreachable!("limit literal {v} is non-zero"))
+        };
         Self {
-            ai: 2,         // Heavy CPU inference — limit strictly
-            scraping: 8,   // Network I/O — can handle more concurrent
-            export: 4,     // File I/O — moderate limit for HDD
-            obsidian: 3,   // Disk scan + embeddings — protect vault I/O
-            content: 6,    // CPU-bound HTML parsing — moderate
-            url_utils: 16, // Lightweight string ops — high limit
-            security: 8,   // WAF detection — moderate
-            assets: 4,     // File downloads — protect HDD
+            ai: nz(2),         // Heavy CPU inference — limit strictly
+            scraping: nz(8),   // Network I/O — can handle more concurrent
+            export: nz(4),     // File I/O — moderate limit for HDD
+            obsidian: nz(3),   // Disk scan + embeddings — protect vault I/O
+            content: nz(6),    // CPU-bound HTML parsing — moderate
+            url_utils: nz(16), // Lightweight string ops — high limit
+            security: nz(8),   // WAF detection — moderate
+            assets: nz(4),     // File downloads — protect HDD
         }
     }
 }
@@ -428,20 +439,19 @@ fn build_robots_fetcher(container: &Container) -> Option<Arc<dyn RobotsPort>> {
 impl CategorySemaphores {
     /// Build semaphores from per-category concurrency limits.
     ///
-    /// Each permit count is clamped to a minimum of one so that a zero-permit
-    /// limit cannot deadlock concurrent tool calls.
+    /// The mapping is 1:1 (#1132): the old `max(1)` clamp is gone because
+    /// `CategoryLimits` fields are [`NonZeroUsize`] — a zero-permit
+    /// semaphore cannot be named, so there is nothing left to clamp.
     pub fn from_limits(limits: &CategoryLimits) -> Self {
-        // Clamp to >= 1 to prevent deadlock from zero-permit semaphores
-        let clamp = |v: usize| v.max(1);
         Self {
-            ai: Arc::new(Semaphore::new(clamp(limits.ai))),
-            scraping: Arc::new(Semaphore::new(clamp(limits.scraping))),
-            export: Arc::new(Semaphore::new(clamp(limits.export))),
-            obsidian: Arc::new(Semaphore::new(clamp(limits.obsidian))),
-            content: Arc::new(Semaphore::new(clamp(limits.content))),
-            url_utils: Arc::new(Semaphore::new(clamp(limits.url_utils))),
-            security: Arc::new(Semaphore::new(clamp(limits.security))),
-            assets: Arc::new(Semaphore::new(clamp(limits.assets))),
+            ai: Arc::new(Semaphore::new(limits.ai.get())),
+            scraping: Arc::new(Semaphore::new(limits.scraping.get())),
+            export: Arc::new(Semaphore::new(limits.export.get())),
+            obsidian: Arc::new(Semaphore::new(limits.obsidian.get())),
+            content: Arc::new(Semaphore::new(limits.content.get())),
+            url_utils: Arc::new(Semaphore::new(limits.url_utils.get())),
+            security: Arc::new(Semaphore::new(limits.security.get())),
+            assets: Arc::new(Semaphore::new(limits.assets.get())),
         }
     }
 }
@@ -476,8 +486,14 @@ mod tests {
     #[test]
     fn test_default_limits_are_reasonable() {
         let limits = CategoryLimits::default();
-        assert!(limits.ai >= 1, "AI limit must allow at least 1 concurrent");
-        assert!(limits.scraping >= 1, "Scraping limit must allow at least 1");
+        assert!(
+            limits.ai.get() >= 1,
+            "AI limit must allow at least 1 concurrent"
+        );
+        assert!(
+            limits.scraping.get() >= 1,
+            "Scraping limit must allow at least 1"
+        );
         assert!(
             limits.ai < limits.scraping,
             "AI should be more restricted than scraping"
@@ -488,9 +504,15 @@ mod tests {
     fn test_semaphores_created_with_correct_permits() {
         let limits = CategoryLimits::default();
         let semaphores = CategorySemaphores::from_limits(&limits);
-        assert_eq!(semaphores.ai.available_permits(), limits.ai);
-        assert_eq!(semaphores.scraping.available_permits(), limits.scraping);
-        assert_eq!(semaphores.obsidian.available_permits(), limits.obsidian);
+        assert_eq!(semaphores.ai.available_permits(), limits.ai.get());
+        assert_eq!(
+            semaphores.scraping.available_permits(),
+            limits.scraping.get()
+        );
+        assert_eq!(
+            semaphores.obsidian.available_permits(),
+            limits.obsidian.get()
+        );
     }
 
     #[tokio::test]
