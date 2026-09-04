@@ -45,6 +45,9 @@ jobs:
           components: rust-docs
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # PRs restore main lineage; only main saves (#1171)
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Prebuilt binary from the project release (v0.7.7) — seconds instead of
       # ~1.6 min per run spent compiling from crates.io via `cargo install`.
@@ -123,6 +126,9 @@ jobs:
           components: rust-docs
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # PRs restore main lineage; only main saves (#1171)
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Prebuilt binary from the project release (v0.7.7) — seconds instead of
       # ~1.6 min per run spent compiling from crates.io via `cargo install`.
