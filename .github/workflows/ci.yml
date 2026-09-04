@@ -22,7 +22,15 @@
 #   miri runs on schedule/dispatch only
 #
 # Key optimization: single runner = single compilation, single cache.
-# Swatinem/rust-cache restores ~300MB of compiled deps on warm runs.
+#
+# Cache Budget Policy (#1171, measured per-job pool weights):
+#   coverage 1419MB (trimmed — non-gate), test-full 1341, test-core 1161,
+#   test-ai 1015 (trimmed — non-gate), doc-quality 822, feature-matrix 717,
+#   mcp 628, tokio 569 (trimmed — non-gate), clippy 399, code-quality 130.
+#   Saves are main-only: PRs restore main's cache lineage and never save,
+#   so the pool does not scale with open PRs.
+#   RULE: any NEW rust-cache consumer must justify its GB in the PR and is
+#   review-blocked by default (precedent: benches.yml:55-60).
 
 name: CI
 
@@ -219,6 +227,9 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # PRs restore main's cache lineage; only main saves — pool must not scale with open PRs (#1171)
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Complexity ratchet (issue #516): clippy.toml sets
       # cognitive-complexity-threshold=30 and too-many-lines-threshold=100.
       # Enabling these two lints + the existing -D warnings fails the build on
@@ -239,6 +250,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install stable toolchain for jscpd-rs (MSRV 1.93)
         run: rustup toolchain install stable --no-self-update --profile minimal
       - name: Install jscpd-rs (MSRV 1.93, via stable)
@@ -263,6 +276,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@nextest
       - name: Pre-build test binary
         run: cargo build -p webfang_cli --bin webfang
@@ -282,6 +297,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@nextest
       # NOTE: no ONNX model download here. test-full runs zero AI inference
       # (all --features compile + test, no --ignored); the only --ignored
@@ -312,10 +329,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # Distinct cache key: unstable cfg changes build fingerprints.
-          key: tokio-unstable
+      # no rust-cache (#1171): non-gate job, compiles cold — cache pool budget, benches.yml:55-60 precedent
       - uses: taiki-e/install-action@nextest
       - name: Compile proof (webfang_cli with console under unstable cfg)
         run: cargo check -p webfang_cli --features console
@@ -343,7 +357,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      # no rust-cache (#1171): non-gate job, compiles cold — cache pool budget, benches.yml:55-60 precedent
       - name: Cache ONNX model (Granite-97M)
         uses: actions/cache@v5
         with:
@@ -448,6 +462,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Rustdoc (links + missing_docs)
         run: cargo doc --workspace --all-features --no-deps
         env:
@@ -499,6 +515,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@cargo-hack
       - name: Feature matrix check
         run: cargo hack check --each-feature --workspace --no-dev-deps
@@ -520,6 +538,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build MCP server
         run: cargo build --bin webfang-mcp --bin webfang-mcp-stdio --all-features
       - name: Validate MCP handshake
@@ -558,6 +578,8 @@ jobs:
         with:
           target: x86_64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build optimized binary
         run: cargo build --release --locked --features "ai mcp ui"
       - name: Strip binary
@@ -755,7 +777,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      # no rust-cache (#1171): non-gate job, compiles cold — cache pool budget, benches.yml:55-60 precedent
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage
         run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info -- --skip test_mcp
