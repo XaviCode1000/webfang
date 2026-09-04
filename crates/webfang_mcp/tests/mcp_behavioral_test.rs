@@ -1522,10 +1522,15 @@ async fn mcp_ai_observability() {
     let parsed: Value = serde_json::from_str(&text).expect("response must parse as JSON");
 
     // The instrumented handler echoes the URL and reports structured metrics.
+    // #1116: `McpUrl` parses once at the deserialization edge, so the echo is
+    // the CANONICAL `url::Url` form — a bare `http://host:port` comes back as
+    // `http://host:port/`. Compare against the canonicalized URL, not the raw
+    // wire string.
+    let expected_url = url::Url::parse(&url).expect("wiremock URI must be a valid URL");
     assert_eq!(
         parsed.get("url").and_then(|v| v.as_str()),
-        Some(url.as_str()),
-        "response should echo the instrumented URL"
+        Some(expected_url.as_str()),
+        "response should echo the instrumented URL (canonical form)"
     );
     assert!(
         parsed.get("chunks").is_some(),

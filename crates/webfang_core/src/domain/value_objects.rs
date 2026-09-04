@@ -198,7 +198,7 @@ impl ValidUrl {
     ///
     /// # Errors
     ///
-    /// Returns [`ScraperError::InvalidUrl`] for any non-http(s) scheme.
+    /// Returns [`crate::error::ScraperError::InvalidUrl`] for any non-http(s) scheme.
     pub fn try_from_url(url: url::Url) -> crate::Result<Self> {
         let mut url = url;
         // Bug #675-2: reject non-HTTP(S) schemes early (fail-fast).

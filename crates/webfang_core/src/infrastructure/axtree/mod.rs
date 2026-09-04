@@ -21,6 +21,7 @@ use super::downloader::DownloadError;
 use crate::domain::axtree_port::AxTreePort;
 #[cfg(feature = "chromium")]
 use crate::domain::axtree_port::RawAxNodeView;
+#[cfg(feature = "chromium")]
 use crate::error::ScraperError;
 
 // DTOs moved to domain::axtree_port in sub-slice 3.A.2 (ADR-0012). Infra
