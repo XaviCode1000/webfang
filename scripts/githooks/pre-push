@@ -1,3 +1,17 @@
 #!/usr/bin/env bash
-# Pre-push delivery gate — consults the Gentle AI review receipt (#1036).
-exec "$(dirname "$0")/review-gate.sh" pre-push
+# Pre-push delivery gate — two sequential gates:
+#
+#   1. review-gate.sh (#1036): consulted first with stdin closed (</dev/null)
+#      and WITHOUT exec so its exit code is propagated — a BLOCK here stops
+#      the push before the main gate runs.
+#   2. main-push-gate.sh (#1091): fed the buffered ref-update list so it reads
+#      git's stdin contract unchanged (#1154).
+#
+# git's stdin contract for this hook: a "<remote-name> <remote-url>" header
+# line followed by one "<local_ref> <local_sha> <remote_ref> <remote_sha>"
+# line per update. The list is read once up-front and replayed verbatim via
+# printf; no child of review-gate.sh can then drain the main gate's input and
+# leave it seeing zero main updates (silent fail-open for a main push).
+input="$(cat)"
+"$(dirname "$0")/review-gate.sh" pre-push </dev/null || exit $?
+printf '%s\n' "$input" | "$(dirname "$0")/main-push-gate.sh"
