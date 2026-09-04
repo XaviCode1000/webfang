@@ -13,6 +13,10 @@ homepage.workspace = true
 default = ["images", "documents"]
 images = []
 documents = []
+# ADR-0014 loom model tests: build.rs emits cfg(loom) for this crate when
+# enabled; loom itself is an unconditional dev-dependency.
+# Run with: cargo nextest run -p webfang_core --features loom-model --lib record_transition
+loom-model = []
 persistence = ["dep:rusqlite", "dep:deadpool-sqlite", "dep:sys-info"]
 console = ["dep:console-subscriber"]
 dev-tracing = ["dep:tracing-tree"]
@@ -141,7 +145,13 @@ criterion = { version = "0.5", features = ["html_reports"] }
 insta = { workspace = true }
 regex = { workspace = true }
 webfang_test_utils = { workspace = true }
+    
 trybuild = "1"
+# ADR-0014 loom model tests: always linked in dev; the `loom-model`
+# feature gates whether build.rs emits cfg(loom) (crate-scoped — NOT
+# RUSTFLAGS, which breaks tokio/wiremock/concurrent-queue cfg paths).
+# Run: cargo nextest run -p webfang_core --features loom-model --lib record_transition
+loom = { workspace = true }
 
 # Integration tests parse exported JSONL lines directly.
 serde_json = { workspace = true }
@@ -240,3 +250,4 @@ path = "tests/security_traversal_test.rs"
 [[test]]
 name = "security_bombs_test"
 path = "tests/security_bombs_test.rs"
+
