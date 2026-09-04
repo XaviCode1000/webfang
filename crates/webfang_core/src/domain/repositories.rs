@@ -70,6 +70,10 @@ pub trait CrawlResultRepository: Send + Sync {
 
     /// Gracefully shut down any background persistence resources.
     ///
+    /// NOTE: fire-and-forget — `save()` on buffering implementations returns
+    /// as soon as the record is queued; call `shutdown()` before exit to
+    /// flush queued writes and learn whether any of them failed.
+    ///
     /// Default: no-op — implementations without a background writer have
     /// nothing to drain. Implementations that buffer writes off-thread MUST
     /// close the send side, drain pending records, and join the writer so
