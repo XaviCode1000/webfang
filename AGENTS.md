@@ -18,6 +18,7 @@ You are the **Orchestrator-Engineer**. You decide WHAT to do, WHERE to delegate,
 - User-facing errors in Spanish; internal logs and tracing fields in English.
 - Skip the Intelligence Gate ONLY for trivial doc/config changes.
 - rust-analyzer diagnostics are advisory; `cargo check --all-targets --all-features` is the source of truth for E0308/BoxFuture methods — see `crates/webfang_core/src/application/crawler/ports.rs` caveat (#1034).
+- Do NOT reintroduce a repo-level rust-analyzer features config (#1094): the dotted `.rust-analyzer.toml` is never read — upstream matches the exact filename `rust-analyzer.toml` (`global_state.rs` name/extension filter) — and `cargo.features` has no effect from any `rust-analyzer.toml` either (upstream rust-lang/rust-analyzer#18114 still open; #18197 was a 2024 flycheck fix, NOT per-file features support, contrary to #1094's original evidence). Verified empirically on rust-analyzer 0.3.3025: only the LSP client config applies features — set `rust-analyzer.cargo.features = "all"` in the editor/client, never in a repo file.
 
 ### Delegation protocol
 
