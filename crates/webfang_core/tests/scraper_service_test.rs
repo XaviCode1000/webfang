@@ -1135,11 +1135,12 @@ async fn test_download_assets_shared_downloader_spy() {
     use std::sync::Mutex;
     use webfang_core::domain::entities::DownloadedAsset as DomainDownloadedAsset;
     use webfang_core::domain::ports::AssetDownloaderPort;
+    use webfang_core::domain::ValidUrl;
 
     /// Spy that counts download_batch calls without doing real I/O.
     struct DownloadSpy {
         call_count: AtomicUsize,
-        last_urls: Mutex<Vec<String>>,
+        last_urls: Mutex<Vec<ValidUrl>>,
     }
 
     impl DownloadSpy {
@@ -1154,7 +1155,7 @@ async fn test_download_assets_shared_downloader_spy() {
             self.call_count.load(Ordering::SeqCst)
         }
 
-        fn last_urls(&self) -> Vec<String> {
+        fn last_urls(&self) -> Vec<ValidUrl> {
             self.last_urls.lock().unwrap().clone()
         }
     }
@@ -1162,7 +1163,7 @@ async fn test_download_assets_shared_downloader_spy() {
     impl AssetDownloaderPort for DownloadSpy {
         fn download_batch(
             &self,
-            urls: &[String],
+            urls: &[ValidUrl],
         ) -> std::pin::Pin<
             Box<
                 dyn std::future::Future<

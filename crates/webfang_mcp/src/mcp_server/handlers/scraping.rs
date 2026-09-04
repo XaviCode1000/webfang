@@ -47,24 +47,21 @@ impl McpHandler {
 
         let _permit = acquire_semaphore!(self, scraping);
 
-        let url = url::Url::parse(&params.url).map_err(|e| {
-            McpError::invalid_params(
-                format!("invalid URL: {e}"),
-                Some(serde_json::Value::String("url".to_string())),
-            )
-        })?;
+        // #1116: the URL was parsed+hardened once at the deserialization
+        // boundary (`McpUrl`); the handler borrows it instead of re-parsing.
+        let url = params.url.as_url();
 
-        crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
+        crate::mcp_server::ssrf::validate_url_no_ssrf(url).await?;
 
         let start = Instant::now();
         // One run identity per tool call, shared by its success and error events (#501/#698).
         let root_correlation = webfang_core::domain::CorrelationId::new();
         // robots.txt gate BEFORE any fetch (#749): a disallowed URL is rejected
         // without touching the network, mirroring `scrape_with_options` (#697).
-        if let Some(err) = self.state.robots_denied_for(&url).await {
+        if let Some(err) = self.state.robots_denied_for(url).await {
             self.state.record_scrape_identity(
                 "scrape_url",
-                domain_of(&params.url),
+                domain_of(params.url.as_str()),
                 Outcome::Error,
                 0,
                 start,
@@ -73,14 +70,13 @@ impl McpHandler {
             return Ok(CallToolResult::error(vec![Content::text(err.to_string())]));
         }
         let client = self.state.container.http_client().as_ref();
-        match webfang_core::application::scraper_service::scrape_with_readability(client, &url)
-            .await
+        match webfang_core::application::scraper_service::scrape_with_readability(client, url).await
         {
             Ok(results) => {
                 let count = results.len();
                 self.state.record_scrape_identity(
                     "scrape_url",
-                    domain_of(&params.url),
+                    domain_of(params.url.as_str()),
                     Outcome::Success,
                     count,
                     start,
@@ -93,7 +89,7 @@ impl McpHandler {
             Err(e) => {
                 self.state.record_scrape_identity(
                     "scrape_url",
-                    domain_of(&params.url),
+                    domain_of(params.url.as_str()),
                     Outcome::Error,
                     0,
                     start,
@@ -117,14 +113,10 @@ impl McpHandler {
 
         let _permit = acquire_semaphore!(self, scraping);
 
-        let url = url::Url::parse(&params.url).map_err(|e| {
-            McpError::invalid_params(
-                format!("invalid URL: {e}"),
-                Some(serde_json::Value::String("url".to_string())),
-            )
-        })?;
+        // #1116: borrow the boundary-parsed URL (no second parse).
+        let url = params.url.as_url();
 
-        crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
+        crate::mcp_server::ssrf::validate_url_no_ssrf(url).await?;
 
         let mut config = webfang_core::domain::config::ScraperConfig::default();
         if let Some(max) = params.max_pages {
@@ -158,7 +150,7 @@ impl McpHandler {
         let root_correlation = webfang_core::domain::CorrelationId::new();
         match webfang_core::application::scraper_service::scrape_with_config(
             client,
-            &url,
+            url,
             &config,
             dl,
             inspector,
@@ -173,7 +165,7 @@ impl McpHandler {
                 let count = outcome.results.len();
                 self.state.record_scrape_identity(
                     "scrape_with_options",
-                    domain_of(&params.url),
+                    domain_of(params.url.as_str()),
                     Outcome::Success,
                     count,
                     start,
@@ -191,7 +183,7 @@ impl McpHandler {
             Err(e) => {
                 self.state.record_scrape_identity(
                     "scrape_with_options",
-                    domain_of(&params.url),
+                    domain_of(params.url.as_str()),
                     Outcome::Error,
                     0,
                     start,
@@ -216,16 +208,13 @@ impl McpHandler {
         tracing::info!("starting batch scrape");
         let _permit = acquire_semaphore!(self, scraping);
 
+        // #1116: each element is already a parsed `McpUrl`; the per-element
+        // `url::Url::parse` is gone.
         let mut urls: Vec<url::Url> = Vec::with_capacity(params.urls.len());
-        for raw in &params.urls {
-            let url = url::Url::parse(raw).map_err(|e| {
-                McpError::invalid_params(
-                    format!("invalid URL: {e}"),
-                    Some(serde_json::Value::String("urls".to_string())),
-                )
-            })?;
-            crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
-            urls.push(url);
+        for parsed in &params.urls {
+            let url = parsed.as_url();
+            crate::mcp_server::ssrf::validate_url_no_ssrf(url).await?;
+            urls.push(url.clone());
         }
 
         if urls.is_empty() {
@@ -317,20 +306,16 @@ impl McpHandler {
 
         let _permit = acquire_semaphore!(self, scraping);
 
-        let seed_url = url::Url::parse(&params.url).map_err(|e| {
-            McpError::invalid_params(
-                format!("invalid URL: {e}"),
-                Some(serde_json::Value::String("url".to_string())),
-            )
-        })?;
+        // #1116: borrow the boundary-parsed seed URL (no second parse).
+        let seed_url = params.url.as_url();
 
-        crate::mcp_server::ssrf::validate_url_no_ssrf(&seed_url).await?;
+        crate::mcp_server::ssrf::validate_url_no_ssrf(seed_url).await?;
 
         let start = Instant::now();
         // One run identity per tool call, shared by its success and error events (#501/#698).
         let root_correlation = webfang_core::domain::CorrelationId::new();
-        // Clone: the builder consumes `seed_url` and the Ok arm re-uses it as
-        // the filter anchor (the config itself is moved into the crawl).
+        // Clone: the builder consumes the seed URL and the Ok arm re-uses it
+        // as the filter anchor (the config itself is moved into the crawl).
         let crawler_config = webfang_core::domain::CrawlerConfig::builder(seed_url.clone())
             .max_depth(params.max_depth.unwrap_or(CRAWL_SITE_DEFAULT_MAX_DEPTH))
             .max_pages(params.max_pages.unwrap_or(CRAWL_SITE_DEFAULT_MAX_PAGES) as usize)
@@ -341,7 +326,7 @@ impl McpHandler {
                 let count = result.total_pages;
                 self.state.record_scrape_identity(
                     "crawl_site",
-                    domain_of(&params.url),
+                    domain_of(params.url.as_str()),
                     Outcome::Success,
                     count,
                     start,
@@ -350,7 +335,7 @@ impl McpHandler {
                 // REQ-01: filter discovered URLs before responding — keep only
                 // seed-host-internal entries; exclusions warn with the URL.
                 let mut urls = Vec::with_capacity(result.urls.len());
-                filter_ssrf_safe(&result.urls, &seed_url, &mut urls);
+                filter_ssrf_safe(&result.urls, seed_url, &mut urls);
                 let json = serde_json::json!({
                     "urls": urls,
                     "total_pages": result.total_pages,
@@ -365,7 +350,7 @@ impl McpHandler {
             Err(e) => {
                 self.state.record_scrape_identity(
                     "crawl_site",
-                    domain_of(&params.url),
+                    domain_of(params.url.as_str()),
                     Outcome::Error,
                     0,
                     start,
@@ -392,22 +377,15 @@ impl McpHandler {
         tracing::info!("starting sitemap crawl");
         let _permit = acquire_semaphore!(self, scraping);
 
-        let seed_url = url::Url::parse(&params.url).map_err(|e| {
-            tracing::error!("invalid URL: {}", e);
-            McpError::invalid_params(
-                format!("invalid URL: {e}"),
-                Some(serde_json::Value::String("url".to_string())),
-            )
-        })?;
-        crate::mcp_server::ssrf::validate_url_no_ssrf(&seed_url).await?;
+        // #1116: borrow the boundary-parsed seed URL (no second parse).
+        let seed_url = params.url.as_url();
+        crate::mcp_server::ssrf::validate_url_no_ssrf(seed_url).await?;
 
         // REQ-02: validate the explicit sitemap URL at entry, BEFORE any
-        // sitemap fetch (guard ON unless disabled via env for tests).
+        // sitemap fetch (guard ON unless disabled via env for tests). The
+        // `McpUrl` boundary already rejected non-http(s) schemes (#1116).
         if let Some(s) = &params.sitemap_url {
-            let sitemap = url::Url::parse(s).map_err(|e| {
-                McpError::invalid_params(format!("URL de sitemap inválida: {e}"), None)
-            })?;
-            crate::mcp_server::ssrf::validate_url_no_ssrf(&sitemap).await?;
+            crate::mcp_server::ssrf::validate_url_no_ssrf(s.as_url()).await?;
         }
 
         let start = Instant::now();
@@ -418,8 +396,8 @@ impl McpHandler {
         let config = webfang_core::domain::CrawlerConfig::new(seed_url.clone());
 
         match webfang_core::application::crawler::crawl_with_sitemap(
-            &params.url,
-            params.sitemap_url.as_deref(),
+            params.url.as_str(),
+            params.sitemap_url.as_ref().map(|s| s.as_str()),
             &config,
         )
         .await
@@ -428,7 +406,7 @@ impl McpHandler {
                 let count = urls.len();
                 self.state.record_scrape_identity(
                     "crawl_with_sitemap",
-                    domain_of(&params.url),
+                    domain_of(params.url.as_str()),
                     Outcome::Success,
                     count,
                     start,
@@ -439,7 +417,7 @@ impl McpHandler {
                 // discovery is host-agnostic — the filter is the gate that
                 // drops external-domain and forbidden-literal-IP entries.
                 let mut url_strings = Vec::with_capacity(urls.len());
-                filter_ssrf_safe(&urls, &seed_url, &mut url_strings);
+                filter_ssrf_safe(&urls, seed_url, &mut url_strings);
                 Ok(CallToolResult::success(vec![Content::text(
                     serde_json::to_string_pretty(&url_strings)
                         .expect("serializing JSON to a string cannot fail"),
@@ -448,7 +426,7 @@ impl McpHandler {
             Err(e) => {
                 self.state.record_scrape_identity(
                     "crawl_with_sitemap",
-                    domain_of(&params.url),
+                    domain_of(params.url.as_str()),
                     Outcome::Error,
                     0,
                     start,
@@ -476,13 +454,9 @@ impl McpHandler {
 
         let _permit = acquire_semaphore!(self, scraping);
 
-        let url = url::Url::parse(&params.url).map_err(|e| {
-            McpError::invalid_params(
-                format!("invalid URL: {e}"),
-                Some(serde_json::Value::String("url".to_string())),
-            )
-        })?;
-        crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
+        // #1116: borrow the boundary-parsed URL (no second parse).
+        let url = params.url.as_url();
+        crate::mcp_server::ssrf::validate_url_no_ssrf(url).await?;
 
         let start = Instant::now();
         // One run identity per tool call, shared by its success and error events (#501/#698).
@@ -491,8 +465,8 @@ impl McpHandler {
         if let Some(robots_error) = robots_denied_response(
             self,
             "discover_urls",
-            &url,
-            &params.url,
+            url,
+            params.url.as_str(),
             start,
             &root_correlation,
         )
@@ -509,7 +483,7 @@ impl McpHandler {
                 if !(200..=299).contains(&resp.status) {
                     self.state.record_scrape_identity(
                         "discover_urls",
-                        domain_of(&params.url),
+                        domain_of(params.url.as_str()),
                         Outcome::Error,
                         0,
                         start,
@@ -521,12 +495,15 @@ impl McpHandler {
                     ))]));
                 }
                 let html = resp.body;
-                match webfang_core::infrastructure::crawler::extract_links(&html, &params.url) {
+                match webfang_core::infrastructure::crawler::extract_links(
+                    &html,
+                    params.url.as_str(),
+                ) {
                     Ok(links) => {
                         let count = links.len();
                         self.state.record_scrape_identity(
                             "discover_urls",
-                            domain_of(&params.url),
+                            domain_of(params.url.as_str()),
                             Outcome::Success,
                             count,
                             start,
@@ -539,7 +516,7 @@ impl McpHandler {
                     Err(e) => {
                         self.state.record_scrape_identity(
                             "discover_urls",
-                            domain_of(&params.url),
+                            domain_of(params.url.as_str()),
                             Outcome::Error,
                             0,
                             start,
@@ -552,7 +529,7 @@ impl McpHandler {
             Err(e) => {
                 self.state.record_scrape_identity(
                     "discover_urls",
-                    domain_of(&params.url),
+                    domain_of(params.url.as_str()),
                     Outcome::Error,
                     0,
                     start,
@@ -578,21 +555,17 @@ impl McpHandler {
 
         let _permit = acquire_semaphore!(self, scraping);
 
-        let seed = url::Url::parse(&params.url).map_err(|e| {
-            McpError::invalid_params(
-                format!("invalid URL: {e}"),
-                Some(serde_json::Value::String("url".to_string())),
-            )
-        })?;
-        crate::mcp_server::ssrf::validate_url_no_ssrf(&seed).await?;
+        // #1116: borrow the boundary-parsed seed URL (no second parse).
+        let seed = params.url.as_url();
+        crate::mcp_server::ssrf::validate_url_no_ssrf(seed).await?;
 
         let start = Instant::now();
         // One run identity per tool call, shared by its success and error events (#501/#698).
         let root_correlation = webfang_core::domain::CorrelationId::new();
-        let crawler_config = webfang_core::domain::CrawlerConfig::new(seed);
+        let crawler_config = webfang_core::domain::CrawlerConfig::new(seed.clone());
 
         match webfang_core::application::crawler::crawl_with_sitemap(
-            &params.url,
+            params.url.as_str(),
             None,
             &crawler_config,
         )
@@ -602,7 +575,7 @@ impl McpHandler {
                 let count = discovered.len();
                 self.state.record_scrape_identity(
                     "discover_sitemap",
-                    domain_of(&params.url),
+                    domain_of(params.url.as_str()),
                     Outcome::Success,
                     count,
                     start,
@@ -616,7 +589,7 @@ impl McpHandler {
             Err(e) => {
                 self.state.record_scrape_identity(
                     "discover_sitemap",
-                    domain_of(&params.url),
+                    domain_of(params.url.as_str()),
                     Outcome::Error,
                     0,
                     start,
@@ -649,13 +622,9 @@ impl McpHandler {
 
         let _permit = acquire_semaphore!(self, scraping);
 
-        let url = url::Url::parse(&params.url).map_err(|e| {
-            McpError::invalid_params(
-                format!("invalid URL: {e}"),
-                Some(serde_json::Value::String("url".to_string())),
-            )
-        })?;
-        crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
+        // #1116: borrow the boundary-parsed URL (no second parse).
+        let url = params.url.as_url();
+        crate::mcp_server::ssrf::validate_url_no_ssrf(url).await?;
 
         let start = Instant::now();
         // One run identity per tool call, shared by its success and error events (#501/#698).
@@ -664,8 +633,8 @@ impl McpHandler {
         if let Some(robots_error) = robots_denied_response(
             self,
             "detect_spa",
-            &url,
-            &params.url,
+            url,
+            params.url.as_str(),
             start,
             &root_correlation,
         )
@@ -678,7 +647,7 @@ impl McpHandler {
             Ok(resp) => {
                 self.state.record_scrape_identity(
                     "detect_spa",
-                    domain_of(&params.url),
+                    domain_of(params.url.as_str()),
                     Outcome::Success,
                     1,
                     start,
@@ -712,7 +681,7 @@ impl McpHandler {
             Err(e) => {
                 self.state.record_scrape_identity(
                     "detect_spa",
-                    domain_of(&params.url),
+                    domain_of(params.url.as_str()),
                     Outcome::Error,
                     0,
                     start,
@@ -859,6 +828,12 @@ fn record_batch_metrics_by_domain(
 
 #[cfg(test)]
 mod tests {
+    /// Test helper: build an `McpUrl` from a KNOWN-VALID http(s) string.
+    /// Invalid strings can no longer be constructed at all (#1116) — the
+    /// rejection tests use `serde_json::from_value` instead.
+    fn vu(s: &str) -> crate::mcp_server::params::McpUrl {
+        s.parse().expect("test url must be valid http(s)")
+    }
     use super::*;
     use crate::mcp_server::state::McpState;
     use rmcp::handler::server::wrapper::Parameters;
@@ -1014,21 +989,26 @@ mod tests {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .scrape_url(Parameters(ScrapeUrlParams {
-                url: "http://127.0.0.1/".to_string(),
+                url: vu("http://127.0.0.1/"),
             }))
             .await;
         assert_ssrf_rejected(res);
     }
 
-    #[tokio::test]
-    async fn scrape_url_invalid_url_is_invalid_params() {
-        let (handler, _tmp) = test_handler().await;
-        let res = handler
-            .scrape_url(Parameters(ScrapeUrlParams {
-                url: "not a url".to_string(),
-            }))
-            .await;
-        assert!(res.is_err(), "invalid URL must be a protocol error");
+    /// #1116: an invalid URL can no longer be constructed as `ScrapeUrlParams`
+    /// at all — `McpUrl` rejects it during deserialization, which rmcp maps
+    /// to JSON-RPC -32602. This replaces the old "build the param with a bad
+    /// URL, call the handler, expect Err" test: the invalid state is now
+    /// unrepresentable, so the rejection is proven at the type boundary.
+    #[test]
+    fn scrape_url_invalid_url_is_unrepresentable() {
+        let res = serde_json::from_value::<ScrapeUrlParams>(serde_json::json!({
+            "url": "not a url"
+        }));
+        assert!(
+            res.is_err(),
+            "invalid URL must fail to deserialize: {res:?}"
+        );
     }
 
     #[tokio::test]
@@ -1042,7 +1022,7 @@ mod tests {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .scrape_with_options(Parameters(ScrapeWithOptionsParams {
-                url: "http://127.0.0.1/".to_string(),
+                url: vu("http://127.0.0.1/"),
                 max_pages: Some(1),
                 download_images: Some(false),
                 download_documents: Some(false),
@@ -1053,20 +1033,17 @@ mod tests {
         assert_ssrf_rejected(res);
     }
 
-    #[tokio::test]
-    async fn scrape_with_options_invalid_url_is_invalid_params() {
-        let (handler, _tmp) = test_handler().await;
-        let res = handler
-            .scrape_with_options(Parameters(ScrapeWithOptionsParams {
-                url: "::bad::".to_string(),
-                max_pages: None,
-                download_images: None,
-                download_documents: None,
-                selector: None,
-                ignore_robots: None,
-            }))
-            .await;
-        assert!(res.is_err(), "invalid URL must be a protocol error");
+    /// #1116: `::bad::` cannot be named as an `McpUrl` — deserialization
+    /// rejects it (see `scrape_url_invalid_url_is_unrepresentable`).
+    #[test]
+    fn scrape_with_options_invalid_url_is_unrepresentable() {
+        let res = serde_json::from_value::<ScrapeWithOptionsParams>(serde_json::json!({
+            "url": "::bad::"
+        }));
+        assert!(
+            res.is_err(),
+            "invalid URL must fail to deserialize: {res:?}"
+        );
     }
 
     #[tokio::test]
@@ -1080,7 +1057,7 @@ mod tests {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .scrape_batch(Parameters(ScrapeBatchParams {
-                urls: vec!["http://127.0.0.1/".to_string()],
+                urls: vec![vu("http://127.0.0.1/")],
                 concurrency: Some(2),
                 ignore_robots: None,
             }))
@@ -1088,20 +1065,16 @@ mod tests {
         assert_ssrf_rejected(res);
     }
 
-    #[tokio::test]
-    async fn scrape_batch_no_valid_urls_is_error() {
-        let (handler, _tmp) = test_handler().await;
-        // Params validation (#512) rejects unparseable URLs up front.
-        let res = handler
-            .scrape_batch(Parameters(ScrapeBatchParams {
-                urls: vec!["not a url".to_string()],
-                concurrency: None,
-                ignore_robots: None,
-            }))
-            .await;
+    /// #1116: a batch element that is not a valid URL cannot be constructed
+    /// — the whole `ScrapeBatchParams` fails to deserialize.
+    #[test]
+    fn scrape_batch_invalid_url_is_unrepresentable() {
+        let res = serde_json::from_value::<ScrapeBatchParams>(serde_json::json!({
+            "urls": ["not a url"]
+        }));
         assert!(
             res.is_err(),
-            "invalid URLs must be a protocol error, got: {res:?}"
+            "invalid batch URL must fail to deserialize: {res:?}"
         );
     }
 
@@ -1111,7 +1084,7 @@ mod tests {
         // Bug #598: max_pages:0 panics mpsc::channel(0).
         // Both must be rejected up front with invalid_params.
         let batch = ScrapeBatchParams {
-            urls: vec!["https://example.com".to_string()],
+            urls: vec![vu("https://example.com")],
             concurrency: Some(0),
             ignore_robots: None,
         }
@@ -1119,7 +1092,7 @@ mod tests {
         assert!(batch.is_err(), "concurrency 0 must be rejected: {batch:?}");
 
         let crawl = CrawlSiteParams {
-            url: "https://example.com".into(),
+            url: vu("https://example.com"),
             max_depth: None,
             max_pages: Some(0),
         }
@@ -1138,24 +1111,21 @@ mod tests {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .discover_urls(Parameters(DiscoverUrlsParams {
-                url: "http://127.0.0.1/".to_string(),
+                url: vu("http://127.0.0.1/"),
             }))
             .await;
         assert_ssrf_rejected(res);
     }
 
-    #[tokio::test]
-    async fn discover_urls_invalid_url_is_invalid_params() {
-        let (handler, _tmp) = test_handler().await;
-        // Params validation (#512) rejects unparseable URLs up front.
-        let res = handler
-            .discover_urls(Parameters(DiscoverUrlsParams {
-                url: "not a url".to_string(),
-            }))
-            .await;
+    /// #1116: invalid URL is unrepresentable at the `McpUrl` boundary.
+    #[test]
+    fn discover_urls_invalid_url_is_unrepresentable() {
+        let res = serde_json::from_value::<DiscoverUrlsParams>(serde_json::json!({
+            "url": "not a url"
+        }));
         assert!(
             res.is_err(),
-            "invalid URL must be a protocol error, got: {res:?}"
+            "invalid URL must fail to deserialize: {res:?}"
         );
     }
 
@@ -1170,24 +1140,21 @@ mod tests {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .detect_spa(Parameters(DetectSpaParams {
-                url: "http://127.0.0.1/".to_string(),
+                url: vu("http://127.0.0.1/"),
             }))
             .await;
         assert_ssrf_rejected(res);
     }
 
-    #[tokio::test]
-    async fn detect_spa_invalid_url_is_invalid_params() {
-        let (handler, _tmp) = test_handler().await;
-        // Params validation (#512) rejects unparseable URLs up front.
-        let res = handler
-            .detect_spa(Parameters(DetectSpaParams {
-                url: "not a url".to_string(),
-            }))
-            .await;
+    /// #1116: invalid URL is unrepresentable at the `McpUrl` boundary.
+    #[test]
+    fn detect_spa_invalid_url_is_unrepresentable() {
+        let res = serde_json::from_value::<DetectSpaParams>(serde_json::json!({
+            "url": "not a url"
+        }));
         assert!(
             res.is_err(),
-            "invalid URL must be a protocol error, got: {res:?}"
+            "invalid URL must fail to deserialize: {res:?}"
         );
     }
 
@@ -1209,7 +1176,7 @@ mod tests {
 
         let res = handler
             .scrape_url(Parameters(ScrapeUrlParams {
-                url: format!("{}/private/page", server.uri()),
+                url: vu(&format!("{}/private/page", server.uri())),
             }))
             .await
             .expect("handler returns Ok with an honest error");
@@ -1239,7 +1206,7 @@ mod tests {
 
         let res = handler
             .scrape_url(Parameters(ScrapeUrlParams {
-                url: format!("{}/public/page", server.uri()),
+                url: vu(&format!("{}/public/page", server.uri())),
             }))
             .await
             .expect("handler returns Ok");
@@ -1275,7 +1242,7 @@ mod tests {
 
         let res = handler
             .discover_urls(Parameters(DiscoverUrlsParams {
-                url: format!("{}/private/list", server.uri()),
+                url: vu(&format!("{}/private/list", server.uri())),
             }))
             .await
             .expect("handler returns Ok with an honest error");
@@ -1304,7 +1271,7 @@ mod tests {
 
         let res = handler
             .detect_spa(Parameters(DetectSpaParams {
-                url: format!("{}/private/app", server.uri()),
+                url: vu(&format!("{}/private/app", server.uri())),
             }))
             .await
             .expect("handler returns Ok with an honest error");
@@ -1317,29 +1284,28 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn crawl_site_invalid_url_is_invalid_params() {
-        let (handler, _tmp) = test_handler().await;
-        let res = handler
-            .crawl_site(Parameters(CrawlSiteParams {
-                url: "not a url".to_string(),
-                max_depth: None,
-                max_pages: None,
-            }))
-            .await;
-        assert!(res.is_err(), "invalid URL must be a protocol error");
+    /// #1116: invalid URL is unrepresentable at the `McpUrl` boundary.
+    #[test]
+    fn crawl_site_invalid_url_is_unrepresentable() {
+        let res = serde_json::from_value::<CrawlSiteParams>(serde_json::json!({
+            "url": "not a url"
+        }));
+        assert!(
+            res.is_err(),
+            "invalid URL must fail to deserialize: {res:?}"
+        );
     }
 
-    #[tokio::test]
-    async fn crawl_with_sitemap_invalid_url_is_invalid_params() {
-        let (handler, _tmp) = test_handler().await;
-        let res = handler
-            .crawl_with_sitemap(Parameters(CrawlWithSitemapParams {
-                url: "not a url".to_string(),
-                sitemap_url: None,
-            }))
-            .await;
-        assert!(res.is_err(), "invalid URL must be a protocol error");
+    /// #1116: invalid URL is unrepresentable at the `McpUrl` boundary.
+    #[test]
+    fn crawl_with_sitemap_invalid_url_is_unrepresentable() {
+        let res = serde_json::from_value::<CrawlWithSitemapParams>(serde_json::json!({
+            "url": "not a url"
+        }));
+        assert!(
+            res.is_err(),
+            "invalid URL must fail to deserialize: {res:?}"
+        );
     }
 
     /// REQ-01: the post-hoc filter keeps seed-host-internal URLs and drops
@@ -1401,22 +1367,23 @@ mod tests {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .crawl_with_sitemap(Parameters(CrawlWithSitemapParams {
-                url: "http://8.8.8.8/".to_string(),
-                sitemap_url: Some("http://127.0.0.1/".to_string()),
+                url: vu("http://8.8.8.8/"),
+                sitemap_url: Some(vu("http://127.0.0.1/")),
             }))
             .await;
         assert_ssrf_rejected(res);
     }
 
-    #[tokio::test]
-    async fn discover_sitemap_invalid_url_is_invalid_params() {
-        let (handler, _tmp) = test_handler().await;
-        let res = handler
-            .discover_sitemap(Parameters(DiscoverUrlsParams {
-                url: "not a url".to_string(),
-            }))
-            .await;
-        assert!(res.is_err(), "invalid URL must be a protocol error");
+    /// #1116: invalid URL is unrepresentable at the `McpUrl` boundary.
+    #[test]
+    fn discover_sitemap_invalid_url_is_unrepresentable() {
+        let res = serde_json::from_value::<DiscoverUrlsParams>(serde_json::json!({
+            "url": "not a url"
+        }));
+        assert!(
+            res.is_err(),
+            "invalid URL must fail to deserialize: {res:?}"
+        );
     }
     // --- record_batch_metrics_by_domain (#696) ---
 

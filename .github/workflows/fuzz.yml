@@ -58,6 +58,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
+          # PRs restore main/develop lineage; only main/develop saves (#1171)
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
 
       - name: Build all fuzz targets
         run: cargo +nightly fuzz build

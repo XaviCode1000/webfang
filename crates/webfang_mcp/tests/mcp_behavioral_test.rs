@@ -1224,13 +1224,22 @@ async fn test_semantic_cleaner_invalid_url_is_invalid_params() {
     )
     .await;
 
-    let error = resp
+    // #1116: invalid URL rejected at the `McpUrl` boundary; rmcp 1.8.0
+    // surfaces it as a tool-level error (isError:true) or a -32602 protocol
+    // error. Either shape proves the request never reached the cleaner.
+    let rejected_as_protocol_error = resp
         .get("error")
-        .unwrap_or_else(|| panic!("invalid URL must return a JSON-RPC error, got: {resp}"));
-    let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
-    assert_eq!(
-        code, -32602,
-        "invalid URL must map to JSON-RPC invalid-params (-32602), got: {error}"
+        .and_then(|e| e.get("code"))
+        .and_then(|c| c.as_i64())
+        == Some(-32602);
+    let rejected_as_tool_error = resp
+        .get("result")
+        .and_then(|r| r.get("isError"))
+        .and_then(|v| v.as_bool())
+        == Some(true);
+    assert!(
+        rejected_as_protocol_error || rejected_as_tool_error,
+        "invalid URL must be rejected (protocol -32602 or tool isError), got: {resp}"
     );
 }
 
@@ -1513,10 +1522,15 @@ async fn mcp_ai_observability() {
     let parsed: Value = serde_json::from_str(&text).expect("response must parse as JSON");
 
     // The instrumented handler echoes the URL and reports structured metrics.
+    // #1116: `McpUrl` parses once at the deserialization edge, so the echo is
+    // the CANONICAL `url::Url` form — a bare `http://host:port` comes back as
+    // `http://host:port/`. Compare against the canonicalized URL, not the raw
+    // wire string.
+    let expected_url = url::Url::parse(&url).expect("wiremock URI must be a valid URL");
     assert_eq!(
         parsed.get("url").and_then(|v| v.as_str()),
-        Some(url.as_str()),
-        "response should echo the instrumented URL"
+        Some(expected_url.as_str()),
+        "response should echo the instrumented URL (canonical form)"
     );
     assert!(
         parsed.get("chunks").is_some(),
@@ -1546,13 +1560,22 @@ async fn semantic_cleaner_invalid_url_reject() {
     )
     .await;
 
-    let error = resp
+    // #1116: invalid URL rejected at the `McpUrl` boundary; rmcp 1.8.0
+    // surfaces it as a tool-level error (isError:true) or a -32602 protocol
+    // error. Either shape proves the request never reached the cleaner.
+    let rejected_as_protocol_error = resp
         .get("error")
-        .unwrap_or_else(|| panic!("invalid URL must return a JSON-RPC error, got: {resp}"));
-    let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
-    assert_eq!(
-        code, -32602,
-        "invalid URL must map to JSON-RPC invalid-params (-32602), got: {error}"
+        .and_then(|e| e.get("code"))
+        .and_then(|c| c.as_i64())
+        == Some(-32602);
+    let rejected_as_tool_error = resp
+        .get("result")
+        .and_then(|r| r.get("isError"))
+        .and_then(|v| v.as_bool())
+        == Some(true);
+    assert!(
+        rejected_as_protocol_error || rejected_as_tool_error,
+        "invalid URL must be rejected (protocol -32602 or tool isError), got: {resp}"
     );
 }
 

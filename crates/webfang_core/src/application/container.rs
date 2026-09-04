@@ -719,11 +719,12 @@ impl Container {
         }
 
         if let Some(ref path) = opts.elastic.output_vectors {
-            // #1106: `StreamRepository::new` does create_dir_all + File::create
-            // synchronously — same reasoning, off the executor.
-            let path = path.clone();
+            // #1118: the wire path is validated into a `SinkPath` at the
+            // boundary. #1106: `StreamRepository::new` does create_dir_all +
+            // File::create synchronously — same reasoning, off the executor.
+            let sink_path = crate::infrastructure::stream::SinkPath::parse(path)?;
             let sink = tokio::task::spawn_blocking(move || {
-                crate::infrastructure::stream::StreamRepository::new(&path)
+                crate::infrastructure::stream::StreamRepository::new(sink_path)
             })
             .await
             .map_err(|e| {

@@ -44,6 +44,7 @@ use serde_json::Value;
 
 use crate::domain::clock::{SystemUtcClock, UtcClock};
 use crate::domain::repository::VectorRepository;
+use crate::domain::{Sha256Hex, ValidUrl};
 use crate::error::ScraperError;
 
 /// A single JSONL vector record emitted by [`StreamRepository`].
@@ -52,12 +53,18 @@ use crate::error::ScraperError;
 /// URL, the content `sha256_hex` (content-hash dedup key), an optional title,
 /// the cleaned `chunk_text`, the raw `embedding` vector, arbitrary `metadata`,
 /// and an RFC3339 `timestamp`.
+///
+/// Both key fields are validated newtypes (#1118): `url` carries the
+/// `ValidUrl` hardening (http(s) only, credentials stripped) and
+/// `sha256_hex` is a real 64-char lowercase digest — the malformed dedup
+/// keys that used to pass as raw `String`s are rejected at the sink
+/// boundary and at (de)serialization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VectorRecord {
     /// Source URL the chunk was extracted from.
-    pub url: String,
+    pub url: ValidUrl,
     /// Content hash (SHA-256 hex) of the resource — the dedup key.
-    pub sha256_hex: String,
+    pub sha256_hex: Sha256Hex,
     /// Best-effort title (first ≤200 chars of the first chunk line), or `null`.
     pub title: Option<String>,
     /// Cleaned chunk text.
@@ -72,10 +79,50 @@ pub struct VectorRecord {
     pub timestamp: String,
 }
 
+/// Where a [`StreamRepository`] writes (#1118).
+///
+/// The `"-"` stdout sentinel used to be a magic string compared inside the
+/// constructor; it is now a variant, and an empty path is rejected at the
+/// boundary instead of reaching `File::create("")`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SinkPath {
+    /// Buffered stdout — the wire sentinel is `"-"`.
+    Stdout,
+    /// A file path, created (truncated) by the sink.
+    File(std::path::PathBuf),
+}
+
+impl SinkPath {
+    /// Parse the CLI wire form (`--output-vectors <path|->`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScraperError::Config`] for an empty or whitespace-only
+    /// path — there is no valid sink there.
+    pub fn parse(raw: &str) -> Result<Self, ScraperError> {
+        if raw == "-" {
+            return Ok(Self::Stdout);
+        }
+        if raw.trim().is_empty() {
+            return Err(ScraperError::Config(
+                "la ruta de salida de vectores no puede estar vacía".to_string(),
+            ));
+        }
+        Ok(Self::File(std::path::PathBuf::from(raw)))
+    }
+}
+
+impl std::str::FromStr for SinkPath {
+    type Err = ScraperError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
 /// Headless vector sink that writes [`VectorRecord`] lines to a JSONL stream.
 ///
-/// Construct with [`StreamRepository::new`]; `"-"` selects stdout (buffered),
-/// any other path selects a file.
+/// Construct with [`StreamRepository::new`] from a validated [`SinkPath`].
 ///
 /// # Executor hygiene (#1119)
 ///
@@ -109,13 +156,10 @@ fn lock_error(lock: &str) -> ScraperError {
 impl StreamRepository {
     /// Open the JSONL sink with the system clock.
     ///
-    /// * `path == "-"` → buffered stdout.
-    /// * otherwise → a file created (truncated) at `path`.
-    ///
     /// # Errors
     ///
     /// Returns [`ScraperError::Io`] if the file cannot be created.
-    pub fn new(path: &str) -> Result<Self, ScraperError> {
+    pub fn new(path: SinkPath) -> Result<Self, ScraperError> {
         Self::with_clock(path, Arc::new(SystemUtcClock))
     }
 
@@ -124,24 +168,28 @@ impl StreamRepository {
     /// # Errors
     ///
     /// Returns [`ScraperError::Io`] if the file cannot be created.
-    pub fn with_clock(path: &str, clock: Arc<dyn UtcClock>) -> Result<Self, ScraperError> {
-        let boxed: Box<dyn Write + Send> = if path == "-" {
-            Box::new(std::io::stdout())
-        } else {
-            if let Some(parent) = std::path::Path::new(path).parent() {
-                std::fs::create_dir_all(parent).map_err(|e| {
+    pub fn with_clock(path: SinkPath, clock: Arc<dyn UtcClock>) -> Result<Self, ScraperError> {
+        let boxed: Box<dyn Write + Send> = match path {
+            SinkPath::Stdout => Box::new(std::io::stdout()),
+            SinkPath::File(file) => {
+                if let Some(parent) = file.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        ScraperError::Io(std::io::Error::new(
+                            e.kind(),
+                            format!("no se pudo crear el directorio '{}': {e}", parent.display()),
+                        ))
+                    })?;
+                }
+                Box::new(std::fs::File::create(&file).map_err(|e| {
                     ScraperError::Io(std::io::Error::new(
                         e.kind(),
-                        format!("no se pudo crear el directorio '{}': {e}", parent.display()),
+                        format!(
+                            "no se pudo crear el archivo de vectores '{}': {e}",
+                            file.display()
+                        ),
                     ))
-                })?;
-            }
-            Box::new(std::fs::File::create(path).map_err(|e| {
-                ScraperError::Io(std::io::Error::new(
-                    e.kind(),
-                    format!("no se pudo crear el archivo de vectores '{path}': {e}"),
-                ))
-            })?)
+                })?)
+            },
         };
         Ok(Self {
             writer: Arc::new(Mutex::new(std::io::BufWriter::new(boxed))),
@@ -230,8 +278,12 @@ impl VectorRepository for StreamRepository {
             tokio::task::spawn_blocking(move || -> Result<(), ScraperError> {
                 // The chunk id is formatted as "{sha256_hex}-{index}" by
                 // `ElasticIngestion::run`, so the hash is the segment before the
-                // first '-' (a SHA-256 hex string contains no '-').
-                let sha256_hex = id.split('-').next().unwrap_or(id.as_str()).to_string();
+                // first '-' (a SHA-256 hex string contains no '-'). Both key
+                // fields are validated at this boundary (#1118): a malformed
+                // dedup key or a non-fetchable URL aborts the write instead of
+                // corrupting the stream.
+                let sha256_hex = Sha256Hex::try_from(id.split('-').next().unwrap_or(id.as_str()))?;
+                let url = ValidUrl::parse(&resource_url)?;
 
                 let title = titles
                     .lock()
@@ -240,7 +292,7 @@ impl VectorRepository for StreamRepository {
                     .cloned();
 
                 let record = VectorRecord {
-                    url: resource_url,
+                    url,
                     sha256_hex,
                     title,
                     chunk_text: content,
@@ -287,20 +339,36 @@ impl VectorRepository for StreamRepository {
 mod tests {
     use super::*;
 
+    /// A real 64-char lowercase digest — the shape `ElasticIngestion`
+    /// produces. Short fakes like `"deadbeef"` used to pass as dedup keys
+    /// (#1118); they no longer do.
+    const HEX_A: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const HEX_B: &str = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+
+    fn sink(path: &str) -> StreamRepository {
+        StreamRepository::new(SinkPath::parse(path).expect("valid sink path")).expect("open stream")
+    }
+
     #[tokio::test]
     async fn test_save_chunk_omits_record_without_embedding() {
         // Write to a temp file so we can assert no line is produced.
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
         let path = tmp.path().to_string_lossy().to_string();
-        let repo = StreamRepository::new(&path).expect("open stream");
+        let repo = sink(&path);
 
-        repo.save_resource("https://example.com", "", "deadbeef", 10)
+        repo.save_resource("https://example.com", "", HEX_A, 10)
             .await
             .expect("save_resource");
         // No embedding → record omitted, write must succeed without a line.
-        repo.save_chunk("deadbeef-0", "https://example.com", 0, "hello", None)
-            .await
-            .expect("save_chunk");
+        repo.save_chunk(
+            &format!("{HEX_A}-0"),
+            "https://example.com",
+            0,
+            "hello",
+            None,
+        )
+        .await
+        .expect("save_chunk");
 
         let contents = std::fs::read_to_string(&path).expect("read stream");
         assert!(
@@ -313,14 +381,14 @@ mod tests {
     async fn test_save_chunk_emits_384_dim_embedding_and_hash() {
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
         let path = tmp.path().to_string_lossy().to_string();
-        let repo = StreamRepository::new(&path).expect("open stream");
+        let repo = sink(&path);
 
         let embedding: Vec<f32> = (0..384).map(|i| i as f32 * 0.001).collect();
-        repo.save_resource("https://example.com/p", "Page Title", "abc123def", 42)
+        repo.save_resource("https://example.com/p", "Page Title", HEX_A, 42)
             .await
             .expect("save_resource");
         repo.save_chunk(
-            "abc123def-0",
+            &format!("{HEX_A}-0"),
             "https://example.com/p",
             0,
             "cleaned chunk text",
@@ -333,7 +401,7 @@ mod tests {
         let line = contents.lines().next().expect("one JSONL line");
         let record: VectorRecord = serde_json::from_str(line).expect("valid JSONL");
 
-        assert_eq!(record.sha256_hex, "abc123def");
+        assert_eq!(record.sha256_hex.as_str(), HEX_A);
         assert_eq!(record.embedding.len(), 384, "explicit 384-dim embedding");
         assert_eq!(record.title.as_deref(), Some("Page Title"));
         assert_eq!(record.chunk_text, "cleaned chunk text");
@@ -364,7 +432,7 @@ mod tests {
 
         let result = repo
             .save_chunk(
-                "deadbeefcafe-0",
+                &format!("{HEX_B}-0"),
                 "https://example.com/p",
                 0,
                 "cleaned chunk text",
@@ -409,10 +477,12 @@ mod tests {
         });
         assert!(poisoner.join().is_err(), "poisoner must have panicked");
 
+        // #1118: the id and URL must pass the typed-boundary validation so the
+        // call actually reaches the poisoned writer lock.
         let embedding: Vec<f32> = (0..384).map(|i| i as f32 * 0.001).collect();
         let result = repo
             .save_chunk(
-                "deadbeefcafe-0",
+                &format!("{HEX_B}-0"),
                 "https://example.com/p",
                 0,
                 "cleaned chunk text",
@@ -437,14 +507,14 @@ mod tests {
     async fn contract_embedding_384_dim_roundtrip() {
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
         let path = tmp.path().to_string_lossy().to_string();
-        let repo = StreamRepository::new(&path).expect("open stream");
+        let repo = sink(&path);
 
         let embedding: Vec<f32> = (0..384).map(|i| i as f32 * 0.001).collect();
-        repo.save_resource("https://example.com/p", "Title", "deadbeefcafe", 42)
+        repo.save_resource("https://example.com/p", "Title", HEX_B, 42)
             .await
             .expect("save_resource");
         repo.save_chunk(
-            "deadbeefcafe-0",
+            &format!("{HEX_B}-0"),
             "https://example.com/p",
             0,
             "cleaned chunk text",
@@ -477,25 +547,20 @@ mod tests {
         );
     }
 
-    /// Lowercase-hex SHA-256 integrity: what upstream provides (a 32-char
-    /// lowercase hex id) is written verbatim and stays lowercase.
+    /// Lowercase-hex SHA-256 integrity: what upstream provides (a real 64-char
+    /// lowercase digest) is written verbatim and stays lowercase.
     #[tokio::test]
     async fn contract_sha256_hex_is_lowercase_and_preserved() {
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
         let path = tmp.path().to_string_lossy().to_string();
-        let repo = StreamRepository::new(&path).expect("open stream");
+        let repo = sink(&path);
 
-        let id = "abcdef0123456789abcdef0123456789-0";
-        repo.save_resource(
-            "https://example.com/p",
-            "T",
-            "abcdef0123456789abcdef0123456789",
-            1,
-        )
-        .await
-        .expect("save_resource");
+        let id = format!("{HEX_A}-0");
+        repo.save_resource("https://example.com/p", "T", HEX_A, 1)
+            .await
+            .expect("save_resource");
         repo.save_chunk(
-            id,
+            &id,
             "https://example.com/p",
             0,
             "cleaned chunk text",
@@ -509,19 +574,89 @@ mod tests {
         let record: VectorRecord = serde_json::from_str(line).expect("valid JSONL");
 
         assert_eq!(
-            record.sha256_hex, "abcdef0123456789abcdef0123456789",
+            record.sha256_hex.as_str(),
+            HEX_A,
             "sha256_hex must be preserved verbatim from the id"
         );
 
         let is_lowercase_hex = record
             .sha256_hex
+            .as_str()
             .chars()
             .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
-            && record.sha256_hex.len() == 32;
+            && record.sha256_hex.as_str().len() == Sha256Hex::HEX_LEN;
         assert!(
             is_lowercase_hex,
-            "sha256_hex must be 32 lowercase hex chars (no uppercase), got: {}",
+            "sha256_hex must be 64 lowercase hex chars (no uppercase), got: {}",
             record.sha256_hex
         );
+    }
+
+    /// #1118 reproduction: the sink used to write ANY string carried by the
+    /// chunk id as the dedup key — a 32-char fake like `"stubhash-0"` (the
+    /// old test fixture shape) produced a valid-looking JSONL line. Now the
+    /// malformed key and a non-fetchable URL are rejected at the boundary
+    /// and no corrupt line reaches the stream.
+    #[tokio::test]
+    async fn issue_1118_sink_rejects_malformed_dedup_key_and_url() {
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let path = tmp.path().to_string_lossy().to_string();
+        let repo = sink(&path);
+        let embedding: Vec<f32> = vec![0.0f32; 384];
+
+        let err = repo
+            .save_chunk(
+                "stubhash-0",
+                "https://example.com/p",
+                0,
+                "x",
+                Some(&embedding),
+            )
+            .await
+            .expect_err("32-char fake hash must be rejected at the sink");
+        assert!(
+            err.to_string().to_lowercase().contains("sha256"),
+            "rejection must name the hash, got: {err}"
+        );
+
+        let err = repo
+            .save_chunk(
+                &format!("{HEX_A}-0"),
+                "data:text/html,x",
+                0,
+                "x",
+                Some(&embedding),
+            )
+            .await
+            .expect_err("data: URL must be rejected at the sink");
+        assert!(
+            err.to_string().contains("no soportado"),
+            "rejection must name the scheme, got: {err}"
+        );
+
+        let contents = std::fs::read_to_string(&path).expect("read stream");
+        assert!(
+            contents.trim().is_empty(),
+            "rejected records must not reach the stream"
+        );
+    }
+
+    /// #1118: the `"-"` stdout sentinel is a variant now; an empty path is
+    /// rejected at the boundary instead of reaching `File::create("")`.
+    #[test]
+    fn issue_1118_sink_path_is_validated() {
+        assert_eq!("-".parse::<SinkPath>().expect("sentinel"), SinkPath::Stdout);
+        assert!(
+            SinkPath::parse("").is_err(),
+            "empty sink path must be rejected at the boundary"
+        );
+        assert!(
+            SinkPath::parse("   ").is_err(),
+            "whitespace-only sink path must be rejected"
+        );
+        assert!(matches!(
+            SinkPath::parse("out/vectors.jsonl"),
+            Ok(SinkPath::File(_))
+        ));
     }
 }

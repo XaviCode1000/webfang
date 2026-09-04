@@ -29,6 +29,10 @@
 #   mcp 628, tokio 569 (trimmed — non-gate), clippy 399, code-quality 130.
 #   Saves are main-only: PRs restore main's cache lineage and never save,
 #   so the pool does not scale with open PRs.
+#   #1171 save gating rolls out to the other workflows: fuzz (main+develop),
+#   docs + bug-discovery (main-only), release (tag-only).
+#   mutants-pr is the documented exception: PR-only hard gate, keeps saving
+#   (its write is gated by hotpath-changed).
 #   RULE: any NEW rust-cache consumer must justify its GB in the PR and is
 #   review-blocked by default (precedent: benches.yml:55-60).
 

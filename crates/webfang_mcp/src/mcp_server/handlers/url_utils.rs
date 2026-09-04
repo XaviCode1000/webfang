@@ -85,17 +85,16 @@ impl McpHandler {
 
         let _permit = acquire_semaphore!(self, url_utils);
 
-        match url::Url::parse(&params.url) {
-            Ok(u) => {
-                // Strip the trailing root-label dot of a fully-qualified
-                // domain (e.g. `books.toscrape.com.` → `books.toscrape.com`),
-                // issue #606.
-                let host = u.host_str().unwrap_or("");
-                let domain = host.strip_suffix('.').unwrap_or(host);
-                Ok(CallToolResult::success(vec![Content::text(domain)]))
-            },
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
-        }
+        // #1116: `params.url` is already a parsed `McpUrl`; the old
+        // `url::Url::parse` re-parse (and its Err arm, now unreachable at
+        // this boundary) are gone.
+        let u = params.url.as_url();
+        // Strip the trailing root-label dot of a fully-qualified
+        // domain (e.g. `books.toscrape.com.` → `books.toscrape.com`),
+        // issue #606.
+        let host = u.host_str().unwrap_or("");
+        let domain = host.strip_suffix('.').unwrap_or(host);
+        Ok(CallToolResult::success(vec![Content::text(domain)]))
     }
 
     /// Normalize a URL (remove fragments, preserve trailing slashes, remove default ports)
@@ -114,20 +113,16 @@ impl McpHandler {
         // Delegate to core normalize_url with strip_www=false (MCP preserves www prefix).
         // query_policy: All matches the prior dedup-style normalization used for display/validation.
         let normalized = webfang_core::infrastructure::crawler::normalize_url(
-            &params.url,
+            params.url.as_str(),
             &NormalizeConfig {
                 strip_www: false,
                 query_policy: RemoveQueryParameters::All,
             },
         );
 
-        // Core returns as-is for non-URLs; MCP tool reports error for invalid input
-        if !params.url.contains("://") {
-            return Ok(CallToolResult::error(vec![Content::text(
-                "Invalid URL: no scheme found".to_string(),
-            )]));
-        }
-
+        // #1116: the old `!params.url.contains("://")` guard is gone — an
+        // `McpUrl` always carries an http(s) scheme (rejected at the
+        // boundary otherwise), so the "no scheme" case is unrepresentable.
         Ok(CallToolResult::success(vec![Content::text(normalized)]))
     }
 
@@ -144,7 +139,7 @@ impl McpHandler {
 
         let _permit = acquire_semaphore!(self, url_utils);
 
-        let matches = webfang_core::domain::match_url_pattern(&params.url, &params.pattern);
+        let matches = webfang_core::domain::match_url_pattern(params.url.as_str(), &params.pattern);
         Ok(CallToolResult::success(vec![Content::text(
             matches.to_string(),
         )]))
@@ -164,7 +159,7 @@ impl McpHandler {
         let _permit = acquire_semaphore!(self, url_utils);
 
         let is_internal = webfang_core::domain::url_validation::is_internal_link(
-            &params.url,
+            params.url.as_str(),
             &params.seed_domain,
         );
         Ok(CallToolResult::success(vec![Content::text(
@@ -302,6 +297,11 @@ mod tests {
 
 #[cfg(test)]
 mod handler_tests {
+    /// Test helper: build an `McpUrl` from a KNOWN-VALID http(s) string.
+    fn vu(s: &str) -> crate::mcp_server::params::McpUrl {
+        s.parse().expect("test url must be valid http(s)")
+    }
+
     use super::*;
     use crate::mcp_server::state::McpState;
     use rmcp::handler::server::wrapper::Parameters;
@@ -406,7 +406,7 @@ mod handler_tests {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .extract_domain(Parameters(ExtractDomainParams {
-                url: "https://www.example.com/x".to_string(),
+                url: vu("https://www.example.com/x"),
             }))
             .await
             .expect("extract_domain returns Ok");
@@ -421,7 +421,7 @@ mod handler_tests {
         // must be normalized to strip the dot.
         let res = handler
             .extract_domain(Parameters(ExtractDomainParams {
-                url: "https://books.toscrape.com./path".to_string(),
+                url: vu("https://books.toscrape.com./path"),
             }))
             .await
             .expect("extract_domain returns Ok");
@@ -429,18 +429,16 @@ mod handler_tests {
         assert_eq!(text, "books.toscrape.com", "trailing dot stripped: {text}");
     }
 
-    #[tokio::test]
-    async fn extract_domain_invalid_is_invalid_params() {
-        let (handler, _tmp) = test_handler().await;
-        // Params validation (#512) rejects unparseable URLs up front.
-        let res = handler
-            .extract_domain(Parameters(ExtractDomainParams {
-                url: "not a url".to_string(),
-            }))
-            .await;
+    /// #1116: an unparseable URL is unrepresentable at the `McpUrl`
+    /// boundary — deserialization fails (rmcp → -32602).
+    #[test]
+    fn extract_domain_invalid_url_is_unrepresentable() {
+        let res = serde_json::from_value::<ExtractDomainParams>(serde_json::json!({
+            "url": "not a url"
+        }));
         assert!(
             res.is_err(),
-            "invalid URL must be a protocol error, got: {res:?}"
+            "invalid URL must fail to deserialize: {res:?}"
         );
     }
 
@@ -449,7 +447,7 @@ mod handler_tests {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .normalize_url(Parameters(NormalizeUrlParams {
-                url: "https://example.com/a/b/#frag".to_string(),
+                url: vu("https://example.com/a/b/#frag"),
             }))
             .await
             .expect("normalize_url returns Ok");
@@ -457,18 +455,17 @@ mod handler_tests {
         assert!(!text.contains("#frag"), "fragment must be stripped: {text}");
     }
 
-    #[tokio::test]
-    async fn normalize_url_invalid_no_scheme_is_invalid_params() {
-        let (handler, _tmp) = test_handler().await;
-        // Params validation (#512) rejects URLs without a parseable scheme.
-        let res = handler
-            .normalize_url(Parameters(NormalizeUrlParams {
-                url: "example.com".to_string(),
-            }))
-            .await;
+    /// #1116: a scheme-less string is unrepresentable as `McpUrl` — the
+    /// "no scheme" case that used to be a runtime guard is now a type error
+    /// at deserialization.
+    #[test]
+    fn normalize_url_no_scheme_is_unrepresentable() {
+        let res = serde_json::from_value::<NormalizeUrlParams>(serde_json::json!({
+            "url": "example.com"
+        }));
         assert!(
             res.is_err(),
-            "URL without scheme must be a protocol error, got: {res:?}"
+            "URL without scheme must fail to deserialize: {res:?}"
         );
     }
 
@@ -477,7 +474,7 @@ mod handler_tests {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .match_url_pattern(Parameters(MatchUrlPatternParams {
-                url: "https://example.com/articles/1".to_string(),
+                url: vu("https://example.com/articles/1"),
                 pattern: "**/articles/*".to_string(),
             }))
             .await
@@ -491,7 +488,7 @@ mod handler_tests {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .is_internal_link(Parameters(IsInternalLinkParams {
-                url: "https://example.com/x".to_string(),
+                url: vu("https://example.com/x"),
                 seed_domain: "example.com".to_string(),
             }))
             .await
