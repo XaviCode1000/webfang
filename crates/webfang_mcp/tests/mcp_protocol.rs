@@ -3,6 +3,8 @@
 //! Tests handler construction, state initialization, semaphore backpressure,
 //! and parameter deserialization without requiring a running server.
 
+use std::num::NonZeroUsize;
+
 use webfang_core::application::container::Container;
 use webfang_core::domain::config::ScraperConfig;
 use webfang_core::domain::CrawlerConfig;
@@ -12,6 +14,12 @@ use webfang_mcp::mcp_server::McpHandler;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Non-zero literal helper — `CategoryLimits` fields are `NonZeroUsize`
+/// since #1132, so raw `0` cannot even be named at a call site.
+fn nz(n: usize) -> NonZeroUsize {
+    NonZeroUsize::new(n).expect("test literal is non-zero")
+}
 
 async fn make_container() -> Container {
     let crawler_config =
@@ -30,27 +38,27 @@ async fn mcp_state_construction_with_default_limits() {
     let container = make_container().await;
     let state = McpState::new(container);
 
-    assert!(state.limits.ai >= 1);
-    assert!(state.limits.scraping >= 1);
+    assert!(state.limits.ai.get() >= 1);
+    assert!(state.limits.scraping.get() >= 1);
 }
 
 #[tokio::test]
 async fn mcp_state_construction_with_custom_limits() {
     let container = make_container().await;
     let limits = CategoryLimits {
-        ai: 1,
-        scraping: 4,
-        export: 2,
-        obsidian: 1,
-        content: 3,
-        url_utils: 8,
-        security: 4,
-        assets: 2,
+        ai: nz(1),
+        scraping: nz(4),
+        export: nz(2),
+        obsidian: nz(1),
+        content: nz(3),
+        url_utils: nz(8),
+        security: nz(4),
+        assets: nz(2),
     };
     let state = McpState::with_limits(container, limits);
 
-    assert_eq!(state.limits.ai, 1);
-    assert_eq!(state.limits.scraping, 4);
+    assert_eq!(state.limits.ai.get(), 1);
+    assert_eq!(state.limits.scraping.get(), 4);
 }
 
 #[tokio::test]
@@ -73,46 +81,57 @@ fn default_limits_have_reasonable_values() {
     assert!(limits.ai <= limits.scraping, "AI should be <= scraping");
     assert!(limits.ai <= limits.url_utils, "AI should be <= url_utils");
 
-    assert!(limits.ai >= 1);
-    assert!(limits.scraping >= 1);
-    assert!(limits.export >= 1);
-    assert!(limits.obsidian >= 1);
-    assert!(limits.content >= 1);
-    assert!(limits.url_utils >= 1);
-    assert!(limits.security >= 1);
-    assert!(limits.assets >= 1);
+    assert!(limits.ai.get() >= 1);
+    assert!(limits.scraping.get() >= 1);
+    assert!(limits.export.get() >= 1);
+    assert!(limits.obsidian.get() >= 1);
+    assert!(limits.content.get() >= 1);
+    assert!(limits.url_utils.get() >= 1);
+    assert!(limits.security.get() >= 1);
+    assert!(limits.assets.get() >= 1);
 }
 
+/// #1132 reproduction: this test used to assert that
+/// `CategoryLimits { ai: 0, .. }` was CONSTRUCTABLE and that
+/// `from_limits` silently clamped the zero-permit semaphore to 1 —
+/// masking the misconfiguration that would otherwise deadlock the tool
+/// category. The clamp is gone because the invalid state is gone: every
+/// field is a `NonZeroUsize`, so `ai: 0` no longer compiles (the old
+/// literal would now be a type error at this very call site).
 #[test]
-fn category_semaphores_clamp_zero_to_one() {
+fn issue_1132_zero_limits_unrepresentable_and_mapping_is_one_to_one() {
+    // The only way to name a limit is through the non-zero type; 0 is
+    // rejected there — no clamp downstream can ever see it.
+    assert!(
+        NonZeroUsize::new(0).is_none(),
+        "0 permits must be unnameable"
+    );
+
     let limits = CategoryLimits {
-        ai: 0,
-        scraping: 0,
-        export: 0,
-        obsidian: 0,
-        content: 0,
-        url_utils: 0,
-        security: 0,
-        assets: 0,
+        ai: nz(1),
+        scraping: nz(2),
+        export: nz(3),
+        ..CategoryLimits::default()
     };
     let semaphores = CategorySemaphores::from_limits(&limits);
 
+    // 1:1 mapping — what you name is exactly what the semaphore gets.
     assert_eq!(semaphores.ai.available_permits(), 1);
-    assert_eq!(semaphores.scraping.available_permits(), 1);
-    assert_eq!(semaphores.export.available_permits(), 1);
+    assert_eq!(semaphores.scraping.available_permits(), 2);
+    assert_eq!(semaphores.export.available_permits(), 3);
 }
 
 #[test]
 fn semaphores_reflect_configured_limits() {
     let limits = CategoryLimits {
-        ai: 3,
-        scraping: 12,
-        export: 6,
-        obsidian: 4,
-        content: 8,
-        url_utils: 24,
-        security: 12,
-        assets: 6,
+        ai: nz(3),
+        scraping: nz(12),
+        export: nz(6),
+        obsidian: nz(4),
+        content: nz(8),
+        url_utils: nz(24),
+        security: nz(12),
+        assets: nz(6),
     };
     let semaphores = CategorySemaphores::from_limits(&limits);
 
@@ -137,7 +156,7 @@ async fn mcp_handler_construction_succeeds() {
 #[tokio::test]
 async fn mcp_handler_semaphores_limit_concurrency() {
     let limits = CategoryLimits {
-        ai: 1,
+        ai: nz(1),
         ..CategoryLimits::default()
     };
     let state = McpState::with_limits(make_container().await, limits);

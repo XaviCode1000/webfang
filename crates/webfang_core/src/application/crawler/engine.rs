@@ -1163,7 +1163,7 @@ pub async fn crawl_site_capturing(
         max_depth = config.max_depth,
         max_pages = config.max_pages,
         delay_ms = config.delay_ms,
-        concurrency = config.concurrency
+        concurrency = config.concurrency.get()
     )
 )]
 async fn crawl_site_inner(
@@ -1329,6 +1329,10 @@ async fn crawl_site_with_options_inner(
 #[cfg(test)]
 #[cfg(not(miri))] // wiremock + wreq use boring-sys2 FFI (unsupported by Miri)
 mod tests {
+    /// Test helper: non-zero literal for `CrawlerConfig::concurrency` (#1132).
+    fn nz(n: usize) -> std::num::NonZeroUsize {
+        std::num::NonZeroUsize::new(n).expect("test literal is non-zero")
+    }
     use super::*;
     use crate::domain::budget::detector::FixedDetector;
     use crate::domain::budget::tiers::{BurstPermits, CrawlConcurrency};
@@ -1344,8 +1348,10 @@ mod tests {
     #[tokio::test]
     async fn raising_crawler_concurrency_leaves_rate_limiter_burst_unchanged() {
         let seed = Url::parse("http://127.0.0.1:9/").expect("valid seed URL");
-        let low = CrawlerConfig::builder(seed.clone()).concurrency(1).build();
-        let high = CrawlerConfig::builder(seed).concurrency(16).build();
+        let low = CrawlerConfig::builder(seed.clone())
+            .concurrency(nz(1))
+            .build();
+        let high = CrawlerConfig::builder(seed).concurrency(nz(16)).build();
 
         let engine_low = Engine::new(low, true).expect("engine must build");
         let engine_high = Engine::new(high, true).expect("engine must build");
@@ -1367,7 +1373,7 @@ mod tests {
             FixedDetector::with_detection(std::num::NonZeroUsize::new(4).expect("non-zero"), None);
         let budget = BudgetModel::build(BudgetOverrides::default(), &detector);
         let seed = Url::parse("http://127.0.0.1:9/").expect("valid seed URL");
-        let config = CrawlerConfig::builder(seed).concurrency(16).build();
+        let config = CrawlerConfig::builder(seed).concurrency(nz(16)).build();
 
         let rl_config = rate_limiter_config(&config, &budget);
         assert_eq!(rl_config.delay_ms, config.delay_ms);
@@ -1393,7 +1399,7 @@ mod tests {
             let budget = BudgetModel::build(BudgetOverrides::default(), &detector);
             for concurrency in [1usize, 8, 16] {
                 let config = CrawlerConfig::builder(seed.clone())
-                    .concurrency(concurrency)
+                    .concurrency(nz(concurrency))
                     .build();
                 assert_eq!(
                     rate_limiter_config(&config, &budget).concurrency,
@@ -1417,7 +1423,7 @@ mod tests {
             ..BudgetOverrides::default()
         };
         let config = CrawlerConfig::builder(seed)
-            .concurrency(1)
+            .concurrency(nz(1))
             .budget_overrides(overrides)
             .build();
 
@@ -1445,7 +1451,7 @@ mod tests {
             BudgetOverrides::default(),
             &crate::domain::budget::detector::SystemDetector,
         );
-        let config = CrawlerConfig::builder(seed).concurrency(16).build();
+        let config = CrawlerConfig::builder(seed).concurrency(nz(16)).build();
 
         let engine = Engine::new(config, true).expect("engine must build");
 
@@ -1494,7 +1500,7 @@ mod tests {
         let config = CrawlerConfig::builder(seed)
             .max_depth(1)
             .max_pages(50) // above link count: page count must be bounded by burst, not max_pages
-            .concurrency(1)
+            .concurrency(nz(1))
             .delay_ms(60_000) // 60s refill: without cancellation run() hangs ~1 min
             .timeout_secs(5)
             .ignore_robots(true)
@@ -1587,7 +1593,7 @@ mod tests {
         let config = CrawlerConfig::builder(seed)
             .max_depth(2)
             .max_pages(2) // Hard ceiling: must not exceed by much
-            .concurrency(5) // High concurrency to trigger the race
+            .concurrency(nz(5)) // High concurrency to trigger the race
             .delay_ms(1)
             .timeout_secs(5)
             .ignore_robots(true)

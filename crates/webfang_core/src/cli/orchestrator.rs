@@ -1207,7 +1207,7 @@ fn build_batch_crawler_config(
         .delay_ms(opts.network.delay_ms)
         // Concurrency bound derives from the run's budget model
         // Operation.crawl tier (task 2.5b), not from the raw CLI flag.
-        .concurrency(budget.crawl().get())
+        .concurrency(budget.crawl().nonzero())
         // Bug R2-1: each batch URL is crawled through the Engine via
         // `crawl_site`; without the overrides the Engine drops the explicit
         // --concurrency / --rate-limit-burst and re-derives the auto tiers.
@@ -1381,7 +1381,8 @@ mod tests {
 
         assert_eq!(config.delay_ms, 750, "--delay-ms must reach the crawler");
         assert_eq!(
-            config.concurrency, 2,
+            config.concurrency.get(),
+            2,
             "explicit --concurrency must reach the crawler through the model"
         );
     }
@@ -1446,7 +1447,7 @@ mod tests {
         let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145, &budget);
 
         assert_eq!(
-            config.concurrency,
+            config.concurrency.get(),
             budget.crawl().get(),
             "auto mode must use the model's derived Operation.crawl tier"
         );
