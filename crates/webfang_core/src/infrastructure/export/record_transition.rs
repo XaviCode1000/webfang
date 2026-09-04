@@ -8,7 +8,10 @@
 //!   in-memory view and re-drivable next run — it never errors, never panics,
 //!   and is never counted),
 //! * the derived `total_exported` counter (COMMITTED only, never stored),
-//! * structural-meaninglessness of empty/whitespace URL identity (#876).
+//! * structural-meaninglessness of empty/whitespace URL identity (#876),
+//! * the EXPORTED→COMMITTED commit-point transition — the ONE
+//!   implementation that production's commit paths and the binding loom
+//!   model share, so the model can never drift from production.
 //!
 //! The machine is PURE: no filesystem, no locks, no clock, no tracing. All
 //! I/O (reading, writing, locking, warning, migrating) stays in
@@ -19,7 +22,7 @@
 //! No new states, verbs, or flags were invented: this is a pure extraction of
 //! the checks that already existed at the v2 record-store seam.
 
-use crate::domain::page_state::{PageStatus, MIGRATED_V1_RUN_ID};
+use crate::domain::page_state::{Exported, PageStatus, Stateful, MIGRATED_V1_RUN_ID};
 use crate::domain::persistence::{DomainRecords, RawRecord};
 
 /// Returns the name of the first violated invariant, if any.
@@ -109,6 +112,46 @@ pub(crate) fn derived_total_exported(records: &DomainRecords) -> u64 {
         .values()
         .filter(|r| r.status == PageStatus::Committed)
         .count() as u64
+}
+
+/// ★ EXPORTED→COMMITTED commit-point transition (D3 step 4) — the ONE
+/// machine-side implementation of the swap. Production's commit paths
+/// (`crate::application::export_factory` via [`swap_to_committed`]) and
+/// the binding loom model exercise this same function, so the model
+/// cannot drift from production again: a previous hand-rolled replica
+/// bumped `attempts` at commit time; production bumps them at the export
+/// drive and commit advances ONLY the status.
+///
+/// Returns the COMMITTED successor, or `None` when the machine rejects
+/// the transition: the slot must currently be a valid EXPORTED record
+/// (gated through the same D2 reconciliation the typed machine uses),
+/// its identity must be meaningful (#876), and the candidate must
+/// satisfy [`invariant_violation`].
+#[must_use]
+pub(crate) fn try_commit_exported(current: &RawRecord) -> Option<RawRecord> {
+    if is_meaningless_identity(&current.url) || current.status != PageStatus::Exported {
+        return None;
+    }
+    let exported = Stateful::<RawRecord, Exported>::reconcile(current.clone()).ok()?;
+    let candidate = exported.commit().into_record();
+    invariant_violation(&candidate)
+        .is_none()
+        .then_some(candidate)
+}
+
+/// Commit-point map swap: apply [`try_commit_exported`] to the slot under
+/// `key`, installing the successor only when the machine accepts the
+/// transition. The status re-check on the live slot is what makes the
+/// swap exactly-once (an already-COMMITTED slot reconciles into no
+/// EXPORTED state and is left untouched). Persisting and notifying stay
+/// with the caller — this function owns the RULE, not the I/O.
+#[must_use]
+pub(crate) fn swap_to_committed(records: &mut DomainRecords, key: &str) -> bool {
+    let Some(committed) = records.get(key).and_then(try_commit_exported) else {
+        return false;
+    };
+    records.insert(key.to_string(), committed);
+    true
 }
 
 #[cfg(test)]
@@ -345,17 +388,78 @@ mod tests {
         }
         assert_eq!(derived_total_exported(&records), 3);
     }
+
+    // --- commit-point transition: production and the model share it -------
+
+    #[test]
+    fn try_commit_exported_advances_status_without_touching_attempts() {
+        let mut exported = record("https://x.test/race");
+        exported.status = PageStatus::Exported;
+        exported.attempts = 2;
+        let committed = try_commit_exported(&exported).expect("valid EXPORTED commits");
+        assert_eq!(committed.status, PageStatus::Committed);
+        assert_eq!(
+            committed.attempts, 2,
+            "the commit point never bumps attempts — the export drive does (production semantics)"
+        );
+        assert_eq!(invariant_violation(&committed), None);
+    }
+
+    #[test]
+    fn try_commit_exported_rejects_wrong_state_errors_and_bad_identity() {
+        assert!(
+            try_commit_exported(&record("https://x.test/e")).is_none(),
+            "EXTRACTED is not EXPORTED"
+        );
+        let mut errored = record("https://x.test/e");
+        errored.status = PageStatus::Exported;
+        errored.last_error = Some(LastError {
+            class: ErrorClass::InternalFatal,
+            message: "must not survive commit".to_string(),
+        });
+        assert!(
+            try_commit_exported(&errored).is_none(),
+            "a COMMITTED candidate may not carry last_error"
+        );
+        let mut blank = record("");
+        blank.status = PageStatus::Exported;
+        assert!(
+            try_commit_exported(&blank).is_none(),
+            "#876: a meaningless identity never reaches COMMITTED through the transition"
+        );
+    }
+
+    #[test]
+    fn swap_to_committed_is_exactly_once_on_the_map() {
+        let mut records = DomainRecords::new();
+        let mut exported = record("https://x.test/swap");
+        exported.status = PageStatus::Exported;
+        records.insert(exported.canonical_url.clone(), exported.clone());
+
+        assert!(swap_to_committed(&mut records, "https://x.test/swap"));
+        assert_eq!(records["https://x.test/swap"].status, PageStatus::Committed);
+        assert!(
+            !swap_to_committed(&mut records, "https://x.test/swap"),
+            "the second swap observes a COMMITTED slot and no-ops — the exact-once gate"
+        );
+        assert!(
+            !swap_to_committed(&mut records, "https://x.test/missing"),
+            "an absent slot is never created by the swap"
+        );
+    }
 }
 
 // --- loom model: concurrent transition of one record --------------------
 //
 // ADR-0014 hybrid strategy: loom owns the IN-MEMORY transition protocol.
-// The pure machine above is stateless, so the race to model is the
-// application-level pattern at `export_factory::save_notifying`: two
-// workers observe the same EXPORTED record and both attempt the
-// COMMITTED transition behind a shared mutex; the machine's invariant
-// check gates the transition and the derived counter must observe
-// exactly-once COMMITTED across every loom interleaving.
+// The race to model is the application-level pattern at `export_factory`
+// (D3 step 4): two workers observe the same EXPORTED record and both
+// attempt the COMMITTED transition behind a shared mutex. The worker body
+// is not a replica — it calls the SAME [`swap_to_committed`] production's
+// commit paths run, so the model and the machine cannot drift: the
+// helper's status re-check on the live slot gates the transition to
+// exactly-once, and the derived counter must observe exactly one COMMITTED
+// record across every loom interleaving.
 //
 // Run with:
 //   cargo nextest run -p webfang_core --features loom-model --lib record_transition
@@ -384,97 +488,89 @@ mod loom_tests {
         }
     }
 
-    /// The COMMITTED transition one worker performs: build the COMMITTED
-    /// candidate, gate it through the machine (the candidate must satisfy
-    /// the invariant table), then swap. Returns whether THIS worker
-    /// performed the transition. The status re-check inside the locked
-    /// window is what makes the transition exactly-once.
-    fn attempt_commit(slot: &loom::sync::Mutex<Option<RawRecord>>) -> bool {
+    /// The commit point one worker performs: production's own
+    /// [`swap_to_committed`] over the map, inside the locked window.
+    /// Returns whether THIS worker performed the transition; the slot
+    /// status re-check the helper runs under the lock is what makes it
+    /// exactly-once.
+    fn attempt_commit(slot: &loom::sync::Mutex<DomainRecords>, key: &str) -> bool {
         let mut guard = slot.lock().unwrap();
-        let Some(record) = guard.as_ref() else {
-            return false;
-        };
-        if record.status != PageStatus::Exported {
-            return false;
-        }
-        let mut committed = record.clone();
-        committed.status = PageStatus::Committed;
-        committed.attempts += 1;
-        // The machine gates the CANDIDATE state, not the observed one: an
-        // EXPORTED record may carry last_error, but the COMMITTED state it
-        // would transition to may not.
-        if invariant_violation(&committed).is_some() {
-            return false;
-        }
-        *guard = Some(committed);
-        true
+        swap_to_committed(&mut guard, key)
     }
 
     /// Exactly-once COMMITTED under every two-worker interleaving: the
-    /// mutex serializes the transition, the machine gates it, and the
-    /// derived counter observes exactly one COMMITTED record.
+    /// mutex serializes the transition, the shared machine helper gates
+    /// it, and the derived counter observes exactly one COMMITTED record.
     #[test]
     fn concurrent_commit_transition_is_exactly_once() {
+        const KEY: &str = "https://x.test/race";
         loom::model(|| {
-            let slot = loom::sync::Arc::new(loom::sync::Mutex::new(Some(exportable(
-                "https://x.test/race",
-            ))));
+            let mut records = DomainRecords::new();
+            records.insert(KEY.to_string(), exportable(KEY));
+            let slot = loom::sync::Arc::new(loom::sync::Mutex::new(records));
             let s1 = slot.clone();
             let s2 = slot.clone();
 
-            let t1 = loom::thread::spawn(move || attempt_commit(&s1));
-            let t2 = loom::thread::spawn(move || attempt_commit(&s2));
+            let t1 = loom::thread::spawn(move || attempt_commit(&s1, KEY));
+            let t2 = loom::thread::spawn(move || attempt_commit(&s2, KEY));
             let w1 = t1.join().unwrap();
             let w2 = t2.join().unwrap();
 
             // Exactly one worker performed the transition under every
-            // interleaving (the other observed non-EXPORTED and no-op'd).
+            // interleaving (the other observed a COMMITTED slot and the
+            // helper no-op'd).
             assert!(w1 ^ w2, "exactly one worker must commit: w1={w1} w2={w2}");
 
             let guard = slot.lock().unwrap();
-            let record = guard.as_ref().expect("record persists");
+            let record = guard.get(KEY).expect("record persists");
             assert_eq!(record.status, PageStatus::Committed);
+            // Production semantics through the shared helper: the commit
+            // point advances ONLY the status — attempts stay at the value
+            // the export drive stamped (the old replica bumped them HERE).
+            assert_eq!(record.attempts, 1, "the commit point never bumps attempts");
             assert_eq!(
                 invariant_violation(record),
                 None,
                 "the surviving record satisfies the invariant table"
             );
 
-            // The derived counter sees exactly-once COMMITTED: build the
-            // map and count.
-            let mut records = DomainRecords::new();
-            records.insert(record.url.clone(), record.clone());
-            assert_eq!(derived_total_exported(&records), 1);
+            // The derived counter sees exactly-once COMMITTED.
+            assert_eq!(derived_total_exported(&guard), 1);
         });
     }
 
-    /// A record whose invariant gate FAILS (committed-with-last_error
-    /// attempt) is never committed, no matter the interleaving: the
+    /// A record whose invariant gate FAILS (would commit carrying
+    /// last_error) is never committed, no matter the interleaving: the
     /// machine's quarantine-worthy state cannot reach COMMITTED through
-    /// the transition path.
+    /// the same transition production runs.
     #[test]
     fn invariant_gate_blocks_commit_under_every_interleaving() {
+        const KEY: &str = "https://x.test/broken";
         loom::model(|| {
-            let mut broken = exportable("https://x.test/broken");
+            let mut broken = exportable(KEY);
             broken.last_error = Some(LastError {
                 class: ErrorClass::InternalFatal,
                 message: "pre-existing error must not survive commit".to_string(),
             });
-            let slot = loom::sync::Arc::new(loom::sync::Mutex::new(Some(broken)));
+            let mut records = DomainRecords::new();
+            records.insert(KEY.to_string(), broken);
+            let slot = loom::sync::Arc::new(loom::sync::Mutex::new(records));
             let s1 = slot.clone();
             let s2 = slot.clone();
 
-            let t1 = loom::thread::spawn(move || attempt_commit(&s1));
-            let t2 = loom::thread::spawn(move || attempt_commit(&s2));
+            let t1 = loom::thread::spawn(move || attempt_commit(&s1, KEY));
+            let t2 = loom::thread::spawn(move || attempt_commit(&s2, KEY));
             let w1 = t1.join().unwrap();
             let w2 = t2.join().unwrap();
 
             assert!(!w1 && !w2, "no worker may commit a gated record");
             let guard = slot.lock().unwrap();
-            let record = guard.as_ref().expect("record persists unchanged");
-            // The record stays EXPORTED with its error intact: the gate
-            // rejected the candidate, nothing mutated.
+            let record = guard.get(KEY).expect("record persists unchanged");
+            // The record stays EXPORTED with its error intact and its
+            // attempts untouched: the helper rejected the candidate
+            // BEFORE installing anything.
             assert_eq!(record.status, PageStatus::Exported);
+            assert_eq!(record.attempts, 1);
             assert!(record.last_error.is_some());
         });
     }

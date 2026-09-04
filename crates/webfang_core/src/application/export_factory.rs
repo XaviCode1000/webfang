@@ -31,6 +31,7 @@ use crate::domain::crawler_port::filename::confine_filename_component;
 use crate::domain::page_state::{PageStatus, Stateful};
 use crate::domain::persistence::{DomainRecords, LastError, RawRecord, RecordStorePort};
 use crate::domain::{entities::ExportFormat, exporter::ExporterError, Exporter, ExporterConfig};
+use crate::infrastructure::export::record_transition;
 
 /// Per-run resume/commit context handed to the export functions (D5 seams).
 ///
@@ -179,11 +180,17 @@ impl<'a> CommitSession<'a> {
         };
         self.records.insert(key.clone(), exported.record().clone());
         self.save_notifying(PageStatus::Exported);
-        // COMMIT POINT — no re-append; the line is already on disk.
-        let committed = exported.commit();
-        info!(url, "flush-proof promotion: advancing to COMMITTED");
-        self.records.insert(key, committed.into_record());
-        self.save_notifying(PageStatus::Committed);
+        // ★ COMMIT POINT ★ — no re-append; the line is already on disk.
+        // The machine-owned transition shared with the loom model.
+        if record_transition::swap_to_committed(&mut self.records, &key) {
+            info!(url, "flush-proof promotion: advancing to COMMITTED");
+            self.save_notifying(PageStatus::Committed);
+        } else {
+            warn!(
+                url,
+                "commit-point transition rejected by the machine; record left EXPORTED"
+            );
+        }
     }
 
     /// Fetch the record backing a flush-proof promotion. A record-less
@@ -358,9 +365,19 @@ impl<'a> CommitSession<'a> {
         self.save_notifying(PageStatus::Exported);
         // Steps 4–5: ★ COMMIT POINT ★ — rename(2) persisting Committed,
         // strictly after the output flush ack + EXPORTED checkpoint.
-        let committed = exported.commit();
-        self.records.insert(key, committed.into_record());
-        self.save_notifying(PageStatus::Committed);
+        // Re-reads the just-checkpointed EXPORTED slot through the ONE
+        // machine-owned transition shared with the loom model.
+        if record_transition::swap_to_committed(&mut self.records, &key) {
+            self.save_notifying(PageStatus::Committed);
+        } else {
+            // Unreachable by construction: the slot holds the EXPORTED the
+            // typed machine just produced. Honesty wins over an assert —
+            // skip the commit point and let the next run re-drive.
+            warn!(
+                url,
+                "commit-point transition rejected by the machine; item left EXPORTED"
+            );
+        }
     }
 
     fn save_and_notify(&self, observer: Option<&dyn Fn(PageStatus)>, status: PageStatus) {
