@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use rmcp::service::ServiceExt;
+use webfang_core::cli::error::CliExit;
 use webfang_mcp::mcp_server::{build_container, spawn_ai_wiring, McpHandler, McpState};
 
 /// Webfang MCP Server — Stdio transport.
@@ -31,7 +32,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> CliExit {
     // All logging to stderr — stdout is reserved for JSON-RPC.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -49,7 +50,17 @@ async fn main() {
     // The AI ports are wired lazily in a background task after the server
     // starts serving, so the MCP `initialize` handshake is never blocked
     // behind the hf_hub model resolution (~390 MB on a cold cache).
-    let container = Arc::new(build_container().await);
+    // A construction failure is a boot-time error: log it (English, structured)
+    // and exit with the config-error code — never a panic backtrace (#1123).
+    let container = match build_container().await {
+        Ok(container) => Arc::new(container),
+        Err(e) => {
+            tracing::error!(error = %e, "MCP stdio boot failed: container construction");
+            return CliExit::ConfigError(format!(
+                "No se pudo crear el contenedor del servidor MCP: {e}"
+            ));
+        },
+    };
 
     if args.enable_ai {
         spawn_ai_wiring(Arc::clone(&container));
@@ -65,11 +76,18 @@ async fn main() {
     let handler = McpHandler::new(state);
 
     // Serve over stdio — stdin/stdout for JSON-RPC, stderr for logs.
+    // A closed stdin or broken pipe before the handshake completes fails
+    // `serve()`; panicking there would send a backtrace to the spawning MCP
+    // client (OpenCode, Claude Desktop, …). Log and exit with the I/O error
+    // code instead (#1108).
     let transport = (tokio::io::stdin(), tokio::io::stdout());
-    let server = handler
-        .serve(transport)
-        .await
-        .expect("failed to start MCP server over stdio");
+    let server = match handler.serve(transport).await {
+        Ok(server) => server,
+        Err(e) => {
+            tracing::error!(error = %e, "mcp stdio serve failed");
+            return CliExit::IoError(format!("No se pudo iniciar el servidor MCP por stdio: {e}"));
+        },
+    };
 
     // Wait for the server to finish (client disconnects or stdin closes).
     let waiting_result = server.waiting().await;
@@ -84,5 +102,13 @@ async fn main() {
         }
     }
 
-    waiting_result.expect("MCP server error");
+    // Normal EOF shutdown returns Ok → exit 0; a transport error mid-session
+    // gets the same clean log + exit treatment instead of a panic backtrace
+    // aimed at the spawning MCP client (#1108).
+    if let Err(e) = waiting_result {
+        tracing::error!(error = %e, "mcp server terminated with error");
+        return CliExit::IoError(format!("El servidor MCP por stdio terminó con error: {e}"));
+    }
+
+    CliExit::Success
 }

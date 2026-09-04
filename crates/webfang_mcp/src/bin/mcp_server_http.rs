@@ -83,8 +83,13 @@ async fn main() -> Result<()> {
 
     // Build the container FAST — no model resolution happens here (#759).
     // The AI ports are wired lazily in a background task after the container
-    // is shared with the server state.
-    let container = Arc::new(build_container().await);
+    // is shared with the server state. A construction failure propagates as a
+    // typed error to the supervisor: stderr message + exit code, never a
+    // panic backtrace (#1123).
+    let container =
+        Arc::new(build_container().await.map_err(|e| {
+            anyhow::anyhow!("No se pudo crear el contenedor del servidor MCP: {e}")
+        })?);
 
     if args.enable_ai {
         spawn_ai_wiring(Arc::clone(&container));

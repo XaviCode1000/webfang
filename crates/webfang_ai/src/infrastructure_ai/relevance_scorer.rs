@@ -3,7 +3,29 @@
 //! Provides relevance scoring between embeddings using cosine similarity.
 //! Used for filtering chunks by semantic relevance to a query or reference.
 
+use std::sync::Once;
+
+use tracing::warn;
+
 use super::embedding_ops::cosine_similarity;
+
+/// One-shot guard for the #1109 downgrade path (#1152): a missing reference
+/// turned the old panic into a silent per-chunk skip, so the first skip is
+/// logged once per process to keep the behaviour observable in the trace
+/// without flooding the log on large batches.
+static MISSING_REFERENCE_WARNED: Once = Once::new();
+
+/// Emit the process-wide one-shot warning when [`RelevanceScorer::score`]
+/// returned `None` because no reference was provided and none is stored.
+fn warn_missing_reference_once(total_chunks: usize, threshold: f32) {
+    MISSING_REFERENCE_WARNED.call_once(|| {
+        warn!(
+            total_chunks,
+            threshold,
+            "Relevance filter skipping chunks: no reference embedding (score() returns None since #1109)"
+        );
+    });
+}
 
 /// Relevance scorer with configurable threshold
 ///
@@ -105,6 +127,10 @@ impl RelevanceScorer {
 
     /// Score embedding against reference
     ///
+    /// Total function (#1109): a missing reference is a skip, not a panic.
+    /// Async data paths run inside Tokio tasks where a panic aborts the
+    /// whole AI batch, so this must never abort.
+    ///
     /// # Arguments
     ///
     /// * `embedding` - Vector to score
@@ -112,23 +138,12 @@ impl RelevanceScorer {
     ///
     /// # Returns
     ///
-    /// Similarity score in range [-1.0, 1.0]
-    ///
-    /// # Panics
-    ///
-    /// Panics if no reference is provided and none is stored
+    /// Similarity score in range [-1.0, 1.0], or `None` if no reference was
+    /// provided and none is stored (same contract as [`score_stored`](Self::score_stored))
     #[must_use]
-    #[allow(clippy::expect_used)]
-    pub fn score(&self, embedding: &[f32], reference: Option<&[f32]>) -> f32 {
-        // Documented panic contract (see `# Panics`): `score` returns `f32`, so
-        // a missing reference cannot be propagated as an error. Callers needing
-        // a non-panicking path use `score_stored`, which returns `Option<f32>`.
-        let reference = reference
-            .or(self.reference.as_deref())
-            // LCOV_EXCL_LINE defensive: missing-reference-embedding — documented panic contract; callers use score_stored
-            .expect("No reference embedding provided or stored");
-
-        cosine_similarity(embedding, reference)
+    pub fn score(&self, embedding: &[f32], reference: Option<&[f32]>) -> Option<f32> {
+        let reference = reference.or(self.reference.as_deref())?;
+        Some(cosine_similarity(embedding, reference))
     }
 
     /// Score embedding against stored reference
@@ -191,9 +206,12 @@ impl RelevanceScorer {
     ) -> Vec<(webfang_core::domain::DocumentChunk, Vec<f32>)> {
         chunks
             .iter()
-            .filter(|(_, embedding)| {
-                let score = self.score(embedding, reference);
-                self.meets_threshold(score)
+            .filter(|(_, embedding)| match self.score(embedding, reference) {
+                Some(score) => self.meets_threshold(score),
+                None => {
+                    warn_missing_reference_once(chunks.len(), self.threshold);
+                    false
+                },
             })
             .map(|(chunk, embedding)| (chunk.clone(), embedding.clone()))
             .collect()
@@ -241,9 +259,12 @@ impl RelevanceScorer {
     ) -> Vec<webfang_core::domain::DocumentChunk> {
         chunks
             .iter()
-            .filter(|(_, embedding)| {
-                let score = self.score(embedding, reference);
-                self.meets_threshold(score)
+            .filter(|(_, embedding)| match self.score(embedding, reference) {
+                Some(score) => self.meets_threshold(score),
+                None => {
+                    warn_missing_reference_once(chunks.len(), self.threshold);
+                    false
+                },
             })
             .map(|(chunk, _)| chunk.clone())
             .collect()
@@ -288,11 +309,13 @@ impl RelevanceScorer {
         reference: &[f32],
         k: usize,
     ) -> Vec<(webfang_core::domain::DocumentChunk, f32)> {
+        // `reference` is always supplied here, so `score` is always `Some`;
+        // `filter_map` keeps the path total without reintroducing an unwrap.
         let mut scored: Vec<_> = chunks
             .iter()
-            .map(|(chunk, embedding)| {
-                let score = self.score(embedding, Some(reference));
-                (chunk.clone(), score)
+            .filter_map(|(chunk, embedding)| {
+                self.score(embedding, Some(reference))
+                    .map(|score| (chunk.clone(), score))
             })
             .collect();
 
@@ -368,7 +391,24 @@ mod tests {
 
         let identical = vec![1.0f32, 0.0, 0.0, 0.0];
         let score = scorer.score(&identical, Some(&reference));
-        assert!((score - 1.0).abs() < 0.001);
+        assert!((score.expect("reference provided") - 1.0).abs() < 0.001);
+    }
+
+    /// Post-fix contract for #1109: `score` mirrors `score_stored` — a
+    /// missing reference yields `None` (skip), never a panic.
+    #[test]
+    fn score_without_reference_returns_none() {
+        let scorer = RelevanceScorer::default();
+        assert_eq!(scorer.score(&[1.0, 0.0, 0.0, 0.0], None), None);
+
+        let reference = vec![1.0f32, 0.0, 0.0, 0.0];
+        let scorer = RelevanceScorer::with_reference(0.3, reference.clone());
+        assert!(
+            scorer
+                .score(&[1.0, 0.0, 0.0, 0.0], None)
+                .is_some_and(|s| (s - 1.0).abs() < 0.001),
+            "stored reference must still be used when the argument is None"
+        );
     }
 
     #[test]
@@ -380,6 +420,35 @@ mod tests {
         let score = scorer.score_stored(&identical);
         assert!(score.is_some());
         assert!((score.unwrap() - 1.0).abs() < 0.001);
+    }
+
+    /// Reproduction guard for #1109: `score` without any reference (argument
+    /// `None`, no stored reference) used to abort the calling task with
+    /// `.expect("No reference embedding provided or stored")`. The test
+    /// compiles against both signatures (`let _` binds `f32` or `Option<f32>`
+    /// alike): on unmodified main the child test panics; after the fix it
+    /// passes.
+    #[test]
+    fn score_without_reference_does_not_panic() {
+        let scorer = RelevanceScorer::default();
+        let _ = scorer.score(&[1.0, 0.0, 0.0, 0.0], None);
+    }
+
+    /// Reproduction guard for #1109: the async data path reaches the same
+    /// panic through `filter`/`filter_with_embeddings` when no reference is
+    /// available. A missing reference must skip (empty result), never abort
+    /// the Tokio task running the batch.
+    #[test]
+    fn filter_without_reference_returns_empty_instead_of_panicking() {
+        let scorer = RelevanceScorer::default();
+        let (chunk, embedding) = create_test_chunk("Content 1");
+        let chunks = vec![(chunk, embedding)];
+
+        let filtered = scorer.filter(&chunks, None);
+        assert!(filtered.is_empty(), "no reference must skip, not panic");
+
+        let kept = scorer.filter_with_embeddings(&chunks, None);
+        assert!(kept.is_empty(), "no reference must skip, not panic");
     }
 
     #[test]
