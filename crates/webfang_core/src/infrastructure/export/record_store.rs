@@ -25,6 +25,7 @@ use tracing::debug;
 
 use crate::domain::exporter::{DomainRecords, RawRecord};
 use crate::domain::page_state::PageStatus;
+use crate::domain::record_transition;
 
 // Backwards-compat shim (ADR-0012-B 3.H): the record DTOs and their error
 // moved to `domain::exporter`; re-export them so `infrastructure::export::*`
@@ -374,50 +375,20 @@ impl RecordStore {
     /// D2/E6 invariant table applied at the single persistence seam.
     /// Violations are QUARANTINED (dropped from the in-memory view and
     /// re-drivable next run), never panics: `warn!` names url + invariant +
-    /// file path.
+    /// file path. The rule itself lives in the pure ADR-0014 state machine
+    /// ([`crate::domain::record_transition`]); this wrapper
+    /// contributes only the file-path context and the `warn!` I/O.
     fn validate_and_quarantine(records: DomainRecords, path: &std::path::Path) -> DomainRecords {
-        let mut kept = DomainRecords::new();
-        for (key, record) in records {
-            if let Some(invariant) = Self::invariant_violation(&record) {
-                tracing::warn!(
-                    url = %record.url,
-                    invariant,
-                    file = %path.display(),
-                    "quarantining record-store entry with impossible state"
-                );
-                continue;
-            }
-            kept.insert(key, record);
+        let (kept, quarantined) = record_transition::partition_valid(records);
+        for entry in &quarantined {
+            tracing::warn!(
+                url = %entry.url,
+                invariant = entry.invariant,
+                file = %path.display(),
+                "quarantining record-store entry with impossible state"
+            );
         }
         kept
-    }
-
-    /// Returns the name of the first violated invariant, if any.
-    fn invariant_violation(record: &RawRecord) -> Option<&'static str> {
-        // #876: an empty URL is structurally meaningless identity; such a
-        // record can never address a page and is quarantined like any
-        // other impossible state.
-        if record.url.trim().is_empty() {
-            return Some("url must not be empty");
-        }
-        // v1-migrated records predate hash tracking by design; their
-        // Committed status is exempt from the output/hash requirement.
-        let migrated = record.run_id == MIGRATED_V1_RUN_ID;
-        if matches!(record.status, PageStatus::Exported | PageStatus::Committed)
-            && !migrated
-            && (record.output_location.is_none() || record.content_hash.is_none())
-        {
-            return Some("exported/committed requires output_location and content_hash");
-        }
-        if record.status == PageStatus::Committed {
-            if record.last_error.is_some() {
-                return Some("committed must not carry last_error");
-            }
-            if record.attempts < 1 {
-                return Some("committed requires attempts >= 1");
-            }
-        }
-        None
     }
 
     /// Explicit v1→v2 migration (Gate 2/SC5): backup FIRST, map every
@@ -463,7 +434,7 @@ impl RecordStore {
             // (dropped + warned), never promoted to Committed state. The
             // whole-file Corrupt policy stays reserved for unparseable
             // structure, so one bad entry never discards good neighbors.
-            if url.trim().is_empty() {
+            if record_transition::is_meaningless_identity(&url) {
                 tracing::warn!(
                     file = %path.display(),
                     "v1 migration: dropping empty-string URL from legacy processed_urls (malformed legacy entry)"
@@ -516,13 +487,12 @@ impl RecordStore {
     }
 
     /// Count of `COMMITTED` records — the compat replacement for v1's stored
-    /// `total_exported` counter (A3): derived, never authoritative.
+    /// `total_exported` counter (A3): derived, never authoritative. The
+    /// rule lives in the pure ADR-0014 state machine; this associated
+    /// function is a delegating alias kept for its existing callers.
     #[must_use]
     pub fn derived_total_exported(records: &DomainRecords) -> u64 {
-        records
-            .values()
-            .filter(|r| r.status == PageStatus::Committed)
-            .count() as u64
+        record_transition::derived_total_exported(records)
     }
 }
 
@@ -702,19 +672,6 @@ mod tests {
         assert_eq!(record.last_error, None);
         assert_eq!(record.output_location, None);
         assert_eq!(record.updated_at, 1_760_000_000_000);
-    }
-
-    #[test]
-    fn derived_total_exported_counts_only_committed() {
-        use crate::domain::page_state::PageStatus;
-        let mut records = DomainRecords::new();
-        let mut committed = full_record("https://x.test/committed");
-        committed.status = PageStatus::Committed;
-        let mut exported = full_record("https://x.test/exported");
-        exported.status = PageStatus::Exported;
-        records.insert(committed.url.clone(), committed);
-        records.insert(exported.url.clone(), exported);
-        assert_eq!(RecordStore::derived_total_exported(&records), 1);
     }
 
     #[test]
@@ -1078,6 +1035,141 @@ mod tests {
         assert!(
             a_pos < z_pos,
             "BTreeMap ordering must be sorted for stable diffs"
+        );
+    }
+
+    // --- D3 commit-point: crash between EXPORTED and COMMITTED saves ------
+    // ADR-0014 hybrid strategy: the filesystem-owned side of the commit
+    // point is verified deterministically via the StoreFs seam (the
+    // SIGKILL harness covers the same points end-to-end in
+    // tests/crash_matrix_test.rs). rename(2) IS the commit point; the
+    // derived counter is never stored (A3), so there is no bookkeeping
+    // write to lose.
+
+    /// Fault-injected fs whose rename(2) succeeds exactly `ok_renames`
+    /// times and fails every later call — a deterministic stand-in for a
+    /// process dying after N successful commits.
+    struct FailAfterRenames {
+        ok_renames: std::sync::atomic::AtomicU32,
+    }
+
+    impl StoreFs for FailAfterRenames {
+        fn write(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+            let mut file = std::fs::File::create(path)?;
+            file.write_all(bytes)?;
+            file.flush()
+        }
+
+        fn rename(&self, from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+            if self
+                .ok_renames
+                .fetch_update(
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                    |n| (n > 0).then(|| n - 1),
+                )
+                .is_ok()
+            {
+                return std::fs::rename(from, to);
+            }
+            Err(std::io::Error::other("simulated crash before rename"))
+        }
+    }
+
+    fn exported_record(url: &str) -> RawRecord {
+        let mut r = full_record(url);
+        r.status = PageStatus::Exported;
+        r.last_error = None;
+        r
+    }
+
+    fn committed_record(url: &str) -> RawRecord {
+        let mut r = full_record(url);
+        r.status = PageStatus::Committed;
+        r.last_error = None;
+        r
+    }
+
+    /// Crash between the EXPORTED save and the COMMITTED save (export_factory
+    /// drives save_notifying(Exported) then save_notifying(Committed); a
+    /// SIGKILL at POST_FLUSH_PRE_COMMIT lands exactly here): the second
+    /// save dies before its rename, so the on-disk state is still the
+    /// full EXPORTED envelope — not lost, not committed, not torn. A
+    /// recovered process reloads EXPORTED and re-drives the record to
+    /// COMMITTED.
+    #[test]
+    fn crash_between_saves_leaves_exported_state_reloadable_and_completable() {
+        let dir = tempdir().unwrap();
+        let state_dir = dir.path().to_path_buf();
+        let url = "https://d3.test/page";
+        let mut records = DomainRecords::new();
+        records.insert(url.to_string(), exported_record(url));
+
+        // Save #1 (EXPORTED): rename #1 succeeds.
+        let store = RecordStore::with_fs(
+            "d3.test",
+            state_dir.clone(),
+            std::sync::Arc::new(FailAfterRenames {
+                ok_renames: std::sync::atomic::AtomicU32::new(1),
+            }),
+        );
+        store.save(&records).expect("EXPORTED save must commit");
+
+        // Save #2 (COMMITTED): the process "crashes" — rename #2 fails.
+        let mut committed = DomainRecords::new();
+        committed.insert(url.to_string(), committed_record(url));
+        let err = store
+            .save(&committed)
+            .expect_err("crash-before-rename must surface as typed Io error");
+        assert!(matches!(err, RecordStoreError::Io { .. }));
+
+        // Recovered process (fresh store, real fs): still EXPORTED —
+        // neither lost nor committed; the atomic rename kept the previous
+        // full envelope intact.
+        let recovered = RecordStore::new("d3.test").with_state_dir(state_dir);
+        let loaded = recovered.load().expect("reload must succeed");
+        assert_eq!(loaded.len(), 1, "no record lost by the crashed save");
+        assert_eq!(loaded[url].status, PageStatus::Exported);
+        assert_eq!(
+            crate::domain::record_transition::derived_total_exported(&loaded),
+            0,
+            "nothing may count as COMMITTED after the crash"
+        );
+
+        // Re-drive: the recovery run completes the transition.
+        recovered
+            .save(&committed)
+            .expect("recovery save must commit");
+        let final_state = recovered.load().expect("post-recovery load");
+        assert_eq!(final_state[url].status, PageStatus::Committed);
+        assert_eq!(
+            crate::domain::record_transition::derived_total_exported(&final_state),
+            1
+        );
+    }
+
+    /// Crash AFTER the COMMITTED rename but before any post-save
+    /// bookkeeping: there is none to lose — the counter is derived (A3),
+    /// never stored, so a reload sees COMMITTED directly. This pins the
+    /// "rename is the commit point" contract.
+    #[test]
+    fn crash_after_committed_rename_sees_committed_on_reload() {
+        let (_dir, store) = temp_store("d3post.test");
+        let url = "https://d3post.test/page";
+        let mut records = DomainRecords::new();
+        records.insert(url.to_string(), committed_record(url));
+        store.save(&records).expect("COMMITTED save must commit");
+
+        // Fresh store = recovered process: COMMITTED survives with zero
+        // bookkeeping replay, and the derived counter sees it.
+        let recovered = RecordStore::new("d3post.test")
+            .with_state_dir(store.state_path().parent().unwrap().to_path_buf());
+        let loaded = recovered.load().expect("reload must succeed");
+        assert_eq!(loaded[url].status, PageStatus::Committed);
+        assert_eq!(
+            crate::domain::record_transition::derived_total_exported(&loaded),
+            1,
+            "the derived counter sees the committed record without any stored counter"
         );
     }
 }
