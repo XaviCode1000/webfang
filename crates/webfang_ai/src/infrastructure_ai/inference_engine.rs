@@ -222,7 +222,11 @@ type SharedReceiver = Arc<Mutex<mpsc::Receiver<WorkerRequest>>>;
 /// # Thread Safety
 ///
 /// - `Send + Sync`: tokio `Sender` and `JoinHandle` are both Send+Sync
-/// - `Clone`: cheap clone (sender is internally reference-counted)
+/// - **Not `Clone`** (#1131): a cloned sender would keep the request channel
+///   open after the owner drops, so the owner's `Drop` would join forever and
+///   the ONNX `Session` plus the `inference-worker-*` threads would leak.
+///   Share the pool as `Arc<InferencePool>` — the single owner's `Drop` then
+///   always disconnects the channel.
 /// - `Drop`: releases the shared session, disconnects the channel (workers
 ///   exit) and joins all threads
 pub struct InferencePool {
@@ -231,18 +235,6 @@ pub struct InferencePool {
     shared_session: Option<SharedSession>,
     model_variant: AiModel,
     worker_count: usize,
-}
-
-impl Clone for InferencePool {
-    fn clone(&self) -> Self {
-        Self {
-            request_tx: self.request_tx.clone(),
-            _worker_handles: Vec::new(), // handles are not cloneable; only sender matters
-            shared_session: None,        // clones never own the session lifecycle
-            model_variant: self.model_variant,
-            worker_count: self.worker_count,
-        }
-    }
 }
 
 impl InferencePool {
@@ -354,7 +346,9 @@ impl InferencePool {
 impl Drop for InferencePool {
     fn drop(&mut self) {
         // Drop sender → disconnects channel → all blocking_recv calls return
-        // None. Workers exit their loops and terminate.
+        // None. Workers exit their loops and terminate. The join below is
+        // bounded because `InferencePool` is not `Clone` (#1131): this is the
+        // only sender, so the channel cannot outlive the pool.
         let (dummy_tx, _dummy_rx) = mpsc::channel(1);
         drop(std::mem::replace(&mut self.request_tx, dummy_tx));
 
@@ -608,11 +602,90 @@ mod tests {
         assert_sync::<InferencePool>();
     }
 
-    /// Test that InferencePool is Clone (cheap clone)
+    /// #1131 — `InferencePool` must NOT be `Clone`.
+    ///
+    /// A cloned sender keeps the request channel open after the owner drops,
+    /// so the owner's `Drop` joins forever and the ONNX `Session` plus the
+    /// `inference-worker-*` threads leak. The pool is shared exclusively via
+    /// `Arc<InferencePool>` (main.rs, ai_wiring, adapters).
+    ///
+    /// Compile-time probe via autoref specialization: the inherent
+    /// `Probe::<T>::is_clone` wins over the blanket trait fallback exactly when
+    /// `T: Clone`. The `ModelInput` positive control guards the probe itself
+    /// from silently degrading to "always false".
     #[test]
-    fn test_inference_pool_is_clone() {
-        fn assert_clone<T: Clone>() {}
-        assert_clone::<InferencePool>();
+    fn test_inference_pool_is_not_clone() {
+        struct Yes;
+        struct No;
+        trait Answer {
+            fn answer(&self) -> bool;
+        }
+        impl Answer for Yes {
+            fn answer(&self) -> bool {
+                true
+            }
+        }
+        impl Answer for No {
+            fn answer(&self) -> bool {
+                false
+            }
+        }
+
+        struct Probe<T>(std::marker::PhantomData<T>);
+        #[allow(dead_code)]
+        impl<T: Clone> Probe<T> {
+            fn is_clone(&self) -> Yes {
+                Yes
+            }
+        }
+        trait NotCloneFallback {
+            fn is_clone(&self) -> No {
+                No
+            }
+        }
+        impl<T> NotCloneFallback for T {}
+
+        assert!(
+            Probe::<ModelInput>(std::marker::PhantomData)
+                .is_clone()
+                .answer(),
+            "probe control failed: ModelInput is Clone, so the probe is broken"
+        );
+        assert!(
+            !Probe::<InferencePool>(std::marker::PhantomData)
+                .is_clone()
+                .answer(),
+            "#1131: InferencePool must not be Clone — a cloned sender keeps \
+             the channel open and hangs the owner's Drop join forever"
+        );
+    }
+
+    /// #1131 — `Drop` returns in bounded time: without `Clone` the pool owns
+    /// the only sender, so dropping it disconnects the channel, every worker
+    /// exits its `blocking_recv` loop, and each `join()` completes. When the
+    /// join returns, the workers' `Arc<Session>` clones are gone and the pool
+    /// already released its own handle, so the ONNX `Session` is freed.
+    ///
+    /// Pre-fix this hung: the repro (run on the base commit) showed the owner
+    /// blocked >5s while a clone was alive, completing only once the clone
+    /// dropped. Now no clone can exist, so the drop is bounded by construction.
+    #[test]
+    fn test_inference_pool_drop_returns_in_bounded_time() {
+        let fake_bytes = Arc::new(b"fake model bytes".to_vec());
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let owner = thread::spawn(move || {
+            let pool = InferencePool::new(fake_bytes, AiModel::Granite97M)
+                .expect("pool creation must succeed even with invalid model bytes");
+            drop(pool);
+            let _ = done_tx.send(());
+        });
+
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect(
+                "Drop must complete in bounded time: the channel closes and every worker is joined",
+            );
+        owner.join().expect("owner thread must not panic");
     }
 
     /// Test InferencePool::new with fake model bytes
