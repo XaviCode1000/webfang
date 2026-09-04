@@ -184,7 +184,7 @@ fn scrape_url_params_deserialize_valid() {
     let json = r#"{"url": "https://example.com"}"#;
     let params: webfang_mcp::mcp_server::params::ScrapeUrlParams =
         serde_json::from_str(json).unwrap();
-    assert_eq!(params.url, "https://example.com");
+    assert_eq!(params.url.as_str(), "https://example.com/");
 }
 
 #[test]
@@ -233,7 +233,7 @@ fn detect_spa_params_deserialize() {
     let json = r#"{"url": "https://example.com"}"#;
     let params: webfang_mcp::mcp_server::params::DetectSpaParams =
         serde_json::from_str(json).unwrap();
-    assert_eq!(params.url, "https://example.com");
+    assert_eq!(params.url.as_str(), "https://example.com/");
 }
 
 #[test]
@@ -241,7 +241,7 @@ fn discover_urls_params_deserialize() {
     let json = r#"{"url": "https://example.com"}"#;
     let params: webfang_mcp::mcp_server::params::DiscoverUrlsParams =
         serde_json::from_str(json).unwrap();
-    assert_eq!(params.url, "https://example.com");
+    assert_eq!(params.url.as_str(), "https://example.com/");
 }
 
 #[test]

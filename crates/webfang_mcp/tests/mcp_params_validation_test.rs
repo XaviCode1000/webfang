@@ -17,6 +17,11 @@
 use webfang_mcp::mcp_server::params::*;
 use webfang_mcp::mcp_server::validation;
 
+/// Test helper: build an `McpUrl` from a KNOWN-VALID http(s) string.
+fn vu(s: &str) -> McpUrl {
+    s.parse().expect("test url must be valid http(s)")
+}
+
 // ===========================================================================
 // validation::require_http_url
 // ===========================================================================
@@ -249,25 +254,21 @@ fn require_one_of_rejects_unknown() {
 #[test]
 fn scrape_url_params_accepts_https() {
     let p = ScrapeUrlParams {
-        url: "https://example.com".into(),
+        url: vu("https://example.com"),
     };
     p.validate().expect("https url should be valid");
 }
 
+/// #1116: `file://` and empty URLs are now UNREPRESENTABLE — `McpUrl`
+/// rejects them during deserialization, so a `ScrapeUrlParams` carrying
+/// them cannot be built. This is strictly stronger than the old
+/// "construct then validate()" tests: the invalid state never exists.
 #[test]
-fn scrape_url_params_rejects_file_scheme() {
-    let p = ScrapeUrlParams {
-        url: "file:///etc/passwd".into(),
-    };
-    let err = p.validate().unwrap_err();
-    assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
-}
-
-#[test]
-fn scrape_url_params_rejects_empty() {
-    let p = ScrapeUrlParams { url: String::new() };
-    let err = p.validate().unwrap_err();
-    assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
+fn scrape_url_params_reject_file_scheme_and_empty_at_boundary() {
+    for bad in ["file:///etc/passwd", ""] {
+        let res = serde_json::from_value::<ScrapeUrlParams>(serde_json::json!({ "url": bad }));
+        assert!(res.is_err(), "`{bad}` must fail to deserialize into McpUrl");
+    }
 }
 
 // ===========================================================================
@@ -285,21 +286,23 @@ fn scrape_batch_params_rejects_empty_list() {
     assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
 }
 
+/// #1116: a single bad element makes the whole batch fail to deserialize —
+/// the invalid URL is unrepresentable, so `validate()` never even runs.
 #[test]
-fn scrape_batch_params_rejects_one_bad_url() {
-    let p = ScrapeBatchParams {
-        urls: vec!["https://ok.example".into(), "file:///etc/passwd".into()],
-        concurrency: None,
-        ignore_robots: None,
-    };
-    let err = p.validate().unwrap_err();
-    assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
+fn scrape_batch_params_reject_one_bad_url_at_boundary() {
+    let res = serde_json::from_value::<ScrapeBatchParams>(serde_json::json!({
+        "urls": ["https://ok.example", "file:///etc/passwd"]
+    }));
+    assert!(
+        res.is_err(),
+        "a bad batch element must fail the whole deserialize"
+    );
 }
 
 #[test]
 fn scrape_batch_params_rejects_oversize_concurrency() {
     let p = ScrapeBatchParams {
-        urls: vec!["https://example.com".into()],
+        urls: vec![vu("https://example.com")],
         concurrency: Some(65),
         ignore_robots: None,
     };
@@ -310,10 +313,7 @@ fn scrape_batch_params_rejects_oversize_concurrency() {
 #[test]
 fn scrape_batch_params_accepts_valid() {
     let p = ScrapeBatchParams {
-        urls: vec![
-            "https://example.com".into(),
-            "https://other.example/path".into(),
-        ],
+        urls: vec![vu("https://example.com"), vu("https://other.example/path")],
         concurrency: Some(8),
         ignore_robots: None,
     };
@@ -387,7 +387,7 @@ fn clean_html_params_rejects_empty() {
 #[test]
 fn crawl_site_params_rejects_oversize_max_depth() {
     let p = CrawlSiteParams {
-        url: "https://example.com".into(),
+        url: vu("https://example.com"),
         max_depth: Some(11),
         max_pages: None,
     };
@@ -398,7 +398,7 @@ fn crawl_site_params_rejects_oversize_max_depth() {
 #[test]
 fn crawl_site_params_rejects_oversize_max_pages() {
     let p = CrawlSiteParams {
-        url: "https://example.com".into(),
+        url: vu("https://example.com"),
         max_depth: None,
         max_pages: Some(100_001),
     };
