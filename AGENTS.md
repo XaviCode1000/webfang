@@ -408,6 +408,27 @@ Measured 2026-08-30: `validate --gate` itself exits 0 and abstains
 ordinary commits — refuting the earlier "hooks would block every commit"
 claim (#1047 fact 2/3).
 
+### Main-push gate (#1091)
+
+`pre-push` now chains two gates: `review-gate.sh` (called without `exec`, exit
+code propagated) and `main-push-gate.sh` (`exec`'d last so git's stdin ref list
+reaches it). The second blocks any local push that would advance
+`refs/heads/main` with commits that did not arrive through a PR merge: a merge
+commit must list ≥ 1 associated PR (`gh api repos/{owner}/{repo}/commits/<sha>/pulls`),
+a plain commit must end in `(#N)` with `gh pr view N --json state` = `MERGED`.
+
+| case | decision |
+| :--- | :--- |
+| push does not target `refs/heads/main` | SKIP (silent) |
+| `refs/heads/main` created (all-zero remote sha) | SKIP + warning |
+| merge commit with 0 associated PRs | **BLOCK** (exit 1) |
+| plain commit without trailing `(#N)`, or PR not MERGED | **BLOCK** (exit 1) |
+| `gh` absent, gh network/auth failure, rev-list cannot enumerate | SKIP + warning (fail-open) |
+
+`--no-verify` remains the documented hatch. This hook is defense-in-depth, not
+the primary control: the reflog shows 0 local pushes to main in 172 updates,
+and every BLOCK line names the bypass.
+
 ### Rebase caveats
 
 - `rebase.updaterefs=true` does NOT auto-update branches checked out in other worktrees — rebase each sequentially.

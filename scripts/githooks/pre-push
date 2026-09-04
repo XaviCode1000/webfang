@@ -1,3 +1,9 @@
 #!/usr/bin/env bash
-# Pre-push delivery gate — consults the Gentle AI review receipt (#1036).
-exec "$(dirname "$0")/review-gate.sh" pre-push
+# Pre-push delivery gate — two sequential gates:
+#
+#   1. review-gate.sh (#1036): consulted WITHOUT exec so its exit code is
+#      propagated — a BLOCK here stops the push before the main gate runs.
+#   2. main-push-gate.sh (#1091): exec'd last so git's stdin ref-update list
+#      reaches it untouched.
+"$(dirname "$0")/review-gate.sh" pre-push || exit $?
+exec "$(dirname "$0")/main-push-gate.sh"
