@@ -5,9 +5,14 @@
 //!
 //! # Design Decisions
 //!
-//! - **DashMap<String, SessionState>** — concurrent per-domain state, same pattern as UrlDeduplicator
+//! - **DashMap<String, DomainEntry>** — concurrent per-domain state, same pattern as UrlDeduplicator
 //! - **Exponential backoff** — `base_delay * 2^min(failures, max_exp)`, capped at `max_delay`
-//! - **TTL eviction** — stale sessions removed on `acquire()`, no background thread
+//! - **TTL eviction** — stale sessions reset on `acquire()`; idle domains removed
+//!   outright by `evict_stale()`, no background thread
+//! - **Bounded domain map (#1130)** — `acquire()` enforces the shared
+//!   `MAX_TRACKED_DOMAINS` cap by evicting the least-recently-seen domain,
+//!   so a long-lived MCP server cannot grow the map linearly with domain
+//!   cardinality
 //! - **Zero-cost abstraction** — `impl SessionManager` not `Box<dyn SessionManager>`
 //!
 //! # D6 lock-across-await audit (task 2.3, change stabilization-concurrency-budget)
@@ -35,7 +40,7 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use tracing::{debug, instrument, warn};
 
-use crate::domain::budget::DomainSlots;
+use crate::domain::budget::{DomainSlots, MAX_TRACKED_DOMAINS};
 use crate::domain::clock::{Clock, SystemClock};
 use crate::domain::session_port::SessionId;
 
@@ -68,6 +73,17 @@ impl SessionState {
             next_retry_time: None,
         }
     }
+}
+
+/// Per-domain tracked entry: session slots + last-activity stamp.
+///
+/// #1130: `last_seen` powers both eviction paths — `evict_stale()` removes
+/// domains idle past the TTL outright, and `acquire()` evicts the
+/// least-recently-seen domain once the map crosses `MAX_TRACKED_DOMAINS`.
+#[derive(Debug, Clone)]
+struct DomainEntry {
+    states: Vec<SessionState>,
+    last_seen: Instant,
 }
 
 /// Configuration for the session pool.
@@ -132,8 +148,9 @@ pub trait SessionManager: sealed::Sealed {
 /// Per-domain session pool with health tracking and exponential backoff.
 #[derive(Clone)]
 pub struct DomainSessionPool {
-    /// Per-domain session states. Key = domain string, Value = Vec of session states.
-    sessions: DashMap<String, Vec<SessionState>>,
+    /// Per-domain session states. Key = domain string, Value = entry with the
+    /// slot Vec plus the `last_seen` stamp backing bounded eviction (#1130).
+    sessions: DashMap<String, DomainEntry>,
     config: SessionPoolConfig,
     /// Injected clock for deterministic time in tests.
     clock: Arc<dyn Clock>,
@@ -250,6 +267,38 @@ impl DomainSessionPool {
         now >= effective_retry
     }
 
+    /// Soft cap on tracked domains (#1130): past the shared
+    /// [`MAX_TRACKED_DOMAINS`] bound (same value the MCP metrics breakdown
+    /// enforces, REQ-05), the least-recently-seen domains are removed
+    /// outright so a long-lived server's map stays bounded.
+    ///
+    /// MUST be called with no `sessions` shard guard held — it scans and
+    /// removes from the map (the same RefMut-dropped-BEFORE-scan invariant
+    /// as `acquire`). In steady state the excess is 1: one O(cap) scan per
+    /// insert past the cap, dominated by the network I/O it precedes.
+    fn enforce_domain_cap(&self) {
+        let tracked = self.sessions.len();
+        if tracked <= MAX_TRACKED_DOMAINS {
+            return;
+        }
+        let excess = tracked - MAX_TRACKED_DOMAINS;
+        let mut by_age: Vec<(String, Instant)> = self
+            .sessions
+            .iter()
+            .map(|e| (e.key().clone(), e.value().last_seen))
+            .collect();
+        by_age.sort_by_key(|(_, last_seen)| *last_seen);
+        for (domain, _) in by_age.into_iter().take(excess) {
+            self.sessions.remove(&domain);
+            debug!(
+                domain = %domain,
+                tracked = self.sessions.len(),
+                cap = MAX_TRACKED_DOMAINS,
+                "session-pool domain evicted (cap)"
+            );
+        }
+    }
+
     /// Apply a failure to a session state, banning or retiring as appropriate.
     fn apply_failure(
         &self,
@@ -303,30 +352,41 @@ impl sealed::Sealed for DomainSessionPool {}
 impl SessionManager for DomainSessionPool {
     #[instrument(skip(self), fields(domain = %domain))]
     fn acquire(&self, domain: &str) -> Option<SessionId> {
-        let mut sessions = self
+        let now = self.clock.now();
+        let mut entry = self
             .sessions
             .entry(domain.to_string())
-            .or_insert_with(|| vec![SessionState::healthy(); self.config.pool_size.get()]);
+            .or_insert_with(|| DomainEntry {
+                states: vec![SessionState::healthy(); self.config.pool_size.get()],
+                last_seen: now,
+            });
 
         // Evict stale sessions first
-        let now = self.clock.now();
-        self.evict_expired(domain, &mut sessions, now);
+        self.evict_expired(domain, &mut entry.states, now);
+        entry.last_seen = now;
 
         // Find first healthy or recoverable session
-        let result = self.find_available(domain, &sessions, now);
+        let result = self.find_available(domain, &entry.states, now);
 
         // Drop the DashMap RefMut before refreshing the gauge to avoid deadlock:
-        // refresh_healthy_gauge calls self.sessions.iter() which needs read access
-        // to the same shard that `sessions` holds a write lock on.
-        drop(sessions);
+        // any map-wide scan (gauge refresh, cap eviction) calls self.sessions.iter()
+        // which needs read access to the same shard that `entry` holds a write
+        // lock on (the RefMut-dropped-BEFORE-scan ordering invariant).
+        drop(entry);
+
+        // #1130: enforce the shared domain cap AFTER the shard guard is gone —
+        // keeps the map bounded in long-lived processes (MCP server).
+        self.enforce_domain_cap();
 
         result
     }
 
     #[instrument(skip(self), fields(domain = %domain, session_id = %session_id.0))]
     fn report_success(&self, domain: &str, session_id: SessionId) {
-        if let Some(mut sessions) = self.sessions.get_mut(domain) {
-            if let Some(state) = sessions.get_mut(session_id.0) {
+        if let Some(mut entry) = self.sessions.get_mut(domain) {
+            // Activity touch: keeps the domain ahead of LRU cap eviction (#1130).
+            entry.last_seen = self.clock.now();
+            if let Some(state) = entry.states.get_mut(session_id.0) {
                 state.status = SessionStatus::Healthy;
                 state.consecutive_failures = 0;
                 state.last_failure_time = None;
@@ -341,8 +401,10 @@ impl SessionManager for DomainSessionPool {
         // Only ban on signals that indicate domain-level blocking
         let should_ban = matches!(status_code, 429 | 503 | 403);
 
-        if let Some(mut sessions) = self.sessions.get_mut(domain) {
-            if let Some(state) = sessions.get_mut(session_id.0) {
+        if let Some(mut entry) = self.sessions.get_mut(domain) {
+            // Activity touch: keeps the domain ahead of LRU cap eviction (#1130).
+            entry.last_seen = self.clock.now();
+            if let Some(state) = entry.states.get_mut(session_id.0) {
                 self.apply_failure(state, domain, session_id, status_code, should_ban);
             }
         }
@@ -353,7 +415,7 @@ impl SessionManager for DomainSessionPool {
         let now = self.clock.now();
         for mut entry in self.sessions.iter_mut() {
             let domain = entry.key().clone();
-            let sessions = entry.value_mut();
+            let sessions = &mut entry.value_mut().states;
             let mut evicted = 0;
             for state in sessions.iter_mut() {
                 if let Some(last_failure) = state.last_failure_time {
@@ -369,10 +431,33 @@ impl SessionManager for DomainSessionPool {
                 debug!(domain = %domain, evicted, "evicted stale sessions");
             }
         }
+
+        // #1130: real removal — domains idle past the TTL lose their entry
+        // entirely (the reset above only heals sessions inside the Vec).
+        let ttl = self.config.ttl_duration;
+        let mut removed = 0usize;
+        self.sessions.retain(|domain, entry| {
+            let idle = now.duration_since(entry.last_seen) > ttl;
+            if idle {
+                removed += 1;
+                debug!(domain = %domain, "evicted idle session-pool domain (TTL)");
+            }
+            !idle
+        });
+        if removed > 0 {
+            debug!(
+                removed,
+                tracked = self.sessions.len(),
+                "idle session-pool domains evicted"
+            );
+        }
     }
 
     fn domain_count(&self, domain: &str) -> usize {
-        self.sessions.get(domain).map(|s| s.len()).unwrap_or(0)
+        self.sessions
+            .get(domain)
+            .map(|e| e.states.len())
+            .unwrap_or(0)
     }
 
     fn total_domains(&self) -> usize {
@@ -425,8 +510,8 @@ mod tests {
         pool.report_failure("example.com", id, 429);
 
         let sessions = pool.sessions.get("example.com").unwrap();
-        assert_eq!(sessions[0].status, SessionStatus::Banned);
-        assert_eq!(sessions[0].consecutive_failures, 1);
+        assert_eq!(sessions.states[0].status, SessionStatus::Banned);
+        assert_eq!(sessions.states[0].consecutive_failures, 1);
     }
 
     #[test]
@@ -437,8 +522,8 @@ mod tests {
         pool.report_success("example.com", id);
 
         let sessions = pool.sessions.get("example.com").unwrap();
-        assert_eq!(sessions[0].status, SessionStatus::Healthy);
-        assert_eq!(sessions[0].consecutive_failures, 0);
+        assert_eq!(sessions.states[0].status, SessionStatus::Healthy);
+        assert_eq!(sessions.states[0].consecutive_failures, 0);
     }
 
     #[test]
@@ -448,8 +533,8 @@ mod tests {
         pool.report_failure("example.com", id, 500);
 
         let sessions = pool.sessions.get("example.com").unwrap();
-        assert_eq!(sessions[0].status, SessionStatus::Healthy);
-        assert_eq!(sessions[0].consecutive_failures, 1);
+        assert_eq!(sessions.states[0].status, SessionStatus::Healthy);
+        assert_eq!(sessions.states[0].consecutive_failures, 1);
     }
 
     #[test]
@@ -461,7 +546,7 @@ mod tests {
         pool.report_failure("example.com", id, 500);
 
         let sessions = pool.sessions.get("example.com").unwrap();
-        assert_eq!(sessions[0].status, SessionStatus::Retiring);
+        assert_eq!(sessions.states[0].status, SessionStatus::Retiring);
     }
 
     // ── Task 3.3: Backoff doubling (with ±20% jitter) ──
@@ -555,6 +640,8 @@ mod tests {
         assert!(id2.is_some(), "stale session should be evicted and retried");
     }
 
+    /// #1130 contract: `evict_stale` no longer only resets session states —
+    /// a domain idle past the TTL loses its entry outright.
     #[test]
     fn evict_stale_removes_old_banned_sessions() {
         let clock = MockClock::new(Instant::now());
@@ -572,8 +659,11 @@ mod tests {
         clock.advance(Duration::from_millis(20));
         pool.evict_stale();
 
-        let sessions = pool.sessions.get("example.com").unwrap();
-        assert_eq!(sessions[0].status, SessionStatus::Healthy);
+        assert!(
+            pool.sessions.get("example.com").is_none(),
+            "domain idle past TTL must be removed, not just reset"
+        );
+        assert_eq!(pool.total_domains(), 0);
     }
 
     #[test]
@@ -588,12 +678,135 @@ mod tests {
         );
         let _id = pool.acquire("example.com").unwrap();
 
-        // Advance past TTL — healthy sessions should NOT be evicted
-        clock.advance(Duration::from_millis(20));
+        // Stay inside the TTL — the domain is fresh and must survive
+        clock.advance(Duration::from_millis(5));
         pool.evict_stale();
 
         let sessions = pool.sessions.get("example.com").unwrap();
-        assert_eq!(sessions[0].status, SessionStatus::Healthy);
+        assert_eq!(sessions.states[0].status, SessionStatus::Healthy);
+    }
+
+    // ── #1130: bounded domain map (cap + real eviction) ──
+
+    /// Soak: a long-lived server sees unique domains forever. Before the fix
+    /// the map grew linearly (one `Vec` per domain, never removed); now the
+    /// shared `MAX_TRACKED_DOMAINS` cap holds the size flat at the bound.
+    #[test]
+    fn soak_unique_domains_stays_bounded() {
+        let clock = MockClock::new(Instant::now());
+        let pool = DomainSessionPool::new(
+            SessionPoolConfig {
+                pool_size: slots(1),
+                ..Default::default()
+            },
+            clock.handle(),
+        );
+        for i in 0..(2 * MAX_TRACKED_DOMAINS) {
+            clock.advance(Duration::from_micros(1));
+            let domain = format!("domain-{i}.example.com");
+            let _ = pool.acquire(&domain);
+        }
+        assert_eq!(
+            pool.total_domains(),
+            MAX_TRACKED_DOMAINS,
+            "tracked domains must plateau at the cap, not grow linearly"
+        );
+    }
+
+    /// The cap evicts the LEAST-recently-seen domain: the oldest untouched
+    /// entry is gone, the newest entries (including the insert that crossed
+    /// the cap) survive.
+    #[test]
+    fn cap_evicts_least_recently_seen_domain() {
+        let clock = MockClock::new(Instant::now());
+        let pool = DomainSessionPool::new(
+            SessionPoolConfig {
+                pool_size: slots(1),
+                ..Default::default()
+            },
+            clock.handle(),
+        );
+        for i in 0..MAX_TRACKED_DOMAINS {
+            clock.advance(Duration::from_micros(1));
+            let domain = format!("domain-{i}.example.com");
+            let _ = pool.acquire(&domain);
+        }
+        assert_eq!(pool.total_domains(), MAX_TRACKED_DOMAINS);
+
+        // One more unique domain crosses the cap → oldest is removed.
+        clock.advance(Duration::from_micros(1));
+        let _ = pool.acquire("domain-new.example.com");
+        assert_eq!(pool.total_domains(), MAX_TRACKED_DOMAINS);
+        assert!(
+            pool.sessions.get("domain-0.example.com").is_none(),
+            "the least-recently-seen domain must be the victim"
+        );
+        assert!(pool.sessions.get("domain-new.example.com").is_some());
+        assert!(
+            pool.sessions
+                .get(&format!("domain-{}.example.com", MAX_TRACKED_DOMAINS - 1))
+                .is_some(),
+            "the freshest pre-cap domain must survive"
+        );
+    }
+
+    /// Activity touches (`report_success` / `report_failure`) refresh
+    /// `last_seen`, keeping a busy domain ahead of cap eviction while an
+    /// idle one becomes the victim.
+    #[test]
+    fn touched_domain_survives_cap_eviction() {
+        let clock = MockClock::new(Instant::now());
+        let pool = DomainSessionPool::new(
+            SessionPoolConfig {
+                pool_size: slots(1),
+                ..Default::default()
+            },
+            clock.handle(),
+        );
+        let _ = pool.acquire("busy.example.com").unwrap();
+        for i in 1..MAX_TRACKED_DOMAINS {
+            clock.advance(Duration::from_micros(1));
+            let domain = format!("domain-{i}.example.com");
+            let _ = pool.acquire(&domain);
+        }
+        // busy.example.com is the OLDEST entry — touch it to keep it alive.
+        clock.advance(Duration::from_micros(1));
+        pool.report_success("busy.example.com", SessionId(0));
+        clock.advance(Duration::from_micros(1));
+        let _ = pool.acquire("domain-overflow.example.com");
+
+        assert_eq!(pool.total_domains(), MAX_TRACKED_DOMAINS);
+        assert!(
+            pool.sessions.get("busy.example.com").is_some(),
+            "a touched domain must outrank an idle one for eviction"
+        );
+        assert!(
+            pool.sessions.get("domain-1.example.com").is_none(),
+            "the now-oldest idle domain must be the victim"
+        );
+    }
+
+    /// `evict_stale` removes idle domains outright and keeps fresh ones —
+    /// the map size drops, it is not merely a state reset.
+    #[test]
+    fn evict_stale_removes_idle_domains_keeps_fresh() {
+        let clock = MockClock::new(Instant::now());
+        let pool = DomainSessionPool::new(
+            SessionPoolConfig {
+                ttl_duration: Duration::from_millis(10),
+                ..Default::default()
+            },
+            clock.handle(),
+        );
+        let _ = pool.acquire("idle.example.com").unwrap();
+        clock.advance(Duration::from_millis(15));
+        let _ = pool.acquire("fresh.example.com").unwrap();
+
+        pool.evict_stale();
+
+        assert!(pool.sessions.get("idle.example.com").is_none());
+        assert!(pool.sessions.get("fresh.example.com").is_some());
+        assert_eq!(pool.total_domains(), 1);
     }
 
     // ── ADR-0012-B 3.F: from_domain_config maps the domain DTO ──
@@ -721,8 +934,8 @@ mod tests {
         // a.com has a banned session, b.com is healthy
         let a = pool.sessions.get("a.com").unwrap();
         let b = pool.sessions.get("b.com").unwrap();
-        assert_eq!(a[0].status, SessionStatus::Banned);
-        assert_eq!(b[0].status, SessionStatus::Healthy);
+        assert_eq!(a.states[0].status, SessionStatus::Banned);
+        assert_eq!(b.states[0].status, SessionStatus::Healthy);
         assert_eq!(pool.total_domains(), 2);
     }
 
@@ -755,8 +968,8 @@ mod tests {
         // Verify it's banned before cooldown
         {
             let sessions = pool.sessions.get("example.com").unwrap();
-            assert_eq!(sessions[0].status, SessionStatus::Banned);
-            assert!(sessions[0].next_retry_time.is_some());
+            assert_eq!(sessions.states[0].status, SessionStatus::Banned);
+            assert!(sessions.states[0].next_retry_time.is_some());
         }
 
         // Advance past cooldown (backoff is 2^1 * 1ms = 2ms)
