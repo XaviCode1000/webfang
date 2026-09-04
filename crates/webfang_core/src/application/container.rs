@@ -14,6 +14,16 @@
 //! Port traits are defined in `domain::ports` — the domain layer owns the
 //! abstractions. The Container creates real infrastructure implementations
 //! and stores them as `Arc<dyn Port>`.
+//!
+//! # Wiring duality (known, tracked for a future slice)
+//!
+//! The Container is the DI root for the MCP binaries (`build_container`) and
+//! for the CLI elastic path, but NOT for the CLI scrape path: `cli::scrape_flow`
+//! builds its downloader directly via the infrastructure free function
+//! `build_fetch_router` (and the engine path via `DefaultDownloaderFactory`).
+//! Unifying the two wirings is deliberately out of scope here (it collides
+//! with the crawl_task/engine changes in #1142); this note records the
+//! parallel representation so it is not mistaken for a single root.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -42,7 +52,9 @@ use crate::domain::{repositories::CrawlResultRepository, CrawlerConfig};
 use crate::infrastructure::autotuning::ElasticConfig;
 use crate::infrastructure::bridge::CpuBridge;
 use crate::infrastructure::cpu_pool::RayonCpuPool;
-use crate::infrastructure::crawler::resource_downloader::{DownloadConfig, ResourceDownloader};
+use crate::infrastructure::crawler::resource_downloader::{
+    ResourceDownloadConfig, ResourceDownloader,
+};
 use crate::infrastructure::export::jsonl_exporter::JsonlExporter;
 use crate::infrastructure::export::state_store::StateStore;
 use crate::infrastructure::export::vector_exporter::VectorExporter;
@@ -484,24 +496,6 @@ impl Container {
     // Builder methods for optional services
     // ========================================================================
 
-    /// Set the state store for resume functionality.
-    pub fn with_state_store(mut self, state_store: StateStore) -> Self {
-        self.state_store = Some(Arc::new(state_store));
-        self
-    }
-
-    /// Set a pre-configured rate limiter (overrides the default).
-    pub fn with_rate_limiter(mut self, limiter: SharedRateLimiter) -> Self {
-        self.rate_limiter = Some(Arc::new(limiter));
-        self
-    }
-
-    /// Set a pre-configured credential store.
-    pub fn with_credential_store(mut self, store: CredentialStore) -> Self {
-        self.credential_store = Arc::new(store);
-        self
-    }
-
     /// Inject an AI semantic cleaner (domain port).
     ///
     /// Takes `Arc<dyn SemanticCleaner>` directly — mirrors the CLI construction
@@ -515,27 +509,6 @@ impl Container {
         self
     }
 
-    /// Inject an embedding port for text vectorization (#386).
-    ///
-    /// Takes `Arc<dyn EmbeddingPort>` — the concrete `InferencePool` wrapper
-    /// is constructed in the CLI/MCP layer and injected here.
-    ///
-    /// Injection is at-most-once ([`OnceCell`] semantics): a second call keeps
-    /// the first port.
-    pub fn with_embedding_port(self, port: Arc<dyn EmbeddingPort>) -> Self {
-        let _ = self.embedding_port.set(port);
-        self
-    }
-
-    /// Inject a note repository for vault search persistence (#386).
-    ///
-    /// Injection is at-most-once ([`OnceCell`] semantics): a second call keeps
-    /// the first repository.
-    pub fn with_note_repository(self, repo: Arc<dyn NoteRepository>) -> Self {
-        let _ = self.note_repository.set(repo);
-        self
-    }
-
     /// Inject a vault note reader port for filesystem vault reads (#1071).
     ///
     /// Takes `Arc<dyn VaultNoteReader>` — the concrete `VaultFsReader` is
@@ -546,15 +519,6 @@ impl Container {
     /// the first reader.
     pub fn with_vault_note_reader(self, reader: Arc<dyn VaultNoteReader>) -> Self {
         let _ = self.vault_note_reader.set(reader);
-        self
-    }
-
-    /// Inject a text chunker for Markdown segmentation (#386).
-    ///
-    /// Injection is at-most-once ([`OnceCell`] semantics): a second call keeps
-    /// the first chunker.
-    pub fn with_text_chunker(self, chunker: Arc<dyn TextChunker>) -> Self {
-        let _ = self.text_chunker.set(chunker);
         self
     }
 
@@ -658,7 +622,7 @@ impl Container {
         let downloader = Arc::new(ResourceDownloader::with_config(
             semaphore,
             client,
-            DownloadConfig {
+            ResourceDownloadConfig {
                 max_size_bytes: config.max_resource_bytes,
                 ..Default::default()
             },
