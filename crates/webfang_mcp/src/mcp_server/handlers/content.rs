@@ -67,7 +67,10 @@ impl McpHandler {
 
         let _permit = acquire_semaphore!(self, content);
 
-        match webfang_core::infrastructure::crawler::extract_links(&params.html, &params.base_url) {
+        match webfang_core::infrastructure::crawler::extract_links(
+            &params.html,
+            params.base_url.as_str(),
+        ) {
             Ok(links) => {
                 let content = serde_json::to_string_pretty(&links)
                     .unwrap_or_else(|_| "failed to serialize".into());
@@ -194,6 +197,11 @@ pub fn build_router() -> ToolRouter<McpHandler> {
 
 #[cfg(test)]
 mod tests {
+    /// Test helper: build an `McpUrl` from a KNOWN-VALID http(s) string.
+    fn vu(s: &str) -> crate::mcp_server::params::McpUrl {
+        s.parse().expect("test url must be valid http(s)")
+    }
+
     use super::*;
     use crate::mcp_server::state::McpState;
     use rmcp::handler::server::wrapper::Parameters;
@@ -279,7 +287,7 @@ mod tests {
         let res = handler
             .extract_links(Parameters(ExtractLinksParams {
                 html: html.to_string(),
-                base_url: "https://example.com".to_string(),
+                base_url: vu("https://example.com"),
             }))
             .await
             .expect("extract_links returns Ok");

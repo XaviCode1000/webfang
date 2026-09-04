@@ -33,16 +33,13 @@ impl McpHandler {
 
         let _permit = acquire_semaphore!(self, assets);
 
-        let base_url = url::Url::parse(&params.base_url).map_err(|e| {
-            McpError::invalid_params(
-                format!("invalid base URL: {e}"),
-                Some(serde_json::Value::String("base_url".to_string())),
-            )
-        })?;
+        // #1116: `base_url` was parsed+hardened at the deserialization
+        // boundary (`McpUrl`); borrow it instead of re-parsing.
+        let base_url = params.base_url.as_url();
 
         // REQ-03: reject forbidden base URLs at entry, BEFORE any asset fetch
         // (guard ON unless disabled via env for tests).
-        crate::mcp_server::ssrf::validate_url_no_ssrf(&base_url).await?;
+        crate::mcp_server::ssrf::validate_url_no_ssrf(base_url).await?;
 
         let mut config = webfang_core::domain::config::ScraperConfig {
             download_images: params.images.unwrap_or(true),
@@ -67,7 +64,7 @@ impl McpHandler {
 
         match webfang_core::application::scraper_service::download_assets_if_enabled(
             &params.html,
-            &base_url,
+            base_url,
             &config,
             dl,
         )
@@ -100,6 +97,11 @@ pub fn build_router() -> ToolRouter<McpHandler> {
 
 #[cfg(test)]
 mod tests {
+    /// Test helper: build an `McpUrl` from a KNOWN-VALID http(s) string.
+    fn vu(s: &str) -> crate::mcp_server::params::McpUrl {
+        s.parse().expect("test url must be valid http(s)")
+    }
+
     use super::*;
     use crate::mcp_server::state::McpState;
     use rmcp::handler::server::wrapper::Parameters;
@@ -141,19 +143,18 @@ mod tests {
             .unwrap_or_default()
     }
 
-    #[tokio::test]
-    async fn download_assets_invalid_base_url_is_invalid_params() {
-        let (handler, _tmp) = test_handler().await;
-        let res = handler
-            .download_assets(Parameters(DownloadAssetsParams {
-                html: "<html></html>".to_string(),
-                base_url: "not a url".to_string(),
-                images: None,
-                documents: None,
-                output_dir: None,
-            }))
-            .await;
-        assert!(res.is_err(), "invalid base URL must be a protocol error");
+    /// #1116: an invalid `base_url` is unrepresentable — `McpUrl` rejects it
+    /// at deserialization (rmcp → -32602).
+    #[test]
+    fn download_assets_invalid_base_url_is_unrepresentable() {
+        let res = serde_json::from_value::<DownloadAssetsParams>(serde_json::json!({
+            "html": "<html></html>",
+            "base_url": "not a url"
+        }));
+        assert!(
+            res.is_err(),
+            "invalid base URL must fail to deserialize: {res:?}"
+        );
     }
 
     /// REQ-03: a loopback `base_url` is rejected at entry by the SSRF guard
@@ -171,7 +172,7 @@ mod tests {
         let res = handler
             .download_assets(Parameters(DownloadAssetsParams {
                 html: "<html><body><img src=\"/x.png\"></body></html>".to_string(),
-                base_url: "http://127.0.0.1/".to_string(),
+                base_url: vu("http://127.0.0.1/"),
                 images: Some(true),
                 documents: None,
                 output_dir: None,
@@ -194,7 +195,7 @@ mod tests {
         let res = handler
             .download_assets(Parameters(DownloadAssetsParams {
                 html: "<html><body><p>no images here</p></body></html>".to_string(),
-                base_url: "https://example.com/".to_string(),
+                base_url: vu("https://example.com/"),
                 images: Some(true),
                 documents: None,
                 output_dir: Some(out_dir.to_string()),
@@ -244,7 +245,7 @@ mod tests {
         let res = handler
             .download_assets(Parameters(DownloadAssetsParams {
                 html,
-                base_url: server.uri(),
+                base_url: vu(&server.uri()),
                 images: Some(true),
                 documents: None,
                 output_dir: Some(out_dir.to_string()),

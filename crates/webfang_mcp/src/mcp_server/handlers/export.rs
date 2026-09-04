@@ -354,27 +354,24 @@ impl McpHandler {
         // existing scraper service) and exports the fresh result; otherwise it
         // falls back to persisted crawl results (issue #605).
         let results = match &params.url {
-            Some(url_str) => {
-                let url = url::Url::parse(url_str).map_err(|e| {
-                    McpError::invalid_params(
-                        format!("URL inválida: {e}"),
-                        Some(serde_json::Value::String("url".to_string())),
-                    )
-                })?;
+            Some(mcp_url) => {
+                // #1116: the optional URL was parsed+hardened at the
+                // boundary (`McpUrl`); borrow it instead of re-parsing.
+                let url = mcp_url.as_url();
                 // #749 fold-in: this branch fetched a caller URL without the
                 // SSRF guard every other URL-fetching tool has.
-                crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
+                crate::mcp_server::ssrf::validate_url_no_ssrf(url).await?;
                 // #749: robots.txt gate before the live scrape, same site-policy
                 // contract as the other scrape tools; denials reuse this
                 // branch's error wrapper below.
-                if let Some(err) = self.state.robots_denied_for(&url).await {
+                if let Some(err) = self.state.robots_denied_for(url).await {
                     return Ok(CallToolResult::error(vec![Content::text(format!(
                         "error al rastrear {url}: {err}"
                     ))]));
                 }
                 let client = self.state.container.http_client().as_ref();
                 match webfang_core::application::scraper_service::scrape_with_readability(
-                    client, &url,
+                    client, url,
                 )
                 .await
                 {
@@ -396,7 +393,7 @@ impl McpHandler {
         };
         let span = tracing::Span::current();
         span.record("format", format_str);
-        span.record("url", params.url.as_deref().unwrap_or(""));
+        span.record("url", params.url.as_ref().map(|u| u.as_str()).unwrap_or(""));
         span.record("results", results.len());
 
         // The pipeline exports to the container's configured output directory.
@@ -426,6 +423,7 @@ pub fn build_router() -> ToolRouter<McpHandler> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     /// REQ-MCP-EXPORT-05 (repository unavailable): when no repository is wired,
@@ -465,6 +463,10 @@ mod tests {
 #[cfg(test)]
 mod handler_tests {
     use super::*;
+    /// Test helper: build an `McpUrl` from a KNOWN-VALID http(s) string.
+    fn vu(s: &str) -> crate::mcp_server::params::McpUrl {
+        s.parse().expect("test url must be valid http(s)")
+    }
     use crate::mcp_server::state::McpState;
     use rmcp::handler::server::wrapper::Parameters;
     use rmcp::model::CallToolResult;
@@ -875,7 +877,7 @@ mod handler_tests {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .process_export_pipeline(Parameters(ProcessExportPipelineParams {
-                url: Some("https://quotes.toscrape.com".to_string()),
+                url: Some(vu("https://quotes.toscrape.com")),
                 pipeline_format: Some("jsonl".to_string()),
             }))
             .await
@@ -915,7 +917,7 @@ mod handler_tests {
 
         let res = handler
             .process_export_pipeline(Parameters(ProcessExportPipelineParams {
-                url: Some(format!("{}/private/page", server.uri())),
+                url: Some(vu(&format!("{}/private/page", server.uri()))),
                 pipeline_format: Some("jsonl".to_string()),
             }))
             .await
@@ -956,7 +958,7 @@ mod handler_tests {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .process_export_pipeline(Parameters(ProcessExportPipelineParams {
-                url: Some("http://127.0.0.1/".to_string()),
+                url: Some(vu("http://127.0.0.1/")),
                 pipeline_format: Some("jsonl".to_string()),
             }))
             .await;

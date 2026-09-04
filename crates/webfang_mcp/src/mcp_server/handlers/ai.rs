@@ -92,22 +92,18 @@ impl McpHandler {
 
         let _permit = acquire_semaphore!(self, ai);
 
-        // REQ-03: reject malformed URLs first (invalid-params), regardless of
-        // cleaner presence — no fetch, no cleaning.
-        let url = url::Url::parse(&params.url).map_err(|e| {
-            McpError::invalid_params(
-                format!("URL inválida: {e}"),
-                Some(serde_json::Value::String("url".to_string())),
-            )
-        })?;
+        // REQ-03: malformed URLs are rejected at the deserialization
+        // boundary by `McpUrl` (#1116) — the handler borrows the parsed URL
+        // instead of re-parsing it.
+        let url = params.url.as_url();
 
         // #749 fold-in: this tool fetched the caller URL without the SSRF
         // guard every other URL-fetching tool has.
-        crate::mcp_server::ssrf::validate_url_no_ssrf(&url).await?;
+        crate::mcp_server::ssrf::validate_url_no_ssrf(url).await?;
         // #749: robots.txt gate BEFORE the cleaner-presence check — site
         // policy is independent of local feature state, so a denial is
         // reported even with the `ai` feature off.
-        if let Some(err) = self.state.robots_denied_for(&url).await {
+        if let Some(err) = self.state.robots_denied_for(url).await {
             return Ok(honest_error(err.to_string()));
         }
 
@@ -120,11 +116,17 @@ impl McpHandler {
 
         // REQ-01: fetch the page via the existing HTTP port, then clean it.
         // Operational failures map to honest errors — never a false success.
-        let response = match self.state.container.http_client().get(&params.url).await {
+        let response = match self
+            .state
+            .container
+            .http_client()
+            .get(params.url.as_str())
+            .await
+        {
             Ok(resp) => resp,
             Err(e) => return Ok(honest_error(format!("no se pudo obtener la página: {e}"))),
         };
-        let documents = match cleaner.clean(&params.url, &response.body).await {
+        let documents = match cleaner.clean(params.url.as_str(), &response.body).await {
             Ok(docs) => docs,
             Err(e) => return Ok(honest_error(format!("error al limpiar el contenido: {e}"))),
         };
@@ -136,7 +138,7 @@ impl McpHandler {
             .map(Vec::len)
             .unwrap_or(0);
         let envelope = SemanticCleanResponse {
-            url: params.url.clone(),
+            url: params.url.as_str().to_string(),
             chunks,
             embedding_dim,
             documents,
@@ -262,6 +264,11 @@ pub fn build_router() -> ToolRouter<McpHandler> {
 
 #[cfg(test)]
 mod tests {
+    /// Test helper: build an `McpUrl` from a KNOWN-VALID http(s) string.
+    fn vu(s: &str) -> crate::mcp_server::params::McpUrl {
+        s.parse().expect("test url must be valid http(s)")
+    }
+
     use super::*;
     use crate::mcp_server::state::McpState;
     use rmcp::handler::server::wrapper::Parameters;
@@ -361,19 +368,17 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// REQ-03: a malformed URL must be rejected with `McpError::invalid_params`
-    /// before any fetch/clean — no honest-error envelope, a real protocol error.
-    #[tokio::test]
-    async fn semantic_cleaner_invalid_url_is_invalid_params() {
-        let (handler, _tmp) = test_handler().await;
-        let res = handler
-            .semantic_cleaner(Parameters(ScrapeUrlParams {
-                url: "not a url".to_string(),
-            }))
-            .await;
+    /// REQ-03 / #1116: a malformed URL is now unrepresentable — `McpUrl`
+    /// rejects it during deserialization (rmcp maps that to -32602), so the
+    /// handler can never even be entered with a bad URL.
+    #[test]
+    fn semantic_cleaner_invalid_url_is_unrepresentable() {
+        let res = serde_json::from_value::<ScrapeUrlParams>(serde_json::json!({
+            "url": "not a url"
+        }));
         assert!(
             res.is_err(),
-            "invalid URL must return McpError, got: {res:?}"
+            "invalid URL must fail to deserialize: {res:?}"
         );
     }
 
@@ -391,7 +396,7 @@ mod tests {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .semantic_cleaner(Parameters(ScrapeUrlParams {
-                url: "https://example.com/article".to_string(),
+                url: vu("https://example.com/article"),
             }))
             .await
             .expect("semantic_cleaner returns Ok with honest error");
@@ -432,7 +437,7 @@ mod tests {
 
         let res = handler
             .semantic_cleaner(Parameters(ScrapeUrlParams {
-                url: format!("{}/private/page", server.uri()),
+                url: vu(&format!("{}/private/page", server.uri())),
             }))
             .await
             .expect("semantic_cleaner returns Ok with honest error");

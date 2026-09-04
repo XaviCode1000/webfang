@@ -271,7 +271,7 @@ impl From<url::Url> for ValidUrl {
 /// let hash = Sha256Hex::try_from(hex.as_str()).expect("64 lowercase hex chars");
 /// assert_eq!(hash.as_str(), hex);
 /// assert!(Sha256Hex::try_from("deadbeef").is_err(), "short non-digest rejected");
-/// assert!(Sha256Hex::try_from(&"z".repeat(64)).is_err(), "non-hex rejected");
+/// assert!(Sha256Hex::try_from("z".repeat(64).as_str()).is_err(), "non-hex rejected");
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
