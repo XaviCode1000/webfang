@@ -159,9 +159,10 @@ wiremock = "0.6"
 proptest = "1.6"
 insta = { version = "1", features = ["redactions", "filters"] }
 serial_test = "3"
-
+loom = "0.7"
+    
 [workspace.lints.rust]
-unexpected_cfgs = { level = "deny", check-cfg = ["cfg(tokio_unstable)"] }
+unexpected_cfgs = { level = "deny", check-cfg = ["cfg(tokio_unstable)", "cfg(loom)"] }
 unsafe_code = "deny"
 
 [workspace.lints.clippy]
