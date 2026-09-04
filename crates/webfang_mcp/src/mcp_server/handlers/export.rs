@@ -120,8 +120,22 @@ impl McpHandler {
     /// Returns `Err(CallToolResult)` when no repository is wired, the bulk
     /// load fails, or the repository holds zero results; callers propagate
     /// this directly.
+    ///
+    /// #1122: the bulk load is a full sequential scan of the append-only log
+    /// (open + `read_exact` + serde per record) — synchronous disk I/O that
+    /// scales with the persisted total. It runs on the blocking pool so a
+    /// 100k-record export cannot park a Tokio worker and inflate the latency
+    /// of every other MCP tool sharing the runtime.
     async fn load_results(&self) -> Result<Vec<ScrapedContent>, CallToolResult> {
-        load_results_from(self.state.container.crawl_result_repository())
+        let repo = self.state.container.crawl_result_repository();
+        tokio::task::spawn_blocking(move || load_results_from(repo))
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, "export_load_results_join_failed");
+                CallToolResult::error(vec![Content::text(format!(
+                    "no se pudieron cargar los resultados: {e}"
+                ))])
+            })?
     }
 
     /// Resolve and validate a caller-supplied export directory (#756).
@@ -473,7 +487,7 @@ mod handler_tests {
     use tempfile::TempDir;
     use webfang_core::di::Container;
     use webfang_core::domain::config::ScraperConfig;
-    use webfang_core::domain::{CrawlerConfig, ScrapedContent, ValidUrl};
+    use webfang_core::domain::{CrawlError, CrawlerConfig, ScrapedContent, ValidUrl};
     use webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -795,6 +809,85 @@ mod handler_tests {
             Some(true),
             "empty repo must map to isError:true, got: {json}"
         );
+    }
+
+    /// #1122 — a repository whose `load_all` stalls 500 ms of synchronous
+    /// disk-style I/O (the real shape of a full append-only log scan).
+    struct SlowScanRepo {
+        content: ScrapedContent,
+    }
+
+    impl CrawlResultRepository for SlowScanRepo {
+        fn save(&self, _content: &ScrapedContent) -> Result<(), CrawlError> {
+            Ok(())
+        }
+        fn find_by_url(&self, _url: &str) -> Result<Option<ScrapedContent>, CrawlError> {
+            Ok(None)
+        }
+        fn get_all_urls(&self) -> Result<Vec<String>, CrawlError> {
+            Ok(vec![])
+        }
+        fn load_all(&self) -> Result<Vec<ScrapedContent>, CrawlError> {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            Ok(vec![self.content.clone()])
+        }
+    }
+
+    /// #1122 — `load_results` must run the full-log scan on the blocking pool.
+    ///
+    /// On a current-thread runtime a synchronous scan parks the only worker:
+    /// the 100 ms timer cannot fire until the 500 ms scan ends, so the timer
+    /// timestamp lands at >=500 ms (pre-fix behaviour, verified FAILING on
+    /// main's body). With `spawn_blocking` the scan yields the reactor and the
+    /// timer fires at ~100 ms. The 400 ms threshold separates the two modes
+    /// with a wide margin.
+    #[tokio::test]
+    async fn load_results_runs_off_the_executor() {
+        let tmp = TempDir::new().expect("temp dir");
+        let crawler_config =
+            CrawlerConfig::new(url::Url::parse("https://example.com").expect("url"));
+        let scraper_config = ScraperConfig {
+            output_dir: tmp.path().to_path_buf(),
+            ..Default::default()
+        };
+        let mut container = Container::new(crawler_config, scraper_config)
+            .await
+            .expect("container");
+        container.crawl_result_repo = Some(Arc::new(SlowScanRepo {
+            content: ScrapedContent {
+                title: "Slow".to_string(),
+                content: "slow scan body".to_string(),
+                url: ValidUrl::new(url::Url::parse("https://example.com/slow").expect("valid")),
+                excerpt: None,
+                author: None,
+                date: None,
+                html: None,
+                assets: vec![],
+                correlation_id: None,
+                quality_hint: None,
+            },
+        }));
+        let handler = McpHandler::new(McpState::new(container));
+
+        let start = std::time::Instant::now();
+        let mut timer_at: Option<std::time::Duration> = None;
+        let ((), results) = tokio::join!(
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                timer_at = Some(start.elapsed());
+            },
+            handler.load_results(),
+        );
+        let results = results.expect("slow scan must still succeed");
+
+        let timer_at = timer_at.expect("timer must have fired");
+        assert!(
+            timer_at < std::time::Duration::from_millis(400),
+            "#1122: the 100ms timer fired at {timer_at:?} — a synchronous scan on \
+             the executor would delay it past the 500ms load, starving every \
+             other MCP tool on this runtime"
+        );
+        assert_eq!(results.len(), 1, "results must pass through unchanged");
     }
 
     #[tokio::test]
