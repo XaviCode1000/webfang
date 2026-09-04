@@ -153,7 +153,7 @@ impl std::fmt::Display for CorrelationId {
 /// let valid = ValidUrl::parse("https://example.com").unwrap();
 /// assert!(valid.as_str().starts_with("https://example.com"));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ValidUrl(url::Url);
 
 impl ValidUrl {

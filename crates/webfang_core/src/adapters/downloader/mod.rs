@@ -103,6 +103,7 @@ impl Drop for InFlightGuard<'_> {
     }
 }
 
+use crate::domain::ValidUrl;
 use crate::error::{ErrorClass, Result, ScraperError};
 use dashmap::DashMap;
 use futures::stream::StreamExt;
@@ -457,12 +458,18 @@ impl Downloader {
     /// Returns `ScraperError::Network` if HTTP request fails.
     /// Returns `ScraperError::Io` if file operations fail.
     /// Returns `ScraperError::Download` if file exceeds size limit.
-    pub async fn download(&self, url: &str) -> Result<DownloadedAsset> {
+    /// Download one asset. The parameter is the validated [`ValidUrl`]
+    /// typestate (#1117): hostile strings (non-http schemes, embedded
+    /// credentials) are rejected by the caller's boundary —
+    /// [`ValidUrl::parse`] / [`ValidUrl::try_from_url`] — before this
+    /// method can hand them to the TLS pool.
+    pub async fn download(&self, url: &ValidUrl) -> Result<DownloadedAsset> {
+        let key = url.as_str();
         // Fast path: a previous page already downloaded this asset (#782).
         // The duplicate is SKIPPED here — no network request is sent.
         let registered = self
             .downloaded_urls
-            .get(url)
+            .get(key)
             .map(|entry| std::sync::Arc::clone(entry.value()));
         if let Some(cell) = registered {
             if let Some(asset) = cell.get() {
@@ -480,7 +487,7 @@ impl Downloader {
 
         let cell = self
             .downloaded_urls
-            .entry(url.to_string())
+            .entry(key.to_string())
             .or_insert_with(|| std::sync::Arc::new(OnceCell::new()))
             .clone();
         // Track insertion order for bounded-cache FIFO eviction. The unbounded
@@ -488,7 +495,7 @@ impl Downloader {
         // mutex traffic, byte-identical behavior.
         if self.asset_cache_capacity != usize::MAX {
             if let Ok(mut order) = self.asset_cache_order.lock() {
-                order.push_new(url.to_string());
+                order.push_new(key.to_string());
             }
         }
         self.evict_over_capacity();
@@ -501,7 +508,7 @@ impl Downloader {
         // this URL as actively downloading — and clears the marker on
         // completion, failure, or task cancellation (#509) alike — which is
         // what lets eviction distinguish "in flight" from "abandoned".
-        let _in_flight = InFlightGuard::new(&self.in_flight_downloads, url);
+        let _in_flight = InFlightGuard::new(&self.in_flight_downloads, key);
         cell.get_or_try_init(|| self.run_download(url))
             .await
             .cloned()
@@ -510,7 +517,7 @@ impl Downloader {
     /// Run the retry/backoff download and record the outcome in the crawl
     /// dedup registry (#782). Successes are observable via the emitted
     /// structured event; failures pass through without caching.
-    async fn run_download(&self, url: &str) -> Result<DownloadedAsset> {
+    async fn run_download(&self, url: &ValidUrl) -> Result<DownloadedAsset> {
         match self.download_with_retry(url).await {
             Ok(asset) => {
                 tracing::debug!(
@@ -538,7 +545,7 @@ impl Downloader {
     ///
     /// Returns the first non-transient error, or the last transient error
     /// after exhausting `max_retries`.
-    async fn download_with_retry(&self, url: &str) -> Result<DownloadedAsset> {
+    async fn download_with_retry(&self, url: &ValidUrl) -> Result<DownloadedAsset> {
         let mut last_err = None;
 
         for attempt in 0..=self.config.max_retries {
@@ -588,10 +595,10 @@ impl Downloader {
             client_id = %format!("{:p}", &self.client)
         )
     )]
-    async fn download_once(&self, url: &str) -> Result<DownloadedAsset> {
+    async fn download_once(&self, url: &ValidUrl) -> Result<DownloadedAsset> {
         let response = self
             .client
-            .get(url)
+            .get(url.as_str())
             .send()
             .await
             .map_err(|e| ScraperError::Network(Box::new(e)))?;
@@ -603,7 +610,7 @@ impl Downloader {
         // into an asset file.
         let status = response.status();
         if !status.is_success() {
-            return Err(ScraperError::http(status.as_u16(), url));
+            return Err(ScraperError::http(status.as_u16(), url.as_str()));
         }
 
         let mime_type = response
@@ -619,7 +626,7 @@ impl Downloader {
             .and_then(|v| v.to_str().ok())
             .and_then(parse_content_disposition_header);
 
-        let asset_type = crate::adapters::detector::detect_from_url(url);
+        let asset_type = crate::adapters::detector::detect_from_url(url.as_str());
         let subdir = if asset_type.is_image() {
             &self.config.images_dir
         } else {
@@ -697,7 +704,7 @@ impl Downloader {
         );
 
         Ok(DownloadedAsset {
-            url: url.to_string(),
+            url: url.as_str().to_string(),
             local_path: final_path,
             mime_type,
             size: downloaded,
@@ -709,12 +716,12 @@ impl Downloader {
     ///
     /// Filters URLs against `include_patterns` / `exclude_patterns` before downloading.
     /// Returns partial results — individual failures don't abort the batch.
-    pub async fn download_batch(&self, urls: &[String]) -> Vec<Result<DownloadedAsset>> {
+    pub async fn download_batch(&self, urls: &[ValidUrl]) -> Vec<Result<DownloadedAsset>> {
         if urls.is_empty() {
             return Vec::new();
         }
 
-        let filtered: Vec<String> = urls
+        let filtered: Vec<&ValidUrl> = urls
             .iter()
             .filter(|url| {
                 url_matches_filters(
@@ -723,7 +730,6 @@ impl Downloader {
                     &self.config.exclude_patterns,
                 )
             })
-            .cloned()
             .collect();
 
         if filtered.is_empty() {
@@ -733,7 +739,7 @@ impl Downloader {
         let concurrency = self.config.concurrency_limit;
         let mut results = Vec::with_capacity(filtered.len());
         let mut futs = Vec::with_capacity(filtered.len());
-        for url in &filtered {
+        for url in filtered {
             futs.push(self.download(url));
         }
         let stream = futures::stream::iter(futs).buffer_unordered(concurrency);
@@ -744,7 +750,7 @@ impl Downloader {
     /// Generate filename according to the configured naming strategy.
     fn generate_filename(
         &self,
-        url: &str,
+        url: &ValidUrl,
         content_hash: &str,
         mime_type: Option<&str>,
         content_disposition_filename: Option<&str>,
@@ -794,7 +800,7 @@ impl Downloader {
 impl crate::domain::ports::AssetDownloaderPort for Downloader {
     fn download_batch(
         &self,
-        urls: &[String],
+        urls: &[ValidUrl],
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<
@@ -858,7 +864,7 @@ fn into_stream(response: Response) -> impl StreamExt<Item = wreq::Result<bytes::
 ///
 /// If `include_patterns` is empty, all URLs pass the include check.
 /// `exclude_patterns` are always applied (deny wins).
-fn url_matches_filters(url: &str, includes: &[String], excludes: &[String]) -> bool {
+fn url_matches_filters(url: &ValidUrl, includes: &[String], excludes: &[String]) -> bool {
     if excludes.iter().any(|p| pattern_matches_asset(url, p)) {
         return false;
     }
@@ -870,20 +876,20 @@ fn url_matches_filters(url: &str, includes: &[String], excludes: &[String]) -> b
 
 /// Match a URL against a pattern, supporting both extension globs (`*.pdf`)
 /// and the standard host/path glob from `domain::pattern_matching`.
-fn pattern_matches_asset(url: &str, pattern: &str) -> bool {
+fn pattern_matches_asset(url: &ValidUrl, pattern: &str) -> bool {
     let p = pattern.trim();
     // Extension glob: *.ext (but NOT host globs like *.example.com which contain a dot after the prefix)
     if let Some(ext) = p.strip_prefix("*.") {
         if !ext.is_empty() && !ext.contains('.') {
-            if let Ok(u) = url::Url::parse(url) {
-                let last = u.path().rsplit('/').next().unwrap_or("");
-                let low = last.to_ascii_lowercase();
-                let ext_low = ext.to_ascii_lowercase();
-                return low.ends_with(&format!(".{ext_low}"));
-            }
+            // The URL is already parsed — the old `Url::parse(url)` re-parse
+            // per pattern per asset is gone (#1117).
+            let last = url.path().rsplit('/').next().unwrap_or("");
+            let low = last.to_ascii_lowercase();
+            let ext_low = ext.to_ascii_lowercase();
+            return low.ends_with(&format!(".{ext_low}"));
         }
     }
-    crate::domain::matches_pattern(url, pattern)
+    crate::domain::matches_pattern(url.as_str(), pattern)
 }
 
 /// Compute exponential backoff delay with jitter.
@@ -906,16 +912,14 @@ fn compute_backoff_delay(attempt: u32, base_ms: u64, max_ms: u64) -> Duration {
 }
 
 /// Derive a slug from the last path segment of a URL.
-fn derive_slug_from_url(url: &str) -> String {
-    url::Url::parse(url)
-        .ok()
-        .and_then(|u| {
-            let path = u.path();
-            path.rsplit('/')
-                .next()
-                .filter(|s| !s.is_empty() && *s != "/")
-                .map(String::from)
-        })
+fn derive_slug_from_url(url: &ValidUrl) -> String {
+    // The URL is already parsed — the old `Url::parse(url).ok()` re-parse
+    // and its silent empty-slug fallback are gone (#1117).
+    url.path()
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty() && *s != "/")
+        .map(String::from)
         .unwrap_or_default()
 }
 
@@ -1020,7 +1024,7 @@ fn mime_type_to_extension(mime: &str) -> Option<String> {
 ///
 /// This is a convenience function for quick downloads. For production use,
 /// create a `Downloader` instance with proper configuration.
-pub async fn quick_download(url: &str, output_dir: &Path) -> Result<DownloadedAsset> {
+pub async fn quick_download(url: &ValidUrl, output_dir: &Path) -> Result<DownloadedAsset> {
     let config = DownloadConfig {
         output_dir: output_dir.to_path_buf(),
         ..Default::default()
@@ -1034,6 +1038,38 @@ pub async fn quick_download(url: &str, output_dir: &Path) -> Result<DownloadedAs
 mod tests {
     use super::*;
     use crate::domain::config::ScraperConfig;
+
+    /// Test helper: the download API is typed on `ValidUrl` (#1117), so
+    /// literals must enter through the same parse the production edge uses.
+    fn vu(s: &str) -> ValidUrl {
+        ValidUrl::parse(s).expect("test url is valid")
+    }
+
+    /// #1117 reproduction: `download` used to take a raw `&str`, so a
+    /// non-fetchable scheme or an embedded-credential URL reached the wreq
+    /// client and failed late in the TLS/connection handshake. The API is
+    /// now typed on `ValidUrl`: those strings cannot be named at the call
+    /// site — `ValidUrl::parse` rejects them at the caller's edge.
+    #[test]
+    fn issue_1117_hostile_urls_cannot_reach_download() {
+        // The exact shapes that used to slip through to the network layer.
+        assert!(
+            ValidUrl::parse("data:text/html,<h1>hi</h1>").is_err(),
+            "data: must be rejected before download() can be called"
+        );
+        assert!(
+            ValidUrl::parse("file:///etc/passwd").is_err(),
+            "file: must be rejected at the type boundary"
+        );
+        // Credentials are stripped by the type, never forwarded to the pool.
+        let with_creds =
+            ValidUrl::parse("https://user:secret@example.com/a.png").expect("https is valid");
+        assert_eq!(
+            with_creds.as_str(),
+            "https://example.com/a.png",
+            "the credential pair must not survive into the download URL"
+        );
+    }
     use tempfile::TempDir;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1151,7 +1187,7 @@ mod tests {
         let downloader = Downloader::new(config).unwrap();
 
         let filename = downloader.generate_filename(
-            "https://example.com/img.png",
+            &vu("https://example.com/img.png"),
             "abc123def456789",
             Some("image/png"),
             None,
@@ -1165,8 +1201,12 @@ mod tests {
             "Filename should start with first 12 chars of hash"
         );
 
-        let filename =
-            downloader.generate_filename("https://example.com/file", "xyz789abc123456", None, None);
+        let filename = downloader.generate_filename(
+            &vu("https://example.com/file"),
+            "xyz789abc123456",
+            None,
+            None,
+        );
         assert!(
             filename.ends_with(".bin"),
             "Expected .bin but got: {filename}"
@@ -1185,7 +1225,7 @@ mod tests {
         let downloader = Downloader::new(config).unwrap();
 
         let filename = downloader.generate_filename(
-            "https://example.com/docs/rust-book.pdf",
+            &vu("https://example.com/docs/rust-book.pdf"),
             "abc123def456789",
             Some("application/pdf"),
             None,
@@ -1205,7 +1245,7 @@ mod tests {
         let downloader = Downloader::new(config).unwrap();
 
         let filename = downloader.generate_filename(
-            "https://example.com/download",
+            &vu("https://example.com/download"),
             "abc123def456789",
             Some("application/pdf"),
             Some("annual-report.pdf"),
@@ -1226,7 +1266,7 @@ mod tests {
 
         // No Content-Disposition → falls back to hash
         let filename = downloader.generate_filename(
-            "https://example.com/download",
+            &vu("https://example.com/download"),
             "abc123def456789",
             Some("application/pdf"),
             None,
@@ -1237,7 +1277,7 @@ mod tests {
     #[test]
     fn test_url_matches_filters_empty_includes() {
         assert!(url_matches_filters(
-            "https://example.com/file.pdf",
+            &vu("https://example.com/file.pdf"),
             &[],
             &[]
         ));
@@ -1247,7 +1287,7 @@ mod tests {
     fn test_url_matches_filters_exclude_wins() {
         let excludes = vec!["/*.pdf".to_string()];
         assert!(!url_matches_filters(
-            "https://example.com/file.pdf",
+            &vu("https://example.com/file.pdf"),
             &[],
             &excludes
         ));
@@ -1257,12 +1297,12 @@ mod tests {
     fn test_url_matches_filters_include_only() {
         let includes = vec!["/*.pdf".to_string()];
         assert!(url_matches_filters(
-            "https://example.com/file.pdf",
+            &vu("https://example.com/file.pdf"),
             &includes,
             &[]
         ));
         assert!(!url_matches_filters(
-            "https://example.com/file.jpg",
+            &vu("https://example.com/file.jpg"),
             &includes,
             &[]
         ));
@@ -1272,12 +1312,12 @@ mod tests {
     fn test_url_matches_filters_extension_glob() {
         let includes = vec!["*.pdf".to_string()];
         assert!(url_matches_filters(
-            "https://x.com/file.pdf",
+            &vu("https://x.com/file.pdf"),
             &includes,
             &[]
         ));
         assert!(!url_matches_filters(
-            "https://x.com/file.jpg",
+            &vu("https://x.com/file.jpg"),
             &includes,
             &[]
         ));
@@ -1343,7 +1383,7 @@ mod tests {
 
         // Bare `..` sanitizes to empty → hash-based fallback.
         let filename = downloader.generate_filename(
-            "https://example.com/download",
+            &vu("https://example.com/download"),
             "abc123def456789",
             Some("application/pdf"),
             Some(".."),
@@ -1378,10 +1418,10 @@ mod tests {
     #[test]
     fn test_derive_slug_from_url() {
         assert_eq!(
-            derive_slug_from_url("https://example.com/docs/book.pdf"),
+            derive_slug_from_url(&vu("https://example.com/docs/book.pdf")),
             "book.pdf"
         );
-        assert_eq!(derive_slug_from_url("https://example.com/"), "");
+        assert_eq!(derive_slug_from_url(&vu("https://example.com/")), "");
     }
 
     #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
@@ -1444,7 +1484,7 @@ mod tests {
         })
         .unwrap();
 
-        let url = format!("{}/img.png", server.uri());
+        let url = vu(&format!("{}/img.png", server.uri()));
         let first = downloader.download(&url).await.unwrap();
         let second = downloader.download(&url).await.unwrap();
 
@@ -1489,7 +1529,7 @@ mod tests {
             })
             .unwrap(),
         );
-        let url = format!("{}/busy.png", server.uri());
+        let url = vu(&format!("{}/busy.png", server.uri()));
 
         let winner = {
             let d = Arc::clone(&downloader);
@@ -1543,7 +1583,7 @@ mod tests {
         })
         .unwrap();
 
-        let url = format!("{}/flaky.png", server.uri());
+        let url = vu(&format!("{}/flaky.png", server.uri()));
         let failure = downloader.download(&url).await;
         assert!(
             matches!(failure, Err(ScraperError::Http { status: 404, .. })),
@@ -1618,7 +1658,7 @@ mod tests {
         .unwrap();
 
         match downloader
-            .download(&format!("{}/download", mock_server.uri()))
+            .download(&vu(&format!("{}/download", mock_server.uri())))
             .await
         {
             Err(ScraperError::Http { status, .. }) => assert_eq!(status, 301),
