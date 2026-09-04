@@ -6,7 +6,7 @@ use url::Url;
 use crate::application::crawl_options::CrawlOptions;
 use crate::application::crawler::crawl_site;
 use crate::application::crawler::engine::{crawl_site_with_options, EngineOptions};
-use crate::application::discover_urls_for_tui;
+use crate::application::discover_urls_single_fetch;
 use crate::domain::persistence::PersistenceMode;
 use crate::error::Result as ScraperResult;
 use crate::infrastructure::downloader::fetch_router::DefaultDownloaderFactory;
@@ -39,7 +39,7 @@ pub async fn discover_urls(
 ) -> ScraperResult<Vec<Url>> {
     let discovery_pb = build_discovery_progress_bar(opts, "Discovering URLs...");
 
-    let discovered_urls = match discover_urls_for_tui(opts.url.as_str(), crawler_config).await {
+    let discovered_urls = match discover_urls_single_fetch(opts.url.as_str(), crawler_config).await {
         Ok(urls) => urls,
         Err(e) => {
             // Treat an empty sitemap as empty discovery (technical success),
@@ -70,7 +70,7 @@ pub async fn discover_urls(
 /// Recursively discover URLs by running the real crawl Engine (BFS).
 ///
 /// The default (non-interactive, non-sitemap) DOM crawl path previously called
-/// `discover_urls_for_tui`, which performs a SINGLE fetch and one round of link
+/// `discover_urls_single_fetch`, which performs a SINGLE fetch and one round of link
 /// extraction — so `--max-depth` was silently ignored and every crawl behaved
 /// like depth 1 (bug #651). This routes discovery through [`crawl_site`], the
 /// same recursive engine the batch and MCP paths use, so `max_depth`,
@@ -80,8 +80,7 @@ pub async fn discover_urls(
 /// the rich content extraction and on-disk export stay in the CLI's existing
 /// `scrape_phase` / `export_phase`, which consume this URL list exactly as the
 /// old single-level discovery produced it — so output location and format are
-/// unchanged. Interactive TUI selection keeps using `discover_urls_for_tui` at
-/// depth 1 and is untouched by this path.
+/// unchanged.
 ///
 /// `persistence_mode` is the unified control-plane from slice 5c:
 /// when the mode enables checkpointing (`Checkpoint` or `Full`), the

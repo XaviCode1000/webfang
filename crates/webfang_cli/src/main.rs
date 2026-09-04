@@ -107,7 +107,7 @@ async fn __main() -> CliExit {
 
     // 6b. Single normalization pipeline (design D3) — replaces legacy merges
     let normalized =
-        match preflight::normalize(&args, &arg_sources, &config_defaults, None) {
+        match preflight::normalize(&args, &arg_sources, &config_defaults) {
             Ok(n) => n,
             Err(e) => return e,
         };

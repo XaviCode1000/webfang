@@ -9,7 +9,7 @@
 //!
 //! [`ConfigSource`] variant declaration order **is** the precedence total
 //! order. The enum derives `PartialOrd`/`Ord`, so `Default < ConfigFile <
-//! Environment < Cli < Tui`. Reordering variants silently changes merge
+//! Environment < Cli`. Reordering variants silently changes merge
 //! semantics — the unit test `source_ordering_is_precedence` pins this.
 
 // ---------------------------------------------------------------------------
@@ -19,7 +19,7 @@
 /// Source of a configuration value, ordered by precedence.
 ///
 /// **Variant order is precedence.** The enum derives `Ord`, so
-/// `Default < ConfigFile < Environment < Cli < Tui`. Do not reorder
+/// `Default < ConfigFile < Environment < Cli`. Do not reorder
 /// variants without updating the pipeline rank guards and the ordering
 /// pin test. Higher-ranked sources strictly outrank lower-ranked ones
 /// during normalization.
@@ -33,8 +33,6 @@ pub enum ConfigSource {
     Environment,
     /// Value supplied explicitly on the command line.
     Cli,
-    /// Value edited explicitly in the TUI (highest precedence).
-    Tui,
 }
 
 // ---------------------------------------------------------------------------
@@ -77,8 +75,8 @@ mod tests {
 
     #[test]
     fn source_ordering_is_precedence() {
-        // Exhaustive 5-variant chain: derived Ord must yield
-        // Default < ConfigFile < Environment < Cli < Tui
+        // Exhaustive 4-variant chain: derived Ord must yield
+        // Default < ConfigFile < Environment < Cli
         assert!(
             ConfigSource::Default < ConfigSource::ConfigFile,
             "Default must be < ConfigFile"
@@ -91,14 +89,12 @@ mod tests {
             ConfigSource::Environment < ConfigSource::Cli,
             "Environment must be < Cli"
         );
-        assert!(ConfigSource::Cli < ConfigSource::Tui, "Cli must be < Tui");
 
         // Pin the full sorted order equals declaration order.
         let mut variants = [
-            ConfigSource::Tui,
+            ConfigSource::Cli,
             ConfigSource::Environment,
             ConfigSource::Default,
-            ConfigSource::Cli,
             ConfigSource::ConfigFile,
         ];
         variants.sort();
@@ -109,7 +105,6 @@ mod tests {
                 ConfigSource::ConfigFile,
                 ConfigSource::Environment,
                 ConfigSource::Cli,
-                ConfigSource::Tui,
             ]
         );
     }
@@ -121,7 +116,6 @@ mod tests {
             ConfigSource::ConfigFile,
             ConfigSource::Environment,
             ConfigSource::Cli,
-            ConfigSource::Tui,
         ];
         for &current in &variants {
             for &incoming in &variants {
@@ -143,9 +137,9 @@ mod tests {
         assert_eq!(cv.source, ConfigSource::Cli);
 
         // Second type / source combination.
-        let cv2 = ConfigValue::new("hello", ConfigSource::Tui);
+        let cv2 = ConfigValue::new("hello", ConfigSource::Cli);
         assert_eq!(cv2.value, "hello");
-        assert_eq!(cv2.source, ConfigSource::Tui);
+        assert_eq!(cv2.source, ConfigSource::Cli);
     }
 
     #[test]

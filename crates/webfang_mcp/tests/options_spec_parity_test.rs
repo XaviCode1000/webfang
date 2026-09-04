@@ -6,7 +6,7 @@
 //! where a runtime-effective advertised-default override applies (#940 F1/F2:
 //! schema truth over spec-default propagation). It also proves the bridge
 //! tables stay anchored to their declared GROUPs (`crawler::GROUP`,
-//! `export::GROUP`, `ai::GROUP`, `obsidian::GROUP`, `tui::GROUP`). Adding,
+//! `export::GROUP`, `ai::GROUP`, `obsidian::GROUP`). Adding,
 //! removing, or renaming a GROUP member forces this
 //! table to be reviewed; adding an overlapping MCP param without bridging it
 //! fails the completeness check.
@@ -33,7 +33,6 @@ const CRAWLER_GROUP: &[OptionSpec] = options_spec::crawler::GROUP;
 const EXPORT_GROUP: &[OptionSpec] = options_spec::export::GROUP;
 const AI_GROUP: &[OptionSpec] = options_spec::ai::GROUP;
 const OBSIDIAN_GROUP: &[OptionSpec] = options_spec::obsidian::GROUP;
-const TUI_GROUP: &[OptionSpec] = options_spec::tui::GROUP;
 
 /// One overlapping MCP parameter: the wire property `wire_name` on `tool`
 /// backed by the OptionsSpec entry `spec_id` inside `group`.
@@ -386,7 +385,6 @@ fn no_group_overlapping_param_escapes_the_parity_table() {
         .chain(EXPORT_GROUP.iter())
         .chain(AI_GROUP.iter())
         .chain(OBSIDIAN_GROUP.iter())
-        .chain(TUI_GROUP.iter())
         .map(|o| o.id)
         .collect();
     // Known wire-name renames: MCP `format` carries `export::EXPORT_FORMAT`
@@ -423,13 +421,13 @@ fn no_group_overlapping_param_escapes_the_parity_table() {
     }
 }
 
-/// Slice 5a coverage: the three new groups (AI, Obsidian, TUI) have no
+/// Slice 5a coverage: the two new groups (AI, Obsidian) have no
 /// MCP wire counterpart today — they're CLI-only. This test pins two
 /// invariants so a future MCP param addition that overlaps one of these
 /// spec ids fails the test instead of silently shipping a divergent
 /// bound or description:
 ///
-/// 1. Every spec id in the three new groups is unique (the existing
+/// 1. Every spec id in the two remaining groups is unique (the existing
 ///    `no_group_overlapping_param_escapes_the_parity_table` test would
 ///    catch any overlap with a current MCP param; this catches
 ///    internal-name collisions in the SSOT itself).
@@ -445,7 +443,6 @@ fn slice5a_cli_only_groups_cover_their_specs() {
     let mut all_new_ids: Vec<&str> = AI_GROUP
         .iter()
         .chain(OBSIDIAN_GROUP.iter())
-        .chain(TUI_GROUP.iter())
         .map(|s| s.id)
         .collect();
     all_new_ids.sort_unstable();

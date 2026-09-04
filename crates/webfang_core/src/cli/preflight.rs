@@ -37,7 +37,7 @@ pub struct ArgSources {
 
 impl ArgSources {
     /// Record `id` as provided by `source` (only `Environment` or `Cli` are
-    /// meaningful; `Default`/`ConfigFile`/`Tui` inserted here are ignored by
+    /// meaningful; `Default`/`ConfigFile` inserted here are ignored by
     /// convention but not rejected).
     pub fn set(&mut self, id: &str, source: ConfigSource) {
         self.map.insert(id.to_string(), source);
@@ -97,34 +97,6 @@ impl ArgSources {
             }
         }
         Self { map }
-    }
-}
-
-/// TUI-emitted overrides: ONLY user-touched fields (design D2).
-///
-/// Plain JSON contract is preserved; every key in this payload is by
-/// construction user-edited, so the pipeline tags the whole payload
-/// `ConfigSource::Tui` at the stage boundary.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct TuiOverrides {
-    fields: BTreeMap<String, serde_json::Value>,
-}
-
-impl TuiOverrides {
-    /// Build from a JSON object value (non-object → empty).
-    #[must_use]
-    pub fn from_json(value: serde_json::Value) -> Self {
-        match value {
-            serde_json::Value::Object(map) => Self {
-                fields: map.into_iter().collect(),
-            },
-            _ => Self::default(),
-        }
-    }
-
-    /// Insert or overwrite a field (last-write-wins within the TUI stage).
-    pub fn insert(&mut self, key: String, value: serde_json::Value) {
-        self.fields.insert(key, value);
     }
 }
 
@@ -243,7 +215,7 @@ impl NormalizedConfig {
         opts.crawl.selector = self.selector.value;
         opts.network.delay_ms = self.delay_ms.value;
         opts.network.timeout_secs = self.timeout_secs.value;
-        // Explicit operator concurrency (CLI/TOML/TUI, not "auto") feeds
+        // Explicit operator concurrency (CLI/TOML, not "auto") feeds
         // the budget model as a crawl-tier override — design D4
         // explicit-wins rule; provenance already rank-guarded upstream.
         // NOTE: read BEFORE the move of self.concurrency.value below.
@@ -645,20 +617,20 @@ fn stage_env_cli(book: &mut FieldBook, args: &Args, sources: &ArgSources) -> usi
 ///   BEFORE provenance projection (unranked by construction).
 /// * `staged` — the pipeline-projected overrides (`into_crawl_options`),
 ///   carrying the WINNING source per the `Default < ConfigFile <
-///   Environment < Cli < Tui` resolution upstream.
+///   Environment < Cli` resolution upstream.
 ///
 /// Tier rules:
 /// - `crawl`: **staged wins; the CLI capture only fills the gap.** Both
-///   sides project the SAME user knob (`--concurrency` / TOML / TUI), but
+///   sides project the SAME user knob (`--concurrency` / TOML), but
 ///   only `staged` is rank-resolved. A blind `cli.or(staged)` here let a
-///   plain `--concurrency` stomp a Tui-ranked staged value while
+///   plain `--concurrency` stomp a rank-resolved staged value while
 ///   `network.concurrency` kept the ranked winner — a silent
 ///   contradiction inside one struct (adversarial review M1 of PR #925).
 ///   Preferring `staged` keeps `budget_overrides.crawl` consistent with
 ///   `network.concurrency` BY CONSTRUCTION.
 /// - `rate_burst` / `batch` / `asset`: CLI-explicit wins where present;
 ///   the staged value (ConfigFile/Env ranks for burst; nothing today for
-///   batch/asset — the TUI has no such fields) fills the rest. Where
+///   batch/asset) fills the rest. Where
 ///   both sides hold a value it is the same CLI flag parsed twice, so the
 ///   order is irrelevant.
 #[must_use]
@@ -739,277 +711,6 @@ fn budget_override(v: u32) -> Result<BudgetOverrides, CliExit> {
         asset: None,
     })
 }
-
-fn apply_tui_numeric(
-    book: &mut FieldBook,
-    key: &str,
-    value: &serde_json::Value,
-) -> Result<bool, CliExit> {
-    match key {
-        "max_pages" => {
-            let parsed = parse_tui_usize(key, value)?;
-            Ok(try_write(
-                &mut book.max_pages,
-                parsed,
-                ConfigSource::Tui,
-                "max_pages",
-            ))
-        },
-        "max_depth" => {
-            let parsed = parse_tui_u8(key, value)?;
-            Ok(try_write(
-                &mut book.max_depth,
-                parsed,
-                ConfigSource::Tui,
-                "max_depth",
-            ))
-        },
-        "delay_ms" => {
-            let parsed = parse_tui_u64(key, value)?;
-            Ok(try_write(
-                &mut book.delay_ms,
-                parsed,
-                ConfigSource::Tui,
-                "delay_ms",
-            ))
-        },
-        "timeout_secs" => {
-            let parsed = parse_tui_u64(key, value)?;
-            Ok(try_write(
-                &mut book.timeout_secs,
-                parsed,
-                ConfigSource::Tui,
-                "timeout_secs",
-            ))
-        },
-        _ => Ok(false),
-    }
-}
-
-fn apply_tui_string(book: &mut FieldBook, key: &str, value: &serde_json::Value) -> bool {
-    match key {
-        "selector" => {
-            if let Some(s) = value.as_str() {
-                if !s.is_empty() {
-                    return try_write(
-                        &mut book.selector,
-                        s.to_string(),
-                        ConfigSource::Tui,
-                        "selector",
-                    );
-                }
-            }
-            false
-        },
-        "sitemap_url" => {
-            if let Some(s) = value.as_str() {
-                let opt = if s.is_empty() {
-                    None
-                } else {
-                    Some(s.to_string())
-                };
-                return try_write(&mut book.sitemap_url, opt, ConfigSource::Tui, "sitemap_url");
-            }
-            false
-        },
-        "output" => {
-            if let Some(s) = value.as_str() {
-                if !s.is_empty() {
-                    return try_write(
-                        &mut book.output,
-                        PathBuf::from(s),
-                        ConfigSource::Tui,
-                        "output",
-                    );
-                }
-            }
-            false
-        },
-        "vault" => {
-            if let Some(s) = value.as_str() {
-                let opt = if s.is_empty() {
-                    None
-                } else {
-                    Some(PathBuf::from(s))
-                };
-                return try_write(&mut book.vault, opt, ConfigSource::Tui, "vault");
-            }
-            false
-        },
-        _ => false,
-    }
-}
-
-fn apply_tui_format(book: &mut FieldBook, key: &str, value: &serde_json::Value) -> bool {
-    match key {
-        "format" => {
-            if let Some(s) = value.as_str() {
-                let target = match s {
-                    "json" => OutputFormat::Json,
-                    "text" => OutputFormat::Text,
-                    _ => OutputFormat::Markdown,
-                };
-                return try_write(&mut book.format, target, ConfigSource::Tui, "format");
-            }
-            false
-        },
-        "export_format" => {
-            if let Some(s) = value.as_str() {
-                let target = match s {
-                    "vector" => ExportFormat::Vector,
-                    "auto" => ExportFormat::Auto,
-                    _ => ExportFormat::Jsonl,
-                };
-                return try_write(
-                    &mut book.export_format,
-                    target,
-                    ConfigSource::Tui,
-                    "export_format",
-                );
-            }
-            false
-        },
-        "obsidian_tags" => {
-            if let Some(s) = value.as_str() {
-                let parsed: Vec<String> = s
-                    .split(',')
-                    .map(|t| t.trim().to_string())
-                    .filter(|t| !t.is_empty())
-                    .collect();
-                return try_write(
-                    &mut book.obsidian_tags,
-                    parsed,
-                    ConfigSource::Tui,
-                    "obsidian_tags",
-                );
-            }
-            false
-        },
-        _ => false,
-    }
-}
-
-fn apply_tui_bool(book: &mut FieldBook, key: &str, value: &serde_json::Value) -> bool {
-    match key {
-        "use_sitemap" => {
-            if let Some(b) = value.as_bool() {
-                return try_write(&mut book.use_sitemap, b, ConfigSource::Tui, "use_sitemap");
-            }
-            false
-        },
-        "obsidian_wiki_links" => {
-            if let Some(b) = value.as_bool() {
-                return try_write(
-                    &mut book.obsidian_wiki_links,
-                    b,
-                    ConfigSource::Tui,
-                    "obsidian_wiki_links",
-                );
-            }
-            false
-        },
-        _ => false,
-    }
-}
-
-fn apply_tui_concurrency(book: &mut FieldBook, value: &serde_json::Value) -> Result<bool, CliExit> {
-    if let Some(s) = value.as_str() {
-        let target = if s == "auto" {
-            ConcurrencyConfig::default()
-        } else if let Ok(num) = s.parse::<usize>() {
-            ConcurrencyConfig::new(num)
-        } else {
-            let msg = format!("valor inválido para concurrency: \"{s}\"");
-            log_scrape_error(&msg, "", "stage_tui", None, "tui parse error");
-            return Err(CliExit::ConfigError(msg));
-        };
-        Ok(try_write(
-            &mut book.concurrency,
-            target,
-            ConfigSource::Tui,
-            "concurrency",
-        ))
-    } else {
-        Ok(false)
-    }
-}
-
-#[instrument(skip_all, fields(fields_written))]
-fn stage_tui(book: &mut FieldBook, tui: &TuiOverrides) -> Result<usize, CliExit> {
-    let mut n = 0;
-    for (key, value) in &tui.fields {
-        let wrote = match key.as_str() {
-            "max_pages" | "max_depth" | "delay_ms" | "timeout_secs" => {
-                apply_tui_numeric(book, key, value)?
-            },
-            "selector" | "sitemap_url" | "output" | "vault" => apply_tui_string(book, key, value),
-            "format" | "export_format" | "obsidian_tags" => apply_tui_format(book, key, value),
-            "use_sitemap" | "obsidian_wiki_links" => apply_tui_bool(book, key, value),
-            "concurrency" => apply_tui_concurrency(book, value)?,
-            _ => false,
-        };
-        if wrote {
-            n += 1;
-        }
-    }
-    Ok(n)
-}
-
-fn parse_tui_usize(field: &str, value: &serde_json::Value) -> Result<usize, CliExit> {
-    if let Some(s) = value.as_str() {
-        s.parse::<usize>().map_err(|_| {
-            let msg =
-                format!("valor inválido para {field}: \"{s}\" — se esperaba un número entero");
-            log_scrape_error(&msg, "", "stage_tui", None, "tui parse error");
-            CliExit::ConfigError(msg)
-        })
-    } else if let Some(n) = value.as_u64() {
-        Ok(n as usize)
-    } else {
-        let msg = format!("valor inválido para {field}: tipo no soportado");
-        log_scrape_error(&msg, "", "stage_tui", None, "tui parse error");
-        Err(CliExit::ConfigError(msg))
-    }
-}
-
-fn parse_tui_u64(field: &str, value: &serde_json::Value) -> Result<u64, CliExit> {
-    if let Some(s) = value.as_str() {
-        s.parse::<u64>().map_err(|_| {
-            let msg =
-                format!("valor inválido para {field}: \"{s}\" — se esperaba un número entero");
-            log_scrape_error(&msg, "", "stage_tui", None, "tui parse error");
-            CliExit::ConfigError(msg)
-        })
-    } else if let Some(n) = value.as_u64() {
-        Ok(n)
-    } else {
-        let msg = format!("valor inválido para {field}: tipo no soportado");
-        log_scrape_error(&msg, "", "stage_tui", None, "tui parse error");
-        Err(CliExit::ConfigError(msg))
-    }
-}
-
-fn parse_tui_u8(field: &str, value: &serde_json::Value) -> Result<u8, CliExit> {
-    if let Some(s) = value.as_str() {
-        s.parse::<u8>().map_err(|_| {
-            let msg =
-                format!("valor inválido para {field}: \"{s}\" — se esperaba un número entero");
-            log_scrape_error(&msg, "", "stage_tui", None, "tui parse error");
-            CliExit::ConfigError(msg)
-        })
-    } else if let Some(n) = value.as_u64() {
-        u8::try_from(n).map_err(|_| {
-            let msg = format!("valor inválido para {field}: {n} fuera de rango");
-            log_scrape_error(&msg, "", "stage_tui", None, "tui parse error");
-            CliExit::ConfigError(msg)
-        })
-    } else {
-        let msg = format!("valor inválido para {field}: tipo no soportado");
-        log_scrape_error(&msg, "", "stage_tui", None, "tui parse error");
-        Err(CliExit::ConfigError(msg))
-    }
-}
-
 #[instrument(skip_all, fields(fields_written))]
 fn apply_cross_field_rules(book: &mut FieldBook) -> usize {
     let mut n = 0;
@@ -1059,28 +760,24 @@ fn validate_stage(book: &FieldBook) -> Result<(), CliExit> {
 
 /// Normalize configuration through the single rank-guarded pipeline (design D3).
 ///
-/// Fixed stage order: defaults → config file → env/cli → tui → cross-field →
+/// Fixed stage order: defaults → config file → env/cli → cross-field →
 /// validation → `NormalizedConfig`.
 ///
 /// # Errors
 ///
-/// Returns `CliExit::ConfigError` with a Spanish message when TUI typed parsing
-/// fails or validation blocks the result.
+/// Returns `CliExit::ConfigError` with a Spanish message when validation
+/// blocks the result.
 #[allow(missing_docs)]
 #[instrument(skip_all, fields(fields_written = tracing::field::Empty))]
 pub fn normalize(
     args: &Args,
     sources: &ArgSources,
     config: &ConfigDefaults,
-    tui: Option<TuiOverrides>,
 ) -> Result<NormalizedConfig, CliExit> {
     let mut book = stage_defaults();
     let mut total = 0usize;
     total += stage_config_file(&mut book, config);
     total += stage_env_cli(&mut book, args, sources);
-    if let Some(ref t) = tui {
-        total += stage_tui(&mut book, t)?;
-    }
     total += apply_cross_field_rules(&mut book);
     total += stage_budget_overrides(&mut book, args, sources, config)?;
     validate_stage(&book)?;
@@ -1503,104 +1200,6 @@ fn binary_reports_version(binary: &str) -> std::io::Result<std::process::ExitSta
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-}
-
-// ============================================================================
-// TUI Config Merge
-// ============================================================================
-
-/// Apply config values from TUI form to CrawlOptions.
-///
-/// This runs after config_tui returns user-submitted values.
-/// Precedence: TUI values > CLI args (they override what was passed).
-pub fn apply_tui_config(mut opts: CrawlOptions, config_values: &serde_json::Value) -> CrawlOptions {
-    use crate::ExportFormat as E;
-    use crate::OutputFormat as O;
-
-    // Output directory
-    if let Some(output) = config_values.get("output").and_then(|v| v.as_str()) {
-        opts.export.output_dir = PathBuf::from(output);
-    }
-
-    // Output format (markdown, json, text)
-    if let Some(fmt) = config_values.get("format").and_then(|v| v.as_str()) {
-        opts.export.output_format = match fmt {
-            "json" => O::Json,
-            "text" => O::Text,
-            _ => O::Markdown,
-        };
-    }
-
-    // Export format (jsonl, vector, auto)
-    if let Some(fmt) = config_values.get("export_format").and_then(|v| v.as_str()) {
-        opts.export.export_format = match fmt {
-            "vector" => E::Vector,
-            "auto" => E::Auto,
-            _ => E::Jsonl,
-        };
-    }
-
-    // Discovery: use_sitemap
-    if let Some(v) = config_values.get("use_sitemap").and_then(|v| v.as_bool()) {
-        opts.crawl.use_sitemap = v;
-    }
-
-    // Discovery: max_pages
-    if let Some(v) = config_values.get("max_pages").and_then(|v| v.as_str()) {
-        if let Ok(n) = v.parse() {
-            opts.crawl.max_pages = n;
-        }
-    }
-
-    // Crawler: max_depth
-    if let Some(v) = config_values.get("max_depth").and_then(|v| v.as_str()) {
-        if let Ok(n) = v.parse() {
-            opts.crawl.max_depth = n;
-        }
-    }
-
-    // Behavior: download_images
-    if let Some(v) = config_values
-        .get("download_images")
-        .and_then(|v| v.as_bool())
-    {
-        opts.network.download_images = v;
-    }
-
-    // Behavior: download_documents
-    if let Some(v) = config_values
-        .get("download_documents")
-        .and_then(|v| v.as_bool())
-    {
-        opts.network.download_documents = v;
-    }
-
-    // Obsidian: obsidian_wiki_links
-    if let Some(v) = config_values
-        .get("obsidian_wiki_links")
-        .and_then(|v| v.as_bool())
-    {
-        opts.export.obsidian_wiki_links = v;
-    }
-
-    // Obsidian: vault path
-    if let Some(vault) = config_values.get("vault").and_then(|v| v.as_str()) {
-        if !vault.is_empty() {
-            opts.export.obsidian_vault = Some(PathBuf::from(vault));
-        }
-    }
-
-    // Obsidian: quick_save
-    if let Some(v) = config_values.get("quick_save").and_then(|v| v.as_bool()) {
-        opts.export.quick_save = v;
-    }
-
-    // AI: clean_ai from config file → CrawlOptions.ai (wired to ExportConfig.clean_ai)
-    if let Some(v) = config_values.get("clean_ai").and_then(|v| v.as_bool()) {
-        opts.ai = v;
-    }
-
-    opts
 }
 
 // ============================================================================
@@ -2390,56 +1989,6 @@ mod normalization_pipeline_tests {
     }
 
     #[test]
-    fn stage_tui_default_equivalent_rejected_over_cli() {
-        let mut book = stage_defaults();
-        book.max_pages = crate::domain::config_value::ConfigValue::new(5, ConfigSource::Cli);
-        let tui = TuiOverrides::from_json(serde_json::json!({"max_pages": "10"}));
-        let written = stage_tui(&mut book, &tui).expect("tui parse ok");
-        // Default-equivalent TUI emission must not clobber Cli; rank guard rejects
-        // Our TuiOverrides is always ConfigSource::Tui, so this actually SHOULD win if Tui > Cli.
-        // But the spec's unit-level no-overwrite proof is for an UNTOUCHED field: empty TUI.
-        // Here we assert the opposite: explicit Tui DOES outrank Cli when field is touched.
-        assert_eq!(written, 1);
-        assert_eq!(book.max_pages.source, ConfigSource::Tui);
-        // Now prove empty TUI does NOT overwrite
-        let mut book2 = stage_defaults();
-        book2.max_pages = crate::domain::config_value::ConfigValue::new(5, ConfigSource::Cli);
-        let empty = TuiOverrides::default();
-        let written2 = stage_tui(&mut book2, &empty).expect("empty tui ok");
-        assert_eq!(written2, 0);
-        assert_eq!(book2.max_pages.value, 5);
-        assert_eq!(book2.max_pages.source, ConfigSource::Cli);
-    }
-
-    #[test]
-    fn stage_tui_typed_parse_failure_returns_spanish_error() {
-        let mut book = stage_defaults();
-        let tui = TuiOverrides::from_json(serde_json::json!({"max_pages": "not-a-number"}));
-        let err = stage_tui(&mut book, &tui).expect_err("non-numeric max_pages must error");
-        match err {
-            CliExit::ConfigError(msg) => assert!(
-                msg.contains("max_pages") || msg.contains("número"),
-                "Spanish error for bad max_pages, got: {msg}"
-            ),
-            other => panic!("expected ConfigError, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn same_source_last_write_wins_within_stage() {
-        let mut book = stage_defaults();
-        let tui = TuiOverrides::from_json(serde_json::json!({"max_pages": "20", "format": "json"}));
-        // Simulate two writes to same field within TUI stage via overwriting map entry
-        let mut tui2 = tui;
-        tui2.insert(
-            "max_pages".to_string(),
-            serde_json::Value::String("30".to_string()),
-        );
-        let _ = stage_tui(&mut book, &tui2).expect("tui ok");
-        assert_eq!(book.max_pages.value, 30);
-    }
-
-    #[test]
     fn cross_field_sitemap_url_implies_use_sitemap_from_any_source() {
         // Via config file
         let mut book = stage_defaults();
@@ -2462,11 +2011,11 @@ mod normalization_pipeline_tests {
         );
         let _ = apply_cross_field_rules(&mut book2);
         assert!(book2.use_sitemap.value);
-        // Via Tui
+        // Via Environment (third covered source)
         let mut book3 = stage_defaults();
         book3.sitemap_url = crate::domain::config_value::ConfigValue::new(
             Some("https://example.com/sitemap.xml".to_string()),
-            ConfigSource::Tui,
+            ConfigSource::Environment,
         );
         let _ = apply_cross_field_rules(&mut book3);
         assert!(book3.use_sitemap.value);
@@ -2565,9 +2114,9 @@ mod normalization_pipeline_tests {
     // ========================================================================
 
     #[test]
-    fn merge_tui_staged_crawl_outranks_cli_capture() {
+    fn merge_staged_crawl_outranks_cli_capture() {
         // M1: a plain `--concurrency 2` (unranked CLI capture) must NEVER
-        // stomp a Tui-ranked staged value — the same contradiction that
+        // stomp a ranked staged value — the same contradiction that
         // made `network.concurrency` and the budget model disagree.
         let merged =
             merge_budget_overrides(test_overrides(Some(2), None), test_overrides(Some(5), None));
@@ -2611,49 +2160,6 @@ mod normalization_pipeline_tests {
                 .asset
                 .map(crate::domain::budget::tiers::DownloadConcurrency::get),
             Some(6)
-        );
-    }
-
-    /// m2 — full TUI path at the pipeline boundary: `normalize()` is the
-    /// production consumer of `TuiOverrides`, so staging a touched
-    /// `concurrency` override through it exercises
-    /// touched_overrides → rank resolution → projection → merge exactly as
-    /// the binary does after `handle_tui_mode`.
-    #[test]
-    fn tui_concurrency_override_survives_normalize_projection_and_merge() {
-        let build_args = || {
-            let mut args = dummy_args();
-            args.crawler.concurrency = "2".parse().expect("valid ConcurrencyConfig");
-            args
-        };
-
-        // Capture path mirrors main.rs: base BEFORE normalization consumes args.
-        let base = crate::application::crawl_options::CrawlOptions::from(build_args());
-        assert_eq!(
-            base.budget_overrides
-                .crawl
-                .map(crate::domain::budget::tiers::CrawlConcurrency::get),
-            Some(2),
-            "From<Args> captures the explicit CLI concurrency"
-        );
-
-        let mut sources = ArgSources::default();
-        sources.set("concurrency", ConfigSource::Cli);
-        let tui = TuiOverrides::from_json(serde_json::json!({ "concurrency": "5" }));
-        let normalized =
-            normalize(&build_args(), &sources, &dummy_config(), Some(tui)).expect("normalize ok");
-
-        let projected = normalized.into_crawl_options();
-        // Rank guard upstream: TUI outranks CLI for network.concurrency too.
-        assert_eq!(projected.network.concurrency.get(), Some(5));
-
-        let merged = merge_budget_overrides(base.budget_overrides, projected.budget_overrides);
-        assert_eq!(
-            merged
-                .crawl
-                .map(crate::domain::budget::tiers::CrawlConcurrency::get),
-            Some(5),
-            "TUI-staged crawl must drive enforcement consistently with network.concurrency"
         );
     }
 
@@ -2701,7 +2207,7 @@ mod normalization_pipeline_tests {
         args.crawler.rate_limit_burst = Some("9".to_string());
         let mut sources = ArgSources::default();
         sources.set("rate_limit_burst", ConfigSource::Environment);
-        let normalized = normalize(&args, &sources, &dummy_config(), None).expect("normalize ok");
+        let normalized = normalize(&args, &sources, &dummy_config()).expect("normalize ok");
         assert_eq!(
             normalized.budget_overrides.value.rate_burst,
             BurstPermits::new(9).ok()
@@ -2723,8 +2229,7 @@ mod normalization_pipeline_tests {
             max_pages: Some(25),
             ..dummy_config()
         };
-        let tui = TuiOverrides::default();
-        let normalized = normalize(&args, &sources, &config, Some(tui)).expect("normalize ok");
+        let normalized = normalize(&args, &sources, &config).expect("normalize ok");
         assert_eq!(normalized.max_pages.value, 10);
         assert_eq!(normalized.max_pages.source, ConfigSource::Cli);
     }

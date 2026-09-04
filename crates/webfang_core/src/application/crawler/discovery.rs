@@ -63,7 +63,7 @@ pub use crate::application::extraction::extract_content;
 /// # Examples
 ///
 /// ```no_run
-/// use webfang_core::{application::discover_urls_for_tui, domain::CrawlerConfig};
+/// use webfang_core::{application::discover_urls_single_fetch, domain::CrawlerConfig};
 /// use url::Url;
 ///
 /// # #[tokio::main]
@@ -71,20 +71,20 @@ pub use crate::application::extraction::extract_content;
 /// let seed = Url::parse("https://example.com")?;
 /// let config = CrawlerConfig::new(seed);
 ///
-/// let urls = discover_urls_for_tui("https://example.com", &config).await?;
+/// let urls = discover_urls_single_fetch("https://example.com", &config).await?;
 /// println!("Found {} URLs", urls.len());
 /// # Ok(())
 /// # }
 /// ```
 #[instrument(
-    name = "discover_urls_for_tui",
+    name = "discover_urls_single_fetch",
     skip(config),
     fields(
         base_url,
         use_sitemap = config.use_sitemap
     )
 )]
-pub async fn discover_urls_for_tui(
+pub async fn discover_urls_single_fetch(
     base_url: &str,
     config: &CrawlerConfig,
 ) -> ScraperResult<Vec<Url>> {
@@ -203,7 +203,7 @@ pub async fn discover_urls_for_tui(
     skip(downloader, config, asset_downloader, engine, binary_writer, correlation),
     fields(url = %url)
 )]
-pub async fn scrape_single_url_for_tui(
+pub async fn scrape_single_url(
     downloader: &dyn Downloader,
     url: &Url,
     config: &ScraperConfig,
@@ -212,7 +212,7 @@ pub async fn scrape_single_url_for_tui(
     binary_writer: Option<&dyn crate::domain::ports::BinaryWriterPort>,
     correlation: &CorrelationId,
 ) -> ScraperResult<ScrapedContent> {
-    scrape_single_url_for_tui_inner(
+    scrape_single_url_inner(
         downloader,
         url,
         config,
@@ -224,7 +224,7 @@ pub async fn scrape_single_url_for_tui(
     .await
 }
 
-/// Inner implementation of [`scrape_single_url_for_tui`].
+/// Inner implementation of [`scrape_single_url`].
 ///
 /// The `#[instrument]` span declares the per-page identity (`correlation_id`,
 /// `trace_id`) AT CREATION time (#501): FileTraceLayer snapshots span fields
@@ -245,7 +245,7 @@ pub async fn scrape_single_url_for_tui(
 // function past clippy's 100-line budget; the span body is cohesive and
 // splitting it would obscure the pipeline order the harness depends on.
 #[allow(clippy::too_many_lines)]
-async fn scrape_single_url_for_tui_inner(
+async fn scrape_single_url_inner(
     downloader: &dyn Downloader,
     url: &Url,
     config: &ScraperConfig,
@@ -523,7 +523,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(not(miri))]
-    async fn test_discover_urls_for_tui_respects_request_timeout() {
+    async fn test_discover_urls_single_fetch_respects_request_timeout() {
         use wiremock::matchers::path;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -546,7 +546,7 @@ mod tests {
             .build();
 
         let start = std::time::Instant::now();
-        let result = discover_urls_for_tui(&server.uri(), &config).await;
+        let result = discover_urls_single_fetch(&server.uri(), &config).await;
         let elapsed = start.elapsed();
 
         let err = result.expect_err("slow response should time out");
@@ -563,7 +563,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(not(miri))]
-    async fn test_discover_urls_for_tui_respects_connect_timeout() {
+    async fn test_discover_urls_single_fetch_respects_connect_timeout() {
         use tokio::net::TcpListener;
 
         // TLS blackhole: accept TCP connections and hold them open without ever
@@ -590,7 +590,7 @@ mod tests {
             .build();
 
         let start = std::time::Instant::now();
-        let result = discover_urls_for_tui(&target, &config).await;
+        let result = discover_urls_single_fetch(&target, &config).await;
         let elapsed = start.elapsed();
 
         let err = result.expect_err("TLS blackhole should fail to connect");
@@ -633,7 +633,7 @@ mod tests {
         let seed = Url::parse(&server.uri()).unwrap();
         let config = CrawlerConfig::builder(seed).max_depth(0).build();
 
-        let urls = discover_urls_for_tui(&server.uri(), &config)
+        let urls = discover_urls_single_fetch(&server.uri(), &config)
             .await
             .expect("discovery should succeed");
 
@@ -670,7 +670,7 @@ mod tests {
         let seed = Url::parse(&seed_url).unwrap();
         let config = CrawlerConfig::builder(seed).max_depth(1).build();
 
-        let urls = discover_urls_for_tui(&seed_url, &config)
+        let urls = discover_urls_single_fetch(&seed_url, &config)
             .await
             .expect("discovery should succeed");
 
@@ -683,7 +683,7 @@ mod tests {
     }
 
     // ========================================================================
-    // scrape_single_url_for_tui — Downloader-injection unit tests (#303)
+    // scrape_single_url — Downloader-injection unit tests (#303)
     // ========================================================================
 
     use crate::domain::downloader_port::FetchedPage;
@@ -747,7 +747,7 @@ mod tests {
         let config = ScraperConfig::new();
 
         let corr = CorrelationId::new();
-        let result = scrape_single_url_for_tui(&dl, &url, &config, None, None, None, &corr)
+        let result = scrape_single_url(&dl, &url, &config, None, None, None, &corr)
             .await
             .expect("binary detection should succeed");
 
@@ -769,7 +769,7 @@ mod tests {
         let config = ScraperConfig::new();
 
         let corr = CorrelationId::new();
-        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None, None, &corr)
+        let err = scrape_single_url(&dl, &url, &config, None, None, None, &corr)
             .await
             .expect_err("WAF body should trigger WafBlocked");
 
@@ -796,7 +796,7 @@ work with when computing the document readability score.</p>
         let config = ScraperConfig::new();
 
         let corr = CorrelationId::new();
-        let result = scrape_single_url_for_tui(&dl, &url, &config, None, None, None, &corr)
+        let result = scrape_single_url(&dl, &url, &config, None, None, None, &corr)
             .await
             .expect("normal HTML should scrape successfully");
 
@@ -818,7 +818,7 @@ work with when computing the document readability score.</p>
         let config = ScraperConfig::new();
 
         let corr = CorrelationId::new();
-        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None, None, &corr)
+        let err = scrape_single_url(&dl, &url, &config, None, None, None, &corr)
             .await
             .expect_err("WafChallenge download error should propagate");
 
@@ -839,7 +839,7 @@ work with when computing the document readability score.</p>
         let config = ScraperConfig::new();
 
         let corr = CorrelationId::new();
-        let err = scrape_single_url_for_tui(&dl, &url, &config, None, None, None, &corr)
+        let err = scrape_single_url(&dl, &url, &config, None, None, None, &corr)
             .await
             .expect_err("404 status should produce an error");
 
@@ -943,7 +943,7 @@ work with when computing the document readability score.</p>
     #[cfg(not(miri))]
     async fn extract_content_reuses_injected_correlation_id() {
         // Issue #501: callers own the page identity (e.g. the scrape span in
-        // `scrape_single_url_for_tui`) and inject it so the exported content
+        // `scrape_single_url`) and inject it so the exported content
         // is correlatable with the trace's `span_fields` — exact identity,
         // not a freshly generated one. The parameter is required: identity
         // enters through the type system or not at all.

@@ -40,7 +40,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use webfang_core::cli::config::ConfigDefaults;
 use webfang_core::cli::error::EXIT_CONFIG;
-use webfang_core::cli::preflight::{normalize, ArgSources, NormalizedConfig, TuiOverrides};
+use webfang_core::cli::preflight::{normalize, ArgSources, NormalizedConfig};
 use webfang_core::domain::config_value::ConfigSource;
 use webfang_core::{Args, CliExit};
 use wiremock::matchers::{method, path};
@@ -258,7 +258,7 @@ fn run_cli(flags: &[&str], ids: &[&str]) -> Result<NormalizedConfig, CliExit> {
     for id in ids {
         sources.set(id, ConfigSource::Cli);
     }
-    normalize(&args, &sources, &ConfigDefaults::default(), None)
+    normalize(&args, &sources, &ConfigDefaults::default())
 }
 
 /// Path (b): environment variables only (clap env fallback equivalent).
@@ -270,7 +270,7 @@ fn run_env(env: &[EnvSetting]) -> Result<NormalizedConfig, CliExit> {
         (e.apply)(&mut args, e.value);
         sources.set(e.id, ConfigSource::Environment);
     }
-    normalize(&args, &sources, &ConfigDefaults::default(), None)
+    normalize(&args, &sources, &ConfigDefaults::default())
 }
 
 /// Path (c): TOML config file only.
@@ -280,7 +280,7 @@ fn run_toml(lines: &[&str]) -> Result<NormalizedConfig, CliExit> {
     base_url_source(&mut sources);
     let text = lines.join("\n");
     let config: ConfigDefaults = toml::from_str(&text).expect("valid TOML body");
-    normalize(&args, &sources, &config, None)
+    normalize(&args, &sources, &config)
 }
 
 /// All channels at once — used by precedence-overlap regressions.
@@ -307,7 +307,7 @@ fn run_all(
     }
     let text = toml_lines.join("\n");
     let config: ConfigDefaults = toml::from_str(&text).expect("valid TOML body");
-    normalize(&args, &sources, &config, None)
+    normalize(&args, &sources, &config)
 }
 
 // ---------------------------------------------------------------------------
@@ -429,7 +429,7 @@ fn discovery_extended_fields_flag_and_env_converge() {
     sources.set(max_depth.0, ConfigSource::Environment);
     sources.set(sitemap_url.0, ConfigSource::Environment);
     let via_env =
-        normalize(&args, &sources, &ConfigDefaults::default(), None).expect("env path normalizes");
+        normalize(&args, &sources, &ConfigDefaults::default()).expect("env path normalizes");
 
     let via_flag = run_cli(
         &["--max-depth", "3", "--sitemap-url", sitemap_url.1],
@@ -534,39 +534,6 @@ fn surface_b_explicit_default_equal_cli_beats_toml() {
     );
     assert_snapshot_redacted(
         "surface_b__explicit_default_equal_cli_beats_toml",
-        Path::new("__no_temp__"),
-        serde_json::to_string_pretty(&eff).expect("serialize"),
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Mandated regression: motivating case (TUI touched-only payload)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn motivating_case_touched_only_tui_payload_preserves_cli_max_pages() {
-    // TUI exports ONLY user-touched fields (design D2). A payload touching
-    // just `format` must not clobber the explicit `--max-pages 5`.
-    let tui = TuiOverrides::from_json(serde_json::json!({ "format": "json" }));
-
-    let args = parse_base(&["--max-pages", "5"]);
-    let mut sources = ArgSources::default();
-    base_url_source(&mut sources);
-    sources.set("max_pages", ConfigSource::Cli);
-
-    let outcome =
-        normalize(&args, &sources, &ConfigDefaults::default(), Some(tui)).expect("normalizes");
-    assert_eq!(
-        outcome.max_pages.value, 5,
-        "CLI --max-pages 5 must survive TUI export"
-    );
-    assert_eq!(outcome.max_pages.source, ConfigSource::Cli);
-    assert_eq!(format!("{:?}", outcome.format.value), "Json");
-    assert_eq!(outcome.format.source, ConfigSource::Tui);
-
-    let eff = effective(&outcome);
-    assert_snapshot_redacted(
-        "motivating_case__tui_touched_only_preserves_max_pages",
         Path::new("__no_temp__"),
         serde_json::to_string_pretty(&eff).expect("serialize"),
     );
