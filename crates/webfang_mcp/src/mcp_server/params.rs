@@ -39,10 +39,12 @@ use crate::mcp_server::validation::{
 /// bypassed the credential strip, so `user:pass@host` could reach logs,
 /// frontmatter and exports.
 ///
-/// A deserialization failure surfaces as JSON-RPC `-32602` through rmcp's
-/// `Parameters` extractor (`serde_json::from_value(...).map_err(
-/// ErrorData::invalid_params)`), preserving the wire contract the
-/// `params_rejection_test` suite pins.
+/// Deserialization runs through `TryFrom<String>` over the JSON tool
+/// arguments. On failure, rmcp 1.8.0 wraps the error in a `CallToolResult`
+/// with `isError: true` (its router's `into_tool_argument_error`), NOT a
+/// JSON-RPC `-32602`, so the Spanish `ValidUrl` reason reaches the client as
+/// content text. `params_rejection_test` pins that shape: rejected before any
+/// fetch, with a reason naming the scheme.
 ///
 /// Following **api-parse-dont-validate** and the repo's own
 /// [`crate::mcp_server::validation::SanitizedFilename`] newtype.
