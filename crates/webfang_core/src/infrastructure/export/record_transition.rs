@@ -13,8 +13,8 @@
 //! The machine is PURE: no filesystem, no locks, no clock, no tracing. All
 //! I/O (reading, writing, locking, warning, migrating) stays in
 //! `record_store.rs`, which delegates its rule checks here. This is the
-//! binding model for ADR-0014; loom model tests over the state space arrive
-//! in a follow-up commit.
+//! binding model for ADR-0014: the `loom_tests` module below model-checks
+//! the concurrent COMMITTED transition (exactly-once) over every interleaving.
 //!
 //! No new states, verbs, or flags were invented: this is a pure extraction of
 //! the checks that already existed at the v2 record-store seam.
@@ -344,5 +344,138 @@ mod tests {
             records.insert(url.to_string(), r);
         }
         assert_eq!(derived_total_exported(&records), 3);
+    }
+}
+
+// --- loom model: concurrent transition of one record --------------------
+//
+// ADR-0014 hybrid strategy: loom owns the IN-MEMORY transition protocol.
+// The pure machine above is stateless, so the race to model is the
+// application-level pattern at `export_factory::save_notifying`: two
+// workers observe the same EXPORTED record and both attempt the
+// COMMITTED transition behind a shared mutex; the machine's invariant
+// check gates the transition and the derived counter must observe
+// exactly-once COMMITTED across every loom interleaving.
+//
+// Run with:
+//   cargo nextest run -p webfang_core --features loom-model --lib record_transition
+// (build.rs emits cfg(loom) crate-scoped under the `loom-model` feature —
+// NOT RUSTFLAGS, whose global cfg breaks tokio/wiremock/concurrent-queue;
+// production code stays loom-free.)
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use super::*;
+    use crate::domain::error::ErrorClass;
+    use crate::domain::persistence::LastError;
+
+    /// An EXPORTED record that satisfies the invariant table, ready to
+    /// commit: attempts >= 1, output_location + content_hash set.
+    fn exportable(url: &str) -> RawRecord {
+        RawRecord {
+            url: url.to_string(),
+            canonical_url: url.to_string(),
+            run_id: "018f3c1e-7a2b-4c0d-9e1f-2a3b4c5d6e7f".to_string(),
+            content_hash: Some("sha256:deadbeef".to_string()),
+            attempts: 1,
+            status: PageStatus::Exported,
+            last_error: None,
+            output_location: Some("out/example.md".to_string()),
+            updated_at: 1_760_000_000_000,
+        }
+    }
+
+    /// The COMMITTED transition one worker performs: build the COMMITTED
+    /// candidate, gate it through the machine (the candidate must satisfy
+    /// the invariant table), then swap. Returns whether THIS worker
+    /// performed the transition. The status re-check inside the locked
+    /// window is what makes the transition exactly-once.
+    fn attempt_commit(slot: &loom::sync::Mutex<Option<RawRecord>>) -> bool {
+        let mut guard = slot.lock().unwrap();
+        let Some(record) = guard.as_ref() else {
+            return false;
+        };
+        if record.status != PageStatus::Exported {
+            return false;
+        }
+        let mut committed = record.clone();
+        committed.status = PageStatus::Committed;
+        committed.attempts += 1;
+        // The machine gates the CANDIDATE state, not the observed one: an
+        // EXPORTED record may carry last_error, but the COMMITTED state it
+        // would transition to may not.
+        if invariant_violation(&committed).is_some() {
+            return false;
+        }
+        *guard = Some(committed);
+        true
+    }
+
+    /// Exactly-once COMMITTED under every two-worker interleaving: the
+    /// mutex serializes the transition, the machine gates it, and the
+    /// derived counter observes exactly one COMMITTED record.
+    #[test]
+    fn concurrent_commit_transition_is_exactly_once() {
+        loom::model(|| {
+            let slot = loom::sync::Arc::new(loom::sync::Mutex::new(Some(exportable(
+                "https://x.test/race",
+            ))));
+            let s1 = slot.clone();
+            let s2 = slot.clone();
+
+            let t1 = loom::thread::spawn(move || attempt_commit(&s1));
+            let t2 = loom::thread::spawn(move || attempt_commit(&s2));
+            let w1 = t1.join().unwrap();
+            let w2 = t2.join().unwrap();
+
+            // Exactly one worker performed the transition under every
+            // interleaving (the other observed non-EXPORTED and no-op'd).
+            assert!(w1 ^ w2, "exactly one worker must commit: w1={w1} w2={w2}");
+
+            let guard = slot.lock().unwrap();
+            let record = guard.as_ref().expect("record persists");
+            assert_eq!(record.status, PageStatus::Committed);
+            assert_eq!(
+                invariant_violation(record),
+                None,
+                "the surviving record satisfies the invariant table"
+            );
+
+            // The derived counter sees exactly-once COMMITTED: build the
+            // map and count.
+            let mut records = DomainRecords::new();
+            records.insert(record.url.clone(), record.clone());
+            assert_eq!(derived_total_exported(&records), 1);
+        });
+    }
+
+    /// A record whose invariant gate FAILS (committed-with-last_error
+    /// attempt) is never committed, no matter the interleaving: the
+    /// machine's quarantine-worthy state cannot reach COMMITTED through
+    /// the transition path.
+    #[test]
+    fn invariant_gate_blocks_commit_under_every_interleaving() {
+        loom::model(|| {
+            let mut broken = exportable("https://x.test/broken");
+            broken.last_error = Some(LastError {
+                class: ErrorClass::InternalFatal,
+                message: "pre-existing error must not survive commit".to_string(),
+            });
+            let slot = loom::sync::Arc::new(loom::sync::Mutex::new(Some(broken)));
+            let s1 = slot.clone();
+            let s2 = slot.clone();
+
+            let t1 = loom::thread::spawn(move || attempt_commit(&s1));
+            let t2 = loom::thread::spawn(move || attempt_commit(&s2));
+            let w1 = t1.join().unwrap();
+            let w2 = t2.join().unwrap();
+
+            assert!(!w1 && !w2, "no worker may commit a gated record");
+            let guard = slot.lock().unwrap();
+            let record = guard.as_ref().expect("record persists unchanged");
+            // The record stays EXPORTED with its error intact: the gate
+            // rejected the candidate, nothing mutated.
+            assert_eq!(record.status, PageStatus::Exported);
+            assert!(record.last_error.is_some());
+        });
     }
 }

@@ -1036,4 +1036,139 @@ mod tests {
             "BTreeMap ordering must be sorted for stable diffs"
         );
     }
+
+    // --- D3 commit-point: crash between EXPORTED and COMMITTED saves ------
+    // ADR-0014 hybrid strategy: the filesystem-owned side of the commit
+    // point is verified deterministically via the StoreFs seam (the
+    // SIGKILL harness covers the same points end-to-end in
+    // tests/crash_matrix_test.rs). rename(2) IS the commit point; the
+    // derived counter is never stored (A3), so there is no bookkeeping
+    // write to lose.
+
+    /// Fault-injected fs whose rename(2) succeeds exactly `ok_renames`
+    /// times and fails every later call — a deterministic stand-in for a
+    /// process dying after N successful commits.
+    struct FailAfterRenames {
+        ok_renames: std::sync::atomic::AtomicU32,
+    }
+
+    impl StoreFs for FailAfterRenames {
+        fn write(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+            let mut file = std::fs::File::create(path)?;
+            file.write_all(bytes)?;
+            file.flush()
+        }
+
+        fn rename(&self, from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+            if self
+                .ok_renames
+                .fetch_update(
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                    |n| (n > 0).then(|| n - 1),
+                )
+                .is_ok()
+            {
+                return std::fs::rename(from, to);
+            }
+            Err(std::io::Error::other("simulated crash before rename"))
+        }
+    }
+
+    fn exported_record(url: &str) -> RawRecord {
+        let mut r = full_record(url);
+        r.status = PageStatus::Exported;
+        r.last_error = None;
+        r
+    }
+
+    fn committed_record(url: &str) -> RawRecord {
+        let mut r = full_record(url);
+        r.status = PageStatus::Committed;
+        r.last_error = None;
+        r
+    }
+
+    /// Crash between the EXPORTED save and the COMMITTED save (export_factory
+    /// drives save_notifying(Exported) then save_notifying(Committed); a
+    /// SIGKILL at POST_FLUSH_PRE_COMMIT lands exactly here): the second
+    /// save dies before its rename, so the on-disk state is still the
+    /// full EXPORTED envelope — not lost, not committed, not torn. A
+    /// recovered process reloads EXPORTED and re-drives the record to
+    /// COMMITTED.
+    #[test]
+    fn crash_between_saves_leaves_exported_state_reloadable_and_completable() {
+        let dir = tempdir().unwrap();
+        let state_dir = dir.path().to_path_buf();
+        let url = "https://d3.test/page";
+        let mut records = DomainRecords::new();
+        records.insert(url.to_string(), exported_record(url));
+
+        // Save #1 (EXPORTED): rename #1 succeeds.
+        let store = RecordStore::with_fs(
+            "d3.test",
+            state_dir.clone(),
+            std::sync::Arc::new(FailAfterRenames {
+                ok_renames: std::sync::atomic::AtomicU32::new(1),
+            }),
+        );
+        store.save(&records).expect("EXPORTED save must commit");
+
+        // Save #2 (COMMITTED): the process "crashes" — rename #2 fails.
+        let mut committed = DomainRecords::new();
+        committed.insert(url.to_string(), committed_record(url));
+        let err = store
+            .save(&committed)
+            .expect_err("crash-before-rename must surface as typed Io error");
+        assert!(matches!(err, RecordStoreError::Io { .. }));
+
+        // Recovered process (fresh store, real fs): still EXPORTED —
+        // neither lost nor committed; the atomic rename kept the previous
+        // full envelope intact.
+        let recovered = RecordStore::new("d3.test").with_state_dir(state_dir);
+        let loaded = recovered.load().expect("reload must succeed");
+        assert_eq!(loaded.len(), 1, "no record lost by the crashed save");
+        assert_eq!(loaded[url].status, PageStatus::Exported);
+        assert_eq!(
+            crate::infrastructure::export::record_transition::derived_total_exported(&loaded),
+            0,
+            "nothing may count as COMMITTED after the crash"
+        );
+
+        // Re-drive: the recovery run completes the transition.
+        recovered
+            .save(&committed)
+            .expect("recovery save must commit");
+        let final_state = recovered.load().expect("post-recovery load");
+        assert_eq!(final_state[url].status, PageStatus::Committed);
+        assert_eq!(
+            crate::infrastructure::export::record_transition::derived_total_exported(&final_state),
+            1
+        );
+    }
+
+    /// Crash AFTER the COMMITTED rename but before any post-save
+    /// bookkeeping: there is none to lose — the counter is derived (A3),
+    /// never stored, so a reload sees COMMITTED directly. This pins the
+    /// "rename is the commit point" contract.
+    #[test]
+    fn crash_after_committed_rename_sees_committed_on_reload() {
+        let (_dir, store) = temp_store("d3post.test");
+        let url = "https://d3post.test/page";
+        let mut records = DomainRecords::new();
+        records.insert(url.to_string(), committed_record(url));
+        store.save(&records).expect("COMMITTED save must commit");
+
+        // Fresh store = recovered process: COMMITTED survives with zero
+        // bookkeeping replay, and the derived counter sees it.
+        let recovered = RecordStore::new("d3post.test")
+            .with_state_dir(store.state_path().parent().unwrap().to_path_buf());
+        let loaded = recovered.load().expect("reload must succeed");
+        assert_eq!(loaded[url].status, PageStatus::Committed);
+        assert_eq!(
+            crate::infrastructure::export::record_transition::derived_total_exported(&loaded),
+            1,
+            "the derived counter sees the committed record without any stored counter"
+        );
+    }
 }
