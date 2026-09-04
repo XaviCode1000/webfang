@@ -60,6 +60,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.target }}
+          # Tag-only saves: manual workflow_dispatch test runs restore the
+          # shared pool but never rewrite it, keeping cache budget for CI.
+          save-if: ${{ github.ref_type == 'tag' }}
 
       # Cross-compilation setup for Linux aarch64
       - name: Install cross-compilation tools
