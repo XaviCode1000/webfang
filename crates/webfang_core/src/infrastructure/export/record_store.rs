@@ -374,50 +374,20 @@ impl RecordStore {
     /// D2/E6 invariant table applied at the single persistence seam.
     /// Violations are QUARANTINED (dropped from the in-memory view and
     /// re-drivable next run), never panics: `warn!` names url + invariant +
-    /// file path.
+    /// file path. The rule itself lives in the pure ADR-0014 state machine
+    /// ([`crate::infrastructure::export::record_transition`]); this wrapper
+    /// contributes only the file-path context and the `warn!` I/O.
     fn validate_and_quarantine(records: DomainRecords, path: &std::path::Path) -> DomainRecords {
-        let mut kept = DomainRecords::new();
-        for (key, record) in records {
-            if let Some(invariant) = Self::invariant_violation(&record) {
-                tracing::warn!(
-                    url = %record.url,
-                    invariant,
-                    file = %path.display(),
-                    "quarantining record-store entry with impossible state"
-                );
-                continue;
-            }
-            kept.insert(key, record);
+        let (kept, quarantined) = super::record_transition::partition_valid(records);
+        for entry in &quarantined {
+            tracing::warn!(
+                url = %entry.url,
+                invariant = entry.invariant,
+                file = %path.display(),
+                "quarantining record-store entry with impossible state"
+            );
         }
         kept
-    }
-
-    /// Returns the name of the first violated invariant, if any.
-    fn invariant_violation(record: &RawRecord) -> Option<&'static str> {
-        // #876: an empty URL is structurally meaningless identity; such a
-        // record can never address a page and is quarantined like any
-        // other impossible state.
-        if record.url.trim().is_empty() {
-            return Some("url must not be empty");
-        }
-        // v1-migrated records predate hash tracking by design; their
-        // Committed status is exempt from the output/hash requirement.
-        let migrated = record.run_id == MIGRATED_V1_RUN_ID;
-        if matches!(record.status, PageStatus::Exported | PageStatus::Committed)
-            && !migrated
-            && (record.output_location.is_none() || record.content_hash.is_none())
-        {
-            return Some("exported/committed requires output_location and content_hash");
-        }
-        if record.status == PageStatus::Committed {
-            if record.last_error.is_some() {
-                return Some("committed must not carry last_error");
-            }
-            if record.attempts < 1 {
-                return Some("committed requires attempts >= 1");
-            }
-        }
-        None
     }
 
     /// Explicit v1→v2 migration (Gate 2/SC5): backup FIRST, map every
@@ -463,7 +433,7 @@ impl RecordStore {
             // (dropped + warned), never promoted to Committed state. The
             // whole-file Corrupt policy stays reserved for unparseable
             // structure, so one bad entry never discards good neighbors.
-            if url.trim().is_empty() {
+            if super::record_transition::is_meaningless_identity(&url) {
                 tracing::warn!(
                     file = %path.display(),
                     "v1 migration: dropping empty-string URL from legacy processed_urls (malformed legacy entry)"
@@ -516,13 +486,12 @@ impl RecordStore {
     }
 
     /// Count of `COMMITTED` records — the compat replacement for v1's stored
-    /// `total_exported` counter (A3): derived, never authoritative.
+    /// `total_exported` counter (A3): derived, never authoritative. The
+    /// rule lives in the pure ADR-0014 state machine; this associated
+    /// function is a delegating alias kept for its existing callers.
     #[must_use]
     pub fn derived_total_exported(records: &DomainRecords) -> u64 {
-        records
-            .values()
-            .filter(|r| r.status == PageStatus::Committed)
-            .count() as u64
+        super::record_transition::derived_total_exported(records)
     }
 }
 
@@ -702,19 +671,6 @@ mod tests {
         assert_eq!(record.last_error, None);
         assert_eq!(record.output_location, None);
         assert_eq!(record.updated_at, 1_760_000_000_000);
-    }
-
-    #[test]
-    fn derived_total_exported_counts_only_committed() {
-        use crate::domain::page_state::PageStatus;
-        let mut records = DomainRecords::new();
-        let mut committed = full_record("https://x.test/committed");
-        committed.status = PageStatus::Committed;
-        let mut exported = full_record("https://x.test/exported");
-        exported.status = PageStatus::Exported;
-        records.insert(committed.url.clone(), committed);
-        records.insert(exported.url.clone(), exported);
-        assert_eq!(RecordStore::derived_total_exported(&records), 1);
     }
 
     #[test]
