@@ -3,7 +3,7 @@
 Complete flag reference for the `webfang` binary. The block in the
 "Complete flag reference" section below is auto-generated from the
 binary itself by `scripts/gen-cli-reference.sh` (built with the exact release
-feature set, `ai mcp ui`), so flags, defaults, and `WEBFANG_*` environment
+feature set, `ai mcp`), so flags, defaults, and `WEBFANG_*` environment
 variables always match reality. CI drift-checks the chapter against the binary
 on every doc run; regenerate locally with `just cli-doc-regen`.
 
