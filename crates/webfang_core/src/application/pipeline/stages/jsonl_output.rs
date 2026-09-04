@@ -5,7 +5,7 @@ use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use crate::application::pipeline::stages::output::{OutputError, OutputStage};
 use crate::domain::pipeline_item::ScrapedItem;
@@ -14,13 +14,9 @@ use crate::domain::pipeline_item::ScrapedItem;
 ///
 /// Each item is serialized as a single JSON object on its own line. The file is
 /// opened in append mode so existing content is preserved.
-///
-/// #1119: the `std::fs::File` lock + `writeln` run inside `spawn_blocking`, so
-/// the append syscall never parks a Tokio worker; the lock guard is never held
-/// across an `.await`.
 pub struct JsonlOutputStage {
     path: PathBuf,
-    file: Arc<Mutex<std::fs::File>>,
+    file: Mutex<std::fs::File>,
 }
 
 impl JsonlOutputStage {
@@ -35,7 +31,7 @@ impl JsonlOutputStage {
             .open(path.as_ref())?;
         Ok(Self {
             path: path.as_ref().to_path_buf(),
-            file: Arc::new(Mutex::new(file)),
+            file: Mutex::new(file),
         })
     }
 
@@ -54,26 +50,15 @@ impl OutputStage for JsonlOutputStage {
         &'a self,
         item: &'a ScrapedItem,
     ) -> Pin<Box<dyn Future<Output = Result<(), OutputError>> + Send + 'a>> {
-        let json = match serde_json::to_string(item) {
-            Ok(json) => json,
-            Err(e) => {
-                return Box::pin(async move { Err(OutputError::Serialization(e.to_string())) })
-            },
-        };
-        let file = Arc::clone(&self.file);
-        Box::pin(async move {
-            // #1119: lock + append write happen on the blocking pool. Poison
-            // and join failures surface as typed `Backend` errors — the old
-            // shape panicked the stage future.
-            tokio::task::spawn_blocking(move || -> Result<(), OutputError> {
-                let mut file = file
-                    .lock()
-                    .map_err(|e| OutputError::Backend(format!("jsonl lock poisoned: {e}")))?;
-                writeln!(file, "{json}").map_err(|e| OutputError::Backend(e.to_string()))?;
-                Ok(())
-            })
-            .await
-            .map_err(|e| OutputError::Backend(format!("jsonl write task join failed: {e}")))?
+        Box::pin(async {
+            let json = serde_json::to_string(item)
+                .map_err(|e| OutputError::Serialization(e.to_string()))?;
+            let mut file = self
+                .file
+                .lock()
+                .map_err(|e| OutputError::Backend(e.to_string()))?;
+            writeln!(file, "{json}").map_err(|e| OutputError::Backend(e.to_string()))?;
+            Ok(())
         })
     }
 }
