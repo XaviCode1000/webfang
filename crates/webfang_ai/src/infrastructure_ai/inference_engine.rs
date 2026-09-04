@@ -187,8 +187,7 @@ impl InputPlan {
 
 use std::thread;
 
-use crossbeam_channel::{self};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info};
 
 /// Internal: a single inference request dispatched to a worker thread.
@@ -204,20 +203,30 @@ struct WorkerRequest {
 /// the work each worker performs.
 type SharedSession = Arc<Mutex<Session>>;
 
+/// Shared request receiver. `tokio::sync::mpsc::Receiver` is `!Sync`, so the
+/// worker threads take turns holding it behind a `std::sync::Mutex` and call
+/// `blocking_recv` — they are plain OS threads, never the Tokio reactor. The
+/// mutex is only held for the receive itself (which returns immediately when
+/// a message is buffered), so inference parallelism is unaffected.
+type SharedReceiver = Arc<Mutex<mpsc::Receiver<WorkerRequest>>>;
+
 /// Pool of dedicated worker threads for ONNX inference.
 ///
 /// All workers share ONE persistent `ort::Session` built with `intra_threads(1)`
-/// and guarded by a `Mutex`. Requests are dispatched via a bounded crossbeam
-/// channel; results return through per-request tokio oneshot channels.
+/// and guarded by a `Mutex`. Requests are dispatched via a bounded
+/// `tokio::sync::mpsc` channel (#1133 — the async `send` applies backpressure
+/// by yielding the task to the reactor instead of parking a Tokio worker on a
+/// synchronous crossbeam send); results return through per-request tokio
+/// oneshot channels.
 ///
 /// # Thread Safety
 ///
-/// - `Send + Sync`: crossbeam Sender and JoinHandle are both Send+Sync
+/// - `Send + Sync`: tokio `Sender` and `JoinHandle` are both Send+Sync
 /// - `Clone`: cheap clone (sender is internally reference-counted)
 /// - `Drop`: releases the shared session, disconnects the channel (workers
 ///   exit) and joins all threads
 pub struct InferencePool {
-    request_tx: crossbeam_channel::Sender<WorkerRequest>,
+    request_tx: mpsc::Sender<WorkerRequest>,
     _worker_handles: Vec<thread::JoinHandle<()>>,
     shared_session: Option<SharedSession>,
     model_variant: AiModel,
@@ -255,8 +264,11 @@ impl InferencePool {
         // Canonical detector seam (Q2, via core dependency): process-wide "auto".
         let worker_count =
             (webfang_core::domain::budget::detector::system_parallelism().get() - 1).max(1);
-        let (request_tx, receiver) = crossbeam_channel::bounded::<WorkerRequest>(worker_count);
-        let receiver = Arc::new(receiver);
+        // #1133: bounded tokio mpsc — `infer` applies backpressure with an
+        // awaitable `send`, so a full queue parks the TASK on the reactor,
+        // never a Tokio worker thread on a synchronous crossbeam send.
+        let (request_tx, receiver) = mpsc::channel::<WorkerRequest>(worker_count);
+        let receiver: SharedReceiver = Arc::new(Mutex::new(receiver));
 
         let (shared_session, worker_handles) = match prepare_shared_session(&model_bytes) {
             Ok((session, plan)) => {
@@ -284,13 +296,15 @@ impl InferencePool {
 
     /// Run inference asynchronously by dispatching to a worker thread.
     ///
-    /// Sends the request via the bounded channel (may block if all workers busy),
-    /// then awaits the oneshot result.
+    /// Sends the request via the bounded channel — under backpressure the
+    /// `send` is an await point that yields the task to the reactor (#1133),
+    /// so `tokio::time::timeout`/cancellation keep working while the queue is
+    /// full — then awaits the oneshot result.
     ///
     /// # Errors
     ///
-    /// Returns `SemanticError::Inference` if the channel is closed or the worker
-    /// drops the response.
+    /// Returns `SemanticError::Inference` if the channel is closed or the
+    /// worker drops the response.
     #[instrument(skip_all)]
     pub async fn infer(&self, input: &ModelInput) -> Result<Vec<f32>, SemanticError> {
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -299,10 +313,10 @@ impl InferencePool {
             reply_tx,
         };
 
-        // crossbeam send is sync but non-blocking when channel has capacity.
-        // If channel is full (all workers busy), this blocks until a worker
-        // frees up — which is the desired backpressure behavior.
-        self.request_tx.send(request).map_err(|_| {
+        // #1133: async send on a bounded tokio channel. When all workers are
+        // busy the task waits cooperatively (cancellable) for capacity — the
+        // executor thread is released, not parked on a blocking send.
+        self.request_tx.send(request).await.map_err(|_| {
             SemanticError::Inference("InferencePool channel closed (all workers exited)".into())
         })?;
 
@@ -339,10 +353,9 @@ impl InferencePool {
 
 impl Drop for InferencePool {
     fn drop(&mut self) {
-        // Drop sender → disconnects channel → all recv() calls return Err
-        // Workers exit their loops and terminate
-        // Drop sender to disconnect channel — workers' recv() returns Err
-        let (dummy_tx, _dummy_rx) = crossbeam_channel::bounded(1);
+        // Drop sender → disconnects channel → all blocking_recv calls return
+        // None. Workers exit their loops and terminate.
+        let (dummy_tx, _dummy_rx) = mpsc::channel(1);
         drop(std::mem::replace(&mut self.request_tx, dummy_tx));
 
         // Release the pool's handle on the shared session BEFORE joining, so the
@@ -379,8 +392,17 @@ fn build_session(bytes: &[u8]) -> Result<Session, SemanticError> {
 }
 
 /// Drains the request channel so a failed pool does not block its callers.
-fn drain_channel(receiver: &crossbeam_channel::Receiver<WorkerRequest>) {
-    while receiver.recv().is_ok() {}
+fn drain_channel(receiver: &SharedReceiver) {
+    while recv_request(receiver).is_some() {}
+}
+
+/// Receive the next request, blocking the worker thread — never the Tokio
+/// reactor (workers are plain OS threads, so `blocking_recv` is legal here).
+/// Returns `None` when the channel is closed or the receiver lock was
+/// poisoned by a panicking worker.
+fn recv_request(receiver: &SharedReceiver) -> Option<WorkerRequest> {
+    let mut rx = receiver.lock().ok()?;
+    rx.blocking_recv()
 }
 
 /// Build the single shared session and resolve its input plan once.
@@ -392,7 +414,7 @@ fn prepare_shared_session(bytes: &[u8]) -> Result<(Session, InputPlan), Semantic
 
 /// Spawn the worker threads that share the single session.
 fn spawn_workers(
-    receiver: &Arc<crossbeam_channel::Receiver<WorkerRequest>>,
+    receiver: &SharedReceiver,
     session: &SharedSession,
     plan: &InputPlan,
     variant: AiModel,
@@ -422,10 +444,8 @@ fn spawn_workers(
 
 /// Spawn a single drainer thread used when the shared session cannot be built.
 ///
-/// Without it, callers would block on a bounded channel nobody reads.
-fn spawn_drainer(
-    receiver: &Arc<crossbeam_channel::Receiver<WorkerRequest>>,
-) -> Result<Vec<thread::JoinHandle<()>>, SemanticError> {
+/// Without it, callers would block forever on a bounded channel nobody reads.
+fn spawn_drainer(receiver: &SharedReceiver) -> Result<Vec<thread::JoinHandle<()>>, SemanticError> {
     let receiver = Arc::clone(receiver);
     let handle = thread::Builder::new()
         .name("inference-drainer".to_string())
@@ -442,7 +462,7 @@ fn spawn_drainer(
 /// Serves requests from the channel until it disconnects, locking the shared
 /// session for the duration of each inference call.
 fn worker_main(
-    receiver: &crossbeam_channel::Receiver<WorkerRequest>,
+    receiver: &SharedReceiver,
     session: &SharedSession,
     variant: AiModel,
     plan: &InputPlan,
@@ -450,7 +470,7 @@ fn worker_main(
 ) {
     debug!(worker_id, "Worker ready, waiting for requests");
 
-    while let Ok(request) = receiver.recv() {
+    while let Some(request) = recv_request(receiver) {
         // A poisoned mutex means another worker panicked mid-inference: the
         // shared session is no longer trustworthy, so every request fails fast
         // instead of panicking this thread too. The crate denies `expect_used`.
@@ -641,6 +661,69 @@ mod tests {
         // Drop the pool — workers should already be exited, join succeeds
         drop(pool);
         // If we reach here without hanging, shutdown was clean
+    }
+
+    /// #1133 — under backpressure `infer` must yield to the reactor, not park
+    /// the worker thread.
+    ///
+    /// Builds a pool-shaped sender over a FULL bounded channel with no worker
+    /// draining it, on a current-thread runtime. The old synchronous crossbeam
+    /// `send` parked the only thread, so the timer could never fire (the test
+    /// hangs on the pre-fix code). The async `tokio::sync::mpsc` send parks the
+    /// TASK cooperatively, the timer fires, and `infer` is still pending.
+    #[tokio::test]
+    async fn test_infer_backpressure_yields_to_executor() {
+        let (tx, rx) = mpsc::channel::<WorkerRequest>(1);
+        // Fill the channel so the next send must wait for capacity.
+        let (hold_tx, _hold_rx) = oneshot::channel();
+        tx.try_send(WorkerRequest {
+            input: ModelInput::from_tokens(vec![101, 2]),
+            reply_tx: hold_tx,
+        })
+        .expect("first send fills capacity 1");
+
+        let pool = InferencePool {
+            request_tx: tx,
+            _worker_handles: Vec::new(),
+            shared_session: None,
+            model_variant: AiModel::Granite97M,
+            worker_count: 1,
+        };
+        let input = ModelInput::from_tokens(vec![101, 2]);
+
+        let outcome =
+            tokio::time::timeout(std::time::Duration::from_millis(50), pool.infer(&input)).await;
+
+        assert!(
+            outcome.is_err(),
+            "infer must stay pending (cancellable) while the queue is full — \
+             a blocking send would have parked this thread and hung the test"
+        );
+        drop(rx); // keep the receiver alive until the assertion has run
+    }
+
+    /// #1133 — when every receiver is gone, `infer` fails promptly with the
+    /// typed closed-channel error instead of blocking.
+    #[tokio::test]
+    async fn test_infer_closed_channel_errors_promptly() {
+        let (tx, rx) = mpsc::channel::<WorkerRequest>(1);
+        drop(rx);
+        let pool = InferencePool {
+            request_tx: tx,
+            _worker_handles: Vec::new(),
+            shared_session: None,
+            model_variant: AiModel::Granite97M,
+            worker_count: 1,
+        };
+        let input = ModelInput::from_tokens(vec![101, 2]);
+        let err = pool
+            .infer(&input)
+            .await
+            .expect_err("closed channel must error");
+        assert!(
+            err.to_string().contains("channel closed"),
+            "error must name the closed channel, got: {err}"
+        );
     }
 
     // --- ModelInput tests ---
