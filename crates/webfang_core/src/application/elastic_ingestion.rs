@@ -39,6 +39,7 @@ use crate::domain::cpu_executor::{CpuExecutorPort, ProcessedChunk};
 use crate::domain::crawler_port::ResourceDownloadPort;
 use crate::domain::repository::VectorRepository;
 use crate::domain::url_validation::{normalize_url, NormalizeConfig, RemoveQueryParameters};
+use crate::domain::Sha256Hex;
 use crate::error::ScraperError;
 
 /// Elastic ingestion pipeline orchestrator (frozen Decision 1).
@@ -140,7 +141,7 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
         let hash = sha256_hex(&bytes);
 
         // Layer: dedup short-circuit (Decision 3) — skip CPU + persist if known.
-        if self.is_duplicate(url, &hash).await? {
+        if self.is_duplicate(url, hash.as_str()).await? {
             return Ok(());
         }
 
@@ -151,7 +152,7 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
 
         // Layer 5: SQLite persist (resource + each chunk).
         let title = extract_title(&chunks);
-        self.persist_chunks(url, &title, &hash, size, chunks)
+        self.persist_chunks(url, &title, hash.as_str(), size, chunks)
             .await?;
 
         info!(%url, %hash, "ingestion completed");
@@ -413,18 +414,14 @@ impl fmt::Display for BatchResult {
     }
 }
 
-/// SHA-256 hex digest of the bytes (dependency-free hex encoding).
-fn sha256_hex(bytes: &[u8]) -> String {
+/// SHA-256 digest of the bytes as the validated [`Sha256Hex`] newtype
+/// (#1118). The hand-rolled hex loop this replaced is now owned by the
+/// domain value object — the `{hash}-{index}` chunk id the sink parses
+/// back out is non-empty lowercase 64-hex by construction.
+fn sha256_hex(bytes: &[u8]) -> Sha256Hex {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    let hash = hasher.finalize();
-    let mut out = String::with_capacity(hash.len() * 2);
-    for b in hash {
-        use std::fmt::Write;
-        // write! into a String is infallible.
-        let _ = write!(out, "{b:02x}");
-    }
-    out
+    Sha256Hex::from_digest(hasher.finalize().into())
 }
 
 /// Derive a best-effort title from the first chunk's first line (≤200 chars).
@@ -848,30 +845,19 @@ mod tests {
     /// `StreamRepository`'s `{hash}-{index}` chunk id, so it must stay lowercase.
     #[test]
     fn contract_sha256_hex_producer_is_lowercase() {
-        // SHA-256 of the empty input (well-known vector), all lowercase hex.
+        // SHA-256 of the empty input (well-known vector). The manual
+        // "is 64 lowercase hex" assertions this test used to carry are gone:
+        // the producer returns `Sha256Hex`, whose only constructors cannot
+        // emit another shape (#1118).
         let empty = sha256_hex(&[]);
         assert_eq!(
-            empty, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            empty.as_str(),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "must match the known empty-input SHA-256 digest"
         );
 
-        let is_lowercase_hex = empty
-            .chars()
-            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
-            && empty.len() == 64;
-        assert!(
-            is_lowercase_hex,
-            "producer output must be 64 lowercase-hex chars, got: {empty}"
-        );
-
-        // Non-empty input also stays lowercase hex and is 64 chars.
+        // Non-empty input stays a valid digest too.
         let sample = sha256_hex(b"webfang");
-        assert_eq!(sample.len(), 64, "SHA-256 digest is always 64 hex chars");
-        assert!(
-            sample
-                .chars()
-                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
-            "non-empty digest must also be lowercase hex, got: {sample}"
-        );
+        assert_eq!(sample.as_str().len(), Sha256Hex::HEX_LEN);
     }
 }

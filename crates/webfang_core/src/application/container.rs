@@ -729,8 +729,9 @@ impl Container {
         }
 
         if let Some(ref path) = opts.elastic.output_vectors {
+            let sink = crate::infrastructure::stream::SinkPath::parse(path)?;
             repos.push(Arc::new(
-                crate::infrastructure::stream::StreamRepository::new(path)?,
+                crate::infrastructure::stream::StreamRepository::new(sink)?,
             ));
         }
 

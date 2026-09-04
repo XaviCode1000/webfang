@@ -281,7 +281,7 @@ impl VaultSearchService {
                         .index_note(
                             &note.path,
                             &note.content,
-                            &note.content_hash,
+                            note.content_hash.as_str(),
                             note.mtime_secs,
                         )
                         .await
@@ -292,13 +292,13 @@ impl VaultSearchService {
                         },
                     }
                 },
-                Some(stored_hash) if *stored_hash != note.content_hash => {
+                Some(stored_hash) if *stored_hash != note.content_hash.as_str() => {
                     // Changed note — content hash differs.
                     match self
                         .index_note(
                             &note.path,
                             &note.content,
-                            &note.content_hash,
+                            note.content_hash.as_str(),
                             note.mtime_secs,
                         )
                         .await
@@ -442,6 +442,7 @@ mod tests {
     // --- Stub ports for sync_vault tests ---
 
     use crate::domain::note_repository::{IndexedNoteMeta, NoteChunkVector, VaultNote};
+    use crate::domain::Sha256Hex;
     use crate::error::SemanticError;
     use std::future::Future;
     use std::pin::Pin;
@@ -491,10 +492,12 @@ mod tests {
             mtime_secs: i64,
         ) -> BoxFuture<'a, Result<i64, ScraperError>> {
             Box::pin(async move {
+                let hash = Sha256Hex::try_from(content_hash)
+                    .map_err(|e| ScraperError::persistence(format!("hash inválido: {e}")))?;
                 let mut notes = self.notes.lock().unwrap();
                 // Update existing or insert new.
                 if let Some(existing) = notes.iter_mut().find(|n| n.path == path) {
-                    existing.content_hash = content_hash.to_owned();
+                    existing.content_hash = hash;
                     existing.mtime_secs = mtime_secs;
                     return Ok(1);
                 }
@@ -502,7 +505,7 @@ mod tests {
                 *id += 1;
                 notes.push(IndexedNoteMeta {
                     path: path.to_owned(),
-                    content_hash: content_hash.to_owned(),
+                    content_hash: hash,
                     mtime_secs,
                 });
                 Ok(*id)
@@ -536,9 +539,11 @@ mod tests {
             chunks: &'a [(&'a str, Option<&'a [f32]>)],
         ) -> BoxFuture<'a, Result<i64, ScraperError>> {
             Box::pin(async move {
+                let hash = Sha256Hex::try_from(content_hash)
+                    .map_err(|e| ScraperError::persistence(format!("hash inválido: {e}")))?;
                 let mut notes = self.notes.lock().unwrap();
                 let id = if let Some(existing) = notes.iter_mut().find(|n| n.path == path) {
-                    existing.content_hash = content_hash.to_owned();
+                    existing.content_hash = hash;
                     existing.mtime_secs = mtime_secs;
                     1
                 } else {
@@ -546,7 +551,7 @@ mod tests {
                     *id += 1;
                     notes.push(IndexedNoteMeta {
                         path: path.to_owned(),
-                        content_hash: content_hash.to_owned(),
+                        content_hash: hash,
                         mtime_secs,
                     });
                     *id
@@ -577,7 +582,7 @@ mod tests {
             Box::pin(async move {
                 let notes = self.notes.lock().unwrap();
                 match notes.iter().find(|n| n.path == path) {
-                    Some(n) => Ok(n.content_hash != content_hash),
+                    Some(n) => Ok(n.content_hash.as_str() != content_hash),
                     None => Ok(true),
                 }
             })
@@ -794,7 +799,7 @@ mod tests {
                     path: "stub.md".to_owned(),
                     content: "# Stub".to_owned(),
                     mtime_secs: 1_700_000_000,
-                    content_hash: "stubhash".to_owned(),
+                    content_hash: Sha256Hex::from_digest([0x5eu8; 32]),
                 }],
             }),
         );
@@ -805,7 +810,10 @@ mod tests {
         let indexed = repo.list_indexed_notes().await.unwrap();
         assert_eq!(indexed.len(), 1);
         assert_eq!(indexed[0].path, "stub.md");
-        assert_eq!(indexed[0].content_hash, "stubhash");
+        assert_eq!(
+            indexed[0].content_hash,
+            Sha256Hex::from_digest([0x5eu8; 32])
+        );
     }
 
     #[tokio::test]

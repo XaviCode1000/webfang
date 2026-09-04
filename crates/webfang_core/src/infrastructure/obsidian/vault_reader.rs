@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 use crate::domain::note_repository::{VaultNote as DomainVaultNote, VaultNoteReader};
+use crate::domain::Sha256Hex;
 use crate::error::ScraperError;
 
 /// A Markdown note read from an Obsidian vault.
@@ -40,8 +41,8 @@ pub struct VaultNote {
     pub content: String,
     /// Last modification time (Unix epoch seconds).
     pub mtime_secs: i64,
-    /// SHA-256 content hash (hex, lowercase).
-    pub content_hash: String,
+    /// SHA-256 content hash — a validated 64-char lowercase digest (#1118).
+    pub content_hash: Sha256Hex,
 }
 
 /// Read all Markdown notes from an Obsidian vault.
@@ -172,21 +173,13 @@ fn process_vault_entry(
     }))
 }
 
-/// SHA-256 hex digest of the bytes (lowercase, dependency-free hex encoding).
-///
-/// Same pattern as `elastic_ingestion::sha256_hex` — kept module-local
-/// to avoid cross-layer coupling (infra → application).
-fn sha256_hex(bytes: &[u8]) -> String {
+/// SHA-256 digest of the bytes as the validated [`Sha256Hex`] newtype
+/// (#1118) — the hand-rolled hex loop this replaced is now owned by the
+/// domain value object, shared with the vector pipeline.
+fn sha256_hex(bytes: &[u8]) -> Sha256Hex {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    let hash = hasher.finalize();
-    let mut out = String::with_capacity(hash.len() * 2);
-    for b in hash {
-        use std::fmt::Write;
-        // write! into a String is infallible.
-        let _ = write!(out, "{b:02x}");
-    }
-    out
+    Sha256Hex::from_digest(hasher.finalize().into())
 }
 
 // ── Domain port adapter (ADR-0012-B sub-slice 3.I, #1071) ──────────────────
@@ -312,7 +305,7 @@ mod tests {
         let notes = read_vault_notes(tmp.path()).unwrap();
         assert_eq!(notes.len(), 1);
         assert_eq!(
-            notes[0].content_hash,
+            notes[0].content_hash.as_str(),
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
         );
     }
@@ -326,7 +319,7 @@ mod tests {
 
         let notes = read_vault_notes(tmp.path()).unwrap();
         assert_eq!(
-            notes[0].content_hash,
+            notes[0].content_hash.as_str(),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
     }
@@ -403,7 +396,7 @@ mod tests {
             path: "test.md".to_owned(),
             content: "# Test".to_owned(),
             mtime_secs: 1_700_000_000,
-            content_hash: "abc123".to_owned(),
+            content_hash: Sha256Hex::from_digest([0x1du8; 32]),
         };
         let cloned = note.clone();
         assert_eq!(note, cloned);
