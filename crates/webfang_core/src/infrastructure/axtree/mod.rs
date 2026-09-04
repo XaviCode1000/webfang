@@ -136,7 +136,7 @@ impl chromiumoxide::types::Command for GetFullAXTree {
 ///
 /// Guarantees deterministic `browser.close() + handler abort` even on
 /// 30s/10s timeout, shared by `fetch_raw_axtree` callers (compact,
-/// playwright, som_capture).
+/// playwright).
 #[cfg(feature = "chromium")]
 pub(crate) async fn with_cdp_page<F, T, Fut>(url: &Url, f: F) -> Result<T, DownloadError>
 where

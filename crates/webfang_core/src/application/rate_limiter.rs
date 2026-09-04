@@ -1,7 +1,7 @@
 //! Rate Limiter module — Token Bucket implementation using governor
 //!
-//! Extracts the rate limiting logic from crawler_service.rs to allow
-//! for independent testing.
+//! Extracts the rate limiting logic out of the crawler orchestration modules
+//! to allow for independent testing.
 //!
 //! # Design Decisions
 //!
