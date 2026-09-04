@@ -19,6 +19,7 @@ use deadpool_sqlite::{Config, Hook, HookError, Manager, Pool, Runtime};
 
 use crate::domain::note_repository::{IndexedNoteMeta, NoteChunkVector, NoteRepository};
 use crate::domain::repository::VectorRepository;
+use crate::domain::Sha256Hex;
 use crate::error::ScraperError;
 
 // ============================================================================
@@ -627,15 +628,15 @@ impl NoteRepository for SqliteVectorRepository {
             let conn = self.pool.get().await.map_err(|e| {
                 ScraperError::persistence(format!("obtener conexión del pool: {e}"))
             })?;
-            let rows: Vec<IndexedNoteMeta> = conn
+            let rows: Vec<(String, String, i64)> = conn
                 .interact(|c| {
                     let mut stmt = c.prepare("SELECT path, content_hash, mtime_secs FROM notes")?;
                     let rows = stmt.query_map([], |row| {
-                        Ok(IndexedNoteMeta {
-                            path: row.get::<_, String>(0)?,
-                            content_hash: row.get::<_, String>(1)?,
-                            mtime_secs: row.get::<_, i64>(2)?,
-                        })
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
                     })?;
                     rows.collect::<Result<Vec<_>, _>>()
                 })
@@ -644,7 +645,24 @@ impl NoteRepository for SqliteVectorRepository {
                     ScraperError::persistence(format!("list_indexed_notes (interact): {e}"))
                 })?
                 .map_err(|e| ScraperError::persistence(format!("list_indexed_notes: {e}")))?;
-            Ok(rows)
+            // Stored hashes are validated on read (#1118): a corrupt
+            // content_hash column aborts the listing instead of poisoning
+            // the staleness comparison downstream.
+            rows.into_iter()
+                .map(|(path, hash, mtime_secs)| {
+                    Sha256Hex::try_from(hash.as_str())
+                        .map(|content_hash| IndexedNoteMeta {
+                            path,
+                            content_hash,
+                            mtime_secs,
+                        })
+                        .map_err(|e| {
+                            ScraperError::persistence(format!(
+                                "content_hash almacenado inválido: {e}"
+                            ))
+                        })
+                })
+                .collect()
         })
     }
 }

@@ -20,6 +20,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use crate::domain::Sha256Hex;
 use crate::error::ScraperError;
 
 /// A boxed future for dyn-compatible async traits.
@@ -52,8 +53,8 @@ pub struct VaultNote {
     pub content: String,
     /// Last modification time (Unix epoch seconds).
     pub mtime_secs: i64,
-    /// SHA-256 content hash (hex, lowercase).
-    pub content_hash: String,
+    /// SHA-256 content hash — a validated 64-char lowercase digest (#1118).
+    pub content_hash: Sha256Hex,
 }
 
 /// Domain port for reading vault notes from the filesystem.
@@ -76,8 +77,8 @@ pub trait VaultNoteReader: Send + Sync {
 pub struct IndexedNoteMeta {
     /// Filesystem path of the note.
     pub path: String,
-    /// SHA-256 content hash (hex, lowercase).
-    pub content_hash: String,
+    /// SHA-256 content hash — a validated 64-char lowercase digest (#1118).
+    pub content_hash: Sha256Hex,
     /// Last modification time (Unix epoch seconds).
     pub mtime_secs: i64,
 }
@@ -201,6 +202,17 @@ pub trait NoteRepository: Send + Sync {
 mod tests {
     use super::*;
 
+    /// A real 64-char lowercase digest built from a repeated hex letter —
+    /// the fake short strings this module used before #1118 no longer
+    /// type-check as `Sha256Hex`.
+    fn hex_hash(c: &str) -> Sha256Hex {
+        assert!(c
+            .chars()
+            .all(|d| d.is_ascii_digit() || ('a'..='f').contains(&d)));
+        Sha256Hex::try_from(c.repeat(Sha256Hex::HEX_LEN / c.len()).as_str())
+            .expect("repeated lowercase hex is a valid digest form")
+    }
+
     #[test]
     fn test_note_chunk_vector_debug() {
         let chunk = NoteChunkVector {
@@ -218,7 +230,7 @@ mod tests {
     fn test_indexed_note_meta_clone_eq() {
         let meta = IndexedNoteMeta {
             path: "vault/note.md".to_owned(),
-            content_hash: "abc123".to_owned(),
+            content_hash: hex_hash("a"),
             mtime_secs: 1_700_000_000,
         };
         let cloned = meta.clone();
@@ -240,7 +252,7 @@ mod tests {
             path: "notes/rust.md".to_owned(),
             content: "hello".to_owned(),
             mtime_secs: 1_700_000_000,
-            content_hash: "abc".to_owned(),
+            content_hash: hex_hash("a"),
         };
         let cloned = note.clone();
         assert_eq!(note, cloned);
@@ -250,7 +262,7 @@ mod tests {
             path: "other.md".to_owned(),
             content: "world".to_owned(),
             mtime_secs: 1_700_000_001,
-            content_hash: "def".to_owned(),
+            content_hash: hex_hash("b"),
         };
         assert_ne!(note, note2);
     }

@@ -152,7 +152,7 @@ pub use session_port::{SessionId, SessionPoolConfig, SessionPort};
 pub use site::{CrawlerConfig, CrawlerConfigBuilder};
 pub use url_validator::{StaticUrlValidator, UrlValidator, UrlValidatorTrait};
 pub use user_agent::{UserAgentPool, UserAgentProvider};
-pub use value_objects::{CorrelationId, ValidUrl};
+pub use value_objects::{CorrelationId, Sha256Hex, ValidUrl};
 pub use waf::{
     set_waf_inspector, waf_inspector, EvidenceSource, InspectionContext, WafEvidence,
     WafInspectorPort, WafTier, WafVerdict,

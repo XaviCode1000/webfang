@@ -180,25 +180,43 @@ impl ValidUrl {
     /// assert!(invalid.is_err());
     /// ```
     pub fn parse(s: &str) -> crate::Result<Self> {
-        let mut parsed =
+        let parsed =
             url::Url::parse(s).map_err(|e| crate::ScraperError::invalid_url(e.to_string()))?;
+        Self::try_from_url(parsed)
+    }
 
+    /// Apply the URL hardening policy to an ALREADY-parsed `url::Url`
+    /// (#1117) — the single home of the #675-2 scheme allow-list and the
+    /// #675-5 credential strip, shared with [`parse`](Self::parse).
+    ///
+    /// For callers like the asset extractor, whose URLs come from
+    /// `base.join(src)` (a hostile `src` can change the scheme), this is
+    /// the validating edge that keeps the policy in ONE place instead of
+    /// re-implementing it per call site. An inherent method rather than
+    /// `TryFrom<url::Url>` because the existing infallible
+    /// `From<url::Url>` impl already owns the blanket `TryFrom`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScraperError::InvalidUrl`] for any non-http(s) scheme.
+    pub fn try_from_url(url: url::Url) -> crate::Result<Self> {
+        let mut url = url;
         // Bug #675-2: reject non-HTTP(S) schemes early (fail-fast).
-        // `url::Url::parse` accepts WHATWG-valid schemes like `data:`, `blob:`,
+        // `url::Url` accepts WHATWG-valid schemes like `data:`, `blob:`,
         // `file:`, `ftp:` — none are fetchable by the crawler.
-        if !matches!(parsed.scheme(), "http" | "https") {
+        if !matches!(url.scheme(), "http" | "https") {
             return Err(crate::ScraperError::invalid_url(format!(
                 "Scheme '{}' no soportado. Solo http:// y https://",
-                parsed.scheme()
+                url.scheme()
             )));
         }
 
         // Bug #675-5: strip credentials to prevent secret leaks
         // into logs, frontmatter, and exports.
-        let _ = parsed.set_username("");
-        let _ = parsed.set_password(None);
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
 
-        Ok(Self(parsed))
+        Ok(Self(url))
     }
 
     /// Get reference to inner url::Url
@@ -230,6 +248,120 @@ impl ValidUrl {
 impl From<url::Url> for ValidUrl {
     fn from(url: url::Url) -> Self {
         Self(url)
+    }
+}
+
+/// A validated SHA-256 content digest in its lowercase-hex wire form (#1118).
+///
+/// The vector pipeline's dedup key used to be a raw `String`: any 64-char
+/// non-hex string passed as a content hash and corrupted the key (false
+/// collisions or misses). The only construction paths are
+/// [`from_digest`](Self::from_digest) (infallible — from a real SHA-256
+/// digest) and the string conversions below, which REJECT anything that is
+/// not exactly 64 lowercase hex characters. Serde goes through
+/// `TryFrom<String>`, so a malformed hash cannot enter or leave a
+/// (de)serialized DTO either.
+///
+/// # Examples
+///
+/// ```
+/// use webfang_core::domain::Sha256Hex;
+///
+/// let hex = "a".repeat(64);
+/// let hash = Sha256Hex::try_from(hex.as_str()).expect("64 lowercase hex chars");
+/// assert_eq!(hash.as_str(), hex);
+/// assert!(Sha256Hex::try_from("deadbeef").is_err(), "short non-digest rejected");
+/// assert!(Sha256Hex::try_from(&"z".repeat(64)).is_err(), "non-hex rejected");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(transparent)]
+pub struct Sha256Hex(String);
+
+impl Sha256Hex {
+    /// Wire length of a SHA-256 hex digest.
+    pub const HEX_LEN: usize = 64;
+
+    /// Wrap a real 32-byte SHA-256 digest (infallible — the bytes came
+    /// from the hash function).
+    #[must_use]
+    pub fn from_digest(digest: [u8; 32]) -> Self {
+        use std::fmt::Write as _;
+        let mut hex = String::with_capacity(Self::HEX_LEN);
+        for byte in digest {
+            // A byte always renders as exactly two lowercase hex chars.
+            let _ = write!(&mut hex, "{byte:02x}");
+        }
+        Self(hex)
+    }
+
+    /// The lowercase-hex wire form (64 chars).
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Reject anything that is not exactly [`Sha256Hex::HEX_LEN`] lowercase hex
+/// characters. Uppercase is rejected on purpose: every producer in this
+/// repo (`sha2::Sha256`) emits lowercase, and accepting both would let two
+/// spellings of the same digest split the dedup key.
+fn parse_sha256_hex(s: String) -> Result<Sha256Hex, crate::ScraperError> {
+    let valid = s.len() == Sha256Hex::HEX_LEN
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if valid {
+        Ok(Sha256Hex(s))
+    } else {
+        Err(crate::ScraperError::Validation(
+            "sha256 hex inválido: se esperan exactamente 64 caracteres hexadecimales en minúscula"
+                .to_string(),
+        ))
+    }
+}
+
+impl TryFrom<String> for Sha256Hex {
+    type Error = crate::ScraperError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        parse_sha256_hex(value)
+    }
+}
+
+impl TryFrom<&str> for Sha256Hex {
+    type Error = crate::ScraperError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        parse_sha256_hex(value.to_string())
+    }
+}
+
+impl std::str::FromStr for Sha256Hex {
+    type Err = crate::ScraperError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::try_from(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Sha256Hex {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        String::deserialize(deserializer)
+            .and_then(|s| parse_sha256_hex(s).map_err(<D::Error as serde::de::Error>::custom))
+    }
+}
+
+impl std::fmt::Display for Sha256Hex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::fmt::LowerHex for Sha256Hex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -442,5 +574,65 @@ mod tests {
         assert!(tracestate.starts_with("webfang=v1:"));
         assert!(tracestate.contains('='));
         assert_eq!(tracestate.len(), 43);
+    }
+
+    // -- Sha256Hex (#1118) ---------------------------------------------------
+
+    #[test]
+    fn sha256_hex_accepts_64_lowercase_hex() {
+        let hex = "0123456789abcdef".repeat(4);
+        assert_eq!(hex.len(), Sha256Hex::HEX_LEN);
+        let hash = Sha256Hex::try_from(hex.as_str()).expect("valid digest hex");
+        assert_eq!(hash.as_str(), hex);
+    }
+
+    /// #1118 reproduction: the dedup key used to be a raw `String`, so any
+    /// 64-char non-hex value passed as a "hash". The newtype rejects it at
+    /// every construction path, including serde.
+    #[test]
+    fn sha256_hex_rejects_non_hex_wrong_len_and_uppercase() {
+        assert!(Sha256Hex::try_from("deadbeef").is_err(), "too short");
+        assert!(
+            Sha256Hex::try_from("z".repeat(64).as_str()).is_err(),
+            "non-hex"
+        );
+        assert!(
+            Sha256Hex::try_from("a".repeat(63).as_str()).is_err(),
+            "63 chars"
+        );
+        assert!(
+            Sha256Hex::try_from("A".repeat(64).as_str()).is_err(),
+            "uppercase splits the key"
+        );
+        let json = format!("\"{}\"", "g".repeat(64));
+        let err =
+            serde_json::from_str::<Sha256Hex>(&json).expect_err("serde must reject non-hex too");
+        assert!(err.to_string().contains("sha256"), "got: {err}");
+    }
+
+    #[test]
+    fn sha256_hex_from_digest_roundtrips_wire_form() {
+        let digest = [0xabu8; 32];
+        let hash = Sha256Hex::from_digest(digest);
+        assert_eq!(hash.as_str(), "ab".repeat(32));
+        let back: Sha256Hex = hash.as_str().parse().expect("wire form re-parses");
+        assert_eq!(back, hash);
+    }
+
+    // -- ValidUrl::TryFrom<url::Url> (#1117) ---------------------------------
+
+    #[test]
+    fn valid_url_try_from_url_applies_scheme_hardening() {
+        // A joined `data:` URL (asset extractor hostile src) must be
+        // rejected by the SAME gate as ValidUrl::parse.
+        let base = url::Url::parse("https://example.com/").expect("base");
+        let hostile = base.join("data:text/html,<h1>x</h1>").expect("joins");
+        assert!(
+            ValidUrl::try_from_url(hostile).is_err(),
+            "data: must not pass"
+        );
+        let ok = base.join("/img/a.png").expect("joins");
+        let valid = ValidUrl::try_from_url(ok).expect("https passes");
+        assert_eq!(valid.as_str(), "https://example.com/img/a.png");
     }
 }
