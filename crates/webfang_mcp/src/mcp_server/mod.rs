@@ -59,6 +59,32 @@ pub async fn build_container() -> webfang_core::di::Container {
         .unwrap_or_else(|| panic!("failed to create container: default config should be valid"))
 }
 
+/// Build the shared asset `Downloader` for the long-lived MCP servers (#1120).
+///
+/// The server process outlives any single crawl, so it must NOT take the
+/// legacy unbounded `Downloader::new` path (`usize::MAX` capacity disables
+/// the dedup-cache eviction). This helper wires the SAME bounded policy the
+/// CLI orchestrator uses — capacity derived from the budget model's Asset
+/// tier via `asset_cache_capacity` — so there is one memory policy per
+/// structure, not a parallel server-side one.
+///
+/// # Errors
+/// Propagates HTTP-client construction failures (`ScraperError::Config`).
+pub fn build_shared_downloader(
+) -> webfang_core::error::Result<webfang_core::adapters::downloader::Downloader> {
+    use webfang_core::adapters::downloader::{asset_cache_capacity, DownloadConfig, Downloader};
+    use webfang_core::domain::budget::{detector::SystemDetector, BudgetModel, BudgetOverrides};
+
+    let budget = BudgetModel::build(BudgetOverrides::default(), &SystemDetector);
+    let capacity = asset_cache_capacity(budget.asset().get());
+    tracing::info!(
+        asset_cache_capacity = capacity,
+        asset_tier_permits = budget.asset().get(),
+        "MCP shared asset downloader bounded (#1120)"
+    );
+    Downloader::with_asset_cache_capacity(DownloadConfig::default(), capacity)
+}
+
 /// Kick off the lazy AI port wiring in a background task (#759).
 ///
 /// Shares the same `Arc<Container>` that the MCP server already holds and
@@ -172,5 +198,35 @@ impl ServerHandler for McpHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(rmcp::model::Implementation::from_build_env())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_shared_downloader;
+
+    /// #1120: the server composition root must never hand out the legacy
+    /// unbounded (`usize::MAX`) downloader — the cache bound is the same
+    /// budget-derived value the CLI orchestrator uses.
+    #[test]
+    fn build_shared_downloader_is_bounded() {
+        use webfang_core::adapters::downloader::asset_cache_capacity;
+        use webfang_core::domain::budget::{
+            detector::SystemDetector, BudgetModel, BudgetOverrides,
+        };
+
+        let downloader = build_shared_downloader().expect("downloader builds");
+        let expected = asset_cache_capacity(
+            BudgetModel::build(BudgetOverrides::default(), &SystemDetector)
+                .asset()
+                .get(),
+        );
+
+        assert_ne!(
+            downloader.asset_cache_capacity(),
+            usize::MAX,
+            "long-lived server must not use the unbounded legacy cache"
+        );
+        assert_eq!(downloader.asset_cache_capacity(), expected);
     }
 }

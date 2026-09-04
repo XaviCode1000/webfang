@@ -314,6 +314,14 @@ impl Downloader {
         }
     }
 
+    /// Effective dedup-cache bound (#1120). `usize::MAX` marks the legacy
+    /// unbounded mode; composition roots assert a finite value so long-lived
+    /// processes can never reintroduce the linear-growth path.
+    #[must_use]
+    pub const fn asset_cache_capacity(&self) -> usize {
+        self.asset_cache_capacity
+    }
+
     /// Insert into the dedup cache through the bounded-cache discipline:
     /// records insertion order and enforces the capacity bound. Probe/test-only
     /// writer; production writes flow through `download`, which performs the

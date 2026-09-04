@@ -9,11 +9,12 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use webfang_core::adapters::downloader::{DownloadConfig, Downloader};
 use webfang_mcp::mcp_server::server::{
     require_auth_for_external_bind, start_mcp_server, ServerOptions, DEFAULT_MCP_ADDR,
 };
-use webfang_mcp::mcp_server::{build_container, spawn_ai_wiring, McpState};
+use webfang_mcp::mcp_server::{
+    build_container, build_shared_downloader, spawn_ai_wiring, McpState,
+};
 
 /// Webfang MCP Server — Streamable HTTP transport.
 #[derive(Parser, Debug)]
@@ -91,9 +92,11 @@ async fn main() -> Result<()> {
 
     // Inject a shared Downloader so `download_assets` reuses one connection
     // pool across tool calls. The default config writes to `./downloads`
-    // relative to the working directory.
+    // relative to the working directory. #1120: built through the bounded
+    // composition-root helper — the same budget-derived cache policy as the
+    // CLI — never the legacy unbounded `Downloader::new` path.
     let state = McpState::from_container(container)
-        .with_downloader(Arc::new(Downloader::new(DownloadConfig::default())?))
+        .with_downloader(Arc::new(build_shared_downloader()?))
         .with_export_roots(args.export_roots);
 
     let opts = ServerOptions {
