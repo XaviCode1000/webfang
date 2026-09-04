@@ -1,7 +1,6 @@
-#![cfg(feature = "ui")]
-//! Progress TUI Integration Tests
+//! Progress Integration Tests
 //!
-//! These tests verify the reactive behavior of the progress TUI view,
+//! These tests verify the reactive behavior of the progress view,
 //! specifically timing requirements for progress updates and error display.
 
 use std::time::{Duration, Instant};

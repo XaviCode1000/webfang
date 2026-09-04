@@ -40,12 +40,7 @@ use wiremock::{Mock, ResponseTemplate};
 /// Hermeticity (#302): the binary is ALWAYS built with the EXACT feature set
 /// active in the test crate — never reused on the sole basis of
 /// `target/debug/webfang` existing. Features are derived individually via
-/// `cfg!()` so the binary matches the test's own configuration. This avoids
-/// dragging in `ui` (or any other feature) when the test crate does not have
-/// it enabled — a `--all-features` shortcut broke `headless_tui_fallback`
-/// tests under `--features ai` (issue #573): the test crate had `ui` OFF, but
-/// the binary was built with `ui` ON, so its `--tui` path printed the wrong
-/// message and the Spanish-message assertion failed.
+/// `cfg!()` so the binary matches the test's own configuration.
 pub(crate) fn webfang_path() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("CARGO_BIN_EXE_webfang") {
         return std::path::PathBuf::from(p);
@@ -78,9 +73,6 @@ pub(crate) fn webfang_path() -> std::path::PathBuf {
     }
     if cfg!(feature = "dev-tracing") {
         active_features.push("dev-tracing");
-    }
-    if cfg!(feature = "ui") {
-        active_features.push("ui");
     }
     if cfg!(feature = "images") {
         active_features.push("images");
@@ -297,20 +289,12 @@ pub(crate) fn redact_temp_path(dir: &Path, text: &str) -> String {
 }
 
 /// Redact common non-deterministic output so snapshots are stable run-to-run:
-/// the temp dir, ISO-8601 log timestamps, dynamic wiremock ports, ANSI color
-/// escape sequences, and environment-specific error suffixes (CI mode,
-/// headless build notices) that differ between local and CI environments.
+/// the temp dir, ISO-8601 log timestamps, dynamic wiremock ports, and ANSI
+/// color escape sequences.
 pub(crate) fn redact_nondeterministic(dir: &Path, text: &str) -> String {
     let text = redact_temp_path(dir, text);
     let ansi = Regex::new(r"\x1b\[[0-9;]*m").unwrap();
     let text = ansi.replace_all(&text, "").into_owned();
-    // Normalize environment-specific error suffixes so snapshots are identical
-    // across local and CI environments. The CLI appends "(CI mode)" when
-    // is_ci() is true and "(interactive prompt requires --features ui)" in
-    // headless builds — neither is deterministic across environments.
-    let env_suffix =
-        Regex::new(r" \(CI mode\)| \(interactive prompt requires --features ui\)").unwrap();
-    let text = env_suffix.replace_all(&text, "").into_owned();
     let ts =
         Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}:?\d{2}|Z)").unwrap();
     let text = ts.replace_all(&text, "<TIMESTAMP>").into_owned();
