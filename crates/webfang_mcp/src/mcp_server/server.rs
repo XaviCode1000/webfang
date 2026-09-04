@@ -146,15 +146,15 @@ async fn rate_limit_middleware(
 /// # Connection Pooling
 ///
 /// For production use, create a shared `Downloader` and inject it via
-/// `McpState::with_downloader()`:
+/// `McpState::with_downloader()`. Long-lived servers MUST use the bounded
+/// composition-root helper (#1120), never the legacy unbounded
+/// `Downloader::new`:
 ///
 /// ```rust,ignore
 /// use std::sync::Arc;
-/// use webfang_core::adapters::downloader::{Downloader, DownloadConfig};
-/// use crate::mcp_server::state::McpState;
+/// use webfang_mcp::mcp_server::{build_shared_downloader, McpState};
 ///
-/// let dl_config = DownloadConfig { /* ... */ };
-/// let downloader = Arc::new(Downloader::new(dl_config)?);
+/// let downloader = Arc::new(build_shared_downloader()?);
 /// let state = McpState::new(container).with_downloader(downloader);
 /// start_mcp_server(state, addr, ServerOptions::default()).await?;
 /// ```
