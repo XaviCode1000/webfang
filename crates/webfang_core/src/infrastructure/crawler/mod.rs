@@ -26,7 +26,7 @@ pub use binary_writer::FsBinaryWriter;
 pub use http_client::{create_rate_limited_client, fetch_url};
 pub use link_extractor::{extract_links, is_internal_link, normalize_url};
 pub use resource_downloader::{
-    DownloadConfig, DownloadedResource, PermitGuard, ResourceDownloader,
+    DownloadedResource, PermitGuard, ResourceDownloadConfig, ResourceDownloader,
 };
 pub use robots_utils::{RobotsFetcher, RobotsRules};
 pub use sitemap_parser::{parse_sitemap, resolve_url, SitemapError, SitemapParser, SitemapUrl};

@@ -13,7 +13,7 @@
 //! - **Hash On-The-Fly**: SHA256 computed during streaming, no buffer needed
 
 use std::collections::{HashSet, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1012,22 +1012,6 @@ fn mime_type_to_extension(mime: &str) -> Option<String> {
         "application/xml" | "text/xml" => Some("xml".to_string()),
         _ => None,
     }
-}
-
-/// Simple async download without creating a Downloader instance.
-///
-/// # Note
-///
-/// This is a convenience function for quick downloads. For production use,
-/// create a `Downloader` instance with proper configuration.
-pub async fn quick_download(url: &str, output_dir: &Path) -> Result<DownloadedAsset> {
-    let config = DownloadConfig {
-        output_dir: output_dir.to_path_buf(),
-        ..Default::default()
-    };
-
-    let downloader = Downloader::new(config)?;
-    downloader.download(url).await
 }
 
 #[cfg(test)]

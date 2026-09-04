@@ -130,7 +130,7 @@ Domain defines ports (traits) → Infrastructure implements them → Application
 
 | Writing a... | Copy from | Location |
 | :--- | :--- | :--- |
-| New service/trait | `crawler_service.rs` | `application/` — trait → impl with DI, `async_trait`, `#[instrument]`, typed errors |
+| New service/trait | `crawler/engine.rs` | `application/` — trait → impl with DI, `async_trait`, `#[instrument]`, typed errors |
 | New domain entity | `entities.rs` | `domain/` — struct + constructor + `TryFrom` validation, `Display`+`Debug`+`PartialEq` |
 | New adapter | `crawler/` | `infrastructure/` — domain trait → impl, module with `mod.rs` |
 | New error type | `error.rs` | `cli/` — `thiserror::Error` + `From` impls, Spanish user-facing |

@@ -159,11 +159,10 @@ pub type DynVectorRepository = std::sync::Arc<dyn VectorRepository + Send + Sync
 /// repositories, so the elastic pipeline can persist to SQLite (`--elastic`)
 /// **and** emit JSONL (`--output-vectors`) simultaneously (issue #636).
 ///
-/// Mirrors the `MultiSinkOutput` fan-out pattern:
-/// [`crate::application::pipeline::stages::multi_sink::MultiSinkOutput`]. Every
-/// write is attempted on all inner sinks, an individual failure is logged but
-/// the remaining sinks still run, and the composite reports success if *at
-/// least one* sink succeeded. Read-style lookups (`resource_exists_by_hash`,
+/// Fan-out pattern: every write is attempted on all inner sinks, an
+/// individual failure is logged but the remaining sinks still run, and the
+/// composite reports success if *at least one* sink succeeded. Read-style
+/// lookups (`resource_exists_by_hash`,
 /// `get_vector`) return the first `Some` produced by any inner repository.
 ///
 /// This is what turns `--elastic` and `--output-vectors` from mutually

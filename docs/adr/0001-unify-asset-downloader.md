@@ -1,9 +1,9 @@
 # ADR 0001: Unify Asset Downloading in the Adapters `Downloader`
 
-- **Status:** Accepted
+- **Status:** Accepted (amended 2026-09-04 — see "Amendment")
 - **Date:** 2026-07-10
 - **Deciders:** Project Architect, `webfang` maintainers
-- **Related issues:** #142 (timeout hardcoded), #143 (`--h2-profile` ignored), #144 (`--include-pattern` not applied to assets), #145 (asset naming = hash only)
+- **Related issues:** #142 (timeout hardcoded), #143 (`--h2-profile` ignored), #144 (`--include-pattern` not applied to assets), #145 (asset naming = hash only), #1115 (amendment)
 - **Supersedes:** —
 
 ## Context
@@ -69,7 +69,9 @@ Adopt **Option B — Structural Unification**. Do **not** patch the island with 
 | Maintainability | High debt (duplicated logic, 3 paths) | Solid (single change point) |
 | Blast radius of change | Low (isolated) | Medium (touches `ScraperService` DI + deletes a module) |
 
-The medium blast radius is accepted: the dependency graph (`download_all` has `impactedCount: 11`,
+The medium blast radius is accepted: the dependency graph (the asset-download entry point —
+cited here at decision time as `download_all`, a name that never existed in the code — had
+`impactedCount: 11`,
 risk CRITICAL across `ScraperService`/`discovery`/`scrape_flow`/`mcp_server`) is concentrated and
 well-understood; tests will be migrated to the adapters `Downloader`.
 
@@ -89,8 +91,9 @@ well-understood; tests will be migrated to the adapters `Downloader`.
   (must update any consumer that assumed "no error = all downloaded").
 
 **Neutral**
-- `quick_download` (adapters `Downloader`'s own convenience fn) remains valid and becomes the
-  canonical quick path.
+- ~~`quick_download` (adapters `Downloader`'s own convenience fn) remains valid and becomes the
+  canonical quick path.~~ **Amended (#1115):** `quick_download` never gained a caller and was
+  removed; the canonical asset path is the `AssetDownloaderPort` (see Amendment).
 
 ## Clarifying questions resolved
 
@@ -105,10 +108,28 @@ well-understood; tests will be migrated to the adapters `Downloader`.
 
 ## References
 
-- `src/adapters/downloader/mod.rs` — target `Downloader` struct (streaming, init-once, `timeout_secs` honored)
-- `src/infrastructure/scraper/asset_download.rs` — island to delete (hardcoded timeout l.133, profile l.132, full-buffer l.144)
-- `src/extractor/mod.rs:104` — `extract_documents` (no pattern filtering today)
-- `src/application/url_filter.rs` — `is_allowed` (reuse for asset filtering)
-- `src/infrastructure/config.rs:76` — `ScraperConfig.download_timeout_secs` (exists, unused by island)
-- `CHANGELOG.md:241` — "True Streaming: Constant ~8KB RAM, no OOM"
+Paths are given as of the amendment (2026-09-04); the original ADR cited the pre-workspace
+`src/...` layout, which maps to `crates/webfang_core/src/...` today.
+
+- `crates/webfang_core/src/adapters/downloader/mod.rs` — target `Downloader` struct (streaming, init-once, `timeout_secs` honored); implements `AssetDownloaderPort`
+- `crates/webfang_core/src/application/asset_download.rs` — application orchestration over the port (the island `infrastructure/scraper/asset_download.rs` was deleted as decided)
+- `crates/webfang_core/src/extractor/mod.rs` — `extract_documents` (pattern filtering)
+- `crates/webfang_core/src/application/url_filter.rs` — `is_allowed` (reuse for asset filtering)
+- `crates/webfang_core/src/domain/config.rs` — `ScraperConfig.download_timeout_secs`
+- `CHANGELOG.md` — "True Streaming: Constant ~8KB RAM, no OOM"
 - Issues: #142, #143, #144, #145
+
+## Amendment (2026-09-04, #1115)
+
+Contract corrections after implementation — the decision itself stands unchanged:
+
+1. **Canonical path is the port, not a convenience fn.** The production asset path is
+   `AssetDownloaderPort` (`domain::ports`), implemented by the adapters `Downloader` and consumed
+   by `application/asset_download.rs`. The `quick_download` convenience fn predicted as "the
+   canonical quick path" was never wired into any caller and has been removed.
+2. **`download_all` never existed.** The blast-radius citation named a function that was not in
+   the code at decision time; the affected entry point was the asset-download call path through
+   `ScraperService`/`scrape_flow`.
+3. **Path updates.** All `src/...` references now live under `crates/webfang_core/src/...`
+   (workspace split); `ScraperConfig::to_download_config` moved to the adapters module next to
+   `DownloadConfig`, keeping `domain` free of `adapters` dependencies (ADR-0010).
