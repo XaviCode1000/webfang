@@ -10,12 +10,20 @@ use std::pin::Pin;
 use crate::domain::pipeline_item::ScrapedItem;
 
 /// Errors that can occur when writing to an output sink.
+///
+/// `Serialization`/`Backend` are the error vocabulary of the [`OutputStage`]
+/// extension point: they are constructed by stage implementors (today only the
+/// `crawl_task` test mocks — the production wiring is intentionally empty, see
+/// #1114) and classified by the live `classify` below. The allow covers the
+/// wired-but-empty extension point, not a dead wall item.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum OutputError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[allow(dead_code)] // extension-point vocabulary — see module note above
     #[error("serialization error: {0}")]
     Serialization(String),
+    #[allow(dead_code)] // extension-point vocabulary — see module note above
     #[error("backend error: {0}")]
     Backend(String),
 }
