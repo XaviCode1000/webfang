@@ -154,8 +154,13 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0
 
-      - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@v2
+      # NOTE: deliberately NO Swatinem/rust-cache here (cf. benches.yml:55-60).
+      # Weekly baseline is low-frequency (Mon 03:00 UTC + dispatch), heavy
+      # (16 shards), and non-blocking (report-only): a fresh multi-GB cache
+      # entry per shard would evict CI/PR caches toward the 10 GB eviction
+      # limit. Cold compile (~10-15 min incl. BoringSSL) fits comfortably in
+      # the 90 min timeout below. mutants-pr KEEPS its cache step (gated on
+      # hotpath-changed, writes rarely).
 
       - name: Run mutation testing (shard)
         # Survivors (exit 2) must not abort the shard: the report job below
