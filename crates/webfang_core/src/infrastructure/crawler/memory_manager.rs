@@ -3,10 +3,7 @@
 //! Manages memory usage for large sitemap processing through page iterators
 //! and disk swapping for extremely large datasets.
 
-use crate::domain::UrlBatch;
 use crate::infrastructure::crawler::SitemapUrl;
-use std::collections::VecDeque;
-use url::Url;
 
 /// Errors that can occur during memory management
 #[derive(Debug, thiserror::Error)]
@@ -52,41 +49,6 @@ impl MemoryManager {
             temp_dir: Some(temp_dir),
             ..Self::new()
         }
-    }
-
-    /// Create an iterator that yields URL batches for paginated processing
-    ///
-    /// This method implements the page iterator pattern, chunking large URL
-    /// collections into manageable batches to avoid memory issues.
-    #[allow(dead_code)] // pub(crate) Phase 0 triage — internal API surface
-    pub(crate) fn create_page_iterator(
-        &self,
-        urls: Vec<Url>,
-        batch_size: usize,
-    ) -> impl Iterator<Item = Result<UrlBatch>> {
-        let _total_urls = urls.len();
-        let batch_size = if batch_size == 0 { 1 } else { batch_size };
-
-        let mut queue: VecDeque<Url> = VecDeque::from(urls);
-        let mut current_batch = 0u32;
-
-        std::iter::from_fn(move || {
-            if queue.is_empty() {
-                return None;
-            }
-
-            let batch_urls: Vec<Url> = queue.drain(..batch_size.min(queue.len())).collect();
-
-            let has_more = !queue.is_empty();
-            let batch_id = current_batch;
-            current_batch += 1;
-
-            Some(Ok(UrlBatch {
-                urls: batch_urls,
-                batch_id,
-                has_more,
-            }))
-        })
     }
 
     /// Handle disk swapping for extremely large URL collections
@@ -143,33 +105,13 @@ mod tests {
     use crate::infrastructure::crawler::SitemapUrl;
     use std::fs;
     use tempfile::TempDir;
+    use url::Url;
 
     #[test]
     fn test_memory_manager_creation() {
         let manager = MemoryManager::new();
         assert_eq!(manager.memory_limit_mb, 500);
         assert!(!manager.enable_disk_swap);
-    }
-
-    #[test]
-    fn test_create_page_iterator() {
-        let manager = MemoryManager::new();
-        let urls = vec![
-            Url::parse("https://example.com/1").unwrap(),
-            Url::parse("https://example.com/2").unwrap(),
-            Url::parse("https://example.com/3").unwrap(),
-        ];
-
-        let mut iterator = manager.create_page_iterator(urls, 2);
-        let batch1 = iterator.next().unwrap().unwrap();
-        assert_eq!(batch1.urls.len(), 2);
-        assert_eq!(batch1.batch_id, 0);
-        assert!(batch1.has_more);
-
-        let batch2 = iterator.next().unwrap().unwrap();
-        assert_eq!(batch2.urls.len(), 1);
-        assert_eq!(batch2.batch_id, 1);
-        assert!(!batch2.has_more);
     }
 
     #[test]

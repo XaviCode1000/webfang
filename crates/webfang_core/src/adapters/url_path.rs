@@ -310,11 +310,6 @@ impl UrlPath {
             })
             .collect()
     }
-
-    #[allow(dead_code, missing_docs)] // Phase 0 triage — internal API surface
-    pub fn as_str(&self) -> &str {
-        &self.raw
-    }
 }
 
 impl std::fmt::Display for UrlPath {

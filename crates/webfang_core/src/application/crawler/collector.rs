@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info, warn, Instrument};
+use tracing::{debug, error, info, Instrument};
 
 use crate::domain::DiscoveredUrl;
 
@@ -36,24 +36,12 @@ use crate::domain::DiscoveredUrl;
 pub(crate) enum CrawlMessage {
     /// URL scrapeada exitosamente
     Success(DiscoveredUrl),
-    /// Error durante el scrape
-    Error { url: String, error: String },
 }
 
 impl CrawlMessage {
-    #[allow(dead_code)] // pub(crate) for Phase 0 missing-docs triage — used in production builds
     /// Crear mensaje de éxito
     pub fn success(url: DiscoveredUrl) -> Self {
         Self::Success(url)
-    }
-
-    #[allow(dead_code)] // pub(crate) for Phase 0 missing-docs triage — used in production builds
-    /// Crear mensaje de error
-    pub fn error(url: impl Into<String>, error: impl Into<String>) -> Self {
-        Self::Error {
-            url: url.into(),
-            error: error.into(),
-        }
     }
 }
 
@@ -116,17 +104,10 @@ impl ResultsCollector {
                 let mut results = Vec::with_capacity(vec_capacity);
 
                 // El bucle termina cuando rx se cierra (todos los tx muertos)
-                while let Some(msg) = rx.recv().await {
-                    match msg {
-                        CrawlMessage::Success(url) => {
-                            debug!("Collected: {}", url.url);
-                            results.push(url);
-                            // Counter already updated in send()
-                        },
-                        CrawlMessage::Error { url, error } => {
-                            warn!("Error collecting {}: {}", url, error);
-                        },
-                    }
+                while let Some(CrawlMessage::Success(url)) = rx.recv().await {
+                    debug!("Collected: {}", url.url);
+                    results.push(url);
+                    // Counter already updated in send()
                 }
 
                 info!("Collector finished: {} URLs", results.len());
@@ -174,27 +155,10 @@ impl ResultsCollector {
         &self,
         msg: CrawlMessage,
     ) -> Result<(), mpsc::error::SendError<CrawlMessage>> {
-        // Update counter synchronously for is_full() checks
-        if let CrawlMessage::Success(_) = &msg {
-            self.counter.fetch_add(1, Ordering::Relaxed);
-        }
+        // Every message on this channel is a success URL; update the counter
+        // synchronously for is_full() checks.
+        self.counter.fetch_add(1, Ordering::Relaxed);
         self.tx.send(msg).await
-    }
-
-    #[allow(dead_code)] // pub(crate) for Phase 0 missing-docs triage — used in production builds
-    /// Intentar enviar sin esperar
-    ///
-    /// Útil para manejo custom de backpressure.
-    /// Retorna error si el canal está lleno.
-    pub(crate) fn try_send(
-        &self,
-        msg: CrawlMessage,
-    ) -> Result<(), Box<mpsc::error::TrySendError<CrawlMessage>>> {
-        // Update counter synchronously for is_full() checks (same as send())
-        if let CrawlMessage::Success(_) = &msg {
-            self.counter.fetch_add(1, Ordering::Relaxed);
-        }
-        self.tx.try_send(msg).map_err(Box::new)
     }
 
     /// Recolectar y retornar resultados
@@ -233,32 +197,6 @@ pub struct ResultsAdapter {
 }
 
 impl ResultsAdapter {
-    #[allow(dead_code)] // pub(crate) for Phase 0 missing-docs triage — used in production builds
-    pub(crate) fn new(capacity: usize) -> Self {
-        Self {
-            collector: ResultsCollector::with_capacity(capacity),
-        }
-    }
-
-    #[allow(dead_code)] // pub(crate) for Phase 0 missing-docs triage — used in production builds
-    /// Enviar URL scrapeada exitosamente
-    pub(crate) async fn add_success(
-        &self,
-        url: DiscoveredUrl,
-    ) -> Result<(), mpsc::error::SendError<CrawlMessage>> {
-        self.collector.send(CrawlMessage::success(url)).await
-    }
-
-    #[allow(dead_code)] // pub(crate) for Phase 0 missing-docs triage — used in production builds
-    /// Enviar error de scrape
-    pub(crate) async fn add_error(
-        &self,
-        url: String,
-        error: String,
-    ) -> Result<(), mpsc::error::SendError<CrawlMessage>> {
-        self.collector.send(CrawlMessage::error(url, error)).await
-    }
-
     /// Verificar límite
     pub fn is_full(&self, max_pages: usize) -> bool {
         self.collector.is_full(max_pages)
@@ -351,114 +289,11 @@ mod tests {
     }
 
     // =========================================================================
-    // Error path tests (T2.4)
+    // Delivery and lifecycle tests
     // =========================================================================
 
     #[tokio::test]
-    async fn test_collector_error_message_does_not_increment_counter() {
-        let collector = ResultsCollector::new(100, None);
-
-        // Send error message — counter should NOT increment
-        let error_msg = CrawlMessage::error("https://failed.com", "connection timeout");
-        collector.send(error_msg).await.unwrap();
-
-        // Counter only tracks successes
-        assert_eq!(collector.len(), 0);
-        assert!(collector.is_empty());
-
-        let results = collector.collect().await;
-        // Error messages are warned and discarded, not collected
-        assert!(results.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_collector_mixed_success_and_error() {
-        let collector = ResultsCollector::new(100, None);
-
-        // Send 3 successes and 2 errors
-        collector
-            .send(CrawlMessage::success(make_url("https://ok1.com")))
-            .await
-            .unwrap();
-        collector
-            .send(CrawlMessage::error("https://fail1.com", "404"))
-            .await
-            .unwrap();
-        collector
-            .send(CrawlMessage::success(make_url("https://ok2.com")))
-            .await
-            .unwrap();
-        collector
-            .send(CrawlMessage::error("https://fail2.com", "timeout"))
-            .await
-            .unwrap();
-        collector
-            .send(CrawlMessage::success(make_url("https://ok3.com")))
-            .await
-            .unwrap();
-
-        // Only successes increment counter
-        assert_eq!(collector.len(), 3);
-
-        let results = collector.collect().await;
-        // Only successful URLs are collected
-        assert_eq!(results.len(), 3);
-    }
-
-    #[tokio::test]
-    async fn test_try_send_success_when_channel_has_capacity() {
-        let collector = ResultsCollector::new(100, None);
-
-        let result = collector.try_send(CrawlMessage::success(make_url("https://ok.com")));
-        assert!(result.is_ok());
-        // Note: try_send does NOT update the counter (only send() does).
-        // This is intentional — counter tracks send()-delivered successes.
-        // The message is still received by the worker.
-        let results = collector.collect().await;
-        assert_eq!(results.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_try_send_error_message_succeeds() {
-        let collector = ResultsCollector::new(100, None);
-
-        let result = collector.try_send(CrawlMessage::error("https://fail.com", "error"));
-        assert!(result.is_ok());
-        // Error messages don't increment counter
-        assert_eq!(collector.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_try_send_full_channel_returns_error() {
-        // Use capacity=2 channel. Send 2 messages via try_send to fill the buffer,
-        // then a 3rd try_send should fail since buffer is full.
-        // Note: the worker runs in a tokio task, so it may drain the buffer.
-        // We use try_send in a tight loop to fill before the worker wakes up.
-        let collector = ResultsCollector::new(2, None);
-
-        // Rapidly fill the buffer with try_sends
-        let mut filled = 0;
-        for i in 0..10 {
-            let result =
-                collector.try_send(CrawlMessage::success(make_url(&format!("https://{i}.com"))));
-            if result.is_ok() {
-                filled += 1;
-            } else {
-                // Buffer is full — this is the behavior we're testing
-                break;
-            }
-        }
-
-        // At least one try_send should have succeeded
-        assert!(filled >= 1, "should have filled at least 1 slot");
-
-        // Verify the collected results include the sent messages
-        let results = collector.collect().await;
-        assert_eq!(results.len(), filled);
-    }
-
-    #[tokio::test]
-    async fn test_try_send_after_collect_returns_error() {
+    async fn test_send_before_collect_delivers_message() {
         // Create collector, send a message, then collect (which drops tx).
         // After collect, the internal worker finishes. We verify the worker
         // received the message by checking the collected results.
@@ -499,44 +334,5 @@ mod tests {
         // Original can collect
         let results = collector.collect().await;
         assert_eq!(results.len(), 1);
-    }
-
-    // =========================================================================
-    // ResultsAdapter tests
-    // =========================================================================
-
-    #[tokio::test]
-    async fn test_results_adapter_add_success() {
-        let adapter = ResultsAdapter::new(100);
-        let url = make_url("https://example.com");
-
-        adapter.add_success(url).await.unwrap();
-        assert_eq!(adapter.len(), 1);
-        assert!(!adapter.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_results_adapter_add_error_does_not_increment() {
-        let adapter = ResultsAdapter::new(100);
-
-        adapter
-            .add_error("https://fail.com".to_string(), "timeout".to_string())
-            .await
-            .unwrap();
-        assert_eq!(adapter.len(), 0);
-        assert!(adapter.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_results_adapter_is_full() {
-        let adapter = ResultsAdapter::new(100);
-
-        for i in 0..5 {
-            let url = make_url(&format!("https://{i}.com"));
-            adapter.add_success(url).await.unwrap();
-        }
-
-        assert!(adapter.is_full(3));
-        assert!(!adapter.is_full(10));
     }
 }

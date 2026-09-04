@@ -36,8 +36,8 @@ as the main article body, proving the scrape pipeline ran end to end.</p>
 </article>
 </body></html>"#;
 
-/// Create a TempDir that `is_valid_vault` accepts: `validate_explicit_vault`
-/// requires a directory containing a `.obsidian/` marker dir.
+/// Create a TempDir that `is_valid_vault` accepts: an explicit `--vault`
+/// must be a directory containing a `.obsidian/` marker dir.
 fn make_vault() -> tempfile::TempDir {
     let vault = tempfile::tempdir().expect("create vault tempdir");
     std::fs::create_dir_all(vault.path().join(".obsidian")).expect("create .obsidian marker dir");

@@ -14,9 +14,6 @@ use crate::domain::{CrawlError, DomainError, UrlValidatorTrait, ValidationResult
 pub(crate) enum ValidationError {
     #[error("HTTP request failed: {0}")]
     HttpError(String),
-    #[error("URL validation timeout")]
-    #[allow(dead_code)] // pub(crate) Phase 0 triage — internal API surface
-    Timeout,
 }
 
 /// Result type for validation operations

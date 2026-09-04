@@ -4,8 +4,6 @@
 //! well-defined transformation or validation on [`crate::domain::pipeline_item::ScrapedItem`]s.
 
 mod clean;
-pub mod jsonl_output;
-pub mod multi_sink;
 pub mod output;
 mod validate;
 

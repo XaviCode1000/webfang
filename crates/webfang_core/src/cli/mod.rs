@@ -22,12 +22,3 @@ pub mod url_discovery;
 
 pub use crate::CliExit;
 pub use args::{Args, Commands, Shell};
-
-/// Result of URL selection.
-#[allow(dead_code)] // pub(crate) Phase 0 triage — internal API surface
-#[derive(Debug)]
-pub(crate) enum SelectedUrls {
-    Urls(Vec<url::Url>),
-    None, // User cancelled or no selection
-    Error(CliExit),
-}
