@@ -32,7 +32,7 @@ set -euo pipefail
 CHAPTER="docs/src/cli-reference.md"
 BEGIN_MARKER="CLI-REFERENCE:BEGIN"
 END_MARKER="CLI-REFERENCE:END"
-FEATURES="ai mcp ui"
+FEATURES="ai mcp"
 # Honor CARGO_TARGET_DIR (shared build cache via direnv in worktrees); the
 # hardcoded target/ path silently broke every sibling-worktree run (#360).
 BIN="${CARGO_TARGET_DIR:-target}/debug/webfang"

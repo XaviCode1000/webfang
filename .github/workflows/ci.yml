@@ -288,7 +288,7 @@ jobs:
       - name: Unit tests (lib)
         run: cargo nextest run --lib --test-threads 4 --retries 2
       - name: Integration tests
-        run: cargo nextest run --features ui --test '*' --test-threads 4 --retries 2
+        run: cargo nextest run --test '*' --test-threads 4 --retries 2
 
   # ============================================================================
   # TIER 4: TEST FULL (4-6 minutes)
@@ -585,7 +585,7 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build optimized binary
-        run: cargo build --release --locked --features "ai mcp ui"
+        run: cargo build --release --locked --features "ai mcp"
       - name: Strip binary
         run: |
           strip target/release/webfang
