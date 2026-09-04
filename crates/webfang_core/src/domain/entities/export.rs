@@ -66,44 +66,121 @@ fn default_version() -> u32 {
     1
 }
 
+/// Wire shape accepted by `ExportState`'s `Deserialize` boundary (#1132).
+///
+/// The legacy `total_exported` counter is accepted for compatibility with
+/// v1 state files but is NEVER stored: it is checked against
+/// `processed_urls.len()` at parse time, so a desynchronized resume file
+/// (`total: 999` with 0 URLs) is rejected instead of silently corrupting
+/// the resume decision. The domain must be non-empty — `ExportState::new`
+/// never produced `""`, and now deserialization cannot either.
+#[derive(Deserialize)]
+struct RawExportState {
+    #[serde(default = "default_version")]
+    version: u32,
+    domain: String,
+    processed_urls: Vec<String>,
+    last_export: Option<DateTime<Utc>>,
+    #[serde(default)]
+    total_exported: Option<u64>,
+}
+
+impl TryFrom<RawExportState> for ExportState {
+    type Error = crate::ScraperError;
+
+    fn try_from(raw: RawExportState) -> Result<Self, Self::Error> {
+        if raw.domain.trim().is_empty() {
+            return Err(crate::ScraperError::Config(
+                "el dominio del estado de exportación no puede estar vacío".to_string(),
+            ));
+        }
+        if let Some(total) = raw.total_exported {
+            if total != raw.processed_urls.len() as u64 {
+                return Err(crate::ScraperError::Config(format!(
+                    "estado de exportación inconsistente: total_exported {total} != {} URLs procesadas",
+                    raw.processed_urls.len()
+                )));
+            }
+        }
+        Ok(Self {
+            version: raw.version,
+            domain: raw.domain,
+            processed_urls: raw.processed_urls,
+            last_export: raw.last_export,
+        })
+    }
+}
+
 /// Metadata for the export state file
 ///
 /// Stored at `~/.cache/webfang/state/<domain>.json`
 /// Tracks which URLs have been processed for a given domain
 /// to support incremental exports and resume capability.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+///
+/// # Type-state (#1132)
+///
+/// * `domain` is private and non-empty: the only construction paths are
+///   [`ExportState::new`] (validated) and deserialization (validated via
+///   `#[serde(try_from)]`). `Default` was removed because it produced an
+///   empty domain.
+/// * `total_exported` is DERIVED from `processed_urls` — the stored counter
+///   could desync (hand-edited or corrupt resume files); now the roundtrip
+///   invariant `total_exported() == processed_urls.len()` holds by
+///   construction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "RawExportState")]
 pub struct ExportState {
     /// Schema version for forward-compatible evolution. Current: 1.
-    #[serde(default = "default_version")]
     pub version: u32,
-    /// Domain this state belongs to (e.g., "example.com")
-    pub domain: String,
+    /// Domain this state belongs to (e.g., "example.com"). Non-empty by
+    /// construction; read via [`domain()`](Self::domain).
+    domain: String,
     /// URLs that have been successfully exported
     pub processed_urls: Vec<String>,
     /// Last export timestamp
     pub last_export: Option<DateTime<Utc>>,
-    /// Total documents exported
-    pub total_exported: u64,
 }
 
 impl ExportState {
-    /// Create a new ExportState for a domain
-    #[must_use]
-    pub fn new(domain: impl Into<String>) -> Self {
-        Self {
-            domain: domain.into(),
+    /// Create a new ExportState for a domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScraperError::Config`](crate::ScraperError::Config) when
+    /// `domain` is empty or whitespace-only — an empty domain is not a
+    /// valid state owner (#1132).
+    pub fn new(domain: impl Into<String>) -> crate::error::Result<Self> {
+        let domain = domain.into();
+        if domain.trim().is_empty() {
+            return Err(crate::ScraperError::Config(
+                "el dominio del estado de exportación no puede estar vacío".to_string(),
+            ));
+        }
+        Ok(Self {
+            domain,
             version: 1,
             processed_urls: Vec::new(),
             last_export: None,
-            total_exported: 0,
-        }
+        })
+    }
+
+    /// The (non-empty) domain this state belongs to.
+    #[must_use]
+    pub fn domain(&self) -> &str {
+        &self.domain
+    }
+
+    /// Total documents exported — DERIVED from `processed_urls`, never a
+    /// stored counter that can desync (#1132).
+    #[must_use]
+    pub fn total_exported(&self) -> u64 {
+        self.processed_urls.len() as u64
     }
 
     /// Mark a URL as processed
     pub fn mark_processed(&mut self, url: &str) {
         if !self.processed_urls.contains(&url.to_string()) {
             self.processed_urls.push(url.to_string());
-            self.total_exported += 1;
         }
     }
 
@@ -157,30 +234,30 @@ mod tests {
 
     #[test]
     fn test_export_state_mark_processed_increments_counter() {
-        let mut state = ExportState::new("example.com");
-        assert_eq!(state.total_exported, 0);
+        let mut state = ExportState::new("example.com").expect("valid domain");
+        assert_eq!(state.total_exported(), 0);
 
         state.mark_processed("https://example.com/page1");
-        assert_eq!(state.total_exported, 1);
+        assert_eq!(state.total_exported(), 1);
         assert_eq!(state.processed_urls.len(), 1);
     }
 
     #[test]
     fn test_export_state_mark_processed_no_duplicate() {
-        let mut state = ExportState::new("example.com");
+        let mut state = ExportState::new("example.com").expect("valid domain");
         state.mark_processed("https://example.com/page1");
         state.mark_processed("https://example.com/page1");
-        assert_eq!(state.total_exported, 1);
+        assert_eq!(state.total_exported(), 1);
         assert_eq!(state.processed_urls.len(), 1);
     }
 
     #[test]
     fn test_export_state_mark_processed_multiple_urls() {
-        let mut state = ExportState::new("example.com");
+        let mut state = ExportState::new("example.com").expect("valid domain");
         state.mark_processed("https://example.com/page1");
         state.mark_processed("https://example.com/page2");
         state.mark_processed("https://example.com/page3");
-        assert_eq!(state.total_exported, 3);
+        assert_eq!(state.total_exported(), 3);
         assert!(state.is_processed("https://example.com/page1"));
         assert!(state.is_processed("https://example.com/page2"));
         assert!(!state.is_processed("https://example.com/other"));
@@ -188,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_export_state_update_timestamp() {
-        let mut state = ExportState::new("example.com");
+        let mut state = ExportState::new("example.com").expect("valid domain");
         assert!(state.last_export.is_none());
 
         state.update_timestamp();
@@ -203,40 +280,84 @@ mod tests {
 
     #[test]
     fn test_export_state_serde_roundtrip() {
-        let mut state = ExportState::new("example.com");
+        let mut state = ExportState::new("example.com").expect("valid domain");
         state.mark_processed("https://example.com/page1");
         state.update_timestamp();
 
         let json = serde_json::to_string(&state).unwrap();
         let deserialized: ExportState = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.domain, "example.com");
-        assert_eq!(deserialized.total_exported, 1);
+        assert_eq!(deserialized.domain(), "example.com");
+        assert_eq!(deserialized.total_exported(), 1);
         assert!(deserialized.is_processed("https://example.com/page1"));
         assert!(deserialized.last_export.is_some());
     }
 
+    /// #1132 reproduction: the invalid states that the raw-primitive shape
+    /// accepted are now rejected at the boundary. Before this change the
+    /// same JSON deserialized to `Ok` (a `total: 999` counter with zero
+    /// processed URLs, and an empty domain, were representable).
     #[test]
-    fn test_export_state_default() {
-        let state = ExportState::default();
-        assert!(state.domain.is_empty());
-        assert!(state.processed_urls.is_empty());
-        assert!(state.last_export.is_none());
-        assert_eq!(state.total_exported, 0);
+    fn issue_1132_desynced_and_empty_domain_state_rejected_at_boundary() {
+        let desynced = r#"{"version":1,"domain":"example.com","processed_urls":[],"last_export":null,"total_exported":999}"#;
+        let err = serde_json::from_str::<ExportState>(desynced)
+            .expect_err("total_exported != len(processed_urls) must be rejected");
+        assert!(
+            err.to_string().contains("inconsistente"),
+            "rejection must name the desync, got: {err}"
+        );
+
+        let empty_domain = r#"{"version":1,"domain":"","processed_urls":[],"last_export":null,"total_exported":0}"#;
+        let err = serde_json::from_str::<ExportState>(empty_domain)
+            .expect_err("empty domain must be rejected at the boundary");
+        assert!(
+            err.to_string().contains("vacío"),
+            "rejection must name the empty domain, got: {err}"
+        );
+
+        // Construction rejects it too — `new()` can no longer produce it.
+        assert!(
+            ExportState::new("").is_err(),
+            "empty domain must fail new()"
+        );
+        assert!(
+            ExportState::new("   ").is_err(),
+            "whitespace-only domain must fail new()"
+        );
+    }
+
+    /// #1132: the counter is derived, so the roundtrip invariant
+    /// `total_exported == len(processed_urls)` holds by construction — the
+    /// legacy field is accepted on the wire but never stored desynced.
+    #[test]
+    fn issue_1132_roundtrip_total_equals_processed_len() {
+        let mut state = ExportState::new("example.com").expect("valid domain");
+        for i in 0..3 {
+            state.mark_processed(&format!("https://example.com/p{i}"));
+        }
+        let json = serde_json::to_string(&state).expect("serialize");
+        assert!(
+            !json.contains("total_exported"),
+            "derived counter must not be stored, got: {json}"
+        );
+        let back: ExportState = serde_json::from_str(&json).expect("valid state");
+        assert_eq!(back.total_exported(), 3);
+        assert_eq!(back.total_exported(), back.processed_urls.len() as u64);
+        assert_eq!(back.domain(), "example.com");
     }
 
     #[test]
     fn test_export_state_is_processed_empty() {
-        let state = ExportState::new("test.com");
+        let state = ExportState::new("test.com").expect("valid domain");
         assert!(!state.is_processed("https://test.com/anything"));
     }
 
     #[test]
     fn test_export_state_mark_many_urls() {
-        let mut state = ExportState::new("example.com");
+        let mut state = ExportState::new("example.com").expect("valid domain");
         for i in 0..100 {
             state.mark_processed(&format!("https://example.com/page{i}"));
         }
-        assert_eq!(state.total_exported, 100);
+        assert_eq!(state.total_exported(), 100);
         assert_eq!(state.processed_urls.len(), 100);
         assert!(state.is_processed("https://example.com/page0"));
         assert!(state.is_processed("https://example.com/page99"));
@@ -276,7 +397,7 @@ mod tests {
 
     #[test]
     fn test_export_state_new_version_is_one() {
-        let state = ExportState::new("example.com");
+        let state = ExportState::new("example.com").expect("valid domain");
         assert_eq!(state.version, 1);
     }
 
@@ -292,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_export_state_roundtrip_preserves_version_one() {
-        let state = ExportState::new("example.com");
+        let state = ExportState::new("example.com").expect("valid domain");
         assert_eq!(state.version, 1);
         let json = serde_json::to_string(&state).unwrap();
         assert!(
@@ -301,7 +422,7 @@ mod tests {
         );
         let deserialized: ExportState = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.version, 1);
-        assert_eq!(deserialized.domain, "example.com");
+        assert_eq!(deserialized.domain(), "example.com");
     }
 
     #[test]

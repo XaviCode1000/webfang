@@ -28,14 +28,14 @@ fn state_store_save_and_load_roundtrip() {
     let mut store = webfang_core::infrastructure::export::state_store::StateStore::new("test.com");
     store.set_cache_dir(tmp.path().to_path_buf());
 
-    let mut state = webfang_core::domain::ExportState::new("test.com");
+    let mut state = webfang_core::domain::ExportState::new("test.com").expect("valid domain");
     state.mark_processed("https://test.com/page1");
     state.mark_processed("https://test.com/page2");
 
     store.save(&state).expect("save should succeed");
 
     let loaded = store.load().expect("load should succeed");
-    assert_eq!(loaded.domain, "test.com");
+    assert_eq!(loaded.domain(), "test.com");
     assert_eq!(loaded.processed_urls.len(), 2);
     assert!(loaded.is_processed("https://test.com/page1"));
     assert!(loaded.is_processed("https://test.com/page2"));
@@ -51,7 +51,7 @@ fn state_store_load_or_default_creates_new_when_missing() {
     let state = store
         .load_or_default()
         .expect("load_or_default should succeed");
-    assert_eq!(state.domain, "new.com");
+    assert_eq!(state.domain(), "new.com");
     assert!(state.processed_urls.is_empty());
 }
 
@@ -64,7 +64,7 @@ fn state_store_load_or_default_returns_existing() {
     store.set_cache_dir(tmp.path().to_path_buf());
 
     // Save first
-    let mut state = webfang_core::domain::ExportState::new("existing.com");
+    let mut state = webfang_core::domain::ExportState::new("existing.com").expect("valid domain");
     state.mark_processed("https://existing.com/page1");
     store.save(&state).unwrap();
 
@@ -78,7 +78,7 @@ fn state_store_load_or_default_returns_existing() {
 #[test]
 fn state_store_mark_and_check_processed() {
     let store = webfang_core::infrastructure::export::state_store::StateStore::new("test.com");
-    let mut state = webfang_core::domain::ExportState::new("test.com");
+    let mut state = webfang_core::domain::ExportState::new("test.com").expect("valid domain");
 
     assert!(!store.is_processed(&state, "https://test.com/page1"));
 
@@ -124,35 +124,35 @@ fn state_store_custom_cache_dir() {
 /// ExportState::new creates empty state with correct domain.
 #[test]
 fn export_state_new_has_correct_domain() {
-    let state = webfang_core::domain::ExportState::new("example.com");
-    assert_eq!(state.domain, "example.com");
+    let state = webfang_core::domain::ExportState::new("example.com").expect("valid domain");
+    assert_eq!(state.domain(), "example.com");
     assert!(state.processed_urls.is_empty());
-    assert_eq!(state.total_exported, 0);
+    assert_eq!(state.total_exported(), 0);
 }
 
 /// ExportState::mark_processed adds URL and increments counter.
 #[test]
 fn export_state_mark_processed_adds_url() {
-    let mut state = webfang_core::domain::ExportState::new("test.com");
+    let mut state = webfang_core::domain::ExportState::new("test.com").expect("valid domain");
     state.mark_processed("https://test.com/page1");
     assert_eq!(state.processed_urls.len(), 1);
-    assert_eq!(state.total_exported, 1);
+    assert_eq!(state.total_exported(), 1);
 }
 
 /// ExportState::mark_processed deduplicates URLs.
 #[test]
 fn export_state_mark_processed_deduplicates() {
-    let mut state = webfang_core::domain::ExportState::new("test.com");
+    let mut state = webfang_core::domain::ExportState::new("test.com").expect("valid domain");
     state.mark_processed("https://test.com/page1");
     state.mark_processed("https://test.com/page1");
     assert_eq!(state.processed_urls.len(), 1);
-    assert_eq!(state.total_exported, 1);
+    assert_eq!(state.total_exported(), 1);
 }
 
 /// ExportState::is_processed returns true for marked URLs.
 #[test]
 fn export_state_is_processed_works() {
-    let mut state = webfang_core::domain::ExportState::new("test.com");
+    let mut state = webfang_core::domain::ExportState::new("test.com").expect("valid domain");
     assert!(!state.is_processed("https://test.com/page1"));
     state.mark_processed("https://test.com/page1");
     assert!(state.is_processed("https://test.com/page1"));
@@ -161,14 +161,14 @@ fn export_state_is_processed_works() {
 /// ExportState serialization roundtrip (serde).
 #[test]
 fn export_state_serde_roundtrip() {
-    let mut state = webfang_core::domain::ExportState::new("serde.com");
+    let mut state = webfang_core::domain::ExportState::new("serde.com").expect("valid domain");
     state.mark_processed("https://serde.com/page1");
     state.mark_processed("https://serde.com/page2");
 
     let json = serde_json::to_string(&state).unwrap();
     let deserialized: webfang_core::domain::ExportState = serde_json::from_str(&json).unwrap();
 
-    assert_eq!(deserialized.domain, "serde.com");
+    assert_eq!(deserialized.domain(), "serde.com");
     assert_eq!(deserialized.processed_urls.len(), 2);
     assert!(deserialized.is_processed("https://serde.com/page1"));
 }

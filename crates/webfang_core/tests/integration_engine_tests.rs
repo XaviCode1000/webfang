@@ -23,7 +23,7 @@ fn test_config(base_url: &str) -> CrawlerConfig {
         .max_depth(0)
         .max_pages(5)
         .delay_ms(1)
-        .concurrency(1)
+        .concurrency(std::num::NonZeroUsize::new(1).expect("1 is non-zero"))
         .timeout_secs(5)
         .build()
 }
