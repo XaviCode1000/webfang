@@ -13,7 +13,6 @@
 //!     |
 //!     ├─→ Args::try_parse()           ← CLI parsing
 //!     ├─→ handle_completions()        ← Subcommand handling
-//!     ├─→ run_config_tui()             ← Config TUI (if --config-tui)
 //!     ├─→ ConfigDefaults::load()      ← TOML config
 //!     ├─→ preflight::normalize()      ← Config merge
 //!     ├─→ init_logging_dual()         ← stderr-only tracing
@@ -24,12 +23,8 @@
 
 use webfang_core::cli::orchestrator;
 
-use std::env;
-use std::io::{self, IsTerminal};
 use std::panic;
 
-#[cfg(feature = "ui")]
-use inquire::Text;
 #[cfg(any(feature = "ai", feature = "adaptive-selectors"))]
 use std::sync::Arc;
 #[cfg(feature = "ai")]
@@ -40,253 +35,12 @@ use webfang_core::application::crawl_options::CrawlOptions;
 use webfang_core::cli::config::ConfigDefaults;
 use webfang_core::cli::error::CliExit;
 use webfang_core::cli::preflight;
-use webfang_core::cli::preflight::{ArgSources, TuiOverrides};
+use webfang_core::cli::preflight::ArgSources;
 #[cfg(feature = "ai")]
 use webfang_core::domain::semantic_cleaner::SemanticCleaner;
 #[cfg(feature = "adaptive-selectors")]
 use webfang_core::infrastructure::scraper::dom_inspector::DefaultDomInspector;
 use webfang_core::{init_logging_dual, is_no_color, Args, Commands};
-#[cfg(feature = "ui")]
-use webfang_tui::tui::modal::HelpModal;
-#[cfg(feature = "ui")]
-use webfang_tui::tui::{
-    run_selector, App, AppMode, AppResult, CollapsibleConfig, Header, StatusBar,
-};
-
-/// Check if running in CI environment.
-fn is_ci() -> bool {
-    env::var("CI").is_ok()
-}
-
-/// Check if stdin is a terminal.
-fn stdin_is_tty() -> bool {
-    io::stdin().is_terminal()
-}
-
-/// Run the unified TUI with collapsible config sections.
-///
-/// Phase 1: Config form with 8 collapsible sections (39 fields)
-/// Phase 2: URL selector (after config submitted)
-///
-/// Returns `Ok(Some(values))` if both phases completed,
-/// `Ok(None)` if cancelled at any point, or `Err` if TTY not available.
-#[cfg(feature = "ui")]
-async fn run_unified_tui() -> Result<Option<serde_json::Value>, CliExit> {
-    // Check if stdout is a TTY
-    if !io::stdout().is_terminal() {
-        tracing::error!("--tui requires an interactive terminal");
-        return Err(CliExit::UsageError(
-            "--tui requiere un terminal interactivo".into(),
-        ));
-    }
-
-    // =========================================================================
-    // Phase 1: Configuration Form
-    // =========================================================================
-    let mut config_app = match App::new(AppMode::Config) {
-        Ok(app) => app,
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to create TUI application");
-            return Err(CliExit::UsageError(format!(
-                "Error creando la aplicación: {e}"
-            )));
-        },
-    }
-    .with_component(Header::new(AppMode::Config))
-    .with_component(CollapsibleConfig::new())
-    .with_component(StatusBar::new().with_items(vec![
-        ("↑↓", "Navegar"),
-        ("Enter", "Expandir"),
-        ("←", "Colapsar"),
-        ("Ctrl+S", "Enviar"),
-        ("q", "Salir"),
-    ]))
-    .with_modal(HelpModal::new(
-        "Ayuda — Configuración".into(),
-        vec![
-            ("↑↓".into(), "Navegar secciones".into()),
-            ("Enter/→".into(), "Expandir sección".into()),
-            ("←".into(), "Colapsar sección".into()),
-            ("Space".into(), "Toggle expand/collapse".into()),
-            ("Tab".into(), "Mover a campos".into()),
-            ("Ctrl+S".into(), "Enviar formulario".into()),
-            ("?".into(), "Mostrar ayuda".into()),
-            ("q".into(), "Salir".into()),
-        ],
-    ));
-
-    let config_values = match config_app.run().await {
-        Ok(AppResult::Config(values)) => values,
-        Ok(AppResult::None) => return Ok(None), // User cancelled
-        Ok(_) => return Ok(None),
-        Err(e) => {
-            tracing::error!(error = %e, "Error in configuration TUI");
-            return Ok(None);
-        },
-    };
-
-    // If config was cancelled or empty, return None
-    let config_values = match config_values {
-        Some(v) => v,
-        None => return Ok(None),
-    };
-
-    // =========================================================================
-    // Phase 2: Discovery + URL Selection
-    // =========================================================================
-    let selected_urls = run_url_selection_phase(&config_values).await?;
-
-    let mut combined = config_values;
-    combined["selected_urls"] = serde_json::to_value(&selected_urls)
-        .map_err(|e| CliExit::UsageError(format!("Error serializando URLs: {e}")))?;
-    Ok(Some(combined))
-}
-
-/// Run Phase 2: discover URLs from seed and run interactive selector.
-#[cfg(feature = "ui")]
-async fn run_url_selection_phase(
-    config_values: &serde_json::Value,
-) -> Result<Vec<url::Url>, CliExit> {
-    use webfang_core::application::crawler::discovery::discover_urls_for_tui;
-
-    let seed_url_str = config_values
-        .get("url")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            tracing::error!("Missing base URL in TUI configuration");
-            CliExit::UsageError("URL base es obligatoria en la TUI".into())
-        })?;
-
-    let seed_url = url::Url::parse(seed_url_str).map_err(|e| {
-        tracing::error!(error = %e, "Invalid base URL");
-        CliExit::UsageError(format!("URL base inválida: {e}"))
-    })?;
-
-    let crawler_config = build_crawler_config_from_json(seed_url, config_values);
-
-    tracing::info!(url = %seed_url_str, "Starting TUI discovery phase");
-    let discovered = discover_urls_for_tui(seed_url_str, &crawler_config)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "URL discovery failed");
-            CliExit::UsageError(format!("Fallo en descubrimiento: {e}"))
-        })?;
-
-    if discovered.is_empty() {
-        tracing::warn!("No URLs discovered");
-        return Err(CliExit::UsageError(
-            "No se encontraron URLs. Revise la URL base o la configuración.".into(),
-        ));
-    }
-
-    let selected = run_selector(&discovered).await.map_err(|e| {
-        tracing::error!(error = %e, "Error in URL selector");
-        CliExit::UsageError(format!("Error en selector: {e}"))
-    })?;
-
-    if selected.is_empty() {
-        return Err(CliExit::UsageError(
-            "Selección cancelada por el usuario".into(),
-        ));
-    }
-
-    Ok(selected)
-}
-
-/// Build CrawlerConfig from TUI JSON config (manual bridge — CrawlerConfig has no Deserialize).
-#[cfg(feature = "ui")]
-fn build_crawler_config_from_json(
-    seed_url: url::Url,
-    config_values: &serde_json::Value,
-) -> webfang_core::domain::CrawlerConfig {
-    use webfang_core::domain::CrawlerConfig;
-
-    let mut builder = CrawlerConfig::builder(seed_url);
-
-    if let Some(d) = config_values.get("max_depth").and_then(|v| v.as_u64()) {
-        builder = builder.max_depth(d as u8);
-    }
-    if let Some(p) = config_values.get("max_pages").and_then(|v| v.as_u64()) {
-        builder = builder.max_pages(p as usize);
-    }
-    if let Some(c) = config_values.get("concurrency").and_then(|v| v.as_u64()) {
-        match std::num::NonZeroUsize::new(c as usize) {
-            Some(level) => builder = builder.concurrency(level),
-            // #1132: a zero spawn bound used to flow into the config and
-            // hang the crawl in `buffer_unordered(0)`. It is now rejected at
-            // this boundary — the default tier stands and the misconfig is
-            // observable instead of silent.
-            None => tracing::warn!(
-                value = c,
-                "ignoring TUI concurrency 0: must be >= 1, keeping the default tier"
-            ),
-        }
-    }
-    if let Some(d) = config_values.get("delay_ms").and_then(|v| v.as_u64()) {
-        builder = builder.delay_ms(d);
-    }
-    if let Some(t) = config_values.get("timeout_secs").and_then(|v| v.as_u64()) {
-        builder = builder.timeout_secs(t);
-    }
-    if let Some(ua) = config_values.get("user_agent").and_then(|v| v.as_str()) {
-        builder = builder.user_agent(ua);
-    }
-    if let Some(sm) = config_values.get("use_sitemap").and_then(|v| v.as_bool()) {
-        builder = builder.use_sitemap(sm);
-    }
-    if let Some(sm_url) = config_values.get("sitemap_url").and_then(|v| v.as_str()) {
-        if !sm_url.is_empty() {
-            builder = builder.sitemap_url(sm_url);
-        }
-    }
-    if let Some(ir) = config_values.get("ignore_robots").and_then(|v| v.as_bool()) {
-        builder = builder.ignore_robots(ir);
-    }
-    if let Some(inc) = config_values.get("include").and_then(|v| v.as_array()) {
-        let patterns: Vec<String> = inc
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect();
-        if !patterns.is_empty() {
-            builder = builder.include_patterns(patterns);
-        }
-    }
-    if let Some(exc) = config_values.get("exclude").and_then(|v| v.as_array()) {
-        let patterns: Vec<String> = exc
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect();
-        if !patterns.is_empty() {
-            builder = builder.exclude_patterns(patterns);
-        }
-    }
-
-    builder.build()
-}
-
-/// Prompt for URL using inquire (interactive mode).
-#[cfg(feature = "ui")]
-fn prompt_for_url() -> Result<String, CliExit> {
-    use inquire::validator::Validation;
-
-    Text::new("Enter the URL to scrape:")
-        .with_help_message("Example: https://example.com")
-        .with_validator(|input: &str| {
-            if input.is_empty() {
-                Err("URL cannot be empty".into())
-            } else if !input.starts_with("http://") && !input.starts_with("https://") {
-                Err("URL must start with http:// or https://".into())
-            } else {
-                Ok(Validation::Valid)
-            }
-        })
-        .prompt()
-        .map_err(|e| {
-            tracing::error!(error = %e, "Error prompting for URL");
-            CliExit::UsageError("interactive prompt failed".into())
-        })
-}
-
 #[tokio::main]
 pub async fn main() -> CliExit {
     // D6 crash-injection harness: arm BEFORE anything else so every pinned
@@ -332,12 +86,6 @@ async fn __main() -> CliExit {
         return orchestrator::handle_completions(shell);
     }
 
-    // 3. Unified TUI mode — returns touched-only overrides
-    let tui_overrides = match handle_tui_mode(&mut args).await {
-        Ok(v) => v,
-        Err(exit) => return exit,
-    };
-
     // 4. URL handling with interactive wizard
     if let Err(exit) = resolve_url(&mut args).await {
         return exit;
@@ -359,7 +107,7 @@ async fn __main() -> CliExit {
 
     // 6b. Single normalization pipeline (design D3) — replaces legacy merges
     let normalized =
-        match preflight::normalize(&args, &arg_sources, &config_defaults, tui_overrides) {
+        match preflight::normalize(&args, &arg_sources, &config_defaults, None) {
             Ok(n) => n,
             Err(e) => return e,
         };
@@ -494,107 +242,7 @@ fn parse_args() -> Result<(Args, ArgSources), CliExit> {
     Ok((args, sources))
 }
 
-/// Run the unified TUI (or reject it when the `ui` feature is off).
-///
-/// Returns the (possibly TUI-modified) args, or the `CliExit` to propagate —
-/// including `CliExit::Success` when the user cancels the TUI.
-#[cfg(feature = "ui")]
-async fn handle_tui_mode(args: &mut Args) -> Result<Option<TuiOverrides>, CliExit> {
-    if args.tui.tui {
-        let tui_result = run_unified_tui().await;
-        match tui_result {
-            Ok(Some(config_values)) => {
-                apply_selected_urls(args, &config_values);
-                println!("Config applied from TUI.");
-                let mut filtered = config_values.clone();
-                if let serde_json::Value::Object(ref mut map) = filtered {
-                    map.remove("selected_urls");
-                }
-                return Ok(Some(TuiOverrides::from_json(filtered)));
-            },
-            Ok(None) => {
-                println!("TUI cancelled.");
-                return Err(CliExit::Success);
-            },
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(None)
-}
-
-/// Apply Phase 2 selected URLs to args (multi-URL → batch file).
-#[cfg(feature = "ui")]
-fn apply_selected_urls(args: &mut Args, config_values: &serde_json::Value) {
-    let Some(selected_urls) = config_values
-        .get("selected_urls")
-        .and_then(|v| v.as_array())
-    else {
-        return;
-    };
-
-    let urls: Vec<String> = selected_urls
-        .iter()
-        .filter_map(|v| v.as_str().map(String::from))
-        .collect();
-
-    if urls.is_empty() {
-        return;
-    }
-
-    args.crawler.url = Some(urls[0].clone());
-
-    if urls.len() > 1 {
-        let batch_file =
-            std::env::temp_dir().join(format!("webfang_batch_{}.txt", uuid::Uuid::now_v7()));
-
-        match write_batch_file(&batch_file, &urls) {
-            Ok(()) => {
-                tracing::info!(path = %batch_file.display(), urls = urls.len(), "Batch file created from TUI selection");
-                args.export.batch = true;
-                args.export.batch_file = Some(batch_file);
-            },
-            Err(e) => {
-                let msg = format!("{e:?}");
-                tracing::error!(error = %msg, "Error creating temporary batch from TUI");
-            },
-        }
-    }
-}
-
-/// Write URLs to a temp batch file (one URL per line).
-#[cfg(feature = "ui")]
-fn write_batch_file(path: &std::path::Path, urls: &[String]) -> Result<(), CliExit> {
-    use std::io::Write;
-
-    let mut file = std::fs::File::create(path)
-        .map_err(|e| CliExit::ConfigError(format!("Error creando archivo batch: {e}")))?;
-
-    for url in urls {
-        writeln!(file, "{url}")
-            .map_err(|e| CliExit::ConfigError(format!("Error escribiendo batch: {e}")))?;
-    }
-
-    Ok(())
-}
-
-/// When `ui` is OFF, any TUI flag triggers a graceful Spanish error (spec S2.2).
-#[cfg(not(feature = "ui"))]
-async fn handle_tui_mode(args: &mut Args) -> Result<Option<TuiOverrides>, CliExit> {
-    if args.tui.tui {
-        eprintln!("Error: La interfaz TUI no está disponible en esta compilación.");
-        eprintln!();
-        eprintln!("Para habilitarla, compile con el feature 'ui' del crate CLI");
-        eprintln!("desde la raíz del workspace:");
-        eprintln!("  cargo run -p webfang_cli --features ui -- --tui");
-        return Err(CliExit::UsageError(
-            "La TUI no está disponible: recompile con 'cargo run -p webfang_cli --features ui'"
-                .into(),
-        ));
-    }
-    Ok(None)
-}
-
-/// Ensure a URL is present, prompting interactively when stdin is a TTY.
+/// Ensure a URL is present; without `--url` (and outside batch mode) scraping cannot start.
 async fn resolve_url(args: &mut Args) -> Result<(), CliExit> {
     // Batch mode reads URLs from stdin/file — --url is not required
     let is_batch = args.export.batch || args.export.batch_file.is_some();
@@ -604,43 +252,7 @@ async fn resolve_url(args: &mut Args) -> Result<(), CliExit> {
         return Ok(());
     }
 
-    // CI environment always requires --url
-    if is_ci() {
-        return Err(CliExit::UsageError(
-            "--url is required for scraping (CI mode)".into(),
-        ));
-    }
-
-    // Try interactive prompt only if stdin is a TTY
-    if stdin_is_tty() {
-        prompt_for_url_interactive(args)
-    } else {
-        // Not a TTY and no URL provided
-        Err(CliExit::UsageError("--url is required for scraping".into()))
-    }
-}
-
-/// Prompt for a URL when stdin is a TTY and the `ui` feature is enabled.
-#[cfg(feature = "ui")]
-fn prompt_for_url_interactive(args: &mut Args) -> Result<(), CliExit> {
-    match prompt_for_url() {
-        Ok(url) => {
-            args.crawler.url = Some(url);
-            Ok(())
-        },
-        Err(_e) => {
-            // Prompt failed (e.g., non-interactive), fall through to error
-            Err(CliExit::UsageError("--url is required for scraping".into()))
-        },
-    }
-}
-
-/// Headless builds have no inquire prompt — require --url explicitly.
-#[cfg(not(feature = "ui"))]
-fn prompt_for_url_interactive(_args: &mut Args) -> Result<(), CliExit> {
-    Err(CliExit::UsageError(
-        "--url is required for scraping (interactive prompt requires --features ui)".into(),
-    ))
+    Err(CliExit::UsageError("--url is required for scraping".into()))
 }
 
 /// Resolve the webfang config file path (graceful: missing file = defaults).
@@ -1042,29 +654,4 @@ async fn build_vault_ports(
     }
 
     ports
-}
-
-#[cfg(all(test, feature = "ui"))]
-mod tui_bridge_tests {
-    use super::build_crawler_config_from_json;
-
-    /// #1132 reproduction: TUI JSON with `concurrency: 0` used to flow
-    /// through the bridge into `CrawlerConfig` (zero spawn bound → hung
-    /// crawl). The bridge now rejects 0 at the boundary and keeps the
-    /// default tier; valid values still pass through.
-    #[test]
-    fn issue_1132_tui_zero_concurrency_rejected_at_bridge() {
-        let seed = url::Url::parse("https://example.com").expect("valid seed");
-        let zero = serde_json::json!({ "concurrency": 0 });
-        let config = build_crawler_config_from_json(seed.clone(), &zero);
-        assert_eq!(
-            config.concurrency.get(),
-            3,
-            "concurrency 0 must not reach the config"
-        );
-
-        let valid = serde_json::json!({ "concurrency": 6 });
-        let config = build_crawler_config_from_json(seed, &valid);
-        assert_eq!(config.concurrency.get(), 6);
-    }
 }

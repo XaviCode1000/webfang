@@ -25,7 +25,6 @@ dev-tracing = ["dep:tracing-tree"]
 # existing cfg(feature) gates in core during the transition period.
 ai = []
 adaptive-selectors = []
-ui = []
 mcp = []
 chromium = ["dep:chromiumoxide"]
 
