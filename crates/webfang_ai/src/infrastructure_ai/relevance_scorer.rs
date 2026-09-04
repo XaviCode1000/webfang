@@ -3,7 +3,29 @@
 //! Provides relevance scoring between embeddings using cosine similarity.
 //! Used for filtering chunks by semantic relevance to a query or reference.
 
+use std::sync::Once;
+
+use tracing::warn;
+
 use super::embedding_ops::cosine_similarity;
+
+/// One-shot guard for the #1109 downgrade path (#1152): a missing reference
+/// turned the old panic into a silent per-chunk skip, so the first skip is
+/// logged once per process to keep the behaviour observable in the trace
+/// without flooding the log on large batches.
+static MISSING_REFERENCE_WARNED: Once = Once::new();
+
+/// Emit the process-wide one-shot warning when [`RelevanceScorer::score`]
+/// returned `None` because no reference was provided and none is stored.
+fn warn_missing_reference_once(total_chunks: usize, threshold: f32) {
+    MISSING_REFERENCE_WARNED.call_once(|| {
+        warn!(
+            total_chunks,
+            threshold,
+            "Relevance filter skipping chunks: no reference embedding (score() returns None since #1109)"
+        );
+    });
+}
 
 /// Relevance scorer with configurable threshold
 ///
@@ -184,9 +206,12 @@ impl RelevanceScorer {
     ) -> Vec<(webfang_core::domain::DocumentChunk, Vec<f32>)> {
         chunks
             .iter()
-            .filter(|(_, embedding)| {
-                self.score(embedding, reference)
-                    .is_some_and(|score| self.meets_threshold(score))
+            .filter(|(_, embedding)| match self.score(embedding, reference) {
+                Some(score) => self.meets_threshold(score),
+                None => {
+                    warn_missing_reference_once(chunks.len(), self.threshold);
+                    false
+                },
             })
             .map(|(chunk, embedding)| (chunk.clone(), embedding.clone()))
             .collect()
@@ -234,9 +259,12 @@ impl RelevanceScorer {
     ) -> Vec<webfang_core::domain::DocumentChunk> {
         chunks
             .iter()
-            .filter(|(_, embedding)| {
-                self.score(embedding, reference)
-                    .is_some_and(|score| self.meets_threshold(score))
+            .filter(|(_, embedding)| match self.score(embedding, reference) {
+                Some(score) => self.meets_threshold(score),
+                None => {
+                    warn_missing_reference_once(chunks.len(), self.threshold);
+                    false
+                },
             })
             .map(|(chunk, _)| chunk.clone())
             .collect()
