@@ -7,6 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::domain::config::OutputFormat;
+use crate::domain::crawler_port::filename::confine_filename_component;
 use crate::domain::entities::DocumentChunkValidated;
 use crate::domain::exporter::{ExportResult, Exporter, ExporterConfig, ExporterError};
 
@@ -132,7 +133,13 @@ impl FileExporter {
         Ok(())
     }
 
-    /// Generate output path for a document
+    /// Generate output path for a document.
+    ///
+    /// Both the domain directory and the file stem are confined to single
+    /// safe components at join time (#1125): the flattening below is kept
+    /// for stable names, and [`confine_filename_component`] closes the
+    /// remaining holes (backslash traversal on Windows, `..` segments,
+    /// control characters) that ad-hoc `replace` chains cannot cover.
     fn output_path(&self, doc: &DocumentChunkValidated, ext: &str) -> PathBuf {
         let output_dir = &self.config.output_dir;
 
@@ -141,6 +148,7 @@ impl FileExporter {
             .ok()
             .and_then(|u| u.host_str().map(String::from))
             .unwrap_or_else(|| "unknown".to_string());
+        let domain = confine_filename_component(&domain, "unknown");
 
         // Generate filename from URL path
         #[allow(clippy::collapsible_str_replace)]
@@ -153,13 +161,13 @@ impl FileExporter {
             .replace('&', "_")
             .replace(':', "_");
 
-        let filename = if filename.is_empty() || filename.ends_with('-') {
-            format!("index.{ext}")
+        let stem = if filename.is_empty() || filename.ends_with('-') {
+            "index".to_string()
         } else {
-            format!("{filename}.{ext}")
+            confine_filename_component(&filename, "index")
         };
 
-        output_dir.join(domain).join(filename)
+        output_dir.join(domain).join(format!("{stem}.{ext}"))
     }
 }
 
@@ -259,6 +267,37 @@ mod tests {
         assert!(result.is_ok());
 
         // Cleanup
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hostile_document_url_is_confined_inside_output_dir() {
+        // Issue #1125: hostile URL paths, backslashes and queries must
+        // collapse so the written file always stays exactly two levels deep:
+        // `<output_dir>/<domain>/<file>`.
+        let dir = temp_dir().join("exporter_test_traversal");
+        let format = crate::domain::entities::ExportFormat::Jsonl;
+        let exporter = FileExporter::new(ExporterConfig::new(dir.clone(), format, "test"));
+
+        for hostile_url in [
+            "https://example.com/../escape",
+            "https://example.com/a\\..\\escape",
+            "https://example.com/?q=..\\..\\escape",
+        ] {
+            let mut doc = make_test_doc();
+            doc.url = hostile_url.to_string();
+            let path = exporter.output_path(&doc, "md");
+            let relative = path
+                .strip_prefix(&dir)
+                .expect("must stay inside output_dir");
+            assert_eq!(
+                relative.components().count(),
+                2,
+                "{hostile_url:?} escaped: {}",
+                path.display()
+            );
+        }
+
         let _ = std::fs::remove_dir_all(dir);
     }
 

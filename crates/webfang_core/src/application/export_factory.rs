@@ -27,6 +27,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::application::resume::{canonical_key, load_preserving, RunId};
+use crate::domain::crawler_port::filename::confine_filename_component;
 use crate::domain::exporter::{DomainRecords, LastError, RawRecord, RecordStorePort};
 use crate::domain::page_state::{PageStatus, Stateful};
 use crate::domain::{entities::ExportFormat, exporter::ExporterError, Exporter, ExporterConfig};
@@ -551,15 +552,18 @@ fn create_auto_exporter(
     // Auto-detect: checks if export.jsonl or export.json exists
     info!("Auto-detecting format...");
 
+    // Confine before probing so a hostile filename can never escape
+    // `output_dir` through the existence checks below (#1125).
+    let filename = confine_filename_component(filename, "export");
     let jsonl_path = output_dir.join(format!("{filename}.jsonl"));
     let vector_path = output_dir.join(format!("{filename}.json"));
 
     if jsonl_path.exists() {
-        Ok(create_detected_jsonl(output_dir, filename, &jsonl_path))
+        Ok(create_detected_jsonl(output_dir, &filename, &jsonl_path))
     } else if vector_path.exists() {
-        Ok(create_detected_vector(output_dir, filename, &vector_path))
+        Ok(create_detected_vector(output_dir, &filename, &vector_path))
     } else {
-        Ok(create_default_jsonl(output_dir, filename))
+        Ok(create_default_jsonl(output_dir, &filename))
     }
 }
 
@@ -696,6 +700,10 @@ pub fn process_results(
     // success that swallows the per-item error (D3 swallow bug, #854).
     std::fs::create_dir_all(&output_dir).map_err(ExporterError::DirectoryCreation)?;
 
+    // Confine before joining so a hostile filename can never escape
+    // `output_dir` through the session index or the exporter (#1125).
+    let filename = confine_filename_component(filename, "export");
+
     // Hash-index BEFORE the exporter touches the file, so membership
     // reflects exactly the bytes flushed by previous runs (D3 seam).
     let output_path = output_dir.join(format!("{filename}.jsonl"));
@@ -703,7 +711,7 @@ pub fn process_results(
     let fallback_run_id = RunId::new();
     let run_id = ctx.map_or(&fallback_run_id, |c| &c.run_id);
 
-    let exporter = create_exporter(output_dir, filename, format)?;
+    let exporter = create_exporter(output_dir, &filename, format)?;
     let mut processed_urls = Vec::new();
 
     for result in results {
@@ -783,12 +791,15 @@ pub fn process_results_with_chunks(
 
     std::fs::create_dir_all(&output_dir).map_err(ExporterError::DirectoryCreation)?;
 
+    // Same join-time confinement as `process_results` (#1125).
+    let filename = confine_filename_component(filename, "export");
+
     let output_path = output_dir.join(format!("{filename}.jsonl"));
     let mut session = CommitSession::open(ctx, &output_path);
     let fallback_run_id = RunId::new();
     let run_id = ctx.map_or(&fallback_run_id, |c| &c.run_id);
 
-    let exporter = create_exporter(output_dir, filename, format)?;
+    let exporter = create_exporter(output_dir, &filename, format)?;
 
     let processed_urls: Vec<String> = chunks.iter().map(|c| c.url.clone()).collect();
 
@@ -921,6 +932,40 @@ mod tests {
         .unwrap();
 
         assert!(processed.is_empty());
+    }
+
+    #[test]
+    fn hostile_export_filename_is_confined_inside_output_dir() {
+        // Issue #1125 end-to-end containment through the public
+        // `process_results` port. The output dir is nested one level deep
+        // so any `../` escape would land inside the sandbox where the walk
+        // can observe it — nothing touches the real filesystem outside.
+        let sandbox = TempDir::new().unwrap();
+        let output_dir = sandbox.path().join("lvl1").join("output");
+        let results = vec![make_scraped_content(
+            "https://example.com/page1",
+            "Containment probe",
+            "Content paragraph long enough to export through the pipeline.",
+        )];
+
+        for hostile in ["../escape", "sub/out", "..\\escape"] {
+            process_results(
+                &results,
+                output_dir.clone(),
+                ExportFormat::Jsonl,
+                hostile,
+                None,
+            )
+            .unwrap();
+        }
+
+        let mut escaped = Vec::new();
+        for entry in walkdir::WalkDir::new(sandbox.path()).into_iter().flatten() {
+            if entry.file_type().is_file() && !entry.path().starts_with(&output_dir) {
+                escaped.push(entry.path().to_path_buf());
+            }
+        }
+        assert!(escaped.is_empty(), "export escaped output_dir: {escaped:?}");
     }
 
     #[test]

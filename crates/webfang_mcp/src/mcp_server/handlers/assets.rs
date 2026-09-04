@@ -162,10 +162,10 @@ mod tests {
     #[tokio::test]
     #[serial] // WEBFANG_MCP_DISABLE_SSRF is process-global — see scraping.rs
     async fn download_assets_rejects_loopback_base_url() {
-        // Defensive under shared-process harnesses: the escape hatch must be
-        // unset for this process so the guard is active. (nextest isolates
-        // each test in its own process, so this is a no-op there.)
-        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
+        // The escape hatch must be unset so the guard is active for this
+        // test; EnvGuard restores the original on drop, so the removal can
+        // no longer leak into sibling tests in a shared process (#1126).
+        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_MCP_DISABLE_SSRF"]);
 
         let (handler, _tmp) = test_handler().await;
         let res = handler
@@ -216,8 +216,9 @@ mod tests {
         // asset from wiremock on 127.0.0.1, so lift the guard for this
         // process (nextest isolates each test in its own process). The SSRF-
         // rejection path is covered separately by
-        // `download_assets_rejects_loopback_base_url` above.
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+        // `download_assets_rejects_loopback_base_url` above. EnvGuard
+        // restores the original on drop (#1126).
+        let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_MCP_DISABLE_SSRF", "1")]);
 
         let (handler, _tmp) = test_handler().await;
         // `output_dir` must be a safe relative path (params validation, #512).

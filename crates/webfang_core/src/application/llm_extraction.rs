@@ -341,16 +341,15 @@ mod tests {
 
     #[test]
     fn from_env_missing_key_is_config_error() {
-        std::env::remove_var("LLM_API_KEY");
+        let _guard = webfang_test_utils::EnvGuard::clean(&["LLM_API_KEY"]);
         let err = LlmConfig::from_env("https://8.8.8.8/v1", 100).expect_err("missing key fails");
         assert!(matches!(err, ScraperError::Config(_)));
     }
 
     #[test]
     fn from_env_redacts_key_in_debug() {
-        std::env::set_var("LLM_API_KEY", "sk-super-secret");
+        let _guard = webfang_test_utils::EnvGuard::with(&[("LLM_API_KEY", "sk-super-secret")]);
         let cfg = LlmConfig::from_env("https://8.8.8.8/v1", 100).expect("key present");
-        std::env::remove_var("LLM_API_KEY");
         let dbg = format!("{cfg:?}");
         assert!(dbg.contains("[REDACTED]"), "debug must redact: {dbg}");
         assert!(

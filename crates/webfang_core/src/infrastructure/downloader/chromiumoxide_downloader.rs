@@ -39,6 +39,40 @@ const NAV_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(feature = "chromium")]
 const CONTENT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// RAII guard over the CDP pump task spawned per `fetch` (#1129).
+///
+/// Dropping a `tokio` [`JoinHandle`](tokio::task::JoinHandle) only detaches
+/// the task, so every early `?` return (`new_page`, cookies, navigation or
+/// content timeout) — and every external cancellation of the `fetch` future
+/// at an `.await` point — would orphan the `while handler.next().await`
+/// pump. Holding this guard across all awaits makes cleanup total: `Drop`
+/// aborts the pump, and the still-owned `Browser` local drops right after,
+/// whose `Drop` kills the Chrome child via `kill_on_drop` (background reap).
+/// The happy path consumes the guard through [`HandlerGuard::join`] after a
+/// graceful close, so neither the abort nor the kill-on-drop fires there.
+#[cfg(feature = "chromium")]
+struct HandlerGuard(Option<tokio::task::JoinHandle<()>>);
+
+#[cfg(feature = "chromium")]
+impl HandlerGuard {
+    /// Happy-path shutdown: wait for the pump to drain after `Browser::close`.
+    /// Taking the handle out of the `Option` skips the `Drop` abort.
+    async fn join(mut self) {
+        if let Some(job) = self.0.take() {
+            let _ = job.await;
+        }
+    }
+}
+
+#[cfg(feature = "chromium")]
+impl Drop for HandlerGuard {
+    fn drop(&mut self) {
+        if let Some(job) = self.0.as_ref() {
+            job.abort();
+        }
+    }
+}
+
 /// CDP downloader that spawns a headless Chrome instance per fetch.
 ///
 /// Note: Resource gating is handled by [`super::hybrid_router::HybridRouter`].
@@ -85,8 +119,12 @@ impl Downloader for ChromiumoxideDownloader {
                 .await
                 .map_err(|e| DownloadError::Internal(format!("Chrome launch failed: {e}")))?;
 
-            // 3. Process CDP messages in isolated task to prevent hangs
+            // 3. Process CDP messages in isolated task to prevent hangs.
+            // `HandlerGuard` aborts the pump on every non-`join` exit
+            // (error `?` or async cancellation); dropping the `JoinHandle`
+            // alone would only detach it (#1129).
             let handler_job = tokio::spawn(async move { while handler.next().await.is_some() {} });
+            let guard = HandlerGuard(Some(handler_job));
 
             // 4. Inject cookies from L1 cookie bridge, filtered by domain
             let current_domain = url.host_str().unwrap_or("");
@@ -134,9 +172,12 @@ impl Downloader for ChromiumoxideDownloader {
                 .map_err(|_| DownloadError::Timeout(CONTENT_TIMEOUT.as_secs()))?
                 .map_err(|e| DownloadError::Internal(e.to_string()))?;
 
-            // 7. Deterministic shutdown — prevents zombie processes
+            // 7. Deterministic shutdown: graceful close, then drain the pump
+            // through the guard (skips the `Drop` abort). Early `?` exits
+            // and cancellation never reach here — the guard aborts the pump
+            // and `Browser::drop` kills the child via `kill_on_drop`.
             browser.close().await.ok();
-            handler_job.await.ok();
+            guard.join().await;
 
             Ok(FetchedPage {
                 url: url.clone(),
@@ -161,7 +202,7 @@ impl Downloader for ChromiumoxideDownloader {
 impl Downloader for ChromiumoxideDownloader {
     fn fetch<'a>(&'a self, _url: &'a Url) -> BoxFuture<'a, Result<FetchedPage, DownloadError>> {
         Box::pin(async move {
-            Err(DownloadError::Internal(
+            Err(DownloadError::FeatureGated(
                 "Chromiumoxide not enabled (compile with --features chromium)".to_string(),
             ))
         })
@@ -187,8 +228,8 @@ mod tests {
         let url: Url = "https://example.com".parse().unwrap();
         let err = dl.fetch(&url).await.unwrap_err();
         assert!(
-            matches!(err, DownloadError::Internal(ref msg) if msg.contains("not enabled")),
-            "expected stub error, got: {err}"
+            matches!(err, DownloadError::FeatureGated(ref msg) if msg.contains("not enabled")),
+            "expected FeatureGated stub error (PermanentFatal, no retry), got: {err}"
         );
     }
 
@@ -198,6 +239,41 @@ mod tests {
         let dl = ChromiumoxideDownloader::new(Arc::new(RwLock::new(CookieBridge::new())));
         assert!(dl.supports_interactions());
         assert_eq!(dl.memory_cost(), 200_000_000);
+    }
+
+    /// The guard must abort the pump task when the fetch scope exits without
+    /// `join` (error `?` or async cancellation, #1129). Proved by observing
+    /// the spawned future's `Drop`: an aborted task drops its future.
+    #[tokio::test]
+    #[cfg(feature = "chromium")]
+    async fn handler_guard_aborts_pump_on_early_exit() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+
+        struct DropFlag(Arc<AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let future_dropped = Arc::new(AtomicBool::new(false));
+        let flag = DropFlag(future_dropped.clone());
+        let job = tokio::spawn(async move {
+            let _flag = flag;
+            std::future::pending::<()>().await;
+        });
+        drop(HandlerGuard(Some(job)));
+
+        timeout(Duration::from_secs(5), async {
+            while !future_dropped.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("aborted pump task must drop its future promptly");
     }
 
     #[test]

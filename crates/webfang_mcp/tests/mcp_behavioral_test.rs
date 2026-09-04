@@ -27,6 +27,10 @@ use webfang_mcp::mcp_server::state::McpState;
 fn init_ssrf_disabled() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
+        // Process-wide, permanent setup (no restore-on-drop), so this uses
+        // `env_lock` directly — but the mutation is still serialized under
+        // the workspace ENV_LOCK invariant (issue #1126).
+        let _lock = webfang_test_utils::env_lock();
         std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
     });
 }

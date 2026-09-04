@@ -66,14 +66,18 @@ fn every_methodology_category_is_represented() {
 /// undocumented egress (non-reproducible numbers) and yields `None`.
 #[test]
 fn egress_type_reads_env_var() {
-    // SAFETY-free on edition 2021; this test owns WEBFANG_BENCH_EGRESS_TYPE.
-    std::env::set_var(EGRESS_TYPE_ENV_VAR, "residential-proxy");
+    // This test owns WEBFANG_BENCH_EGRESS_TYPE for its whole body: EnvGuard
+    // holds the workspace ENV_LOCK, `set`/`remove` step through values under
+    // that held lock, and drop restores the original state — no raw
+    // `set_var`/`remove_var` racing sibling threads (issue #1126).
+    let mut guard =
+        webfang_test_utils::EnvGuard::with(&[(EGRESS_TYPE_ENV_VAR, "residential-proxy")]);
     assert_eq!(
         tierb_corpus::egress_type_from_env().as_deref(),
         Some("residential-proxy")
     );
-    std::env::set_var(EGRESS_TYPE_ENV_VAR, "   ");
+    guard.set(EGRESS_TYPE_ENV_VAR, "   ");
     assert_eq!(tierb_corpus::egress_type_from_env(), None);
-    std::env::remove_var(EGRESS_TYPE_ENV_VAR);
+    guard.remove(EGRESS_TYPE_ENV_VAR);
     assert_eq!(tierb_corpus::egress_type_from_env(), None);
 }

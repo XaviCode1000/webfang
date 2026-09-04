@@ -28,17 +28,19 @@ pub(crate) mod test_support {
     /// exactly these names — issue #926). Tests must observe the declared
     /// defaults, not the ambient shell.
     pub(crate) fn with_clap_env_cleared<T>(f: impl FnOnce() -> T) -> T {
-        let saved: Vec<(String, String)> = std::env::vars()
-            .filter(|(name, _)| name.starts_with("WEBFANG_") || name == "AI_MODEL_ID")
-            .collect();
-        for (name, _) in &saved {
-            std::env::remove_var(name);
-        }
-        let result = f();
-        for (name, value) in saved {
-            std::env::set_var(&name, value);
-        }
-        result
+        // Snapshot the matching keys while holding ENV_LOCK so the iteration
+        // cannot race a concurrent mutation (issue #1126); the guard then
+        // removes them and restores on drop.
+        let keys: Vec<String> = {
+            let _lock = webfang_test_utils::env_lock();
+            std::env::vars()
+                .filter(|(name, _)| name.starts_with("WEBFANG_") || name == "AI_MODEL_ID")
+                .map(|(name, _)| name)
+                .collect()
+        };
+        let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+        let _guard = webfang_test_utils::EnvGuard::clean(&refs);
+        f()
     }
 }
 
@@ -359,6 +361,10 @@ mod tests {
     static ENV_GUARD: std::sync::Once = std::sync::Once::new();
     fn clean_env() {
         ENV_GUARD.call_once(|| {
+            // Permanent, process-wide removal (no restore-on-drop), so this
+            // uses `env_lock` directly instead of `EnvGuard` — but the lock
+            // invariant still holds: every mutation is serialized (#1126).
+            let _lock = webfang_test_utils::env_lock();
             let poisoned: Vec<String> = std::env::vars()
                 .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")
                 .map(|(k, _)| k)
