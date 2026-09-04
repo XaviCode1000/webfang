@@ -6,7 +6,8 @@
 #
 # Pipeline flow:
 #   toolchain (15s) → fmt (30s) → clippy (2min) → test-core (15min) → test-full (20min cold cache)
-#   toolchain also runs dead-test detection (scripts/check_dead_tests.sh)
+#   repo-guards (parallel) runs dead-test detection + the other architectural
+#   guards + actionlint/shellcheck lint; gate still blocks merge on it.
 #   test-core runs: unit tests (--lib) then integration/behavioral tests (--test '*')
 #   test-full runs: all features enabled (full workspace compile + test, NO AI inference)
 #   test-ai (NON-REQUIRED, parallel after clippy): AI integration tests with ONNX model.
