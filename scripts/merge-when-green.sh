@@ -23,10 +23,16 @@
 #   3. Merges with `gh pr merge --squash` (default) or `gh pr merge --merge` when
 #      `--merge` is passed, then deletes the remote head
 #      branch for same-owner PRs. Local branch/worktree cleanup is left to the
-#      post-merge runbook (see 'Post-merge runbook' below).
+#      post-merge runbook (see 'Post-merge runbook' below). A remote-cleanup
+#      failure never changes the exit code; it is reported on stdout as
+#      `cleanup: failed branch=<name> reason=<reason>` (#1072).
 #
 # Exit codes:
-#   0  PR merged.
+#   0  PR merged. Remote-branch cleanup failure after a successful merge also
+#      exits 0 — by design: a non-zero exit post-merge teaches callers the
+#      merge failed and re-arms the #819 retry trap (double merge), which is
+#      worse than a stale branch. Parse the `cleanup: failed` stdout line
+#      instead (#1072).
 #   1  Invalid arguments (including --squash together with --merge) or missing gh.
 #   2  Required check FAILED, was CANCELLED, or SKIPPED.
 #   3  All checks green but merge state is not mergeable (e.g. BEHIND — rebase first).
@@ -329,6 +335,12 @@ if [[ $delete_remote -eq 1 ]]; then
   # deleted by another process), and `git push --delete` on an absent ref
   # prints a noisy "[remote rejected]" error even though nothing is wrong.
   if ! refs="$(git ls-remote origin "refs/heads/${head_branch}")"; then
+    # Machine-readable signal (#1072): cleanup outcome is reported on stdout,
+    # never via the exit code. A non-zero exit AFTER a successful merge would
+    # teach callers the merge failed and re-arm the #819 retry trap (double
+    # merge) — strictly worse than a stale branch. Consumers that need to
+    # detect pending cleanup grep for '^cleanup: failed'.
+    echo "cleanup: failed branch=${head_branch} reason=ls-remote-failed"
     echo "warning: merge succeeded, but remote branch cleanup could not be verified." >&2
     remote_branch_state="stale"
   elif [[ -z "$refs" ]]; then
@@ -343,6 +355,8 @@ if [[ $delete_remote -eq 1 ]]; then
       echo "    remote branch already absent."
       remote_branch_state="absent"
     else
+      # See #1072 note above: signal on stdout, keep exit 0 (the merge is OK).
+      echo "cleanup: failed branch=${head_branch} reason=push-delete-failed"
       echo "warning: merge succeeded but remote branch '${head_branch}' could not be deleted." >&2
       remote_branch_state="stale"
     fi
