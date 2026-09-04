@@ -266,7 +266,7 @@ impl VaultSearchService {
         let reader = Arc::clone(&self.note_reader);
         let notes = tokio::task::spawn_blocking(move || reader.read_vault_notes(&path))
             .await
-            .map_err(|e| ScraperError::ingestion(format!("vault read join: {e}")))??;
+            .map_err(|e| ScraperError::ingestion(format!("leer vault (join): {e}")))??;
 
         // Step 2: Load all indexed note metadata.
         let indexed = self.repository.list_indexed_notes().await?;

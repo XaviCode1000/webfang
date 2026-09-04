@@ -355,7 +355,10 @@ impl Container {
         let log_path = scraper_config.output_dir.join("crawl_results.bin");
         // #1106: construction rebuilds the index by scanning an existing log
         // with synchronous std::fs I/O — on the blocking pool, so a large
-        // persisted log cannot park a Tokio worker during startup.
+        // persisted log cannot park a Tokio worker during startup. The inner
+        // `tokio::spawn` the constructor issues still works from
+        // `spawn_blocking` because that thread propagates the ambient Tokio
+        // runtime context.
         let repo_build =
             tokio::task::spawn_blocking(move || CrawlResultRepositoryImpl::new(log_path, 1024))
                 .await;

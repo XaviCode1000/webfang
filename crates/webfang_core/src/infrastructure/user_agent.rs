@@ -359,7 +359,15 @@ mod tests {
     #[tokio::test]
     async fn test_fresh_cache_served_from_disk_off_the_executor() {
         let tmp = tempfile::TempDir::new().expect("tmp");
-        std::env::set_var("XDG_CACHE_HOME", tmp.path());
+        // Env hermeticity (#1126): the cache path reads XDG_CACHE_HOME, so the
+        // mutation must serialize on the shared ENV_LOCK. `EnvGuard::with`
+        // holds the lock for the whole body (including the awaited blocking
+        // read) and restores the original value on drop — which runs before
+        // the TempDir drops, undoing setup in reverse order.
+        let _guard = webfang_test_utils::EnvGuard::with(&[(
+            "XDG_CACHE_HOME",
+            tmp.path().to_str().expect("utf-8 temp path"),
+        )]);
         let dir = tmp.path().join("webfang");
         std::fs::create_dir_all(&dir).expect("cache dir");
         let cache = UserAgentCache {
@@ -375,7 +383,6 @@ mod tests {
 
         let agents = UserAgentCache::load_with_profile(Profile::Chrome145).await;
 
-        std::env::remove_var("XDG_CACHE_HOME");
         assert_eq!(
             agents, cache.agents,
             "fresh cache must be served from disk, not the network"

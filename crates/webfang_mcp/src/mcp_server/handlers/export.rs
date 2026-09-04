@@ -131,6 +131,7 @@ impl McpHandler {
         tokio::task::spawn_blocking(move || load_results_from(repo))
             .await
             .map_err(|e| {
+                tracing::warn!(error = %e, "export_load_results_join_failed");
                 CallToolResult::error(vec![Content::text(format!(
                     "no se pudieron cargar los resultados: {e}"
                 ))])
