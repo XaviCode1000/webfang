@@ -1040,14 +1040,18 @@ mod tests {
 
     // ============================================================================
     // Task 5.1 memory probe — repository index growth (BEFORE numbers).
-    // Reuses this module's make_content/wait helpers; no byte assertions by
+    // Reuses this module's make_content helper; no byte assertions by
     // design (Q3 MEASURE FIRST).
     // ============================================================================
+    /// Channel capacity `N + 1_024` exceeds the total load `N` because `save()`
+    /// is a non-blocking `try_send`: any capacity below `N` makes acceptance
+    /// depend on the worker's drain timing, the assumption that saturated the
+    /// 1024-slot channel under CI load (#1170).
     #[tokio::test]
     async fn memory_probe_repository_index_growth_20k_results() {
         const N: usize = 20_000;
         let dir = tempfile::tempdir().expect("tempdir");
-        let repo = CrawlResultRepositoryImpl::new(dir.path().join("probe-log.jsonl"), 1_024)
+        let repo = CrawlResultRepositoryImpl::new(dir.path().join("probe-log.jsonl"), N + 1_024)
             .expect("repository builds");
         let before = crate::infrastructure::observability::memory_probe::rss_bytes();
 
@@ -1057,24 +1061,13 @@ mod tests {
                 &format!("Probe document {i}"),
             );
             repo.save(&content).expect("save accepted");
-            // Yield periodically so the background writer drains the bounded
-            // channel — exercising its real backpressure, not bypassing it.
-            if i % 256 == 255 {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
         }
-        wait_for_index(&repo, &format!("https://probe.example.com/doc-{}", N - 1)).await;
-        // Give the writer a final drain window for the tail of the channel.
-        for _ in 0..40 {
-            if repo
-                .find_by_url(&format!("https://probe.example.com/doc-{}", N - 1))
-                .unwrap()
-                .is_some()
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
+        // Deterministic rendezvous: shutdown() drains the queue in order and
+        // joins the writer thread (#1121), so every record is guaranteed to be
+        // in the index when it returns — no polling windows, no sleep yields.
+        repo.shutdown()
+            .await
+            .expect("clean shutdown drains and joins the writer");
         assert_eq!(repo.index.len(), N, "every save must land in the index");
 
         let after = crate::infrastructure::observability::memory_probe::rss_bytes();
