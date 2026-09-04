@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use tokio::sync::RwLock as AsyncRwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn, Instrument};
 use wreq_util::Profile;
@@ -122,7 +123,7 @@ pub struct Engine {
     /// dynamic fetch path for this engine.
     downloader_factory: Option<Arc<dyn DownloaderFactory>>,
     /// Cookie bridge for extracting and injecting cookies.
-    cookie_bridge: Arc<RwLock<CookieBridge>>,
+    cookie_bridge: Arc<AsyncRwLock<CookieBridge>>,
     /// Domains currently banned due to WAF or rate limiting.
     banned_domains: Arc<RwLock<Vec<BannedDomain>>>,
     /// Optional sink capturing every fetched page body (#631).
@@ -237,7 +238,7 @@ impl Engine {
             js_strategy: JsStrategy::default(),
             fetch_router: None,
             downloader_factory: None,
-            cookie_bridge: Arc::new(RwLock::new(CookieBridge::new())),
+            cookie_bridge: Arc::new(AsyncRwLock::new(CookieBridge::new())),
             banned_domains: Arc::new(RwLock::new(Vec::new())),
             content_sink: None,
             pipeline: None,

@@ -16,8 +16,9 @@
 //! internal `[[bin]] bench_run --strategy <s>` executed via
 //! `std::process::Command` — never weaken the test.
 
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::layer::SubscriberExt;
 use url::Url;

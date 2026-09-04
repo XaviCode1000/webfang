@@ -16,8 +16,9 @@
 //! infrastructure concretes and need its own ADR-0010 allowlist entry, which is
 //! exactly what this slice deletes.
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
+use tokio::sync::RwLock;
 use url::Url;
 use wreq::cookie::Jar;
 use wreq_util::Profile;
@@ -242,7 +243,6 @@ mod router_tests {
     use super::*;
     use crate::domain::JsStrategy;
     use std::path::PathBuf;
-    use std::sync::RwLock;
 
     fn test_cookie_bridge() -> Arc<RwLock<CookieBridge>> {
         Arc::new(RwLock::new(CookieBridge::new()))
