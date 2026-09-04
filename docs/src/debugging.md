@@ -139,7 +139,7 @@ jq -r 'select(.level == "ERROR") | .fields.url // empty' debug.jsonl | sort -u
 | `execute` | `pipeline::PipelineExecutor` | `url`, `stages` |
 | `pipeline_stage` | `pipeline::PipelineExecutor` | `stage`, `url` |
 | `export_batch` | `JsonlExporter` / `VectorExporter` / `FileExporter` | `exporter`, `documents` |
-| `scrape_single_url` → `scrape_single` | `crawler::discovery::scrape_single_url_for_tui` | `url` (outer), `correlation_id`, `trace_id`, `url` (inner, #501) |
+| `scrape_single_url` → `scrape_single` | `crawler::discovery::scrape_single_url` | `url` (outer), `correlation_id`, `trace_id`, `url` (inner, #501) |
 | `scrape_with_config` | `scraper_service` | `url`, `correlation_id`, `trace_id`, `has_downloads` |
 | `scrape_multiple_with_limit` | `scraper_service` | `urls`, `concurrency` |
 

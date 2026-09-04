@@ -164,11 +164,6 @@ Behavior:
           [env: WEBFANG_CLEAN_AI=]
           [alias: --ai]
 
-      --tui
-          Unified TUI mode: config form (collapsible sections) → URL selector → scraping
-          
-          [env: WEBFANG_TUI=]
-
 Display:
   -v, --verbose...
           Verbosity level: -v (INFO), -vv (DEBUG), -vvv (TRACE)

@@ -6,8 +6,8 @@
 #
 # Why it works the way it does:
 #   - The binary is ALWAYS built first, with EXACTLY the release feature set
-#     (`ai mcp ui` — see .github/workflows/release.yml). Feature-gated flags
-#     (--tui, AI flags) must appear; dev-only features (e.g.
+#     (`ai mcp` — see .github/workflows/release.yml). Feature-gated flags
+#     (AI flags) must appear; dev-only features (e.g.
 #     adaptive-selectors) must NOT. Incremental: a no-op when already up to
 #     date, so this is cheap to run locally and in CI.
 #   - Help output is captured via command substitution (`$(...)`), which

@@ -31,7 +31,7 @@ OUT_DIR=docs/book/webfang-docs-llm
 BUILD_DATE="${BUILD_DATE:-}"
 SOURCE_COMMIT="${GITHUB_SHA:-}"
 PAGES_PREFIX="https://xavicode1000.github.io/webfang/webfang-docs-llm"
-CHAPTERS="overview debugging testing troubleshooting tui-unified-design"
+CHAPTERS="overview debugging testing troubleshooting"
 # webfang_cli is bin-only and stays excluded from the API render: it is covered
 # by the 06-cli-reference chapter (#733). Only the 5 lib crates are rendered.
 ALL_CRATES="webfang_core webfang_ai webfang_mcp webfang_test_utils"
