@@ -267,55 +267,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
-      - name: Cache ONNX model (Granite-97M)
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/huggingface/hub/
-          key: onnx-model-${{ runner.os }}-granite-97m-v1
-          restore-keys: |
-            onnx-model-${{ runner.os }}-granite-97m-
-      - name: Download ONNX model (cache miss)
-        run: |
-          set -e
-          MODEL_DIR="$HOME/.cache/huggingface/hub/models--ibm-granite--granite-embedding-97m-multilingual-r2"
-          BLOB_SHA="68e592b160673d30250824c1116bc6ab33f70efb22b97c9e1d7ce1e69c1c9d70"
-          TOKENIZER_BLOB_SHA="4f2842d568e2724370aec203652a42ac783c7937f8347a1a2cc7506d71f1582f"
-          BLOB_FILE="$MODEL_DIR/blobs/$BLOB_SHA"
-          TOKENIZER_BLOB_FILE="$MODEL_DIR/blobs/$TOKENIZER_BLOB_SHA"
-          SNAPSHOT_DIR="$MODEL_DIR/snapshots/835ad14087e140460703cf0fae09f97d469d65c2"
-          SNAPSHOT_FILE="$SNAPSHOT_DIR/onnx/model.onnx"
-          SNAPSHOT_TOKENIZER="$SNAPSHOT_DIR/tokenizer.json"
-          # Write the ref BEFORE the cache-hit check, unconditionally.
-          # hf-hub 0.5.0 reads refs/main VERBATIM (no trim) to build the
-          # snapshot path (#843): a trailing newline makes every lookup miss
-          # and all model-dependent tests fail instantly. Older versions of
-          # this step wrote the ref with `echo`, poisoning restored caches —
-          # rewriting it here (printf = no newline, matches hf-hub's own
-          # writer) heals them on first run after this change.
-          mkdir -p "$MODEL_DIR/refs"
-          printf '%s' "835ad14087e140460703cf0fae09f97d469d65c2" > "$MODEL_DIR/refs/main"
-          if [ -f "$SNAPSHOT_FILE" ] || [ -L "$SNAPSHOT_FILE" ]; then
-            echo "Model already cached, skipping download"
-            exit 0
-          fi
-          echo "Downloading Granite-97M ONNX model (~372MB)..."
-          mkdir -p "$MODEL_DIR/blobs"
-          mkdir -p "$SNAPSHOT_DIR/onnx"
-          curl -L --fail --retry 5 --retry-all-errors \
-            --retry-delay 5 -o "$BLOB_FILE" \
-            "https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/main/onnx/model.onnx"
-          echo "Verifying model SHA256..."
-          echo "$BLOB_SHA  $BLOB_FILE" | sha256sum --check --status
-          echo "Downloading tokenizer.json..."
-          curl -L --fail --retry 5 --retry-all-errors \
-            --retry-delay 5 -o "$TOKENIZER_BLOB_FILE" \
-            "https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/main/tokenizer.json"
-          echo "Verifying tokenizer SHA256..."
-          echo "$TOKENIZER_BLOB_SHA  $TOKENIZER_BLOB_FILE" | sha256sum --check --status
-          ln -s "../../../blobs/$BLOB_SHA" "$SNAPSHOT_FILE"
-          ln -s "../../blobs/$TOKENIZER_BLOB_SHA" "$SNAPSHOT_TOKENIZER"
-          echo "Model + tokenizer downloaded, verified, and cached"
-          ls -lh "$BLOB_FILE"
+      # NOTE: no ONNX model download here. test-full runs zero AI inference
+      # (all --features compile + test, no --ignored); the only --ignored
+      # consumer is the test-ai job, which keeps its own download. Skipping
+      # the ~372MB model cache entry here saves Actions-cache budget.
       - name: Pre-build test binary
         run: cargo build -p webfang_cli --bin webfang --all-features
       - run: cargo nextest run --all-features --test-threads 4 --retries 2
