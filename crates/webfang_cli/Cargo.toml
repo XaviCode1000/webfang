@@ -44,9 +44,6 @@ tracing = { workspace = true }
 # URL
 url = { workspace = true }
 
-# Serialization
-serde_json = { workspace = true }
-
 
 [lints]
 workspace = true
