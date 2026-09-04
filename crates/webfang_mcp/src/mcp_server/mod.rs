@@ -47,16 +47,15 @@ pub use state::McpState;
 /// model resolution) is now performed lazily by [`spawn_ai_wiring`] after the
 /// server starts serving (#759).
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if the container cannot be created from the default config.
-/// This should never happen as the default config always produces a valid container.
-pub async fn build_container() -> webfang_core::di::Container {
+/// Returns the typed construction error (e.g. HTTP client setup failure) so
+/// the calling binaries can log it and exit with a code instead of aborting
+/// the process (#1123).
+pub async fn build_container(
+) -> Result<webfang_core::di::Container, Box<dyn std::error::Error + Send + Sync>> {
     let config = webfang_core::config::Config::default();
-    webfang_core::di::Container::from_config(config)
-        .await
-        .ok()
-        .unwrap_or_else(|| panic!("failed to create container: default config should be valid"))
+    webfang_core::di::Container::from_config(config).await
 }
 
 /// Build the shared asset `Downloader` for the long-lived MCP servers (#1120).
@@ -203,7 +202,7 @@ impl ServerHandler for McpHandler {
 
 #[cfg(test)]
 mod tests {
-    use super::build_shared_downloader;
+    use super::*;
 
     /// #1120: the server composition root must never hand out the legacy
     /// unbounded (`usize::MAX`) downloader — the cache bound is the same
@@ -228,5 +227,23 @@ mod tests {
             "long-lived server must not use the unbounded legacy cache"
         );
         assert_eq!(downloader.asset_cache_capacity(), expected);
+    }
+
+    /// Contract guard for #1123: `build_container` propagates the typed
+    /// construction error as `Err` instead of aborting the process with a
+    /// `panic!`. Against the pre-fix signature (`-> Container`) this test does
+    /// not compile (`is_ok` does not exist on `Container`) — that compile
+    /// failure on main is the reproduction evidence that the panic-as-error
+    /// handling contract existed. The panic itself is defensive: probes with
+    /// hostile proxy env vars showed `Container::from_config` cannot fail from
+    /// the binaries' default config, so no runtime repro is reachable.
+    #[tokio::test]
+    async fn build_container_returns_result_and_boots_with_default_config() {
+        let result = build_container().await;
+        assert!(
+            result.is_ok(),
+            "default config must produce a valid container, got Err: {:?}",
+            result.err().map(|e| e.to_string())
+        );
     }
 }
