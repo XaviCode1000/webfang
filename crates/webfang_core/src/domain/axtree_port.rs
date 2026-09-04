@@ -3,8 +3,10 @@
 //! Owns the pure DTOs (`SnapshotFormat`, `CompactNode`, `CompactSnapshot`),
 //! the `RawAxNodeView` trait abstraction, the `compact` serializer, and
 //! the `AxTreePort` trait. The I/O implementations (chromiumoxide CDP
-//! fetcher) live in `infrastructure::axtree` and impl this trait;
-//! `application::som_capture` consumes the trait through container DI.
+//! fetcher) live in `infrastructure::axtree` and impl this trait; today the
+//! only consumers are the `infrastructure::axtree` free functions
+//! (`fetch_axtree_snapshot`, `fetch_playwright_snapshot`) called by the MCP
+//! axtree handler. The trait remains the DI seam for future application use.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -18,8 +20,10 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Domain port for fetching raw accessibility trees.
 ///
-/// The I/O implementations live in `infrastructure::axtree`. Application
-/// code consumes the trait through container DI as `Arc<dyn AxTreePort>`.
+/// The I/O implementations live in `infrastructure::axtree`
+/// (`ChromiumoxideAxTreeAdapter`). The trait is the DI seam for application
+/// code that needs raw AX nodes; current snapshot consumers go through the
+/// infrastructure free functions instead.
 ///
 /// `#[cfg(feature = "chromium")]` impl spawns headless Chromium via CDP;
 /// non-chromium stub returns an error.
