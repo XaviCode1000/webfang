@@ -50,12 +50,15 @@
 #   - Does NOT auto-rebase if BEHIND. The maintainer should rebase and re-push,
 #     then re-run the script. Single maintainer, ~30s, no automation needed.
 #   - Requires `gh` authenticated with repo scope.
-#   - After an actual merge, prints exactly ONE machine-parseable marker line on
+#   - After an actual merge, prints one machine-parseable RESULT line last on
 #     stdout: `RESULT: merged remote_branch=<deleted|absent|stale>` — deleted:
 #     remote head branch deleted; absent: head ref already gone (or fork PR — no
 #     head ref on origin to delete); stale: head ref could not be deleted, or its
-#     absence could not be verified. Every post-merge path still exits 0 (#819);
-#     automation must parse this line, not prose, to learn the cleanup outcome.
+#     absence could not be verified. Cleanup-failure lines (`cleanup: failed
+#     branch=<name> reason=<reason>`, contract defined in #1161), if any,
+#     precede the RESULT line, so the machine stream may hold two lines. Every
+#     post-merge path still exits 0 (#819); automation must parse these markers,
+#     not prose, to learn the cleanup outcome.
 #
 # Post-merge runbook — run from the main checkout (branch `main`) after this
 # script succeeds:
@@ -111,11 +114,13 @@ Exit codes:
   4  gh network/auth failure.
 
 Result marker:
-  After an actual merge (not --dry-run) the script prints one final stdout line:
+  After an actual merge (not --dry-run) the script prints this machine line last:
     RESULT: merged remote_branch=<deleted|absent|stale>
   deleted = remote head branch deleted; absent = head ref already gone (or fork
   PR: no head ref on origin); stale = head ref could not be deleted or its
-  absence could not be verified. Cleanup never changes the exit code (#819).
+  absence could not be verified. Cleanup-failure lines (`cleanup: failed
+  branch=<name> reason=<reason>` — full contract in #1161), if any, precede the
+  RESULT line. Cleanup never changes the exit code (#819).
 EOF
 }
 
@@ -344,6 +349,7 @@ if [[ $delete_remote -eq 1 ]]; then
   fi
 fi
 
-# Single machine-parseable handoff line; every post-merge path exits 0 (#819).
+# Final machine-parseable handoff line; any `cleanup: failed` lines (#1161)
+# precede it. Every post-merge path exits 0 (#819).
 echo "RESULT: merged remote_branch=${remote_branch_state}"
 exit 0
