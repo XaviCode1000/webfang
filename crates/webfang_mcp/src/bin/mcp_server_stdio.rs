@@ -55,6 +55,11 @@ async fn main() {
         spawn_ai_wiring(Arc::clone(&container));
     }
 
+    // Keep a second handle: `serve()` moves the handler (and with it the
+    // state and its container) into the service, so this clone is what lets
+    // main drain the crawl-result writer at exit (#1143 review).
+    let exit_container = Arc::clone(&container);
+
     let state = McpState::from_container(container).with_export_roots(args.export_roots);
 
     let handler = McpHandler::new(state);
@@ -67,5 +72,17 @@ async fn main() {
         .expect("failed to start MCP server over stdio");
 
     // Wait for the server to finish (client disconnects or stdin closes).
-    server.waiting().await.expect("MCP server error");
+    let waiting_result = server.waiting().await;
+
+    // #1121: same drain as the HTTP transport (server.rs) — the stdio tools
+    // persist crawl results through the very same background writer, so on
+    // this transport too `shutdown()` must join it before the runtime goes
+    // away. Runs even if `waiting()` errored; its error is propagated after.
+    if let Some(repo) = exit_container.crawl_result_repository() {
+        if let Err(e) = repo.shutdown().await {
+            tracing::warn!(error = %e, "crawl-result writer shutdown reported errors");
+        }
+    }
+
+    waiting_result.expect("MCP server error");
 }

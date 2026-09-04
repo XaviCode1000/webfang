@@ -178,9 +178,24 @@ pub async fn start_mcp_server(
     info!("MCP server starting on http://{}/mcp", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
+    // Capture the serve result instead of `?`: a serve error must still drain
+    // the writer below — the early-return would silently skip the flush of
+    // every buffered record (#1143 review). The failure is propagated after
+    // the drain completes.
+    let serve_result = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(state.cancel_token.clone()))
-        .await?;
+        .await;
+
+    // #1121: drain and join the crawl-result background writer before the
+    // runtime goes away, so every write acknowledged by `save` is confirmed
+    // persisted and a dead writer is reported instead of silently detached.
+    if let Some(repo) = state.container.crawl_result_repository() {
+        if let Err(e) = repo.shutdown().await {
+            tracing::warn!(error = %e, "crawl-result writer shutdown reported errors");
+        }
+    }
+
+    serve_result?;
 
     Ok(())
 }

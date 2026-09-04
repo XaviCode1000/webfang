@@ -3,6 +3,9 @@
 //! Defines contracts for storing and retrieving domain entities.
 //! Infrastructure layer implements these traits.
 
+use std::future::Future;
+use std::pin::Pin;
+
 use crate::domain::{CrawlError, ScrapedContent};
 
 /// Repository interface for crawl results
@@ -63,6 +66,29 @@ pub trait CrawlResultRepository: Send + Sync {
             .into_iter()
             .filter_map(|url| self.find_by_url(&url).transpose())
             .collect()
+    }
+
+    /// Gracefully shut down any background persistence resources.
+    ///
+    /// NOTE: fire-and-forget — `save()` on buffering implementations returns
+    /// as soon as the record is queued; call `shutdown()` before exit to
+    /// flush queued writes and learn whether any of them failed.
+    ///
+    /// Default: no-op — implementations without a background writer have
+    /// nothing to drain. Implementations that buffer writes off-thread MUST
+    /// close the send side, drain pending records, and join the writer so
+    /// the durability claimed by `save` actually holds when the caller
+    /// proceeds (#1121).
+    ///
+    /// Dyn-compatible `BoxFuture` shape follows `VectorRepository`: the
+    /// join is awaited, never blocked on a worker thread.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - background writer drained and joined cleanly
+    /// * `Err(CrawlError)` - the writer died or reported I/O errors
+    fn shutdown(&self) -> Pin<Box<dyn Future<Output = Result<(), CrawlError>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
