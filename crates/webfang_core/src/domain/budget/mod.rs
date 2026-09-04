@@ -45,6 +45,15 @@ pub(crate) const BATCH_CONCURRENCY_DEFAULT: usize = 5;
 /// `max_concurrent_inference` default.
 pub(crate) const INFERENCE_WORKERS_DEFAULT: usize = 4;
 
+/// Shared cap on distinct domains tracked by long-lived per-domain maps.
+///
+/// ONE policy value, two enforcement sites:
+/// - `webfang_mcp::mcp_server::metrics` (REQ-05): domains past the cap
+///   aggregate into the overflow bucket;
+/// - `infrastructure::network::session_pool` (#1130): domains past the cap
+///   are evicted LRU-style so the MCP server's session map stays bounded.
+pub const MAX_TRACKED_DOMAINS: usize = 500;
+
 /// Operator-level budget overrides. Every field is `None` unless the
 /// operator explicitly set the knob; `Default` therefore reproduces
 /// today's behavior exactly.

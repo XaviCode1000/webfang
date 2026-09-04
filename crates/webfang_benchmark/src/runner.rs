@@ -158,7 +158,7 @@ fn run_strategy(
         let config = CrawlerConfig::builder(seed)
             .max_pages(max_pages)
             .max_depth(1)
-            .concurrency(2)
+            .concurrency(std::num::NonZeroUsize::new(2).expect("2 is non-zero"))
             .delay_ms(0)
             .build();
         let _crawl_result = tracing::dispatcher::with_default(&dispatch, || {

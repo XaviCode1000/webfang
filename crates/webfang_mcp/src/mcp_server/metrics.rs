@@ -107,7 +107,11 @@ impl ScrapeEvent {
 
 /// Maximum number of distinct domains tracked in the per-domain breakdown
 /// (REQ-05). Beyond this cap, new domains aggregate into [`OVERFLOW_DOMAIN_KEY`].
-pub const MAX_TRACKED_DOMAINS: usize = 500;
+///
+/// #1130: the value moved to `webfang_core::domain::budget` — the single
+/// source shared with the `DomainSessionPool` cap — and is re-exported here
+/// so existing `metrics::MAX_TRACKED_DOMAINS` paths keep working.
+pub use webfang_core::domain::budget::MAX_TRACKED_DOMAINS;
 
 /// Overflow bucket key for domains recorded past [`MAX_TRACKED_DOMAINS`]
 /// (REQ-05). A domain literally named `"otros"` merges into this same bucket —
