@@ -55,6 +55,8 @@ jobs:
   # TIER 0: TOOLCHAIN GATE (< 30 seconds)
   # Verify the installed Rust version matches rust-version in Cargo.toml.
   # Runs first — catches version drift before any compilation.
+  # Repo guards live in the parallel `repo-guards` job so a slow lint never
+  # blocks the compile tiers (fmt/clippy/test-core/security fan out from here).
   # ============================================================================
   toolchain:
     name: Verify rust-version
@@ -80,6 +82,19 @@ jobs:
             echo "ERROR: Rust $INSTALLED is below minimum $REQUIRED"
             exit 1
           fi
+
+  # ============================================================================
+  # TIER 0b: REPO GUARDS (parallel with the compile tiers)
+  # The 6 regression guards + workflow/shell lint, relocated verbatim from the
+  # old `toolchain` job. Merge-blocking via the `gate` job's needs (not via
+  # the toolchain fan-out), so fmt/clippy/test-core/security start immediately.
+  # ============================================================================
+  repo-guards:
+    name: Repo guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
       # Regression guard for Wave 3 (#402): all tests must be crate-local.
       # Fails if anyone re-adds a .rs file under root tests/ (dead test).
       - name: Dead test detection
@@ -451,7 +466,7 @@ jobs:
   # ============================================================================
   gate:
     name: CI Gate
-    needs: [toolchain, fmt, clippy, test-core, test-full, security, doc-quality]
+    needs: [toolchain, repo-guards, fmt, clippy, test-core, test-full, security, doc-quality]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
