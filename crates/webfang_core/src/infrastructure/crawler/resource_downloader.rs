@@ -55,7 +55,7 @@ impl Drop for PermitGuard {
 
 /// Configuration for resource downloading.
 #[derive(Debug, Clone)]
-pub struct DownloadConfig {
+pub struct ResourceDownloadConfig {
     /// Maximum total size in bytes (default: 25MB)
     pub max_size_bytes: u64,
     /// Global download timeout in seconds
@@ -70,7 +70,7 @@ pub struct DownloadConfig {
     pub buffer_capacity_bytes: usize,
 }
 
-impl Default for DownloadConfig {
+impl Default for ResourceDownloadConfig {
     fn default() -> Self {
         Self {
             max_size_bytes: 25 * 1024 * 1024, // 25MB
@@ -103,7 +103,7 @@ pub struct DownloadedResource {
 pub struct ResourceDownloader {
     semaphore: Arc<tokio::sync::Semaphore>,
     client: Client,
-    config: DownloadConfig,
+    config: ResourceDownloadConfig,
 }
 
 /// Port-slice adapter (ADR-0012-B unit 5): the concrete's `download` surface
@@ -125,7 +125,7 @@ impl ResourceDownloader {
         Self {
             semaphore,
             client,
-            config: DownloadConfig::default(),
+            config: ResourceDownloadConfig::default(),
         }
     }
 
@@ -133,7 +133,7 @@ impl ResourceDownloader {
     pub fn with_config(
         semaphore: Arc<tokio::sync::Semaphore>,
         client: Client,
-        config: DownloadConfig,
+        config: ResourceDownloadConfig,
     ) -> Self {
         Self {
             semaphore,
@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn test_download_config_default() {
-        let config = DownloadConfig::default();
+        let config = ResourceDownloadConfig::default();
         assert_eq!(config.max_size_bytes, 25 * 1024 * 1024);
         assert_eq!(config.global_timeout_seconds, 30);
         assert_eq!(config.chunk_timeout_seconds, 5);
@@ -364,7 +364,7 @@ mod tests {
 
     /// Builds a downloader wired to a large semaphore (no backpressure) and
     /// a fresh `wreq` client.
-    fn downloader(config: DownloadConfig) -> ResourceDownloader {
+    fn downloader(config: ResourceDownloadConfig) -> ResourceDownloader {
         let client = wreq::Client::builder()
             .build()
             .expect("fallo construyendo cliente wreq de prueba");
@@ -500,11 +500,11 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = DownloadConfig {
+        let config = ResourceDownloadConfig {
             global_timeout_seconds: 5,
             chunk_timeout_seconds: 5,
             max_size_bytes: 1024 * 1024,
-            ..DownloadConfig::default()
+            ..ResourceDownloadConfig::default()
         };
         let downloader = downloader(config);
         let url = format!("{}/", mock_server.uri());
@@ -520,12 +520,12 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio::time::timeout hangs under Miri
     async fn test_download_slowloris_chunk_timeout() {
-        let config = DownloadConfig {
+        let config = ResourceDownloadConfig {
             // Generous global budget so the GLOBAL timeout cannot fire first.
             global_timeout_seconds: 30,
             chunk_timeout_seconds: 1, // short per-chunk timeout
             max_size_bytes: 1024 * 1024,
-            ..DownloadConfig::default()
+            ..ResourceDownloadConfig::default()
         };
         // Server stalls 3s between chunks (> 1s chunk timeout).
         let port = spawn_slow_chunked_server(Duration::from_secs(3)).await;
@@ -556,11 +556,11 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = DownloadConfig {
+        let config = ResourceDownloadConfig {
             global_timeout_seconds: 5,
             chunk_timeout_seconds: 5,
             max_size_bytes: 1024, // small limit
-            ..DownloadConfig::default()
+            ..ResourceDownloadConfig::default()
         };
         let downloader = downloader(config);
         let url = format!("{}/", mock_server.uri());
@@ -587,11 +587,11 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = DownloadConfig {
+        let config = ResourceDownloadConfig {
             global_timeout_seconds: 1, // fires before the 2s server delay
             chunk_timeout_seconds: 5,
             max_size_bytes: 1024 * 1024,
-            ..DownloadConfig::default()
+            ..ResourceDownloadConfig::default()
         };
         let downloader = downloader(config);
         let url = format!("{}/", mock_server.uri());
@@ -624,11 +624,11 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = DownloadConfig {
+        let config = ResourceDownloadConfig {
             global_timeout_seconds: 5,
             chunk_timeout_seconds: 5,
             max_size_bytes: 1024 * 1024,
-            ..DownloadConfig::default()
+            ..ResourceDownloadConfig::default()
         };
         // Budget exactly equal to the body size: the download must acquire (and
         // later release) precisely `body.len()` byte-weighted permits.
@@ -678,11 +678,11 @@ mod tests {
         .await;
         let url = format!("http://127.0.0.1:{port}/");
 
-        let config = DownloadConfig {
+        let config = ResourceDownloadConfig {
             global_timeout_seconds: 5,
             chunk_timeout_seconds: 5,
             max_size_bytes: 1024 * 1024,
-            ..DownloadConfig::default()
+            ..ResourceDownloadConfig::default()
         };
         // Budget exactly fits the two chunks (8 KB); the in-flight download must
         // hold permits drawn from this shared budget.
@@ -754,11 +754,11 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = DownloadConfig {
+        let config = ResourceDownloadConfig {
             global_timeout_seconds: 5,
             chunk_timeout_seconds: 5,
             max_size_bytes: 1024,
-            ..DownloadConfig::default()
+            ..ResourceDownloadConfig::default()
         };
         // 1 MiB budget — far more than the body, so any acquire would be visible.
         let budget = 1 << 20usize;
@@ -802,12 +802,12 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = DownloadConfig {
+        let config = ResourceDownloadConfig {
             global_timeout_seconds: 5,
             // Short acquire timeout: the bounded-deadlock path is exercised fast.
             chunk_timeout_seconds: 1,
             max_size_bytes: 1024 * 1024,
-            ..DownloadConfig::default()
+            ..ResourceDownloadConfig::default()
         };
         // Byte-sized semaphore with ONE fewer permit than the body: any
         // byte-weighted acquire of the full body can never be satisfied.

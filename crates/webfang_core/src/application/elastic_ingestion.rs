@@ -445,7 +445,7 @@ mod tests {
     #[cfg(not(miri))]
     use crate::infrastructure::cpu_pool::RayonCpuPool;
     #[cfg(not(miri))]
-    use crate::infrastructure::crawler::resource_downloader::DownloadConfig;
+    use crate::infrastructure::crawler::resource_downloader::ResourceDownloadConfig;
     use std::collections::HashMap;
     use std::future::Future;
     use std::pin::Pin;
@@ -566,11 +566,11 @@ mod tests {
             let downloader = Arc::new(ResourceDownloader::with_config(
                 semaphore,
                 client,
-                DownloadConfig {
+                ResourceDownloadConfig {
                     global_timeout_seconds: 5,
                     chunk_timeout_seconds: 5,
                     max_size_bytes: 1024 * 1024,
-                    ..DownloadConfig::default()
+                    ..ResourceDownloadConfig::default()
                 },
             ));
             let pool = RayonCpuPool::new(2).expect("pool de 2 hilos");
