@@ -15,6 +15,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::domain::crawler_port::filename::confine_filename_component;
+use crate::domain::entities::export::StateVersion;
 use crate::domain::exporter::StateStorePort;
 use crate::domain::ExportState;
 use crate::error::ScraperError;
@@ -273,14 +274,15 @@ impl StateStore {
         Ok(())
     }
 
-    const CURRENT_VERSION: u32 = 1;
-
     /// Load existing state or create a new one if it doesn't exist    ///
     /// Version-aware: if the persisted file has a different `version` than
-    /// `CURRENT_VERSION`, it is discarded, an `info!` is emitted, and a fresh
-    /// `ExportState::new(domain)` (version `CURRENT_VERSION`) is returned.
+    /// [`StateVersion::CURRENT`], it is discarded, an `info!` is emitted, and a fresh
+    /// `ExportState::new(domain)` (version `CURRENT`) is returned.
     /// `NotFound` also yields a fresh state. Corrupted JSON (Serialization)
     /// is propagated so `filter_processed_urls` can degrade to re-scrape.
+    /// Unknown (future) versions never reach this comparison: they are rejected
+    /// at the `ExportState` serde boundary (#1162) and propagate as
+    /// `Serialization` errors through the same degrade-to-rescrape path.
     ///
     /// # Returns
     ///
@@ -296,10 +298,10 @@ impl StateStore {
     /// ```
     pub fn load_or_default(&self) -> crate::error::Result<ExportState> {
         match self.load() {
-            Ok(state) if state.version != Self::CURRENT_VERSION => {
+            Ok(state) if state.version != StateVersion::CURRENT => {
                 info!(
-                    version = state.version,
-                    expected = Self::CURRENT_VERSION,
+                    version = state.version.get(),
+                    expected = StateVersion::CURRENT.get(),
                     domain = %self.domain,
                     "discarding stale StateStore version, returning fresh state"
                 );
@@ -329,7 +331,8 @@ impl StateStore {
 }
 
 /// Domain seam implementation (#1097): delegates to the inherent methods.
-/// No signature changes to the concrete; `CURRENT_VERSION` stays private.
+/// No signature changes to the concrete; the version vocabulary
+/// ([`StateVersion::CURRENT`]) is owned by the domain.
 impl StateStorePort for StateStore {
     fn get_state_path(&self) -> PathBuf {
         StateStore::get_state_path(self)
@@ -550,7 +553,8 @@ mod tests {
         store.cache_dir = cache_dir;
         let state = store.load_or_default().unwrap();
         assert_eq!(
-            state.version, 1,
+            state.version,
+            StateVersion::CURRENT,
             "stale v0 must be discarded and replaced with fresh v1"
         );
         assert_eq!(state.domain(), "stale-zero.com");
@@ -577,7 +581,7 @@ mod tests {
         let mut store = StateStore::new("current-one.com");
         store.cache_dir = cache_dir;
         let state = store.load_or_default().unwrap();
-        assert_eq!(state.version, 1);
+        assert_eq!(state.version, StateVersion::CURRENT);
         assert_eq!(state.processed_urls.len(), 1);
         assert_eq!(state.processed_urls[0], "https://current-one.com/a");
     }
@@ -600,6 +604,30 @@ mod tests {
         );
     }
 
+    /// #1162: a future version never reaches the stale-discard comparison —
+    /// the `ExportState` boundary rejects it, and `load_or_default` propagates
+    /// the error so the caller degrades to re-scrape (same path as corrupt).
+    #[test]
+    fn test_load_or_default_unknown_version_propagates_error() {
+        let dir = tempdir().unwrap();
+        let mut cache_dir = dir.path().to_path_buf();
+        cache_dir.push("webfang/state");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let state_path = cache_dir.join("future.com.json");
+        std::fs::write(
+            &state_path,
+            r#"{"domain":"future.com","processed_urls":[],"last_export":null,"total_exported":0,"version":999}"#,
+        )
+        .unwrap();
+        let mut store = StateStore::new("future.com");
+        store.cache_dir = cache_dir;
+        let err = store.load_or_default().unwrap_err();
+        assert!(
+            err.to_string().contains("no soportada"),
+            "future version must propagate the Spanish boundary error, got: {err}"
+        );
+    }
+
     #[test]
     fn test_load_does_not_discard_stale_version() {
         let dir = tempdir().unwrap();
@@ -617,7 +645,8 @@ mod tests {
         store.cache_dir = cache_dir;
         let state = store.load().unwrap();
         assert_eq!(
-            state.version, 0,
+            state.version,
+            StateVersion::LEGACY,
             "load() must return raw version without discarding"
         );
         assert_eq!(state.processed_urls.len(), 1);
