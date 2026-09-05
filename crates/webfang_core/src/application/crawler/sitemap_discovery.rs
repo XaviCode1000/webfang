@@ -22,12 +22,12 @@ use url::Url;
 ///
 /// Kept for the frozen `discover_sitemap_wiremock` contract (that suite is
 /// outside this slice's surfaces, so its call sites cannot be repointed
-/// here). It routes through the same [`SitemapConfig`] boundary as the live
+/// here). It routes through the same `SitemapConfig` boundary as the live
 /// path: an explicit URL is validated EARLY (Spanish, typed) instead of
 /// failing late at fetch/parse time, and `None` keeps the historical
 /// auto-discovery semantics.
 ///
-/// New code resolves [`SitemapConfig`] from the config and calls
+/// New code resolves `SitemapConfig` from the config and calls
 /// [`crawl_with_sitemap_resolved`] with the resolved value.
 ///
 /// Following **own-borrow-over-clone**: Accepts `&str` not `&String`.
@@ -95,7 +95,7 @@ pub async fn crawl_with_sitemap(
 
 /// Crawl site using a boundary-resolved sitemap URL (#1190).
 ///
-/// This is the live entry: callers match on the [`SitemapConfig`] resolved
+/// This is the live entry: callers match on the `SitemapConfig` resolved
 /// from the config and pass the validated value. The parameter is
 /// `Option<&ValidUrl>` rather than `&SitemapConfig` on purpose — the mode
 /// enum is `pub(crate)` (the MCP adapter cannot name it) while [`ValidUrl`]

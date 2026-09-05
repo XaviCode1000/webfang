@@ -312,7 +312,7 @@ impl CrawlerConfigBuilder {
 
     /// Enable sitemap auto-discovery (no explicit URL).
     ///
-    /// Fully `pub` (unlike [`Self::sitemap`]): the signature names no
+    /// Fully `pub` (unlike `Self::sitemap`): the signature names no
     /// `pub(crate)` type, so external adapters can enable URL-less discovery
     /// without resolving the boundary themselves.
     pub fn auto_sitemap(mut self) -> Self {
@@ -341,7 +341,7 @@ impl CrawlerConfigBuilder {
     /// Build the final [`CrawlerConfig`], consuming this builder.
     ///
     /// No coercion lives here anymore (#1190): the sitemap mode arrives
-    /// already resolved — [`SitemapConfig::resolve`] is the single home of
+    /// already resolved — `SitemapConfig::resolve` is the single home of
     /// the `Some(url) implies intent` rule.
     #[must_use]
     pub fn build(self) -> CrawlerConfig {
