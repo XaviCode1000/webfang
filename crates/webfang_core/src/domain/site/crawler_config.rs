@@ -20,29 +20,24 @@ const fn default_concurrency() -> NonZeroUsize {
     }
 }
 
-/// Sitemap discovery mode as a type-state (#1162, resto de #1132).
+/// Sitemap discovery mode as a type-state (#1162, resto de #1132; adopted #1190).
 ///
-/// Collapses the `use_sitemap: bool` + `sitemap_url: Option<String>` pair —
-/// where `false + Some(..)` was silently ignored and `true + Some("not-a-url")`
-/// travelled unchecked into `resolve_sitemap_url` (an explicit URL is passed
-/// through without parsing, so it failed late at fetch/parse time) — into one
-/// validated value. Build it with [`SitemapConfig::resolve`]; read the live
-/// pair through [`CrawlerConfig::sitemap_config`].
+/// The single home of the `use_sitemap: bool` + `sitemap_url: Option<String>`
+/// pair — where `false + Some(..)` was silently ignored and
+/// `true + Some("not-a-url")` travelled unchecked into `resolve_sitemap_url`
+/// (an explicit URL passed through without parsing, so it failed late at
+/// fetch/parse time). The pair is deleted: build the mode with
+/// [`SitemapConfig::resolve`] (which parses the explicit URL NOW, at the
+/// domain boundary) and read it through [`CrawlerConfig::sitemap_config`].
 ///
-/// Not to be confused with the infrastructure sitemap-*parser* `SitemapConfig`
-/// (pagination/batch knobs in `application::crawler::sitemap_discovery`): this
-/// one is the domain discovery-mode decision.
+/// Not to be confused with the sitemap-*parser* `SitemapConfig`
+/// (pagination/batch knobs in `crate::domain::crawler_port`): this one is
+/// the domain discovery-mode decision.
 ///
 /// `pub(crate)` on purpose: the type lives in the private `site::crawler_config`
 /// module, so a wider visibility would leak through `CrawlerConfig`'s public
-/// interface (`private_interfaces`). Intra-crate consumers resolve it from the
-/// config; the two raw fields stay `pub` for the existing discovery readers.
-///
-/// `dead_code` is allowed until the `discovery.rs` reader adopts this boundary
-/// (needs a `site/mod.rs` re-export too — both outside this slice's surfaces).
-/// The builder coercion below already fixes the silent-ignore in production;
-/// this enum + its tests pin the contract the wiring will consume.
-#[allow(dead_code)]
+/// interface (`private_interfaces`). Intra-crate consumers resolve it from
+/// the projection (CLI) or match on it from the config (discovery).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SitemapConfig {
     /// Sitemap discovery off; the crawler uses DOM link extraction.
@@ -53,7 +48,6 @@ pub(crate) enum SitemapConfig {
     Enabled { url: Option<ValidUrl> },
 }
 
-#[allow(dead_code)]
 impl SitemapConfig {
     /// Collapse the raw pair into the validated mode.
     ///
@@ -118,10 +112,13 @@ pub struct CrawlerConfig {
     pub user_agent: String,
     /// Timeout for each request in seconds
     pub timeout_secs: u64,
-    /// Use sitemap for URL discovery (FASE 3)
-    pub use_sitemap: bool,
-    /// Explicit sitemap URL (auto-discovers if None)
-    pub sitemap_url: Option<String>,
+    /// Sitemap discovery mode (FASE 3), resolved at the projection boundary
+    /// (#1190): the raw `use_sitemap: bool` + `sitemap_url: Option<String>`
+    /// pair is deleted — `false + Some(..)` can no longer be named, and an
+    /// explicit URL is parsed once via [`SitemapConfig::resolve`] instead of
+    /// failing late at fetch time. Private because the mode type is
+    /// `pub(crate)`; read it through [`CrawlerConfig::sitemap_config`].
+    sitemap: SitemapConfig,
     /// Skip robots.txt enforcement.
     pub ignore_robots: bool,
     /// TLS/HTTP2 fingerprint emulation preset applied to the crawl HTTP client.
@@ -157,29 +154,21 @@ impl CrawlerConfig {
             delay_ms: 500,                      // Hardware-aware: 500ms for HDD
             user_agent: "webfang/2.0.0 (High-Performance Extraction)".to_string(),
             timeout_secs: 30,
-            use_sitemap: false,
-            sitemap_url: None,
+            sitemap: SitemapConfig::Disabled,
             ignore_robots: false,
             tls_emulation: Profile::Chrome145,
             budget_overrides: BudgetOverrides::default(),
         }
     }
 
-    /// Collapse the `use_sitemap` + `sitemap_url` pair into the validated
-    /// [`SitemapConfig`] type-state (#1162).
+    /// Read the resolved sitemap mode (#1190).
     ///
-    /// A `Some` URL always implies intent (same coercion the CLI preflight
-    /// applies), and it is parsed here — at the domain boundary — instead
-    /// of failing late inside sitemap fetch/parse.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ScraperError::InvalidUrl`](crate::ScraperError::InvalidUrl)
-    /// (mensaje en español) when an explicit sitemap URL is not a valid
-    /// http(s) URL.
-    #[allow(dead_code)]
-    pub(crate) fn sitemap_config(&self) -> crate::error::Result<SitemapConfig> {
-        SitemapConfig::resolve(self.use_sitemap, self.sitemap_url.as_deref())
+    /// Infallible: the config stores the validated [`SitemapConfig`]
+    /// directly — parsing happens once at the projection boundary
+    /// ([`SitemapConfig::resolve`]), never here.
+    #[must_use]
+    pub(crate) fn sitemap_config(&self) -> &SitemapConfig {
+        &self.sitemap
     }
 
     /// Check if a URL matches the include patterns
@@ -219,8 +208,7 @@ pub struct CrawlerConfigBuilder {
     delay_ms: u64,
     user_agent: String,
     timeout_secs: u64,
-    use_sitemap: bool,
-    sitemap_url: Option<String>,
+    sitemap: SitemapConfig,
     ignore_robots: bool,
     tls_emulation: Profile,
     budget_overrides: BudgetOverrides,
@@ -239,8 +227,7 @@ impl CrawlerConfigBuilder {
             delay_ms: 500,
             user_agent: "webfang/2.0.0 (High-Performance Extraction)".to_string(),
             timeout_secs: 30,
-            use_sitemap: false,
-            sitemap_url: None,
+            sitemap: SitemapConfig::Disabled,
             ignore_robots: false,
             tls_emulation: Profile::Chrome145,
             budget_overrides: BudgetOverrides::default(),
@@ -311,15 +298,25 @@ impl CrawlerConfigBuilder {
         self
     }
 
-    /// Set use_sitemap flag (FASE 3)
-    pub fn use_sitemap(mut self, use_sitemap: bool) -> Self {
-        self.use_sitemap = use_sitemap;
+    /// Set the sitemap discovery mode, already resolved through
+    /// [`SitemapConfig::resolve`] (#1190).
+    ///
+    /// `pub(crate)` like the mode itself: the raw bool+Option pair is
+    /// deleted, so there is no `use_sitemap`/`sitemap_url` setter to reach
+    /// for — resolve first, then set the validated mode (or use
+    /// [`Self::auto_sitemap`] for URL-less discovery).
+    pub(crate) fn sitemap(mut self, sitemap: SitemapConfig) -> Self {
+        self.sitemap = sitemap;
         self
     }
 
-    /// Set explicit sitemap URL (FASE 3)
-    pub fn sitemap_url(mut self, url: impl Into<String>) -> Self {
-        self.sitemap_url = Some(url.into());
+    /// Enable sitemap auto-discovery (no explicit URL).
+    ///
+    /// Fully `pub` (unlike `Self::sitemap`): the signature names no
+    /// `pub(crate)` type, so external adapters can enable URL-less discovery
+    /// without resolving the boundary themselves.
+    pub fn auto_sitemap(mut self) -> Self {
+        self.sitemap = SitemapConfig::Enabled { url: None };
         self
     }
 
@@ -342,13 +339,12 @@ impl CrawlerConfigBuilder {
     }
 
     /// Build the final [`CrawlerConfig`], consuming this builder.
+    ///
+    /// No coercion lives here anymore (#1190): the sitemap mode arrives
+    /// already resolved — `SitemapConfig::resolve` is the single home of
+    /// the `Some(url) implies intent` rule.
     #[must_use]
     pub fn build(self) -> CrawlerConfig {
-        // #1162: an explicit sitemap URL implies intent — the CLI preflight
-        // already coerces `sitemap_url.is_some() → use_sitemap = true`, and
-        // the builder applies the same rule so the programmatic pair
-        // `false + Some(..)` is enabled instead of silently ignored.
-        let use_sitemap = self.use_sitemap || self.sitemap_url.is_some();
         CrawlerConfig {
             seed_url: self.seed_url,
             max_depth: self.max_depth,
@@ -359,8 +355,7 @@ impl CrawlerConfigBuilder {
             delay_ms: self.delay_ms,
             user_agent: self.user_agent,
             timeout_secs: self.timeout_secs.max(1),
-            use_sitemap,
-            sitemap_url: self.sitemap_url,
+            sitemap: self.sitemap,
             ignore_robots: self.ignore_robots,
             tls_emulation: self.tls_emulation,
             budget_overrides: self.budget_overrides,
@@ -414,8 +409,7 @@ mod tests {
             "webfang/2.0.0 (High-Performance Extraction)"
         );
         assert_eq!(config.timeout_secs, 30);
-        assert!(!config.use_sitemap);
-        assert!(config.sitemap_url.is_none());
+        assert_eq!(config.sitemap_config(), &SitemapConfig::Disabled);
         assert!(!config.ignore_robots);
         assert_eq!(config.tls_emulation, Profile::Chrome145);
         assert!(config.include_patterns.is_empty());
@@ -533,8 +527,10 @@ mod tests {
             .delay_ms(200)
             .user_agent("custom-bot/1.0".to_string())
             .timeout_secs(60)
-            .use_sitemap(true)
-            .sitemap_url("https://example.com/sitemap.xml".to_string())
+            .sitemap(
+                SitemapConfig::resolve(true, Some("https://example.com/sitemap.xml"))
+                    .expect("test URL resolves"),
+            )
             .ignore_robots(true)
             .tls_emulation(Profile::Chrome131)
             .include_pattern("/blog/*".to_string())
@@ -548,11 +544,13 @@ mod tests {
         assert_eq!(config.delay_ms, 200);
         assert_eq!(config.user_agent, "custom-bot/1.0");
         assert_eq!(config.timeout_secs, 60);
-        assert!(config.use_sitemap);
-        assert_eq!(
-            config.sitemap_url.as_deref(),
-            Some("https://example.com/sitemap.xml")
-        );
+        match config.sitemap_config() {
+            SitemapConfig::Enabled { url } => assert_eq!(
+                url.as_ref().map(ValidUrl::as_str),
+                Some("https://example.com/sitemap.xml")
+            ),
+            SitemapConfig::Disabled => panic!("explicit mode must enable"),
+        }
         assert!(config.ignore_robots);
         assert_eq!(config.tls_emulation, Profile::Chrome131);
         assert_eq!(config.include_patterns.len(), 1);
@@ -649,83 +647,41 @@ mod tests {
     /// now `NonZeroUsize`: the only way to name the value is through a
     /// fallible constructor, and 0 is rejected there — the invalid state
     /// cannot reach `build()` at all.
-    /// #1162: `false + Some(url)` is no longer silently ignored — the
-    /// builder coerces it to enabled (same rule as the CLI preflight) and
-    /// the resolver parses the URL at the domain boundary.
+    ///
+    /// #1190: the raw pair these tests used to pin is deleted — the
+    /// rejection contract moved end-to-end into the discovery entries
+    /// (`sitemap_discovery` tests drive the invalid/non-http cases
+    /// through `crawl_with_sitemap`, the projection cases through the
+    /// orchestrator build fns). What stays here is the replacement
+    /// surface: absence of the pair is enforced at compile time (any
+    /// reader of the deleted fields or setters fails to build), and
+    /// this test pins that every mode builds only from the boundary.
     #[test]
-    fn issue_1162_false_with_url_enables_and_parses() {
+    fn issue_1190_sitemap_modes_build_only_from_boundary() {
         let seed = Url::parse("https://example.com").unwrap();
-        let config = CrawlerConfig::builder(seed)
-            .sitemap_url("https://example.com/sitemap.xml".to_string())
-            .build();
-        assert!(config.use_sitemap, "explicit URL must imply intent");
-        match config.sitemap_config().expect("valid URL resolves") {
-            SitemapConfig::Enabled { url } => assert_eq!(
-                url.as_ref().map(ValidUrl::as_str),
-                Some("https://example.com/sitemap.xml")
-            ),
-            SitemapConfig::Disabled => panic!("explicit URL must enable"),
-        }
-    }
+        let off = CrawlerConfig::builder(seed.clone()).build();
+        assert_eq!(off.sitemap_config(), &SitemapConfig::Disabled);
+        assert!(!off.sitemap_config().is_enabled());
 
-    /// #1162: `true + Some("not-a-url")` fails HERE (Spanish, typed) —
-    /// before this change the raw string travelled unchecked through
-    /// `resolve_sitemap_url` and failed late at fetch/parse time.
-    #[test]
-    fn issue_1162_invalid_url_fails_early_in_spanish() {
-        let seed = Url::parse("https://example.com").unwrap();
-        let config = CrawlerConfig::builder(seed)
-            .use_sitemap(true)
-            .sitemap_url("not-a-url".to_string())
-            .build();
-        let err = config
-            .sitemap_config()
-            .expect_err("invalid sitemap URL must fail at the boundary");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("sitemap") && msg.contains("inválida"),
-            "rejection must name the sitemap URL in Spanish, got: {msg}"
-        );
-    }
-
-    /// #1162 triangulation: non-http(s) schemes are rejected too —
-    /// `ValidUrl` hardening applies at this boundary, not just URL shape.
-    #[test]
-    fn issue_1162_non_http_sitemap_scheme_rejected() {
-        let seed = Url::parse("https://example.com").unwrap();
-        let config = CrawlerConfig::builder(seed)
-            .use_sitemap(true)
-            .sitemap_url("ftp://example.com/sitemap.xml".to_string())
-            .build();
-        assert!(
-            config.sitemap_config().is_err(),
-            "non-http(s) sitemap URL must fail at the boundary"
-        );
-    }
-
-    /// #1162: `true + None` stays auto-discover; `false + None` stays off.
-    #[test]
-    fn issue_1162_auto_discover_and_disabled_resolve() {
-        let seed = Url::parse("https://example.com").unwrap();
-        let auto = CrawlerConfig::builder(seed.clone())
-            .use_sitemap(true)
+        let explicit = CrawlerConfig::builder(seed.clone())
+            .sitemap(
+                SitemapConfig::resolve(true, Some("https://example.com/sitemap.xml"))
+                    .expect("test URL resolves"),
+            )
             .build();
         assert!(
             matches!(
-                auto.sitemap_config().expect("auto resolves"),
-                SitemapConfig::Enabled { url: None }
+                explicit.sitemap_config(),
+                SitemapConfig::Enabled { url: Some(_) }
             ),
-            "true + None must resolve to auto-discovery"
+            "explicit resolve must enable with a URL"
         );
-        let off = CrawlerConfig::builder(seed).build();
-        assert_eq!(
-            off.sitemap_config().expect("disabled resolves"),
-            SitemapConfig::Disabled
+
+        let auto = CrawlerConfig::builder(seed).auto_sitemap().build();
+        assert!(
+            matches!(auto.sitemap_config(), SitemapConfig::Enabled { url: None }),
+            "auto_sitemap must enable without a URL"
         );
-        assert!(!off
-            .sitemap_config()
-            .expect("disabled resolves")
-            .is_enabled());
     }
 
     #[test]

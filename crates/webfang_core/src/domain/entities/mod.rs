@@ -13,7 +13,7 @@ pub use content::{
     Exported, ScrapedContent, Validated, ValidationError,
 };
 pub use download::DownloadedAsset;
-pub use export::{ExportFormat, ExportState};
+pub use export::{ExportFormat, ExportState, StateVersion};
 pub use progress::{
     ErrorEntry, ErrorType, ProgressState, ScrapeError, ScrapeProgress, ScrapeStatus, UrlState,
 };

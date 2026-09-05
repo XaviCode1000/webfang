@@ -138,9 +138,9 @@ async fn __main() -> CliExit {
     opts.export.obsidian_vault = projected.export.obsidian_vault;
     opts.export.quick_save = projected.export.quick_save;
     opts.crawl.ignore_waf = projected.crawl.ignore_waf;
-    if opts.crawl.sitemap_url.is_some() {
-        opts.crawl.use_sitemap = true;
-    }
+    // No sitemap coercion here (#1190): `into_crawl_options` already
+    // applies the cross-field rule, and `SitemapConfig::resolve` is the
+    // single home of the `Some(url) implies intent` rule at projection.
     // Budget overrides (#897 item 1): merge FIELD-WISE, never by slot, with
     // per-tier provenance rules (see `merge_budget_overrides`): the ranked
     // pipeline value wins the crawl tier; explicit CLI knobs win the rest.

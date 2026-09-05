@@ -14,6 +14,7 @@ use crate::domain::config::ScraperConfig;
 use crate::domain::crawler_port::derive_filename_from_content_disposition;
 use crate::domain::downloader_port::{DownloadError, Downloader};
 use crate::domain::http_config::HttpClientConfig;
+use crate::domain::site::SitemapConfig;
 use crate::domain::url_validation::{
     is_internal_link, normalize_url, NormalizeConfig, RemoveQueryParameters,
 };
@@ -35,6 +36,7 @@ type AdaptiveSelectorEngine = ();
 // repoints — no application symbol may reach `infrastructure::crawler` through
 // a shim (ADR-0012-B).
 pub use crate::application::crawler::sitemap_discovery::crawl_with_sitemap;
+use crate::application::crawler::sitemap_discovery::crawl_with_sitemap_resolved;
 pub use crate::application::extraction::extract_content;
 
 // ============================================================================
@@ -81,7 +83,7 @@ pub use crate::application::extraction::extract_content;
     skip(config),
     fields(
         base_url,
-        use_sitemap = config.use_sitemap
+        use_sitemap = tracing::field::Empty
     )
 )]
 pub async fn discover_urls_single_fetch(
@@ -90,10 +92,16 @@ pub async fn discover_urls_single_fetch(
 ) -> ScraperResult<Vec<Url>> {
     info!("Discovering URLs from {}", base_url);
 
+    // Resolve the sitemap mode ONCE at the boundary (#1190): an explicit but
+    // invalid URL fails here (Spanish, typed) instead of travelling unchecked
+    // into sitemap fetch/parse. Past this point no productive reader touches
+    // the raw `use_sitemap` + `sitemap_url` pair.
+    let sitemap = config.sitemap_config();
+    tracing::Span::current().record("use_sitemap", sitemap.is_enabled());
+
     // If sitemap enabled, use sitemap (preferred)
-    if config.use_sitemap {
-        let discovered =
-            crawl_with_sitemap(base_url, config.sitemap_url.as_deref(), config).await?;
+    if let SitemapConfig::Enabled { url } = sitemap {
+        let discovered = crawl_with_sitemap_resolved(base_url, url.as_ref(), config).await?;
         let urls: Vec<Url> = discovered.into_iter().map(|d| d.url).collect();
 
         Ok(urls)
@@ -540,10 +548,7 @@ mod tests {
             .await;
 
         let seed = Url::parse(&server.uri()).unwrap();
-        let config = CrawlerConfig::builder(seed)
-            .timeout_secs(2)
-            .use_sitemap(false)
-            .build();
+        let config = CrawlerConfig::builder(seed).timeout_secs(2).build();
 
         let start = std::time::Instant::now();
         let result = discover_urls_single_fetch(&server.uri(), &config).await;
@@ -584,10 +589,7 @@ mod tests {
 
         let target = format!("https://127.0.0.1:{port}");
         let seed = Url::parse(&target).unwrap();
-        let config = CrawlerConfig::builder(seed)
-            .timeout_secs(2)
-            .use_sitemap(false)
-            .build();
+        let config = CrawlerConfig::builder(seed).timeout_secs(2).build();
 
         let start = std::time::Instant::now();
         let result = discover_urls_single_fetch(&target, &config).await;
