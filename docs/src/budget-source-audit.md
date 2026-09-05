@@ -34,7 +34,7 @@ Audit greps over `crates/` (production paths, tests excluded):
 ## Documented SKIPs (non-goals per proposal/design)
 
 - **MCP `CategorySemaphores`** (mcp_server/state.rs): NOT trivially adjacent (separate crate, own ServerOptions limits). Documented skip.
-- **domain/config.rs `resolve()` available_parallelism**: legacy carrier consistent with the seam by construction (same underlying source, same auto table); retained for TOML/TUI provenance. Its enforcement consumers were all rewired to the model.
+- **domain/config.rs `resolve()` available_parallelism**: legacy carrier consistent with the seam by construction (same underlying source, same auto table); retained for TOML provenance. Its enforcement consumers were all rewired to the model.
 - **resource_downloader / elastic_ingestion test semaphores**: test-only fixtures.
 
 ## Trivially-adjacent cleanup absorbed

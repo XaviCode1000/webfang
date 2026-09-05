@@ -32,7 +32,6 @@ body:
       options:
         - Crawler (core)
         - AI / semantic cleaning
-        - TUI selector
         - MCP server
         - CLI / export / Obsidian
         - CI / docs / tooling

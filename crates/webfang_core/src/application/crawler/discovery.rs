@@ -1,8 +1,8 @@
 //! Discovery module — URL discovery and single-URL scraping
 //!
 //! Functions for discovering URLs from websites (DOM link extraction) and the
-//! TUI single-URL scraping use case. Part of the TUI workflow:
-//! discover → select → scrape. Sitemap crawling lives in `sitemap_discovery.rs`
+//! CLI single-URL scraping use case — the reusable entry point for one-off
+//! scrapes: discover → scrape. Sitemap crawling lives in `sitemap_discovery.rs`
 //! and sitemap XML parsing in the infrastructure layer (issue #442); both are
 //! re-exported here so existing import paths keep resolving.
 
@@ -38,15 +38,15 @@ pub use crate::application::crawler::sitemap_discovery::crawl_with_sitemap;
 pub use crate::application::extraction::extract_content;
 
 // ============================================================================
-// TUI Support — Discover/Scrape Use Cases
+// Discover/Scrape Use Cases — CLI one-off scraping entry points
 // ============================================================================
 
 /// Discover URLs from a website without downloading content
 ///
-/// This is the first step in the TUI workflow:
+/// This is the first step of the single-URL discovery path:
 /// 1. Discover all URLs from sitemap or DOM scraping
-/// 2. Return `Vec<Url>` for interactive selection
-/// 3. User selects which URLs to scrape
+/// 2. Return `Vec<Url>` for the caller to filter or select
+/// 3. Scrape only the URLs the caller chose
 ///
 /// Following **own-borrow-over-clone**: Accepts `&str` not `&String`.
 ///
@@ -518,7 +518,7 @@ mod tests {
             .any(|u| u.url.as_str() == "https://external.com/page2"));
     }
 
-    // #289 acceptance tests: the TUI DOM discovery path must honor CrawlerConfig
+    // #289 acceptance tests: the DOM discovery path must honor CrawlerConfig
     // timeouts. Both build a real wreq client (boring-sys2 FFI), hence not(miri).
 
     #[tokio::test]

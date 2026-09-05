@@ -6,7 +6,7 @@
 //!
 //! # Architecture
 //!
-//! Following Clean Architecture with TUI support:
+//! Following Clean Architecture:
 //!
 //! ```text
 //! main.rs (thin entry point) -> orchestrator::run()
@@ -19,7 +19,8 @@
 //!     └─→ orchestrator::run()         ← Full pipeline
 //! ```
 //!
-//! **Golden Rule:** Application layer NEVER imports ratatui/crossterm/indicatif.
+//! **Golden Rule:** The application layer stays UI-free — the CLI, MCP
+//! server and AI pipeline are thin adapters over it, never the reverse.
 
 use webfang_core::cli::orchestrator;
 

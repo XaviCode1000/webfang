@@ -21,7 +21,7 @@ persistence = ["dep:rusqlite", "dep:deadpool-sqlite", "dep:sys-info"]
 console = ["dep:console-subscriber"]
 dev-tracing = ["dep:tracing-tree"]
 # Marker features for backward-compatible cfg gates.
-# These are activated by dependent crates (ai, tui, mcp) to preserve
+# These are activated by dependent crates (ai, mcp) to preserve
 # existing cfg(feature) gates in core during the transition period.
 ai = []
 adaptive-selectors = []

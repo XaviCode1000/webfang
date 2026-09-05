@@ -127,7 +127,7 @@ jobs:
       # Regression guard for #513: inter-crate dependency direction (see
       # AGENTS.md "Inter-crate dependency direction (ENFORCED POLICY)").
       # Fails if any crate depends on a prohibited sibling crate (e.g.
-      # webfang_core depending on cli/tui/mcp/ai, or tui on cli).
+      # webfang_core depending on cli/mcp/ai, or mcp on cli).
       - name: Dependency direction gate
         run: bash scripts/check_dependency_direction.sh
       # Regression guard for #990 (ADR-0010): intra-crate Clean Architecture

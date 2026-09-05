@@ -15,10 +15,6 @@ coverage:
         flags: [mcp]
         target: auto
         threshold: 2%
-      tui:
-        flags: [tui]
-        target: auto
-        threshold: 3% # UI is inherently harder to test
       ai:
         flags: [ai]
         target: auto
