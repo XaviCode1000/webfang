@@ -583,7 +583,10 @@ merge PR to main
          version bump ([workspace.package] in Cargo.toml) + CHANGELOG.md (cliff.toml)
    merge Release PR (human review — the ONE place to polish changelog text)
    └─> release-plz-release job: pushes tag v{{ version }} (single lockstep version)
-         └─> release.yml: 5 binaries + SHA256SUMS + GitHub Release
+         └─> release.yml: 4 binaries + SHA256SUMS + GitHub Release
+             (linux x86_64/aarch64, macOS Apple Silicon, Windows x86_64 —
+             Intel macOS is not built: ONNX Runtime dropped x64 macOS as of
+             1.24.1, so the `ai` feature has no prebuilt to link against)
 ```
 
 Configuration lives in `release-plz.toml` (workspace: `git_only = true`, `git_tag_name = "v{{
