@@ -1,0 +1,74 @@
+# git-cliff configuration consumed by release-plz (changelog_config).
+# Format: Keep a Changelog, with webfang's section vocabulary.
+# https://git-cliff.org/docs/configuration
+#
+# NOTE: parsing keys (commit_parsers, commit_preprocessors, tag_pattern) live
+# in the [git] section, not [changelog]. Keys after [changelog] in TOML would
+# be silently ignored.
+
+[changelog]
+trim = true
+
+header = """\
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+"""
+
+body = """
+{%- if version %}
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}
+## [Unreleased]
+{% endif %}
+
+{%- set breaking = commits | filter(attribute="breaking", value=true) %}
+{%- set non_breaking = commits | filter(attribute="breaking", value=false) %}
+{%- if breaking | length > 0 %}
+
+### ⚠️ Breaking Changes
+{% for commit in breaking %}
+- {{ commit.message | split(pat="\n") | first | trim | upper_first }}
+{%- endfor %}
+{%- endif %}
+{%- for group, group_commits in non_breaking | group_by(attribute="group") %}
+
+### {{ group | upper_first }}
+{% for commit in group_commits %}
+- {{ commit.message | split(pat="\n") | first | trim | upper_first }}
+{%- endfor %}
+{%- endfor %}
+"""
+
+[git]
+# Skip non-conventional commits (raw merge commits, history noise). Squash-merge
+# titles on main are conventional, so forward history stays fully represented.
+filter_unconventional = true
+# Never drop breaking-change commits from a release section, even if filters
+# would exclude them.
+protect_breaking_commits = true
+# Only v* tags are release boundaries.
+tag_pattern = "v[0-9].*"
+
+# Conventional commit type -> webfang CHANGELOG section (existing emoji vocabulary).
+commit_parsers = [
+  { message = "^feat", group = "🎉 Added" },
+  { message = "^fix", group = "🔧 Fixed" },
+  { message = "^perf", group = "⚡ Performance" },
+  { message = "^refactor", group = "🏗️ Architecture Improvements" },
+  { message = "^test", group = "🧪 Testing" },
+  { message = "^doc", group = "📖 Documentation" },
+  { message = "^build|^ci|^chore\\(ci\\)|^chore\\(build\\)", group = "🔧 CI/CD" },
+  { message = "^chore\\(deps\\)|^chore:.*bump|^chore:.*update", group = "📦 Dependencies" },
+  { message = "^style", group = "🎨 Styling" },
+  { message = "^wip|^v[0-9]", group = "🔧 Other" },
+  { message = ".*", group = "🔧 Other" },
+]
+
+# PR merge commits on main have titles like `feat: x (#1234)`; link the PR.
+commit_preprocessors = [
+  { pattern = " \\(#(\\d+)\\)", replace = " ([#$1](https://github.com/XaviCode1000/webfang/pull/$1))" },
+]

@@ -538,19 +538,25 @@ gh pr create --base main --head "$(git branch --show-current)" \
 
 Base the body on `.github/PULL_REQUEST_TEMPLATE.md`.
 
-### CHANGELOG policy (written at consolidation — work PRs never touch it)
+### CHANGELOG policy (release-plz writes it — work PRs never touch it)
 
 `CHANGELOG.md` is **out of scope for ordinary work PRs and for every delegated agent**. Do not
 add, edit, or "keep it fresh" in a feature/fix branch.
 
-The entries are written **once, centrally, in the consolidation step** — the batch PR that merges
-the reviewed work to `main` (see "Batch merge of multiple green PRs" below):
+**Since the release-plz automation (#1177), the `CHANGELOG.md` `[Unreleased]` section and every
+`## [x.y.z]` release section are written automatically** by release-plz (git-cliff) from the
+Conventional Commit history, in the automated **Release PR** (`chore/release-*`, see
+"Release automation" below). Humans only edit CHANGELOG.md inside that Release PR (entry polish
+before merging) or for one-off baseline cuts such as the v2.0.0 consolidation (#1176).
 
-- **Large slice → ONE entry** covering the whole slice.
-- **Small slice → ONE entry per issue closed** (closing `Closes #A` + `Closes #B` gets two entries).
-- Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), entries under `## [Unreleased]`
-  in the matching category (respect the existing emoji category headings).
-- Entry text: English, imperative, with the `#<issue>` reference.
+The old rules that still apply:
+
+- **Work PRs never touch `CHANGELOG.md`** — write good Conventional Commit titles instead
+  (`feat:`, `fix:`, `refactor:`, ...); that is what the changelog generator reads.
+- Breaking changes must be declared in the commit body footer (`BREAKING CHANGE: <why>`) or in
+  the title (`feat!:`) so both the version bump and the ⚠️ section are generated correctly.
+- Batch merges of N green PRs still keep **disjoint files** per PR — `CHANGELOG.md` must not
+  appear in any of them.
 
 ```markdown
 ## [Unreleased]
@@ -564,7 +570,32 @@ the reviewed work to `main` (see "Batch merge of multiple green PRs" below):
 > **Why the restriction, not just a preference:** the batch-merge policy requires the merged PRs to
 > touch **disjoint files** so N green PRs cost one CI run instead of N. `CHANGELOG.md` is a single
 > shared file, so per-PR edits guarantee a conflict in every batch and silently kill the
-> optimization. The file stays untouched until one writer — the consolidation PR — owns it.
+> optimization. The file stays untouched until one writer — now the automated Release PR — owns it.
+
+### Release automation (release-plz, tags + binaries, no crates.io)
+
+Releases are automated end-to-end as of #1177. Distribution is **binaries-only** (GitHub
+Releases); nothing is published to crates.io.
+
+```text
+merge PR to main
+   └─> release-plz-pr job: opens/updates the Release PR (chore/release-*)
+         version bump ([workspace.package] in Cargo.toml) + CHANGELOG.md (cliff.toml)
+   merge Release PR (human review — the ONE place to polish changelog text)
+   └─> release-plz-release job: pushes tag v{{ version }} (single lockstep version)
+         └─> release.yml: 5 binaries + SHA256SUMS + GitHub Release
+```
+
+Configuration lives in `release-plz.toml` (workspace: `git_only = true`, `git_tag_name = "v{{
+version }}"`, `version_group = "webfang"` on every processed crate, `publish = false`) and
+`cliff.toml` (Keep a Changelog sections with the emoji vocabulary).
+
+- All crates share ONE version and ONE tag per release — the tag must keep the `v*` shape or
+  `release.yml` will not trigger (`git_tag_name` is load-bearing).
+- `webfang_benchmark` and `webfang_test_utils` are excluded (`release = false`).
+- Breaking changes: declare `BREAKING CHANGE: <why>` in the commit footer → major bump; `feat:`
+  → minor; `fix:`/`perf:` → patch.
+- The tag must never be created by hand anymore (except emergency recoveries); release-plz owns it.
 
 ### Pre-commit gate (every commit)
 
