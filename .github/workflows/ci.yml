@@ -23,12 +23,17 @@
 #
 # Key optimization: single runner = single compilation, single cache.
 #
-# Cache Budget Policy (#1171, measured per-job pool weights):
-#   coverage 1419MB (trimmed — non-gate), test-full 1341, test-core 1161,
-#   test-ai 1015 (trimmed — non-gate), doc-quality 822, feature-matrix 717,
-#   mcp 628, tokio 569 (trimmed — non-gate), clippy 399, code-quality 130.
+# Cache Budget Policy (#1171, weights re-measured 2026-09-05, pool 8.05 GB):
+#   test-full 1526, test-core 1208, validate 1085, doc-quality 922,
+#   feature-matrix 707, mcp 614, release 604, deploy 471, clippy 410,
+#   fuzz-build 338, code-quality 123;
+#   coverage 1419MB, test-ai 1015, tokio 569 (all trimmed — non-gate, no live entries).
 #   Saves are main-only: PRs restore main's cache lineage and never save,
-#   so the pool does not scale with open PRs.
+#   so the pool does not scale with open PRs (verified: zero merge-ref entries).
+#   2026-09-05: purged 1.88 GB of tag saves under the malformed ref
+#   `refs/heads/refs/tags/v2.0.0` (unrestorable lineage, incl. a duplicated
+#   entry). The release.yml tag-save ref that produced them belongs to the
+#   release flow — fix it there, not here.
 #   #1171 save gating rolls out to the other workflows: fuzz (main+develop),
 #   docs + bug-discovery (main-only), release (tag-only).
 #   mutants-pr is the documented exception: PR-only hard gate, keeps saving
