@@ -599,6 +599,10 @@ version }}"`, `version_group = "webfang"` on every processed crate, `publish = f
 - Breaking changes: declare `BREAKING CHANGE: <why>` in the commit footer → major bump; `feat:`
   → minor; `fix:`/`perf:` → patch.
 - The tag must never be created by hand anymore (except emergency recoveries); release-plz owns it.
+- Release PRs use `GITHUB_TOKEN` deliberately (#1205): GitHub does not deliver `pull_request`
+  events for GITHUB_TOKEN-created PRs, so pr-validation never runs on `chore/release-*`
+  branches (whose ISO-8601 names would fail the branch regex). Do NOT migrate to a PAT
+  without first allowing that branch shape in `pr-validation.yml`.
 
 ### Pre-commit gate (every commit)
 
