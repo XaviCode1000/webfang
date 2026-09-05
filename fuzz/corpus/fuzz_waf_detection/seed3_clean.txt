@@ -1,1 +1,0 @@
-Normal page content with no WAF indicators.
