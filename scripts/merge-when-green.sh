@@ -6,6 +6,8 @@
 #   scripts/merge-when-green.sh <PR-NUMBER> --dry-run
 #   scripts/merge-when-green.sh <PR-NUMBER> --merge     # merge commit (batch PRs)
 #   scripts/merge-when-green.sh <PR-NUMBER> --squash    # explicit default
+#   scripts/merge-when-green.sh <PR-NUMBER> --timeout=1800   # large PRs w/ slow jobs (#1206)
+#   MERGE_WHEN_GREEN_TIMEOUT=1800 scripts/merge-when-green.sh <PR-NUMBER>  # same via env
 #
 # Behavior:
 #   1. Reads the required status-check contexts from branch protection, then polls
@@ -92,6 +94,14 @@ set -euo pipefail
 
 pr_number=""
 dry_run=0
+# Watcher deadline in seconds: flag --timeout wins over env
+# MERGE_WHEN_GREEN_TIMEOUT, which wins over the 600s default (#1206).
+# Flag value is captured raw here and validated after arg parsing so both
+# sources share one numeric check.
+timeout_secs=""
+# Set to 1 when --timeout is passed, so an explicit empty value fails
+# validation instead of silently falling back to the default.
+timeout_given=0
 # Merge strategy passed to `gh pr merge`: "squash" (default) or "merge".
 # `strategy_explicit` records that the user named one, so passing both flags can
 # be rejected instead of silently letting the last one win.
@@ -100,7 +110,7 @@ strategy_explicit=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/merge-when-green.sh <PR-NUMBER> [--dry-run] [--squash | --merge]
+Usage: scripts/merge-when-green.sh <PR-NUMBER> [--dry-run] [--squash | --merge] [--timeout=<sec>]
 
 Waits for all required CI checks on the PR to pass, then merges.
 
@@ -110,7 +120,15 @@ Flags:
   --merge     Merge commit instead of squash. Use for batch PRs, where squashing
               N independent fixes would destroy per-fix revert granularity.
               Mutually exclusive with --squash.
+  --timeout=<sec>  Watcher deadline in seconds (default 600). Accepts
+              '--timeout 300' or '--timeout=300'. Overrides the
+              MERGE_WHEN_GREEN_TIMEOUT env var. Useful for large PRs with
+              slow jobs (e.g. cargo-mutants) that need more than 10 min (#1206).
   -h, --help  Show this help.
+
+Environment:
+  MERGE_WHEN_GREEN_TIMEOUT  Same as --timeout but with lower precedence:
+              flag wins over env, env wins over the 600s default.
 
 Exit codes:
   0  Merged (or dry-run reports green).
@@ -134,6 +152,26 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --dry-run) dry_run=1; shift ;;
+    --timeout=*)
+      timeout_secs="${1#--timeout=}"
+      timeout_given=1
+      if [[ -z "$timeout_secs" ]]; then
+        echo "error: --timeout requires a value in seconds" >&2
+        usage >&2
+        exit 1
+      fi
+      shift
+      ;;
+    --timeout)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --timeout requires a value in seconds" >&2
+        usage >&2
+        exit 1
+      fi
+      timeout_secs="$2"
+      timeout_given=1
+      shift 2
+      ;;
     --squash|--merge)
       requested="${1#--}"
       if [[ -n "$strategy_explicit" && "$strategy_explicit" != "$requested" ]]; then
@@ -160,6 +198,23 @@ done
 
 if [[ -z "$pr_number" ]]; then
   echo "error: PR number is required" >&2
+  usage >&2
+  exit 1
+fi
+
+# Resolve the watcher deadline: --timeout flag wins over
+# MERGE_WHEN_GREEN_TIMEOUT, which wins over the 600s default (#1206).
+# Validated before the gh check so bad values fail as bad args (rc=1)
+# even when gh is missing.
+timeout_effective=600
+if [[ -n "${MERGE_WHEN_GREEN_TIMEOUT:-}" ]]; then
+  timeout_effective="${MERGE_WHEN_GREEN_TIMEOUT}"
+fi
+if [[ -n "$timeout_secs" || $timeout_given -eq 1 ]]; then
+  timeout_effective="$timeout_secs"
+fi
+if ! [[ "$timeout_effective" =~ ^[0-9]+$ ]] || [[ "$timeout_effective" -le 0 ]]; then
+  echo "error: timeout must be a positive integer number of seconds (got '${timeout_effective}')" >&2
   usage >&2
   exit 1
 fi
@@ -214,10 +269,12 @@ if [[ -z "$required" ]]; then
 else
   required_count=$(printf '%s\n' "$required" | sed '/^[[:space:]]*$/d' | wc -l)
   echo "    required contexts from branch protection: $(printf '%s\n' "$required" | tr '\n' ',' | sed 's/,$//')"
+  echo "    watcher timeout: ${timeout_effective}s (flag --timeout wins over MERGE_WHEN_GREEN_TIMEOUT, default 600s)"
 
-  # ~10 min at 15s. CI is ~8.5 min on this repo, so this bounds the loop without
-  # pre-empting a normal run.
-  deadline=$((SECONDS + 600))
+  # CI is ~8.5 min on this repo, so the 600s default bounds the loop without
+  # pre-empting a normal run. Large PRs with slow jobs (e.g. cargo-mutants)
+  # can raise it via --timeout=<sec> or MERGE_WHEN_GREEN_TIMEOUT (#1206).
+  deadline=$((SECONDS + timeout_effective))
   while :; do
     checks_json="$(gh pr checks "$pr_number" --json name,bucket 2>/dev/null || echo '[]')"
     buckets="$(printf '%s' "$checks_json" \
