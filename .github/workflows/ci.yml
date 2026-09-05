@@ -347,17 +347,14 @@ jobs:
         run: cargo nextest run -p webfang_core --features console --test tokio_console_smoke_test
 
   # ============================================================================
-  # TEST AI (NON-REQUIRED): AI integration tests with ONNX model.
+  # TEST AI (REQUIRED since #848): AI integration tests with ONNX model.
   #
-  # These tests are #[ignore]'d by design — they load a 372MB ONNX model and run
-  # real inference, which is too slow and flaky for the merge gate. They run in
+  # These tests load a 372MB ONNX model and run
+  # real inference. Soak passed 2026-09-05, so they now block merge via
+  # the gate like every other required producer. They run in
   # parallel after clippy (NOT after test-full) so they don't add to the critical
   # path. Gated behind clippy to avoid wasting the model download on PRs that
   # already fail compilation.
-  #
-  # Does NOT block merge: the job name ("Tests (AI integration)") is deliberately
-  # distinct from the required check ("Tests (all features)"), so branch protection
-  # won't wait for it.
   # ============================================================================
   test-ai:
     name: Tests (AI integration)
