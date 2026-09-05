@@ -15,7 +15,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::domain::crawler_port::filename::confine_filename_component;
-use crate::domain::entities::export::StateVersion;
+use crate::domain::entities::StateVersion;
 use crate::domain::exporter::StateStorePort;
 use crate::domain::ExportState;
 use crate::error::ScraperError;

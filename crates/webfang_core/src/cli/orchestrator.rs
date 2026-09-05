@@ -16,6 +16,7 @@ use crate::cli::url_discovery::{discover_urls, discover_urls_recursive};
 use crate::domain::config::ScraperConfig;
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::persistence::PersistenceMode;
+use crate::domain::site::SitemapConfig;
 use crate::CrawlerConfig;
 
 use crate::domain;
@@ -423,7 +424,10 @@ async fn run_dry_run(opts: CrawlOptions) -> CliExit {
         Ok(profile) => profile,
         Err(e) => return CliExit::ConfigError(e.to_string()),
     };
-    let crawler_config = build_crawler_config_for_discovery(&opts, tls_emulation);
+    let crawler_config = match build_crawler_config_for_discovery(&opts, tls_emulation) {
+        Ok(config) => config,
+        Err(e) => return e,
+    };
 
     // #784: with --batch-file, opts.url is empty, so discovering from it would
     // report "0 URL(s) would be scraped". List the batch URLs the user actually
@@ -463,29 +467,39 @@ async fn run_dry_run(opts: CrawlOptions) -> CliExit {
     CliExit::Success
 }
 
+/// Resolve the CLI-projected sitemap pair into the domain boundary (#1190).
+///
+/// The single home (with [`SitemapConfig::resolve`]) of the
+/// `sitemap_url.is_some() → enabled` coercion: the preflight book, the
+/// `webfang_cli` projection, and the builder coercion all collapsed here,
+/// so an explicit but invalid URL fails as `CliExit::ConfigError`
+/// (Spanish, typed) before any discovery starts.
+fn resolve_sitemap_projection(opts: &CrawlOptions) -> Result<SitemapConfig, CliExit> {
+    SitemapConfig::resolve(opts.crawl.use_sitemap, opts.crawl.sitemap_url.as_deref())
+        .map_err(|e| CliExit::ConfigError(e.to_string()))
+}
+
 /// Build a `CrawlerConfig` for URL discovery (shared by dry-run, prepare, and batch).
 fn build_crawler_config_for_discovery(
     opts: &CrawlOptions,
     tls_emulation: wreq_util::Profile,
-) -> CrawlerConfig {
-    let mut crawler_config = CrawlerConfig::builder(opts.url.clone())
+) -> Result<CrawlerConfig, CliExit> {
+    let crawler_config = CrawlerConfig::builder(opts.url.clone())
         .max_pages(opts.crawl.max_pages)
         .max_depth(opts.crawl.max_depth)
         .include_patterns(opts.crawl.include_patterns.clone())
         .exclude_patterns(opts.crawl.exclude_patterns.clone())
         .ignore_robots(opts.crawl.ignore_robots)
-        .use_sitemap(opts.crawl.use_sitemap)
+        .sitemap(resolve_sitemap_projection(opts)?)
         .timeout_secs(opts.network.timeout_secs)
         .delay_ms(opts.network.delay_ms)
         // Bug R2-1: recursive URL discovery runs the real crawl Engine, so
         // the operator overrides must ride on the config or the Engine
         // silently re-derives the auto tiers.
         .budget_overrides(opts.budget_overrides)
-        .tls_emulation(tls_emulation);
-    if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
-        crawler_config = crawler_config.sitemap_url(sitemap_url);
-    }
-    crawler_config.build()
+        .tls_emulation(tls_emulation)
+        .build();
+    Ok(crawler_config)
 }
 
 /// Resolve the persistence mode and warn about ignored CLI flags.
@@ -526,7 +540,7 @@ async fn prepare_phase(
         let tls_emulation = HttpClientConfig::profile_from_name(&opts.network.h2_profile)
             .map_err(|e| CliExit::ConfigError(e.to_string()))?;
 
-        let crawler_config = build_crawler_config_for_discovery(opts, tls_emulation);
+        let crawler_config = build_crawler_config_for_discovery(opts, tls_emulation)?;
 
         // Sitemap mode is the source of truth (depth-agnostic XML), so keep the
         // existing single-pass sitemap discovery. DOM mode must run the recursive
@@ -962,7 +976,7 @@ async fn prepare_batch_manager(
         opts.budget_overrides,
         &crate::domain::budget::detector::SystemDetector,
     );
-    let crawler_config = build_batch_crawler_config(opts, tls_emulation, &budget);
+    let crawler_config = build_batch_crawler_config(opts, tls_emulation, &budget)?;
     let manager = load_batch_manager(opts, crawler_config, &budget)
         .await?
         .with_content_sink(sink);
@@ -1195,14 +1209,14 @@ fn build_batch_crawler_config(
     opts: &CrawlOptions,
     tls_emulation: wreq_util::Profile,
     budget: &crate::domain::budget::BudgetModel,
-) -> CrawlerConfig {
-    let mut crawler_config = CrawlerConfig::builder(opts.url.clone())
+) -> Result<CrawlerConfig, CliExit> {
+    let crawler_config = CrawlerConfig::builder(opts.url.clone())
         .max_pages(opts.crawl.max_pages)
         .max_depth(opts.crawl.max_depth)
         .include_patterns(opts.crawl.include_patterns.clone())
         .exclude_patterns(opts.crawl.exclude_patterns.clone())
         .ignore_robots(opts.crawl.ignore_robots)
-        .use_sitemap(opts.crawl.use_sitemap)
+        .sitemap(resolve_sitemap_projection(opts)?)
         .timeout_secs(opts.network.timeout_secs)
         .delay_ms(opts.network.delay_ms)
         // Concurrency bound derives from the run's budget model
@@ -1212,11 +1226,9 @@ fn build_batch_crawler_config(
         // `crawl_site`; without the overrides the Engine drops the explicit
         // --concurrency / --rate-limit-burst and re-derives the auto tiers.
         .budget_overrides(opts.budget_overrides)
-        .tls_emulation(tls_emulation);
-    if let Some(ref sitemap_url) = opts.crawl.sitemap_url {
-        crawler_config = crawler_config.sitemap_url(sitemap_url);
-    }
-    crawler_config.build()
+        .tls_emulation(tls_emulation)
+        .build();
+    Ok(crawler_config)
 }
 
 /// Load the batch manager from a file or stdin.
@@ -1377,7 +1389,8 @@ mod tests {
             &crate::domain::budget::detector::SystemDetector,
         );
 
-        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145, &budget);
+        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145, &budget)
+            .expect("valid test projection must build");
 
         assert_eq!(config.delay_ms, 750, "--delay-ms must reach the crawler");
         assert_eq!(
@@ -1396,7 +1409,8 @@ mod tests {
         opts.budget_overrides.crawl = crate::domain::budget::tiers::CrawlConcurrency::new(6).ok();
         opts.budget_overrides.rate_burst = crate::domain::budget::tiers::BurstPermits::new(11).ok();
 
-        let config = build_crawler_config_for_discovery(&opts, wreq_util::Profile::Chrome145);
+        let config = build_crawler_config_for_discovery(&opts, wreq_util::Profile::Chrome145)
+            .expect("valid test projection must build");
 
         assert_eq!(
             config.budget_overrides.crawl.map(|c| c.get()),
@@ -1423,7 +1437,8 @@ mod tests {
             &crate::domain::budget::detector::SystemDetector,
         );
 
-        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145, &budget);
+        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145, &budget)
+            .expect("valid test projection must build");
 
         assert_eq!(
             config.budget_overrides.crawl.map(|c| c.get()),
@@ -1444,7 +1459,8 @@ mod tests {
         assert!(opts.network.concurrency.is_auto());
         let budget = crate::domain::budget::BudgetModel::for_test_preset();
 
-        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145, &budget);
+        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145, &budget)
+            .expect("valid test projection must build");
 
         assert_eq!(
             config.concurrency.get(),
@@ -1462,9 +1478,47 @@ mod tests {
             &opts,
             wreq_util::Profile::Chrome145,
             &crate::domain::budget::BudgetModel::for_test_preset(),
-        );
+        )
+        .expect("valid test projection must build");
 
         assert_eq!(config.delay_ms, 0);
+    }
+
+    // ===== sitemap projection tests (#1190) =====
+
+    #[test]
+    fn discovery_config_invalid_sitemap_url_is_config_error() {
+        // End-to-end projection rejection: an explicit but invalid URL
+        // fails HERE (Spanish, typed) instead of travelling into
+        // discovery and failing late at fetch/parse time.
+        let mut opts = CrawlOptions::default();
+        opts.crawl.use_sitemap = true;
+        opts.crawl.sitemap_url = Some("not-a-url".to_string());
+
+        let err = build_crawler_config_for_discovery(&opts, wreq_util::Profile::Chrome145)
+            .expect_err("invalid sitemap URL must fail the projection");
+        match err {
+            CliExit::ConfigError(msg) => assert!(
+                msg.contains("sitemap") && msg.contains("inválida"),
+                "rejection must name the sitemap URL in Spanish, got: {msg}"
+            ),
+            other => panic!("expected ConfigError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn discovery_config_explicit_url_implies_enabled() {
+        // The `Some(url) implies intent` coercion lives in the single
+        // domain rule now: `false + Some(valid)` projects to enabled.
+        let mut opts = CrawlOptions::default();
+        opts.crawl.sitemap_url = Some("https://example.com/sitemap.xml".to_string());
+
+        let config = build_crawler_config_for_discovery(&opts, wreq_util::Profile::Chrome145)
+            .expect("valid sitemap URL must project");
+        assert!(
+            config.sitemap_config().is_enabled(),
+            "explicit URL must imply intent through the projection"
+        );
     }
 
     // ===== format_failure tests =====

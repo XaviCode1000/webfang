@@ -7,19 +7,30 @@
 
 use crate::application::url_filter::is_allowed;
 use crate::domain::crawler_port::sitemap::{SitemapError, SitemapParserPort, SitemapUrl};
-use crate::domain::crawler_port::SitemapConfig;
 use crate::domain::error::WafDetectionKind;
 use crate::domain::http_config::HttpClientConfig;
+use crate::domain::site::SitemapConfig;
 use crate::domain::waf::{waf_inspector, InspectionContext};
+use crate::domain::ValidUrl;
 use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl};
+use crate::error::ScraperError;
 use std::sync::Arc;
 use tracing::{info, instrument};
 use url::Url;
 
-/// Crawl site using sitemap (preferred method - FASE 3)
+/// Crawl site using sitemap (legacy string entry).
+///
+/// Kept for the frozen `discover_sitemap_wiremock` contract (that suite is
+/// outside this slice's surfaces, so its call sites cannot be repointed
+/// here). It routes through the same [`SitemapConfig`] boundary as the live
+/// path: an explicit URL is validated EARLY (Spanish, typed) instead of
+/// failing late at fetch/parse time, and `None` keeps the historical
+/// auto-discovery semantics.
+///
+/// New code resolves [`SitemapConfig`] from the config and calls
+/// [`crawl_with_sitemap_resolved`] with the resolved value.
 ///
 /// Following **own-borrow-over-clone**: Accepts `&str` not `&String`.
-/// Following **api-builder-pattern**: Uses SitemapConfig builder.
 ///
 /// # Arguments
 ///
@@ -62,19 +73,75 @@ pub async fn crawl_with_sitemap(
     sitemap_url: Option<&str>,
     config: &CrawlerConfig,
 ) -> Result<Vec<DiscoveredUrl>, CrawlError> {
-    crawl_with_sitemap_internal(base_url, sitemap_url, config).await
+    // Through the boundary even on the legacy path: `resolve` is the single
+    // home of the `Some(url) implies intent` coercion, and it parses NOW, so
+    // `true + Some("not-a-url")` fails here instead of travelling unchecked
+    // into `resolve_sitemap_url` (#1190). `resolve` only fails with
+    // `InvalidUrl`; the second arm is defensive.
+    let explicit = match sitemap_url {
+        Some(raw) => {
+            match SitemapConfig::resolve(true, Some(raw)).map_err(|e| match e {
+                ScraperError::InvalidUrl(msg) => CrawlError::InvalidUrl(msg),
+                other => CrawlError::Parse(other.to_string()),
+            })? {
+                SitemapConfig::Enabled { url } => url,
+                SitemapConfig::Disabled => None,
+            }
+        },
+        None => None,
+    };
+    crawl_with_sitemap_resolved(base_url, explicit.as_ref(), config).await
+}
+
+/// Crawl site using a boundary-resolved sitemap URL (#1190).
+///
+/// This is the live entry: callers match on the [`SitemapConfig`] resolved
+/// from the config and pass the validated value. The parameter is
+/// `Option<&ValidUrl>` rather than `&SitemapConfig` on purpose — the mode
+/// enum is `pub(crate)` (the MCP adapter cannot name it) while [`ValidUrl`]
+/// is the public resolved value, already scheme-hardened with credentials
+/// stripped, so no second parse happens downstream.
+///
+/// * `Some(url)` - fetch exactly this sitemap (already validated).
+/// * `None` - auto-discover the sitemap (robots.txt `Sitemap:` directive,
+///   fallback paths, then sub-path probes).
+///
+/// # Arguments
+///
+/// * `base_url` - Base URL of the website
+/// * `sitemap` - Resolved explicit sitemap URL (auto-discovers if None)
+/// * `config` - Crawler configuration (timeouts, TLS profile, depth gate)
+///
+/// # Returns
+///
+/// * `Ok(Vec<DiscoveredUrl>)` - URLs discovered from sitemap
+/// * `Err(CrawlError)` - Error during sitemap fetch or parse
+#[instrument(
+    name = "crawl_with_sitemap_resolved",
+    skip(config),
+    fields(
+        base_url,
+        sitemap = ?sitemap
+    )
+)]
+pub async fn crawl_with_sitemap_resolved(
+    base_url: &str,
+    sitemap: Option<&ValidUrl>,
+    config: &CrawlerConfig,
+) -> Result<Vec<DiscoveredUrl>, CrawlError> {
+    crawl_with_sitemap_internal(base_url, sitemap, config).await
 }
 
 /// Crawl with sitemap (internal version with progress tracking)
 ///
 /// This is the internal implementation that supports optional progress tracking.
-/// The public `crawl_with_sitemap` function calls this one.
+/// The public `crawl_with_sitemap_resolved` function calls this one.
 ///
-/// Following **own-borrow-over-clone**: Accepts `&str` not `&String`.
+/// Following **own-borrow-over-clone**: Accepts `&ValidUrl` (borrowed), not an owned URL.
 #[allow(unused_variables)]
 async fn crawl_with_sitemap_internal(
     base_url: &str,
-    sitemap_url: Option<&str>,
+    sitemap: Option<&ValidUrl>,
     config: &CrawlerConfig,
 ) -> Result<Vec<DiscoveredUrl>, CrawlError> {
     info!("Crawling with sitemap for {}", base_url);
@@ -84,11 +151,11 @@ async fn crawl_with_sitemap_internal(
     // gzip/brotli as the DOM path (#298).
     let discovery_client = build_discovery_client(config)?;
 
-    // Use default batch size (10,000) - SitemapConfig handles pagination
+    // Use default batch size (10,000) - the parser `SitemapConfig` handles pagination
     const DEFAULT_BATCH_SIZE: usize = 10_000;
 
     // Auto-discover sitemap URL if not provided
-    let sitemap_url = resolve_sitemap_url(base_url, sitemap_url, &discovery_client).await?;
+    let sitemap_url = resolve_sitemap_url(base_url, sitemap, &discovery_client).await?;
 
     tracing::info!("Using sitemap: {}", sitemap_url);
 
@@ -165,18 +232,18 @@ fn build_discovery_client(config: &CrawlerConfig) -> Result<wreq::Client, CrawlE
         .map_err(|e| CrawlError::Internal(format!("failed to build discovery client: {e}")))
 }
 
-/// Resolve the sitemap URL: use the provided one, or auto-discover it.
+/// Resolve the sitemap URL: use the provided (already validated) one, or auto-discover it.
 async fn resolve_sitemap_url(
     base_url: &str,
-    sitemap_url: Option<&str>,
+    sitemap: Option<&ValidUrl>,
     client: &wreq::Client,
 ) -> Result<String, CrawlError> {
-    match sitemap_url {
-        Some(url) if !url.is_empty() => {
-            tracing::info!("Sitemap URL provided: {}", url);
-            Ok(url.to_string())
+    match sitemap {
+        Some(url) => {
+            tracing::info!("Sitemap URL provided: {}", url.as_str());
+            Ok(url.as_str().to_string())
         },
-        _ => discover_sitemap_url_for(base_url, client).await,
+        None => discover_sitemap_url_for(base_url, client).await,
     }
 }
 
@@ -208,7 +275,7 @@ fn build_sitemap_parser(
     batch_size: usize,
 ) -> Result<Arc<dyn SitemapParserPort>, CrawlError> {
     crate::application::container::build_sitemap_parser(
-        SitemapConfig::builder()
+        crate::domain::crawler_port::SitemapConfig::builder()
             .gzip_enabled(true)
             .max_depth(3)
             .concurrency(5)
@@ -871,5 +938,133 @@ mod tests {
 
         let result = discover_sitemap_url(mock.uri().as_str(), &test_client()).await;
         assert!(result.is_err());
+    }
+
+    // ── Issue #1162/#1190: rejection end-to-end via discovery ──
+    // These replace the isolated-enum `issue_1162_*` tests (which passed
+    // while production still failed late): each drives a real discovery
+    // entry, so a regression reintroduces the late failure — not a unit
+    // miss (systemic-issue-triage: trust the reproduction over the
+    // mechanism).
+
+    /// `Some("not-a-url")` is rejected by the legacy entry BEFORE any
+    /// client build or fetch (Spanish, typed) — no mock needed because
+    /// the network is never touched.
+    #[tokio::test]
+    async fn issue_1162_invalid_url_rejected_before_fetch() {
+        let seed = Url::parse("https://example.com").expect("valid seed");
+        let config = CrawlerConfig::new(seed);
+        let err = crawl_with_sitemap("https://example.com", Some("not-a-url"), &config)
+            .await
+            .expect_err("invalid sitemap URL must fail at the boundary");
+        match err {
+            CrawlError::InvalidUrl(msg) => assert!(
+                msg.contains("sitemap") && msg.contains("inválida"),
+                "rejection must name the sitemap URL in Spanish, got: {msg}"
+            ),
+            other => panic!("expected InvalidUrl, got: {other:?}"),
+        }
+    }
+
+    /// Non-http(s) schemes are rejected at the same edge (`ValidUrl`
+    /// hardening applies at the boundary, not just URL shape).
+    #[tokio::test]
+    async fn issue_1162_non_http_sitemap_scheme_rejected() {
+        let seed = Url::parse("https://example.com").expect("valid seed");
+        let config = CrawlerConfig::new(seed);
+        let err = crawl_with_sitemap(
+            "https://example.com",
+            Some("ftp://example.com/sitemap.xml"),
+            &config,
+        )
+        .await
+        .expect_err("non-http(s) sitemap URL must fail at the boundary");
+        assert!(
+            matches!(err, CrawlError::InvalidUrl(_)),
+            "expected InvalidUrl, got: {err:?}"
+        );
+    }
+
+    /// An explicit VALID URL flows through the boundary untouched: served
+    /// by wiremock, the resolved entry returns exactly its `<loc>` entries.
+    #[tokio::test]
+    async fn issue_1162_explicit_valid_url_used_verbatim() {
+        let mock = MockServer::start().await;
+        let page1 = format!("{}/page1", mock.uri());
+        let page2 = format!("{}/page2", mock.uri());
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>{page1}</loc></url>
+    <url><loc>{page2}</loc></url>
+</urlset>"#
+        );
+        Mock::given(method("GET"))
+            .and(path("/sitemap.xml"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(xml)
+                    .insert_header("Content-Type", "application/xml"),
+            )
+            .mount(&mock)
+            .await;
+
+        let base_url = mock.uri();
+        let seed = Url::parse(&base_url).expect("valid mock URL");
+        let config = CrawlerConfig::new(seed);
+        let sitemap_url = format!("{base_url}/sitemap.xml");
+        let explicit = ValidUrl::parse(&sitemap_url).expect("explicit test URL is valid");
+
+        let urls = crawl_with_sitemap_resolved(&base_url, Some(&explicit), &config)
+            .await
+            .expect("explicit sitemap must parse");
+
+        assert_eq!(urls.len(), 2, "expected both <loc> entries");
+        let found: Vec<String> = urls.into_iter().map(|d| d.url.to_string()).collect();
+        assert!(found.contains(&page1), "should contain page1");
+        assert!(found.contains(&page2), "should contain page2");
+    }
+
+    /// No explicit URL auto-discovers through the resolved entry
+    /// (robots.txt `Sitemap:` directive → sitemap fetch → URLs).
+    #[tokio::test]
+    async fn issue_1162_auto_discovery_without_url() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/robots.txt"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("User-agent: *\nDisallow:\nSitemap: /sitemap.xml\n"),
+            )
+            .mount(&mock)
+            .await;
+        let page1 = format!("{}/page1", mock.uri());
+        let page2 = format!("{}/page2", mock.uri());
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>{page1}</loc></url>
+    <url><loc>{page2}</loc></url>
+</urlset>"#
+        );
+        Mock::given(method("GET"))
+            .and(path("/sitemap.xml"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(xml)
+                    .insert_header("Content-Type", "application/xml"),
+            )
+            .mount(&mock)
+            .await;
+
+        let base_url = mock.uri();
+        let seed = Url::parse(&base_url).expect("valid mock URL");
+        let config = CrawlerConfig::new(seed);
+
+        let urls = crawl_with_sitemap_resolved(&base_url, None, &config)
+            .await
+            .expect("auto-discovery should succeed");
+
+        assert_eq!(urls.len(), 2, "expected both auto-discovered URLs");
     }
 }

@@ -395,9 +395,17 @@ impl McpHandler {
         // re-uses it as the filter anchor.
         let config = webfang_core::domain::CrawlerConfig::new(seed_url.clone());
 
-        match webfang_core::application::crawler::crawl_with_sitemap(
+        // The explicit sitemap URL arrives boundary-validated (`McpUrl`
+        // wraps a parsed+hardened `ValidUrl`): rewrap without re-parsing
+        // and enter through the resolved entry (#1190).
+        let explicit = params
+            .sitemap_url
+            .as_ref()
+            .map(|s| webfang_core::domain::ValidUrl::new(s.as_url().clone()));
+
+        match webfang_core::application::crawler::sitemap_discovery::crawl_with_sitemap_resolved(
             params.url.as_str(),
-            params.sitemap_url.as_ref().map(|s| s.as_str()),
+            explicit.as_ref(),
             &config,
         )
         .await
@@ -564,7 +572,7 @@ impl McpHandler {
         let root_correlation = webfang_core::domain::CorrelationId::new();
         let crawler_config = webfang_core::domain::CrawlerConfig::new(seed.clone());
 
-        match webfang_core::application::crawler::crawl_with_sitemap(
+        match webfang_core::application::crawler::sitemap_discovery::crawl_with_sitemap_resolved(
             params.url.as_str(),
             None,
             &crawler_config,

@@ -1,5 +1,11 @@
 //! Sitemap port — domain-owned sitemap surface (VO, error type, parser trait).
 //!
+//! Not to be confused with `crate::domain::site::SitemapConfig`: that one
+//! is the discovery-mode decision (off / auto / explicit `ValidUrl`), while
+//! the `SitemapConfig` in the parent `crate::domain::crawler_port` module
+//! carries the sitemap-*parser* pagination/batch knobs consumed by
+//! `application::crawler::sitemap_discovery::build_sitemap_parser`.
+//!
 //! Extracted from `infrastructure::crawler::sitemap_parser` so
 //! `application::crawler::sitemap_discovery` can depend on `domain::*`
 //! without `application→infrastructure` (ADR-0012-B sitemap port, follow-up
