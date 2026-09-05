@@ -40,9 +40,10 @@ jobs:
             os: ubuntu-latest
             archive: tar.gz
             cross: true
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            archive: tar.gz
+          # x86_64-apple-darwin intentionally NOT built: ONNX Runtime dropped
+          # x64 macOS as of 1.24.1, so ort-sys has no prebuilt for it and the
+          # `ai` feature cannot link (upstream pykeio/ort#556, closed not_planned).
+          # macOS 26 (Tahoe) is also Apple's last Intel release.
           - target: aarch64-apple-darwin
             os: macos-latest
             archive: tar.gz
@@ -69,7 +70,7 @@ jobs:
         if: matrix.cross
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
       - name: Build release binary
