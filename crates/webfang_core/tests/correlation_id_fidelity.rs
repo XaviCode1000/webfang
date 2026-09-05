@@ -247,7 +247,7 @@ async fn correlation_id_shared_across_tasks() {
 // whole run stays reconstructable under ONE trace_id (audit F14). Without
 // this contract each subsystem that called `CorrelationId::new()` per page
 // would fragment the run into N unrelated traces — the exact symptom of
-// #687 ("discovery acuña un trace UUID propio"). `scrape_single_url_for_tui`
+// #687 ("discovery acuña un trace UUID propio"). `scrape_single_url`
 // (discovery.rs) and `scrape_urls` (scrape_flow.rs) take the identity as a
 // REQUIRED parameter (#501); these tests pin the derivation semantics that
 // make that parameter sufficient.

@@ -159,8 +159,7 @@ pub fn redact_temp_path(dir: &Path, text: &str) -> String {
 
 /// Redact common non-deterministic output so snapshots are stable run-to-run:
 /// the temp dir, ISO-8601 log timestamps, dynamic wiremock ports, ANSI color
-/// escape sequences, environment-specific error suffixes, and source line
-/// numbers in tracing spans.
+/// escape sequences, and source line numbers in tracing spans.
 ///
 /// # Panics
 ///
@@ -172,9 +171,6 @@ pub fn redact_nondeterministic(dir: &Path, text: &str) -> String {
     let text = redact_temp_path(dir, text);
     let ansi = Regex::new(r"\x1b\[[0-9;]*m").expect("valid ANSI regex");
     let text = ansi.replace_all(&text, "").into_owned();
-    let env_suffix = Regex::new(r" \(CI mode\)| \(interactive prompt requires --features ui\)")
-        .expect("valid env suffix regex");
-    let text = env_suffix.replace_all(&text, "").into_owned();
     let ts = Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}:?\d{2}|Z)")
         .expect("valid timestamp regex");
     let text = ts.replace_all(&text, "<TIMESTAMP>").into_owned();

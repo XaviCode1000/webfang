@@ -531,7 +531,7 @@ async fn prepare_phase(
         // Sitemap mode is the source of truth (depth-agnostic XML), so keep the
         // existing single-pass sitemap discovery. DOM mode must run the recursive
         // crawl Engine so `--max-depth` is honored (bug #651): the legacy
-        // `discover_urls_for_tui` path did one fetch and silently ignored depth.
+        // `discover_urls_single_fetch` path did one fetch and silently ignored depth.
         let discovered_urls = if opts.crawl.use_sitemap {
             match discover_urls(&crawler_config, opts).await {
                 // "Site has no sitemap" is a terminal discovery state, not

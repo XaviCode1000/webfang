@@ -240,7 +240,7 @@ pub(crate) async fn adaptive_selector_repair(
 /// Recibe HTML ya fetchado y validado (post-WAF). No conoce el transporte.
 ///
 /// Correlation identity (#501): the per-page identity is a REQUIRED input —
-/// callers own it (e.g. `scrape_single_url_for_tui` declares it on its trace
+/// callers own it (e.g. `scrape_single_url` declares it on its trace
 /// span) and inject it here so the exported content shares the same identity
 /// as the page's `span_fields` in the `--trace-file` JSONL. Standalone
 /// callers mint their own root at entry. Identity enters through the type

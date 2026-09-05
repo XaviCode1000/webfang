@@ -13,7 +13,7 @@ use crate::application::crawl_options::CrawlOptions;
 use crate::application::export_factory;
 use crate::application::progress_observer::ProgressObserver;
 use crate::application::resume::filter_committed;
-use crate::application::scrape_single_url_for_tui;
+use crate::application::scrape_single_url;
 use crate::cli::error::CliExit;
 use crate::domain::config::ScraperConfig;
 use crate::domain::cookie_bridge::CookieBridge;
@@ -410,7 +410,7 @@ async fn scrape_one_url(
         .on_status_changed(url_str, ScrapeStatus::Fetching)
         .await;
 
-    match scrape_single_url_for_tui(
+    match scrape_single_url(
         ctx.router,
         url,
         ctx.scraper_config,

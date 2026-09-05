@@ -6,14 +6,11 @@ pub mod crawler;
 pub mod export;
 /// Obsidian vault integration arguments.
 pub mod obsidian;
-/// Terminal UI configuration arguments.
-pub mod tui;
 
 pub use ai::AiArgs;
 pub use crawler::CrawlerArgs;
 pub use export::ExportArgs;
 pub use obsidian::ObsidianArgs;
-pub use tui::TuiArgs;
 
 /// Test-only helpers shared by the per-group arg modules.
 #[cfg(test)]
@@ -97,10 +94,6 @@ pub struct Args {
     /// AI-powered semantic cleaning settings.
     #[command(flatten)]
     pub ai: AiArgs,
-
-    /// Terminal UI configuration.
-    #[command(flatten)]
-    pub tui: TuiArgs,
 }
 
 /// Subcommands.

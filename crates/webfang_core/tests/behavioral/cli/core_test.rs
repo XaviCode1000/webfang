@@ -198,6 +198,22 @@ fn invalid_url_exit_code_64() {
 }
 
 // ---------------------------------------------------------------------------
+// Removed flags (TUI removal)
+// ---------------------------------------------------------------------------
+
+/// The interactive TUI was deleted with its crate; `--tui` must fail at
+/// clap parse time as an unexpected argument with the usage exit code 64
+/// (`EXIT_USAGE_ERROR`), not panic — pinning the post-removal contract.
+#[test]
+fn removed_tui_flag_is_rejected_with_usage_error() {
+    cmd()
+        .arg("--tui")
+        .assert()
+        .code(64)
+        .stderr(predicate::str::contains("unexpected argument '--tui'"));
+}
+
+// ---------------------------------------------------------------------------
 // --help output snapshot (deterministic, network-free)
 // Only runs when both the `ai` and `adaptive-selectors` features are enabled,
 // because the snapshot includes AI-specific flags (--clean-ai, --threshold,

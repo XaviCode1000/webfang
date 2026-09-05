@@ -316,18 +316,6 @@ pub(crate) fn obsidian_args(headings: Headings) -> Vec<clap::Arg> {
 }
 
 // ---------------------------------------------------------------------------
-// TUI group
-// ---------------------------------------------------------------------------
-
-/// All TUI-group args in declaration order — pure spec build.
-pub(crate) fn tui_args(headings: Headings) -> Vec<clap::Arg> {
-    options_spec::tui::GROUP
-        .iter()
-        .map(|s| build_arg(s, headings))
-        .collect()
-}
-
-// ---------------------------------------------------------------------------
 // Crawler group
 // ---------------------------------------------------------------------------
 
@@ -523,10 +511,6 @@ mod tests {
             obsidian_args(Headings::Omitted).len(),
             options_spec::obsidian::GROUP.len()
         );
-        assert_eq!(
-            tui_args(Headings::Omitted).len(),
-            options_spec::tui::GROUP.len()
-        );
         #[cfg(feature = "ai")]
         assert_eq!(ai_args(Headings::Omitted).len(), AI_LAYOUT.len());
     }
@@ -542,10 +526,6 @@ mod tests {
         assert_eq!(
             obsidian_args(Headings::Applied).len(),
             options_spec::obsidian::GROUP.len()
-        );
-        assert_eq!(
-            tui_args(Headings::Applied).len(),
-            options_spec::tui::GROUP.len()
         );
         #[cfg(feature = "ai")]
         assert_eq!(ai_args(Headings::Applied).len(), AI_LAYOUT.len());
@@ -644,13 +624,6 @@ mod tests {
                 .unwrap_or_else(|| panic!("obsidian arg `{}` missing", spec.id));
             assert_eq!(arg.get_help_heading(), spec.heading, "`{}`", spec.id);
         }
-        for spec in options_spec::tui::GROUP {
-            let arg = tui_args(Headings::Applied)
-                .into_iter()
-                .find(|a| a.get_id() == spec.id)
-                .unwrap_or_else(|| panic!("tui arg `{}` missing", spec.id));
-            assert_eq!(arg.get_help_heading(), spec.heading, "`{}`", spec.id);
-        }
     }
 
     /// The runtime shape carries headings (#932, post-ADR-002): every active
@@ -667,7 +640,6 @@ mod tests {
             }
         }
         specs.extend(options_spec::obsidian::GROUP.iter());
-        specs.extend(options_spec::tui::GROUP.iter());
         #[cfg(feature = "ai")]
         for slot in AI_LAYOUT.iter() {
             if let AiSlot::Spec(s) = slot {
@@ -679,7 +651,6 @@ mod tests {
             .into_iter()
             .chain(crawler_args(Headings::Applied))
             .chain(obsidian_args(Headings::Applied))
-            .chain(tui_args(Headings::Applied))
             .chain({
                 #[cfg(feature = "ai")]
                 {

@@ -36,10 +36,10 @@ Output is saved to `output/` as Markdown by default.
 
 ## Architecture
 
-Clean Architecture with enforced dependency direction across 5 workspace crates (plus `webfang_test_utils`, a shared dev/test-support crate):
+Clean Architecture with enforced dependency direction across 4 workspace crates (plus `webfang_test_utils`, a shared dev/test-support crate):
 
 ```
-webfang_cli ──→ webfang_tui ──→ webfang_core ←── webfang_ai
+webfang_cli ──→ webfang_ai ───→ webfang_core
 webfang_cli ──→ webfang_mcp ──→ webfang_core
 webfang_cli ──────────────────────→ webfang_core
 ```
@@ -48,11 +48,10 @@ webfang_cli ──────────────────────�
 |-------|---------|-----------------|
 | `webfang_core` | Domain, application, infrastructure | wreq, tokio, scraper, lol_html |
 | `webfang_ai` | ONNX semantic cleaning | tract-onnx |
-| `webfang_tui` | Terminal UI | ratatui |
 | `webfang_mcp` | MCP server for AI agents | rmcp |
 | `webfang_cli` | Binary entry point + CLI parsing | clap |
 
-**Dependency direction:** CLI → {TUI, MCP, AI} → Core. No circular dependencies.
+**Dependency direction:** CLI → {MCP, AI} → Core. No circular dependencies.
 
 ---
 
@@ -71,7 +70,6 @@ webfang_cli ──────────────────────�
 | **Rate limiting** | Configurable with Retry-After respect |
 | **Resume** | Continues interrupted crawls with `--resume` |
 | **TLS fingerprinting** | wreq impersonates real browsers to bypass WAFs |
-| **TUI selector** | Interactive URL selection with ratatui |
 
 ---
 
@@ -257,7 +255,6 @@ CLI arguments override config file values.
 |---------|-----------|---------|
 | `default` | images + documents | `cargo install --path crates/webfang_cli` |
 | `ai` | Semantic cleaning with ONNX (~90MB model) | `--features ai` |
-| `ui` | Interactive TUI with ratatui | `--features ui` |
 | `mcp` | MCP server for AI agents | `--features mcp` |
 | `persistence` | SQLite checkpoint store | `--features persistence` |
 | `console` | Tokio console (debugging) | `--features console` |
@@ -294,7 +291,6 @@ webfang/
 ├── crates/
 │   ├── webfang_core/     # Domain + application + infrastructure
 │   ├── webfang_ai/       # AI/ONNX inference
-│   ├── webfang_tui/      # Terminal UI
 │   ├── webfang_mcp/      # MCP server
 │   └── webfang_cli/      # Binary entry point
 ├── Cargo.toml                 # Workspace manifest
@@ -322,12 +318,12 @@ codedb index .
 
 ### Architecture rules
 
-- **Dependency direction:** CLI → {TUI, MCP, AI} → Core (never reverse)
+- **Dependency direction:** CLI → {MCP, AI} → Core (never reverse)
 - **Port/Adapter pattern:** Domain defines traits, Infrastructure implements them
 - **Error types:** DomainError, InfraError, AppError → ScraperError (dual wrapping)
 - **User-facing errors:** Spanish. Internal logs: English.
 
-**Stack:** Rust 1.88 · Tokio · wreq (TLS fingerprint) · ratatui · scraper 0.27 · lol_html · tract-onnx
+**Stack:** Rust 1.88 · Tokio · wreq (TLS fingerprint) · scraper 0.27 · lol_html · tract-onnx
 
 ---
 

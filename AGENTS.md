@@ -1,8 +1,8 @@
 # AGENTS.md — WebFang
 
-Production-ready web scraper. Clean Architecture, TUI selector, AI semantic cleaning, sitemap-based crawling.
+Production-ready web scraper. Clean Architecture, AI semantic cleaning, sitemap-based crawling.
 
-**Stack:** Rust 1.88 · Tokio · wreq 6 (TLS fingerprint) · ratatui · ort (feature-gated) · SQLite
+**Stack:** Rust 1.88 · Tokio · wreq 6 (TLS fingerprint) · ort (feature-gated) · SQLite
 
 ---
 
@@ -91,7 +91,6 @@ webfang/                          # virtual workspace root (no [package])
 ├── crates/
 │   ├── webfang_core/             # domain + application + infrastructure
 │   ├── webfang_ai/               # ONNX embeddings, semantic cleaning
-│   ├── webfang_tui/              # ratatui TUI selector
 │   ├── webfang_mcp/              # MCP server (36 tools)
 │   ├── webfang_cli/              # CLI binary (webfang)
 │   └── webfang_test_utils/       # shared test utilities (not shipped)
@@ -101,7 +100,7 @@ webfang/                          # virtual workspace root (no [package])
 ### Inter-crate dependency direction (ENFORCED POLICY)
 
 ```text
-cli ──→ tui ──→ core ←── ai
+ai ───→ core
 cli ──→ mcp ──→ core
 cli ──────────→ core
 cli ──→ ai   (feature-gated, #433)
@@ -114,9 +113,8 @@ Full allow-matrix (effective build graph):
 | :--- | :--- |
 | `webfang_core` | — |
 | `webfang_ai` | `webfang_core` |
-| `webfang_tui` | `webfang_core` |
 | `webfang_mcp` | `webfang_core`, `webfang_ai` |
-| `webfang_cli` | `webfang_core`, `webfang_tui`, `webfang_ai`, `webfang_mcp` |
+| `webfang_cli` | `webfang_core`, `webfang_ai`, `webfang_mcp` |
 | `webfang_benchmark` | `webfang_core`, `webfang_test_utils` (leaf; benchmark tooling, no production dependents) |
 
 This is an architectural POLICY, not just what the code happens to do. New code must respect this direction. Verify cross-crate usage with `codedb_deps` or CodeGraph `explore` before adding any inter-crate import.
@@ -137,7 +135,7 @@ Domain defines ports (traits) → Infrastructure implements them → Application
 | New error type | `error.rs` | `cli/` — `thiserror::Error` + `From` impls, Spanish user-facing |
 | New behavioral test | `cli_harness.rs` | `tests/common/` — `BehavioralTest` + wiremock + TempDir + insta snapshots |
 
-**Avoid:** `adapters/tui/progress_widget.rs` (551 lines), `infrastructure/mcp_server/mod.rs` (1404 lines) — keep new components focused.
+**Avoid:** oversized components such as `infrastructure/mcp_server/mod.rs` (1404 lines) — keep new components focused.
 
 ### Error stratification
 
@@ -496,7 +494,7 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 **Format:** `type(scope): description`
 
 - type: `feat` | `fix` | `refactor` | `test` | `docs` | `perf` | `chore` | `revert`
-- scope: `cli` | `tui` | `crawler` | `ai` | `mcp` | `exporter` | `http` | `domain` | `infra`
+- scope: `cli` | `crawler` | `ai` | `mcp` | `exporter` | `http` | `domain` | `infra`
 
 ### PR creation — CI-enforced rules (`pr-validation.yml`)
 

@@ -15,10 +15,6 @@ coverage:
         flags: [mcp]
         target: auto
         threshold: 2%
-      tui:
-        flags: [tui]
-        target: auto
-        threshold: 3% # UI is inherently harder to test
       ai:
         flags: [ai]
         target: auto
@@ -42,10 +38,6 @@ flags:
   mcp:
     paths:
       - crates/webfang_mcp/src/
-    carryforward: true
-  tui:
-    paths:
-      - crates/webfang_tui/src/
     carryforward: true
   ai:
     paths:
@@ -80,10 +72,6 @@ component_management:
       name: "AI / Embeddings"
       paths:
         - "crates/webfang_ai/**"
-    - component_id: webfang_tui
-      name: "TUI Selector"
-      paths:
-        - "crates/webfang_tui/**"
     - component_id: webfang_mcp
       name: "MCP Server"
       paths:
