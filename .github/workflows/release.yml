@@ -53,7 +53,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.88.0
         with:
           targets: ${{ matrix.target }}
 
@@ -73,6 +73,12 @@ jobs:
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
       - name: Build release binary
+        # dtolnay/rust-toolchain@1.88.0 (not @stable): the repo pins 1.88.0 via
+        # rust-toolchain.toml, which takes precedence over rustup's default
+        # toolchain (rustup docs: overrides rank 4 > 5). Installing the cross
+        # target on `stable` leaves the pinned toolchain without it ->
+        # E0463 "can't find crate for `core`". The @1.88.0 rev installs the
+        # target on the SAME toolchain cargo resolves via the toolchain file.
         run: cargo build --release --locked --features "ai mcp" --target ${{ matrix.target }} -p webfang_cli
 
       - name: Strip binary (Linux/macOS)
