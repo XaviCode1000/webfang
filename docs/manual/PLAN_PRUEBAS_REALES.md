@@ -27,9 +27,8 @@
 ### Builds required (do in this order, share `CARGO_TARGET_DIR`)
 
 ```bash
-cargo build -p webfang_cli                                   # BIN1: plain (no ui/ai)
-cargo build -p webfang_cli --features ui                     # BIN2: + TUI
-cargo build -p webfang_cli --features ui,ai                  # BIN3: full (used for AI + final smoke)
+cargo build -p webfang_cli                                   # BIN1: plain (no ai)
+cargo build -p webfang_cli --features ai                     # BIN2: + AI (used for AI + final smoke)
 cargo build -p webfang_mcp --bin mcp_server_http             # MCP server binary
 # optional: cargo build -p webfang_mcp --features ai --bin mcp_server_http  (AI tools)
 ```
@@ -78,7 +77,7 @@ source of truth for which site tests what.
 | 1.5 | Invalid URL | `webfang --url "notaurl"` | `Invalid URL: notaurl` usage error (exit 2), NOT a panic (CrawlOptions::from historically panicked) |
 | 1.6 | Completions | `webfang completions bash` (and fish/zsh) | valid shell output, exit 0 |
 | 1.7 | Flag validation | `webfang --url https://example.com --timeout-secs 0` ; `--download-concurrency 0` ; `--batch-concurrency 0` ; `--cpu-cores 0` ; `--ram-budget 0 ; --ram-budget nonsense` | Spanish validation error each, exit ≠ 0 |
-| 1.8 | Legacy TUI flags on BIN1 | `webfang --tui` on BIN1 (no `ui` feature) | rejection/honest message, no panic |
+| 1.8 | Removed `--tui` flag | `webfang --tui` (flag no longer exists) | clap "unexpected argument", exit 2, no panic |
 
 **Bug classes:** panic on bad input, English leaks into user errors, exit codes wrong.
 
@@ -191,7 +190,7 @@ source of truth for which site tests what.
 
 **Bug classes:** auth fail-open, SSRF gaps, export-roots bypass (#696 regression), honest-error contracts broken, stdio/stdout pollution.
 
-### Phase 7 — AI semantic cleaning (BIN3, feature `ai`)
+### Phase 7 — AI semantic cleaning (BIN2, feature `ai`)
 
 > No HF cache → first run downloads Granite-97M. Test both the cold and warm path.
 
@@ -212,24 +211,11 @@ source of truth for which site tests what.
 
 **Bug classes:** download-failure panics, offline-mode lies, dimension mismatches, memory blowups, cache corruption handling.
 
-### Phase 8 — TUI / UI (BIN2+, feature `ui`)
+### Phase 8 — RETIRED (TUI removed)
 
-> Interactive — run in a real terminal (tmux pane ok). Record with `script`/asciinema if useful.
-
-| # | Test | Steps | Expected |
-|---|------|-------|----------|
-| 8.1 | Unified TUI launch | `webfang --tui`, enter a URL | config form renders (no garbled borders), navigable |
-| 8.2 | URL selector widget | reach URL Selector phase (Space/Enter/A/D/q keys) | checkboxes toggle, counter updates, scroll works on long lists |
-| 8.3 | Multi-select → batch | select 2+ URLs, Enter | temp batch file created (uuid v7), crawl proceeds for both |
-| 8.4 | Cancel path | q at selector | "TUI cancelled.", exit 0, no partial state |
-| 8.5 | Non-interactive terminal | `webfang --tui < /dev/null` (no TTY) | honest error, no panic/rendering garbage |
-| 8.6 | Deprecated flags | `--config-tui`, `--interactive` | deprecation warning pointing to `--tui`, still works |
-| 8.7 | TUI + bad URL | enter invalid URL in form | inline validation, no crash |
-| 8.8 | TUI under slow network | crawl S5 via TUI | progress visible, no input lockup |
-| 8.9 | Terminal resize | resize pane mid-render | re-renders, no panic |
-| 8.10 | Chrome preflight in TUI | set js_strategy=full in config form (#724 preflight finding) | honest "no Chrome" message inside TUI, no hang |
-
-**Bug classes:** ratatui panics on resize/bad UTF-8, key event deadlocks (#741-era bugs), temp-file leaks.
+The interactive TUI (`--tui` flag and its crate, feature `ui`) was removed;
+`webfang --tui` now exits 2 via clap (covered by 1.8). This phase number stays
+reserved so later phase references keep their meaning.
 
 ### Phase 9 — Observability & stress
 
@@ -256,7 +242,7 @@ GitHub issues with `type:bug` and one `priority:*` label):
 | Command | full reproducible command |
 | Expected | from this plan |
 | Actual | what happened (exit code, message, panic backtrace if any) |
-| Evidence | file in `out/<test-id>/`, trace JSONL excerpt, screenshot (TUI) |
+| Evidence | file in `out/<test-id>/`, trace JSONL excerpt, screenshot (where relevant) |
 | Severity | Critical (panic/data-loss/lie) / High (broken feature) / Medium (bad UX) / Low (cosmetic) |
 | Dupe check | cross-ref #695 / #724 / #749 / #751 before filing |
 | Suggested title | `fix(<scope>): <spanish-or-english per repo convention>` |
@@ -279,9 +265,9 @@ GitHub issues with `type:bug` and one `priority:*` label):
 2. **Phase 6** (MCP) before Phase 7, because MCP is the most attack-surface-heavy surface and #749/#724 findings are open.
 3. **Phase 4** (WAF/JS) right after core — fingerprinting is webfang's differentiator.
 4. **Phase 7** (AI) — needs ~400 MB download, run when bandwidth allows.
-5. **Phase 3** (discovery), **5** (exports), **8** (TUI), **9** (stress) interleave as capacity allows.
+5. **Phase 3** (discovery), **5** (exports), **9** (stress) interleave as capacity allows.
 
-Total: ~70 individual checks. Estimated wall time: 4–6 h excluding the AI model
+Total: ~60 individual checks. Estimated wall time: 4–6 h excluding the AI model
 download and any installed-Chrome follow-up (out of scope this environment).
 
 ## 5. Out of scope (documented, not forgotten)

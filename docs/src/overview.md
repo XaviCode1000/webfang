@@ -1,11 +1,11 @@
 # Overview
 
 **WebFang** is a production-ready web scraper built in Rust (1.88), with
-Clean Architecture, a TLS-fingerprinting HTTP client, an interactive TUI
-selector, optional AI semantic cleaning, and sitemap-based crawling.
+Clean Architecture, a TLS-fingerprinting HTTP client, optional AI semantic
+cleaning, and sitemap-based crawling.
 
 This book is the narrative documentation. The complete **API reference** for
-all six crates is generated from source via `cargo doc` and published
+all five crates is generated from source via `cargo doc` and published
 alongside this book under `/api/<crate>/` (e.g. `/api/webfang_core/`).
 
 ## Crates
@@ -14,7 +14,6 @@ alongside this book under `/api/<crate>/` (e.g. `/api/webfang_core/`).
 | :--- | :--- |
 | `webfang_core` | Domain, application, and infrastructure layers — the scraping engine |
 | `webfang_ai` | ONNX embeddings + semantic cleaning (feature-gated) |
-| `webfang_tui` | `ratatui` TUI URL selector |
 | `webfang_mcp` | MCP server (35 tools) |
 | `webfang_cli` | CLI binary (`webfang`) |
 | `webfang_test_utils` | Shared test helpers |
@@ -29,8 +28,6 @@ alongside this book under `/api/<crate>/` (e.g. `/api/webfang_core/`).
   failures, WAF blocks, and async deadlocks.
 - **[CLI Reference](cli-reference.md)** — the complete `webfang` flag
   reference, auto-generated from the binary itself.
-- **[TUI Unified Design](tui-unified-design.md)** — the collapsible config +
-  URL selector design.
 
 ## Regenerating this documentation
 

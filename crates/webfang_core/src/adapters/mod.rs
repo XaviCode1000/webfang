@@ -4,8 +4,6 @@
 //! - Asset downloading (images, documents)
 //! - URL extraction from HTML
 //! - MIME type detection
-//!
-//! TUI adapter lives in the separate `webfang_tui` crate.
 
 pub mod detector;
 pub mod downloader;

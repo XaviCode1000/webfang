@@ -667,9 +667,6 @@ pub mod ai;
 
 /// Obsidian flag group (ADR-002 slice 5a): mirrors `cli::args::ObsidianArgs`.
 pub mod obsidian;
-
-/// TUI flag group (ADR-002 slice 5a): mirrors `cli::args::TuiArgs`.
-pub mod tui;
 #[cfg(test)]
 mod tests {
     use super::{crawler, export, schema_object, BoundError, DefaultValue, OptionSpecError};

@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "crates/webfang_core",
     "crates/webfang_ai",
-    "crates/webfang_tui",
     "crates/webfang_mcp",
     "crates/webfang_cli",
     "crates/webfang_test_utils",
@@ -26,7 +25,6 @@ homepage = "https://github.com/XaviCode1000/webfang"
 # with the workspace version on every bump.
 webfang_core = { path = "crates/webfang_core", version = "2.0.0" }
 webfang_ai = { path = "crates/webfang_ai", version = "2.0.0" }
-webfang_tui = { path = "crates/webfang_tui", version = "2.0.0" }
 webfang_mcp = { path = "crates/webfang_mcp", version = "2.0.0" }
 webfang_cli = { path = "crates/webfang_cli", version = "2.0.0" }
 webfang_test_utils = { path = "crates/webfang_test_utils", version = "2.0.0" }
@@ -116,12 +114,6 @@ smallvec = "1.13"
 wide = "0.7"
 ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "download-binaries", "copy-dylibs", "tls-native"] }
 hf-hub = { version = "0.5", default-features = false, features = ["tokio", "rustls-tls"] }
-
-# TUI features
-ratatui = { version = "0.29", features = ["palette", "serde"] }
-ratatui-form = "0.1.1"
-crossterm = { version = "0.28", features = ["event-stream"] }
-inquire = "0.9"
 
 # MCP features
 rmcp = { version = "1.7", features = ["server", "macros", "schemars", "transport-streamable-http-server"] }

@@ -75,9 +75,5 @@ name = "webfang_ai"
 version_group = "webfang"
 
 [[package]]
-name = "webfang_tui"
-version_group = "webfang"
-
-[[package]]
 name = "webfang_mcp"
 version_group = "webfang"

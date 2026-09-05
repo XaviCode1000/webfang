@@ -43,7 +43,7 @@ pub use crawler::content_sink::{CapturedPage, CrawlContentSink, InMemoryContentS
 pub use crawler::engine::EngineOptions;
 pub use crawler::{
     crawl_site, crawl_site_capturing, crawl_site_with_options, crawl_with_sitemap,
-    discover_urls_for_tui, extract_content, scrape_single_url_for_tui,
+    discover_urls_single_fetch, extract_content, scrape_single_url,
 };
 pub use deduplicator::UrlDeduplicator;
 pub use http_client::create_http_client;

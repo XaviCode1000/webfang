@@ -21,7 +21,7 @@ pub use collector::{ResultsAdapter, ResultsCollector};
 pub use concurrency_level::{ConcurrencyLevel, SharedConcurrencyLevel};
 pub use content_sink::{CapturedPage, CrawlContentSink, InMemoryContentSink};
 pub use discovery::{
-    crawl_with_sitemap, discover_urls_for_tui, extract_content, scrape_single_url_for_tui,
+    crawl_with_sitemap, discover_urls_single_fetch, extract_content, scrape_single_url,
 };
 pub use engine::{crawl_site, crawl_site_capturing, crawl_site_with_options, EngineOptions};
 pub use progress::CrawlProgress;

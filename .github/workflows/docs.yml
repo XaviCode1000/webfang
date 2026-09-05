@@ -95,7 +95,7 @@ jobs:
       - name: CLI reference drift check (chapter must match binary help)
         run: |
           set -euo pipefail
-          cargo build -p webfang_cli --features "ai mcp ui" --locked
+          cargo build -p webfang_cli --features "ai mcp" --locked
           scripts/gen-cli-reference.sh --check
 
   # --------------------------------------------------------------------------

@@ -65,5 +65,5 @@ Full 37-row `#[ignore]` catalog: [`docs/test-inventory.md`](docs/test-inventory.
 - SDD: `sdd/stabilization-sprint0-baseline`
 - Gate 0: `FREEZE_FEATURES=true` in `.github/workflows/pr-validation.yml` + `AGENTS.md` Freeze policy
 - `scripts/check_dependency_direction.sh` still enforces inter-crate direction
-- Stack: `wreq` (TLS fingerprint), `Tokio`, `ratatui`, `ort` (feature-gated), `SQLite`
+- Stack: `wreq` (TLS fingerprint), `Tokio`, `ort` (feature-gated), `SQLite`
 

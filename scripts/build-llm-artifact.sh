@@ -31,10 +31,10 @@ OUT_DIR=docs/book/webfang-docs-llm
 BUILD_DATE="${BUILD_DATE:-}"
 SOURCE_COMMIT="${GITHUB_SHA:-}"
 PAGES_PREFIX="https://xavicode1000.github.io/webfang/webfang-docs-llm"
-CHAPTERS="overview debugging testing troubleshooting tui-unified-design"
+CHAPTERS="overview debugging testing troubleshooting"
 # webfang_cli is bin-only and stays excluded from the API render: it is covered
 # by the 06-cli-reference chapter (#733). Only the 5 lib crates are rendered.
-ALL_CRATES="webfang_core webfang_ai webfang_tui webfang_mcp webfang_test_utils"
+ALL_CRATES="webfang_core webfang_ai webfang_mcp webfang_test_utils"
 
 for f in $CHAPTERS cli-reference; do
   if [ ! -f "docs/src/$f.md" ]; then
@@ -140,11 +140,11 @@ PYEOF
 # Output convention: exactly one H1 per file — the "# <crate> API Reference"
 # wrapper — with the tool output (which starts "# <crate> API (<version>)")
 # demoted one level. Feature flags replicate `cargo doc --all-features` per
-# crate; webfang_tui/webfang_test_utils get no --features flag at all.
+# crate; webfang_test_utils gets no --features flag at all.
 render_api() {
   local crate="$1" out="$2" features
   case "$crate" in
-  webfang_core) features="default images documents persistence console dev-tracing ai adaptive-selectors ui mcp chromium" ;;
+  webfang_core) features="default images documents persistence console dev-tracing ai adaptive-selectors mcp chromium" ;;
   webfang_ai) features="ai" ;;
   webfang_mcp) features="mcp ai persistence" ;;
   *) features="" ;;
@@ -187,9 +187,8 @@ per_source_file() {
   case "$1" in
   webfang_core) echo "01-webfang_core.md" ;;
   webfang_ai) echo "02-webfang_ai.md" ;;
-  webfang_tui) echo "03-webfang_tui.md" ;;
-  webfang_mcp) echo "04-webfang_mcp.md" ;;
-  webfang_test_utils) echo "05-webfang_test_utils.md" ;;
+  webfang_mcp) echo "03-webfang_mcp.md" ;;
+  webfang_test_utils) echo "04-webfang_test_utils.md" ;;
   *) echo "" ;;
   esac
 }
@@ -198,7 +197,6 @@ crate_description() {
   case "$1" in
   webfang_core) echo "core domain/application/infrastructure API" ;;
   webfang_ai) echo "ONNX embeddings and semantic cleaning API" ;;
-  webfang_tui) echo "ratatui TUI selector API" ;;
   webfang_mcp) echo "MCP server (35 tools) API" ;;
   webfang_test_utils) echo "shared test utilities API" ;;
   *) echo "" ;;
@@ -269,7 +267,7 @@ done
 {
   echo "# WebFang"
   echo
-  echo "> Production-ready web scraper: Clean Architecture, TUI selector, AI semantic cleaning, sitemap-based crawling. This directory bundles LLM/RAG-oriented documentation sources generated in CI."
+  echo "> Production-ready web scraper: Clean Architecture, AI semantic cleaning, sitemap-based crawling. This directory bundles LLM/RAG-oriented documentation sources generated in CI."
   echo
   if [ -n "$BUILD_DATE" ]; then
     echo "Generated: $BUILD_DATE"
@@ -286,7 +284,7 @@ done
   echo
   echo "Focused sources:"
   echo
-  echo "- [00-narrative.md]($PAGES_PREFIX/00-narrative.md): guides — debugging/tracing, testing, troubleshooting, TUI design ($(wc -w <"$OUT_DIR/00-narrative.md") words)"
+  echo "- [00-narrative.md]($PAGES_PREFIX/00-narrative.md): guides — debugging/tracing, testing, troubleshooting ($(wc -w <"$OUT_DIR/00-narrative.md") words)"
   for crate in $ALL_CRATES; do
     out_file=$(per_source_file "$crate")
     [ -n "$out_file" ] && [ -f "$OUT_DIR/$out_file" ] || continue
@@ -305,7 +303,7 @@ done
 # Summary.
 echo
 echo "Output: $OUT_DIR"
-for f in llms.txt 00-narrative.md 01-webfang_core.md 02-webfang_ai.md 03-webfang_tui.md 04-webfang_mcp.md 05-webfang_test_utils.md 06-cli-reference.md webfang-docs-full.md; do
+for f in llms.txt 00-narrative.md 01-webfang_core.md 02-webfang_ai.md 03-webfang_mcp.md 04-webfang_test_utils.md 06-cli-reference.md webfang-docs-full.md; do
   [ -f "$OUT_DIR/$f" ] || continue
   echo "$f $(wc -w <"$OUT_DIR/$f") words"
 done
