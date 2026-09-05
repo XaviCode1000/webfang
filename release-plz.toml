@@ -12,6 +12,11 @@
 # This repo does not publish to crates.io.
 git_only = true
 
+# The CI checkout contains tracked-but-gitignored files (fuzz/corpus seeds,
+# sdd/*.md artifacts); release-plz refuses to compute versions on a dirty
+# tree. This is release-plz's documented escape hatch for that situation.
+allow_dirty = true
+
 # All packages move in lockstep under one tag: `v2.0.1`, not `webfang-v2.0.1`,
 # so the tag matches release.yml's `v*` trigger.
 git_tag_enable = true

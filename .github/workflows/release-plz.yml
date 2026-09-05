@@ -36,6 +36,11 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          # actions/checkout does NOT fetch tags by default (fetch-tags: false)
+          # even with fetch-depth: 0. release-plz git_only mode needs the v* tags
+          # for version detection - without them every package is treated as an
+          # initial release (observed on the first automated run).
+          fetch-tags: true
           persist-credentials: false
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -62,6 +67,11 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          # actions/checkout does NOT fetch tags by default (fetch-tags: false)
+          # even with fetch-depth: 0. release-plz git_only mode needs the v* tags
+          # for version detection - without them every package is treated as an
+          # initial release (observed on the first automated run).
+          fetch-tags: true
           persist-credentials: false
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
