@@ -21,8 +21,8 @@
 //! for the CLI elastic path, AND for the CLI scrape path: `cli::scrape_flow`
 //! builds its fetch downloader through the [`Container`] ephemeral factories
 //! below (`scrape_downloader_spec` + `build_scrape_downloader`), which
-//! delegate to the same production [`DefaultDownloaderFactory`] the crawl
-//! [`Engine`] uses. There is one strategy → downloader-stack mapping
+//! delegate to the same production `DefaultDownloaderFactory` the crawl
+//! `Engine` uses. There is one strategy → downloader-stack mapping
 //! (`infrastructure::downloader::fetch_router`), reached through exactly one
 //! composition-root seam.
 //!
@@ -33,7 +33,7 @@
 //! the server `Container`'s `crawl_results.bin` — are never reused here.
 //! Wire parity: the CLI operator set (UA #503, headers/lang/cookies/jar #890,
 //! obscura binary #787, shutdown token #653, robots-per-batch #337) rides on
-//! the [`DownloaderSpec`]; the Engine path keeps its rotating defaults
+//! the `DownloaderSpec`; the Engine path keeps its rotating defaults
 //! (`None`/empty) untouched.
 
 use std::path::PathBuf;
