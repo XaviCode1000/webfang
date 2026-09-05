@@ -1,0 +1,395 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [2.0.0] - 2026-09-05
+
+
+### ⚠️ Breaking Changes
+
+- DownloaderFactory port; FetchRouter to infrastructure (ADR-0012 sub-slice 3.B-1b) ([#1023](https://github.com/XaviCode1000/webfang/pull/1023))
+
+### ⚡ Performance
+
+- Bounded asset dedup cache with measured evidence (Sprint 7-8 P1-conc, slice 5/5) ([#906](https://github.com/XaviCode1000/webfang/pull/906))
+- Consolidate redundant DOM parses on scrape hot path
+
+### 🎉 Added
+
+- Wire AiConfig from CLI flags into CrawlOptions and ExportConfig ([#214](https://github.com/XaviCode1000/webfang/pull/214))
+- Add Clock and UtcClock traits with mock test doubles
+- Inject Clock into DomainSessionPool for deterministic TTL testing
+- Add ContentProcessor trait and 3 infrastructure adapters
+- Wire DomainSessionPool into HttpClient — session-aware requests ([#261](https://github.com/XaviCode1000/webfang/pull/261))
+- Implement chromiumoxide CDP fetch for JS-rendered pages
+- Add SemanticInspectorPort trait and RepairFailureDiagnostic types
+- Add AdaptiveSelectorEngine with 2-tier cascade + cache
+- Add --adaptive-selectors CLI flag and config plumbing
+- Integrate adaptive selector repair into scraper_service + add integration tests
+- Integrate adaptive selector engine into scrape_with_config
+- Add select_sync_aware with spawn_blocking for !Sync isolation
+- Integrate adaptive engine into scrape_with_config via select_sync_aware
+- Add progress types to domain/entities/progress.rs
+- Add ProgressObserver trait to ports.rs and re-export progress types
+- Wire progress events from scraper to TUI via unbounded channel
+- Wire progress bar to live scraping events
+- Add SessionPort trait and DomainBanned error variant
+- Implement SessionPort for DomainSessionPool with jitter
+- Wire session pool into HttpClient with builder pattern
+- Wire DomainSessionPool into Container and scrape_flow
+- Wire --adaptive-selectors to AdaptiveSelectorEngine ([#288](https://github.com/XaviCode1000/webfang/pull/288))
+- Wire --js-strategy into CLI scrape path via FetchRouter injection ([#304](https://github.com/XaviCode1000/webfang/pull/304))
+- Differentiate JsStrategy::Full from Hybrid in FetchRouter ([#311](https://github.com/XaviCode1000/webfang/pull/311))
+- Close observability roadmap gaps (error logging coverage + docs)
+- Implement real MCP export tools with honest errors (issue #343 slice 1) ([#383](https://github.com/XaviCode1000/webfang/pull/383))
+- Wire AI tools via Container cleaner port (issue #381 slice 2) ([#387](https://github.com/XaviCode1000/webfang/pull/387))
+- Add error breakdown by category to crawl summary ([#374](https://github.com/XaviCode1000/webfang/pull/374)) ([#423](https://github.com/XaviCode1000/webfang/pull/423))
+- Add multi-strategy author extraction cascade ([#432](https://github.com/XaviCode1000/webfang/pull/432))
+- Add positional URL argument and fix negative threshold parsing ([#426](https://github.com/XaviCode1000/webfang/pull/426))
+- Implement semantic vault search foundation ([#386](https://github.com/XaviCode1000/webfang/pull/386)) ([#436](https://github.com/XaviCode1000/webfang/pull/436))
+- Add EmbeddingAdapter and wire vault-search ports ([#433](https://github.com/XaviCode1000/webfang/pull/433)) ([#480](https://github.com/XaviCode1000/webfang/pull/480))
+- Add VaultReader for Obsidian vault note reading ([#434](https://github.com/XaviCode1000/webfang/pull/434)) ([#482](https://github.com/XaviCode1000/webfang/pull/482))
+- Add eager vault indexing with staleness detection ([#435](https://github.com/XaviCode1000/webfang/pull/435)) ([#483](https://github.com/XaviCode1000/webfang/pull/483))
+- Emit span_duration_ms on span close in FileTraceLayer ([#499](https://github.com/XaviCode1000/webfang/pull/499))
+- Engine cancellation token with bounded worker drain ([#509](https://github.com/XaviCode1000/webfang/pull/509)) ([#521](https://github.com/XaviCode1000/webfang/pull/521))
+- Semantic DOM Pruning — pre-pruning TreeWalker + evaluación Trafilatura ([#805](https://github.com/XaviCode1000/webfang/pull/805))
+- Comprehensive webfang features (#790+) ([#806](https://github.com/XaviCode1000/webfang/pull/806))
+- Extraction quality scoring + honest error hints (Slice A, #792) ([#804](https://github.com/XaviCode1000/webfang/pull/804))
+- JSON-per-domain RecordStore v2 with v1 migration and invariant quarantine (Sprint 3-5 P0-1, PR2) ([#853](https://github.com/XaviCode1000/webfang/pull/853))
+- Unified COMMITTED-only resume gate with D3 commit protocol (Sprint 3-5 P0-1, PR3) ([#854](https://github.com/XaviCode1000/webfang/pull/854))
+- Single-writer JSONL session with torn-tail recovery and flush-ack barrier (Sprint 3-5 P0-1, PR4) ([#855](https://github.com/XaviCode1000/webfang/pull/855))
+- Render grouped help sections from OptionsSpec headings ([#974](https://github.com/XaviCode1000/webfang/pull/974))
+- Add compat layer for WEBFANG_AI_MODEL_ID env var rename (persistencemode-5b #980) ([#987](https://github.com/XaviCode1000/webfang/pull/987))
+
+### 🎨 Styling
+
+- Fix cargo fmt formatting in error.rs and sitemap_parser.rs
+- Suppress clippy::io_other_error in test modules
+- Fix cargo fmt in crawl_error.rs
+- Fix cargo fmt import ordering
+
+### 🏗️ Architecture Improvements
+
+- Complete product rename from rust_scraper to webfang
+- Remove unused dependencies (serde, serde_json, thiserror from webfang_ai; rustls-webpki, time from webfang_core; bytes, thiserror from webfang_mcp)
+- Remove duplicate DomainError, use canonical type from domain
+- Unify UrlValidators through domain trait
+- Migrate discover_sitemap to crawl_with_sitemap, delete fetch_sitemap
+- Remove Clone+PartialEq from HttpError (T1-T2)
+- Expand CrawlError with new variants, add From<HttpError> (T3-T6)
+- Add From<CrawlError> for ScraperError, simplify InfraError From impl (T7-T9)
+- Delete AppError, remove From<AppError> impl (T10)
+- Fix InfraError Network/Download String→Box<dyn Error> (T11)
+- Eliminate io::Error::other() in scraper_service and engine (T12-T14)
+- Add ErrorClass enum with classify() on ScraperError (T16-T17)
+- Migrate tests, fix HttpError Clone removal fallout (T18)
+- Replace string-matching retry logic with ErrorClass::classify()
+- Eliminate all remaining io::Error::other() sites
+- CrawlTaskCtx — consolidate 18 Arc clones per spawn into 1 struct
+- Consolidate DomainSessionPool into network/session_pool ([#247](https://github.com/XaviCode1000/webfang/pull/247))
+- Wire ContentProcessor adapters into CleanStage and CpuBridge
+- Phase 0 — pub(crate) triage for internal-only items
+- Cleanup dead error conversion and finalize progress wiring
+- Remove redundant timeout layers from fetch_url
+- Consolidate checkpoint into single application-layer implementation ([#293](https://github.com/XaviCode1000/webfang/pull/293))
+- Error Map V2 — post-merge cleanup ([#292](https://github.com/XaviCode1000/webfang/pull/292))
+- Consolidar los resolvers string→Profile en un único helper de domain ([#310](https://github.com/XaviCode1000/webfang/pull/310))
+- Extract content pipeline from scrape_single_url_for_tui ([#314](https://github.com/XaviCode1000/webfang/pull/314))
+- Route sitemap discovery client through shared factory ([#317](https://github.com/XaviCode1000/webfang/pull/317))
+- Workspace lints + feature gate fix + scoped unwrap_used ([#405](https://github.com/XaviCode1000/webfang/pull/405))
+- Wave 3 — resurrect ~40 dead tests with #[ignore] ([#412](https://github.com/XaviCode1000/webfang/pull/412))
+- Inline format args and remove uninlined_format_args allow (issue #411) ([#414](https://github.com/XaviCode1000/webfang/pull/414))
+- Descomponer scraper_service.rs God Module ([#443](https://github.com/XaviCode1000/webfang/pull/443)) ([#454](https://github.com/XaviCode1000/webfang/pull/454))
+- Descomponer discovery.rs God Object ([#442](https://github.com/XaviCode1000/webfang/pull/442)) ([#458](https://github.com/XaviCode1000/webfang/pull/458))
+- Deduplicar cascade del adaptive_engine + JoinError→error ([#445](https://github.com/XaviCode1000/webfang/pull/445)) ([#459](https://github.com/XaviCode1000/webfang/pull/459))
+- Deduplicar loops de retry 429/5xx en client.rs ([#444](https://github.com/XaviCode1000/webfang/pull/444)) ([#460](https://github.com/XaviCode1000/webfang/pull/460))
+- Costuras baratas de reorganización (orchestrator + collapsible_config) ([#449](https://github.com/XaviCode1000/webfang/pull/449)) ([#461](https://github.com/XaviCode1000/webfang/pull/461))
+- Eliminar anyhow residual de webfang_core ([#463](https://github.com/XaviCode1000/webfang/pull/463))
+- Extract FetchRouter to fetch_router.rs (strangler fig A) ([#467](https://github.com/XaviCode1000/webfang/pull/467))
+- Move run_crawl_task + handle_crawl_result to crawl_task.rs (strangler fig B) ([#468](https://github.com/XaviCode1000/webfang/pull/468))
+- Extract CrawlScheduler from run loop (strangler fig C) ([#469](https://github.com/XaviCode1000/webfang/pull/469))
+- Inject ports for run_crawl_task unit testability ([#478](https://github.com/XaviCode1000/webfang/pull/478))
+- Complete #516 code-quality audit — clippy ratchets, dead deps, MCP coverage ([#541](https://github.com/XaviCode1000/webfang/pull/541))
+- Test Suite Audit #239 remediation — deterministic, observable tests ([#546](https://github.com/XaviCode1000/webfang/pull/546))
+- Remove silent-skips and message-string assertions ([#545](https://github.com/XaviCode1000/webfang/pull/545)) ([#557](https://github.com/XaviCode1000/webfang/pull/557))
+- Error classification matrix — exhaustive classify + typed exit codes ([#840](https://github.com/XaviCode1000/webfang/pull/840))
+- Evolve StageOutcome into typed Filtered/Rejected/Failed connected to ErrorClass ([#867](https://github.com/XaviCode1000/webfang/pull/867))
+- Adopt canonical ErrorClass-to-exit functions in orchestrator ([#839](https://github.com/XaviCode1000/webfang/pull/839)) ([#891](https://github.com/XaviCode1000/webfang/pull/891))
+- Remove dead progress TUI, D1 spike debris, deprecated flags past window ([#880](https://github.com/XaviCode1000/webfang/pull/880)) ([#894](https://github.com/XaviCode1000/webfang/pull/894))
+- OptionsSpec SSOT — slice 1 foundation + export flag group (ADR-002) ([#919](https://github.com/XaviCode1000/webfang/pull/919))
+- OptionsSpec slice 2 — crawler flag group (ADR-002) ([#921](https://github.com/XaviCode1000/webfang/pull/921))
+- W1 — per-group module split + Option<NumericPolicy> modeling ([#923](https://github.com/XaviCode1000/webfang/pull/923))
+- Review polish — drop blank-line artifacts, document update semantics ([#931](https://github.com/XaviCode1000/webfang/pull/931))
+- Wire OptionsSpec json_schema into MCP tool schemas + parity table (ADR-002 slice 4) ([#943](https://github.com/XaviCode1000/webfang/pull/943))
+- Slice 4 review follow-ups (F4-F7 + bridge coverage) ([#969](https://github.com/XaviCode1000/webfang/pull/969))
+- Fix help orphan bucket — assign headings to 19 flags (975+976+977) ([#981](https://github.com/XaviCode1000/webfang/pull/981))
+- Slice 5a — SSOT completion (ai/obsidian/tui) (ADR-002) ([#983](https://github.com/XaviCode1000/webfang/pull/983))
+- Followups from #983 review (parity + ai feature gate + threshold heading) ([#986](https://github.com/XaviCode1000/webfang/pull/986))
+- Unify resume and checkpoint via PersistenceMode (persistencemode-5c #980) ([#984](https://github.com/XaviCode1000/webfang/pull/984))
+- Restore intra-crate direction + tighten allowlist to export narrow (ADR-0010 + ADR-0011) Closes #990 ([#993](https://github.com/XaviCode1000/webfang/pull/993))
+- Migrate application/ to domain::config (ADR-0012 sub-slice 1) ([#998](https://github.com/XaviCode1000/webfang/pull/998))
+- Move UrlSource to domain::crawler_port (ADR-0012 sub-slice 3.A starter) Closes part of #994 ([#1000](https://github.com/XaviCode1000/webfang/pull/1000))
+- Move axtree DTOs to domain::axtree_port (ADR-0012 sub-slice 3.A.2 starter) Closes part of #994 ([#1001](https://github.com/XaviCode1000/webfang/pull/1001))
+- Extract compact serializer to domain::axtree_port (ADR-0012 sub-slice 3.A.2-followup.A) ([#1003](https://github.com/XaviCode1000/webfang/pull/1003))
+- Wire AxTreePort into som_capture (ADR-0012 sub-slice 3.A.2-followup.B) ([#1004](https://github.com/XaviCode1000/webfang/pull/1004))
+- Move CookieBridge to domain and repoint downloader imports (ADR-0012 sub-slice 3.B) ([#1005](https://github.com/XaviCode1000/webfang/pull/1005))
+- ADR-0012 3.B-1c — domain RamProbePort for the ResourceGovernor RAM probe ([#1042](https://github.com/XaviCode1000/webfang/pull/1042))
+- Delete dead tests/infrastructure, repoint cookie_bridge consumers, delete shim ([#1043](https://github.com/XaviCode1000/webfang/pull/1043))
+- Collapse duplicate WAF VO families into canonical domain::waf ([#1049](https://github.com/XaviCode1000/webfang/pull/1049))
+- Move scraper/converter surface into domain (ADR-0012 3.D) ([#1055](https://github.com/XaviCode1000/webfang/pull/1055))
+- Collapse duplicated clean_html into a single domain owner ([#1057](https://github.com/XaviCode1000/webfang/pull/1057))
+- Domain::ssrf_guard port; 3 allowlist entries closed (ADR-0012 3.C) ([#1059](https://github.com/XaviCode1000/webfang/pull/1059))
+- Close the SSRF guard choke-point gap left by 3.C (ADR-0012 #1060) ([#1064](https://github.com/XaviCode1000/webfang/pull/1064))
+- Grow CpuExecutorPort with dispatch_resource + ProcessedChunk DTO; CpuBridge shim (ADR-0012-B 3.E) ([#1076](https://github.com/XaviCode1000/webfang/pull/1076))
+- Port vault_search to domain::note_repository::VaultNoteReader (ADR-0012-B 3.I) ([#1073](https://github.com/XaviCode1000/webfang/pull/1073))
+- Consume domain SessionPort in Engine, build pool via container seam ([#1075](https://github.com/XaviCode1000/webfang/pull/1075)) ([#1077](https://github.com/XaviCode1000/webfang/pull/1077))
+- Port ElasticIngestion bridge to Arc<dyn CpuExecutorPort>; drop allowlist entry (ADR-0012-B 3.E.2) ([#1080](https://github.com/XaviCode1000/webfang/pull/1080))
+- Port the two cheap-win allowlist sites; drop 2 entries (ADR-0012-B) ([#1081](https://github.com/XaviCode1000/webfang/pull/1081))
+- Repoint 3 application imports from crawler shims to domain (ADR-0012-B) ([#1085](https://github.com/XaviCode1000/webfang/pull/1085))
+- Port record DTOs and RecordStorePort to domain::exporter (Closes part of #1083) ([#1087](https://github.com/XaviCode1000/webfang/pull/1087))
+- Port sitemap surface to domain::crawler_port::sitemap (ADR-0012-B) ([#1088](https://github.com/XaviCode1000/webfang/pull/1088))
+- Port RobotsFetcher to domain::crawler_port (ADR-0012-B post-narrow) ([#1089](https://github.com/XaviCode1000/webfang/pull/1089))
+- Drop crawler::SitemapConfig allowlist entry and shim (ADR-0012-B unit 1)
+- Dismantle parse_sitemap application shim, drop allowlist entry (ADR-0012-B unit 2)
+- Move filename vocabulary to domain::crawler_port (ADR-0012-B unit 3)
+- Route binary-writer fallback through composition root (ADR-0012-B unit 4)
+- Port ResourceDownloader behind ResourceDownloadPort (ADR-0012-B unit 5)
+- Route extract_links through the domain LinkExtractor seam (ADR-0012-B unit 6)
+- Port fetch_url behind StaticFetchPort (ADR-0012-B unit 7)
+- Port UrlQueue behind UrlQueuePort (ADR-0012-B unit 8)
+- Create the domain StateStorePort deferred by ADR-0012-B 3.H ([#1101](https://github.com/XaviCode1000/webfang/pull/1101))
+- Retire the infrastructure::config shim path and scrub ALIAS_NAMES ([#1128](https://github.com/XaviCode1000/webfang/pull/1128))
+- Pure from_config resolver + rustdoc scope-trap convention ([#1136](https://github.com/XaviCode1000/webfang/pull/1136))
+- Unify persistence ports in domain::persistence, drop dead state-store methods ([#1140](https://github.com/XaviCode1000/webfang/pull/1140))
+
+### 📖 Documentation
+
+- PR 0A — baseline snapshot + lint swap + dedup fix
+- Phase 1 — document domain layer (34 warnings)
+- Clarify --force-js-render is a no-op and point to --js-strategy ([#295](https://github.com/XaviCode1000/webfang/pull/295))
+- Annotate defensive error paths with LCOV_EXCL markers ([#530](https://github.com/XaviCode1000/webfang/pull/530))
+- Align fetch_router fallback doc with the StaticFetchPort seam
+- Fix rustdoc link lints introduced by the filename port
+
+### 🔧 CI/CD
+
+- Activate deny(missing_docs) + doc quality CI jobs
+- Ignore build_elastic_ingestion tests that hit BoringSSL FFI
+- Fix snapshots, add --features ui to test-core, and remove ui gate from progress_e2e_wiring
+- Gate downloader tests for Miri FFI + clean warnings
+- Gate test_generate_filename_slug_strategy for Miri FFI
+- Gate scrape_single_normal_html test for Miri Tree Borrows UB
+- Tokio-console-smoke job with unstable cfg and threshold assertion
+
+### 🔧 Fixed
+
+- Resolve merge conflicts and fix remaining rename issues
+- Remove remaining rust_scraper references missed by PR #184 ([#195](https://github.com/XaviCode1000/webfang/pull/195))
+- Sitemap error, signal handler hang, output dirs
+- Replace expect() with proper error propagation in sitemap_parser
+- Replace .unwrap() with .expect() in HttpClient rate limiter config
+- Replace .unwrap() with .expect() in scraper_service title extraction
+- Resolve merge conflict with PR #221 — update function signatures for AssetDownloaderPort
+- Propagate ai_model through ExportConfig and use opts.ai_config in SemanticCleanerImpl
+- Address Judgment Day findings — structured CrawlError::Http, wreq transient detection
+- Drop task_ctx before collector.collect() to prevent batch hang
+- Replace tautological assertions in readability.rs
+- Replace panic with assert-matches in dom_inspector test
+- Inject UtcClock for deterministic timestamps in VectorRecord
+- Eliminate domain→application layer import violations
+- Remove unused HttpResult import in ports.rs
+- MCP test wiring, try_send counter, Auto detection order ([#246](https://github.com/XaviCode1000/webfang/pull/246))
+- Resolve 25 rustdoc errors + 71 doctest import paths
+- Revert allow(missing_docs) speed-run, document items properly
+- Add doc comment to test_new (clippy missing_docs)
+- Address PR #262 review blockers
+- Resolve rustdoc link and formatting in chromiumoxide downloader
+- Deterministic cache hashing and test compatibility
+- Revert scraper_service integration, keep engine standalone
+- Add cascade_started event and Degraded path tests
+- Prefix unused engine parameter with underscore to resolve clippy warning
+- Restore engine parameter with allow(unused) for adaptive-selectors cfg
+- Resolve rebase conflicts, remove dead code, fix circular SessionId import
+- Resolve CI failures - clippy, doc links, snapshots
+- Enforce timeout-secs on body streaming and warn on bare include/exclude patterns ([#267](https://github.com/XaviCode1000/webfang/pull/267))
+- Wire opts.network.timeout_secs through CrawlerConfig
+- Robots URL construction, sitemap max_depth, batch error propagation ([#278](https://github.com/XaviCode1000/webfang/pull/278))
+- Propagate error from UrlValidator::new instead of panicking ([#283](https://github.com/XaviCode1000/webfang/pull/283))
+- Wire --timeout-secs into WreqDownloader, ObscuraDownloader, and sitemap discovery ([#286](https://github.com/XaviCode1000/webfang/pull/286))
+- Wire --resume state persistence + behavioral tests ([#291](https://github.com/XaviCode1000/webfang/pull/291))
+- Enforce max_depth in crawl_with_subpath_sitemaps ([#294](https://github.com/XaviCode1000/webfang/pull/294))
+- Make create_http_client timeout configurable via HttpClientConfig ([#301](https://github.com/XaviCode1000/webfang/pull/301))
+- Make tls_emulation the single source of truth for TLS profile ([#309](https://github.com/XaviCode1000/webfang/pull/309))
+- Validate --timeout-secs and reject 0 (instant timeouts) ([#315](https://github.com/XaviCode1000/webfang/pull/315))
+- Honor tls_emulation in the rate-limited crawl client
+- Honor tls_emulation in sitemap XML fetch
+- Honor tls_emulation in URL validator client
+- Honor tls_emulation in WreqDownloader::new ([#333](https://github.com/XaviCode1000/webfang/pull/333))
+- Validate --threshold range at parse time instead of panic ([#347](https://github.com/XaviCode1000/webfang/pull/347))
+- Drop elastic ingestion before runtime shutdown ([#348](https://github.com/XaviCode1000/webfang/pull/348))
+- Fetch robots.txt through TLS-fingerprinted RobotsFetcher
+- Honest defensive guard when AI cleaner is unavailable
+- Drop required-features from ai_error_propagation test target
+- Wire and fix the 8 orphaned criterion benchmarks
+- Document exit codes 64/3 in --help and wire EXIT_SCRAPER_FAILURE ([#378](https://github.com/XaviCode1000/webfang/pull/378))
+- Remove dead --force-js-render flag ([#379](https://github.com/XaviCode1000/webfang/pull/379))
+- Detección WAF context-aware — elimina falsos positivos por mención de vendors ([#380](https://github.com/XaviCode1000/webfang/pull/380))
+- Propagate user-requested init errors instead of silent degradation ([#391](https://github.com/XaviCode1000/webfang/pull/391))
+- Activate inert webfang_ai feature gate ([#399](https://github.com/XaviCode1000/webfang/pull/399)) ([#410](https://github.com/XaviCode1000/webfang/pull/410))
+- Collapse /index.html and /index.htm in URL normalization ([#425](https://github.com/XaviCode1000/webfang/pull/425))
+- Flatten nested error display for network failures ([#427](https://github.com/XaviCode1000/webfang/pull/427))
+- Neutralize Obsidian URI command injection + harden path sanitization (#446 #447 #448) ([#453](https://github.com/XaviCode1000/webfang/pull/453))
+- Defuse production unwrap()/expect() — collector mem::take + documented invariants ([#466](https://github.com/XaviCode1000/webfang/pull/466))
+- Crawl_site max_depth now follows internal links ([#479](https://github.com/XaviCode1000/webfang/pull/479)) ([#481](https://github.com/XaviCode1000/webfang/pull/481))
+- Exclude Miri-incompatible tests via cfg(not(miri)) ([#485](https://github.com/XaviCode1000/webfang/pull/485))
+- Context-aware empty discovery message based on --use-sitemap ([#495](https://github.com/XaviCode1000/webfang/pull/495))
+- Use per-layer filters so FileTraceLayer runs at TRACE independently ([#494](https://github.com/XaviCode1000/webfang/pull/494))
+- Include seed URL in DOM discovery when no internal links ([#488](https://github.com/XaviCode1000/webfang/pull/488)) ([#496](https://github.com/XaviCode1000/webfang/pull/496))
+- Gate extract_content tests that trigger servo_arc Tree Borrows UB ([#486](https://github.com/XaviCode1000/webfang/pull/486))
+- --sitemap-url implies --use-sitemap ([#497](https://github.com/XaviCode1000/webfang/pull/497))
+- Make is_internal_link www-agnostic on seed side ([#500](https://github.com/XaviCode1000/webfang/pull/500)) ([#504](https://github.com/XaviCode1000/webfang/pull/504))
+- Vector export header total_documents matches document count ([#502](https://github.com/XaviCode1000/webfang/pull/502)) ([#505](https://github.com/XaviCode1000/webfang/pull/505))
+- Pin --user-agent on the wreq layer so the flag reaches the wire ([#518](https://github.com/XaviCode1000/webfang/pull/518))
+- Trace events share one correlation ID per run — no per-page correlation in trace JSONL ([#506](https://github.com/XaviCode1000/webfang/pull/506))
+- Business logic review — dedup normalization, nofollow, checkpoint queue ([#517](https://github.com/XaviCode1000/webfang/pull/517)) ([#525](https://github.com/XaviCode1000/webfang/pull/525))
+- Repair mutants workflow sharding and bulkhead ([#523](https://github.com/XaviCode1000/webfang/pull/523))
+- Include pure downloader submodules in Miri/TSan, replace unsafe expect paths ([#524](https://github.com/XaviCode1000/webfang/pull/524))
+- Remove async-unsafe span.enter() guards across .await ([#519](https://github.com/XaviCode1000/webfang/pull/519)) ([#526](https://github.com/XaviCode1000/webfang/pull/526))
+- Preserve transient error severity in exit-code routing ([#537](https://github.com/XaviCode1000/webfang/pull/537)) ([#540](https://github.com/XaviCode1000/webfang/pull/540))
+- Resolve ONNX input mapping + elastic semaphore deadlock (#543 #544) ([#560](https://github.com/XaviCode1000/webfang/pull/560))
+- --clean-ai exporta 0 chunks — enriquecer chunks AI con url/title ([#569](https://github.com/XaviCode1000/webfang/pull/569)) ([#572](https://github.com/XaviCode1000/webfang/pull/572))
+- Derive exact feature set in webfang_path instead of --all-features ([#574](https://github.com/XaviCode1000/webfang/pull/574))
+- Inject SemanticCleaner into ElasticIngestion for --output-vectors and --elastic ([#578](https://github.com/XaviCode1000/webfang/pull/578))
+- Robust centroid reference + cosine similarity correctness + filter warn ([#579](https://github.com/XaviCode1000/webfang/pull/579))
+- Resolve 10 bugs from comprehensive tool audit ([#590](https://github.com/XaviCode1000/webfang/pull/590)) ([#592](https://github.com/XaviCode1000/webfang/pull/592))
+- --max-depth 0 limits crawl to seed URL ([#583](https://github.com/XaviCode1000/webfang/pull/583)) ([#593](https://github.com/XaviCode1000/webfang/pull/593))
+- Expose batch failures and honest Obsidian dispatch (issue #591) ([#594](https://github.com/XaviCode1000/webfang/pull/594))
+- Generate_rich_metadata incluye language y content_type; reading_time 0 para vacío ([#616](https://github.com/XaviCode1000/webfang/pull/616))
+- Classify Network{403} as Waf, Network{429} as RateLimit ([#630](https://github.com/XaviCode1000/webfang/pull/630))
+- Combine 6 batch/elastic/crawler bug fixes (#631-#640) ([#647](https://github.com/XaviCode1000/webfang/pull/647))
+- Concurrency stress — batch-concurrency/concurrency/delay-ms no-ops, SIGINT ignorado, unbounded RAM ([#653](https://github.com/XaviCode1000/webfang/pull/653)) ([#654](https://github.com/XaviCode1000/webfang/pull/654))
+- Sitemap parsing — & shatters URLs, SSRF, CDATA dropeado, dry-run lie, gzip bomb ([#658](https://github.com/XaviCode1000/webfang/pull/658))
+- Network resilience — DNS/TLS classification, 5xx retry, 3xx fix, mid-body transient ([#657](https://github.com/XaviCode1000/webfang/pull/657))
+- Deep crawl — preserva query strings, respeta --max-depth, final_url ([#661](https://github.com/XaviCode1000/webfang/pull/661))
+- Sitemap parsing follow-up — metadata, exit codes, error propagation (Bugs 6, 8, 9) ([#660](https://github.com/XaviCode1000/webfang/pull/660))
+- Export edge-case audit — query/fragment filenames, -o -, output-vectors, metadata v2.1.0, dedup ([#672](https://github.com/XaviCode1000/webfang/pull/672))
+- 6 edge-case bugs — filename overflow, scheme validation, credentials, cookie/header flags, 429 backoff ([#678](https://github.com/XaviCode1000/webfang/pull/678))
+- Resolve issue #674 - Phase 2 integration, error message, dead code, missing features ([#679](https://github.com/XaviCode1000/webfang/pull/679))
+- Block SSRF bypass via IPv4-mapped IPv6 addresses ([#710](https://github.com/XaviCode1000/webfang/pull/710))
+- Propagate run-root span across tokio::spawn hot-path tasks (#704 Paso 1) ([#711](https://github.com/XaviCode1000/webfang/pull/711))
+- Exit 77 when every URL is blocked by robots.txt ([#712](https://github.com/XaviCode1000/webfang/pull/712))
+- Replace string-soup warns with structured log_scrape_error in scrape flow (#704 Paso 3) ([#715](https://github.com/XaviCode1000/webfang/pull/715))
+- Fail-fast exit 65 for --output-vectors without --clean-ai ([#714](https://github.com/XaviCode1000/webfang/pull/714))
+- Exit 0 when resume finds nothing pending ([#716](https://github.com/XaviCode1000/webfang/pull/716))
+- Chrome preflight exit 78 + MCP robots.txt enforcement (#685, #697) ([#722](https://github.com/XaviCode1000/webfang/pull/722))
+- Honest JS-only content errors + wire Tier 2 semantic ([#706](https://github.com/XaviCode1000/webfang/pull/706)) ([#730](https://github.com/XaviCode1000/webfang/pull/730))
+- Fase 4 hardening — SSRF remanente, cota de métricas y auth fail-fast ([#707](https://github.com/XaviCode1000/webfang/pull/707)) ([#732](https://github.com/XaviCode1000/webfang/pull/732))
+- Compile adaptive-selectors test arity + add CI coverage ([#737](https://github.com/XaviCode1000/webfang/pull/737))
+- Gate sitemap_discovery tests under Miri, force nightly in sanitizers miri job ([#752](https://github.com/XaviCode1000/webfang/pull/752))
+- Hallazgos menores auditoría CLI v2.0.0 ([#695](https://github.com/XaviCode1000/webfang/pull/695)) ([#754](https://github.com/XaviCode1000/webfang/pull/754))
+- Enforce robots.txt uniformly across all direct-fetch tools ([#755](https://github.com/XaviCode1000/webfang/pull/755))
+- Gate Miri-hostile tests killing infra-fast/slow jobs (issue #751) ([#763](https://github.com/XaviCode1000/webfang/pull/763))
+- Gate extraction.rs tests hitting servo_arc Tree Borrows UB under Miri ([#764](https://github.com/XaviCode1000/webfang/pull/764)) ([#765](https://github.com/XaviCode1000/webfang/pull/765))
+- Sitemap .gz double decompression — magic-byte-first detection ([#757](https://github.com/XaviCode1000/webfang/pull/757)) ([#770](https://github.com/XaviCode1000/webfang/pull/770))
+- Wire chromium feature in CLI preflight + detect SPA by visible text ([#758](https://github.com/XaviCode1000/webfang/pull/758)) ([#771](https://github.com/XaviCode1000/webfang/pull/771))
+- Answer stdio initialize before resolving AI models ([#759](https://github.com/XaviCode1000/webfang/pull/759)) ([#772](https://github.com/XaviCode1000/webfang/pull/772))
+- Align detect_spa with the scrape extraction chain ([#760](https://github.com/XaviCode1000/webfang/pull/760)) ([#773](https://github.com/XaviCode1000/webfang/pull/773))
+- Resolve 5 CLI audit findings from #761 ([#774](https://github.com/XaviCode1000/webfang/pull/774))
+- Gate Chrome preflight spawn tests from Miri ([#775](https://github.com/XaviCode1000/webfang/pull/775)) ([#776](https://github.com/XaviCode1000/webfang/pull/776))
+- Obsidian: --vault redirige output + reparar artefacto byline vacío ([#762](https://github.com/XaviCode1000/webfang/pull/762)) ([#778](https://github.com/XaviCode1000/webfang/pull/778))
+- Batch of crawler/CLI bug fixes (#780, #781, #782, #785, #787, #793, #794) ([#802](https://github.com/XaviCode1000/webfang/pull/802))
+- Batch CLI and exporter reliability fixes ([#801](https://github.com/XaviCode1000/webfang/pull/801))
+- Validate vector export + repair JSONL excerpt + miri/coverage (closes #796, #800, #810) ([#811](https://github.com/XaviCode1000/webfang/pull/811))
+- Typed sitemap exit-code taxonomy + discovery honesty fixes ([#832](https://github.com/XaviCode1000/webfang/pull/832))
+- Hf_hub cache ref written with trailing newline broke all model tests in CI ([#847](https://github.com/XaviCode1000/webfang/pull/847))
+- Hermetic args tests against poisoned AI_MODEL_ID + waf gauntlet trace sequence ([#860](https://github.com/XaviCode1000/webfang/pull/860))
+- Config provenance + single normalization pipeline (Sprint 6 P0-2, Gate 3) ([#870](https://github.com/XaviCode1000/webfang/pull/870))
+- Surface output-stage failures via classified ErrorClass + cross-layer outcome consistency ([#871](https://github.com/XaviCode1000/webfang/pull/871))
+- Defer AI model validation to AI init path ([#827](https://github.com/XaviCode1000/webfang/pull/827)) ([#873](https://github.com/XaviCode1000/webfang/pull/873))
+- Reject structurally invalid record identity at domain boundary ([#876](https://github.com/XaviCode1000/webfang/pull/876)) ([#882](https://github.com/XaviCode1000/webfang/pull/882))
+- Unified concurrency budget model core (Sprint 7-8 P1-conc, slice 1/5) ([#886](https://github.com/XaviCode1000/webfang/pull/886))
+- Enforcement rewiring + detector unification (Sprint 7-8 P1-conc, slice 2/5) ([#896](https://github.com/XaviCode1000/webfang/pull/896))
+- Sanitize derived filenames to prevent path traversal escape ([#910](https://github.com/XaviCode1000/webfang/pull/910))
+- Filename sanitizer follow-ups — truncation collision, scope docs, test ergonomics ([#915](https://github.com/XaviCode1000/webfang/pull/915))
+- Close DNS rebinding TOCTOU + hostname-redirect SSRF via validating connect-time resolver ([#917](https://github.com/XaviCode1000/webfang/pull/917))
+- Hermetic + race-free tests — SSRF env race, poisoned-env parity, gzip snapshot family ([#930](https://github.com/XaviCode1000/webfang/pull/930))
+- Budget override plumbing — TOML/TUI concurrency reaches enforcement, burst-0 rejected everywhere ([#925](https://github.com/XaviCode1000/webfang/pull/925))
+- Forward operator budget overrides into Engine-based flows (batch, discovery, MCP) ([#942](https://github.com/XaviCode1000/webfang/pull/942))
+- Gate AI chunk export behind resume decision (F3-A) ([#947](https://github.com/XaviCode1000/webfang/pull/947))
+- Block IPv4-embedded IPv6 translation ranges in SSRF deny predicate ([#952](https://github.com/XaviCode1000/webfang/pull/952))
+- Changelog policy + crawl error-class inversions ([#968](https://github.com/XaviCode1000/webfang/pull/968))
+- Extend intra-crate lint to inline qualified paths (ADR-0010-A) ([#997](https://github.com/XaviCode1000/webfang/pull/997))
+- Fetch_url propagates real status, cookies and final URL to the crawl fallback ([#1040](https://github.com/XaviCode1000/webfang/pull/1040))
+- Cluster F infra bugs — HybridRouter cancel token, Miri pin, AI env race, WafInspector DI ([#1041](https://github.com/XaviCode1000/webfang/pull/1041))
+- Unify SSRF env guard to webfang_test_utils::EnvGuard ([#1066](https://github.com/XaviCode1000/webfang/pull/1066))
+- Batch 1 security & lifecycle hardening (#1124 #1125 #1126 #1129) ([#1139](https://github.com/XaviCode1000/webfang/pull/1139))
+- Make 20k memory probe independent of writer-channel capacity ([#1170](https://github.com/XaviCode1000/webfang/pull/1170)) ([#1172](https://github.com/XaviCode1000/webfang/pull/1172))
+- Remove reachable panics in startup, stdio, and data paths (#1123 #1108 #1109) ([#1152](https://github.com/XaviCode1000/webfang/pull/1152))
+- Type the URL and hex boundaries with existing newtypes (#1116 #1117 #1118) ([#1158](https://github.com/XaviCode1000/webfang/pull/1158))
+
+### 🔧 Other
+
+- Remove unused mut on MockClock after &self advance refactor
+- Resolve A/B/C before deny
+- Remove dead Redis rate-limiter backend ([#287](https://github.com/XaviCode1000/webfang/pull/287))
+- Remove jzon-rs-serde, consolidate on serde_json ([#385](https://github.com/XaviCode1000/webfang/pull/385))
+- Deny clippy::expect_used + disallowed_types anyhow barrier ([#471](https://github.com/XaviCode1000/webfang/pull/471))
+- THONY STARK follow-ups — atomicity, errors, RAII, canonical paths
+- Correcciones no bloqueantes de auditoría (validate_url, extract_domain, discover_urls, detect_waf, scrape_with_options) ([#618](https://github.com/XaviCode1000/webfang/pull/618))
+- Consolidate 6 pending fixes (waf, url, crawler, audit, docs) ([#625](https://github.com/XaviCode1000/webfang/pull/625))
+- Deduplicar boilerplate de tests para cumplir el ratchet jscpd ([#663](https://github.com/XaviCode1000/webfang/pull/663))
+- Fix misconfigured Rust tooling (dead fuzz.toml, broken aliases, CI drift) ([#725](https://github.com/XaviCode1000/webfang/pull/725))
+- Sprint 0 Gate 0 — Freeze + Baseline ([#816](https://github.com/XaviCode1000/webfang/pull/816))
+- Sprint 6 deferred follow-ups — trace provenance, rank guard, doc refresh ([#872](https://github.com/XaviCode1000/webfang/pull/872))
+- Translate Spanish tracing messages to English ([#877](https://github.com/XaviCode1000/webfang/pull/877)) ([#878](https://github.com/XaviCode1000/webfang/pull/878))
+- Budget override plumbing over current main — staged-wins crawl precedence ([#897](https://github.com/XaviCode1000/webfang/pull/897)) ([#936](https://github.com/XaviCode1000/webfang/pull/936))
+- Single-parse rewiring compiles workspace-wide
+- Remove dead_code allow on Headings::Omitted + dual coverage for all_groups_assemble ([#979](https://github.com/XaviCode1000/webfang/pull/979))
+- Eliminar crate webfang_tui (producto solo CLI/MCP/AI) ([#1180](https://github.com/XaviCode1000/webfang/pull/1180))
+
+### 🧪 Testing
+
+- Add 53 unit tests for TUI components
+- Add resume mode + sitemap behavioral tests
+- Add Downloader shared-instance spy and fallback regression tests
+- Introduce AssetDownloaderPort trait to fix vacuous spy test ([#217](https://github.com/XaviCode1000/webfang/pull/217))
+- Improve assertion clarity in test_parse_malformed_xml
+- Ignore real-network test covered by wiremock
+- Ignore real-network DNS test
+- Add comprehensive tests for process_results and Auto format
+- Add comprehensive error path and adapter tests
+- Add MockClock tests and configuration validation
+- Replace thread::sleep TTL tests with MockClock
+- Add 33 regression tests for 4 HTML cleaning pipelines
+- Add unit tests for From<ScraperError> for ScrapeError variant mapping
+- Behavioral test that --clean-ai surfaces real init error
+- Add tracing overhead benchmark (verifies Fase 2 < 5% claim)
+- Hermetic tests for vault_detector, args, and ai_integration ([#409](https://github.com/XaviCode1000/webfang/pull/409))
+- Fix flaky test_execute_emits_pipeline_spans ([#418](https://github.com/XaviCode1000/webfang/pull/418))
+- Add failure-path tests for #393 (state_store, checkpoint, config) ([#421](https://github.com/XaviCode1000/webfang/pull/421))
+- Replace httpbin.org with wiremock in url_validator tests ([#457](https://github.com/XaviCode1000/webfang/pull/457))
+- Resucitar y podar tests de resurrection_ward ([#431](https://github.com/XaviCode1000/webfang/pull/431)) ([#464](https://github.com/XaviCode1000/webfang/pull/464))
+- WAF Gauntlet e2e — 403→429→200 retry + observability + checkpoint (DoD #441) ([#473](https://github.com/XaviCode1000/webfang/pull/473))
+- Fix flaky connect-timeout assertion and decouple snapshots from source location ([#477](https://github.com/XaviCode1000/webfang/pull/477))
+- Inline unit tests for CrawlScheduler + handle_crawl_result ([#474](https://github.com/XaviCode1000/webfang/pull/474)) ([#476](https://github.com/XaviCode1000/webfang/pull/476))
+- Cover HybridRouter escalation gaps — L2 non-WAF error and all-layers-exhausted ([#520](https://github.com/XaviCode1000/webfang/pull/520))
+- Add CLI+AI and MCP+AI integration tests (#542 phases 4-5)
+- Cover WAF@L2 escalation + ratchet unwrap in tests ([#595](https://github.com/XaviCode1000/webfang/pull/595))
+- Pin run-root identity derivation contract (#704 Paso 2, #687 evidence) ([#713](https://github.com/XaviCode1000/webfang/pull/713))
+- Typed page lifecycle with trybuild compile-fail suite (Sprint 3-5 P0-1, PR1) ([#852](https://github.com/XaviCode1000/webfang/pull/852))
+- SIGKILL crash matrix + SC7 cancellation + durability docs (Sprint 3-5 P0-1, PR5) ([#856](https://github.com/XaviCode1000/webfang/pull/856))
+- Complete SIGKILL matrix coverage to 10/10 roadmap points ([#863](https://github.com/XaviCode1000/webfang/pull/863))
+- Scaffold adversarial stress matrix target
+- Max-budget saturation scenario
+- Domain contention with slot-limit and gauge-ordering assertions
+- Mid-flight cancellation with bounded shutdown grace
+- Backpressure-full channel scenarios
+- Mixed operation/asset tier isolation
+- 100x10 fan-in sha256 corruption-proof scenario
+- Fmt formatting pass on stress matrix
+- Tokio-console smoke with env-configurable task-ceiling threshold
+- Spawn real crawl-ceiling tasks in smoke workload
+- Make ProductionPageFetcher's two branches distinguishable ([#1024](https://github.com/XaviCode1000/webfang/pull/1024)) ([#1028](https://github.com/XaviCode1000/webfang/pull/1028))
