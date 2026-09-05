@@ -40,8 +40,8 @@ pr_body = """\
 ## Release PR (automated)\n\
 Closes part of #1177\n\n\
 This PR updates the workspace version and CHANGELOG.md based on the commits \
-merged since the last `v*` tag. On merge, the release-plz workflow tags \
-`v{{ version }}`, which triggers release.yml to build binaries and publish \
+merged since the last `v*` tag. On merge, the release-plz workflow pushes \
+the new `v*` tag, which triggers release.yml to build binaries and publish \
 the GitHub Release.\n\n\
 Edit CHANGELOG.md here if any entry needs polish before merging — this is \
 the single-write consolidation point for the release.\n\
