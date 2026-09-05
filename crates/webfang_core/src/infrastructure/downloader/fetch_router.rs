@@ -69,8 +69,11 @@ fn build_obscura_layer(timeout_secs: u64, obscura_binary: &str) -> ObscuraDownlo
 /// Build the [`FetchRouter`] for a given JavaScript rendering strategy.
 ///
 /// Single source of truth for the strategy → router mapping, reached only
-/// through [`DefaultDownloaderFactory`] (the crawl `Engine` and the CLI
-/// scrape path both go via the factory).
+/// through [`DefaultDownloaderFactory`] — which itself is reached through the
+/// [`Container`](crate::application::container::Container) single-graph seam
+/// (`downloader_factory` / `build_scrape_downloader`, #1149) by every
+/// non-engine call site, and injected into the crawl `Engine` as the domain
+/// [`DownloaderFactory`](crate::domain::downloader_factory::DownloaderFactory) port.
 /// `timeout_secs` drives the wreq request timeout (connect timeout is clamped
 /// to 10s); `tls_emulation` is the TLS/HTTP2 fingerprint profile applied to the
 /// wreq layer; `cookie_bridge` is shared with the Chromiumoxide layer for

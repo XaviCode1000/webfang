@@ -5,10 +5,11 @@ use std::sync::Arc;
 
 use futures::stream::StreamExt;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use url::Url;
 
 use crate::application::container;
+use crate::application::container::Container;
 use crate::application::crawl_options::CrawlOptions;
 use crate::application::export_factory;
 use crate::application::progress_observer::ProgressObserver;
@@ -16,13 +17,11 @@ use crate::application::resume::filter_committed;
 use crate::application::scrape_single_url;
 use crate::cli::error::CliExit;
 use crate::domain::config::ScraperConfig;
-use crate::domain::cookie_bridge::CookieBridge;
+use crate::domain::crawler_port::RobotsPort;
 use crate::domain::entities::progress::{ScrapeError, ScrapeStatus};
 use crate::domain::persistence::PersistenceMode;
 use crate::domain::persistence::StateStorePort;
 use crate::domain::{CorrelationId, ScrapedContent};
-use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
-use crate::infrastructure::downloader::fetch_router::build_fetch_router;
 use crate::infrastructure::downloader::Downloader;
 use crate::infrastructure::export::RecordStore;
 use crate::infrastructure::observability::log_scrape_error;
@@ -120,39 +119,6 @@ pub(crate) fn record_store_bridge(state_store: &dyn StateStorePort) -> RecordSto
     RecordStore::new(domain).with_state_dir(dir)
 }
 
-/// Seed operator `--cookie` values (#890) into a shared wreq jar so the
-/// Static and Hybrid-L1 layers carry them from the first fetch. Returns
-/// [`None`] when no cookies were requested or no target URL exists. The
-/// Chromiumoxide L3 layer keeps consuming the CookieBridge seeded in the
-/// caller.
-///
-/// # Observability
-///
-/// Emits a `debug!` event with cookie count and host scope only — cookie
-/// names and values are credentials and never reach traces.
-fn seed_operator_cookie_jar(
-    opts: &CrawlOptions,
-    urls: &[Url],
-) -> Option<std::sync::Arc<wreq::cookie::Jar>> {
-    if opts.network.initial_cookies.is_empty() {
-        return None;
-    }
-    urls.first().map(|first_url| {
-        let jar = wreq::cookie::Jar::default();
-        for (name, value) in &opts.network.initial_cookies {
-            // RFC 6265 host-scoped cookie: no Domain attribute, so it
-            // matches only the target host.
-            jar.add(format!("{name}={value}").as_str(), first_url.as_str());
-        }
-        debug!(
-        seeded_cookie_count = opts.network.initial_cookies.len(),
-        host = %first_url.host_str().unwrap_or(""),
-        "seeding operator cookies into the scrape client jar"
-        );
-        std::sync::Arc::new(jar)
-    })
-}
-
 /// Scrape all URLs, reporting progress via the provided observer.
 ///
 /// Returns `(results, failures, blocked)` where `blocked` counts URLs skipped
@@ -193,54 +159,24 @@ pub async fn scrape_urls(
     ),
     crate::error::ScraperError,
 > {
-    // Build the fetch router from the configured JS strategy.
+    // Single wiring graph (#1149): the fetch downloader, cookie set, and
+    // robots fetcher are built through the `Container` ephemeral factories —
+    // the same production factory the crawl Engine uses. Wire values are
+    // unchanged: UA #503, headers/lang/cookies/jar #890, obscura binary #787,
+    // shutdown token #653, robots-per-batch TLS fingerprint #337.
     let http_config = build_http_client_config(opts)?;
-    let mut cookie_bridge = CookieBridge::new();
-    if let Some(first_url) = urls.first() {
-        let domain = first_url.host_str().unwrap_or("").to_string();
-        if !domain.is_empty() {
-            for (name, value) in &opts.network.initial_cookies {
-                cookie_bridge.seed(name, value, &domain);
-            }
-        }
-    }
-    let cookie_bridge = std::sync::Arc::new(tokio::sync::RwLock::new(cookie_bridge));
-    let initial_cookie_jar = seed_operator_cookie_jar(opts, urls);
-    let router = build_fetch_router(
-        &opts.network.js_strategy,
-        http_config.timeout_secs,
-        http_config.tls_emulation,
-        cookie_bridge,
-        opts.crawl.ignore_waf,
-        // #503: move the operator's --user-agent into the wreq layer instead
-        // of dropping it on the floor. `http_config` stays usable below —
-        // only this field moves out.
-        http_config.user_agent,
-        // #890: operator headers, Accept-Language, and seeded cookies reach
-        // the wreq layer instead of being silently dropped. Accept-Language
-        // mirrors the retry-client semantics: the configured value applies
-        // unconditionally (NetworkOptions carries the profile-matching
-        // default when the operator did not override it).
-        opts.network.custom_headers.clone(),
-        Some(opts.network.accept_language.clone()),
-        initial_cookie_jar,
-        // #653: the run's shutdown token, so Full-strategy governor waits abort
-        // on SIGINT/SIGTERM instead of hanging until their own timeout.
-        cancel.clone(),
-        http_config.max_retries,
-        http_config.backoff_base_ms,
-        http_config.backoff_max_ms,
-        // #787: propagate --obscura-binary into the Hybrid Layer 2 downloader
-        // instead of always resolving the bare `obscura` name from PATH.
-        &opts.network.obscura_binary,
-    )?;
+    let (cookie_bridge, initial_cookie_jar) = Container::fresh_scrape_cookie_set(opts, urls);
+    let spec = Container::scrape_downloader_spec(opts, &http_config, initial_cookie_jar);
+    let router = Container::build_scrape_downloader(&spec, cookie_bridge, cancel.clone())?;
 
     let _total_urls = urls.len();
 
     // Robots.txt fetcher — shares the batch's TLS fingerprint so the robots.txt
     // request is indistinguishable from a page fetch (#337). Shared across all
-    // URLs in this batch.
-    let robots_fetcher = RobotsFetcher::new(http_config.tls_emulation, http_config.timeout_secs)?;
+    // URLs in this batch. Erased to the domain seam; the concrete is the same
+    // `RobotsFetcher` as before, now named only inside the Container.
+    let robots_fetcher =
+        container::build_robots_fetcher(http_config.tls_emulation, http_config.timeout_secs)?;
 
     // Apply max_pages limit if configured
     let urls_to_process = apply_max_pages_limit(urls, scraper_config);
@@ -250,11 +186,11 @@ pub async fn scrape_urls(
     let mut failures: Vec<(String, crate::error::ScraperError)> = Vec::new();
 
     let ctx = ScrapeContext {
-        router: &router,
+        router: router.as_ref(),
         scraper_config,
         downloader,
         engine,
-        robots_fetcher: &robots_fetcher,
+        robots_fetcher: robots_fetcher.as_ref(),
         fingerprint_repo: build_fingerprint_repo(opts).await,
     };
 
@@ -341,7 +277,7 @@ struct ScrapeContext<'a> {
     scraper_config: &'a ScraperConfig,
     downloader: Option<&'a dyn crate::domain::ports::AssetDownloaderPort>,
     engine: Option<&'a AdaptiveSelectorEngine>,
-    robots_fetcher: &'a RobotsFetcher,
+    robots_fetcher: &'a dyn RobotsPort,
     /// Extraction failure fingerprint sink (#792). `None` when
     /// `--extraction-fingerprint` is off — recording is opt-in.
     fingerprint_repo:
@@ -358,9 +294,9 @@ fn scrape_concurrency(
     opts: &CrawlOptions,
     detector: &dyn crate::domain::budget::detector::HardwareDetector,
 ) -> usize {
-    crate::domain::budget::BudgetModel::build(opts.budget_overrides, detector)
-        .crawl()
-        .get()
+    // Single budget point (#1149): the CLI scrape bound reads the same
+    // Operation.crawl tier the Engine tiers derive from.
+    Container::scrape_concurrency(opts, detector)
 }
 
 fn apply_max_pages_limit(urls: &[Url], scraper_config: &ScraperConfig) -> Vec<Url> {
@@ -594,8 +530,9 @@ fn build_http_client_config(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_resume_mode, build_http_client_config, scrape_urls, RobotsFetcher};
+    use super::{apply_resume_mode, build_http_client_config, scrape_urls};
     use crate::application::crawl_options::CrawlOptions;
+    use crate::infrastructure::crawler::robots_utils::RobotsFetcher;
     use std::num::NonZeroUsize;
     use tempfile::TempDir;
     use tokio_util::sync::CancellationToken;

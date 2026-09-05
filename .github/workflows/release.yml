@@ -81,6 +81,11 @@ jobs:
             echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
             echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
             echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
+            # Host `strip` cannot parse an aarch64 ELF (release run
+            # 33976276171: "Unable to recognise the format of the input
+            # file"). The target-prefixed binutils ship with the
+            # already-installed gcc-aarch64-linux-gnu package.
+            echo "STRIP=aarch64-linux-gnu-strip"
           } >> "$GITHUB_ENV"
 
       - name: Build release binary
@@ -95,7 +100,9 @@ jobs:
       - name: Strip binary (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
-          strip target/${{ matrix.target }}/release/webfang
+          # STRIP is set to the target-prefixed binutils only in the
+          # cross job; native jobs fall back to host `strip`.
+          ${STRIP:-strip} target/${{ matrix.target }}/release/webfang
 
       - name: Compress (Unix)
         if: runner.os != 'Windows'
