@@ -20,12 +20,14 @@ repository = "https://github.com/XaviCode1000/webfang"
 homepage = "https://github.com/XaviCode1000/webfang"
 
 [workspace.dependencies]
-# Internal crates
-webfang_core = { path = "crates/webfang_core" }
-webfang_ai = { path = "crates/webfang_ai" }
-webfang_mcp = { path = "crates/webfang_mcp" }
-webfang_cli = { path = "crates/webfang_cli" }
-webfang_test_utils = { path = "crates/webfang_test_utils" }
+# Internal crates — version is REQUIRED for `cargo package` (used by the
+# release-plz git_only change detection). release-plz keeps these in sync
+# with the workspace version on every bump.
+webfang_core = { path = "crates/webfang_core", version = "2.0.0" }
+webfang_ai = { path = "crates/webfang_ai", version = "2.0.0" }
+webfang_mcp = { path = "crates/webfang_mcp", version = "2.0.0" }
+webfang_cli = { path = "crates/webfang_cli", version = "2.0.0" }
+webfang_test_utils = { path = "crates/webfang_test_utils", version = "2.0.0" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

@@ -1,0 +1,79 @@
+# release-plz configuration — https://release-plz.dev/docs/config
+#
+# Distribution model: binaries-only via GitHub Releases. The existing
+# .github/workflows/release.yml (trigger: `v*` tags) remains the sole
+# writer of GitHub Releases with binaries + SHA256SUMS.
+#
+# release-plz owns: version bump, CHANGELOG, Release PR, git tag.
+# release.yml owns: binary builds and the GitHub Release page.
+
+[workspace]
+# Version detection from git tags (vX.Y.Z), not from a cargo registry.
+# This repo does not publish to crates.io.
+git_only = true
+
+# All packages move in lockstep under one tag: `v2.0.1`, not `webfang-v2.0.1`,
+# so the tag matches release.yml's `v*` trigger.
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+
+# Per-package `{{package}}-v{{version}}` GitHub releases would fragment the
+# release page. One release per version is generated on merge instead.
+git_release_enable = false
+
+# Changelog: single workspace-level file, Keep a Changelog sections.
+# The first automated update runs against the 2.0.0 baseline cut in #1176.
+
+# Release PR must pass pr-validation.yml unchanged:
+# - `chore/release-...` matches the conventional branch regex
+# - `type:chore` is the single type:* label (Gate 0 freeze does not block it)
+# - `Closes part of #1177` passes the linked-issue check without auto-closing
+#   the tracker (auto-close requires strict adjacency).
+pr_branch_prefix = "chore/release-"
+pr_labels = ["release", "type:chore"]
+pr_body = """\
+## Release PR (automated)\n\
+Closes part of #1177\n\n\
+This PR updates the workspace version and CHANGELOG.md based on the commits \
+merged since the last `v*` tag. On merge, the release-plz workflow tags \
+`v{{ version }}`, which triggers release.yml to build binaries and publish \
+the GitHub Release.\n\n\
+Edit CHANGELOG.md here if any entry needs polish before merging — this is \
+the single-write consolidation point for the release.\n\
+"""
+
+# Changelog rendering is fully delegated to cliff.toml (git-cliff format).
+# release-plz enables changelog updates by default.
+changelog_config = "cliff.toml"
+
+# No registry publishing anywhere.
+publish = false
+semver_check = false
+repo_url = "https://github.com/XaviCode1000/webfang"
+
+# Internal-only crates: never processed by release-plz.
+[[package]]
+name = "webfang_benchmark"
+release = false
+
+[[package]]
+name = "webfang_test_utils"
+release = false
+
+# Lockstep group: every processed package gets the same next version
+# (the highest among the group's next versions), tagged once as `v{{ version }}`.
+[[package]]
+name = "webfang_cli"
+version_group = "webfang"
+
+[[package]]
+name = "webfang_core"
+version_group = "webfang"
+
+[[package]]
+name = "webfang_ai"
+version_group = "webfang"
+
+[[package]]
+name = "webfang_mcp"
+version_group = "webfang"
