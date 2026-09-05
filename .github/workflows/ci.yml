@@ -10,9 +10,10 @@
 #   guards + actionlint/shellcheck lint; gate still blocks merge on it.
 #   test-core runs: unit tests (--lib) then integration/behavioral tests (--test '*')
 #   test-full runs: all features enabled (full workspace compile + test, NO AI inference)
-#   test-ai (NON-REQUIRED, parallel after clippy): AI integration tests with ONNX model.
-#     Does NOT block merge — these tests load a 372MB model and run real inference,
-#     which is too slow/flaky for the merge gate. Gated behind clippy to skip the
+#   test-ai (REQUIRED since #848, parallel after clippy): AI integration tests with ONNX model.
+#     Soak passed 2026-09-05 (~2 weeks since #847 + 12 consecutive green runs on real
+#     PRs, zero model-download failures). Blocks merge via the gate like every other
+#     required producer. Gated behind clippy to skip the
 #     model download on PRs that already fail the compile gate.
 #   security runs in parallel with tests (no Rust compile)
 #   feature-matrix runs after clippy (cargo-hack --each-feature, catches broken feature combos)
@@ -492,7 +493,7 @@ jobs:
   # ============================================================================
   gate:
     name: CI Gate
-    needs: [toolchain, repo-guards, fmt, clippy, test-core, test-full, security, doc-quality]
+    needs: [toolchain, repo-guards, fmt, clippy, test-core, test-full, test-ai, security, doc-quality]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
