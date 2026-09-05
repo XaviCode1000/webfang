@@ -18,7 +18,6 @@ use webfang_core::adapters::downloader::Downloader;
 use webfang_core::di::Container;
 use webfang_core::domain::crawler_port::RobotsPort;
 use webfang_core::domain::DomInspectorPort;
-use webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher;
 
 /// Per-category semaphore limits for backpressure.
 /// Tuned for Intel i5-4590 (4C), 8GB DDR3, HDD.
@@ -422,13 +421,16 @@ fn warn_if_configured_output_dir_outside_roots(output_dir: &Path, roots: &[PathB
 
 /// Build the shared robots.txt fetcher for the scrape tools (#697).
 ///
+/// Single graph (#1149): built through the `Container` default robots seam
+/// (same `Chrome145` fingerprint + cache policy as every other robots
+/// fetcher), so the MCP crate no longer names the infrastructure concrete.
 /// Uses the container's configured download timeout. Construction failure is
 /// NON-FATAL — the fetcher stays `None` and robots enforcement degrades to
 /// "no fetcher available", mirroring the rate-limiter pattern in the core
 /// container.
 fn build_robots_fetcher(container: &Container) -> Option<Arc<dyn RobotsPort>> {
-    match RobotsFetcher::with_default_profile(container.config().download_timeout_secs) {
-        Ok(fetcher) => Some(Arc::new(fetcher)),
+    match Container::build_default_robots_fetcher(container.config().download_timeout_secs) {
+        Ok(fetcher) => Some(fetcher),
         Err(e) => {
             tracing::warn!(error = %e, "robots_fetcher_init_failed_non_fatal");
             None
