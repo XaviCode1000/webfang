@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-30
+
 ### ⚠️ Breaking Changes
 
 #### Config precedence fix — TOML no longer beats explicit default-equal CLI/env values (Sprint 6, #302, Gate 3)
