@@ -12,10 +12,11 @@
 # This repo does not publish to crates.io.
 git_only = true
 
-# The CI checkout contains tracked-but-gitignored files (fuzz/corpus seeds,
-# sdd/*.md artifacts); release-plz refuses to compute versions on a dirty
-# tree. This is release-plz's documented escape hatch for that situation.
-allow_dirty = true
+# Refuse a dirty tree: it means something is genuinely wrong, and #1197
+# showed that allowing it commits that junk straight into the Release PR.
+# The tracked-but-gitignored files that forced allow_dirty in #1188 were
+# untracked in #1200, so the checkout is clean again.
+allow_dirty = false
 
 # All packages move in lockstep under one tag: `v2.0.1`, not `webfang-v2.0.1`,
 # so the tag matches release.yml's `v*` trigger.
@@ -40,16 +41,21 @@ pr_body = """\
 ## Release PR (automated)\n\
 Closes part of #1177\n\n\
 This PR updates the workspace version and CHANGELOG.md based on the commits \
-merged since the last `v*` tag. On merge, the release-plz workflow tags \
-`v{{ version }}`, which triggers release.yml to build binaries and publish \
+merged since the last `v*` tag. On merge, the release-plz workflow pushes \
+the new `v*` tag, which triggers release.yml to build binaries and publish \
 the GitHub Release.\n\n\
 Edit CHANGELOG.md here if any entry needs polish before merging — this is \
 the single-write consolidation point for the release.\n\
 """
 
 # Changelog rendering is fully delegated to cliff.toml (git-cliff format).
-# release-plz enables changelog updates by default.
 changelog_config = "cliff.toml"
+
+# Single root CHANGELOG.md for the whole product (official pattern:
+# https://release-plz.dev/docs/extra/single-changelog). Off by default so
+# release-plz does not write one file per crate; webfang_cli owns the root
+# file and pulls in the other packages' commits (see [[package]] below).
+changelog_update = false
 
 # No registry publishing anywhere.
 publish = false
@@ -70,6 +76,11 @@ release = false
 [[package]]
 name = "webfang_cli"
 version_group = "webfang"
+# The product changelog: one file at the repo root, fed by every crate's
+# commits so a release reads as one chronological story (lockstep version).
+changelog_update = true
+changelog_path = "./CHANGELOG.md"
+changelog_include = ["webfang_core", "webfang_ai", "webfang_mcp"]
 
 [[package]]
 name = "webfang_core"
