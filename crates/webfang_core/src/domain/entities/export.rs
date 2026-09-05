@@ -66,6 +66,51 @@ fn default_version() -> u32 {
     1
 }
 
+/// Schema version of the persisted export state as a type-state (#1162).
+///
+/// A raw `u32` accepted any value at the serde boundary; now only versions the
+/// reader understands cross it, via [`TryFrom`]: [`StateVersion::LEGACY`] (`0`,
+/// readable so stale files still reach the `load_or_default` discard path) and
+/// [`StateVersion::CURRENT`]. Anything newer fails fast with a Spanish error
+/// instead of loading as maybe-compatible state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct StateVersion(u32);
+
+impl StateVersion {
+    /// Current schema version written by [`ExportState::new`].
+    pub const CURRENT: Self = Self(1);
+    /// Legacy version: readable but never written.
+    pub const LEGACY: Self = Self(0);
+
+    /// The raw version number (for comparisons, logs, and compat shims).
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl TryFrom<u32> for StateVersion {
+    type Error = crate::ScraperError;
+
+    fn try_from(raw: u32) -> Result<Self, Self::Error> {
+        if raw == Self::CURRENT.get() || raw == Self::LEGACY.get() {
+            Ok(Self(raw))
+        } else {
+            Err(crate::ScraperError::Config(format!(
+                "versión de estado de exportación no soportada: {raw} (versión actual: {})",
+                Self::CURRENT.get()
+            )))
+        }
+    }
+}
+
+impl From<StateVersion> for u32 {
+    fn from(version: StateVersion) -> Self {
+        version.get()
+    }
+}
+
 /// Wire shape accepted by `ExportState`'s `Deserialize` boundary (#1132).
 ///
 /// The legacy `total_exported` counter is accepted for compatibility with
@@ -103,7 +148,7 @@ impl TryFrom<RawExportState> for ExportState {
             }
         }
         Ok(Self {
-            version: raw.version,
+            version: StateVersion::try_from(raw.version)?,
             domain: raw.domain,
             processed_urls: raw.processed_urls,
             last_export: raw.last_export,
@@ -127,11 +172,14 @@ impl TryFrom<RawExportState> for ExportState {
 ///   could desync (hand-edited or corrupt resume files); now the roundtrip
 ///   invariant `total_exported() == processed_urls.len()` holds by
 ///   construction.
+/// * `version` is a [`StateVersion`]: only known schema versions cross the
+///   boundary (#1162); a raw `u32` accepted any future version silently.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(try_from = "RawExportState")]
 pub struct ExportState {
-    /// Schema version for forward-compatible evolution. Current: 1.
-    pub version: u32,
+    /// Schema version for forward-compatible evolution.
+    /// [`StateVersion::CURRENT`] is written; [`StateVersion::LEGACY`] reads.
+    pub version: StateVersion,
     /// Domain this state belongs to (e.g., "example.com"). Non-empty by
     /// construction; read via [`domain()`](Self::domain).
     domain: String,
@@ -158,7 +206,7 @@ impl ExportState {
         }
         Ok(Self {
             domain,
-            version: 1,
+            version: StateVersion::CURRENT,
             processed_urls: Vec::new(),
             last_export: None,
         })
@@ -345,6 +393,45 @@ mod tests {
         assert_eq!(back.domain(), "example.com");
     }
 
+    /// #1162: versions newer than CURRENT fail fast at the boundary with a
+    /// Spanish error — a raw `u32` accepted anything, risking a
+    /// maybe-compatible load of an unreadable future schema.
+    #[test]
+    fn issue_1162_unknown_version_rejected_at_boundary() {
+        let future = r#"{"version":999,"domain":"example.com","processed_urls":[],"last_export":null,"total_exported":0}"#;
+        let err = serde_json::from_str::<ExportState>(future)
+            .expect_err("unknown version must be rejected at the boundary");
+        assert!(
+            err.to_string().contains("no soportada"),
+            "rejection must name the unsupported version in Spanish, got: {err}"
+        );
+    }
+
+    /// #1162: only known schema versions cross `TryFrom<u32>` — legacy
+    /// stays readable (stale discard path), anything newer is rejected.
+    #[test]
+    fn issue_1162_state_version_try_from_known_versions_only() {
+        assert_eq!(
+            StateVersion::try_from(0).expect("legacy reads"),
+            StateVersion::LEGACY
+        );
+        assert_eq!(
+            StateVersion::try_from(1).expect("current reads"),
+            StateVersion::CURRENT
+        );
+        assert_eq!(StateVersion::CURRENT.get(), 1);
+        assert_eq!(StateVersion::LEGACY.get(), 0);
+        assert_eq!(u32::from(StateVersion::CURRENT), 1);
+        assert!(
+            StateVersion::try_from(2).is_err(),
+            "next future version must be rejected"
+        );
+        assert!(
+            StateVersion::try_from(u32::MAX).is_err(),
+            "far-future version must be rejected"
+        );
+    }
+
     #[test]
     fn test_export_state_is_processed_empty() {
         let state = ExportState::new("test.com").expect("valid domain");
@@ -398,7 +485,8 @@ mod tests {
     #[test]
     fn test_export_state_new_version_is_one() {
         let state = ExportState::new("example.com").expect("valid domain");
-        assert_eq!(state.version, 1);
+        assert_eq!(state.version, StateVersion::CURRENT);
+        assert_eq!(state.version.get(), 1);
     }
 
     #[test]
@@ -406,7 +494,8 @@ mod tests {
         let legacy_json = r#"{"domain":"example.com","processed_urls":[],"total_exported":0}"#;
         let state: ExportState = serde_json::from_str(legacy_json).unwrap();
         assert_eq!(
-            state.version, 1,
+            state.version,
+            StateVersion::CURRENT,
             "legacy JSON without version must default to 1 via default_version()"
         );
     }
@@ -414,14 +503,14 @@ mod tests {
     #[test]
     fn test_export_state_roundtrip_preserves_version_one() {
         let state = ExportState::new("example.com").expect("valid domain");
-        assert_eq!(state.version, 1);
+        assert_eq!(state.version, StateVersion::CURRENT);
         let json = serde_json::to_string(&state).unwrap();
         assert!(
             json.contains("\"version\":1"),
             "serialized JSON must contain version:1, got: {json}"
         );
         let deserialized: ExportState = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.version, 1);
+        assert_eq!(deserialized.version, StateVersion::CURRENT);
         assert_eq!(deserialized.domain(), "example.com");
     }
 
@@ -431,7 +520,8 @@ mod tests {
             r#"{"domain":"example.com","processed_urls":[],"total_exported":0,"version":0}"#;
         let state: ExportState = serde_json::from_str(json_zero).unwrap();
         assert_eq!(
-            state.version, 0,
+            state.version,
+            StateVersion::LEGACY,
             "explicit version:0 must be preserved for mismatch discard path"
         );
     }
