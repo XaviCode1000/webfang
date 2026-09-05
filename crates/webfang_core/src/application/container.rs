@@ -15,15 +15,26 @@
 //! abstractions. The Container creates real infrastructure implementations
 //! and stores them as `Arc<dyn Port>`.
 //!
-//! # Wiring duality (known, tracked for a future slice)
+//! # Single wiring graph (#1149)
 //!
-//! The Container is the DI root for the MCP binaries (`build_container`) and
-//! for the CLI elastic path, but NOT for the CLI scrape path: `cli::scrape_flow`
-//! builds its downloader directly via the infrastructure free function
-//! `build_fetch_router` (and the engine path via `DefaultDownloaderFactory`).
-//! Unifying the two wirings is deliberately out of scope here (it collides
-//! with the crawl_task/engine changes in #1142); this note records the
-//! parallel representation so it is not mistaken for a single root.
+//! The Container is the DI root for the MCP binaries (`build_container`),
+//! for the CLI elastic path, AND for the CLI scrape path: `cli::scrape_flow`
+//! builds its fetch downloader through the [`Container`] ephemeral factories
+//! below (`scrape_downloader_spec` + `build_scrape_downloader`), which
+//! delegate to the same production [`DefaultDownloaderFactory`] the crawl
+//! [`Engine`] uses. There is one strategy → downloader-stack mapping
+//! (`infrastructure::downloader::fetch_router`), reached through exactly one
+//! composition-root seam.
+//!
+//! Ephemeral discipline: CLI runs are short-lived processes, so every factory
+//! below builds FRESH instances per run (cookie bridge, cookie jar, robots
+//! fetcher, asset downloader). Long-lived server singletons — the MCP
+//! `McpState` shared downloader's `downloaded_urls`/`asset_cache` (#1120),
+//! the server `Container`'s `crawl_results.bin` — are never reused here.
+//! Wire parity: the CLI operator set (UA #503, headers/lang/cookies/jar #890,
+//! obscura binary #787, shutdown token #653, robots-per-batch #337) rides on
+//! the [`DownloaderSpec`]; the Engine path keeps its rotating defaults
+//! (`None`/empty) untouched.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -318,6 +329,243 @@ pub(crate) fn build_state_store(state_dir: PathBuf, domain: &str) -> Arc<dyn Sta
     let mut store = StateStore::new(domain);
     store.set_cache_dir(state_dir);
     Arc::new(store)
+}
+
+/// Single-graph CLI scrape wiring (#1149).
+///
+/// The crawl [`Engine`](crate::application::crawler::engine::Engine) and the
+/// CLI scrape path (`cli::scrape_flow`) share one strategy → downloader-stack
+/// mapping: `infrastructure::downloader::fetch_router`. These associated
+/// functions are the ONLY non-engine route to it — every CLI, benchmark, and
+/// discovery call site builds through [`Container::downloader_factory`] /
+/// [`Container::build_scrape_downloader`] instead of naming the infrastructure
+/// concrete directly.
+///
+/// Ephemeral discipline (invariant c): every factory below builds FRESH
+/// instances per CLI run. Nothing here borrows long-lived server singletons
+/// (MCP `downloaded_urls`/`asset_cache` #1120, server `crawl_results.bin`).
+/// `Container::new` itself is untouched: no blocking work and no model
+/// resolution were added to the MCP startup path (invariant a, #1106/#759),
+/// and the WAF/SSRF keep-first arming inside `new` is unchanged (invariant b,
+/// #996).
+impl Container {
+    /// Production downloader factory behind the domain port.
+    ///
+    /// Single graph point: the crawl Engine, `cli::scrape_flow`,
+    /// `cli::url_discovery`, and the benchmark harness all build fetch
+    /// downloaders through this factory. Stateless (`DefaultDownloaderFactory`
+    /// is a unit struct) — sharing one `Arc` across the process is safe.
+    #[must_use]
+    pub fn downloader_factory() -> Arc<dyn crate::domain::downloader_factory::DownloaderFactory> {
+        Arc::new(crate::infrastructure::downloader::fetch_router::DefaultDownloaderFactory)
+    }
+
+    /// Map CLI operator options onto a fetch [`DownloaderSpec`](crate::domain::downloader_factory::DownloaderSpec)
+    /// WITH the full operator set on the wire (invariant d).
+    ///
+    /// Carries: pinned UA #503, custom headers + Accept-Language +
+    /// pre-seeded cookie jar #890, obscura binary #787, retry/backoff budget,
+    /// WAF bypass flag, timeout + TLS profile. Infallible by construction: the
+    /// TLS profile arrives already resolved in `http_config` (the caller maps
+    /// the `--h2-profile` name once via `HttpClientConfig::profile_from_name`
+    /// and surfaces the typed `UnknownProfileError` there), so this mapping
+    /// cannot fail and never panics.
+    ///
+    /// The Engine path is deliberately NOT routed here: it builds its own spec
+    /// with `user_agent: None`, empty headers, `accept_language: None`, and no
+    /// jar (rotating emulation defaults #503/#890) — that behavior is pinned
+    /// and must not change.
+    #[must_use]
+    pub fn scrape_downloader_spec(
+        opts: &CrawlOptions,
+        http_config: &crate::application::http_client::HttpClientConfig,
+        initial_cookie_jar: Option<Arc<wreq::cookie::Jar>>,
+    ) -> crate::domain::downloader_factory::DownloaderSpec {
+        crate::domain::downloader_factory::DownloaderSpec {
+            strategy: opts.network.js_strategy,
+            timeout_secs: http_config.timeout_secs,
+            tls_emulation: http_config.tls_emulation,
+            ignore_waf: opts.crawl.ignore_waf,
+            user_agent: http_config.user_agent.clone(),
+            custom_headers: opts.network.custom_headers.clone(),
+            accept_language: Some(opts.network.accept_language.clone()),
+            initial_cookie_jar,
+            max_retries: http_config.max_retries,
+            backoff_base_ms: http_config.backoff_base_ms,
+            backoff_max_ms: http_config.backoff_max_ms,
+            obscura_binary: opts.network.obscura_binary.clone(),
+        }
+    }
+
+    /// Fresh cookie bridge + pre-seeded wreq jar for one CLI scrape run.
+    ///
+    /// Seeds operator `--cookie` values (#890) into BOTH layers: the shared
+    /// [`CookieBridge`](crate::domain::cookie_bridge::CookieBridge) (consumed by
+    /// the Chromiumoxide L3 layer) and the wreq [`Jar`](wreq::cookie::Jar)
+    /// (shared by the Static and Hybrid-L1 layers). Returns `(bridge, None)`
+    /// when no cookies were requested or no target URL exists. A new bridge
+    /// per run — never the server's long-lived bridge.
+    ///
+    /// Cookie names/values are credentials: the debug event reports the count
+    /// and host scope only, never the secrets.
+    #[must_use]
+    pub fn fresh_scrape_cookie_set(
+        opts: &CrawlOptions,
+        urls: &[url::Url],
+    ) -> (
+        Arc<tokio::sync::RwLock<crate::domain::cookie_bridge::CookieBridge>>,
+        Option<Arc<wreq::cookie::Jar>>,
+    ) {
+        let mut bridge = crate::domain::cookie_bridge::CookieBridge::new();
+        if let Some(first_url) = urls.first() {
+            let domain = first_url.host_str().unwrap_or("").to_string();
+            if !domain.is_empty() {
+                for (name, value) in &opts.network.initial_cookies {
+                    bridge.seed(name, value, &domain);
+                }
+            }
+        }
+        let bridge = Arc::new(tokio::sync::RwLock::new(bridge));
+        let jar = if opts.network.initial_cookies.is_empty() {
+            None
+        } else {
+            urls.first().map(|first_url| {
+                let jar = wreq::cookie::Jar::default();
+                for (name, value) in &opts.network.initial_cookies {
+                    jar.add(format!("{name}={value}").as_str(), first_url.as_str());
+                }
+                tracing::debug!(
+                seeded_cookie_count = opts.network.initial_cookies.len(),
+                host = %first_url.host_str().unwrap_or(""),
+                "seeding operator cookies into the scrape client jar"
+                );
+                Arc::new(jar)
+            })
+        };
+        (bridge, jar)
+    }
+
+    /// Build the scrape fetch downloader through the single factory.
+    ///
+    /// `cookie_bridge` is the run's FRESH bridge from
+    /// [`fresh_scrape_cookie_set`](Self::fresh_scrape_cookie_set) (shared mutable
+    /// state that must outlive the downloader); `cancel_token` is the run's
+    /// shutdown token (#653), injected into the Full-strategy governor so
+    /// permit waits abort on SIGINT/SIGTERM.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`DownloadError::Internal`](crate::domain::downloader_port::DownloadError::Internal)
+    /// when the wreq client cannot be constructed (same contract as the former
+    /// direct `build_fetch_router` call).
+    pub fn build_scrape_downloader(
+        spec: &crate::domain::downloader_factory::DownloaderSpec,
+        cookie_bridge: Arc<tokio::sync::RwLock<crate::domain::cookie_bridge::CookieBridge>>,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<
+        Arc<dyn crate::domain::downloader_port::Downloader>,
+        crate::domain::downloader_port::DownloadError,
+    > {
+        Self::downloader_factory().build(spec, cookie_bridge, cancel_token)
+    }
+
+    /// Scrape-path `buffer_unordered` bound (invariant e).
+    ///
+    /// Derives from the budget model's Operation.crawl tier built from the
+    /// run's operator overrides plus the given hardware detector — the same
+    /// derivation the Engine tiers use, read here for the CLI scrape
+    /// concurrency so the two stay in lockstep. The `NonZero` tier type
+    /// guarantees ≥ 1, so no `.max(1)` guard is needed.
+    #[must_use]
+    pub fn scrape_concurrency(
+        opts: &CrawlOptions,
+        detector: &dyn crate::domain::budget::detector::HardwareDetector,
+    ) -> usize {
+        crate::domain::budget::BudgetModel::build(opts.budget_overrides, detector)
+            .crawl()
+            .get()
+    }
+
+    /// Fresh bounded asset downloader for one CLI run.
+    ///
+    /// Ephemeral (invariant c): built per run with the SAME bounded policy
+    /// the MCP server uses for its long-lived downloader — capacity derived
+    /// from the budget model's Asset tier via `asset_cache_capacity` (#1120).
+    /// Never shares the server's `downloaded_urls` dedup cache.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the HTTP-client construction failure unchanged (invalid TLS
+    /// profile, malformed header value), so the caller's Spanish user-facing
+    /// error text stays identical to the historical inline path.
+    pub fn build_ephemeral_asset_downloader(
+        config: &ScraperConfig,
+        asset_tier_permits: usize,
+    ) -> Result<crate::adapters::downloader::Downloader, crate::error::ScraperError> {
+        crate::adapters::downloader::Downloader::with_asset_cache_capacity(
+            config.to_download_config(),
+            crate::adapters::downloader::asset_cache_capacity(asset_tier_permits),
+        )
+    }
+
+    /// Asset-cache capacity for the MCP long-lived shared downloader (#1120).
+    ///
+    /// Single policy point: the server process outlives any single crawl, so
+    /// it must never take the legacy unbounded path (`usize::MAX` disables
+    /// eviction). CLI ephemeral runs size the same way via
+    /// [`build_ephemeral_asset_downloader`](Self::build_ephemeral_asset_downloader)
+    /// — one memory policy per structure, not a parallel server-side one.
+    #[must_use]
+    pub fn mcp_asset_cache_capacity() -> usize {
+        let budget = crate::domain::budget::BudgetModel::build(
+            crate::domain::budget::BudgetOverrides::default(),
+            &crate::domain::budget::detector::SystemDetector,
+        );
+        crate::adapters::downloader::asset_cache_capacity(budget.asset().get())
+    }
+
+    /// Build the MCP long-lived shared asset downloader (#1120).
+    ///
+    /// Bounded by [`mcp_asset_cache_capacity`](Self::mcp_asset_cache_capacity).
+    /// The server reuses this ONE instance across tool calls (connection
+    /// pooling); CLI runs must NOT reuse it — they build a fresh ephemeral
+    /// downloader per run (see [`build_ephemeral_asset_downloader`](Self::build_ephemeral_asset_downloader)).
+    ///
+    /// # Errors
+    ///
+    /// Propagates HTTP-client construction failures (`ScraperError::Config`).
+    pub fn build_mcp_shared_asset_downloader(
+    ) -> Result<crate::adapters::downloader::Downloader, crate::error::ScraperError> {
+        let capacity = Self::mcp_asset_cache_capacity();
+        tracing::info!(
+            asset_cache_capacity = capacity,
+            "MCP shared asset downloader bounded (#1120)"
+        );
+        crate::adapters::downloader::Downloader::with_asset_cache_capacity(
+            crate::adapters::downloader::DownloadConfig::default(),
+            capacity,
+        )
+    }
+
+    /// Default robots.txt fetcher for callers that must not name wreq-util.
+    ///
+    /// Uses the default production TLS fingerprint (`Profile::Chrome145`, same
+    /// as `HttpClientConfig::default()`), so the MCP crate reaches the single
+    /// robots seam without adding a wreq-util dependency (issue #705) and
+    /// without naming the infrastructure concrete.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InfraError::Network`](crate::infrastructure::error::InfraError::Network)
+    /// if the wreq client cannot be built.
+    pub fn build_default_robots_fetcher(
+        timeout_secs: u64,
+    ) -> Result<
+        Arc<dyn crate::domain::crawler_port::RobotsPort>,
+        crate::infrastructure::error::InfraError,
+    > {
+        build_robots_fetcher(wreq_util::Profile::Chrome145, timeout_secs)
+    }
 }
 
 impl Container {
