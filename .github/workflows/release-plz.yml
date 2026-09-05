@@ -1,0 +1,73 @@
+# Release-plz — automated version bump + CHANGELOG + Release PR + v* tags.
+#
+# Flow: push to main -> release-plz-pr opens/updates a Release PR
+# (chore/release-*) with Cargo.toml + CHANGELOG.md updates.
+# Merging it -> release-plz-release pushes the `v{{ version }}` tag,
+# which triggers release.yml (binaries + GitHub Release).
+#
+# Config: release-plz.toml + cliff.toml. No registry publishing (git_only).
+
+name: Release-plz
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Publish already-merged release commits: pushes the v* tag.
+  # Tag push triggers release.yml for binaries + GitHub Release.
+  release-plz-release:
+    name: Release-plz release
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'XaviCode1000' }}
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Open or update the Release PR with the next version + CHANGELOG.
+  release-plz-pr:
+    name: Release-plz PR
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'XaviCode1000' }}
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
