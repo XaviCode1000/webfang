@@ -1,1 +1,0 @@
-https://user:pass@host.com:8080/path
