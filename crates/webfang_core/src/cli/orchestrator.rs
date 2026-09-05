@@ -643,10 +643,13 @@ async fn prepare_phase(
     // Q3 MEASURE FIRST: the dedup cache is the only structure whose measured
     // growth crossed the 50 MB materiality line; its capacity derives from the
     // Asset tier like every other budget-model bound.
+    // Single graph (#1149): the ephemeral asset downloader is built through
+    // the `Container` factory — fresh and bounded per run, never the MCP
+    // server's long-lived shared downloader (#1120).
     let shared_downloader = if scraper_config.has_downloads() {
-        match crate::adapters::downloader::Downloader::with_asset_cache_capacity(
-            scraper_config.to_download_config(),
-            crate::adapters::downloader::asset_cache_capacity(budget.asset().get()),
+        match crate::application::container::Container::build_ephemeral_asset_downloader(
+            &scraper_config,
+            budget.asset().get(),
         ) {
             Ok(dl) => Some(std::sync::Arc::new(dl)),
             Err(e) => {

@@ -9,7 +9,6 @@ use crate::application::crawler::engine::{crawl_site_with_options, EngineOptions
 use crate::application::discover_urls_single_fetch;
 use crate::domain::persistence::PersistenceMode;
 use crate::error::Result as ScraperResult;
-use crate::infrastructure::downloader::fetch_router::DefaultDownloaderFactory;
 use crate::CrawlerConfig;
 
 /// Build the discovery progress spinner, or `None` when quiet is enabled.
@@ -105,9 +104,12 @@ pub async fn discover_urls_recursive(
             // `Engine::with_js_strategy`, and the engine no longer builds a
             // downloader on its own (ADR-0012 sub-slice 3.B-1b). Without the
             // factory injected, `--js-strategy hybrid|full` would silently
-            // degrade to static fetching. `cli` is exempt from the ADR-0010
-            // direction gate, so naming the concrete here is legal.
-            downloader_factory: Some(std::sync::Arc::new(DefaultDownloaderFactory)),
+            // degrade to static fetching. Single graph (#1149): the factory
+            // comes from the `Container`, not from naming the infrastructure
+            // concrete here.
+            downloader_factory: Some(
+                crate::application::container::Container::downloader_factory(),
+            ),
             ..EngineOptions::default()
         };
         crawl_site_with_options(crawler_config, options).await?
