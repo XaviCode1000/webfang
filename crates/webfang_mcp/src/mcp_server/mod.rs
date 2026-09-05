@@ -60,28 +60,17 @@ pub async fn build_container(
 
 /// Build the shared asset `Downloader` for the long-lived MCP servers (#1120).
 ///
-/// The server process outlives any single crawl, so it must NOT take the
-/// legacy unbounded `Downloader::new` path (`usize::MAX` capacity disables
-/// the dedup-cache eviction). This helper wires the SAME bounded policy the
-/// CLI orchestrator uses — capacity derived from the budget model's Asset
-/// tier via `asset_cache_capacity` — so there is one memory policy per
-/// structure, not a parallel server-side one.
+/// Single graph (#1149): built through the `Container` composition root, so
+/// the bounded policy (capacity from the budget model's Asset tier) has one
+/// home shared with the CLI ephemeral runs. The server process outlives any
+/// single crawl, so it must NOT take the legacy unbounded `Downloader::new`
+/// path (`usize::MAX` capacity disables the dedup-cache eviction).
 ///
 /// # Errors
 /// Propagates HTTP-client construction failures (`ScraperError::Config`).
 pub fn build_shared_downloader(
 ) -> webfang_core::error::Result<webfang_core::adapters::downloader::Downloader> {
-    use webfang_core::adapters::downloader::{asset_cache_capacity, DownloadConfig, Downloader};
-    use webfang_core::domain::budget::{detector::SystemDetector, BudgetModel, BudgetOverrides};
-
-    let budget = BudgetModel::build(BudgetOverrides::default(), &SystemDetector);
-    let capacity = asset_cache_capacity(budget.asset().get());
-    tracing::info!(
-        asset_cache_capacity = capacity,
-        asset_tier_permits = budget.asset().get(),
-        "MCP shared asset downloader bounded (#1120)"
-    );
-    Downloader::with_asset_cache_capacity(DownloadConfig::default(), capacity)
+    webfang_core::application::container::Container::build_mcp_shared_asset_downloader()
 }
 
 /// Kick off the lazy AI port wiring in a background task (#759).
