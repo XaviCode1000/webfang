@@ -289,6 +289,64 @@ async fn stdio_server_exits_gracefully_on_pre_handshake_stdin_eof() {
     );
 }
 
+/// Regression guard for #1151: closing the read end of stdout AFTER a
+/// successful handshake used to hang the server forever — rmcp swallows the
+/// post-handshake write error, so `server.waiting()` never resolved: no exit
+/// code, no log.
+///
+/// The test bounds its own wait ([`EXIT_TIMEOUT`] via [`wait_exited`]): if the
+/// bug is still present the child never exits and the test FAILS on the
+/// timeout instead of hanging the suite (`kill_on_drop` reaps the orphan).
+/// stderr is drained concurrently so a full log pipe can never mimic the
+/// hang by blocking the child on a write.
+#[tokio::test]
+async fn issue_1151_post_handshake_stdout_close_exits_cleanly() {
+    let mut child = spawn_stdio_server_with_stderr();
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let mut reader = BufReader::new(child.stdout.take().expect("piped stdout"));
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let stderr_drain = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut stderr, &mut buf)
+            .await
+            .expect("read the child's stderr to EOF");
+        String::from_utf8_lossy(&buf).into_owned()
+    });
+
+    handshake(&mut stdin, &mut reader).await;
+
+    // Post-handshake transport death: the client closes its read end of
+    // stdout. Dropping the only `ChildStdout` closes the fd, so the next
+    // server write fails with EPIPE (the Rust runtime ignores SIGPIPE, hence
+    // the failure surfaces as `Err`, not a signal).
+    drop(reader);
+
+    // Force a server→client write: the response to this request is what hits
+    // the closed pipe. Without the fix nothing is ever observed and the
+    // server pends in `waiting()` forever.
+    let list = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}});
+    send(&mut stdin, &list).await;
+
+    let status = wait_exited(&mut child).await;
+    let stderr = stderr_drain
+        .await
+        .expect("the stderr drain task completes once the child exits");
+
+    assert!(
+        !stderr.contains("panicked at"),
+        "transport death must not surface a panic backtrace; stderr:\n{stderr}"
+    );
+    assert_eq!(
+        status.code(),
+        Some(74),
+        "post-handshake stdout death must exit with the I/O error code (74); stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Error:"),
+        "stderr must carry the user-facing error line; got:\n{stderr}"
+    );
+}
+
 /// Regression guard for #1108: a broken stdout pipe (client closes the read
 /// end mid-handshake) used to panic at the same `serve().expect()` site with
 /// `TransportError { BrokenPipe }`. The binary must exit cleanly instead.

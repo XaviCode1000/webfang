@@ -4,11 +4,16 @@
 //! the server as a subprocess (OpenCode, Claude Desktop, Cline, etc.). This
 //! replaces the old `examples/mcp_server_stdio.rs` example.
 
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use clap::Parser;
 use rmcp::service::ServiceExt;
-use webfang_core::cli::error::CliExit;
+use tokio::io::AsyncWrite;
+use tokio::sync::Notify;
+use webfang_core::cli::error::{CliExit, EXIT_IO_ERROR};
 use webfang_mcp::mcp_server::{build_container, spawn_ai_wiring, McpHandler, McpState};
 
 /// Webfang MCP Server — Stdio transport.
@@ -29,6 +34,125 @@ struct Args {
     /// values are rejected (fail-closed); relative paths always work.
     #[arg(long, env = "WEBFANG_MCP_EXPORT_ROOTS", value_delimiter = ',')]
     export_roots: Vec<std::path::PathBuf>,
+}
+
+// #1151: shared death signal for the stdout half of the stdio transport.
+//
+// rmcp's server loop discards handler-response send errors and only quits on
+// stdin EOF or cancellation — so after a successful handshake, a client that
+// closes its read end of stdout leaves `server.waiting()` pending forever
+// with no exit code and no log. The Rust runtime ignores SIGPIPE, hence the
+// broken pipe surfaces as an `Err` from `AsyncWrite`, not a signal.
+// Recording the first write failure here lets `main()` observe the transport
+// death at our layer and shut down cleanly. No wall-clock timeout around
+// `waiting()`: MCP sessions are legitimately long-lived and a timeout would
+// kill healthy ones.
+#[derive(Debug, Clone)]
+struct StdoutDeathSignal {
+    inner: Arc<SignalInner>,
+}
+
+#[derive(Debug)]
+struct SignalInner {
+    broken: AtomicBool,
+    notify: Notify,
+    first_error: std::sync::Mutex<Option<String>>,
+}
+
+impl StdoutDeathSignal {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(SignalInner {
+                broken: AtomicBool::new(false),
+                notify: Notify::new(),
+                first_error: std::sync::Mutex::new(None),
+            }),
+        }
+    }
+
+    /// Record a stdout write failure, keeping only the first message for the
+    /// shutdown log. Never blocks: the mutex is held for a single `Option`
+    /// store, never across `.await` (this runs inside `poll_write`).
+    fn mark_broken(&self, error: &std::io::Error) {
+        if !self.inner.broken.swap(true, Ordering::SeqCst) {
+            if let Ok(mut slot) = self.inner.first_error.lock() {
+                *slot = Some(error.to_string());
+            }
+            self.inner.notify.notify_waiters();
+        }
+    }
+
+    fn first_error_message(&self) -> Option<String> {
+        self.inner
+            .first_error
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Resolve when the stdout half dies. The notified future is created
+    /// BEFORE checking the flag so a `mark_broken` racing this check cannot
+    /// be missed (no wall-clock timeout involved).
+    #[tracing::instrument(skip(self), name = "mcp_stdio_stdout_death_watch")]
+    async fn wait_broken(&self) {
+        loop {
+            let notified = self.inner.notify.notified();
+            if self.inner.broken.load(Ordering::SeqCst) {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+/// `AsyncWrite` adapter that observes stdout transport death at our layer
+/// (#1151). Forwards every call to the inner writer unchanged; on failure it
+/// raises the shared [`StdoutDeathSignal`] and returns the error to rmcp
+/// untouched, so the wire behavior is identical and only the observability
+/// is new.
+#[derive(Debug)]
+struct ObservingStdout<W> {
+    inner: W,
+    signal: StdoutDeathSignal,
+}
+
+impl<W> AsyncWrite for ObservingStdout<W>
+where
+    W: AsyncWrite + Unpin,
+{
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match Pin::new(&mut self.inner).poll_write(cx, buf) {
+            Poll::Ready(Err(error)) => {
+                self.signal.mark_broken(&error);
+                Poll::Ready(Err(error))
+            },
+            other => other,
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match Pin::new(&mut self.inner).poll_flush(cx) {
+            Poll::Ready(Err(error)) => {
+                self.signal.mark_broken(&error);
+                Poll::Ready(Err(error))
+            },
+            other => other,
+        }
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match Pin::new(&mut self.inner).poll_shutdown(cx) {
+            Poll::Ready(Err(error)) => {
+                self.signal.mark_broken(&error);
+                Poll::Ready(Err(error))
+            },
+            other => other,
+        }
+    }
 }
 
 #[tokio::main]
@@ -80,7 +204,16 @@ async fn main() -> CliExit {
     // `serve()`; panicking there would send a backtrace to the spawning MCP
     // client (OpenCode, Claude Desktop, …). Log and exit with the I/O error
     // code instead (#1108).
-    let transport = (tokio::io::stdin(), tokio::io::stdout());
+    // #1151: main owns the AsyncWrite handed to serve(). Wrapping stdout
+    // records post-handshake write failures (EPIPE when the client closes
+    // its read end) that rmcp would otherwise swallow while `waiting()`
+    // pends forever.
+    let stdout_signal = StdoutDeathSignal::new();
+    let stdout = ObservingStdout {
+        inner: tokio::io::stdout(),
+        signal: stdout_signal.clone(),
+    };
+    let transport = (tokio::io::stdin(), stdout);
     let server = match handler.serve(transport).await {
         Ok(server) => server,
         Err(e) => {
@@ -89,8 +222,14 @@ async fn main() -> CliExit {
         },
     };
 
-    // Wait for the server to finish (client disconnects or stdin closes).
-    let waiting_result = server.waiting().await;
+    // Wait for the server to finish (client disconnects or stdin closes)
+    // — or for OUR layer to observe the stdout half dying underneath a
+    // live session. No wall-clock timeout: MCP sessions are legitimately
+    // long-lived and a timeout would kill healthy ones (#1151).
+    let session_outcome = tokio::select! {
+        result = server.waiting() => Some(result),
+        () = stdout_signal.wait_broken() => None,
+    };
 
     // #1121: same drain as the HTTP transport (server.rs) — the stdio tools
     // persist crawl results through the very same background writer, so on
@@ -101,6 +240,29 @@ async fn main() -> CliExit {
             tracing::warn!(error = %e, "crawl-result writer shutdown reported errors");
         }
     }
+
+    // A post-handshake stdout death (client closed the read end) never
+    // surfaces through `waiting()` — rmcp swallows the write error — so
+    // it gets the same clean log + I/O-error exit instead of hanging
+    // forever with no exit code and no log (#1151).
+    let Some(waiting_result) = session_outcome else {
+        let detail = stdout_signal
+            .first_error_message()
+            .unwrap_or_else(|| "el cliente cerró la tubería de salida".to_string());
+        tracing::error!(error = %detail, "mcp stdio stdout broken pipe: client closed read end, shutting down");
+        let message = format!("El servidor MCP por stdio terminó con error: {detail}");
+        // Mirror of `CliExit::IoError`'s `Termination::report` (which is
+        // bypassed below): user-facing Spanish line on stderr + EX_IOERR.
+        eprintln!("Error: {message}");
+        // `std::process::exit`, not `return`: the dead client still holds
+        // the stdin write end open, so the blocking-pool thread parked in
+        // `read(stdin)` by the abandoned serve loop can never observe EOF
+        // — and `Runtime` drop joins that thread, which would hang this
+        // branch exactly like the original bug (verified via gdb: main in
+        // `BlockingPool` drop, worker in `read(stdin)`). The crawl-result
+        // writer above is already drained; the OS reaps the rest.
+        std::process::exit(EXIT_IO_ERROR.into());
+    };
 
     // Normal EOF shutdown returns Ok → exit 0; a transport error mid-session
     // gets the same clean log + exit treatment instead of a panic backtrace
