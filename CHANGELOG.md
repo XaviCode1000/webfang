@@ -107,6 +107,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Deleted two zero-absorption dead-weight entries and ported the two cheap-win sites
   (`asset_download`, engine probe default) to their domain seams (#1079, #1081).
 
+#### Pruned the zombie shims, orphans, the dead_code wall and the JsRenderer port (Systemic backlog Batch 3, #1164, closing #1110, #1111, #1112, #1113, #1114, #1115)
+- Delete the `crawler_service` shim and the zero-caller `som_capture` orphan module (#1111, #1113).
+- Tear down the Phase 0 `dead_code` wall — let unreachable code die by the compiler, not by attribute (#1114).
+- Resolve the download-path drift, prune dead `Container` setters and unify asset-downloader cleanup (#1115, #1110).
+- Delete the `JsRenderer` domain port outright (#1112).
+- Net effect: −1,143 lines of dead or duplicated machinery (115 insertions / 1,258 deletions across 34 files).
+
+#### Unified the persistence ports in `domain::persistence` (#1140, part of #994 slice 3)
+- Consolidate `RecordStorePort`, `StateStorePort` and the record DTOs under one `domain::persistence`
+  home instead of duplicating them per the superseded issue spec, and drop the dead state-store methods
+  (ADR-0014).
+
+#### Typed the URL and hex boundaries with existing newtypes (Systemic backlog Batch 6 slice B, #1158, closing #1116, #1117, #1118)
+- Add `Sha256Hex` (rejects non-hex, wrong-length and uppercase keys) and `ValidUrl::try_from_url` in
+  `domain/value_objects.rs`, reusing `ValidUrl`/`NonZero` rather than minting parallel types.
+- Parse MCP request URLs exactly once at the deserialize boundary into `McpUrl` — deletes 10 redundant
+  `Url::parse` calls and the ad-hoc `starts_with("data:")` filters (#1116).
+- Require `&ValidUrl` at the downloader seam and asset download so hostile URLs can no longer reach the
+  socket (#1117).
+- Route dedup keys and sink paths through `Sha256Hex` / validated `ValidUrl` across the stream,
+  note-repository, vault-reader and sqlite layers, killing the hand-rolled hex loops (#1118).
+- Pin each boundary with `*_is_unrepresentable` regression tests plus hostile-URL and malformed-key
+  coverage.
+
 ### 📖 Documentation
 
 #### CHANGELOG policy — single-write at consolidation (#965)
@@ -120,6 +144,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and recorded the campaign's method lessons, including that a commit message is not evidence: one commit
   claimed to drop an allowlist line absent from its own diff while every numeric check passed.
 
+#### Recorded ADR-0015 — WAF detection stays infrastructure-side (#1155, supersedes #994 slice 4)
+- Log the ruling that WAF detection remains an infrastructure concern: #994 slice 4 (porting it to the
+  domain) is superseded, closing that leg of the deferred-port backlog with a decision instead of code.
+
+#### Documented the codedb CLI root-first rule in AGENTS.md (#1137)
+- Record that `codedb <abs-root> <cmd>` is positional-first (only `mcp` accepts the reversed order) and
+  drop the stale diagnostics/remote rows from the intelligence-stack table.
+
 ### 🔧 Fixed
 
 #### From<CrawlError> error-class inversions for budget siblings (#957)
@@ -129,6 +161,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Root cause:** `wreq` (built with `.gzip(true)`) auto-decompresses the transport `Content-Encoding` and strips that header, while `CompressionHandler::detect_compression` trusted the `.gz` URL extension and decompressed again — `decompression failed: Invalid gzip header` on every `.xml.gz` sitemap served with `content-encoding: gzip` (e.g. MDN: 10/10 child sitemaps failed).
 - **Fix:** magic bytes are now the sovereign truth for snifable formats (gzip `0x1f8b`, zstd frame/skippable magics). The URL extension is only a fallback hint for non-snifable formats (brotli `.br`, still fail-closed). A `.gz`/`.gzip`/`.zst` URL whose payload lacks magic bytes passes through untouched (transport already decoded, or lying extension) with a `tracing::debug!` audit trail.
 - **Coverage:** body-gzip + `content-encoding: gzip` (was broken), gzip body without header (still works), plain body behind `.gz` URL (now passes through), end-to-end wiremock regressions added to `sitemap_parser.rs` plus extended unit tests.
+
+#### Hardened security and process lifecycle (Systemic backlog Batch 1, #1139, closing #1124, #1125, #1126, #1129 and part of #1127)
+- Make `kill_self` target the process's own `getpid()` with an `abort()` fallback — never broadcast
+  `kill(-1, SIGKILL)`, never ignore the `kill` return value (#1124).
+- Confine export/cache filename and domain joins through the shared `sanitize_filename_component` —
+  neutralize `../escape`, `sub/out` and `..\escape` traversal vectors inside the output/cache dir (#1125).
+- Make `ENV_LOCK` the only constructible path for process-scope env mutations in `webfang_test_utils`
+  (`EnvGuard::set/remove` under the held lock, reverse-order `Drop` restore) (#1126).
+- Return `FeatureGated` (PermanentFatal), not `Internal`, from the no-chromium downloader/axtree stub
+  (#1127 downloader half — the `som_capture` stub half was deliberately left to #1113's deletion).
+- Add the RAII `HandlerGuard` so the CDP pump aborts on timeout/error/cancel — no leaked Chrome process
+  or handler task (#1129).
+- Every closure pinned by a named regression test (e.g. `confine_neutralizes_traversal_vectors`,
+  `handler_guard_aborts_pump_on_early_exit`).
+
+#### Hardened the async runtime: inference backpressure, sink locks, writer drain, startup I/O (Systemic backlog Batch 2, #1163, closing #1103, #1104, #1106, #1107, #1119, #1121, #1122, #1133)
+- Make `InferencePool` backpressure awaitable by switching the semaphore to a tokio mpsc gate — callers
+  suspend instead of busy-blocking the executor (#1133).
+- Move std `Mutex`/blocking sink I/O (cookie jar, repositories) off the Tokio executor with
+  `spawn_blocking` seams (#1119; #1105 closed as its duplicate).
+- Resync the crawl-result writer offset on partial-frame failure and drain it before serve-error
+  propagation, joining it on shutdown (#1121).
+- Move every startup/vault/cache/export I/O site off the Tokio executor hot path (#1103, #1104, #1106,
+  #1107, #1122).
+
+#### Bounded the session/download pools and made pool state invariants unrepresentable (Systemic backlog Batches 5–6, #1168, #1153, closing #1120, #1130, #1131, #1134 and part of #1132)
+- Bound `DomainSessionPool`'s domain map with the shared cache cap plus real eviction wiring (#1130), and
+  wire the MCP server's domain-session and shared asset-downloader caches to the CLI bounded policy (#1120).
+- Remove `InferencePool::Clone` so a cloned handle can no longer keep `Drop` from hanging (#1131).
+- Freeze the session cooldown and balance slot picks under stress (#1134).
+- Make invalid state unrepresentable in `ExportState`, `CrawlerConfig` and `CategoryLimits` via typed
+  constructors instead of raw field mutation (#1132).
+
+#### Removed the reachable panics in startup, stdio and data paths (#1152, closing #1123, #1108, #1109)
+- Replace `unwrap`/`expect` on fallible startup config, MCP stdio transport, and data-path parsing with
+  typed error propagation — no production panic path survives the sweep.
+
+### 🧪 Testing
+
+#### Added the loom model and D3 crash-sequence coverage for record transitions (Systemic backlog Batch 6–7, #1173, closing #1094, part of #994)
+- Extract the record state-transition machine from `record_store`, move the pure machine into the domain
+  (fixing the ADR-0010 direction violation) and share one commit-point transition between production and
+  the model (#994 slice 3).
+- Prove the crash-sequence safety of record transitions with a loom model over the shared state machine
+  (#1150).
+- Delete the inert per-file `rust-analyzer.toml` features config — upstream never reads it and no
+  `cargo.features` takes effect from it (#1094, #1160).
+
+#### Made the 20k memory probe independent of writer-channel capacity (#1172, closing #1170)
+- Size the probe against the memory metric it measures instead of the bounded writer channel, so it can
+  no longer pass or flake on channel state (#1170).
+
+### 🚧 CI/CD
+
+#### Enforced the Actions cache budget with main-only, gate-scoped saves (Systemic backlog CI wave, #1166, #1174, #1175, closing #1165, part of #1171)
+- Enforce the 10 GB Actions cache budget and parallelize the repo guard scripts so PR CI stops degrading
+  to cold caches under eviction (#1165).
+- Restrict cache saves to `main` and trim non-gate jobs out of the cache pool (#1174).
+- Extend the save gating to the fuzz, docs and bug-discovery jobs (#1175).
+
+#### Hardened the delivery gate scripts (#1154, #1161, closing #1072, #1091)
+- Emit a machine-readable `RESULT` marker from `merge-when-green.sh` and chain a `main-push-gate` on
+  `pre-push` that blocks any local push advancing `refs/heads/main` with commits that did not arrive
+  through a PR merge (#1091).
+- Emit the `cleanup:failed` line in machine-readable form without changing the script's exit code (#1072).
 
 ## [1.1.1] - 2026-07-11
 
