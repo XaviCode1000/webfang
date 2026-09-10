@@ -128,16 +128,20 @@ async fn policy_parity_forbidden_literals_rejected_by_both_predicates() {
 // Layer independence: which knob lifts what
 // ============================================================================
 
-/// P6-3 verdict, part 2 — the scope an operator agrees to.
+/// P6-3 parity claim, stated executably: MCP's entry switch has the SAME scope
+/// for IP literals as the CLI's.
 ///
-/// With only `WEBFANG_MCP_DISABLE_SSRF` set, nothing on this path checks an IP
-/// literal: the core literal guard is not wired into the MCP scrape path and wreq
-/// consults no resolver for a literal host, so the request reaches the socket and
-/// fails as a connection error with no SSRF wording. Characterization, not
-/// approval — hostname targets and redirect hops stay validated, and
-/// `docs/ssrf-layers.md` says which knob lifts which layer.
+/// With only `WEBFANG_MCP_DISABLE_SSRF` set, nothing checks an IP literal on the
+/// MCP scrape path — the core literal guard lives in `cli/scrape_flow.rs` and
+/// `fetch_router.rs`, not here, and wreq consults no resolver for a literal host —
+/// so the request reaches the socket and fails as a connection error with no SSRF
+/// wording. The CLI-side twin of that exact fact is
+/// `domain::ssrf_guard`'s `entry_guard_hatch_requires_exact_value_one` (`"1"`
+/// disarms, which is how `tests/common/cli_harness.rs` drives `127.0.0.1` mocks).
+/// Characterization, not approval: hostname targets and redirect hops stay
+/// validated, and `docs/ssrf-layers.md` maps knob to layer.
 #[tokio::test]
-async fn mcp_env_alone_is_the_whole_entry_check_for_ip_literals() {
+async fn mcp_entry_env_has_the_same_literal_scope_as_the_cli_entry_env() {
     // Built with every guard armed; the starter removes the disable flag itself.
     let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = wreq::Client::new();

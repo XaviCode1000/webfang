@@ -67,6 +67,12 @@ deny-list verdict for both stacks on a table of literals; that the MCP switch al
 literal through; that the core switch alone does **not** disarm MCP's layer. Change one
 layer's scope and that suite is where it surfaces.
 
+The CLI↔MCP parity claim above is pinned executably on both sides, by name:
+`mcp_entry_env_has_the_same_literal_scope_as_the_cli_entry_env` (MCP's switch) and
+`entry_guard_hatch_requires_exact_value_one` in `domain/ssrf_guard.rs` (the CLI's). Each
+test names the other in its doc comment, so weakening one scope without the other is a
+deliberate edit rather than an oversight.
+
 ## Related
 
 - `docs/error-classification-matrix.md` — how a refusal becomes an exit code (CLI) or an
