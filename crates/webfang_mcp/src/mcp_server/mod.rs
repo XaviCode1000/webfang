@@ -130,6 +130,25 @@ pub fn spawn_ai_wiring(container: Arc<webfang_core::application::container::Cont
 #[cfg(not(feature = "ai"))]
 pub fn spawn_ai_wiring(_container: Arc<webfang_core::application::container::Container>) {}
 
+/// The DOM inspector every MCP server instance ships with (#1294 NS-01).
+///
+/// `McpState::inspector` defaults to `None` (`state.rs:164`) and no MCP
+/// composition root ever set one, while the scrape handlers pass
+/// `state.inspector.as_deref()` straight into the scrape use case
+/// (`handlers/scraping.rs:155`). The CLI has wired [`DefaultDomInspector`] in
+/// production since that port landed (`webfang_cli/src/main.rs:428`), so every
+/// CSS-selector diagnostic — the DOM structure report and the near-miss
+/// suggestions — silently degraded to "no diagnostics" for MCP clients only.
+///
+/// One shared constructor keeps both transports on the same implementation, the
+/// way [`build_shared_downloader`] keeps the asset-download policy shared.
+///
+/// [`DefaultDomInspector`]: webfang_core::infrastructure::scraper::dom_inspector::DefaultDomInspector
+#[must_use]
+pub fn default_dom_inspector() -> Arc<dyn webfang_core::domain::DomInspectorPort> {
+    Arc::new(webfang_core::infrastructure::scraper::dom_inspector::DefaultDomInspector::new())
+}
+
 /// Main MCP handler struct.
 ///
 /// Holds the application state and combined tool router.
@@ -192,6 +211,34 @@ impl ServerHandler for McpHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1294 NS-01: the helper must hand out the REAL inspector, not a stub.
+    ///
+    /// `NoOpInspector` answers every suggestion with an empty vec, so a
+    /// non-empty near-miss list is what separates "wired" from "wired with
+    /// something that does nothing". The per-binary tests check the wiring; this
+    /// checks the thing being wired.
+    #[test]
+    fn default_dom_inspector_reports_near_miss_suggestions() {
+        use webfang_core::domain::DomInspectorPort;
+
+        let inspector = default_dom_inspector();
+        let document = scraper::Html::parse_document(
+            r#"<html><body>
+                   <div class="article-body"><p class="article-title">content</p></div>
+                 </body></html>"#,
+        );
+
+        let suggestions = inspector.suggest(&document, ".article-body");
+        assert!(
+            !suggestions.is_empty(),
+            "the production inspector must produce selector suggestions"
+        );
+        assert!(
+            inspector.inspect(&document).element_count > 0,
+            "the production inspector must produce a non-empty DOM report"
+        );
+    }
 
     /// #1120: the server composition root must never hand out the legacy
     /// unbounded (`usize::MAX`) downloader — the cache bound is the same

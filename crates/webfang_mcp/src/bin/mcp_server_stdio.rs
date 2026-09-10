@@ -14,7 +14,9 @@ use rmcp::service::ServiceExt;
 use tokio::io::AsyncWrite;
 use tokio::sync::Notify;
 use webfang_core::cli::error::{CliExit, EXIT_IO_ERROR};
-use webfang_mcp::mcp_server::{build_container, spawn_ai_wiring, McpHandler, McpState};
+use webfang_mcp::mcp_server::{
+    build_container, default_dom_inspector, spawn_ai_wiring, McpHandler, McpState,
+};
 
 /// Webfang MCP Server — Stdio transport.
 #[derive(Parser, Debug)]
@@ -155,6 +157,18 @@ where
     }
 }
 
+/// Compose the [`McpState`] this binary ships (#1294 NS-01).
+///
+/// Mirror of the HTTP transport's helper, deliberately without the shared
+/// `Downloader`: that gap is its own finding (#1300) and stays out of this issue.
+/// Split out of `main` so the wiring is reachable from a test.
+fn build_state(
+    container: Arc<webfang_core::di::Container>,
+    export_roots: Vec<std::path::PathBuf>,
+) -> McpState {
+    McpState::from_container(container).with_inspector(default_dom_inspector())
+}
+
 #[tokio::main]
 async fn main() -> CliExit {
     // All logging to stderr — stdout is reserved for JSON-RPC.
@@ -195,7 +209,7 @@ async fn main() -> CliExit {
     // main drain the crawl-result writer at exit (#1143 review).
     let exit_container = Arc::clone(&container);
 
-    let state = McpState::from_container(container).with_export_roots(args.export_roots);
+    let state = build_state(container, args.export_roots);
 
     let handler = McpHandler::new(state);
 
@@ -273,4 +287,30 @@ async fn main() -> CliExit {
     }
 
     CliExit::Success
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #1294 NS-01: the stdio transport is the one most MCP clients actually
+    /// spawn, and it shipped the same unwired state as HTTP. Both composition
+    /// roots are pinned separately on purpose: sharing one helper would hide a
+    /// regression in whichever binary stops using it.
+    #[tokio::test]
+    async fn stdio_composition_root_wires_an_inspector() {
+        let config = webfang_core::config::Config::default();
+        let container = Arc::new(
+            webfang_core::di::Container::new(config.crawler, config.scraper)
+                .await
+                .expect("container creation failed"),
+        );
+
+        let state = build_state(container, Vec::new());
+        assert!(
+            state.inspector.is_some(),
+            "the stdio server must wire a DOM inspector; a `None` here silences \
+                 every selector diagnostic an MCP client asks for"
+        );
+    }
 }

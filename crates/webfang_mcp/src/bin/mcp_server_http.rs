@@ -13,7 +13,7 @@ use webfang_mcp::mcp_server::server::{
     require_auth_for_external_bind, start_mcp_server, ServerOptions, DEFAULT_MCP_ADDR,
 };
 use webfang_mcp::mcp_server::{
-    build_container, build_shared_downloader, spawn_ai_wiring, McpState,
+    build_container, build_shared_downloader, default_dom_inspector, spawn_ai_wiring, McpState,
 };
 
 /// Webfang MCP Server — Streamable HTTP transport.
@@ -60,6 +60,23 @@ struct Args {
     export_roots: Vec<std::path::PathBuf>,
 }
 
+/// Compose the [`McpState`] this binary ships (#1294 NS-01).
+///
+/// Split out of `main` because `main` is unreachable from a test and the
+/// composition root is the exact place the DOM inspector enters the MCP process:
+/// `McpState::inspector` defaults to `None`, so a server that never wires one
+/// answers every selector failure without diagnostics.
+fn build_state(
+    container: Arc<webfang_core::di::Container>,
+    downloader: Arc<webfang_core::adapters::downloader::Downloader>,
+    export_roots: Vec<std::path::PathBuf>,
+) -> McpState {
+    McpState::from_container(container)
+        .with_downloader(downloader)
+        .with_inspector(default_dom_inspector())
+        .with_export_roots(export_roots)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -95,14 +112,16 @@ async fn main() -> Result<()> {
         spawn_ai_wiring(Arc::clone(&container));
     }
 
-    // Inject a shared Downloader so `download_assets` reuses one connection
-    // pool across tool calls. The default config writes to `./downloads`
-    // relative to the working directory. #1120: built through the bounded
-    // composition-root helper — the same budget-derived cache policy as the
-    // CLI — never the legacy unbounded `Downloader::new` path.
-    let state = McpState::from_container(container)
-        .with_downloader(Arc::new(build_shared_downloader()?))
-        .with_export_roots(args.export_roots);
+    // Inject a shared Downloader so `download_assets` reuses one connection pool
+    // across tool calls. The default config writes to `./downloads` relative to
+    // the working directory. #1120: built through the bounded composition-root
+    // helper — the same budget-derived cache policy as the CLI — never the legacy
+    // unbounded `Downloader::new` path.
+    let state = build_state(
+        container,
+        Arc::new(build_shared_downloader()?),
+        args.export_roots,
+    );
 
     let opts = ServerOptions {
         request_timeout_secs: args.timeout_secs,
@@ -118,4 +137,34 @@ async fn main() -> Result<()> {
     }
 
     start_mcp_server(state, args.bind, opts).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #1294 NS-01: this transport's composition root must ship an inspector.
+    ///
+    /// The claim is narrow on purpose — wiring, not behavior: what the helper
+    /// returns is pinned next to it in `mcp_server/mod.rs`. Nothing in the tree
+    /// asserted this before, which is why the field could stay `None` in every
+    /// production MCP process while its unit tests kept passing.
+    #[tokio::test]
+    async fn http_composition_root_wires_an_inspector() {
+        let config = webfang_core::config::Config::default();
+        let container = Arc::new(
+            webfang_core::di::Container::new(config.crawler, config.scraper)
+                .await
+                .expect("container creation failed"),
+        );
+        let downloader =
+            Arc::new(build_shared_downloader().expect("bounded shared downloader builds"));
+
+        let state = build_state(container, downloader, Vec::new());
+        assert!(
+            state.inspector.is_some(),
+            "the HTTP server must wire a DOM inspector; a `None` here silences every \
+             selector diagnostic an MCP client asks for"
+        );
+    }
 }
