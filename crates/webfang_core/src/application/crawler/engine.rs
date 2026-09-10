@@ -424,19 +424,7 @@ impl Engine {
     #[instrument(skip(self))]
     fn delete_checkpoint(&mut self) {
         if let Some(path) = self.checkpoint_path.take() {
-            match std::fs::remove_file(&path) {
-                Ok(()) => {
-                    debug!(path = %path.display(), "checkpoint removed after successful crawl");
-                },
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
-                Err(e) => {
-                    warn!(
-                        path = %path.display(),
-                        error = %e,
-                        "checkpoint cleanup failed"
-                    );
-                },
-            }
+            super::checkpoint::delete_checkpoint_file(&path);
         }
     }
 
@@ -666,30 +654,13 @@ impl Engine {
 
     /// Persist a checkpoint on a blocking thread, logging the outcome.
     async fn persist_checkpoint(&self, state: CrawlCheckpoint, path: &std::path::Path) {
-        // Save on blocking thread to avoid blocking the event loop
-        let store = BincodeCheckpoint::new();
-        let path = path.to_path_buf();
-        let outcome = tokio::task::spawn_blocking(move || store.save(&state, &path))
-            .in_current_span()
-            .await;
-        Self::log_checkpoint_save(outcome);
-    }
-
-    /// Log the result of a checkpoint save attempt.
-    fn log_checkpoint_save(outcome: Result<Result<(), String>, tokio::task::JoinError>) {
-        match outcome {
-            Ok(Ok(())) => {
-                tracing::debug!("checkpoint saved successfully");
-            },
-            Ok(Err(e)) => {
-                tracing::error!(error = %e, "checkpoint save failed");
-            },
-            // LCOV_EXCL_START defensive: checkpoint-join-error — a JoinError occurs only when the spawned task panicked, a bug
-            Err(join_err) => {
-                tracing::error!(error = %join_err, "checkpoint save task panicked");
-            },
-            // LCOV_EXCL_STOP
-        }
+        let outcome = super::checkpoint::persist_checkpoint_state(
+            BincodeCheckpoint::new(),
+            state,
+            path.to_path_buf(),
+        )
+        .await;
+        super::checkpoint::log_checkpoint_save(outcome);
     }
 
     /// Spawn a signal handler that sets the shutdown flag on SIGINT/SIGTERM.
@@ -837,14 +808,18 @@ impl Engine {
             && !self.collector.is_full(self.config.max_pages);
         let session_close = match self.session.take() {
             Some(session) => {
-                let run_label = session.identity().run_label.clone();
-                let action = session.finish(completed_fully);
-                match action {
-                    CheckpointAction::Delete => self.delete_checkpoint(),
-                    CheckpointAction::Write => self.save_checkpoint().await,
-                    CheckpointAction::Skip => {},
+                // P6-2 slice 2: the session derives the F-01 verdict AND
+                // performs the IO; the engine only supplies the crawl-state
+                // snapshot (an execution fact, paid only on Write) and clears
+                // its own handle on Delete so the shutdown() save cannot
+                // re-create the file the session just removed.
+                let close = session
+                    .finish(completed_fully, async || self.build_checkpoint_state().await)
+                    .await;
+                if close.action == CheckpointAction::Delete {
+                    self.checkpoint_path = None;
                 }
-                Some((run_label, action))
+                Some((close.run_label, close.action))
             },
             None => {
                 if completed_fully {
