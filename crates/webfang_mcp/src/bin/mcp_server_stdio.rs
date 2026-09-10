@@ -166,7 +166,9 @@ fn build_state(
     container: Arc<webfang_core::di::Container>,
     export_roots: Vec<std::path::PathBuf>,
 ) -> McpState {
-    McpState::from_container(container).with_inspector(default_dom_inspector())
+    McpState::from_container(container)
+        .with_inspector(default_dom_inspector())
+        .with_export_roots(export_roots)
 }
 
 #[tokio::main]
@@ -311,6 +313,28 @@ mod tests {
             state.inspector.is_some(),
             "the stdio server must wire a DOM inspector; a `None` here silences \
                  every selector diagnostic an MCP client asks for"
+        );
+    }
+
+    /// The extraction that lost a parameter is the reason this exists: moving the
+    /// chain out of `main` silently dropped `with_export_roots`, which would have
+    /// turned #696's allowlist off for every stdio client. `main` cannot be tested,
+    /// so the composition root is asserted directly on both transports.
+    #[tokio::test]
+    async fn stdio_composition_root_keeps_the_export_roots_contract() {
+        let config = webfang_core::config::Config::default();
+        let container = Arc::new(
+            webfang_core::di::Container::new(config.crawler, config.scraper)
+                .await
+                .expect("container creation failed"),
+        );
+        let roots = vec![std::path::PathBuf::from("/srv/allowed")];
+
+        let state = build_state(container, roots.clone());
+        assert_eq!(
+            state.allowed_export_roots.as_slice(),
+            roots.as_slice(),
+            "stdio must honor --export-roots / WEBFANG_MCP_EXPORT_ROOTS (#696)"
         );
     }
 }

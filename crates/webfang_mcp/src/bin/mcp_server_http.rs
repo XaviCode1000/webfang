@@ -164,7 +164,30 @@ mod tests {
         assert!(
             state.inspector.is_some(),
             "the HTTP server must wire a DOM inspector; a `None` here silences every \
-             selector diagnostic an MCP client asks for"
+                 selector diagnostic an MCP client asks for"
+        );
+    }
+
+    /// Same contract as the stdio transport: `--export-roots` must survive the
+    /// composition root (#696 fail-closed allowlist). Pinned on both because both
+    /// now build their state through a helper that could drop an argument.
+    #[tokio::test]
+    async fn http_composition_root_keeps_the_export_roots_contract() {
+        let config = webfang_core::config::Config::default();
+        let container = Arc::new(
+            webfang_core::di::Container::new(config.crawler, config.scraper)
+                .await
+                .expect("container creation failed"),
+        );
+        let downloader =
+            Arc::new(build_shared_downloader().expect("bounded shared downloader builds"));
+        let roots = vec![std::path::PathBuf::from("/srv/allowed")];
+
+        let state = build_state(container, downloader, roots.clone());
+        assert_eq!(
+            state.allowed_export_roots.as_slice(),
+            roots.as_slice(),
+            "HTTP must honor --export-roots / WEBFANG_MCP_EXPORT_ROOTS (#696)"
         );
     }
 }

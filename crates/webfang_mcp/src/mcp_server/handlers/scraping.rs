@@ -262,12 +262,14 @@ impl McpHandler {
             .unwrap_or_else(|| "unknown".to_string());
         let count = urls.len();
 
-        let mut config = webfang_core::domain::config::ScraperConfig::default();
         // An omitted value means the advertised default, and the advertised default
         // is this constant — never a second copy of the number in prose (#1294 NS-04).
-        config.scraper_concurrency = params
-            .concurrency
-            .unwrap_or(SCRAPE_BATCH_DEFAULT_CONCURRENCY);
+        let config = webfang_core::domain::config::ScraperConfig {
+            scraper_concurrency: params
+                .concurrency
+                .unwrap_or(SCRAPE_BATCH_DEFAULT_CONCURRENCY),
+            ..Default::default()
+        };
 
         // G2 (RC-1 slice 4): optional pre-fetch pacing through the SAME
         // shared token-bucket implementation the crawl engine and the CLI

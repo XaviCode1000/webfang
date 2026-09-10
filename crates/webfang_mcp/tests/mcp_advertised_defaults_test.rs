@@ -91,6 +91,9 @@ fn property(name: &str) -> Value {
         .clone()
 }
 
+/// Characters that end a scalar claimed in prose; see [`prose_default`].
+const SCALAR_TERMINATORS: [char; 5] = [' ', ',', ')', '.', ';'];
+
 /// The `default: <value>` fragment inside a description, when the prose claims one.
 ///
 /// Scans for `default:` and takes the following token up to the first character that
@@ -101,7 +104,7 @@ fn prose_default(description: &str) -> Option<&str> {
     let token_start = after.len() - after.trim_start().len();
     let rest = &after[token_start..];
     let end = rest
-        .find(|c: char| c == ' ' || c == ',' || c == ')' || c == '.' || c == ';')
+        .find(|c: char| SCALAR_TERMINATORS.contains(&c))
         .unwrap_or(rest.len());
     let token = &rest[..end];
     (!token.is_empty()).then_some(token)

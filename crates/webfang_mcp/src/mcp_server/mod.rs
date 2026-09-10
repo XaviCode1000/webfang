@@ -220,8 +220,6 @@ mod tests {
     /// checks the thing being wired.
     #[test]
     fn default_dom_inspector_reports_near_miss_suggestions() {
-        use webfang_core::domain::DomInspectorPort;
-
         let inspector = default_dom_inspector();
         let document = scraper::Html::parse_document(
             r#"<html><body>
