@@ -629,15 +629,24 @@ async fn test_unknown_method_returns_error() {
              got {status} in: {}",
         &body[..body.len().min(500)]
     );
-    let error_code = parse_jsonrpc_error_code(&body);
+    // Deliberately NOT `parse_jsonrpc_error_code`: it takes the first `data:` line,
+    // and a session stream opens with an SSE priming event whose data is empty
+    // (SEP-1699), so it reports "no error code" for a perfectly good answer. The
+    // local `extract_json` skips lines that are not JSON, which is the shape this
+    // transport actually emits.
+    let payload = extract_json(&body).expect("the session stream must carry a JSON-RPC object");
+    let error_code = payload
+        .get("error")
+        .and_then(|e| e.get("code"))
+        .and_then(Value::as_i64);
     assert_eq!(
-            error_code,
-            Some(JSONRPC_METHOD_NOT_FOUND),
-            "unknown method should return JSON-RPC error code {} (Method not found), got code {:?} in: {}",
-            JSONRPC_METHOD_NOT_FOUND,
-            error_code,
-            &body[..body.len().min(500)]
-        );
+        error_code,
+        Some(JSONRPC_METHOD_NOT_FOUND),
+        "unknown method should return JSON-RPC error code {} (Method not found), got code {:?} in: {}",
+        JSONRPC_METHOD_NOT_FOUND,
+        error_code,
+        &body[..body.len().min(500)]
+    );
 }
 
 // ============================================================================
