@@ -9,28 +9,30 @@
 //! MCP imports directly (`mcp_server/ssrf.rs:12`). [`policy_parity_…`] proves it
 //! on one address table.
 //!
-//! **The layering does.** The chain has one more entry layer on each side, and
+//! **The layering does.** Both stacks decide with the same predicate, but MCP has one
 //! each layer has its own test-only kill-switch:
 //!
 //! | Layer | Sees | CLI | MCP |
 //! | :--- | :--- | :--- | :--- |
 //! | MCP DNS pre-check (`mcp_server/ssrf.rs:41-105`) | literals **and** hostnames (own `lookup_host`) | — | `WEBFANG_MCP_DISABLE_SSRF` |
-//! | core literal entry guard (`reject_forbidden_literal_url`, `ssrf_guard.rs:373`) | literals only | `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` | **absent from this path today** |
+//! | core literal entry guard (`reject_forbidden_literal_url`, `ssrf_guard.rs:373`) | literals only | `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` | not on the MCP scrape path |
 //! | connect-time resolver (`infrastructure/ssrf.rs`) | hostnames only — wreq short-circuits IP literals before any custom resolver (`ssrf.rs:105-108`) | same env family | same env family |
 //!
-//! Consequence, and the part that is an actual defect rather than policy: the
-//! core literal guard is wired in `cli/scrape_flow.rs:464` and
-//! `infrastructure/downloader/fetch_router.rs:188`, but the MCP scrape path goes
-//! through `application::scraper_service::scrape_with_config`, which has no entry
-//! guard. So for MCP, `WEBFANG_MCP_DISABLE_SSRF` is not "one layer off" — with the
-//! resolver structurally blind to IP literals, it is the **only** thing standing
-//! between a loopback target and an opened socket, while `bin/mcp_server_http.rs`
-//! logs it as "SSRF protection disabled (test mode)".
+//! Consequence, and the thing an operator must not have to guess (#1294 P6-3): the
+//! core literal entry guard is wired in `cli/scrape_flow.rs:464` and
+//! `infrastructure/downloader/fetch_router.rs:188`, while the MCP scrape path goes
+//! through `application::scraper_service::scrape_with_config`. Since wreq consults no
+//! resolver for an IP-literal host ("wreq short-circuits IP-literal hosts",
+//! `infrastructure/ssrf.rs:105-108`), setting `WEBFANG_MCP_DISABLE_SSRF` leaves such a
+//! target unchecked on this path. That is the switch's purpose — point the server at an
+//! internal target deliberately — and it has the same scope as the CLI's
+//! `WEBFANG_DISABLE_SSRF_ENTRY_GUARD`, which `cli_harness.rs:142-150` disarms and then
+//! drives `127.0.0.1` mocks through. What was wrong is that nothing said so: the binary
+//! logged "SSRF protection disabled (test mode)" and the pre-check logged at `debug`.
+//! Both now name the layers that stay armed, and `docs/ssrf-layers.md` holds the matrix.
 //!
-//! That is what [`mcp_disable_env_lifts_only_its_own_precheck`] pins. It is the
-//! suite's only **red** test against the current build; the others are
-//! characterizations that document the intended policy so P6-3 closes with
-//! evidence rather than with a relaxation.
+//! Every test here is therefore a characterization: it pins the intended scope in both
+//! directions, so changing any layer has to pass here first.
 //!
 //! Run with: `cargo nextest run -p webfang_mcp --features mcp --test mcp_ssrf_knob_matrix_test`
 
@@ -126,17 +128,16 @@ async fn policy_parity_forbidden_literals_rejected_by_both_predicates() {
 // Layer independence: which knob lifts what
 // ============================================================================
 
-/// P6-3 verdict, part 2: `WEBFANG_MCP_DISABLE_SSRF` is an entry-layer switch,
-/// never a global one. Loopback must still be refused by the shared core entry
-/// guard while only that variable is set.
+/// P6-3 verdict, part 2 — the scope an operator agrees to.
 ///
-/// **RED against the current build.** The core literal guard is not on the MCP
-/// scrape path, and wreq never consults the validating resolver for IP literals,
-/// so today this probe opens (and fails) a socket instead of being refused at
-/// entry. The fix keeps the intended policy and adds the shared guard to the MCP
-/// path; the companion test below shows what legitimately does open the path.
+/// With only `WEBFANG_MCP_DISABLE_SSRF` set, nothing on this path checks an IP
+/// literal: the core literal guard is not wired into the MCP scrape path and wreq
+/// consults no resolver for a literal host, so the request reaches the socket and
+/// fails as a connection error with no SSRF wording. Characterization, not
+/// approval — hostname targets and redirect hops stay validated, and
+/// `docs/ssrf-layers.md` says which knob lifts which layer.
 #[tokio::test]
-async fn mcp_disable_env_lifts_only_its_own_precheck() {
+async fn mcp_env_alone_is_the_whole_entry_check_for_ip_literals() {
     // Built with every guard armed; the starter removes the disable flag itself.
     let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = wreq::Client::new();
@@ -155,23 +156,33 @@ async fn mcp_disable_env_lifts_only_its_own_precheck() {
         json!({ "url": url }),
     )
     .await;
-
-    assert_ssrf_refusal(&resp, url, "MCP's entry layer is disabled in this probe");
+    assert!(
+        !carries_ssrf_marker(&resp),
+        "with the MCP pre-check disabled no SSRF refusal may appear: {resp}"
+    );
+    assert!(
+        is_failure(&resp),
+        "a closed discard port must still fail the tool call, not silently succeed: {resp}"
+    );
 }
 
-/// The honest companion: it takes BOTH knobs to put a loopback literal on the
-/// wire. That is why the MCP harnesses set two variables where the CLI harness
-/// sets one (`tests/common/mod.rs` vs `cli_harness.rs:145-150`), and it is the
-/// asymmetry this issue must document rather than "fix" by relaxing a guard.
+/// P6-3 verdict, part 3: the reverse direction, the core kill-switch does not
+/// disarm MCP's layer.
 ///
-/// Characterization: passes today and after the fix.
+/// With only `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` set, this crate's pre-check stays
+/// armed and still refuses the loopback literal with the protocol-level `-32602`.
+/// That single pair of results is the whole P6-3 answer: the stacks share one deny
+/// list and one verdict, and what differs is how many layers each one has to disarm
+/// — which is why the MCP harnesses set two variables where `cli_harness.rs` sets
+/// one. Documented, not relaxed.
 #[tokio::test]
-async fn both_entry_knobs_are_what_reach_the_socket() {
+async fn core_entry_guard_env_does_not_lift_the_mcp_precheck() {
     let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = wreq::Client::new();
     let session_id = init_session(&client, &base_url).await;
 
-    let _guard = EnvGuard::with(&[(MCP_SSRF_ENV, "1"), (CORE_ENTRY_GUARD_ENV, "1")]);
+    let mut guard = EnvGuard::clean(&[MCP_SSRF_ENV]);
+    guard.set(CORE_ENTRY_GUARD_ENV, "1");
 
     let url = "http://127.0.0.1:9/";
     let resp = call_tool(
@@ -183,15 +194,7 @@ async fn both_entry_knobs_are_what_reach_the_socket() {
     )
     .await;
 
-    assert!(
-        !carries_ssrf_marker(&resp),
-        "with both entry layers lifted the request must go to the socket, so no SSRF \
-         refusal may be reported; the failure has to be a connection error. Got: {resp}"
-    );
-    assert!(
-        is_failure(&resp),
-        "a closed discard port must still fail the tool call, not silently succeed: {resp}"
-    );
+    assert_ssrf_refusal(&resp, url, "only the core entry layer was disarmed");
 }
 
 // ============================================================================

@@ -262,3 +262,26 @@ explicit authorization.
    `openspec/` in this tree. Approve the location or name the right one (new file outside
    `crates/`/`tests/` needs your authorization per AGENTS.md §Safety).
 3. Turn for the single repro build+run, with a long window.
+
+---
+
+## Verdicts after the repro (measured on this branch, superseding the hypotheses above)
+
+Repro run: 15 tests, 10 passed, 5 failed (pre-fix). All five failures were contract defects,
+not harness artifacts; the one harness bug found en route (indexing the schema root instead of
+its `properties`) is fixed in `b490f933` and was itself informative — it is the same
+"advertised vs actual" confusion the slice is about.
+
+| Item | Verdict, with the measurement |
+| :--- | :--- |
+| P5-1 | **framework-owned, closed with evidence.** Unknown method over an established session: HTTP 200 + `-32601`. The reported 422 is rmcp's session gate on a session-less POST, reproduced separately. Our permissive assertion is what hid this; tightened in slice A. |
+| P5-2 | **framework-owned, closed with evidence.** A JSON-RPC 1.0 body yields 415 with `fail to deserialize request body`; the header gates produce 406 and a *different* 415 text, now both pinned. |
+| P6-3 | **intended policy + a dishonest log.** Measured: with only `WEBFANG_MCP_DISABLE_SSRF=1` a loopback literal reaches the socket, and the same is true of the CLI's own entry disarmer (`cli_harness.rs:142-150` relies on it), so the stacks are symmetric on literals and differ only in layer count. Wiring core's guard into the MCP path was implemented-as-proposed, then measured at ~15 harness sites across 9 files — including `handlers/scraping.rs`, which slice C also edits — so it is out of this issue and B ships: an accurate WARN naming the armed layers, plus `docs/ssrf-layers.md`, plus both directions pinned as characterizations. |
+| P6-5 / F-10 | **documented boundary + sync guard.** `cli_exit_for_class` has zero production callers; adoption would be a CLI-wide exit-code change and the only class-consuming site uses it for control flow. Documented in the matrix, with `matrix_doc_agrees_with_the_class_exit_helpers` parsing the document so it cannot drift again. |
+| NS-01 | **fixed.** Both composition roots now wire `DefaultDomInspector` through one shared helper; each binary has its own wiring test (they were unpinned precisely because the binaries were untestable). |
+| NS-02 | **fixed (description only).** Confirmed live: "Auto-discover a website's **sitemap URL**…" while the payload is the page list. Frozen wire contract respected. |
+| NS-04 | **fixed.** The published property was `{"description":"Concurrency limit (default: 4)","minimum":0}` — wrong number, no machine default, and a floor the validator rejects (#597). Now `SCRAPE_BATCH_DEFAULT_CONCURRENCY` + `CONCURRENCY_MIN/MAX` feed both the handler and the bridge via `DefaultOverride::Set` and the new `SetBounds`. |
+
+Side findings filed elsewhere: #1300 (stdio ships no shared bounded downloader, #1120's
+rationale applies to it too) and #1301 (a refused connection surfaces as
+"WAF/CAPTCHA detectado … robots.txt", observed in the P6-3 probe output).
