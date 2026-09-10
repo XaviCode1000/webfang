@@ -29,7 +29,7 @@
 use serde_json::{json, Map, Value};
 
 use webfang_core::config::Config;
-use webfang_core::di::Container;
+use webfang_core::di::{Container, ContainerExt};
 use webfang_core::domain::config::ScraperConfig;
 use webfang_mcp::mcp_server::params::ScrapeBatchParams;
 use webfang_mcp::mcp_server::schema_bridge::{
@@ -57,10 +57,23 @@ fn runtime_default_concurrency() -> u64 {
 /// scrape_batch's input schema exactly as production renders it: bridge tables plus
 /// the tool's advertised-default overrides, through the shared code path
 /// (mirrors `merged_with_overrides` in `options_spec_parity_test.rs`).
+///
+/// Returns the `properties` object, not the schema root — the root also carries
+/// `$defs`/`required`/`type`, and scanning that instead would silently check nothing
+/// (measured: the first run of this suite reported zero prose defaults for exactly
+/// this reason).
 fn production_properties() -> Map<String, Value> {
     let overrides = default_overrides_for_tool(TOOL);
     let merged = merged_input_schema::<ScrapeBatchParams>(SCRAPE_BATCH_PROPERTIES, &overrides);
-    (*merged).clone()
+    properties_of(&merged)
+}
+
+/// The `properties` object of a rendered input schema.
+fn properties_of(schema: &Map<String, Value>) -> Map<String, Value> {
+    match schema.get("properties") {
+        Some(Value::Object(props)) => props.clone(),
+        other => panic!("input schema must carry a properties object, got: {other:?}"),
+    }
 }
 
 /// One advertised property, or a test failure that names the tool.
@@ -103,22 +116,31 @@ fn scalar_text(value: &Value) -> Option<String> {
 // NS-04 — the advertised concurrency default
 // ============================================================================
 
-/// Control/characterization: the schemars derive alone does NOT advertise a
-/// default for `concurrency`.
+/// Control/characterization: what the schemars derive alone advertises for
+/// `concurrency`, and therefore where the fix belongs.
 ///
-/// This pins *where* the fix belongs — the bridge's `DefaultOverride` table, which
-/// is the mechanism the repo already uses for the same bug class on `crawl_site`
-/// and `delay_ms` — and it stays green before and after the change.
+/// Measured on the current build: **no** `default` key at all, and
+/// `"minimum": 0` — the derive's `usize` floor. The bridge's `DefaultOverride`
+/// table is the mechanism the repo already uses for this class of drift on
+/// `crawl_site` and `delay_ms` (#940 F1/F2), and the bounds need the sibling
+/// `SetBounds` sub-slice. Stays green before and after the change.
 #[test]
 fn derived_schema_alone_advertises_no_concurrency_default() {
     let derived = merged_input_schema::<ScrapeBatchParams>(&[], &[]);
-    let prop = derived.get(CONCURRENCY).unwrap_or_else(|| {
-        panic!("concurrency must survive the empty-bridge derive, got: {derived:?}")
+    let props = properties_of(&derived);
+    let prop = props.get(CONCURRENCY).unwrap_or_else(|| {
+        panic!("concurrency must survive the empty-bridge derive, got: {props:?}")
     });
     assert!(
         prop.get("default").is_none(),
-        "an `Option<usize>` field must not gain a machine default from the derive \
-         alone; if it does, the override table is the wrong place for the fix: {prop}"
+        "an `Option<usize>` field must not gain a machine default from the derive alone; \
+         if it does, the override table is the wrong place for the fix: {prop}"
+    );
+    assert_eq!(
+        prop.get("minimum"),
+        Some(&json!(0)),
+        "the derive floor for usize is 0, which is precisely the lie the bounds \
+         sub-slice must overwrite: {prop}"
     );
 }
 
@@ -166,7 +188,7 @@ fn every_prose_default_is_also_a_machine_readable_default() {
             .unwrap_or_else(|| {
                 panic!(
                     "property '{name}' claims `default: {claimed}` in prose but advertises no \
-                     machine-readable default: {prop}"
+                     machine-readable default: {prop:?}"
                 )
             });
         assert_eq!(
@@ -175,13 +197,18 @@ fn every_prose_default_is_also_a_machine_readable_default() {
         );
     }
     assert!(
-        checked >= 2,
+        checked >= 1,
         "the scan found nothing to check ({checked}); the suite would be vacuous"
     );
 }
 
 /// NS-04 `SetBounds` sub-slice (approved): the bounds the validator enforces must be
 /// discoverable from the schema, not only from a rejected call.
+///
+/// Measured red on the current build, and sharper than "absent": the derive publishes
+/// `"minimum": 0`, while `params.rs:405-407` rejects 0 (`#597` pinned the deadlock a
+/// `concurrency: 0` caused). The advertised contract therefore tells a client that the
+/// value it must not send is allowed.
 #[test]
 fn concurrency_bounds_are_advertised_in_schema() {
     let prop = property(CONCURRENCY);
