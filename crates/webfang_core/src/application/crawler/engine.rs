@@ -276,7 +276,7 @@ impl Engine {
     ///
     /// Returns [`CrawlError`] when the engine or its fetch router cannot
     /// be constructed — same contract as the `with_*` chain it replaces.
-    pub(crate) fn from_session(session: CrawlSession) -> Result<Self, CrawlError> {
+    pub(crate) fn from_session(mut session: CrawlSession) -> Result<Self, CrawlError> {
         let transport = session.transport.clone();
         let config = session.config().as_ref().clone();
         let mut engine = Engine::new(config, transport.ignore_robots)?;
@@ -285,20 +285,27 @@ impl Engine {
         engine.correlation_id = session.identity().root.clone();
         // Adopt the session's single cancellation authority (#509).
         engine.cancel_token = session.cancel_token();
-        if let Some(pool) = session.ports.session_pool.clone() {
-            engine = engine.with_session_pool(pool);
-        } else if transport.session_pool_enabled {
-            // Same construction the legacy entry performed: pool slot
-            // count derives from the model's Domain tier (task 2.2c), the
-            // 2s cooldown is the backoff base delay.
+        // P6-2 wiring fix (#1291): `session.ports.session_pool` is the single
+        // injection point the derived task ctx reads (`CrawlSession::task_ctx`).
+        // A `session_pool_enabled` transport flag with no injected pool derives
+        // one into the ports BEFORE the session is stored — the pre-seam
+        // semantics (pool reaches workers) that the direct `Engine.session_pool`
+        // mirror silently lost for session-built runs. Slot count derives from
+        // the model's Domain tier (task 2.2c); the 2s cooldown is the backoff
+        // base delay — same shape the legacy entry built.
+        if session.ports.session_pool.is_none() && transport.session_pool_enabled {
             let pool_cfg = SessionPoolConfig {
                 base_delay: Duration::from_secs(2),
                 pool_size: engine.budget.domain(),
                 ..SessionPoolConfig::default()
             };
-            engine = engine.with_session_pool(
-                crate::application::container::build_crawl_session_pool(pool_cfg),
-            );
+            session.ports.session_pool =
+                Some(crate::application::container::build_crawl_session_pool(pool_cfg));
+        }
+        // Mirror for the direct-construction (session-less) builders; the
+        // session path reads the ports, not this field (removed in #1291).
+        if let Some(pool) = session.ports.session_pool.clone() {
+            engine = engine.with_session_pool(pool);
         }
         if let Some(factory) = session.ports.downloader_factory.clone() {
             engine = engine.with_downloader_factory(factory);
@@ -2066,15 +2073,32 @@ mod tests {
 
     // ——— ADR-0012-B sub-slice 3.F: session pool is the domain port (#1075) ———
 
-    /// In-crate fake port — proves `Engine` stores and shares the injected
-    /// trait object itself, with no concrete-pool construction in `application`.
-    struct FakeSessionPort;
+    /// In-crate fake port with per-instance counters — proves the SAME
+    /// trait object reaches the spawned workers (ban/cooldown state must be
+    /// visible to every consumer, #1075; wiring fix coverage, #1291).
+    #[derive(Debug, Default)]
+    struct FakeSessionPort {
+        acquires: std::sync::atomic::AtomicUsize,
+        successes: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FakeSessionPort {
+        fn acquire_count(&self) -> usize {
+            self.acquires.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn success_count(&self) -> usize {
+            self.successes.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
 
     impl SessionPort for FakeSessionPort {
         fn acquire(&self, _domain: &str) -> Option<crate::domain::session_port::SessionId> {
+            self.acquires.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Some(crate::domain::session_port::SessionId(0))
         }
-        fn report_success(&self, _domain: &str, _session: crate::domain::session_port::SessionId) {}
+        fn report_success(&self, _domain: &str, _session: crate::domain::session_port::SessionId) {
+            self.successes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         fn report_failure(
             &self,
             _domain: &str,
@@ -2084,29 +2108,99 @@ mod tests {
         }
     }
 
-    /// 3.F wiring: `with_session_pool` injects the port, and `build_task_ctx`
-    /// hands the SAME `Arc` to the crawl task context (the pre-3.F code cloned
-    /// the concrete into a fresh `Arc`; sharing one instance is the point of
-    /// the port — ban/cooldown state must be visible to every consumer).
-    /// `#[tokio::test]`: `Engine::new` spawns the collector worker.
+    /// Test helper: a validated session for pool-wiring proofs — static
+    /// strategy, robots ignored (mirrors the `Engine::new(config, true)` the
+    /// 3.F tests used). `pool` injects through the ports, the single
+    /// production injection point since the #1291 wiring fix.
+    fn pool_session(
+        config: CrawlerConfig,
+        pool: Option<Arc<FakeSessionPort>>,
+        session_pool_enabled: bool,
+    ) -> CrawlSession {
+        CrawlSession::builder()
+            .config(config)
+            .persistence(PersistenceMode::Disabled)
+            .transport(crate::application::crawler::session::TransportPolicy {
+                js_strategy: JsStrategy::Static,
+                tls_emulation: Profile::Chrome145,
+                ignore_waf: false,
+                max_retries: 3,
+                backoff_base_ms: 1000,
+                backoff_max_ms: 10000,
+                obscura_binary: DEFAULT_OBSCURA_BINARY.to_string(),
+                chrome_binary: None,
+                session_pool_enabled,
+                autoscale_enabled: false,
+                ignore_robots: true,
+            })
+            .ports(crate::application::crawler::session::CrawlPorts {
+                session_pool: pool.map(|p| p as Arc<dyn SessionPort>),
+                downloader_factory: None,
+                content_sink: None,
+                pipeline: None,
+                output_stages: Vec::new(),
+            })
+            .build()
+            .expect("test session must build")
+    }
+
+    /// 3.F wiring + #1291 fix: a pool injected through `CrawlPorts` reaches
+    /// the spawned workers on the SESSION path — the counters live on this
+    /// exact instance, so nonzero traffic proves the same `Arc` is shared by
+    /// every task context derived from the session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ports_injected_pool_reaches_crawl_workers() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("<html><body>seed</body></html>"),
+            )
+            .mount(&server)
+            .await;
+        let seed = Url::parse(&format!("{}/", server.uri())).expect("seed URL");
+        let config = CrawlerConfig::builder(seed)
+            .max_depth(0)
+            .max_pages(10)
+            .ignore_robots(true)
+            .build();
+        let pool = Arc::new(FakeSessionPort::default());
+
+        let mut engine = Engine::from_session(pool_session(config, Some(Arc::clone(&pool)), false))
+            .expect("engine must build from a pooled session");
+        let result = engine.run().await.expect("crawl must complete");
+        engine.shutdown().await;
+
+        assert_eq!(result.total_pages, 1, "seed must be crawled");
+        assert!(
+            pool.acquire_count() >= 1,
+            "workers must acquire from the ports-injected pool"
+        );
+        assert!(
+            pool.success_count() >= 1,
+            "a successful fetch must report back into the ports-injected pool"
+        );
+    }
+
+    /// #1291 wiring fix: the `session_pool_enabled` transport flag derives a
+    /// pool into the SESSION ports — the place `task_ctx` reads. Before this
+    /// fix the flag-built pool was attached to the engine mirror only, which
+    /// the session path never read, silently dropping per-domain gating.
     #[tokio::test]
-    async fn with_session_pool_injects_port_shared_with_task_ctx() {
+    async fn session_pool_enabled_flag_installs_pool_into_session_ports() {
         let seed = Url::parse("https://example.com").expect("valid seed URL");
         let config = CrawlerConfig::builder(seed).max_depth(0).build();
-        let pool: Arc<dyn SessionPort> = Arc::new(FakeSessionPort);
 
-        let engine = Engine::new(config, true)
-            .expect("engine must build")
-            .with_session_pool(Arc::clone(&pool));
+        let engine =
+            Engine::from_session(pool_session(config, None, true)).expect("engine must build");
 
-        let ctx = engine.build_task_ctx();
-        let wired = ctx
-            .session_pool
+        let owned = engine
+            .session
             .as_ref()
-            .expect("injected pool must reach the task ctx");
+            .expect("pre-run engine owns its session");
         assert!(
-            Arc::ptr_eq(wired, &pool),
-            "task ctx must share the injected port instance, not a clone of a concrete"
+            owned.ports.session_pool.is_some(),
+            "the session_pool_enabled flag must derive a pool into the session ports"
         );
     }
 
