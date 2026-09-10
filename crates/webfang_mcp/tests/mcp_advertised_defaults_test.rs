@@ -4,17 +4,17 @@
 //! what the tool *does*. Nothing here is a framework artifact — these strings and
 //! schemas are ours.
 //!
-//! - **NS-04** — `concurrency` advertises `(default: 4)` in its doc comment
-//!   (`mcp_server/params.rs:363`) while the handler applies
+//! - **NS-04** — `concurrency` advertised `(default: 4)` in its doc comment
+//!   (`mcp_server/params.rs:363`) while the handler applied
 //!   `ScraperConfig::default().scraper_concurrency`, which is **3**
 //!   (`handlers/scraping.rs:255-258` → `domain/config.rs:113`, consumed unclamped at
-//!   `application/scraper_service.rs:779`). And because `concurrency` has no CLI
-//!   twin, it is outside the OptionsSpec bridge (`schema_bridge.rs:99-108`), so the
-//!   existing parity suite never looks at it. The advertised `default` is produced by
-//!   exactly the mechanism that already fixes this class of drift —
-//!   `DefaultOverride::Set` (#940 F1/F2, "schema truth outranks spec-default
-//!   propagation", `schema_bridge.rs:115-120`) — and the bounds come from the
-//!   `SetBounds` sub-slice approved for this issue.
+//!   `application/scraper_service.rs:779`), and the rendered schema carried neither a
+//!   `default` nor its real bounds (`minimum: 0`, a value the validator rejects).
+//!   Because `concurrency` has no CLI twin it is outside the OptionsSpec bridge
+//!   (`schema_bridge.rs:99-108`), so the parity suite never looked at it. The fix uses
+//!   the mechanism that already handles this class of drift — `DefaultOverride::Set`
+//!   (#940 F1/F2, "schema truth outranks spec-default propagation",
+//!   `schema_bridge.rs:115-120`) — plus the `SetBounds` variant this issue adds.
 //! - **NS-02** — `discover_sitemap` advertises "Auto-discover a website's **sitemap
 //!   URL**" (`handlers/scraping.rs:633-637`) but returns the **page URLs inside** the
 //!   sitemap (`scraping.rs:655-676`); the real sitemap-URL discoverer
@@ -23,6 +23,9 @@
 //!   description is the half that moves.
 //!
 //! Run with: `cargo nextest run -p webfang_mcp --features mcp --test mcp_advertised_defaults_test`
+//!
+//! Measured red on `08eee306` (pre-fix): 4 of these 8 tests failed — every one of
+//! them an advertised-contract defect, not a harness artifact.
 
 #![cfg(feature = "mcp")]
 
@@ -31,7 +34,8 @@ use serde_json::{json, Map, Value};
 use webfang_core::config::Config;
 use webfang_core::di::{Container, ContainerExt};
 use webfang_core::domain::config::ScraperConfig;
-use webfang_mcp::mcp_server::params::ScrapeBatchParams;
+use webfang_mcp::mcp_server::handlers::scraping::SCRAPE_BATCH_DEFAULT_CONCURRENCY;
+use webfang_mcp::mcp_server::params::{ScrapeBatchParams, CONCURRENCY_MAX, CONCURRENCY_MIN};
 use webfang_mcp::mcp_server::schema_bridge::{
     default_overrides_for_tool, merged_input_schema, SCRAPE_BATCH_PROPERTIES,
 };
@@ -43,13 +47,15 @@ const TOOL: &str = "scrape_batch";
 /// The property the issue is about.
 const CONCURRENCY: &str = "concurrency";
 
-/// Bounds `ScrapeBatchParams::validate` actually enforces (`params.rs:405-407`).
-const CONCURRENCY_MIN: u64 = 1;
-const CONCURRENCY_MAX: u64 = 64;
+/// Bounds `ScrapeBatchParams::validate` enforces, taken from the production constants
+/// so this suite cannot pin a range the validator no longer uses.
+const CONCURRENCY_LOWER: u64 = CONCURRENCY_MIN as u64;
+const CONCURRENCY_UPPER: u64 = CONCURRENCY_MAX as u64;
 
-/// The concurrency the tool applies when the client omits the field — read from the
-/// same expression the handler uses, never re-typed here, so this test cannot drift
-/// into pinning a second copy of the default.
+/// The concurrency the tool applies when the client omits the field — read from
+/// `ScraperConfig::default()`, the expression the handler fell back to before the
+/// constant existed, so "advertised equals runtime" compares two independent sources
+/// instead of a constant against itself.
 fn runtime_default_concurrency() -> u64 {
     ScraperConfig::default().scraper_concurrency as u64
 }
@@ -144,9 +150,13 @@ fn derived_schema_alone_advertises_no_concurrency_default() {
     );
 }
 
-/// NS-04 red test: the advertised default must exist and must equal what the tool
-/// applies when the field is omitted (3), not the number written in the doc comment
-/// (4).
+/// NS-04 guard: the advertised default must exist, must equal what the tool applies
+/// when the field is omitted, and the constant the bridge advertises must not drift
+/// from the config default the handler falls back to.
+///
+/// Measured red on `08eee306`, where the published property was
+/// `{"description":"Concurrency limit (default: 4)","minimum":0}`: no `default` key,
+/// prose claiming 4, runtime applying 3.
 #[test]
 fn advertised_concurrency_default_matches_the_runtime_default() {
     let prop = property(CONCURRENCY);
@@ -160,19 +170,25 @@ fn advertised_concurrency_default_matches_the_runtime_default() {
         "the advertised {CONCURRENCY} default must be the value the tool applies when \
          the field is absent"
     );
+    assert_eq!(
+        SCRAPE_BATCH_DEFAULT_CONCURRENCY as u64,
+        runtime_default_concurrency(),
+        "the constant the bridge advertises has drifted from the config default the \
+         handler falls back to"
+    );
 }
 
-/// NS-04 red test: prose may not claim a default the schema does not carry.
+/// NS-04 guard: prose may not claim a default the schema does not carry.
 ///
 /// Every `scrape_batch` property that states `default: <x>` in its description must
-/// also expose `default: <x>` as JSON. Today `concurrency` claims 4 with no machine
-/// default (and the wrong number), and `ignore_robots` claims `false` with none —
-/// the same lie, one tool, one table. Generalizing this scan beyond `scrape_batch` is
-/// a follow-up, not part of this slice.
+/// also expose `default: <x>` as JSON. Measured red on `08eee306` for `concurrency`,
+/// which claimed 4 while the schema carried no default at all. After the fix the
+/// prose stops naming numbers and the machine-readable field is the only source, so
+/// this scan passes by having nothing to contradict. Generalizing it beyond
+/// `scrape_batch` is a follow-up, not part of this slice.
 #[test]
 fn every_prose_default_is_also_a_machine_readable_default() {
     let props = production_properties();
-    let mut checked = 0usize;
     for (name, prop) in props {
         let Value::Object(prop) = prop else { continue };
         let Some(Value::String(description)) = prop.get("description") else {
@@ -181,7 +197,6 @@ fn every_prose_default_is_also_a_machine_readable_default() {
         let Some(claimed) = prose_default(description) else {
             continue;
         };
-        checked += 1;
         let advertised = prop
             .get("default")
             .and_then(scalar_text)
@@ -196,30 +211,44 @@ fn every_prose_default_is_also_a_machine_readable_default() {
             "property '{name}' prose default and machine default disagree"
         );
     }
+}
+
+/// NS-04 guard: the number lives in exactly one place.
+///
+/// The `concurrency` description must no longer state a default of its own now that
+/// the schema carries the runtime-effective one; a re-added `default: n` here is the
+/// drift that produced the original lie.
+#[test]
+fn concurrency_description_defers_to_the_machine_readable_default() {
+    let prop = property(CONCURRENCY);
+    let description = prop
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{CONCURRENCY} must be described, got: {prop}"));
     assert!(
-        checked >= 1,
-        "the scan found nothing to check ({checked}); the suite would be vacuous"
+        prose_default(description).is_none(),
+        "the description must not restate a default the schema already carries: {description:?}"
     );
 }
 
-/// NS-04 `SetBounds` sub-slice (approved): the bounds the validator enforces must be
+/// NS-04 `SetBounds` sub-slice: the bounds the validator enforces must be
 /// discoverable from the schema, not only from a rejected call.
 ///
-/// Measured red on the current build, and sharper than "absent": the derive publishes
-/// `"minimum": 0`, while `params.rs:405-407` rejects 0 (`#597` pinned the deadlock a
-/// `concurrency: 0` caused). The advertised contract therefore tells a client that the
-/// value it must not send is allowed.
+/// Measured red on `08eee306`, and worse than absent: the property published
+/// `"minimum": 0`, the value `validate()` rejects (#597 pinned the deadlock a
+/// `concurrency: 0` caused). The advertised contract told clients to send a value
+/// that must fail.
 #[test]
 fn concurrency_bounds_are_advertised_in_schema() {
     let prop = property(CONCURRENCY);
     assert_eq!(
         prop.get("minimum"),
-        Some(&json!(CONCURRENCY_MIN)),
+        Some(&json!(CONCURRENCY_LOWER)),
         "{CONCURRENCY} must advertise its lower bound as enforced by validate(): {prop}"
     );
     assert_eq!(
         prop.get("maximum"),
-        Some(&json!(CONCURRENCY_MAX)),
+        Some(&json!(CONCURRENCY_UPPER)),
         "{CONCURRENCY} must advertise its upper bound as enforced by validate(): {prop}"
     );
 }
