@@ -99,6 +99,11 @@ fn resolve_export_path(
 /// Extracted as a free function over the shared buffer so the empty-session
 /// branch — the honest "nothing to export" contract (REQ-MCP-EXPORT-05,
 /// re-pointed from the retired repository read) — is unit-testable directly.
+///
+/// The read copies the whole in-memory buffer, so [`McpHandler::session_results`]
+/// must keep calling it on the blocking pool: that preserves the #1122
+/// executor anti-starvation contract even though the scan is no longer disk
+/// I/O.
 fn load_session_results(
     session_results: &Arc<std::sync::Mutex<Vec<ScrapedContent>>>,
 ) -> Result<Vec<ScrapedContent>, CallToolResult> {
@@ -119,12 +124,20 @@ impl McpHandler {
     /// an honest `CallToolResult::error` (isError:true, Spanish).
     ///
     /// Returns `Err(CallToolResult)` when no crawl has run (or its extraction
-    /// produced nothing); callers propagate this directly. Synchronous by
-    /// design — the short metrics-discipline lock (REQ-07) copies the
-    /// in-memory buffer, no disk scan — which is what retired the #1122
-    /// blocking-pool requirement that the repository read needed.
-    fn session_results(&self) -> Result<Vec<ScrapedContent>, CallToolResult> {
-        load_session_results(&self.state.session_results)
+    /// produced nothing); callers propagate this directly. The snapshot copy
+    /// runs on the blocking pool to preserve the #1122 executor
+    /// anti-starvation contract; the synchronous lock is taken only inside
+    /// that blocking task, never across an `.await` (REQ-07).
+    async fn session_results(&self) -> Result<Vec<ScrapedContent>, CallToolResult> {
+        let session_results = Arc::clone(&self.state.session_results);
+        tokio::task::spawn_blocking(move || load_session_results(&session_results))
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, "export_load_session_results_join_failed");
+                CallToolResult::error(vec![Content::text(format!(
+                    "no se pudieron cargar los resultados: {e}"
+                ))])
+            })?
     }
 
     /// Resolve and validate a caller-supplied export directory (#756).
@@ -289,7 +302,7 @@ impl McpHandler {
                 )
             })?;
 
-        let results = match self.session_results() {
+        let results = match self.session_results().await {
             Ok(results) => results,
             Err(err) => return Ok(err),
         };
@@ -326,7 +339,7 @@ impl McpHandler {
                 )
             })?;
 
-        let results = match self.session_results() {
+        let results = match self.session_results().await {
             Ok(results) => results,
             Err(err) => return Ok(err),
         };
@@ -399,7 +412,7 @@ impl McpHandler {
                     },
                 }
             },
-            None => match self.session_results() {
+            None => match self.session_results().await {
                 Ok(results) => results,
                 Err(err) => return Ok(err),
             },
@@ -813,10 +826,9 @@ mod handler_tests {
 
     /// The session read COPIES: two exports after one crawl must serve the
     /// same records (the buffer is only replaced by the next crawl run). This
-    /// replaces the #1122 executor-starvation test, whose concern (a full-log
-    /// synchronous scan on the runtime) was structural to the retired
-    /// repository read — an in-memory swap under a short lock cannot starve
-    /// the executor (REQ-07 discipline on `session_results`).
+    /// replaces the #1122 executor-starvation timing test, whose old disk-scan
+    /// shape is no longer representable here; the blocking-pool wrapper is the
+    /// anti-starvation mechanism, while this test pins the snapshot semantics.
     #[test]
     fn load_session_results_copies_without_draining() {
         let session_results = Arc::new(std::sync::Mutex::new(vec![seed_content(
