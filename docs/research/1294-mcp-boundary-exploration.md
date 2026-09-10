@@ -272,6 +272,14 @@ not harness artifacts; the one harness bug found en route (indexing the schema r
 its `properties`) is fixed in `b490f933` and was itself informative — it is the same
 "advertised vs actual" confusion the slice is about.
 
+Post-verification correction of that count: **4 of the 5 stayed red-to-green as contract
+defects** (NS-04 x3, NS-02 x1). The fifth, `mcp_disable_env_lifts_only_its_own_precheck`,
+asserted a behavior that turned out to be the intended scope of a test-mode switch, so it was
+renamed and reframed as a parity characterization rather than fixed — see the P6-3 row below.
+Final verified state: `webfang_mcp` all targets 432/432, `webfang_core --lib` 2185/2185,
+`cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity
+-W clippy::too_many_lines` clean, `cargo fmt --check` clean.
+
 | Item | Verdict, with the measurement |
 | :--- | :--- |
 | P5-1 | **framework-owned, closed with evidence.** Unknown method over an established session: HTTP 200 + `-32601`. The reported 422 is rmcp's session gate on a session-less POST, reproduced separately. Our permissive assertion is what hid this; tightened in slice A. |
