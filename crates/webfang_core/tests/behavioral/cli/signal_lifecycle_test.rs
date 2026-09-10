@@ -163,18 +163,6 @@ fn spawn_webfang(args: &[String], cache_dir: &std::path::Path, what: &str) -> Ch
         .unwrap_or_else(|e| panic!("{what}: spawn failed: {e}"))
 }
 
-/// Reaped stdout+stderr of a spawned child.
-fn output_of(mut child: Child) -> String {
-    let mut out = String::new();
-    if let Some(mut s) = child.stdout.take() {
-        let _ = s.read_to_string(&mut out);
-    }
-    if let Some(mut s) = child.stderr.take() {
-        let _ = s.read_to_string(&mut out);
-    }
-    out
-}
-
 /// Mount a sitemap listing exactly `paths` and return the sitemap URL.
 async fn mount_sitemap(server: &MockServer, paths: &[String]) -> String {
     let base = server.uri();
