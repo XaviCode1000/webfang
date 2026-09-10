@@ -19,7 +19,6 @@
 
 use crate::BehavioralTest;
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
