@@ -13,6 +13,11 @@
 //!
 //! `RecordStorePort` is a domain-owned public port (ADR-0012-B §3.H), so these
 //! tests exercise an external contract, not internal state.
+//!
+//! Evidence naming (ADR-0016 §5, issue #1292): the concurrency tests here carry
+//! the `f07_` prefix and are the NAMED F-07 evidence. The multi-process
+//! reproduction in `tests/behavioral/cli/transactional_store_test.rs` stays
+//! `#[ignore]`d as a documented stress check, never CI evidence.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -64,7 +69,7 @@ fn persisted_urls(store: &RecordStore) -> BTreeSet<String> {
 /// loads *inside* the exclusive lock, so the second writer sees the first one's
 /// committed records and adds to them instead of overwriting them.
 #[test]
-fn concurrent_updates_persist_the_union_of_both_writers() {
+fn f07_concurrent_updates_persist_the_union_of_both_writers() {
     let dir = TempDir::new().unwrap();
     let writer_a = store(dir.path(), "example.com");
     let writer_b = store(dir.path(), "example.com");
@@ -95,13 +100,14 @@ fn concurrent_updates_persist_the_union_of_both_writers() {
     );
 }
 
-/// A transaction must observe what another writer already committed.
+/// #1230 / F-07 — companion to the `f07_` union evidence above: a transaction
+/// must observe what another writer already committed.
 ///
 /// Without this, `update` could be implemented as "load a stale snapshot,
 /// mutate, write" and still satisfy the previous test by accident. The
 /// observation is asserted *inside* the closure, where it is unambiguous.
 #[test]
-fn update_observes_records_committed_by_another_writer() {
+fn f07_update_observes_records_committed_by_another_writer() {
     let dir = TempDir::new().unwrap();
     let writer_a = store(dir.path(), "example.com");
     let writer_b = store(dir.path(), "example.com");
