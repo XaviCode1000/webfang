@@ -111,13 +111,13 @@ async fn wait_for_page_fetches(server: &MockServer, k: usize) {
 /// trigger, expressed safely).
 fn send_signal(child: &Child, signal: &str, what: &str) {
     let status = Command::new("kill")
-        .arg(format!("-s{signal}"))
+        .arg(format!("-{signal}"))
         .arg(child.id().to_string())
         .status()
         .unwrap_or_else(|e| panic!("{what}: invoking kill failed: {e}"));
     assert!(
         status.success(),
-        "{what}: kill -s{signal} {} must succeed",
+        "{what}: kill -{signal} {} must succeed",
         child.id()
     );
 }
@@ -153,6 +153,13 @@ fn spawn_webfang(args: &[String], cache_dir: &std::path::Path, what: &str) -> Ch
         }
     }
     c.env("XDG_CACHE_HOME", cache_dir);
+    // SSRF entry-guard allowance (F-06 + F-32, #1217): the wiremock mock binds
+    // 127.0.0.1, a forbidden literal — the harness disarms ONLY the entry
+    // layer for spawned binaries, exactly like `sanitize_env` does.
+    c.env(
+        webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+        "1",
+    );
     c.spawn()
         .unwrap_or_else(|e| panic!("{what}: spawn failed: {e}"))
 }
@@ -445,12 +452,14 @@ async fn f39_sigint_checkpoint_frontier_is_bounded() {
         "SIGINT must persist a crawl checkpoint in the state dir"
     );
     for file in &checkpoint_files {
-        let raw = std::fs::read_to_string(file).unwrap();
-        // BincodeCheckpoint writes may be binary-wrapped JSON; extract the JSON
-        // payload defensively (CRC32/binary containers start at the first '{').
-        let json_start = raw.find('{').unwrap_or(0);
-        let checkpoint: serde_json::Value = serde_json::from_str(&raw[json_start..])
-            .unwrap_or_else(|e| panic!("checkpoint {file:?} must parse as JSON: {e}\n{raw}"));
+        // Format (BincodeCheckpoint::save): CRC32 checksum (4 bytes,
+        // native endian) + JSON payload. Skip the checksum and parse the
+        // payload directly — the prefix is binary, so no text read.
+        let raw = std::fs::read(file).unwrap();
+        let payload = &raw[4.min(raw.len())..];
+        let checkpoint: serde_json::Value = serde_json::from_slice(payload).unwrap_or_else(|e| {
+            panic!("checkpoint {file:?} must parse as JSON after the CRC32 prefix: {e}")
+        });
         let queued = checkpoint["queued"].as_array().expect("queued array").len();
         assert!(
             queued <= MAX_PAGES,
