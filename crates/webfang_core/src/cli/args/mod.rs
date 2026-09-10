@@ -71,7 +71,7 @@ pub(crate) mod test_support {
 #[command(name = "webfang", version)]
 #[command(
     about = "High-performance web scraper with WAF evasion and AI-powered content cleaning",
-    after_help = "EXIT CODES:\n  0    Success\n  2    No URLs discovered\n  3    All scrapers failed\n  64   Bad CLI arguments (usage error)\n  69   WAF block or network error\n  74   I/O error\n  76   Protocol error\n  78   Configuration error\n\nEXAMPLES:\n  webfang https://example.com\n  webfang -u https://example.com\n  webfang -u https://example.com --ai\n  webfang -u https://example.com -f jsonl\n  webfang -u https://example.com -v\n  webfang -u https://example.com -vv  # DEBUG\n  webfang --url-list urls.txt --resume"
+    after_help = "EXIT CODES:\n  0    Success\n  2    No URLs discovered\n  3    All scrapers failed\n  64   Bad CLI arguments (usage error)\n  69   WAF block or network error\n  74   I/O error\n  76   Protocol error\n  78   Configuration error\n\nEXAMPLES:\n  webfang https://example.com\n  webfang -u https://example.com\n  webfang -u https://example.com --ai\n  webfang -u https://example.com -f jsonl\n  webfang -u https://example.com -v\n  webfang -u https://example.com -vv  # DEBUG\n  webfang --batch-file urls.txt --resume"
 )]
 #[command(subcommand_negates_reqs = true)]
 pub struct Args {
