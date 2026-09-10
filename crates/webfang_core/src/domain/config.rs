@@ -428,17 +428,26 @@ impl clap::builder::TypedValueParser for ConcurrencyValueParser {
             return Ok(ConcurrencyConfig::default());
         }
 
-        value
-            .parse::<usize>()
-            .map(ConcurrencyConfig::new)
-            .map_err(|_| {
-                clap::Error::raw(
-                    clap::error::ErrorKind::InvalidValue,
-                    format!(
-                        "'{value}' is not a valid concurrency value (expected number or 'auto')"
-                    ),
-                )
-            })
+        let parsed = value.parse::<usize>().map_err(|_| {
+            clap::Error::raw(
+                clap::error::ErrorKind::InvalidValue,
+                format!(
+                    "'{value}' is not a valid concurrency value (expected number or 'auto')"
+                ),
+            )
+        })?;
+        // Zero Silent Loss (P4-2, #1296): a silent clamp 0 -> 1 would run a
+        // different cadence than the one the operator typed. Reject at the
+        // argv boundary instead (mirrors --download-concurrency and
+        // --timeout-secs). The domain-level clamp in `ConcurrencyConfig::new`
+        // stays as defense-in-depth for programmatic callers.
+        if parsed == 0 {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::InvalidValue,
+                "--concurrency debe ser >= 1 (usa 'auto' para autodetectar)",
+            ));
+        }
+        Ok(ConcurrencyConfig::new(parsed))
     }
 }
 
@@ -520,6 +529,19 @@ mod tests {
 
         let explicit = ConcurrencyConfig::new(5);
         assert_eq!(format!("{explicit}"), "5");
+    }
+
+    /// Zero Silent Loss (P4-2, #1296): the argv-boundary parser must reject
+    /// `0` instead of silently clamping it to 1.
+    #[test]
+    fn concurrency_value_parser_rejects_zero() {
+        let err = ConcurrencyValueParser
+            .parse_ref(&clap::Command::new("test"), None, std::ffi::OsStr::new("0"))
+            .expect_err("zero concurrency must be rejected at the argv boundary");
+        assert!(
+            err.to_string().contains("--concurrency debe ser >= 1"),
+            "got: {err}"
+        );
     }
 
     #[test]
