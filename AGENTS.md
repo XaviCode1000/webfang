@@ -82,6 +82,24 @@ In worktrees, BOTH tools need the **absolute worktree path** or they silently re
 
 ---
 
+## 💾 Engram Persistent Memory — correct usage (agents)
+
+The engram MCP server resolves the active session from the working directory. With
+several concurrent agent sessions on this repo, `mem_save` / `mem_judge` fail with
+`multiple active runtime sessions match the current project and directory`:
+
+- **Never guess or invent a `session_id`.** Register one first with `mem_session_start`
+  (explicit unique ID, e.g. `opencode-<task>-<YYYYMMDD>`), then pass that same
+  `session_id` to every `mem_save` / `mem_judge` call for the rest of the session.
+- If `mem_save` returns `judgment_required: true`, judge every candidate with its own
+  `judgment_id` from `candidates[]` — never the top-level one.
+- **On ANY engram error, run `engram --help` first** (then `engram <cmd> --help` for
+  the failing command) before retrying or inventing flags. The CLI is also the
+  fallback when MCP fails: `engram save "<title>" "<content>" --project webfang`,
+  `engram search <query>`, `engram context [project]`.
+
+---
+
 ## 🏗️ Architecture & Code Rules
 
 ### Workspace structure (6 crates)
