@@ -12,9 +12,7 @@ use clap::Parser;
 use webfang_mcp::mcp_server::server::{
     require_auth_for_external_bind, start_mcp_server, ServerOptions, DEFAULT_MCP_ADDR,
 };
-use webfang_mcp::mcp_server::{
-    build_container, build_shared_downloader, spawn_ai_wiring, McpState,
-};
+use webfang_mcp::mcp_server::{build_container, build_mcp_state, spawn_ai_wiring};
 
 /// Webfang MCP Server — Streamable HTTP transport.
 #[derive(Parser, Debug)]
@@ -95,14 +93,12 @@ async fn main() -> Result<()> {
         spawn_ai_wiring(Arc::clone(&container));
     }
 
-    // Inject a shared Downloader so `download_assets` reuses one connection
-    // pool across tool calls. The default config writes to `./downloads`
-    // relative to the working directory. #1120: built through the bounded
-    // composition-root helper — the same budget-derived cache policy as the
-    // CLI — never the legacy unbounded `Downloader::new` path.
-    let state = McpState::from_container(container)
-        .with_downloader(Arc::new(build_shared_downloader()?))
-        .with_export_roots(args.export_roots);
+    // Shared composition root (#1300): injects the bounded shared Downloader
+    // so `download_assets` reuses one connection pool across tool calls
+    // (#1120) — the same budget-derived cache policy as the CLI, never the
+    // legacy unbounded `Downloader::new` path. Both transports share this
+    // single root, so stdio gets the identical composition (#1300).
+    let state = build_mcp_state(container, args.export_roots)?;
 
     let opts = ServerOptions {
         request_timeout_secs: args.timeout_secs,

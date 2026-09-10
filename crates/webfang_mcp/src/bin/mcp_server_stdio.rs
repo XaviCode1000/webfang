@@ -14,7 +14,7 @@ use rmcp::service::ServiceExt;
 use tokio::io::AsyncWrite;
 use tokio::sync::Notify;
 use webfang_core::cli::error::{CliExit, EXIT_IO_ERROR};
-use webfang_mcp::mcp_server::{build_container, spawn_ai_wiring, McpHandler, McpState};
+use webfang_mcp::mcp_server::{build_container, build_mcp_state, spawn_ai_wiring, McpHandler};
 
 /// Webfang MCP Server — Stdio transport.
 #[derive(Parser, Debug)]
@@ -195,7 +195,18 @@ async fn main() -> CliExit {
     // main drain the crawl-result writer at exit (#1143 review).
     let exit_container = Arc::clone(&container);
 
-    let state = McpState::from_container(container).with_export_roots(args.export_roots);
+    // Shared composition root (#1300): wires the bounded shared downloader
+    // so `download_assets` reuses one connection pool across tool calls —
+    // #1120's pool churn no longer persists on the stdio transport.
+    let state = match build_mcp_state(container, args.export_roots) {
+        Ok(state) => state,
+        Err(e) => {
+            tracing::error!(error = %e, "MCP stdio boot failed: shared downloader construction");
+            return CliExit::ConfigError(format!(
+                "No se pudo construir el estado del servidor MCP: {e}"
+            ));
+        },
+    };
 
     let handler = McpHandler::new(state);
 

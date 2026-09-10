@@ -73,6 +73,32 @@ pub fn build_shared_downloader(
     webfang_core::application::container::Container::build_mcp_shared_asset_downloader()
 }
 
+/// Compose the shared [`McpState`] for the long-lived MCP servers.
+///
+/// Single composition root for BOTH transports (stdio and HTTP, #1300):
+/// injecting the bounded shared downloader here makes pool reuse across
+/// tool calls structural — a transport that forgets the call no longer
+/// compiles against this helper. Previously the stdio binary built its
+/// state without [`McpState::with_downloader`], so every
+/// `download_assets` call re-created the connection pool and #1120's
+/// churn persisted on that transport.
+///
+/// The DOM inspector is intentionally NOT wired here: MCP production
+/// wiring of the inspector is #1294 (NS-01 / slice D), which owns the
+/// verify-or-fix decision for both transports.
+///
+/// # Errors
+/// Propagates [`build_shared_downloader`] failures
+/// (`ScraperError::Config`).
+pub fn build_mcp_state(
+    container: std::sync::Arc<webfang_core::application::container::Container>,
+    export_roots: Vec<std::path::PathBuf>,
+) -> webfang_core::error::Result<McpState> {
+    Ok(McpState::from_container(container)
+        .with_downloader(std::sync::Arc::new(build_shared_downloader()?))
+        .with_export_roots(export_roots))
+}
+
 /// Kick off the lazy AI port wiring in a background task (#759).
 ///
 /// Shares the same `Arc<Container>` that the MCP server already holds and
@@ -216,6 +242,33 @@ mod tests {
             "long-lived server must not use the unbounded legacy cache"
         );
         assert_eq!(downloader.asset_cache_capacity(), expected);
+    }
+
+    /// #1300: BOTH transports share one composition root, so the stdio
+    /// server gets the same bounded shared downloader as HTTP — the #1120
+    /// pool churn cannot return on any transport that composes through the
+    /// helper. Export roots and the documented inspector boundary are
+    /// pinned alongside.
+    #[tokio::test]
+    async fn build_mcp_state_shares_bounded_downloader_and_export_roots() {
+        let container = std::sync::Arc::new(build_container().await.expect("container boots"));
+        let roots = vec![std::path::PathBuf::from("/tmp/webfang-test-export-roots")];
+
+        let state = build_mcp_state(container, roots.clone()).expect("state composes");
+
+        let downloader = state
+            .downloader
+            .as_ref()
+            .expect("composition root must inject the shared bounded downloader");
+        assert_ne!(
+            downloader.asset_cache_capacity(),
+            usize::MAX,
+            "long-lived server must not use the unbounded legacy cache"
+        );
+        assert_eq!(state.allowed_export_roots, roots.into());
+        // The inspector is intentionally not wired here: MCP production
+        // wiring is #1294 (NS-01 / slice D) for both transports.
+        assert!(state.inspector.is_none());
     }
 
     /// Contract guard for #1123: `build_container` propagates the typed
