@@ -431,9 +431,7 @@ impl clap::builder::TypedValueParser for ConcurrencyValueParser {
         let parsed = value.parse::<usize>().map_err(|_| {
             clap::Error::raw(
                 clap::error::ErrorKind::InvalidValue,
-                format!(
-                    "'{value}' is not a valid concurrency value (expected number or 'auto')"
-                ),
+                format!("'{value}' is not a valid concurrency value (expected number or 'auto')"),
             )
         })?;
         // Zero Silent Loss (P4-2, #1296): a silent clamp 0 -> 1 would run a
