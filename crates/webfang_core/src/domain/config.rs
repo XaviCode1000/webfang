@@ -535,6 +535,7 @@ mod tests {
     /// `0` instead of silently clamping it to 1.
     #[test]
     fn concurrency_value_parser_rejects_zero() {
+        use clap::builder::TypedValueParser as _;
         let err = ConcurrencyValueParser
             .parse_ref(&clap::Command::new("test"), None, std::ffi::OsStr::new("0"))
             .expect_err("zero concurrency must be rejected at the argv boundary");
