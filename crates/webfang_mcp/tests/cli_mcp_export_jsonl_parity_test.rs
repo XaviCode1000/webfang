@@ -127,6 +127,8 @@ async fn call_tool(
 }
 
 fn tool_text(result: &Value) -> String {
+    // `result` here is the JSON-RPC result object (already unwrapped by
+    // `tool_result`), whose content array carries the text part.
     result
         .get("content")
         .and_then(|c| c.as_array())
@@ -142,6 +144,14 @@ fn is_tool_error(result: &Value) -> bool {
         .get("isError")
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
+}
+
+/// Unwrap the JSON-RPC envelope: the tool payload lives under `result`
+/// (same convention as the shared `export_coverage`/`mcp_behavioral` harness).
+fn tool_result(resp: Value) -> Value {
+    resp.get("result")
+        .cloned()
+        .unwrap_or_else(|| panic!("expected a JSON-RPC result, got: {resp}"))
 }
 
 /// A relative temporary directory that deletes itself on drop.
@@ -178,12 +188,18 @@ impl Drop for RelTempDir {
 // Fixtures & normalization
 // ============================================================================
 
-/// Start an in-process MCP server with the tool-level SSRF gate disabled
-/// (wiremock binds 127.0.0.1; same convention as the shared test harness).
+/// Start an in-process MCP server with the SSRF guards disabled — the exact
+/// environment the proven multi-page crawl test
+/// (`test_crawl_site_max_depth_one_follows_internal_links`,
+/// `ssrf_guards_off`) runs under: the MCP-layer gate AND the entry-layer
+/// gate, because wiremock binds 127.0.0.1. This binary holds one test, so
+/// the process-wide `set_var` has no concurrent reader.
 async fn start_server() -> (String, tokio::task::JoinHandle<()>, tempfile::TempDir) {
-    // Set in this test binary's process before the router serves anything;
-    // this binary holds exactly one test, so there is no concurrent reader.
     std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+    std::env::set_var(
+        webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+        "1",
+    );
 
     let container_tmp = tempfile::TempDir::new().expect("create container temp dir");
     let crawler_config =
@@ -235,7 +251,7 @@ fn webfang_binary() -> std::path::PathBuf {
     let candidates = [
         std::env::var("CARGO_TARGET_DIR")
             .ok()
-            .map(|t| std::path::PathBuf::from(t)),
+            .map(std::path::PathBuf::from),
         Some(workspace_root.join("target")),
         Some(manifest_dir.join("target")),
     ];
@@ -248,20 +264,21 @@ fn webfang_binary() -> std::path::PathBuf {
     panic!("webfang binary not found — build it first (cargo build -p webfang_cli)");
 }
 
-/// One fixture page with enough extractable prose to pass the minimum-content
-/// guard and a unique marker so a mix-up between pages is impossible.
+/// One wiremock page: a title, two content paragraphs (comfortably above the
+/// minimum-content guard, so the pipeline never drops a page for thin text),
+/// and optional raw link markup appended for the seed. Plain string concat —
+/// no escaping surprises. Each page carries a unique marker so a mix-up
+/// between surfaces is impossible.
 fn page(marker: &str, links: &str) -> String {
-    format!(
-        r#"<html><head><title>Parity {marker}</title></head><body>\
-         <h1>Heading {marker}</h1>\
-         <p>Marker {marker}: the quick brown fox jumps over the lazy dog while the \
-         parity fixture holds its ground and repeats enough ordinary sentences for the \
-         readability pipeline to accept this document as the main content of the page \
-         without tripping the minimum content guard at any surface.</p>\
-         <p>A second paragraph for {marker} keeps the extracted text comfortably above \
-         the guard with more plain words that carry no links, no scripts, and no noise.</p>\
-         {links}</body></html>"#
-    )
+    let body = format!(
+        "<h1>Heading {marker}</h1><p>Marker {marker}: the quick brown fox jumps over the lazy dog \
+         while the parity fixture holds its ground and repeats enough ordinary sentences \
+         for the readability pipeline to accept this document as the main content of the \
+         page without tripping the minimum content guard at any surface.</p>\
+         <p>A second paragraph for {marker} keeps the extracted text comfortably above the guard \
+         with more plain words that carry no links, no scripts, and no noise at all here.</p>"
+    );
+    format!("<html><head><title>Parity {marker}</title></head><body>{links}{body}</body></html>")
 }
 
 /// Read a JSONL export into timestamp-redacted records sorted by url.
@@ -307,82 +324,93 @@ fn normalized_records(path: &std::path::Path) -> Vec<Value> {
 // The parity test (closes P6-2/F-16)
 // ============================================================================
 
-/// One wiremock site, two surfaces, one record set: the CLI crawl's JSONL
-/// export and the MCP `crawl_site` + `export_jsonl` sequence must produce
-/// record-equivalent JSONL modulo the redacted run timestamp (P6-2/F-16,
-/// #1290). Explicit depth/page budgets keep the two runs on identical
-/// engine knobs despite the per-surface advertised defaults (#940).
-#[tokio::test]
-async fn cli_vs_mcp_export_jsonl_record_parity() {
-    // --- shared fixture site: seed + two leaf pages (depth 1) -------------
-    let site = MockServer::start().await;
-    let base = site.uri();
-
+/// Mount the shared fixture site: permissive robots.txt, a seed with two
+/// internal links, and the two leaf pages.
+async fn mount_parity_site(site: &MockServer) {
     Mock::given(method("GET"))
         .and(path("/robots.txt"))
         .respond_with(ResponseTemplate::new(200).set_body_string("User-agent: *\nAllow: /\n"))
-        .mount(&site)
+        .mount(site)
         .await;
     Mock::given(method("GET"))
         .and(path("/"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(page(
-            "seed",
-            &format!(r#"<a href="{base}/a">a</a> <a href="{base}/b">b</a>"#),
-        )))
-        .mount(&site)
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(page("seed", r#"<a href="/a">a</a> <a href="/b">b</a>"#)),
+        )
+        .mount(site)
         .await;
     Mock::given(method("GET"))
         .and(path("/a"))
         .respond_with(ResponseTemplate::new(200).set_body_string(page("alpha", "")))
-        .mount(&site)
+        .mount(site)
         .await;
     Mock::given(method("GET"))
         .and(path("/b"))
         .respond_with(ResponseTemplate::new(200).set_body_string(page("beta", "")))
-        .mount(&site)
+        .mount(site)
         .await;
+}
 
-    let seed = format!("{base}/");
-
-    // --- MCP surface: crawl_site + export_jsonl ----------------------------
+/// MCP surface: `crawl_site` + `export_jsonl` over the session buffer,
+/// returning the redacted records. The server and its output dir live for
+/// the whole call; records are read before they drop.
+async fn mcp_export_records(seed: &str) -> Vec<Value> {
     let (mcp_base, _mcp_server, _mcp_tmp) = start_server().await;
     let client = Client::new();
     let session_id = init_session(&client, &mcp_base).await;
 
-    let crawl = call_tool(
-        &client,
-        &mcp_base,
-        &session_id,
-        "crawl_site",
-        json!({ "url": seed, "max_depth": 1, "max_pages": 10 }),
-    )
-    .await;
+    let crawl = tool_result(
+        call_tool(
+            &client,
+            &mcp_base,
+            &session_id,
+            "crawl_site",
+            json!({ "url": seed, "max_depth": 2, "max_pages": 10 }),
+        )
+        .await,
+    );
+    let crawl_response = tool_text(&crawl);
     assert!(
         !is_tool_error(&crawl),
-        "crawl_site must succeed: {}",
-        tool_text(&crawl)
+        "crawl_site must succeed: {crawl_response}"
+    );
+    let crawled: Value =
+        serde_json::from_str(&crawl_response).expect("crawl_site response is JSON");
+    // A crawl that visited anything else would be an engine/fixture failure,
+    // not an export failure: fail HERE, loudly, not in the parity assert.
+    assert_eq!(
+        crawled.get("total_pages").and_then(Value::as_u64),
+        Some(3),
+        "the MCP crawl must visit seed + two leaf pages: {crawl_response}"
     );
 
     let mcp_out = RelTempDir::new("cli-mcp-parity-mcp");
-    let export = call_tool(
-        &client,
-        &mcp_base,
-        &session_id,
-        "export_jsonl",
-        json!({
-            "output_dir": mcp_out.path().to_string_lossy(),
-            "filename": "parity",
-        }),
-    )
-    .await;
+    let export = tool_result(
+        call_tool(
+            &client,
+            &mcp_base,
+            &session_id,
+            "export_jsonl",
+            json!({
+                "output_dir": mcp_out.path().to_string_lossy(),
+                "filename": "parity",
+            }),
+        )
+        .await,
+    );
     assert!(
         !is_tool_error(&export),
         "export_jsonl must succeed on the session buffer: {}",
         tool_text(&export)
     );
-    let mcp_records = normalized_records(&mcp_out.path().join("parity.jsonl"));
+    normalized_records(&mcp_out.path().join("parity.jsonl"))
+}
 
-    // --- CLI surface: same crawl knobs, JSONL pipeline export --------------
+/// CLI surface: the `webfang` binary runs the same crawl knobs with the
+/// JSONL pipeline export, returning the redacted records from the single
+/// `*.jsonl` it writes.
+fn cli_export_records(seed: &str) -> Vec<Value> {
     let cli_tmp = tempfile::TempDir::new().expect("cli temp dir");
     let cli_out = cli_tmp.path().join("export");
     let cache = cli_tmp.path().join("cache");
@@ -399,8 +427,8 @@ async fn cli_vs_mcp_export_jsonl_record_parity() {
         cmd.env_remove(&key);
     }
     let cli_output = cmd
-        .arg(&seed)
-        .args(["--max-depth", "1", "--max-pages", "10"])
+        .arg(seed)
+        .args(["--max-depth", "2", "--max-pages", "10"])
         .args(["--output", cli_out.to_string_lossy().as_ref()])
         .args(["--pipeline-format", "jsonl"])
         .arg("--quiet")
@@ -427,7 +455,22 @@ async fn cli_vs_mcp_export_jsonl_record_parity() {
         1,
         "CLI must write exactly one JSONL export, found: {jsonls:?}"
     );
-    let cli_records = normalized_records(&jsonls[0]);
+    normalized_records(&jsonls[0])
+}
+
+/// One wiremock site, two surfaces, one record set: the CLI crawl's JSONL
+/// export and the MCP `crawl_site` + `export_jsonl` sequence must produce
+/// record-equivalent JSONL modulo the redacted run timestamp (P6-2/F-16,
+/// #1290). Explicit depth/page budgets keep the two runs on identical
+/// engine knobs despite the per-surface advertised defaults (#940).
+#[tokio::test]
+async fn cli_vs_mcp_export_jsonl_record_parity() {
+    let site = MockServer::start().await;
+    mount_parity_site(&site).await;
+    let seed = format!("{}/", site.uri());
+
+    let mcp_records = mcp_export_records(&seed).await;
+    let cli_records = cli_export_records(&seed);
 
     // --- record equivalence -------------------------------------------------
     assert!(!cli_records.is_empty(), "the CLI export must hold records");
@@ -473,7 +516,7 @@ async fn cli_vs_mcp_export_jsonl_record_parity() {
         .filter_map(|r| r.get("url").and_then(Value::as_str))
         .collect();
     assert!(
-        urls.contains(&format!("{base}/").as_str())
+        urls.contains(&seed.as_str())
             && urls.iter().any(|u| u.ends_with("/a"))
             && urls.iter().any(|u| u.ends_with("/b")),
         "every fixture page reached both exports: {urls:?}"
