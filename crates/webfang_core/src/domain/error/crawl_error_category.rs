@@ -137,6 +137,9 @@ impl From<&CrawlError> for CrawlErrorCategory {
             // Row 15 (validation): no dedicated validation category exists,
             // so the Internal catch-all remains the closest match.
             CrawlError::InvalidUrl(_) => Self::Internal,
+            // Row 33 (P6-2 slice 2): invalid run description — a
+            // validation failure, same Internal catch-all as row 15.
+            CrawlError::InvalidSession(_) => Self::Internal,
             // Rows 9/10/11/12 (limits/budget family): budget stops are not
             // operational failures and there is no budget category; the
             // Internal catch-all is the closest existing category.

@@ -34,6 +34,7 @@ use crate::domain::cookie_bridge::CookieBridge;
 use crate::domain::crawler_port::{RobotsPort, UrlQueuePort};
 use crate::domain::downloader_factory::DownloaderFactory;
 use crate::domain::downloader_port::Downloader;
+use crate::domain::error::CrawlError;
 use crate::domain::persistence::PersistenceMode;
 use crate::domain::session_port::SessionPort;
 use crate::domain::{CorrelationId, CrawlerConfig, JsStrategy};
@@ -245,6 +246,14 @@ impl From<CrawlSessionError> for ScraperError {
             },
             CrawlSessionError::Internal(msg) => ScraperError::Internal(msg),
         }
+    }
+}
+
+impl From<CrawlSessionError> for CrawlError {
+    fn from(err: CrawlSessionError) -> Self {
+        // Row 33 (P6-2 slice 2): the rendered session error travels as the
+        // payload; upstream maps to `ScraperError::Config` (exit 78).
+        CrawlError::InvalidSession(err.to_string())
     }
 }
 
@@ -718,7 +727,7 @@ mod tests {
         );
         let _ = session.finish(true, async || CrawlCheckpoint::new()).await;
     }
-    
+
     #[tokio::test]
     async fn begin_checkpoint_without_file_starts_fresh() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
@@ -739,7 +748,7 @@ mod tests {
         );
         let _ = session.finish(true, async || CrawlCheckpoint::new()).await;
     }
-    
+
     #[tokio::test]
     async fn begin_unwritable_dir_degrades_without_failing() {
         // A regular file where the directory should be: ensure_dir fails
@@ -764,7 +773,7 @@ mod tests {
         );
         let _ = session.finish(true, async || CrawlCheckpoint::new()).await;
     }
-    
+
     #[tokio::test]
     async fn begin_resumes_matching_checkpoint() {
         use crate::application::crawler::checkpoint::{
@@ -801,7 +810,7 @@ mod tests {
         );
         let _ = session.finish(true, async || CrawlCheckpoint::new()).await;
     }
-    
+
     #[tokio::test]
     async fn finish_decision_table() {
         // (completed, enabled) -> action; mirrors today's F-01 branches.

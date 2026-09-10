@@ -342,15 +342,6 @@ impl Engine {
         Ok(engine)
     }
 
-    /// Override the crawl's root correlation ID.
-    ///
-    /// Used by `crawl_site` / `crawl_site_with_options` to make the entry-point
-    /// tracing span share the same `trace_id` as the engine and all its pages.
-    pub(crate) fn with_correlation_id(mut self, correlation_id: CorrelationId) -> Self {
-        self.correlation_id = correlation_id;
-        self
-    }
-
     /// Unified persistence — wraps `with_checkpoint` when `PersistenceMode` enables checkpointing.
     ///
     /// `Checkpoint` and `Full` variants configure periodic checkpointing via
@@ -814,7 +805,9 @@ impl Engine {
                 // its own handle on Delete so the shutdown() save cannot
                 // re-create the file the session just removed.
                 let close = session
-                    .finish(completed_fully, async || self.build_checkpoint_state().await)
+                    .finish(completed_fully, async || {
+                        self.build_checkpoint_state().await
+                    })
                     .await;
                 if close.action == CheckpointAction::Delete {
                     self.checkpoint_path = None;
@@ -1400,14 +1393,13 @@ async fn crawl_site_inner(
     );
 
     let ignore_robots = config.ignore_robots;
-    let fallback_config = config.clone();
-    // P6-2 slice 1: build the validated run object first; the engine
+    // P6-2 slice 2: build the validated run object first; the engine
     // executes from it. A build failure (exotic seed, inconsistent
-    // transport) falls back to the legacy path so behavior stays
-    // verbatim — slice 2 hardens callers instead of branching here.
+    // transport) fails the run before any worker spawns — no silent
+    // legacy fallback (matrix rows 31/33).
     let run_label = config.seed_url.host_str().unwrap_or("seed").to_string();
     let seed_url = config.seed_url.as_str().to_string();
-    let session = super::session::CrawlSession::builder()
+    let mut session = super::session::CrawlSession::builder()
         .config(config)
         .persistence(PersistenceMode::Disabled)
         .transport(super::session::TransportPolicy {
@@ -1434,42 +1426,19 @@ async fn crawl_site_inner(
             root: correlation_id.clone(),
             run_label,
         })
-        .build();
-    let mut session = match session {
-        Ok(session) => session,
-        Err(err) => {
+        .build()
+        .map_err(|err| {
             log_scrape_error(
                 &err,
                 &seed_url,
                 "session",
                 Some(&correlation_id),
-                "session build failed — legacy engine path",
+                "session build failed — refusing to run (no legacy fallback)",
             );
-            return crawl_site_inner_legacy(fallback_config, correlation_id, content_sink).await;
-        },
-    };
+            CrawlError::from(err)
+        })?;
     session.begin();
     let mut engine = Engine::from_session(session)?;
-    let result = engine.run().await;
-    engine.shutdown().await;
-    result
-}
-
-/// Legacy direct path for [`crawl_site_inner`] (pre-session).
-///
-/// Reached only when the session builder rejects the description
-/// (exotic seed, inconsistent transport); behavior is byte-identical to
-/// the pre-slice-1 body so tripwires cannot distinguish it.
-async fn crawl_site_inner_legacy(
-    config: CrawlerConfig,
-    correlation_id: CorrelationId,
-    content_sink: Option<Arc<dyn CrawlContentSink>>,
-) -> Result<CrawlResult, CrawlError> {
-    let ignore_robots = config.ignore_robots;
-    let mut engine = Engine::new(config, ignore_robots)?.with_correlation_id(correlation_id);
-    if let Some(sink) = content_sink {
-        engine = engine.with_content_sink(sink);
-    }
     let result = engine.run().await;
     engine.shutdown().await;
     result
@@ -1570,7 +1539,9 @@ async fn crawl_site_with_options_inner(
     // Checkpoint mode comes from the same (path, interval) pair the
     // legacy `with_checkpoint` below consumes. Ports the options cannot
     // prebuild (pool needs the budget tier) stay unset — `from_session`
-    // assembles them exactly as the legacy body did.
+    // assembles them exactly as the former legacy body did. A build
+    // failure fails the run before any worker spawns — no silent legacy
+    // fallback (matrix rows 31/33).
     let mode = match &options.checkpoint_path {
         Some(dir) => PersistenceMode::Checkpoint {
             cfg: CheckpointCfg {
@@ -1580,9 +1551,7 @@ async fn crawl_site_with_options_inner(
         },
         None => PersistenceMode::Disabled,
     };
-    let fallback_options = options.clone();
-    let fallback_config = config.clone();
-    let session = super::session::CrawlSession::builder()
+    let mut session = super::session::CrawlSession::builder()
         .config(config)
         .persistence(mode)
         .transport(super::session::TransportPolicy::from(&options))
@@ -1597,101 +1566,20 @@ async fn crawl_site_with_options_inner(
             root: correlation_id.clone(),
             run_label,
         })
-        .build();
-    let mut session = match session {
-        Ok(session) => session,
-        Err(err) => {
+        .build()
+        .map_err(|err| {
             log_scrape_error(
                 &err,
                 &seed_url,
                 "session",
                 Some(&correlation_id),
-                "session build failed — legacy engine path",
+                "session build failed — refusing to run (no legacy fallback)",
             );
-            return crawl_site_with_options_legacy(
-                fallback_config,
-                fallback_options,
-                correlation_id,
-            )
-            .await;
-        },
-    };
+            CrawlError::from(err)
+        })?;
 
     session.begin();
     let mut engine = Engine::from_session(session)?;
-    let result = engine.run().await;
-    engine.shutdown().await;
-    result
-}
-
-/// Legacy direct path for the `with_options` entry (pre-session).
-///
-/// Reached only when the session builder rejects the description;
-/// behavior is byte-identical to the pre-slice-1 body.
-async fn crawl_site_with_options_legacy(
-    config: CrawlerConfig,
-    options: EngineOptions,
-    correlation_id: CorrelationId,
-) -> Result<CrawlResult, CrawlError> {
-    let mut engine =
-        Engine::new(config, options.ignore_robots)?.with_correlation_id(correlation_id);
-
-    // Apply checkpoint if path provided — interval from options (PersistenceMode), not hardcoded.
-    if let Some(ref path) = options.checkpoint_path {
-        engine = engine.with_checkpoint(options.checkpoint_interval, path.clone());
-    }
-
-    // Apply session pool if enabled. ADR-0012-B 3.F: the engine consumes the
-    // domain port — the concrete pool is built by the composition-root helper
-    // in `application::container`. Slot count derives from the model's Domain
-    // tier, not a raw default (task 2.2c); the 2s cooldown is the backoff
-    // base delay, exactly as the former in-engine construction used.
-    if options.session_pool_enabled {
-        let pool_cfg = SessionPoolConfig {
-            base_delay: Duration::from_secs(2),
-            pool_size: engine.budget.domain(),
-            ..SessionPoolConfig::default()
-        };
-        engine = engine.with_session_pool(crate::application::container::build_crawl_session_pool(
-            pool_cfg,
-        ));
-    }
-
-    // Apply the downloader factory before the JS strategy: `with_js_strategy`
-    // is where the factory is invoked, and it has no built-in fallback.
-    if let Some(factory) = options.downloader_factory.clone() {
-        engine = engine.with_downloader_factory(factory);
-    }
-
-    // F-05 (#1229 slice 2): wire the capture sink through the SAME engine
-    // path — checkpoint-only, capture-only, and both all converge here, so
-    // discovery content arrives without a second HTTP round-trip. Placed
-    // away from the checkpoint/restore block above (peer FIX-2 owns
-    // `queued` there) to minimize rebase conflict.
-    if let Some(sink) = options.content_sink.clone() {
-        engine = engine.with_content_sink(sink);
-    }
-
-    // Apply JS strategy
-    engine = engine.with_js_strategy(
-        options.js_strategy,
-        options.tls_emulation,
-        options.ignore_waf,
-        options.max_retries,
-        options.backoff_base_ms,
-        options.backoff_max_ms,
-        // #787: propagate --obscura-binary into the Hybrid Layer 2 downloader.
-        options.obscura_binary.clone(),
-        // F-52-c: propagate the gate-certified Chrome binary into the
-        // Hybrid L3 / Full launcher.
-        options.chrome_binary.clone(),
-    )?;
-
-    // Apply autoscale if enabled
-    if options.autoscale_enabled {
-        engine = engine.with_autoscale();
-    }
-
     let result = engine.run().await;
     engine.shutdown().await;
     result
@@ -1753,7 +1641,51 @@ mod tests {
             if via_session {
                 crawl_site_with_options(config, options).await
             } else {
-                crawl_site_with_options_legacy(config, options, CorrelationId::new()).await
+                // Slice 2 removed the production legacy fallback (matrix
+                // rows 31/33); this replica pins the historical
+                // direct-construction path the seam replaced so the
+                // equivalence keeps proving that ownership changes never
+                // change outcomes. Deleted with `EngineOptions` in slice 4.
+                let mut engine = Engine::new(config, options.ignore_robots)?;
+                // Identity override the former legacy entry performed via
+                // `with_correlation_id` (removed with the fallback paths):
+                // the entry-point span shares the engine's trace_id.
+                engine.correlation_id = CorrelationId::new();
+                if let Some(ref path) = options.checkpoint_path {
+                    engine = engine.with_checkpoint(options.checkpoint_interval, path.clone());
+                }
+                if options.session_pool_enabled {
+                    let pool_cfg = crate::domain::session_port::SessionPoolConfig {
+                        base_delay: std::time::Duration::from_secs(2),
+                        pool_size: engine.budget.domain(),
+                        ..crate::domain::session_port::SessionPoolConfig::default()
+                    };
+                    engine = engine.with_session_pool(
+                        crate::application::container::build_crawl_session_pool(pool_cfg),
+                    );
+                }
+                if let Some(factory) = options.downloader_factory.clone() {
+                    engine = engine.with_downloader_factory(factory);
+                }
+                if let Some(sink) = options.content_sink.clone() {
+                    engine = engine.with_content_sink(sink);
+                }
+                engine = engine.with_js_strategy(
+                    options.js_strategy,
+                    options.tls_emulation,
+                    options.ignore_waf,
+                    options.max_retries,
+                    options.backoff_base_ms,
+                    options.backoff_max_ms,
+                    options.obscura_binary.clone(),
+                    options.chrome_binary.clone(),
+                )?;
+                if options.autoscale_enabled {
+                    engine = engine.with_autoscale();
+                }
+                let result = engine.run().await;
+                engine.shutdown().await;
+                result
             }
         }
         // NOTE: sequential awaits (no join!) — two engines share the
