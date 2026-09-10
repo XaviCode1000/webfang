@@ -7,6 +7,7 @@ on:
 
 permissions:
   pull-requests: read
+  issues: read
 
 jobs:
   validate:
@@ -56,6 +57,38 @@ jobs:
             exit 1
           fi
           echo "OK: issue vinculada."
+
+      - name: Require status:approved on linked issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.prnum.outputs.pr }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          BODY=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json body --jq '.body // ""')
+          # Same keyword family as the linked-issue check (including the
+          # partial form `Closes part of #N`). EVERY linked issue must carry
+          # the protected `status:approved` label BEFORE a PR can reference
+          # it — the maintainer's explicit approval gate (branch-pr skill,
+          # institutionalized 2026-09-11). `status:approved` is a protected
+          # label: only the maintainer (or an actor with verified
+          # MAINTAIN/ADMIN) adds it, never the PR author agent.
+          NUMBERS=$(printf '%s' "$BODY" | grep -oiE '(closes|fixes|resolves)([[:space:]]+(part|some|one)[[:space:]]+of)?[[:space:]]*#[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | sort -un || true)
+          if [ -z "$NUMBERS" ]; then
+            echo "::error::No se pudo extraer el número de issue vinculado del cuerpo del PR."
+            exit 1
+          fi
+          MISSING=""
+          for N in $NUMBERS; do
+            if ! gh issue view "$N" --repo "$REPO" --json labels --jq '[.labels[].name]' | grep -q '"status:approved"'; then
+              MISSING="$MISSING #$N"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::Toda issue vinculada debe tener el label 'status:approved' (faltan:$MISSING). El label es protegido: pedí al mantenedor que apruebe la issue antes de abrir el PR."
+            exit 1
+          fi
+          echo "OK: todas las issues vinculadas tienen status:approved."
 
       - name: Require exactly one type:* label
         env:

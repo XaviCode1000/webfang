@@ -540,7 +540,7 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 
 ### PR creation — CI-enforced rules (`pr-validation.yml`)
 
-Every PR is validated on open / edit / synchronize / label changes. **All three MUST pass:**
+Every PR is validated on open / edit / synchronize / label changes. **All four MUST pass:**
 
 1. **Linked issue** — PR body must contain `Closes #N`, `Fixes #N`, or `Resolves #N`.
    For a **partial slice of an umbrella issue**, use `Closes part of #N` — it passes
@@ -550,8 +550,15 @@ Every PR is validated on open / edit / synchronize / label changes. **All three 
    closed after sub-slice 1 of 5 with 0 of 11 acceptance criteria ticked (#1010).
    The cleanest shape remains **one issue per PR**, with the umbrella as an index that
    links child issues rather than a link target.
-2. **Exactly one `type:*` label** — count of labels starting with `type:` must be exactly 1.
-3. **Conventional branch name** — must match `^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)/[a-z0-9._-]+$`.
+2. **Linked issue carries `status:approved`** — every issue linked via
+   `Closes/Fixes/Resolves #N` must carry the protected `status:approved` label BEFORE
+   the PR is opened (enforced since 2026-09-11). The label is protected: agents must
+   never self-approve — request the maintainer's approval and let them (or an actor
+   with verified `MAINTAIN`/`ADMIN` on the target host) add it. Verify with
+   `gh issue view N --json labels`. External contributions: the maintainer approves
+   the issue first, then the PR can pass validation.
+3. **Exactly one `type:*` label** — count of labels starting with `type:` must be exactly 1.
+4. **Conventional branch name** — must match `^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)/[a-z0-9._-]+$`.
 
 **Label mapping** (the label vocabulary is NOT the commit-type vocabulary):
 
@@ -678,7 +685,7 @@ gh run list --workflow=ci.yml --branch "$(git branch --show-current)" --limit 1 
 - [ ] `cargo nextest run` (at least affected module)
 - [ ] Review `git diff --stat main...HEAD` to confirm only expected symbols/files changed
 - [ ] Error messages in Spanish if user-facing; new public items have doc comments
-- [ ] PR has exactly one `type:*` label + linked issue + conventional branch
+- [ ] PR has exactly one `type:*` label + linked issue WITH `status:approved` + conventional branch
 - [ ] `CHANGELOG.md` **not** touched by this PR (entries are written once, in the consolidation PR — AGENTS.md → "CHANGELOG policy")
 - [ ] Verified worktree: `git branch --show-current` matches directory name
 - [ ] No `git checkout`/`switch`/`stash` was executed during the session
