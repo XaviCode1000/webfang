@@ -2,3 +2,6 @@
 2026-09-09T03:16:20Z,chore/ci-workflow-overhaul,full,green,145
 2026-09-09T03:16:59Z,chore/ci-workflow-overhaul,docs+ci,green,1
 2026-09-10T02:34:18Z,fix/f52c-chrome-path,code,green,191
+2026-09-10T22:57:26Z,fix/ci-miri-schedule,ci,green,1
+2026-09-10T23:03:22Z,fix/ci-miri-schedule,docs+ci,green,1
+2026-09-10T23:14:37Z,fix/ci-miri-schedule,docs+ci,green,0
