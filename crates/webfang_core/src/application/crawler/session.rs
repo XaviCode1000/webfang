@@ -811,6 +811,70 @@ mod tests {
         let _ = session.finish(true, async || CrawlCheckpoint::new()).await;
     }
 
+    /// P8-3 (issue #1289): a corrupt checkpoint file must never crash the
+    /// run nor silently resume into an empty result — the StateStore
+    /// contract is corrupt → discard → start fresh → re-scrape. Pins both
+    /// corruption modes (CRC mismatch over garbage, valid CRC over
+    /// non-checkpoint JSON) and proves the session-close rewrite replaces
+    /// the corrupt file with loadable state.
+    #[tokio::test]
+    async fn corrupt_checkpoint_file_starts_fresh_and_resscrapes() {
+        use crate::application::crawler::checkpoint::{CheckpointPath, CheckpointStore};
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        // `Url::parse` normalizes the seed with a trailing slash — the
+        // fixture must hash the same normalized string `begin()` derives.
+        let seed = "https://example.com/";
+        let scoped = CheckpointPath::new(tmp.path()).file_for_seed(seed);
+        CheckpointPath::new(tmp.path())
+            .ensure_dir()
+            .expect("ensure dir");
+
+        // Corruption mode 1: garbage bytes — CRC32 header mismatch.
+        std::fs::write(&scoped, b"not a checkpoint at all").expect("corrupt file");
+        let mode = PersistenceMode::Checkpoint {
+            cfg: CheckpointCfg {
+                dir: tmp.path().to_path_buf(),
+                interval: 100,
+            },
+        };
+        let mut session = build_ok(mode.clone());
+        let outcome = session.begin();
+        assert_eq!(
+            outcome,
+            BeginOutcome {
+                resumed: false,
+                degraded: false,
+            },
+            "garbage checkpoint must start fresh, not fail"
+        );
+        let close = session.finish(false, async || CrawlCheckpoint::new()).await;
+        assert_eq!(close.action, CheckpointAction::Write);
+        assert!(
+            BincodeCheckpoint::new().load(&scoped).is_some(),
+            "close must replace the corrupt file with loadable state"
+        );
+
+        // Corruption mode 2: valid CRC32 header over non-checkpoint JSON —
+        // integrity passes, deserialization fails, still a fresh start.
+        let payload = br#"{"visited": "i am not a checkpoint"}"#;
+        let mut corrupt = Vec::with_capacity(4 + payload.len());
+        corrupt.extend_from_slice(&crc32fast::hash(payload).to_ne_bytes());
+        corrupt.extend_from_slice(payload);
+        std::fs::write(&scoped, &corrupt).expect("corrupt file v2");
+        let mut session = build_ok(mode);
+        let outcome = session.begin();
+        assert_eq!(
+            outcome,
+            BeginOutcome {
+                resumed: false,
+                degraded: false,
+            },
+            "CRC-valid non-checkpoint JSON must start fresh, not fail"
+        );
+        let _ = session.finish(true, async || CrawlCheckpoint::new()).await;
+    }
+
     #[tokio::test]
     async fn finish_decision_table() {
         // (completed, enabled) -> action; mirrors today's F-01 branches.
