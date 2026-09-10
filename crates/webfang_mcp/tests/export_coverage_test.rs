@@ -45,7 +45,7 @@ async fn start_seeded_server(n: usize) -> (String, tokio::task::JoinHandle<()>, 
         .await
         .expect("container creation failed");
 
-    let mut state = McpState::new(container);
+    let state = McpState::new(container);
     for i in 0..n {
         let url_str = format!("https://seed.example.com/page/{i}");
         let url = url::Url::parse(&url_str).expect("valid seeded URL");
