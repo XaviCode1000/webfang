@@ -117,6 +117,16 @@ pub enum CrawlError {
     #[error("internal error: {0}")]
     Internal(String),
 
+    /// Session-derived invalid run description (P6-2 slice 2, matrix row
+    /// 33). Surfaces a `CrawlSessionError` build failure: a run that
+    /// cannot be described validly fails before any worker spawns, never
+    /// falling back to a legacy path. The payload is the rendered session
+    /// error ("invalid crawl session: …", "checkpoint unwritable …") so
+    /// the cause is not double-prefixed. Maps to `ScraperError::Config`
+    /// (exit 78) upstream.
+    #[error("{0}")]
+    InvalidSession(String),
+
     /// Sitemap not found during auto-discovery
     #[error("no sitemap found for {0}")]
     SitemapNotFound(String),
@@ -281,6 +291,10 @@ impl CrawlError {
             // Matrix taxonomy: unspecified internal error = bug indicator
             // (InternalFatal family; cf. row 23).
             Self::Internal(_) => ErrorClass::InternalFatal,
+            // Row 33 (P6-2 slice 2): an invalid run description is caller
+            // error — permanent, surfaced as exit 78 through
+            // `ScraperError::Config` (same contract family as row 31).
+            Self::InvalidSession(_) => ErrorClass::PermanentFatal,
             // Row 20.
             Self::SitemapNotFound(_) => ErrorClass::DomainRecoverable,
             // Row 23: data-integrity errors are NEVER retried (Gate 2).
