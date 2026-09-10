@@ -233,10 +233,7 @@ pub async fn extract_page_content(
     page: &CapturedPage,
     config: &crate::domain::config::ScraperConfig,
     page_correlation: &crate::domain::CorrelationId,
-) -> Result<
-    crate::domain::ScrapedContent,
-    (String, crate::error::ScraperError),
-> {
+) -> Result<crate::domain::ScrapedContent, (String, crate::error::ScraperError)> {
     let url = match url::Url::parse(&page.url) {
         Ok(u) => u,
         Err(e) => {

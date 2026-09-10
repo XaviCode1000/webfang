@@ -362,7 +362,7 @@ impl McpHandler {
 
     /// Crawl a website with BFS and depth limit
     #[tool(
-        description = "Crawl a website using BFS with configurable depth limit, concurrency control, and rate limiting."
+        description = "Crawl a website using BFS with configurable depth limit, concurrency control, and rate limiting. The run's enriched results stay owned by this session and are what the export tools serve afterwards (#1290)."
     )]
     #[instrument(skip(self), fields(url = %params.url))]
     // serde_json::to_string cannot fail for a serde_json::Value.
@@ -390,7 +390,24 @@ impl McpHandler {
             .max_pages(params.max_pages.unwrap_or(CRAWL_SITE_DEFAULT_MAX_PAGES) as usize)
             .build();
 
-        match webfang_core::application::crawler::crawl_site(crawler_config).await {
+        // P6-2/F-16 (#1290): the run is session-owned. Capture every fetched
+        // body through the shared in-memory sink — the same
+        // `crawl_site_capturing` path the CLI discovery uses — and convert
+        // the pages with the single shared page→content helper below, so the
+        // export tools serve the same enriched DTO the CLI exports in memory.
+        let sink = std::sync::Arc::new(
+            webfang_core::application::crawler::content_sink::InMemoryContentSink::new(),
+        );
+
+        match webfang_core::application::crawler::crawl_site_capturing(
+            crawler_config,
+            std::sync::Arc::clone(&sink)
+                as std::sync::Arc<
+                    dyn webfang_core::application::crawler::content_sink::CrawlContentSink,
+                >,
+        )
+        .await
+        {
             Ok(result) => {
                 let count = result.total_pages;
                 self.state.record_scrape_identity(
@@ -401,6 +418,11 @@ impl McpHandler {
                     start,
                     &root_correlation,
                 );
+                // Convert the captured pages BEFORE answering, so a client
+                // that exports right after this call observes exactly this
+                // run's records (same contract as a CLI crawl finishing its
+                // export phase).
+                self.store_session_results(&sink).await;
                 // REQ-01: filter discovered URLs before responding — keep only
                 // seed-host-internal entries; exclusions warn with the URL.
                 let mut urls = Vec::with_capacity(result.urls.len());
@@ -778,6 +800,76 @@ impl McpHandler {
                 Ok(CallToolResult::error(vec![Content::text(format!(
                     "HTTP error: {e}"
                 ))]))
+            },
+        }
+    }
+}
+
+impl McpHandler {
+    /// Convert this crawl run's captured pages into the session-owned
+    /// result set the export tools consume (#1290, P6-2/F-16).
+    ///
+    /// Pages go through the SINGLE shared conversion path —
+    /// `extract_page_content`, the same helper the CLI batch/export phases
+    /// use — so record equivalence holds by construction: same DTO, same
+    /// `WebfangMetadata` downstream (checksum, timestamp, `word_count`,
+    /// `metadata_version`). Per-page extraction failures are logged through
+    /// the shared `log_scrape_error` path and skipped: one bad page never
+    /// drops the run's good records, exactly as on the CLI batch path.
+    ///
+    /// The buffer is REPLACED wholesale per run: an export after a second
+    /// crawl mirrors the second crawl, and an empty extraction result
+    /// honestly reads as "no hay resultados disponibles para exportar".
+    /// Lock discipline follows `metrics` (REQ-07): the synchronous lock is
+    /// taken only to swap the vector, never across an `.await`.
+    async fn store_session_results(
+        &self,
+        sink: &webfang_core::application::crawler::content_sink::InMemoryContentSink,
+    ) {
+        use webfang_core::application::crawler::content_sink::extract_page_content;
+        use webfang_core::domain::CorrelationId;
+        use webfang_core::infrastructure::observability::log_scrape_error;
+
+        // Same shape as the CLI batch phase: default extraction config
+        // (selector/ignore-waf defaults), output dir carried from the
+        // container, one run-root identity with per-page children.
+        let config = webfang_core::domain::config::ScraperConfig {
+            output_dir: self.state.container.scraper_config.output_dir.clone(),
+            ..Default::default()
+        };
+        let root = CorrelationId::new();
+        let pages = sink.take_pages();
+        let mut results = Vec::with_capacity(pages.len());
+        let mut failures = 0usize;
+        for page in &pages {
+            let child = root.child();
+            match extract_page_content(page, &config, &child).await {
+                Ok(content) => results.push(content),
+                Err((url, err)) => {
+                    failures += 1;
+                    log_scrape_error(
+                        &err,
+                        &url,
+                        "mcp_session_capture",
+                        Some(&child),
+                        "crawl result extraction failed",
+                    );
+                },
+            }
+        }
+        let captured = results.len();
+        match self.state.session_results.lock() {
+            Ok(mut guard) => {
+                let replaced = guard.len();
+                *guard = results;
+                tracing::info!(captured, replaced, failures, "mcp_session_results_captured");
+            },
+            Err(poisoned) => {
+                // Poisoned elsewhere only by a panic mid-swap: recover the
+                // guard and keep the run's records rather than losing them.
+                let mut guard = poisoned.into_inner();
+                *guard = results;
+                tracing::warn!(captured, failures, "mcp_session_results_lock_recovered");
             },
         }
     }

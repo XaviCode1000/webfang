@@ -5,10 +5,16 @@
 //!
 //! Every tool performs a REAL export via the existing `webfang_core`
 //! `export_factory` surface (jsonl/vector/auto) and reports honest
-//! success/error. Operational failures (no repository, empty results,
-//! missing content, I/O errors) map to `CallToolResult::error`
-//! (isError:true, Spanish). Invalid parameters (bad format) map to a
-//! protocol-level `McpError::invalid_params` — never a silent fallback.
+//! success/error. Operational failures (no session results, missing
+//! content, I/O errors) map to `CallToolResult::error` (isError:true,
+//! Spanish). Invalid parameters (bad format) map to a protocol-level
+//! `McpError::invalid_params` — never a silent fallback.
+//!
+//! Result source (#1290, P6-2/F-16): the session-owned results of the last
+//! MCP crawl run — the same enriched DTO the CLI exports in memory, so both
+//! surfaces produce record-equivalent JSONL from the same site. The legacy
+//! server-persistence read (`CrawlResultRepository::load_all`) was dropped
+//! here; its physical removal is slice 4 of the plan.
 
 use super::McpHandler;
 use crate::mcp_server::params::*;
@@ -23,7 +29,6 @@ use std::sync::Arc;
 use tracing::instrument;
 use webfang_core::application::export_factory::{create_exporter, process_results};
 use webfang_core::domain::entities::ExportFormat;
-use webfang_core::domain::CrawlResultRepository;
 use webfang_core::domain::DocumentChunkUnvalidated;
 use webfang_core::domain::ScrapedContent;
 
@@ -81,30 +86,26 @@ fn resolve_export_path(
     }
 }
 
-/// Resolve persisted crawl results from an optional repository, mapping every
+/// Resolve the crawl results the current session owns, mapping every
 /// operational failure to an honest `CallToolResult::error` (isError:true,
 /// Spanish).
 ///
-/// Extracted from [`McpHandler::load_results`] as a free function so the
-/// `None`-repository branch — unreachable through `Container::new`, which
-/// always attempts to wire a repository and tolerates log corruption — can be
-/// unit-tested directly (REQ-MCP-EXPORT-05).
-fn load_results_from(
-    repo: Option<Arc<dyn CrawlResultRepository>>,
+/// The session buffer lives in [`McpState::session_results`]: `crawl_site`
+/// replaces it with the enriched DTOs of its just-finished run (pages
+/// converted through the single shared `extract_page_content` path, exactly
+/// what the CLI batch/export phases use), so an export after a crawl serves
+/// record-equivalent bytes to the CLI's JSONL (#1290, P6-2/F-16).
+///
+/// Extracted as a free function over the shared buffer so the empty-session
+/// branch — the honest "nothing to export" contract (REQ-MCP-EXPORT-05,
+/// re-pointed from the retired repository read) — is unit-testable directly.
+fn load_session_results(
+    session_results: &Arc<std::sync::Mutex<Vec<ScrapedContent>>>,
 ) -> Result<Vec<ScrapedContent>, CallToolResult> {
-    let repo = match repo {
-        Some(repo) => repo,
-        None => {
-            return Err(CallToolResult::error(vec![Content::text(
-                "no hay repositorio de resultados disponible",
-            )]))
-        },
+    let results = match session_results.lock() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
     };
-    let results = repo.load_all().map_err(|e| {
-        CallToolResult::error(vec![Content::text(format!(
-            "no se pudieron cargar los resultados: {e}"
-        ))])
-    })?;
     if results.is_empty() {
         return Err(CallToolResult::error(vec![Content::text(
             "no hay resultados disponibles para exportar",
@@ -114,28 +115,16 @@ fn load_results_from(
 }
 
 impl McpHandler {
-    /// Load all persisted crawl results, mapping operational failures to an
-    /// honest `CallToolResult::error` (isError:true, Spanish).
+    /// Load the session-owned crawl results, mapping operational failures to
+    /// an honest `CallToolResult::error` (isError:true, Spanish).
     ///
-    /// Returns `Err(CallToolResult)` when no repository is wired, the bulk
-    /// load fails, or the repository holds zero results; callers propagate
-    /// this directly.
-    ///
-    /// #1122: the bulk load is a full sequential scan of the append-only log
-    /// (open + `read_exact` + serde per record) — synchronous disk I/O that
-    /// scales with the persisted total. It runs on the blocking pool so a
-    /// 100k-record export cannot park a Tokio worker and inflate the latency
-    /// of every other MCP tool sharing the runtime.
-    async fn load_results(&self) -> Result<Vec<ScrapedContent>, CallToolResult> {
-        let repo = self.state.container.crawl_result_repository();
-        tokio::task::spawn_blocking(move || load_results_from(repo))
-            .await
-            .map_err(|e| {
-                tracing::warn!(error = %e, "export_load_results_join_failed");
-                CallToolResult::error(vec![Content::text(format!(
-                    "no se pudieron cargar los resultados: {e}"
-                ))])
-            })?
+    /// Returns `Err(CallToolResult)` when no crawl has run (or its extraction
+    /// produced nothing); callers propagate this directly. Synchronous by
+    /// design — the short metrics-discipline lock (REQ-07) copies the
+    /// in-memory buffer, no disk scan — which is what retired the #1122
+    /// blocking-pool requirement that the repository read needed.
+    fn session_results(&self) -> Result<Vec<ScrapedContent>, CallToolResult> {
+        load_session_results(&self.state.session_results)
     }
 
     /// Resolve and validate a caller-supplied export directory (#756).
@@ -271,9 +260,9 @@ impl McpHandler {
         }
     }
 
-    /// Export persisted crawl results to JSONL format (one JSON object per line)
+    /// Export the current session's crawl results to JSONL format (one JSON object per line)
     #[tool(
-        description = "Export persisted crawl results to JSONL format (one JSON object per line). Optimal for RAG pipeline ingestion. Reports the real written path."
+        description = "Export the current session's crawl results to JSONL format (one JSON object per line) — the same enriched records the CLI writes, taken from the last crawl_site run. Optimal for RAG pipeline ingestion. Reports the real written path."
     )]
     #[instrument(skip(self), fields(filename, format = "jsonl", results))]
     async fn export_jsonl(
@@ -300,7 +289,7 @@ impl McpHandler {
                 )
             })?;
 
-        let results = match self.load_results().await {
+        let results = match self.session_results() {
             Ok(results) => results,
             Err(err) => return Ok(err),
         };
@@ -311,9 +300,9 @@ impl McpHandler {
         export_results(&results, output_dir, ExportFormat::Jsonl, &filename)
     }
 
-    /// Export persisted crawl results with embeddings for vector database ingestion
+    /// Export the current session's crawl results with embeddings for vector database ingestion
     #[tool(
-        description = "Export persisted crawl results to JSON format for vector database ingestion. Includes a metadata header. Reports the real written path."
+        description = "Export the current session's crawl results to JSON format for vector database ingestion. Includes a metadata header. Reports the real written path."
     )]
     #[instrument(skip(self), fields(filename, format = "vector", results))]
     async fn export_vector(
@@ -337,7 +326,7 @@ impl McpHandler {
                 )
             })?;
 
-        let results = match self.load_results().await {
+        let results = match self.session_results() {
             Ok(results) => results,
             Err(err) => return Ok(err),
         };
@@ -354,7 +343,7 @@ impl McpHandler {
     /// robots.txt: a disallowed URL is rejected with a `robots.txt` error
     /// before any fetch (#749, uniform with #697).
     #[tool(
-        description = "Run the export pipeline synchronously: when `url` is provided, scrape it first; otherwise use persisted crawl results. Export to the specified format (jsonl, vector, or auto; default jsonl). Reports the real written path; never queues."
+        description = "Run the export pipeline synchronously: when `url` is provided, scrape it first; otherwise use the current session's crawl results. Export to the specified format (jsonl, vector, or auto; default jsonl). Reports the real written path; never queues."
     )]
     #[instrument(skip(self), fields(format, url, results))]
     async fn process_export_pipeline(
@@ -375,7 +364,8 @@ impl McpHandler {
 
         // When a URL is supplied the pipeline scrapes it live (reusing the
         // existing scraper service) and exports the fresh result; otherwise it
-        // falls back to persisted crawl results (issue #605).
+        // falls back to the session-owned crawl results (issue #605, source
+        // re-pointed to the session per #1290).
         let results = match &params.url {
             Some(mcp_url) => {
                 // #1116: the optional URL was parsed+hardened at the
@@ -409,7 +399,7 @@ impl McpHandler {
                     },
                 }
             },
-            None => match self.load_results().await {
+            None => match self.session_results() {
                 Ok(results) => results,
                 Err(err) => return Ok(err),
             },
@@ -449,17 +439,16 @@ mod tests {
 
     use super::*;
 
-    /// REQ-MCP-EXPORT-05 (repository unavailable): when no repository is wired,
-    /// the loader must return an honest `CallToolResult::error` (isError:true)
-    /// carrying the Spanish "no hay repositorio" message — never a fake success.
-    ///
-    /// This branch is unreachable through `Container::new` (which always
-    /// attempts to wire a repository and tolerates log corruption), so it is
-    /// exercised directly through the extracted `load_results_from` free
-    /// function by passing `None`.
+    /// REQ-MCP-EXPORT-05 (re-pointed to the session source, #1290): when the
+    /// session holds no results — no crawl has run, or its extraction produced
+    /// nothing — the loader must return an honest `CallToolResult::error`
+    /// (isError:true) carrying the Spanish "no hay resultados" message —
+    /// never a fake success, never a silently empty file.
     #[test]
-    fn load_results_from_none_repository_is_honest_error() {
-        let err = load_results_from(None).expect_err("None repository must be an error");
+    fn load_session_results_empty_session_is_honest_error() {
+        let session_results = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let err =
+            load_session_results(&session_results).expect_err("an empty session must be an error");
 
         // Serialize exactly as the MCP transport would, then assert the honest
         // error contract: isError:true plus the Spanish message.
@@ -467,7 +456,7 @@ mod tests {
         assert_eq!(
             json.get("isError").and_then(|v| v.as_bool()),
             Some(true),
-            "None-repository path must set isError:true, got: {json}"
+            "empty-session path must set isError:true, got: {json}"
         );
         let text = json
             .get("content")
@@ -477,8 +466,8 @@ mod tests {
             .and_then(|t| t.as_str())
             .unwrap_or_default();
         assert!(
-            text.contains("no hay repositorio de resultados disponible"),
-            "honest Spanish no-repository error expected, got: {text}"
+            text.contains("no hay resultados disponibles para exportar"),
+            "honest Spanish no-results error expected, got: {text}"
         );
     }
 }
@@ -498,7 +487,7 @@ mod handler_tests {
     use tempfile::TempDir;
     use webfang_core::di::Container;
     use webfang_core::domain::config::ScraperConfig;
-    use webfang_core::domain::{CrawlError, CrawlerConfig, ScrapedContent, ValidUrl};
+    use webfang_core::domain::{CrawlerConfig, ScrapedContent, ValidUrl};
     use webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -539,22 +528,14 @@ mod handler_tests {
         (McpState::new(container), tmp)
     }
 
-    /// Seed the container's crawl-result repository with one item, polling
-    /// until the append-only writer has flushed it (mirrors the shared
-    /// `start_seeded_server` harness).
-    async fn seed_one(handler: &McpHandler) {
-        let repo = handler
-            .state
-            .container
-            .crawl_result_repository()
-            .expect("repo wired");
-        let content = ScrapedContent {
-            title: "Seed".to_string(),
-            content: "seed body".to_string(),
-            url: ValidUrl::try_from_url(
-                url::Url::parse("https://example.com/seed").expect("valid"),
-            )
-            .expect("seed fixture is a plain https URL"),
+    /// Build one fixture [`ScrapedContent`] for session seeding.
+    fn seed_content(url: &str, title: &str, body: &str) -> ScrapedContent {
+        ScrapedContent {
+            title: title.to_string(),
+            content: body.to_string(),
+            url: ValidUrl::try_from_url(url::Url::parse(url).expect("valid")).expect(
+                "seed fixture is a plain https URL — validation only rejects non-fetchable schemes",
+            ),
             excerpt: None,
             author: None,
             date: None,
@@ -562,18 +543,23 @@ mod handler_tests {
             assets: vec![],
             correlation_id: None,
             quality_hint: None,
-        };
-        repo.save(&content).expect("save seed");
-        for _ in 0..80 {
-            if repo
-                .find_by_url("https://example.com/seed")
-                .expect("find")
-                .is_some()
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
+    }
+
+    /// Seed the session buffer with one item — the shape a finished `crawl_site`
+    /// run leaves behind (#1290; replaces the retired repository seeding and
+    /// its flush-poll, which an in-memory buffer does not need).
+    fn seed_one(handler: &McpHandler) {
+        let mut guard = handler
+            .state
+            .session_results
+            .lock()
+            .expect("fresh session lock is never poisoned");
+        guard.push(seed_content(
+            "https://example.com/seed",
+            "Seed",
+            "seed body",
+        ));
     }
 
     fn result_text(result: &CallToolResult) -> String {
@@ -742,7 +728,7 @@ mod handler_tests {
     }
 
     /// #756: same root-of-trust gate for `export_jsonl`. The gate runs before
-    /// `load_results`, so the rejection holds even with an empty repository.
+    /// the session read, so the rejection holds even with an empty session.
     #[tokio::test]
     async fn export_jsonl_rejects_absolute_output_dir_without_roots() {
         let (handler, _tmp) = test_handler().await;
@@ -787,7 +773,7 @@ mod handler_tests {
         let root = tmp.path().to_path_buf();
         let state = state.with_export_roots(vec![root.clone()]);
         let handler = McpHandler::new(state);
-        seed_one(&handler).await;
+        seed_one(&handler);
 
         let res = handler
             .export_jsonl(Parameters(ExportJsonlParams {
@@ -808,7 +794,7 @@ mod handler_tests {
     }
 
     #[tokio::test]
-    async fn export_jsonl_empty_repo_is_error() {
+    async fn export_jsonl_empty_session_is_error() {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .export_jsonl(Parameters(ExportJsonlParams {
@@ -816,101 +802,39 @@ mod handler_tests {
                 filename: None,
             }))
             .await
-            .expect("export_jsonl returns Ok on empty repo");
+            .expect("export_jsonl returns Ok on an empty session");
         let json = serde_json::to_value(&res).expect("serialize");
         assert_eq!(
             json.get("isError").and_then(|v| v.as_bool()),
             Some(true),
-            "empty repo must map to isError:true, got: {json}"
+            "empty session must map to isError:true, got: {json}"
         );
     }
 
-    /// #1122 — a repository whose `load_all` stalls 500 ms of synchronous
-    /// disk-style I/O (the real shape of a full append-only log scan).
-    struct SlowScanRepo {
-        content: ScrapedContent,
-    }
-
-    impl CrawlResultRepository for SlowScanRepo {
-        fn save(&self, _content: &ScrapedContent) -> Result<(), CrawlError> {
-            Ok(())
-        }
-        fn find_by_url(&self, _url: &str) -> Result<Option<ScrapedContent>, CrawlError> {
-            Ok(None)
-        }
-        fn get_all_urls(&self) -> Result<Vec<String>, CrawlError> {
-            Ok(vec![])
-        }
-        fn load_all(&self) -> Result<Vec<ScrapedContent>, CrawlError> {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            Ok(vec![self.content.clone()])
-        }
-    }
-
-    /// #1122 — `load_results` must run the full-log scan on the blocking pool.
-    ///
-    /// On a current-thread runtime a synchronous scan parks the only worker:
-    /// the 100 ms timer cannot fire until the 500 ms scan ends, so the timer
-    /// timestamp lands at >=500 ms (pre-fix behaviour, verified FAILING on
-    /// main's body). With `spawn_blocking` the scan yields the reactor and the
-    /// timer fires at ~100 ms. The 400 ms threshold separates the two modes
-    /// with a wide margin.
-    #[tokio::test]
-    async fn load_results_runs_off_the_executor() {
-        let tmp = TempDir::new().expect("temp dir");
-        let crawler_config =
-            CrawlerConfig::new(url::Url::parse("https://example.com").expect("url"));
-        let scraper_config = ScraperConfig {
-            output_dir: tmp.path().to_path_buf(),
-            ..Default::default()
-        };
-        let mut container = Container::new(crawler_config, scraper_config)
-            .await
-            .expect("container");
-        container.crawl_result_repo = Some(Arc::new(SlowScanRepo {
-            content: ScrapedContent {
-                title: "Slow".to_string(),
-                content: "slow scan body".to_string(),
-                url: ValidUrl::try_from_url(
-                    url::Url::parse("https://example.com/slow").expect("valid"),
-                )
-                .expect("slow fixture is a plain https URL"),
-                excerpt: None,
-                author: None,
-                date: None,
-                html: None,
-                assets: vec![],
-                correlation_id: None,
-                quality_hint: None,
-            },
-        }));
-        let handler = McpHandler::new(McpState::new(container));
-
-        let start = std::time::Instant::now();
-        let mut timer_at: Option<std::time::Duration> = None;
-        let ((), results) = tokio::join!(
-            async {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                timer_at = Some(start.elapsed());
-            },
-            handler.load_results(),
-        );
-        let results = results.expect("slow scan must still succeed");
-
-        let timer_at = timer_at.expect("timer must have fired");
-        assert!(
-            timer_at < std::time::Duration::from_millis(400),
-            "#1122: the 100ms timer fired at {timer_at:?} — a synchronous scan on \
-             the executor would delay it past the 500ms load, starving every \
-             other MCP tool on this runtime"
-        );
-        assert_eq!(results.len(), 1, "results must pass through unchanged");
+    /// The session read COPIES: two exports after one crawl must serve the
+    /// same records (the buffer is only replaced by the next crawl run). This
+    /// replaces the #1122 executor-starvation test, whose concern (a full-log
+    /// synchronous scan on the runtime) was structural to the retired
+    /// repository read — an in-memory swap under a short lock cannot starve
+    /// the executor (REQ-07 discipline on `session_results`).
+    #[test]
+    fn load_session_results_copies_without_draining() {
+        let session_results = Arc::new(std::sync::Mutex::new(vec![seed_content(
+            "https://example.com/a",
+            "A",
+            "body a",
+        )]));
+        let first = load_session_results(&session_results).expect("one item is exportable");
+        let second = load_session_results(&session_results).expect("the same item exports again");
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_eq!(first[0].url, second[0].url);
     }
 
     #[tokio::test]
     async fn export_jsonl_seeded_writes_file() {
         let (handler, _tmp) = test_handler().await;
-        seed_one(&handler).await;
+        seed_one(&handler);
         let out_dir = "test-output/export-jsonl-seeded";
         let _ = std::fs::remove_dir_all(out_dir);
         let res = handler
@@ -935,7 +859,7 @@ mod handler_tests {
     #[tokio::test]
     async fn export_vector_seeded_writes_json() {
         let (handler, _tmp) = test_handler().await;
-        seed_one(&handler).await;
+        seed_one(&handler);
         let out_dir = "test-output/export-vector-seeded";
         let _ = std::fs::remove_dir_all(out_dir);
         let res = handler
@@ -960,7 +884,7 @@ mod handler_tests {
     #[tokio::test]
     async fn process_export_pipeline_seeded_writes_to_output_dir() {
         let (handler, _tmp) = test_handler().await;
-        seed_one(&handler).await;
+        seed_one(&handler);
         let res = handler
             .process_export_pipeline(Parameters(ProcessExportPipelineParams {
                 url: None,

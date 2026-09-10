@@ -89,6 +89,16 @@ pub struct McpState {
     /// Process-lifetime scrape metrics, shared across all per-session clones
     /// (REQ-06). Locked only in short synchronous sections (REQ-07).
     pub metrics: Arc<Mutex<ScrapeMetrics>>,
+    /// Session-owned results of the last MCP crawl run (#1290, P6-2/F-16).
+    ///
+    /// `crawl_site` replaces the buffer after every completed run (the same
+    /// enriched DTO the CLI exports in memory: checksum, timestamp,
+    /// `word_count`, `metadata_version` are produced downstream by the
+    /// shared `process_results` path), and the export tools consume it
+    /// instead of the legacy server persistence. `metrics` discipline
+    /// applies: `Arc` shared across clones, locked only in short
+    /// synchronous sections, never across an `.await` (REQ-07).
+    pub session_results: Arc<Mutex<Vec<webfang_core::domain::ScrapedContent>>>,
     /// Allowed root directories for absolute `output_dir` paths (#696).
     ///
     /// Empty (default) = absolute `output_dir` values are REJECTED
@@ -164,6 +174,7 @@ impl McpState {
             inspector: None,
             robots_fetcher,
             metrics: Arc::new(Mutex::new(ScrapeMetrics::default())),
+            session_results: Arc::new(Mutex::new(Vec::new())),
             allowed_export_roots: Arc::new(Vec::new()),
             obsidian_hermetic: None,
             cancel_token: CancellationToken::new(),
