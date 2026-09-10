@@ -96,7 +96,7 @@ fn resolve_export_path(
 /// what the CLI batch/export phases use), so an export after a crawl serves
 /// record-equivalent bytes to the CLI's JSONL (#1290, P6-2/F-16).
 ///
-/// Extracted as a free function over the shared buffer so the empty-session
+/// Extracted as a free function over the per-session buffer so the empty-session
 /// branch — the honest "nothing to export" contract (REQ-MCP-EXPORT-05,
 /// re-pointed from the retired repository read) — is unit-testable directly.
 ///
