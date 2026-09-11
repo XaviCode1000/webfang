@@ -153,7 +153,8 @@ async fn __main() -> CliExit {
     // must leave its reason on stderr — otherwise the WARN would be silently
     // dropped (#796). Still stderr-only, respects quiet + NO_COLOR.
     let no_color = is_no_color();
-    let log_level = resolve_log_level(opts.verbosity);
+    let log_level =
+        resolve_log_level_with_config(opts.verbosity, config_defaults.log_level.as_deref());
     let file_trace_layer = build_file_trace_layer(trace_file);
 
     // Initialize logging (stderr + optional JSONL file trace layer)
@@ -275,6 +276,63 @@ fn resolve_log_level(verbosity: u8) -> &'static str {
         1 => "info",
         2 => "debug",
         _ => "trace",
+    }
+}
+
+/// Resolve the effective log level, honoring `log_level` from the config
+/// file when the operator gave no `-v` flags (P4-3 of #1296: the key was
+/// loaded by `ConfigDefaults` but never consumed — repro posted in the
+/// issue). Explicit flags always win; an invalid config value warns on
+/// stderr — the tracing subscriber does not exist yet — and falls back to
+/// WARN, matching the `ConfigDefaults` graceful-degradation contract.
+fn resolve_log_level_with_config(verbosity: u8, config_level: Option<&str>) -> &'static str {
+    if verbosity > 0 {
+        return resolve_log_level(verbosity);
+    }
+    let normalized = config_level
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_ascii_lowercase());
+    match normalized.as_deref() {
+        None | Some("warn") => "warn",
+        Some("error") => "error",
+        Some("info") => "info",
+        Some("debug") => "debug",
+        Some("trace") => "trace",
+        Some(other) => {
+            eprintln!(
+                "Advertencia: log_level «{other}» inválido en el archivo de configuración; se usa «warn»."
+            );
+            "warn"
+        },
+    }
+}
+
+#[cfg(test)]
+mod log_level_tests {
+    use super::resolve_log_level_with_config;
+
+    #[test]
+    fn explicit_flags_win_over_config() {
+        assert_eq!(resolve_log_level_with_config(1, Some("trace")), "info");
+        assert_eq!(resolve_log_level_with_config(2, Some("error")), "debug");
+        assert_eq!(resolve_log_level_with_config(3, Some("info")), "trace");
+    }
+
+    #[test]
+    fn config_level_applies_when_no_flags() {
+        assert_eq!(resolve_log_level_with_config(0, Some("info")), "info");
+        assert_eq!(resolve_log_level_with_config(0, Some("TRACE")), "trace");
+        assert_eq!(resolve_log_level_with_config(0, Some("  debug  ")), "debug");
+        assert_eq!(resolve_log_level_with_config(0, Some("warn")), "warn");
+    }
+
+    #[test]
+    fn missing_or_invalid_config_falls_back_to_warn() {
+        assert_eq!(resolve_log_level_with_config(0, None), "warn");
+        assert_eq!(resolve_log_level_with_config(0, Some("")), "warn");
+        assert_eq!(resolve_log_level_with_config(0, Some("   ")), "warn");
+        assert_eq!(resolve_log_level_with_config(0, Some("loud")), "warn");
     }
 }
 

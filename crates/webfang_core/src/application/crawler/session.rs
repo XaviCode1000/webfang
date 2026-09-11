@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 use wreq_util::Profile;
 
 use crate::application::crawler::checkpoint::{
-    BannedDomain, BincodeCheckpoint, CheckpointPath, CheckpointStore, CrawlCheckpoint,
+    self, BannedDomain, BincodeCheckpoint, CheckpointPath, CheckpointStore, CrawlCheckpoint,
 };
 use crate::application::crawler::collector::ResultsCollector;
 use crate::application::crawler::content_sink::CrawlContentSink;
@@ -34,6 +34,7 @@ use crate::domain::cookie_bridge::CookieBridge;
 use crate::domain::crawler_port::{RobotsPort, UrlQueuePort};
 use crate::domain::downloader_factory::DownloaderFactory;
 use crate::domain::downloader_port::Downloader;
+use crate::domain::error::CrawlError;
 use crate::domain::persistence::PersistenceMode;
 use crate::domain::session_port::SessionPort;
 use crate::domain::{CorrelationId, CrawlerConfig, JsStrategy};
@@ -171,10 +172,11 @@ pub(crate) struct BeginOutcome {
     pub degraded: bool,
 }
 
-/// Verdict of [`CrawlSession::finish`]: what must happen to the checkpoint file.
+/// Verdict of [`CrawlSession::finish`] over the checkpoint file.
 ///
-/// Pure decision — the engine performs the IO. Mirrors today's F-01 branches
-/// exactly (completed → delete, interrupted → save, disabled → skip).
+/// Derived internally by `finish` (P6-2 slice 2) and surfaced in
+/// [`SessionClose`]. Mirrors today's F-01 branches exactly
+/// (completed → delete, interrupted → save, disabled → skip).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CheckpointAction {
     /// Run completed fully: delete the checkpoint (no stale resume).
@@ -183,6 +185,18 @@ pub(crate) enum CheckpointAction {
     Write,
     /// Checkpointing disabled: nothing to do.
     Skip,
+}
+
+/// Outcome of [`CrawlSession::finish`]: the close facts the engine needs
+/// for its close trace event. The checkpoint IO already happened — the
+/// engine only reacts by clearing its own IO handle on [`CheckpointAction::Delete`]
+/// so its shutdown save cannot re-create the removed file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionClose {
+    /// Human-readable run tag (seed host by default).
+    pub run_label: String,
+    /// Verdict executed on the checkpoint file.
+    pub action: CheckpointAction,
 }
 
 /// Application-layer session failures (D-spec error stratification).
@@ -232,6 +246,14 @@ impl From<CrawlSessionError> for ScraperError {
             },
             CrawlSessionError::Internal(msg) => ScraperError::Internal(msg),
         }
+    }
+}
+
+impl From<CrawlSessionError> for CrawlError {
+    fn from(err: CrawlSessionError) -> Self {
+        // Row 33 (P6-2 slice 2): the rendered session error travels as the
+        // payload; upstream maps to `ScraperError::Config` (exit 78).
+        CrawlError::InvalidSession(err.to_string())
     }
 }
 
@@ -485,22 +507,64 @@ impl CrawlSession {
         })
     }
 
-    /// End the run: pure delete-vs-save verdict (D7 structural direction —
-    /// slice 1 decides here, the engine performs the IO; full IO ownership
-    /// migrates with run()/shutdown() in slice 2).
+    /// End the run: derive the F-01 verdict AND perform the checkpoint IO
+    /// (P6-2 slice 2 — close-time IO ownership lives here; the engine no
+    /// longer writes checkpoint state at close).
     ///
-    /// Mirrors today's F-01 branches exactly: completed + enabled → delete,
-    /// interrupted + enabled → write, disabled → skip.
-    pub(crate) fn finish(self, completed_fully: bool) -> CheckpointAction {
-        let enabled = !matches!(
-            self.persistence.mode,
-            PersistenceMode::Disabled | PersistenceMode::Resume { .. }
-        );
-        match (completed_fully, enabled) {
-            (true, true) => CheckpointAction::Delete,
-            (false, true) => CheckpointAction::Write,
+    /// Verdict table unchanged from slice 1: completed + enabled → delete,
+    /// interrupted + enabled → write, disabled → skip. The write path invokes
+    /// `checkpoint_snapshot` exactly once — only a Write pays for the crawl
+    /// state snapshot; delete and skip never touch it. The scoped checkpoint
+    /// path is derived from the persistence policy, so closing does not depend
+    /// on `begin()` having run (a degraded `begin` already flipped the mode to
+    /// [`PersistenceMode::Disabled`], which skips here too).
+    ///
+    /// Returns the run label + action for the engine's close trace event (the
+    /// event itself stays in the engine: its `crawl completed` summary is the
+    /// benchmark aggregator key and must not grow a sibling).
+    pub(crate) async fn finish(
+        self,
+        completed_fully: bool,
+        checkpoint_snapshot: impl AsyncFnOnce() -> CrawlCheckpoint,
+    ) -> SessionClose {
+        let scoped_path =
+            checkpoint_scoped_path(&self.persistence.mode, self.config.seed_url.as_str());
+        let action = match (completed_fully, scoped_path.is_some()) {
+            (true, true) => {
+                if let Some(path) = &scoped_path {
+                    checkpoint::delete_checkpoint_file(path);
+                }
+                CheckpointAction::Delete
+            },
+            (false, true) => {
+                if let Some(path) = scoped_path {
+                    let state = checkpoint_snapshot().await;
+                    let outcome =
+                        checkpoint::persist_checkpoint_state(BincodeCheckpoint::new(), state, path)
+                            .await;
+                    checkpoint::log_checkpoint_save(outcome);
+                }
+                CheckpointAction::Write
+            },
             (_, false) => CheckpointAction::Skip,
+        };
+        SessionClose {
+            run_label: self.identity.run_label,
+            action,
         }
+    }
+}
+
+/// Scoped checkpoint file path for the run's seed, when checkpointing is
+/// enabled (`None` = checkpointing off — same derivation as `begin()` and
+/// `Engine::from_session`; single source of truth for the file location).
+fn checkpoint_scoped_path(mode: &PersistenceMode, seed: &str) -> Option<PathBuf> {
+    match mode {
+        PersistenceMode::Checkpoint { cfg }
+        | PersistenceMode::Full {
+            checkpoint: cfg, ..
+        } => Some(CheckpointPath::new(&cfg.dir).file_for_seed(seed)),
+        PersistenceMode::Disabled | PersistenceMode::Resume { .. } => None,
     }
 }
 
@@ -635,8 +699,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn identity_single_mint_and_default_label() {
+    #[tokio::test]
+    async fn identity_single_mint_and_default_label() {
         let a = build_ok(PersistenceMode::Disabled);
         let b = build_ok(PersistenceMode::Disabled);
         assert_ne!(
@@ -646,12 +710,12 @@ mod tests {
         );
         assert_eq!(a.identity().run_label, "example.com");
         // Consume: an un-run session is a must_use leak by design (D7).
-        let _ = a.finish(true);
-        let _ = b.finish(true);
+        let _ = a.finish(true, async || CrawlCheckpoint::new()).await;
+        let _ = b.finish(true, async || CrawlCheckpoint::new()).await;
     }
 
-    #[test]
-    fn begin_disabled_is_fresh_without_io() {
+    #[tokio::test]
+    async fn begin_disabled_is_fresh_without_io() {
         let mut session = build_ok(PersistenceMode::Disabled);
         let outcome = session.begin();
         assert_eq!(
@@ -661,11 +725,11 @@ mod tests {
                 degraded: false,
             }
         );
-        let _ = session.finish(true);
+        let _ = session.finish(true, async || CrawlCheckpoint::new()).await;
     }
 
-    #[test]
-    fn begin_checkpoint_without_file_starts_fresh() {
+    #[tokio::test]
+    async fn begin_checkpoint_without_file_starts_fresh() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let mode = PersistenceMode::Checkpoint {
             cfg: CheckpointCfg {
@@ -682,11 +746,11 @@ mod tests {
                 degraded: false,
             }
         );
-        let _ = session.finish(true);
+        let _ = session.finish(true, async || CrawlCheckpoint::new()).await;
     }
 
-    #[test]
-    fn begin_unwritable_dir_degrades_without_failing() {
+    #[tokio::test]
+    async fn begin_unwritable_dir_degrades_without_failing() {
         // A regular file where the directory should be: ensure_dir fails
         // deterministically on every platform (no chmod games).
         let tmp = tempfile::TempDir::new().expect("tempdir");
@@ -707,11 +771,11 @@ mod tests {
                 degraded: true,
             }
         );
-        let _ = session.finish(true);
+        let _ = session.finish(true, async || CrawlCheckpoint::new()).await;
     }
 
-    #[test]
-    fn begin_resumes_matching_checkpoint() {
+    #[tokio::test]
+    async fn begin_resumes_matching_checkpoint() {
         use crate::application::crawler::checkpoint::{
             BincodeCheckpoint, CheckpointPath, CheckpointStore,
         };
@@ -744,12 +808,79 @@ mod tests {
                 degraded: false,
             }
         );
-        let _ = session.finish(true);
+        let _ = session.finish(true, async || CrawlCheckpoint::new()).await;
     }
 
-    #[test]
-    fn finish_decision_table() {
-        // (completed, mode) -> action; mirrors today's F-01 branches.
+    /// P8-3 (issue #1289): a corrupt checkpoint file must never crash the
+    /// run nor silently resume into an empty result — the StateStore
+    /// contract is corrupt → discard → start fresh → re-scrape. Pins both
+    /// corruption modes (CRC mismatch over garbage, valid CRC over
+    /// non-checkpoint JSON) and proves the session-close rewrite replaces
+    /// the corrupt file with loadable state.
+    #[tokio::test]
+    async fn corrupt_checkpoint_file_starts_fresh_and_resscrapes() {
+        use crate::application::crawler::checkpoint::{CheckpointPath, CheckpointStore};
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        // `Url::parse` normalizes the seed with a trailing slash — the
+        // fixture must hash the same normalized string `begin()` derives.
+        let seed = "https://example.com/";
+        let scoped = CheckpointPath::new(tmp.path()).file_for_seed(seed);
+        CheckpointPath::new(tmp.path())
+            .ensure_dir()
+            .expect("ensure dir");
+
+        // Corruption mode 1: garbage bytes — CRC32 header mismatch.
+        std::fs::write(&scoped, b"not a checkpoint at all").expect("corrupt file");
+        let mode = PersistenceMode::Checkpoint {
+            cfg: CheckpointCfg {
+                dir: tmp.path().to_path_buf(),
+                interval: 100,
+            },
+        };
+        let mut session = build_ok(mode.clone());
+        let outcome = session.begin();
+        assert_eq!(
+            outcome,
+            BeginOutcome {
+                resumed: false,
+                degraded: false,
+            },
+            "garbage checkpoint must start fresh, not fail"
+        );
+        let close = session.finish(false, async || CrawlCheckpoint::new()).await;
+        assert_eq!(close.action, CheckpointAction::Write);
+        assert!(
+            BincodeCheckpoint::new().load(&scoped).is_some(),
+            "close must replace the corrupt file with loadable state"
+        );
+
+        // Corruption mode 2: valid CRC32 header over non-checkpoint JSON —
+        // integrity passes, deserialization fails, still a fresh start.
+        let payload = br#"{"visited": "i am not a checkpoint"}"#;
+        let mut corrupt = Vec::with_capacity(4 + payload.len());
+        corrupt.extend_from_slice(&crc32fast::hash(payload).to_ne_bytes());
+        corrupt.extend_from_slice(payload);
+        std::fs::write(&scoped, &corrupt).expect("corrupt file v2");
+        let mut session = build_ok(mode);
+        let outcome = session.begin();
+        assert_eq!(
+            outcome,
+            BeginOutcome {
+                resumed: false,
+                degraded: false,
+            },
+            "CRC-valid non-checkpoint JSON must start fresh, not fail"
+        );
+        let _ = session.finish(true, async || CrawlCheckpoint::new()).await;
+    }
+
+    #[tokio::test]
+    async fn finish_decision_table() {
+        // (completed, enabled) -> action; mirrors today's F-01 branches.
+        // The Write case performs real IO — the fixture uses an ephemeral
+        // TempDir, never a shared path.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
         let table = [
             (true, true, CheckpointAction::Delete),
             (false, true, CheckpointAction::Write),
@@ -760,7 +891,7 @@ mod tests {
             let mode = if enabled {
                 PersistenceMode::Checkpoint {
                     cfg: CheckpointCfg {
-                        dir: std::path::PathBuf::from("/tmp/x"),
+                        dir: tmp.path().to_path_buf(),
                         interval: 100,
                     },
                 }
@@ -768,7 +899,10 @@ mod tests {
                 PersistenceMode::Disabled
             };
             let session = build_ok(mode);
-            assert_eq!(session.finish(completed), expected);
+            let close = session
+                .finish(completed, async || CrawlCheckpoint::new())
+                .await;
+            assert_eq!(close.action, expected);
         }
     }
 
