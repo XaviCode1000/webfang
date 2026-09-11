@@ -181,7 +181,7 @@ change (closed contract, `261bdb66-…`).
 | `application/crawler/crawl_task_ctx.rs` | Modify | add constructor from session; field set unchanged |
 | `domain/error/crawl_error.rs` + `cli/error.rs` + matrix doc | Modify | new variant wiring |
 | `application/container.rs` | Modify (minor) | expose port bundle builder if a helper is cleaner than per-caller assembly |
-| `docs/architecture/p62-crawlsession-rc2/*`, `docs/adr/0016-*.md` | Create | this artifact set (`openspec/` is scratch — see README) |
+| `docs/architecture/p62-crawlsession-rc2/*`, `docs/adr/0017-*.md` | Create | this artifact set (`openspec/` is scratch — see README) |
 
 ## Migration / Rollout
 
@@ -224,7 +224,7 @@ harden or reinterpret it. Any hardening is a separate change with its own matrix
 
 - [x] **P1 = (a)** `CrawlSession` is the seam consumed by `Engine`; `Engine::run`
       stays the entry point. **(b)** — session as the public owner — is the declared
-      destination in ADR-0016. **(c)** domain port rejected.
+      destination in ADR-0017. **(c)** domain port rejected.
 - [x] **P2 =** seam now, MCP run-parity in slice 3, with its own delta spec and
       snapshots, tracked as a mandatory follow-up (it does not fall out of the plan).
 - [x] **P3 =** no persisted format changes. `CrawlCheckpoint` stays v2,
@@ -232,7 +232,7 @@ harden or reinterpret it. Any hardening is a separate change with its own matrix
       exists in logs and traces only.
 - [x] **P4 = (a)** everything `pub(crate)` in slice 1 → PR labeled `refactor`, no
       `type:breaking-change`.
-- [x] **P5 =** `docs/architecture/p62-crawlsession-rc2/` + `docs/adr/0016-*.md` is the
+- [x] **P5 =** `docs/architecture/p62-crawlsession-rc2/` + `docs/adr/0017-*.md` is the
       single canonical home; `openspec/` stays ignored scratch.
 
 The four signatures unblock slices 2–4 scope-wise; they authorize no delivery. Nothing

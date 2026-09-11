@@ -84,5 +84,5 @@ it; (3) MCP run-parity (needs the orchestrator's P2 decision); (4) deprecate
 
 Yes — and it went ahead: the four decisions came back signed by the orchestrator
 (ownership = seam consumed by `Engine`; MCP parity = mandatory slice 3; no persisted
-format change; everything `pub(crate)` in slice 1). See ADR-0016 and `design.md`
+format change; everything `pub(crate)` in slice 1). See ADR-0017 and `design.md`
 §Decisions signed by the orchestrator.

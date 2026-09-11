@@ -26,7 +26,7 @@ emits it.
   scrape and export within a process.
 - `#[instrument]` fields for the session span, plus a `checkpoint_action` field on
   the run summary (make the F-01 delete-vs-save decision visible in traces).
-- Delta spec for the `crawl-session` capability; ADR-0016.
+- Delta spec for the `crawl-session` capability; ADR-0017.
 
 ### Out of Scope
 
@@ -77,7 +77,7 @@ functions.
 | Mechanical move changes behavior | Med | existing determinism / checkpoint / parity tests are the tripwire; no logic edits in slice 1 |
 | Checkpoint lost on early drop | Med | `#[must_use]` session; `finish(self)` consumes; `Drop` performs no IO |
 | Guard held across `.await` | Low | `#![deny(clippy::await_holding_lock)]` in the new module (engine.rs:19 precedent) |
-| Name confusion with `SessionPort` | Med | never abbreviate to `Session`; ADR-0016 states the collision |
+| Name confusion with `SessionPort` | Med | never abbreviate to `Session`; ADR-0017 states the collision |
 | Review-size blowout | Med | chained slices, ≤400 authored lines each |
 
 ## Rollback Plan

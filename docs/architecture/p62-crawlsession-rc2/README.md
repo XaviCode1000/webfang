@@ -10,12 +10,12 @@ Branch: `docs/p62-crawlsession-rc2` · worktree: `~/Projects/Rust/webfang-worktr
 | `proposal.md` | sdd-propose | intent, scope/non-goals, capabilities, risks, rollback, success criteria |
 | `spec.md` | sdd-spec | 9 requirements + Given/When/Then scenarios (WHAT, no HOW) |
 | `design.md` | sdd-design | 10 decisions, signature sketches, async rules, data flow, observability, error stratification, verification plan |
-| `../../adr/0016-crawlsession-run-owner.md` | ADR log | context / decision / consequences / alternatives rejected |
+| `../../adr/0017-crawlsession-run-owner.md` | ADR log | context / decision / consequences / alternatives rejected |
 
 ## Canonical location (resolved P5)
 
 **This directory is the single canonical home** for the RC-2 design artifacts, plus
-`docs/adr/0016-*.md`. `openspec/changes/crawl-session-abstraction/` is scratch only:
+`docs/adr/0017-*.md`. `openspec/changes/crawl-session-abstraction/` is scratch only:
 `.gitignore:39` ignores `openspec/` ("AI AGENTS — SDD / Agent working directories") and
 `.gitignore:41` ignores `specs/` **at any depth**, so neither the SDD convention path nor
 its spec-delta subpath can be committed here. Do not edit the scratch copy as if it were
@@ -33,11 +33,11 @@ they were caught:
 
 ## Read order
 
-`exploration.md` → `proposal.md` → `spec.md` → `design.md` → ADR-0016.
+`exploration.md` → `proposal.md` → `spec.md` → `design.md` → ADR-0017.
 
 ## Status
 
 **Design closed and signed by the orchestrator (P1–P4 FIRMADO, P5 resolved).** No code in
 this mission. Slice 1 is unblocked for the code mission; slices 2–4 execute under the
-signed decisions recorded in ADR-0016 and `design.md` §Decisions. Delivery (push/PR) is
+signed decisions recorded in ADR-0017 and `design.md` §Decisions. Delivery (push/PR) is
 the orchestrator's, not this branch's.
