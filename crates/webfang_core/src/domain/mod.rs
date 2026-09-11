@@ -42,6 +42,7 @@ pub mod pattern_matching;
 /// Pipeline stage definitions and scraped item types for the crawl pipeline.
 pub mod pipeline_item;
 pub mod ports;
+pub mod post_load_wait;
 pub mod profile;
 pub mod repositories;
 pub mod repository;
@@ -144,6 +145,7 @@ pub use pattern_matching::{match_url_pattern, matches_pattern};
 pub use persistence::{DomainRecords, RawRecord, RecordStoreError, RecordStorePort};
 pub use pipeline_item::{FilterReason, PipelineStage, RejectReason, ScrapedItem, StageOutcome};
 pub use ports::AssetDownloaderPort;
+pub use post_load_wait::PostLoadWait;
 pub use profile::{profile_from_name, valid_profile_names};
 pub use repositories::CrawlResultRepository;
 pub use repository::VectorRepository;

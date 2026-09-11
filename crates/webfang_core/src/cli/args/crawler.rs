@@ -1,5 +1,6 @@
 use crate::domain::config::ConcurrencyConfig;
 use crate::domain::options_spec::crawler as crawler_specs;
+use crate::domain::post_load_wait::PostLoadWait;
 use crate::domain::JsStrategy;
 use crate::domain::ValidUrl;
 use scraper::Selector;
@@ -107,6 +108,13 @@ pub(crate) fn parse_seed_url(s: &str) -> Result<ValidUrl, String> {
     // ("URL inválida: …") and clap names the offending value itself, so no
     // extra prefix is added (which would duplicate "URL inválida").
     ValidUrl::parse(s).map_err(|e| e.to_string())
+}
+
+/// Parse `--js-wait` (F-52-b, #1277): `idle` | `none` | `<ms 1..=30000>`
+/// via [`PostLoadWait::from_str`]. Invalid input surfaces as a Spanish
+/// clap usage error (exit 64) naming the value and the valid forms.
+pub(crate) fn parse_js_wait(s: &str) -> Result<PostLoadWait, String> {
+    s.parse::<PostLoadWait>()
 }
 
 pub(crate) fn parse_timeout_secs(s: &str) -> Result<u64, String> {
@@ -338,6 +346,10 @@ pub struct CrawlerArgs {
     /// JavaScript rendering strategy: static (wreq only), hybrid (3-layer), full (Chromiumoxide only)
     pub js_strategy: JsStrategy,
 
+    /// Post-load settlement wait for the chromium render path (F-52-b):
+    /// idle (default), fixed ms, or none.
+    pub post_load_wait: PostLoadWait,
+
     /// Path to the obscura binary (default: "obscura")
     pub obscura_binary: String,
 
@@ -395,6 +407,7 @@ impl clap::FromArgMatches for CrawlerArgs {
             no_session_health: m.get_flag("no_session_health"),
             h2_profile: extract::value(m, "h2_profile")?,
             js_strategy: extract::value(m, "js_strategy")?,
+            post_load_wait: extract::value(m, "js_wait")?,
             obscura_binary: extract::value(m, "obscura_binary")?,
             dom_preprune: m.get_flag("dom_preprune"),
         })
@@ -626,7 +639,7 @@ mod spec_parity_tests {
 
     #[test]
     fn deferred_list_is_honest_about_its_reasons() {
-        assert_eq!(spec::crawler::GROUP.len() + DEFERRED_FROM_SPEC.len(), 47);
+        assert_eq!(spec::crawler::GROUP.len() + DEFERRED_FROM_SPEC.len(), 48);
         let args = command_args();
         for (id, _) in DEFERRED_FROM_SPEC {
             assert!(

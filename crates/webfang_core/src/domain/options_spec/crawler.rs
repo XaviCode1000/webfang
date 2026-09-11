@@ -773,6 +773,27 @@ pub const JS_STRATEGY: OptionSpec = OptionSpec {
     value_delimiter: None,
     };
 
+/// `--js-wait <JS_WAIT>` (F-52-b, #1277)
+pub const JS_WAIT: OptionSpec = OptionSpec {
+id: "js_wait",
+value_name: "JS_WAIT",
+long: "js-wait",
+short: None,
+aliases: &[],
+env: Some("WEBFANG_JS_WAIT"),
+default: Some(DefaultValue::Str("idle")),
+help: "Post-load settlement wait for the chromium render path: idle (network-idle, default), <ms> fixed wait (1..=30000), none (capture immediately)",
+heading: Some("JS Rendering"),
+// Free-text kind: the `<ms>` numeric form is not enumerable, so the
+// typed parse lives in `text_binding` (FromStr), not PossibleValues.
+kind: ValueKind::Text,
+visible_aliases: &[],
+nullable: false,
+description_override: None,
+feature_gate: None,
+value_delimiter: None,
+};
+
 /// `--obscura-binary <OBSCURA_BINARY>`
 pub const OBSCURA_BINARY: OptionSpec = OptionSpec {
     id: "obscura_binary",
@@ -896,6 +917,7 @@ pub const GROUP: &[OptionSpec] = &[
     NO_SESSION_HEALTH,
     H2_PROFILE,
     JS_STRATEGY,
+    JS_WAIT,
     OBSCURA_BINARY,
     DOM_PREPRUNE,
 ];
