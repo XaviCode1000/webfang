@@ -38,6 +38,13 @@ resolver, and a hostname's answer set is only visible at resolution time. That i
 
 Only the exact value `1` disarms anything; `0`, `true`, `yes` all leave the layer armed.
 
+## Test-isolation rule
+
+- Writers: use `EnvGuard::{set,remove,with,clean}` or `env_lock()` for permanent setup (#1126).
+- Readers: hold `EnvGuard` for full read-or-assert window (even pure readers use `EnvGuard::clean`) or `#[serial]`; see #1308.
+- Never nest `EnvGuard` in `env_lock()` (mutex not reentrant).
+- Spawned children exempt: `Command::env`/`env_remove` fix child env at spawn (see `sanitize_env` in `cli_harness.rs`).
+
 ## What MCP actually does with `WEBFANG_MCP_DISABLE_SSRF`
 
 It removes layers 1 and — because layer 2 never sat on this path — **every entry-level
