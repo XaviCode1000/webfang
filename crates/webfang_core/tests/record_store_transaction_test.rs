@@ -17,7 +17,7 @@
 //! Evidence naming (ADR-0016 §5, issue #1292): the concurrency tests here carry
 //! the `f07_` prefix and are the NAMED F-07 evidence. The multi-process
 //! reproduction in `tests/behavioral/cli/transactional_store_test.rs` stays
-//! `#[ignore]`d as a documented stress check, never CI evidence.
+//! ignored as a documented stress check, never CI evidence.
 
 use std::collections::BTreeSet;
 use std::path::Path;
