@@ -2,4 +2,4 @@
 source: crates/webfang_core/../../tests/cli_binary_test.rs
 expression: "redact_nondeterministic(Path::new(\"__no_temp__\"), &stdout)"
 ---
-webfang 2.0.0
+webfang 2.1.0
