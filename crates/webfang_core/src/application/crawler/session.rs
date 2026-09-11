@@ -1,7 +1,8 @@
 //! `CrawlSession` — one validated owner for one crawl run (P6-2/RC-2 slice 1).
 //!
 //! A crawl run used to have no owner: per-run state was assembled in five
-//! places (`Engine::new`, `Engine::build_task_ctx`, the three entry fns, CLI
+//! places (the engine's former direct constructor, its former task-context
+//! builder, the three entry fns, CLI
 //! discovery, batch), each re-deriving a subset of the knobs. `CrawlSession`
 //! is the single validated run object; [`Engine`](super::engine::Engine) keeps
 //! executing and receives a session instead of a knob bag
@@ -9,7 +10,8 @@
 //!
 //! Slice 1 is additive and revertible: the entry functions keep their
 //! signatures and build a session internally before delegating; `EngineOptions`
-//! stays compilable as a transitional view (removed in slice 4).
+//! stays compilable as a transitional view (slice 4 kept it — its deprecation
+//! is a separate `type:breaking-change` act per the signed design).
 #![deny(clippy::await_holding_lock)]
 
 use std::path::PathBuf;
@@ -117,7 +119,7 @@ pub(crate) struct CrawlPorts {
 /// The engine keeps building its scheduler, limiter, counters, collector,
 /// bridges and fetch router exactly as today; this bundle hands them to the
 /// session so the shared task context is *derived* from run facts instead of
-/// re-derived by the executor (D6). Assembled by `Engine::build_task_ctx`.
+/// re-derived by the executor (D6). Assembled by [`Engine::run`](super::engine::Engine::run).
 pub(crate) struct CrawlExec {
     /// Shared discovery queue.
     pub queue: Arc<dyn UrlQueuePort>,
@@ -384,11 +386,6 @@ impl CrawlSession {
         &self.config
     }
 
-    /// Single cancellation authority for the run (#509).
-    pub(crate) fn cancel(&self) {
-        self.cancel_token.cancel();
-    }
-
     /// Cancellation token clone for engine adoption (`from_session`).
     pub(crate) fn cancel_token(&self) -> CancellationToken {
         self.cancel_token.clone()
@@ -570,8 +567,9 @@ fn checkpoint_scoped_path(mode: &PersistenceMode, seed: &str) -> Option<PathBuf>
 
 /// Transitional shim: [`TransportPolicy`] from [`EngineOptions`].
 ///
-/// Lets slice-1 callers migrate one knob bag at a time; `EngineOptions`
-/// deprecation (slice 4) removes it.
+/// Lets callers migrate one knob bag at a time; `EngineOptions` deprecation —
+/// a separate `type:breaking-change` act per the signed design (#1288) —
+/// removes it.
 impl From<&crate::application::crawler::engine::EngineOptions> for TransportPolicy {
     fn from(options: &crate::application::crawler::engine::EngineOptions) -> Self {
         Self {
