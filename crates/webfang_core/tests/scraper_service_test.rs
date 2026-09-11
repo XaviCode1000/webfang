@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use webfang_core::application::http_client::{HttpError, HttpResponse};
 use webfang_core::application::scraper_service::{
-    detect_spa_content, extract_with_selector, scrape_multiple_with_limit, scrape_with_config,
-    scrape_with_readability, MAX_INSTRUMENTED_BODY_SIZE, MIN_CONTENT_CHARS,
+    detect_spa_content, enforce_robots_policy, extract_with_selector, scrape_multiple_with_limit,
+    scrape_with_config, scrape_with_readability, MAX_INSTRUMENTED_BODY_SIZE, MIN_CONTENT_CHARS,
 };
 use webfang_core::domain::{CorrelationId, DomInspectorPort, ExtractResult, SelectorErrorKind};
 use webfang_core::{ScraperConfig, ScraperError};
@@ -1398,4 +1398,102 @@ async fn test_batch_without_pacing_runs_unthrottled() {
         elapsed < Duration::from_millis(150),
         "unthrottled batch must not pace, took {elapsed:?}"
     );
+}
+
+// =====================================================================
+// #1301: a policy refusal is not a robots denial
+// =====================================================================
+
+/// Fixed-answer robots port for `enforce_robots_policy` tests: hermetic,
+/// no network, no env hatches.
+struct StubRobotsPort {
+    allowed: bool,
+}
+
+impl webfang_core::domain::crawler_port::RobotsPort for StubRobotsPort {
+    fn is_allowed<'a>(
+        &'a self,
+        url: &'a str,
+        domain: &'a str,
+    ) -> futures::future::BoxFuture<'a, bool> {
+        let _ = (url, domain);
+        Box::pin(async move { self.allowed })
+    }
+}
+
+/// The #1301 repro shape (`scrape_url("http://127.0.0.1:9/")`): a
+/// forbidden-literal target must NOT be reported as
+/// "WAF/CAPTCHA detectado ... robots.txt". No socket ever opens and
+/// robots.txt is never consulted, so the denial surfaces the guard's real
+/// cause as a Network error. The guard-chain itself is untouched.
+///
+/// Deliberately NO entry-guard hatch: the production guard must fire. Siblings in
+/// this same binary ARM `DISABLE_ENTRY_GUARD_ENV` through `EnvGuard`, which
+/// serialises environment *mutations* but not *reads* — so this test must hold the
+/// lock and force the variable absent for its whole lifetime, or it observes a
+/// sibling's hatch whenever the two share a process. nextest gives one process per
+/// test (so the CI Tests jobs pass); `cargo test --tests`, which the Coverage job
+/// runs through llvm-cov, does not (#1308).
+#[tokio::test]
+async fn policy_denial_on_forbidden_literal_is_network_not_waf() {
+    // `EnvGuard` acquires the environment lock itself: never wrap it in a
+    // separate `env_lock()` — the mutex is non-reentrant and would deadlock.
+    let _hatch_off = webfang_test_utils::EnvGuard::clean(&[
+        webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+    ]);
+    let fetcher =
+        webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher::with_default_profile(5)
+            .expect("fetcher construction is offline");
+    let url = url::Url::parse("http://127.0.0.1:9/").unwrap();
+
+    let err = enforce_robots_policy(&url, Some(&fetcher), false)
+        .await
+        .expect_err("forbidden literal must be denied");
+
+    match &err {
+        ScraperError::Network(_) => {},
+        other => panic!("policy refusal must be Network, got: {other:?}"),
+    }
+    let msg = err.to_string();
+    assert!(
+        msg.contains("SSRF detectado"),
+        "real cause named, got: {msg}"
+    );
+    assert!(!msg.contains("WAF/CAPTCHA"), "no phantom WAF, got: {msg}");
+    assert!(
+        !msg.contains("robots.txt"),
+        "robots never consulted, got: {msg}"
+    );
+}
+
+/// A genuine robots-rules denial keeps the #697/#705 contract: `WafBlocked`
+/// with the robots.txt provider — `example.com` is a hostname, so the
+/// entry guard passes and the stub's denial is a real rules denial.
+#[tokio::test]
+async fn genuine_robots_denial_stays_waf_blocked() {
+    let stub = StubRobotsPort { allowed: false };
+    let url = url::Url::parse("https://example.com/private/page").unwrap();
+
+    let err = enforce_robots_policy(&url, Some(&stub), false)
+        .await
+        .expect_err("rules denial must fail the gate");
+
+    match err {
+        ScraperError::WafBlocked { provider, .. } => assert!(
+            provider.contains("robots"),
+            "robots denial must surface the robots.txt provider, got: {provider}"
+        ),
+        other => panic!("expected WafBlocked(robots.txt), got: {other:?}"),
+    }
+}
+
+/// An allowed URL flows through the gate untouched.
+#[tokio::test]
+async fn robots_allow_flows_through() {
+    let stub = StubRobotsPort { allowed: true };
+    let url = url::Url::parse("https://example.com/public/page").unwrap();
+
+    enforce_robots_policy(&url, Some(&stub), false)
+        .await
+        .expect("allowed URL must pass the gate");
 }
