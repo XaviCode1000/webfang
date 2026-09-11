@@ -1,9 +1,9 @@
 # Release-plz — automated version bump + CHANGELOG + Release PR + v* tags.
 #
-# Flow: push to main -> release-plz-pr opens/updates a Release PR
-# (chore/release-*) with Cargo.toml + CHANGELOG.md updates.
-# Merging it -> release-plz-release pushes the `v{{ version }}` tag,
-# which triggers release.yml (binaries + GitHub Release).
+# Flow: push to main -> release-plz-release pushes the `v{{ version }}` tag
+# for an already-merged version bump, which triggers release.yml (binaries +
+# GitHub Release). The Release PR itself is created MANUALLY (see #1339):
+# the release-plz-pr job cannot open one, see the note on that job below.
 #
 # Config: release-plz.toml + cliff.toml. No registry publishing (git_only).
 
@@ -51,7 +51,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Open or update the Release PR with the next version + CHANGELOG.
+  # KNOWN ISSUE (webfang#1337): this job fails whenever there is something to
+  # release. In git_only mode release-plz runs `cargo package --allow-dirty
+  # --workspace` in a worktree at the last release tag, and our inter-crate deps
+  # are { path, version } on crates that are never published (binaries-only), so
+  # crates.io resolution can never succeed. Manual Release PRs are the operating
+  # convention (see #1339) until release-plz supports skipping the packaging step.
   release-plz-pr:
     name: Release-plz PR
     runs-on: ubuntu-latest
