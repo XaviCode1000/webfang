@@ -1427,9 +1427,20 @@ impl webfang_core::domain::crawler_port::RobotsPort for StubRobotsPort {
 /// robots.txt is never consulted, so the denial surfaces the guard's real
 /// cause as a Network error. The guard-chain itself is untouched.
 ///
-/// Deliberately NO entry-guard hatch: the production guard must fire.
+/// Deliberately NO entry-guard hatch: the production guard must fire. Siblings in
+/// this same binary ARM `DISABLE_ENTRY_GUARD_ENV` through `EnvGuard`, which
+/// serialises environment *mutations* but not *reads* — so this test must hold the
+/// lock and force the variable absent for its whole lifetime, or it observes a
+/// sibling's hatch whenever the two share a process. nextest gives one process per
+/// test (so the CI Tests jobs pass); `cargo test --tests`, which the Coverage job
+/// runs through llvm-cov, does not (#1308).
 #[tokio::test]
 async fn policy_denial_on_forbidden_literal_is_network_not_waf() {
+    // `EnvGuard` acquires the environment lock itself: never wrap it in a
+    // separate `env_lock()` — the mutex is non-reentrant and would deadlock.
+    let _hatch_off = webfang_test_utils::EnvGuard::clean(&[
+        webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+    ]);
     let fetcher =
         webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher::with_default_profile(5)
             .expect("fetcher construction is offline");
