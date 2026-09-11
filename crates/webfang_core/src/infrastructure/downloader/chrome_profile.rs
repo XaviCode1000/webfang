@@ -65,9 +65,11 @@ mod tests {
 
     #[test]
     fn test_chrome_profile_dir_creates_unique_dirs() {
-        let dirs: Vec<PathBuf> = (0..10)
-            .map(|_| ChromeProfileDir::new().unwrap().path().to_path_buf())
-            .collect();
+        // Keep the guards alive: dropping one deletes its dir (see the
+        // cleanup test), so collecting bare paths would assert on litter.
+        let guards: Vec<ChromeProfileDir> =
+            (0..10).map(|_| ChromeProfileDir::new().unwrap()).collect();
+        let dirs: Vec<PathBuf> = guards.iter().map(|g| g.path().to_path_buf()).collect();
 
         // All directories should be unique.
         let mut sorted = dirs.clone();
