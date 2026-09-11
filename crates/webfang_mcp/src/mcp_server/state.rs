@@ -369,8 +369,10 @@ impl McpState {
     /// Delegates to the single policy source
     /// ([`enforce_robots_policy`](webfang_core::application::scraper_service::enforce_robots_policy)):
     /// fail-open when the fetcher is absent, `WafBlocked(url, "robots.txt")`
-    /// on denial. Callers receive the denial as an error payload and report it
-    /// through their tool error envelope.
+    /// on a genuine rules denial, `Network` carrying the guard's cause on a
+    /// policy refusal (#1301 — never a phantom WAF). Callers receive the
+    /// denial as an error payload and report it through their tool error
+    /// envelope.
     pub async fn robots_denied_for(
         &self,
         url: &url::Url,

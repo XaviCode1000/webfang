@@ -23,6 +23,8 @@ use crate::domain::axtree_port::AxTreePort;
 use crate::domain::axtree_port::RawAxNodeView;
 #[cfg(feature = "chromium")]
 use crate::error::ScraperError;
+#[cfg(feature = "chromium")]
+use std::path::Path;
 
 // DTOs moved to domain::axtree_port in sub-slice 3.A.2 (ADR-0012). Infra
 // re-exports them so existing call sites continue to resolve.
@@ -139,7 +141,11 @@ impl chromiumoxide::types::Command for GetFullAXTree {
 /// 30s/10s timeout, shared by `fetch_raw_axtree` callers (compact,
 /// playwright).
 #[cfg(feature = "chromium")]
-pub(crate) async fn with_cdp_page<F, T, Fut>(url: &Url, f: F) -> Result<T, DownloadError>
+pub(crate) async fn with_cdp_page<F, T, Fut>(
+    url: &Url,
+    user_data_dir: Option<&Path>,
+    f: F,
+) -> Result<T, DownloadError>
 where
     F: FnOnce(chromiumoxide::Page) -> Fut,
     Fut: std::future::Future<Output = Result<T, DownloadError>>,
@@ -160,9 +166,13 @@ where
         )));
     }
 
-    let config = BrowserConfig::builder()
+    let mut config_builder = BrowserConfig::builder()
         .headless_mode(HeadlessMode::True)
-        .no_sandbox()
+        .no_sandbox();
+    if let Some(dir) = user_data_dir {
+        config_builder = config_builder.user_data_dir(dir);
+    }
+    let config = config_builder
         .build()
         // LCOV_EXCL_LINE defensive: browser-config-build — static builder flags cannot fail at runtime
         .map_err(DownloadError::Internal)?;
@@ -223,7 +233,11 @@ impl AxTreePort for ChromiumoxideAxTreeAdapter {
         >,
     > {
         Box::pin(async move {
-            let raw = fetch_raw_axtree(url)
+            let profile =
+                super::downloader::chrome_profile::ChromeProfileDir::new().map_err(|e| {
+                    ScraperError::extraction(format!("failed to create Chrome profile dir: {e}"))
+                })?;
+            let raw = fetch_raw_axtree(url, Some(profile.path()))
                 .await
                 .map_err(|e| ScraperError::extraction(format!("AXTree fetch failed: {e}")))?;
             Ok(wrap_as_views(raw))
@@ -235,8 +249,9 @@ impl AxTreePort for ChromiumoxideAxTreeAdapter {
 #[cfg(feature = "chromium")]
 pub(crate) async fn fetch_raw_axtree(
     url: &Url,
+    user_data_dir: Option<&Path>,
 ) -> Result<Vec<chromiumoxide::cdp::browser_protocol::accessibility::AxNode>, DownloadError> {
-    with_cdp_page(url, |page| async move {
+    with_cdp_page(url, user_data_dir, |page| async move {
         use tokio::time::{timeout, Duration};
         const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
         let response = timeout(
@@ -282,7 +297,10 @@ pub async fn fetch_axtree_snapshot(
     format: SnapshotFormat,
 ) -> Result<CompactSnapshot, DownloadError> {
     require_supported_format(format)?;
-    let nodes = fetch_raw_axtree(url).await?;
+    let profile = super::downloader::chrome_profile::ChromeProfileDir::new().map_err(|e| {
+        DownloadError::Internal(format!("failed to create Chrome profile dir: {e}"))
+    })?;
+    let nodes = fetch_raw_axtree(url, Some(profile.path())).await?;
     let views = wrap_as_views(nodes);
     Ok(crate::domain::axtree_port::compact(
         &views,
@@ -300,7 +318,10 @@ pub async fn fetch_playwright_snapshot(
     interactive_only: bool,
     selector: Option<&str>,
 ) -> Result<PlaywrightSnapshot, DownloadError> {
-    let nodes = fetch_raw_axtree(url).await?;
+    let profile = super::downloader::chrome_profile::ChromeProfileDir::new().map_err(|e| {
+        DownloadError::Internal(format!("failed to create Chrome profile dir: {e}"))
+    })?;
+    let nodes = fetch_raw_axtree(url, Some(profile.path())).await?;
     Ok(playwright::playwright(&nodes, interactive_only, selector))
 }
 

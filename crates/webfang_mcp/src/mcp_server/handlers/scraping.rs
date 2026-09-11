@@ -946,7 +946,8 @@ fn batch_outcome_to_jsonl(
 /// fail-open when no fetcher is wired). On denial, records an
 /// `Outcome::Error` scrape identity for `tool` — the same shape as each
 /// handler's HTTP-error branch — and returns the tool error envelope carrying
-/// the denial text (`WafBlocked(url, "robots.txt")`).
+/// the denial text (`WafBlocked(url, "robots.txt")` for genuine rules
+/// denials; `Network` with the guard's cause for policy refusals, #1301).
 async fn robots_denied_response(
     handler: &McpHandler,
     tool: &'static str,
