@@ -204,7 +204,7 @@ pub async fn scrape_with_config(
 /// A policy refusal is NOT a robots denial (#1301): when the SSRF literal-IP
 /// entry guard rejects the URL, no socket ever opens and robots.txt was never
 /// consulted — reporting that as `WafBlocked(url, "robots.txt")` invents a
-/// WAF that does not exist. The denial surfaces as [`ScraperError::Network"]
+/// WAF that does not exist. The denial surfaces as [`ScraperError::Network`]
 /// carrying the guard's own cause (`SSRF detectado: ...`), so connect-family
 /// failures keep their real cause. The guard-chain itself is untouched: the
 /// same guard still denies, still emits its own WARN, and the fetcher's
