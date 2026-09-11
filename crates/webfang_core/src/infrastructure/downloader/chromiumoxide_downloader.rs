@@ -256,6 +256,27 @@ impl ChromiumoxideDownloader {
         })
     }
 
+    /// Real navigation HTTP status for a just-loaded page (#1311).
+    /// Fails closed: no recorded response (or no numeric status) is an
+    /// honest `Internal` error, never a synthetic 200.
+    #[cfg(feature = "chromium")]
+    async fn navigation_status(page: &Page, url: &Url) -> Result<u16, DownloadError> {
+        let navigation = timeout(NAV_TIMEOUT, page.wait_for_navigation_response())
+            .await
+            .map_err(|_| {
+                DownloadError::Internal(format!("navigation to {url} produced no HTTP response"))
+            })?
+            .map_err(|e| DownloadError::Internal(e.to_string()))?;
+        navigation
+            .as_ref()
+            .and_then(|request| request.response.as_ref())
+            .map(|response| response.status)
+            .and_then(|code| u16::try_from(code).ok())
+            .ok_or_else(|| {
+                DownloadError::Internal(format!("navigation to {url} produced no HTTP status"))
+            })
+    }
+
     /// Subscribe to one CDP network event kind. `None` (with WARN) on
     /// failure — the caller degrades to immediate capture. `what` names
     /// the subscription for the log line only.
@@ -398,11 +419,17 @@ impl Downloader for ChromiumoxideDownloader {
             } else {
                 None
             };
-            // 5. Navigate with timeout
+            // 5. Navigate with timeout, capturing the REAL navigation HTTP
+            // status (#1311). `goto` resolves after load but carries no
+            // status, so the waiter below reads the main frame's recorded
+            // navigation request. Queried AFTER `goto`: the handler answers
+            // immediately when the frame is already loaded, so there is no
+            // missed-navigation race; a missing record fails closed below.
             timeout(NAV_TIMEOUT, page.goto(url.as_str()))
                 .await
                 .map_err(|_| DownloadError::Timeout(NAV_TIMEOUT.as_secs()))?
                 .map_err(|e| DownloadError::Internal(e.to_string()))?;
+            let status = Self::navigation_status(&page, url).await?;
 
             // 5.5 Post-load settle (F-52-b, #1277): bounded wait so
             // post-load hydration lands before capture. Best-effort: never
@@ -431,7 +458,7 @@ impl Downloader for ChromiumoxideDownloader {
             Ok(FetchedPage {
                 url: url.clone(),
                 html,
-                status: 200,
+                status,
                 headers: std::collections::HashMap::new(),
                 cookies: Vec::new(),
             })
