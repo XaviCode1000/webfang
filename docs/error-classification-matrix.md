@@ -94,6 +94,9 @@ SemaphoreInanition (#13) indicates a backpressure configuration bug.
 | 28 | FeatureGated | PermanentFatal | 64 | No |
 | 29 | AI: ModelLoad / Inference / InvalidThreshold | InternalFatal | 3 | No |
 | 30 | AI: ChunkTooLarge / Tokenize / Download / CacheValidation / OfflineMode | DomainRecoverable | 78*/69* | No |
+| 31 | CrawlSession: InvalidConfiguration / CheckpointUnwritable (P6-2) | PermanentFatal | **78 override** | No |
+| 32 | CrawlSession: Internal (P6-2) | InternalFatal | 3 | No |
+| 33 | CrawlError: InvalidSession (P6-2 slice 2) | PermanentFatal | **78 override** | No |
 
 Rows 21-22 classify by `io::ErrorKind`, mirroring the existing
 `DownloadError::classify()` behavior. Rows 29-30 document the existing
@@ -154,10 +157,50 @@ every consumer of `ErrorClass` at the `ScraperError` layer.
 3. `CrawlErrorCategory`: `_ =>` catch-all removed; every variant mapped explicitly.
 4. DoD test: each `ErrorClass` maps to its documented default exit code.
 
-## Explicit non-goals (this sprint)
-
-- **No retry-loop wiring.** `RetryPolicy` keeps its current behavior until the
-  Sprint 7-8 budget model exists (thundering-herd protection). The matrix makes
-  the data available; consumption is deferred by design.
-- No changes to `HttpError` / `DownloadError` classifications (already explicit
-  and correct); they are documented here as upstream inputs.
+    ## Explicit non-goals (this sprint)
+    
+    - **No retry-loop wiring.** `RetryPolicy` keeps its current behavior until the
+      Sprint 7-8 budget model exists (thundering-herd protection). The matrix makes
+      the data available; consumption is deferred by design.
+    - No changes to `HttpError` / `DownloadError` classifications (already explicit
+      and correct); they are documented here as upstream inputs.
+    
+    ## Boundary status of the class → exit helpers (F-10, #1294)
+    
+    `default_exit_code_for_class` and `cli_exit_for_class` are the canonical code form of
+    the table above. Their production call-site count is **zero**: exit codes are still
+    decided where each error is turned into a `CliExit`, across ~138 explicit
+    constructions. That is a documented state, not a pending refactor — the one site that
+    consumes `classify()` today (`cli/export_flow.rs`) uses it for control flow
+    (abort vs. fall back vs. count), not to pick an exit code, so routing it through the
+    helper would be wrong.
+    
+    Two invariants keep this honest without a mass migration:
+    
+    1. `matrix_doc_agrees_with_the_class_exit_helpers` (`src/cli/error.rs`) parses the
+       "Default exit codes by class" rows and compares them against the helper, including
+       the two classes that must stay unpinned. The document cannot drift from the code.
+    2. The existing DoD tests pin the helper's own values.
+    
+    If the taxonomy is ever adopted, do it row by row with an exit-code test per site, not
+    by rewriting the mapping call-sites in one pass.
+    
+    ## How a class reaches an MCP client instead of an exit code (P6-5, #1294)
+    
+    MCP has no exit channel, so "CLI says 69, MCP says…" is the wrong question: the two
+    surfaces are projections of one classification, not two competing ones.
+    
+    | Situation | CLI | MCP |
+    | :--- | :--- | :--- |
+    | Unroutable request (bad params, unknown tool, forbidden target) | exit 64 usage / 69 unavailable, Spanish message on stderr | JSON-RPC error: `-32602` invalid params, `-32601` method not found |
+    | The tool ran and failed (network, WAF, robots, budget, empty result) | per-class exit above | `result.isError: true` + Spanish text — deliberately **not** a protocol error, so the caller actually sees the message |
+    | Request shape the transport rejects (bad `Accept`, bad `Content-Type`, non-2.0 body, no session) | n/a | HTTP 406/415/422 from rmcp, before JSON-RPC exists |
+    | Server cannot serve at all (container construction) | exit 78 config | process refuses to start; typed stderr + exit code (#1123) |
+    
+    The last two rows are the boundary #1294 documents rather than closes: they are owned
+    by the framework and by the supervisor, not by the error mapping. Rule of thumb, from
+    rmcp's own contract: `Err(McpError)` means "your request was unroutable", `Ok(CallToolResult::error(..))`
+    means "the job failed, here is why" — and an agent only reads the second one.
+    
+    See `docs/ssrf-layers.md` for the `-32602` SSRF row and `crates/webfang_mcp/tests/mcp_transport_contract_test.rs`
+    for the framework rows.

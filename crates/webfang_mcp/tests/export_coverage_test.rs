@@ -1,8 +1,8 @@
 //! Export tools behavioral coverage — error paths (issue #450).
 //!
 //! End-to-end tests for the export tools that were only partially covered:
-//! - `export_vector`: empty-repository honest error (isError:true, Spanish)
-//! - `process_export_pipeline`: empty-repository honest error + invalid-format
+//! - `export_vector`: empty-session honest error (isError:true, Spanish)
+//! - `process_export_pipeline`: empty-session honest error + invalid-format
 //!   JSON-RPC invalid-params (-32602)
 //!
 //! Happy paths and `export_jsonl`/`export_file` error paths are covered in
@@ -28,8 +28,11 @@ use webfang_mcp::mcp_server::state::McpState;
 // Harness helpers — local copies (each integration test binary is standalone).
 // ============================================================================
 
-/// Start a test MCP server whose crawl-result repository is pre-seeded with
-/// `n` `ScrapedContent` items. Returns `(base_url, server_handle, container_tmp)`.
+/// Start a test MCP server whose session-owned results buffer is pre-seeded
+/// with `n` `ScrapedContent` items — the same buffer a finished `crawl_site`
+/// run leaves behind (#1290 re-pointed the export tools from the legacy
+/// repository read to the session). Returns `(base_url, server_handle,
+/// container_tmp)`.
 async fn start_seeded_server(n: usize) -> (String, tokio::task::JoinHandle<()>, tempfile::TempDir) {
     let container_tmp = tempfile::TempDir::new().expect("create container temp dir");
     let crawler_config =
@@ -42,9 +45,7 @@ async fn start_seeded_server(n: usize) -> (String, tokio::task::JoinHandle<()>, 
         .await
         .expect("container creation failed");
 
-    let repo = container
-        .crawl_result_repository()
-        .expect("container must wire a crawl result repository");
+    let state = McpState::new(container);
     for i in 0..n {
         let url_str = format!("https://seed.example.com/page/{i}");
         let url = url::Url::parse(&url_str).expect("valid seeded URL");
@@ -60,19 +61,14 @@ async fn start_seeded_server(n: usize) -> (String, tokio::task::JoinHandle<()>, 
             correlation_id: None,
             quality_hint: None,
         };
-        repo.save(&content).expect("save seeded content");
+        // In-memory seed: no background writer to wait for, so the flush-poll
+        // the repository path needed is gone.
+        state
+            .session_results
+            .lock()
+            .expect("fresh session lock is never poisoned")
+            .push(content);
     }
-    for i in 0..n {
-        let url_str = format!("https://seed.example.com/page/{i}");
-        for _ in 0..80 {
-            if repo.find_by_url(&url_str).expect("find_by_url").is_some() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-    }
-
-    let state = McpState::new(container);
     let app = build_mcp_router(state, &ServerOptions::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -225,10 +221,10 @@ impl Drop for RelTempDir {
 // export_vector
 // ============================================================================
 
-/// REQ-MCP-EXPORT-05: `export_vector` on an empty repository returns an honest
+/// REQ-MCP-EXPORT-05: `export_vector` on an empty session returns an honest
 /// `CallToolResult::error` (isError:true, Spanish) and writes no file.
 #[tokio::test]
-async fn test_export_vector_empty_repo_honest_error() {
+async fn test_export_vector_empty_session_honest_error() {
     let (base_url, _handle, _container_tmp) = start_seeded_server(0).await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
@@ -249,13 +245,13 @@ async fn test_export_vector_empty_repo_honest_error() {
         .clone();
     assert!(
         is_tool_error(&result),
-        "empty repository must return isError:true, got: {}",
+        "empty session must return isError:true, got: {}",
         tool_text(&result)
     );
 
     assert!(
         !out.path().join("vectors.json").exists(),
-        "no file should be written for an empty repository"
+        "no file should be written for an empty session"
     );
 }
 
@@ -263,11 +259,11 @@ async fn test_export_vector_empty_repo_honest_error() {
 // process_export_pipeline
 // ============================================================================
 
-/// REQ-MCP-EXPORT-05: `process_export_pipeline` on an empty repository returns
+/// REQ-MCP-EXPORT-05: `process_export_pipeline` on an empty session returns
 /// an honest `CallToolResult::error` (isError:true, Spanish) — never a queued
 /// or fake success.
 #[tokio::test]
-async fn test_process_export_pipeline_empty_repo_honest_error() {
+async fn test_process_export_pipeline_empty_session_honest_error() {
     let (base_url, _handle, container_tmp) = start_seeded_server(0).await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
@@ -287,13 +283,13 @@ async fn test_process_export_pipeline_empty_repo_honest_error() {
         .clone();
     assert!(
         is_tool_error(&result),
-        "empty repository must return isError:true, got: {}",
+        "empty session must return isError:true, got: {}",
         tool_text(&result)
     );
 
     assert!(
         !container_tmp.path().join("export.jsonl").exists(),
-        "no file should be written for an empty repository"
+        "no file should be written for an empty session"
     );
 }
 

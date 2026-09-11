@@ -47,6 +47,9 @@
 #   (its write is gated by hotpath-changed).
 #   RULE: any NEW rust-cache consumer must justify its GB in the PR and is
 #   review-blocked by default (precedent: benches.yml:55-60).
+#   Shared-keys measured 2026-09-10: no genuine compile twins among
+#   rust-cache consumers (test-ai compiles cold by design, test-core vs
+#   test-full differ in features) — no sharing applied.
 
 name: CI
 

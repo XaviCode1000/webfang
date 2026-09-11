@@ -7,6 +7,9 @@
 //! and `strip_display_marker` helper remain infrastructure-owned (they would be
 //! an outward `domain→wreq` dependency if they lived in `domain`).
 
+/// Chrome profile directory helper for unique user-data-dir per launch.
+#[cfg(feature = "chromium")]
+pub mod chrome_profile;
 pub mod chromiumoxide_downloader;
 pub mod fetch_router;
 pub mod hybrid_router;

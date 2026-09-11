@@ -22,6 +22,13 @@
 //!    resolver, closing the gap where a hostname redirect target could reach an
 //!    address that was never validated at entry (DNS rebinding / TOCTOU
 //!    included).
+//! 4. **Accepted residual (F-R3-7, ADR-0016 §6)** — hybrid escalation layers
+//!    L2 (Obscura subprocess) and L3 (headless Chromium/CDP) perform their own
+//!    networking, so the dial-level guard above does not run inside them. An
+//!    entry-time re-check does NOT close the resulting TOCTOU window (it
+//!    re-opens between the re-check and the subprocess's own dial). The residual
+//!    is LOW and is ACCEPTED BY DESIGN — see ADR-0016 §6; re-evaluate whenever
+//!    L2/L3 networking changes.
 //! 3. **Belt-and-suspenders literal guard** — [`redirect_policy`] still stops
 //!    redirects whose target is a *literal* forbidden IP synchronously,
 //!    before any resolution happens.
@@ -761,6 +768,14 @@ mod tests {
         }
     }
 
+    /// The entry hatch is a value-equality check, and its second half is the
+    /// CLI-side fact behind #1294 P6-3: `"1"` really does put a forbidden literal
+    /// on the wire, which is exactly what `tests/common/cli_harness.rs` relies on
+    /// to drive `127.0.0.1` mocks. MCP's own switch has that same scope for the
+    /// literals its pre-check stops covering — pinned by
+    /// `mcp_entry_env_has_the_same_literal_scope_as_the_cli_entry_env` in
+    /// `crates/webfang_mcp/tests/mcp_ssrf_knob_matrix_test.rs`. Change either
+    /// scope and both suites have to move together.
     #[test]
     fn entry_guard_hatch_requires_exact_value_one() {
         let url: url::Url = "http://127.0.0.1/".parse().expect("test URL parses");

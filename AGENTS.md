@@ -143,7 +143,6 @@ Domain defines ports (traits) → Infrastructure implements them → Application
 [CLI] → ScraperError : [infra] HttpError/WafError/ParseError
                 ↓
         DomainError (7 variants)
-        AppError (6 variants)
         InfraError (13 variants)
 ```
 

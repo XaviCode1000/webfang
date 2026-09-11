@@ -16,6 +16,7 @@ mod js_strategy_test;
 mod obsidian_test;
 mod resume_test;
 mod robots_test;
+mod signal_lifecycle_test;
 mod single_page_test;
 mod sitemap_exit_code_test;
 mod sitemap_test;
