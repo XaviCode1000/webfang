@@ -394,6 +394,8 @@ impl Container {
             backoff_base_ms: http_config.backoff_base_ms,
             backoff_max_ms: http_config.backoff_max_ms,
             obscura_binary: opts.network.obscura_binary.clone(),
+            // F-52-b: post-load settle mode for the chromium path.
+            post_load_wait: opts.network.post_load_wait,
             // F-52-c (#1278): the gate-certified Chrome binary (or None =
             // launcher auto-detection on paths that never ran the gate).
             chrome_binary: opts.network.chrome_binary.clone(),
@@ -1069,6 +1071,29 @@ mod tests {
             vectors_path.exists(),
             "StreamRepository::new must create the JSONL file"
         );
+    }
+
+    /// F-52-b (#1277): the scrape path must carry `--js-wait` into the
+    /// downloader spec — same propagation guarantee as the engine path,
+    /// or scrapes silently settle differently from crawls.
+    #[test]
+    fn scrape_downloader_spec_propagates_post_load_wait() {
+        use crate::application::http_client::HttpClientConfig;
+        use crate::domain::post_load_wait::PostLoadWait;
+
+        for mode in [
+            PostLoadWait::Idle,
+            PostLoadWait::Fixed(400),
+            PostLoadWait::None,
+        ] {
+            let mut opts = CrawlOptions::default();
+            opts.network.post_load_wait = mode;
+            let spec = Container::scrape_downloader_spec(&opts, &HttpClientConfig::default(), None);
+            assert_eq!(
+                spec.post_load_wait, mode,
+                "--js-wait {mode} must reach the scrape downloader spec"
+            );
+        }
     }
 
     // --- SSRF guard wiring (ADR-0012 sub-slice 3.C) ---

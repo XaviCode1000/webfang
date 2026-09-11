@@ -30,6 +30,7 @@ use tokio_util::sync::CancellationToken;
 use crate::domain::cookie_bridge::CookieBridge;
 use crate::domain::downloader_factory::{DownloaderFactory, DownloaderSpec};
 use crate::domain::downloader_port::{DownloadError, Downloader, FetchedPage};
+use crate::domain::post_load_wait::PostLoadWait;
 use crate::domain::JsStrategy;
 use crate::infrastructure::downloader::chromiumoxide_downloader::ChromiumoxideDownloader;
 use crate::infrastructure::downloader::hybrid_router::HybridRouter;
@@ -116,6 +117,8 @@ pub(crate) fn build_fetch_router(
     backoff_max_ms: u64,
     obscura_binary: &str,
     max_page_bytes: u64,
+    // F-52-b (#1277): post-load settle mode for the chromium path.
+    post_load_wait: PostLoadWait,
     // F-52-c (#1278): gate-certified Chrome binary (None = auto-detect).
     chrome_binary: Option<PathBuf>,
 ) -> Result<FetchRouter, DownloadError> {
@@ -153,7 +156,12 @@ pub(crate) fn build_fetch_router(
             )?
             .with_ignore_waf(ignore_waf);
             let l2 = build_obscura_layer(timeout_secs, obscura_binary);
-            let l3 = ChromiumoxideDownloader::new(cookie_bridge, chrome_binary.clone());
+            let l3 = ChromiumoxideDownloader::new(
+                cookie_bridge,
+                post_load_wait,
+                timeout_secs,
+                chrome_binary.clone(),
+            );
             // #1009: share the engine's cancellation token with the Hybrid
             // governor so permit waits abort on shutdown (parity with the Full
             // strategy, see #509).
@@ -171,7 +179,12 @@ pub(crate) fn build_fetch_router(
         // shares the engine's cancellation token so permit waits abort on
         // shutdown (#509).
         JsStrategy::Full => {
-            let dl = ChromiumoxideDownloader::new(cookie_bridge, chrome_binary);
+            let dl = ChromiumoxideDownloader::new(
+                cookie_bridge,
+                post_load_wait,
+                timeout_secs,
+                chrome_binary,
+            );
             let governor = ResourceGovernor::with_cancel_token(cancel_token);
             FetchRouter::Full(Arc::new(dl), Arc::new(governor))
         },
@@ -255,6 +268,8 @@ impl DownloaderFactory for DefaultDownloaderFactory {
             &spec.obscura_binary,
             spec.max_page_bytes
                 .unwrap_or(crate::domain::downloader_factory::DEFAULT_MAX_PAGE_BYTES),
+            // F-52-b: settle mode from the spec.
+            spec.post_load_wait,
             // F-52-c: the gate-certified binary (None on paths that never
             // ran the CLI preflight gate).
             spec.chrome_binary.clone(),
@@ -292,6 +307,8 @@ mod router_tests {
             10000,
             "obscura",
             50_000_000,
+            // F-52-b: variant-selection tests settle immediately.
+            PostLoadWait::None,
             // F-52-c: variant-selection tests need no pinned binary.
             None,
         )
@@ -320,6 +337,8 @@ mod router_tests {
             10000,
             "obscura",
             50_000_000,
+            // F-52-b: variant-selection tests settle immediately.
+            PostLoadWait::None,
             // F-52-c: variant-selection tests need no pinned binary.
             None,
         )
@@ -348,6 +367,8 @@ mod router_tests {
             10000,
             "obscura",
             50_000_000,
+            // F-52-b: variant-selection tests settle immediately.
+            PostLoadWait::None,
             // F-52-c: variant-selection tests need no pinned binary.
             None,
         )
@@ -381,6 +402,7 @@ mod router_tests {
             10000,
             "obscura",
             50_000_000,
+            PostLoadWait::None,
             Some(pinned.clone()),
         )
         .expect("full router must build");
@@ -417,5 +439,40 @@ mod router_tests {
             PathBuf::from("obscura").as_path(),
             "the default bare name must be preserved on Layer 2"
         );
+    }
+
+    /// F-52-b (#1277): the configured settle mode must reach the Full
+    /// launcher verbatim — proves propagation without spawning a browser.
+    #[cfg(feature = "chromium")]
+    #[test]
+    fn build_fetch_router_full_passes_configured_wait_mode() {
+        let router = build_fetch_router(
+            &JsStrategy::Full,
+            30,
+            Profile::Chrome145,
+            test_cookie_bridge(),
+            false,
+            None,
+            Vec::new(),
+            None,
+            None,
+            CancellationToken::new(),
+            3,
+            1000,
+            10000,
+            "obscura",
+            50_000_000,
+            PostLoadWait::Fixed(750),
+            None,
+        )
+        .expect("full router must build");
+        match router {
+            FetchRouter::Full(dl, _) => assert_eq!(
+                dl.post_load_wait(),
+                PostLoadWait::Fixed(750),
+                "the Full launcher must carry the configured wait mode"
+            ),
+            _other => panic!("expected Full router for the wait-mode seam"),
+        }
     }
 }

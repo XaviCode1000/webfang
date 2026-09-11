@@ -38,6 +38,7 @@ use crate::domain::downloader_factory::DownloaderFactory;
 use crate::domain::downloader_port::Downloader;
 use crate::domain::error::CrawlError;
 use crate::domain::persistence::PersistenceMode;
+use crate::domain::post_load_wait::PostLoadWait;
 use crate::domain::session_port::SessionPort;
 use crate::domain::{CorrelationId, CrawlerConfig, JsStrategy};
 use crate::error::ScraperError;
@@ -85,9 +86,12 @@ pub(crate) struct TransportPolicy {
     pub obscura_binary: String,
     /// Gate-certified Chrome binary (F-52-c, #1278). `None` keeps launcher
     /// auto-detection. Threaded into `with_js_strategy` like every other
-    /// transport knob (added on rebase over 08eee306; `post_load_wait`
-    /// follows after F-52-b merges).
+    /// transport knob (added on rebase over 08eee306).
     pub chrome_binary: Option<std::path::PathBuf>,
+    /// Post-load settlement wait for the chromium render path (F-52-b,
+    /// #1286). Threaded into `with_js_strategy` like every other transport
+    /// knob — the seam foretold in the `chrome_binary` note above.
+    pub post_load_wait: PostLoadWait,
     /// Domain session pool enabled (pool itself arrives via [`CrawlPorts`]).
     pub session_pool_enabled: bool,
     /// Autoscaled concurrency from system RAM.
@@ -581,6 +585,7 @@ impl From<&crate::application::crawler::engine::EngineOptions> for TransportPoli
             backoff_max_ms: options.backoff_max_ms,
             obscura_binary: options.obscura_binary.clone(),
             chrome_binary: options.chrome_binary.clone(),
+            post_load_wait: options.post_load_wait,
             session_pool_enabled: options.session_pool_enabled,
             autoscale_enabled: options.autoscale_enabled,
             ignore_robots: options.ignore_robots,
@@ -607,6 +612,7 @@ mod tests {
             backoff_max_ms: 10000,
             obscura_binary: "obscura".to_string(),
             chrome_binary: None,
+            post_load_wait: PostLoadWait::Idle,
             session_pool_enabled: false,
             autoscale_enabled: false,
             ignore_robots: false,

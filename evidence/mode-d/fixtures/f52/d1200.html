@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>F52 Delay 1200ms Fixture</title></head>
+<body><main><article>
+<h1>F52 Delay 1200ms Fixture</h1>
+<p>This paragraph is present in the raw HTML response and carries prose signal
+for the readability extractor to select this article as primary content.</p>
+<p>A second static paragraph reinforces the extraction signal further so the
+article node remains unambiguous for every downloader layer under test.</p>
+<div id="slot"><p>PLACEHOLDER_INNER_HTML_STATIC_TEXT</p></div>
+</article></main>
+<script>
+  setTimeout(function () {
+    document.getElementById('slot').innerHTML =
+      '<p>D1200M RENDERED MARKER content injected by JavaScript 1200 ms after load.</p>';
+  }, 1200);
+</script>
+</body></html>

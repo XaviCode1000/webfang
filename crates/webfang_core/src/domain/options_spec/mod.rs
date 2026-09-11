@@ -754,7 +754,7 @@ mod tests {
 
     #[test]
     fn crawler_group_covers_every_non_deferred_crawler_args_field() {
-        assert_eq!(crawler::GROUP.len(), 41);
+        assert_eq!(crawler::GROUP.len(), 42);
         for opt in crawler::GROUP {
             assert!(
                 opt.id

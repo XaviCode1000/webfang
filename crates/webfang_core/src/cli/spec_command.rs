@@ -181,6 +181,9 @@ fn hidden_placeholder_help(spec: &OptionSpec) -> &'static str {
 fn text_binding(id: &str) -> Option<ValueParser> {
     match id {
         "url" => Some(str_fn(super::args::crawler::parse_seed_url)),
+        // F-52-b: `idle` | `none` | `<ms>` via FromStr (numeric form rules
+        // out PossibleValues).
+        "js_wait" => Some(str_fn(super::args::crawler::parse_js_wait)),
         _ => None,
     }
 }
@@ -395,6 +398,7 @@ const CRAWLER_LAYOUT: &[CrawlerSlot] = &[
     CrawlerSlot::Spec(&options_spec::crawler::NO_SESSION_HEALTH),
     CrawlerSlot::Spec(&options_spec::crawler::H2_PROFILE),
     CrawlerSlot::Spec(&options_spec::crawler::JS_STRATEGY),
+    CrawlerSlot::Spec(&options_spec::crawler::JS_WAIT),
     CrawlerSlot::Spec(&options_spec::crawler::OBSCURA_BINARY),
     CrawlerSlot::Spec(&options_spec::crawler::DOM_PREPRUNE),
 ];

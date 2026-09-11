@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>F52 Network-Driven Hydration Fixture</title></head>
+<body><main><article>
+<h1>F52 Network-Driven Hydration Fixture</h1>
+<p>This paragraph is present in the raw HTML response and carries prose signal
+for the readability extractor to select this article as primary content.</p>
+<p>A second static paragraph reinforces the extraction signal further so the
+article node remains unambiguous for every downloader layer under test.</p>
+<div id="slot"><p>PLACEHOLDER_INNER_HTML_STATIC_TEXT</p></div>
+</article></main>
+<script>
+  // SPA-shaped hydration: the marker arrives via a post-load network
+  // round-trip (not a timer), so only network-idle settlement observes it.
+  // The /api/data endpoint below responds after a server-side delay.
+  fetch('api/data').then(function (r) { return r.text(); }).then(function (t) {
+    document.getElementById('slot').innerHTML = '<p>' + t + '</p>';
+  });
+</script>
+</body></html>

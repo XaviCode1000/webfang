@@ -353,6 +353,12 @@ JS Rendering:
           [env: WEBFANG_JS_STRATEGY=]
           [default: static]
 
+      --js-wait <JS_WAIT>
+          Post-load settlement wait for the chromium render path: idle (network-idle, default), <ms> fixed wait (1..=30000), none (capture immediately)
+          
+          [env: WEBFANG_JS_WAIT=]
+          [default: idle]
+
       --obscura-binary <OBSCURA_BINARY>
           Path to the obscura binary (default: "obscura")
           
