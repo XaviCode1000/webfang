@@ -212,6 +212,55 @@ impl CrawlContentSink for InMemoryContentSink {
     }
 }
 
+/// Convert one [`CapturedPage`] into [`ScrapedContent`] through the exact
+/// extraction pipeline the CLI batch/export phases use: Readability → text
+/// fallback → binary detection (via [`extract_content`]).
+///
+/// This is the SINGLE page→content conversion path shared by CLI and MCP
+/// (#1290, P6-2/F-16): both surfaces feeding the same captured page here
+/// produce the same enriched DTO, and therefore the same `WebfangMetadata`
+/// JSONL records (checksum, `word_count`, timestamps, `metadata_version`).
+/// Asset downloader and adaptive-selector engine are `None`, matching the
+/// batch crawl behavior — one fetch per URL, equivalent to `--no-images` /
+/// `--no-documents`.
+///
+/// Errors come back paired with the offending URL instead of aborting the
+/// batch: callers collect per-page failures exactly as `extract_batch_content`
+/// does today, so a single bad page never loses the run's good records.
+///
+/// [`extract_content`]: crate::application::extraction::extract_content
+/// [`ScrapedContent`]: crate::domain::ScrapedContent
+pub async fn extract_page_content(
+    page: &CapturedPage,
+    config: &crate::domain::config::ScraperConfig,
+    page_correlation: &crate::domain::CorrelationId,
+) -> Result<crate::domain::ScrapedContent, (String, crate::error::ScraperError)> {
+    let url = match url::Url::parse(&page.url) {
+        Ok(u) => u,
+        Err(e) => {
+            return Err((
+                page.url.clone(),
+                crate::error::ScraperError::invalid_url(format!(
+                    "No se pudo parsear la URL capturada: {e}",
+                )),
+            ));
+        },
+    };
+    match crate::application::extraction::extract_content(
+        &page.html,
+        &url,
+        config,
+        None,
+        None,
+        page_correlation,
+    )
+    .await
+    {
+        Ok(content) => Ok(content),
+        Err(e) => Err((page.url.clone(), e)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
