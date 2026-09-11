@@ -62,6 +62,12 @@ use wreq::redirect::Policy;
 /// set before building clients. Production never sets it; the entry-level DNS
 /// validator still blocks forbidden targets even when this is set, only the
 /// synchronous redirect guard is lifted.
+///
+/// TEST-ISOLATION: Writers use `EnvGuard::{set,remove,with,clean}` or
+/// `env_lock()` for permanent setup (#1126). Readers must hold `EnvGuard`
+/// for full read-or-assert window (even pure readers use `EnvGuard::clean`)
+/// or `#[serial]`; see #1308. Never nest `EnvGuard` in `env_lock()`; spawned
+/// children exempt (see `sanitize_env` in `cli_harness.rs`).
 pub(crate) const DISABLE_REDIRECT_GUARD_ENV: &str = "WEBFANG_DISABLE_SSRF_REDIRECT_GUARD";
 
 /// Test-only escape hatch for the connect-time validating DNS resolver.
@@ -70,6 +76,12 @@ pub(crate) const DISABLE_REDIRECT_GUARD_ENV: &str = "WEBFANG_DISABLE_SSRF_REDIRE
 /// which [`is_forbidden_ip`] rejects, so any harness driving real connections
 /// through the production clients must set `WEBFANG_DISABLE_SSRF_RESOLVER=1`
 /// before clients are built. Production never sets it.
+///
+/// TEST-ISOLATION: Writers use `EnvGuard::{set,remove,with,clean}` or
+/// `env_lock()` for permanent setup (#1126). Readers must hold `EnvGuard`
+/// for full read-or-assert window (even pure readers use `EnvGuard::clean`)
+/// or `#[serial]`; see #1308. Never nest `EnvGuard` in `env_lock()`; spawned
+/// children exempt (see `sanitize_env` in `cli_harness.rs`).
 pub(crate) const DISABLE_VALIDATING_RESOLVER_ENV: &str = "WEBFANG_DISABLE_SSRF_RESOLVER";
 
 /// Test-only escape hatch for the entry literal-IP guard
@@ -86,6 +98,12 @@ pub(crate) const DISABLE_VALIDATING_RESOLVER_ENV: &str = "WEBFANG_DISABLE_SSRF_R
 /// `pub` (not `pub(crate)`) so the CLI behavioral harness — an external test
 /// target — can reference the single source of truth instead of duplicating
 /// the variable name as a string.
+///
+/// TEST-ISOLATION: Writers use `EnvGuard::{set,remove,with,clean}` or
+/// `env_lock()` for permanent setup (#1126). Readers must hold `EnvGuard`
+/// for full read-or-assert window (even pure readers use `EnvGuard::clean`)
+/// or `#[serial]`; see #1308. Never nest `EnvGuard` in `env_lock()`; spawned
+/// children exempt (see `sanitize_env` in `cli_harness.rs`).
 pub const DISABLE_ENTRY_GUARD_ENV: &str = "WEBFANG_DISABLE_SSRF_ENTRY_GUARD";
 
 /// Returns `true` if `ip` falls within a forbidden range.
