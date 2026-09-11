@@ -7,6 +7,130 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-11
+
+
+### 🎉 Added
+
+- Scrape tools emit shared CLI record shape (RC-1 slice 1) ([#1274](https://github.com/XaviCode1000/webfang/pull/1274))
+- RC-1 slices 2/4/5 — batch shape, pacing, retry parity ([#1283](https://github.com/XaviCode1000/webfang/pull/1283))
+- Post-load settlement wait for chromium render path (F-52-b) ([#1286](https://github.com/XaviCode1000/webfang/pull/1286))
+
+### 🏗️ Architecture Improvements
+
+- Extract load_checkpoint_state to satisfy clippy complexity gate
+- Unify dry-run/DOM discovery, engine capture sink, deterministic frontier ([#1229](https://github.com/XaviCode1000/webfang/pull/1229)) ([#1248](https://github.com/XaviCode1000/webfang/pull/1248))
+- CrawlSession seam consumed by Engine (P6-2 slice 1)
+- Thread chrome_binary through TransportPolicy (rebase over F-52-c)
+- Single page-to-content helper shared by CLI and MCP export paths
+- Wire export tools to session-owned crawl results
+- CrawlSession::finish performs the checkpoint IO (P6-2 slice 2)
+- Entry build-failure fails the run — no legacy fallback (P6-2 slice 2)
+- Retire build_task_ctx_legacy — session build is the only path
+- Retire dead build_scrape_response helper ([#1297](https://github.com/XaviCode1000/webfang/pull/1297)) ([#1303](https://github.com/XaviCode1000/webfang/pull/1303))
+
+### 📖 Documentation
+
+- Batch help strings describe scrape semantics ([#1215](https://github.com/XaviCode1000/webfang/pull/1215))
+- Regenerate cli-reference.md for batch help strings ([#1215](https://github.com/XaviCode1000/webfang/pull/1215))
+- Document the fetch guard-chain convention ([#1257](https://github.com/XaviCode1000/webfang/pull/1257))
+- Sync AGENTS.md with path-aware CI tooling ([#1264](https://github.com/XaviCode1000/webfang/pull/1264))
+- Mode D re-verification evidence (CLI+AI, MCP+AI PASS) ([#1275](https://github.com/XaviCode1000/webfang/pull/1275))
+- Resolve ScrapedContent intra-doc link ([#1290](https://github.com/XaviCode1000/webfang/pull/1290))
+- Replace stale --url-list with --batch-file in after_help ([#1296](https://github.com/XaviCode1000/webfang/pull/1296))
+- Mode-D verification run — AI columns + F-52 JS rendering evidence ([#1295](https://github.com/XaviCode1000/webfang/pull/1295))
+- Close Phase-7 rows 7.1 and 7.5 with real downloads ([#1295](https://github.com/XaviCode1000/webfang/pull/1295))
+- De-link private CrawlSession from public EngineOptions docs ([#1291](https://github.com/XaviCode1000/webfang/pull/1291))
+- Exploration brief for #1294 contract-boundary remnants
+- State what WEBFANG_MCP_DISABLE_SSRF actually lifts (P6-3)
+- Record the real state of the exit taxonomy (P6-5, F-10)
+- Name the CLI twin of the MCP entry scope (P6-3 parity)
+- Correct the repro count in the brief after verification
+- Remove nonexistent AppError from error stratification ([#1284](https://github.com/XaviCode1000/webfang/pull/1284))
+- Fix broken debugging/troubleshooting links ([#1284](https://github.com/XaviCode1000/webfang/pull/1284))
+- Fix malformed intra-doc link in enforce_robots_policy ([#1301](https://github.com/XaviCode1000/webfang/pull/1301))
+
+### 🔧 CI/CD
+
+- Promote Tests (AI integration) to required after soak ([#1213](https://github.com/XaviCode1000/webfang/pull/1213))
+- Retire Gate 0 freeze permanently ([#1241](https://github.com/XaviCode1000/webfang/pull/1241)) ([#1242](https://github.com/XaviCode1000/webfang/pull/1242))
+- Path-aware CI with fast PR gate and tiered verification ([#1262](https://github.com/XaviCode1000/webfang/pull/1262))
+- SsrfGuard port-adoption gate + isolated target-dir rule ([#1272](https://github.com/XaviCode1000/webfang/pull/1272))
+- Untrack generated fast-gate.log telemetry ([#1325](https://github.com/XaviCode1000/webfang/pull/1325))
+- Scheduled purge of closed-PR merge-ref caches ([#1171](https://github.com/XaviCode1000/webfang/pull/1171))
+
+### 🔧 Fixed
+
+- Apply include/exclude patterns to seed URL in plan_urls ([#1216](https://github.com/XaviCode1000/webfang/pull/1216))
+- Keep standalone image URL with --obsidian-wiki-links ([#1223](https://github.com/XaviCode1000/webfang/pull/1223))
+- Shared SSRF literal-IP entry guard for CLI and MCP ([#1217](https://github.com/XaviCode1000/webfang/pull/1217))
+- CI follow-ups for SSRF entry guard ([#1217](https://github.com/XaviCode1000/webfang/pull/1217))
+- --batch scrapes each URL instead of BFS-crawling, JSONL idempotent ([#1215](https://github.com/XaviCode1000/webfang/pull/1215))
+- Drop panic=abort so catch_unwind guards work (unwind contract, #1219)
+- Default repeat crawls to Disabled (F-01 truth-table invert, #1214)
+- Scope checkpoint per seed and delete on completion ([#1214](https://github.com/XaviCode1000/webfang/pull/1214))
+- Close both unhardened ValidUrl construction doors ([#1233](https://github.com/XaviCode1000/webfang/pull/1233)) ([#1240](https://github.com/XaviCode1000/webfang/pull/1240))
+- Strip raw seed URL credentials from the root run span ([#1239](https://github.com/XaviCode1000/webfang/pull/1239)) ([#1244](https://github.com/XaviCode1000/webfang/pull/1244))
+- Transactional state updates, single-writer lock, bounded checkpoint frontier ([#1230](https://github.com/XaviCode1000/webfang/pull/1230)) ([#1247](https://github.com/XaviCode1000/webfang/pull/1247))
+- Derive the mutation gate from examine_globs and pin cardinality + parser properties ([#1235](https://github.com/XaviCode1000/webfang/pull/1235)) ([#1246](https://github.com/XaviCode1000/webfang/pull/1246))
+- Single root trace_id with stable span linkage for trace reconstruction ([#1238](https://github.com/XaviCode1000/webfang/pull/1238)) ([#1245](https://github.com/XaviCode1000/webfang/pull/1245))
+- Fetch guard chain — retriable timeouts, bounded decompressed reads, scrape-path rate limiting ([#1231](https://github.com/XaviCode1000/webfang/pull/1231)) ([#1249](https://github.com/XaviCode1000/webfang/pull/1249))
+- Strict zero-arg tool params + scrape_batch single_page with CLI parity (P5-3, P6-4) ([#1254](https://github.com/XaviCode1000/webfang/pull/1254))
+- Evaluate the universal wildcard before parsing the URL ([#1258](https://github.com/XaviCode1000/webfang/pull/1258))
+- WAF inspection on the non-2xx fetch path (F-11) ([#1266](https://github.com/XaviCode1000/webfang/pull/1266))
+- Close RC-3 guard-chain gaps on batch entry, Stack B body caps (F-R3-1/3/5/6) ([#1269](https://github.com/XaviCode1000/webfang/pull/1269))
+- Propagate --js-strategy into crawl EngineOptions (F-52-a) ([#1279](https://github.com/XaviCode1000/webfang/pull/1279))
+- Pin chromium launcher to gate-certified binary (F-52-c) ([#1285](https://github.com/XaviCode1000/webfang/pull/1285))
+- Session close uses distinct trace message (P6-2 slice 1)
+- Keep the session export read on the blocking pool ([#1290](https://github.com/XaviCode1000/webfang/pull/1290))
+- Isolate session export buffer per MCP session ([#1290](https://github.com/XaviCode1000/webfang/pull/1290))
+- Stdio server shares the bounded downloader via one composition root ([#1300](https://github.com/XaviCode1000/webfang/pull/1300))
+- Enforce Zero Silent Loss for --concurrency and --download-timeout ([#1296](https://github.com/XaviCode1000/webfang/pull/1296))
+- Honor log_level from config file when no -v flags ([#1296](https://github.com/XaviCode1000/webfang/pull/1296))
+- Pin sitemap all-children-fail stderr contract without WARN order
+- Route the crawl session pool through CrawlPorts
+- Pin interruption/resume lifecycle evidence (F-07/F-39/P8-4/P8-5/P8-6/F-R3-7) ([#1304](https://github.com/XaviCode1000/webfang/pull/1304))
+- Advertise the concurrency contract the runtime actually applies
+- Give both transports a DOM inspector (NS-01)
+- Stop dropping --export-roots in the stdio composition root
+- Lift both SSRF knobs in MCP scope-parity test
+- Report SSRF-policy refusal with its real cause, not WAF robots.txt ([#1301](https://github.com/XaviCode1000/webfang/pull/1301))
+- Unique user-data-dir per Chrome launch
+- Repair scheduled Miri runs and add failure notification ([#1323](https://github.com/XaviCode1000/webfang/pull/1323))
+- Make intra-workspace dev-dep path-only so cargo package succeeds ([#1338](https://github.com/XaviCode1000/webfang/pull/1338))
+
+### 🔧 Other
+
+- Install cargo-mutants 27.1.0 ([#1220](https://github.com/XaviCode1000/webfang/pull/1220))
+- Pin rust-analyzer via project mise.toml + align pi-lens LSP feature view ([#1281](https://github.com/XaviCode1000/webfang/pull/1281))
+- Record local fast-gate run for chore/mode-d-verify
+
+### 🧪 Testing
+
+- Add F-35 seed-pattern regression tests (RED, #1216)
+- Zero-outbound SSRF literal tests + wiremock allowances ([#1217](https://github.com/XaviCode1000/webfang/pull/1217))
+- Entry-guard allowance for scraping_coverage wiremock tests ([#1217](https://github.com/XaviCode1000/webfang/pull/1217))
+- Entry-guard allowance for loopback corpus crawl ([#1217](https://github.com/XaviCode1000/webfang/pull/1217))
+- Prime SSRF-disable ONCE before EnvGuard to fix test deadlock ([#1217](https://github.com/XaviCode1000/webfang/pull/1217))
+- Batch scrape-once regression tests, RED-first ([#1215](https://github.com/XaviCode1000/webfang/pull/1215))
+- Dev-profile panic containment regression tests ([#1219](https://github.com/XaviCode1000/webfang/pull/1219))
+- Pin SSRF RFC1918/NAT64/CGNAT entry-guard E2E matrix (P9-2 confirmation) ([#1251](https://github.com/XaviCode1000/webfang/pull/1251))
+- E2E userinfo never persists plus uniform scheme rejection ([#1260](https://github.com/XaviCode1000/webfang/pull/1260))
+- Pin F-14 dry-run parity + verify F-13 determinism ([#1273](https://github.com/XaviCode1000/webfang/pull/1273))
+- CLI-vs-MCP JSONL export record parity closes P6-2/F-16
+- Align parity fixture with the proven crawl-test environment
+- Pin corrupt-checkpoint contract — fresh start and re-scrape (P8-3, #1289)
+- Import TypedValueParser trait in concurrency parser test ([#1296](https://github.com/XaviCode1000/webfang/pull/1296))
+- Accept help snapshots and regenerate cli-reference ([#1296](https://github.com/XaviCode1000/webfang/pull/1296))
+- Pin the transport contract rmcp owns (P5-1, P5-2)
+- Pin the SSRF layer/knob matrix (P6-3)
+- Pin advertised defaults against runtime (NS-04, NS-02)
+- Read the bridged properties object, not the schema root
+- Stop accepting any HTTP error as a method-not-found answer
+- Read the JSON-RPC object, not rmcp's SSE priming event
+- Lift both SSRF hatches in the robots-gate tests ([#1301](https://github.com/XaviCode1000/webfang/pull/1301))
+- Force SSRF entry guard armed in the policy-denial test
+- Keep profile guards alive in uniqueness test
 ## [2.0.0] - 2026-08-30
 
 ### ⚠️ Breaking Changes

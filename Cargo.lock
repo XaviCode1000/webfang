@@ -5864,7 +5864,7 @@ dependencies = [
 
 [[package]]
 name = "webfang_ai"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -5888,7 +5888,7 @@ dependencies = [
 
 [[package]]
 name = "webfang_benchmark"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5906,7 +5906,7 @@ dependencies = [
 
 [[package]]
 name = "webfang_cli"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "clap",
  "dirs 5.0.1",
@@ -5918,7 +5918,7 @@ dependencies = [
 
 [[package]]
 name = "webfang_core"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "ahash",
  "aho-corasick",
@@ -5996,7 +5996,7 @@ dependencies = [
 
 [[package]]
 name = "webfang_mcp"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -6027,7 +6027,7 @@ dependencies = [
 
 [[package]]
 name = "webfang_test_utils"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "regex",
 ]
