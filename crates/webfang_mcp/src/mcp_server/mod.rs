@@ -73,6 +73,32 @@ pub fn build_shared_downloader(
     webfang_core::application::container::Container::build_mcp_shared_asset_downloader()
 }
 
+/// Compose the shared [`McpState`] for the long-lived MCP servers.
+///
+/// Single composition root for BOTH transports (stdio and HTTP, #1300):
+/// injecting the bounded shared downloader here makes pool reuse across
+/// tool calls structural — a transport that forgets the call no longer
+/// compiles against this helper. Previously the stdio binary built its
+/// state without [`McpState::with_downloader`], so every
+/// `download_assets` call re-created the connection pool and #1120's
+/// churn persisted on that transport.
+///
+/// The DOM inspector is intentionally NOT wired here: MCP production
+/// wiring of the inspector is #1294 (NS-01 / slice D), which owns the
+/// verify-or-fix decision for both transports.
+///
+/// # Errors
+/// Propagates [`build_shared_downloader`] failures
+/// (`ScraperError::Config`).
+pub fn build_mcp_state(
+    container: std::sync::Arc<webfang_core::application::container::Container>,
+    export_roots: Vec<std::path::PathBuf>,
+) -> webfang_core::error::Result<McpState> {
+    Ok(McpState::from_container(container)
+        .with_downloader(std::sync::Arc::new(build_shared_downloader()?))
+        .with_export_roots(export_roots))
+}
+
 /// Kick off the lazy AI port wiring in a background task (#759).
 ///
 /// Shares the same `Arc<Container>` that the MCP server already holds and
@@ -129,6 +155,25 @@ pub fn spawn_ai_wiring(container: Arc<webfang_core::application::container::Cont
 /// No-op placeholder when the `ai` feature is not compiled in (#759).
 #[cfg(not(feature = "ai"))]
 pub fn spawn_ai_wiring(_container: Arc<webfang_core::application::container::Container>) {}
+
+/// The DOM inspector every MCP server instance ships with (#1294 NS-01).
+///
+/// `McpState::inspector` defaults to `None` (`state.rs:164`) and no MCP
+/// composition root ever set one, while the scrape handlers pass
+/// `state.inspector.as_deref()` straight into the scrape use case
+/// (`handlers/scraping.rs:155`). The CLI has wired [`DefaultDomInspector`] in
+/// production since that port landed (`webfang_cli/src/main.rs:428`), so every
+/// CSS-selector diagnostic — the DOM structure report and the near-miss
+/// suggestions — silently degraded to "no diagnostics" for MCP clients only.
+///
+/// One shared constructor keeps both transports on the same implementation, the
+/// way [`build_shared_downloader`] keeps the asset-download policy shared.
+///
+/// [`DefaultDomInspector`]: webfang_core::infrastructure::scraper::dom_inspector::DefaultDomInspector
+#[must_use]
+pub fn default_dom_inspector() -> Arc<dyn webfang_core::domain::DomInspectorPort> {
+    Arc::new(webfang_core::infrastructure::scraper::dom_inspector::DefaultDomInspector::new())
+}
 
 /// Main MCP handler struct.
 ///
@@ -193,6 +238,32 @@ impl ServerHandler for McpHandler {
 mod tests {
     use super::*;
 
+    /// #1294 NS-01: the helper must hand out the REAL inspector, not a stub.
+    ///
+    /// `NoOpInspector` answers every suggestion with an empty vec, so a
+    /// non-empty near-miss list is what separates "wired" from "wired with
+    /// something that does nothing". The per-binary tests check the wiring; this
+    /// checks the thing being wired.
+    #[test]
+    fn default_dom_inspector_reports_near_miss_suggestions() {
+        let inspector = default_dom_inspector();
+        let document = scraper::Html::parse_document(
+            r#"<html><body>
+                   <div class="article-body"><p class="article-title">content</p></div>
+                 </body></html>"#,
+        );
+
+        let suggestions = inspector.suggest(&document, ".article-body");
+        assert!(
+            !suggestions.is_empty(),
+            "the production inspector must produce selector suggestions"
+        );
+        assert!(
+            inspector.inspect(&document).element_count > 0,
+            "the production inspector must produce a non-empty DOM report"
+        );
+    }
+
     /// #1120: the server composition root must never hand out the legacy
     /// unbounded (`usize::MAX`) downloader — the cache bound is the same
     /// budget-derived value the CLI orchestrator uses.
@@ -216,6 +287,33 @@ mod tests {
             "long-lived server must not use the unbounded legacy cache"
         );
         assert_eq!(downloader.asset_cache_capacity(), expected);
+    }
+
+    /// #1300: BOTH transports share one composition root, so the stdio
+    /// server gets the same bounded shared downloader as HTTP — the #1120
+    /// pool churn cannot return on any transport that composes through the
+    /// helper. Export roots and the documented inspector boundary are
+    /// pinned alongside.
+    #[tokio::test]
+    async fn build_mcp_state_shares_bounded_downloader_and_export_roots() {
+        let container = std::sync::Arc::new(build_container().await.expect("container boots"));
+        let roots = vec![std::path::PathBuf::from("/tmp/webfang-test-export-roots")];
+
+        let state = build_mcp_state(container, roots.clone()).expect("state composes");
+
+        let downloader = state
+            .downloader
+            .as_ref()
+            .expect("composition root must inject the shared bounded downloader");
+        assert_ne!(
+            downloader.asset_cache_capacity(),
+            usize::MAX,
+            "long-lived server must not use the unbounded legacy cache"
+        );
+        assert_eq!(state.allowed_export_roots, roots.into());
+        // The inspector is intentionally not wired here: MCP production
+        // wiring is #1294 (NS-01 / slice D) for both transports.
+        assert!(state.inspector.is_none());
     }
 
     /// Contract guard for #1123: `build_container` propagates the typed

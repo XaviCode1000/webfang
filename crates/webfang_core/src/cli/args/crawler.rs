@@ -123,6 +123,17 @@ pub(crate) fn parse_timeout_secs(s: &str) -> Result<u64, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Validate `--download-timeout`: must be >= 1. A value of 0 makes wreq
+/// apply `Duration::from_secs(0)` to every asset download, so each one
+/// fails instantly. Same "Zero Silent Loss" boundary as `--timeout-secs`
+/// (P4-2 of #1296). Bounds and messages come from the OptionsSpec
+/// (ADR-002).
+pub(crate) fn parse_download_timeout(s: &str) -> Result<u64, String> {
+    crawler_specs::DOWNLOAD_TIMEOUT
+        .parse_uint(s)
+        .map_err(|e| e.to_string())
+}
+
 /// Validate `--max-pages`: must be >= 1. A value of 0 would panic
 /// `tokio::sync::mpsc::channel(0)` inside `ResultsCollector::new`
 /// (SIGABRT, #780 — the MCP path already rejects this; #598/#611 only
@@ -975,7 +986,7 @@ mod spec_parity_tests {
                 .collect::<Vec<_>>(),
             vec!["auto"]
         );
-        assert_eq!(help_of(c), "Concurrency level (auto or number)");
+        assert_eq!(help_of(c), "Concurrency level (auto or number, minimum 1)");
         assert!(c.get_long_help().is_none());
     }
 
@@ -1232,6 +1243,40 @@ mod spec_parity_tests {
             .expect_err("malformed concurrency rejected");
         assert!(
             err.contains("'muchas' no es un número válido para --download-concurrency"),
+            "got: {err}"
+        );
+    }
+
+    /// P4-2 of #1296: `--download-timeout` honors the Zero Silent Loss
+    /// policy — 0 is rejected with the same rationale shape as
+    /// `--timeout-secs` (0-second timeout fails every asset instantly).
+    #[test]
+    fn download_timeout_zero_and_malformed_error_like_timeout_secs() {
+        let err =
+            parse_args(&["--download-timeout", "0"]).expect_err("zero download timeout rejected");
+        assert!(
+            err.contains(
+                "--download-timeout debe ser >= 1 (0 hace que cada descarga de assets falle al instante)"
+            ),
+            "got: {err}"
+        );
+
+        let err = parse_args(&["--download-timeout", "fast"])
+            .expect_err("malformed download timeout rejected");
+        assert!(
+            err.contains("'fast' no es un número válido para --download-timeout"),
+            "got: {err}"
+        );
+    }
+
+    /// P4-2 of #1296: `--concurrency` honors the Zero Silent Loss policy —
+    /// the old silent clamp 0 -> 1 is now a Spanish usage error at the argv
+    /// boundary (flag and `WEBFANG_CONCURRENCY` share the parser).
+    #[test]
+    fn parse_concurrency_rejects_zero_with_spanish_error() {
+        let err = parse_args(&["--concurrency", "0"]).expect_err("zero concurrency rejected");
+        assert!(
+            err.contains("--concurrency debe ser >= 1 (usa 'auto' para autodetectar)"),
             "got: {err}"
         );
     }

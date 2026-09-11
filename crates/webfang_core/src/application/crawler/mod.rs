@@ -14,6 +14,7 @@ pub mod discovery;
 pub mod engine;
 pub(crate) mod ports;
 pub mod progress;
+pub(crate) mod session;
 pub mod sitemap_discovery;
 
 pub use bounded_sink::{BoundedFileSink, BoundedSinkError, CapturedPageReader};

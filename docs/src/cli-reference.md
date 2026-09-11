@@ -31,8 +31,24 @@ webfang https://example.com -s "article.main-content" --export-format jsonl
 Resume an interrupted crawl from its last checkpoint:
 
 ```bash
-webfang --url-list urls.txt --resume
+webfang --batch-file urls.txt --resume
 ```
+
+## Zero values
+
+Numeric flags follow the **Zero Silent Loss** policy: a zero is never
+silently turned into another value.
+
+- **Zero disables the feature** where an "off" state exists:
+  `--delay-ms 0` disables request pacing (no token bucket is allocated),
+  `--max-depth 0` scrapes only the seed URL.
+- **Zero is rejected** with a usage error where zero is meaningless or
+  destructive: `--concurrency`, `--download-concurrency`,
+  `--download-timeout`, `--max-pages`, `--rate-limit-burst`,
+  `--timeout-secs`.
+- Legacy exception: a non-numeric `--rate-limit-burst` value warns and
+  falls back to the hardware-derived default (numeric zero and
+  out-of-range values are still rejected).
 
 ## Complete flag reference
 
@@ -100,7 +116,7 @@ Discovery:
           [default: 10]
 
       --concurrency <CONCURRENCY>
-          Concurrency level (auto or number)
+          Concurrency level (auto or number, minimum 1)
           
           [env: WEBFANG_CONCURRENCY=]
           [default: auto]
@@ -231,7 +247,7 @@ Download Settings:
           [default: 52428800]
 
       --download-timeout <DOWNLOAD_TIMEOUT>
-          Timeout for individual asset downloads in seconds
+          Timeout for individual asset downloads in seconds (minimum 1)
           
           [env: WEBFANG_DOWNLOAD_TIMEOUT=]
           [default: 30]
@@ -520,7 +536,7 @@ EXAMPLES:
   webfang -u https://example.com -f jsonl
   webfang -u https://example.com -v
   webfang -u https://example.com -vv  # DEBUG
-  webfang --url-list urls.txt --resume
+  webfang --batch-file urls.txt --resume
 ````
 
 ````text

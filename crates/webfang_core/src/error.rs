@@ -686,6 +686,9 @@ impl From<crate::domain::error::CrawlError> for ScraperError {
             },
             // LCOV_EXCL_LINE defensive: error-pass-through — Internal maps 1:1 and is invariant-guarded upstream
             CrawlError::Internal(msg) => ScraperError::Internal(msg),
+            // Row 33 (P6-2 slice 2): invalid run description — Config keeps
+            // the exit-78 contract (same contract family as matrix row 31).
+            CrawlError::InvalidSession(msg) => ScraperError::Config(msg),
             // LCOV_EXCL_LINE defensive: error-pass-through — RequestFailed collapses into Internal and is invariant-guarded upstream
             CrawlError::RequestFailed(msg) => ScraperError::Internal(msg),
             CrawlError::Download(e) => ScraperError::Download(e),

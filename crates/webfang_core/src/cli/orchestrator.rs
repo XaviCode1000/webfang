@@ -1243,31 +1243,17 @@ async fn extract_batch_content(
         CliExit::IoError(format!("No se pudo leer el contenido capturado: {e}"))
     })? {
         let page_correlation = root_correlation.child();
-        let url = match url::Url::parse(&page.url) {
-            Ok(u) => u,
-            Err(e) => {
-                failures.push((
-                    page.url,
-                    crate::error::ScraperError::invalid_url(format!(
-                        "No se pudo parsear la URL capturada: {e}",
-                    )),
-                ));
-                continue;
-            },
-        };
-
-        match crate::application::crawler::extract_content(
-            &page.html,
-            &url,
+        // Single shared conversion path (P6-2/F-16, #1290): the same helper
+        // MCP's session export feeds — identical DTO by construction.
+        match crate::application::crawler::content_sink::extract_page_content(
+            &page,
             &scraper_config,
-            None,
-            None,
             &page_correlation,
         )
         .await
         {
             Ok(content) => results.push(content),
-            Err(e) => failures.push((page.url, e)),
+            Err((url, e)) => failures.push((url, e)),
         }
     }
 

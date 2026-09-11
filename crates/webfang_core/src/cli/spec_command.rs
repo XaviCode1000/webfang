@@ -237,11 +237,11 @@ fn numeric_binding(id: &str) -> Option<ValueParser> {
         "selector" => Some(str_fn(super::args::crawler::parse_selector)),
         "max_depth" => Some(str_fn(super::args::crawler::parse_max_depth)),
         "max_tokens" => Some(ValueParser::from(clap::value_parser!(usize))),
+        "download_timeout" => Some(str_fn(super::args::crawler::parse_download_timeout)),
         "delay_ms"
         | "backoff_base_ms"
         | "backoff_max_ms"
         | "max_file_size"
-        | "download_timeout"
         | "checkpoint_interval" => Some(ValueParser::from(clap::value_parser!(u64))),
         "verbose" | "sitemap_depth" => Some(ValueParser::from(clap::value_parser!(u8))),
         "max_retries" => Some(ValueParser::from(clap::value_parser!(u32))),
@@ -425,7 +425,7 @@ fn manual_concurrency() -> clap::Arg {
         .value_parser(clap::value_parser!(
             crate::domain::config::ConcurrencyConfig
         ))
-        .help("Concurrency level (auto or number)")
+        .help("Concurrency level (auto or number, minimum 1)")
         .help_heading("Discovery")
 }
 

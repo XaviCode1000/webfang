@@ -490,5 +490,33 @@ async fn index_children_all_fail_exits_69() {
         "an index whose children ALL fail must exit 69 (fetch failure), not 2"
     );
     let stderr = String::from_utf8_lossy(&result.stderr).to_string();
-    assert_snapshot_redacted("index_children_all_fail_stderr", output.path(), stderr);
+
+    // The per-child fetch WARNs are emitted from concurrent child futures, so
+    // their relative order on stderr is NOT guaranteed: pin presence only (#1317).
+    assert!(
+        stderr.contains("non-2xx status: 500"),
+        "each failing child must WARN its non-2xx status, stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("/child-a.xml") && stderr.contains("/child-b.xml"),
+        "both failing children must be reported with their URLs, stderr:\n{stderr}"
+    );
+
+    // The aggregated error is built from results collected in input order
+    // (`buffered` preserves result order even with concurrent fetches), so the
+    // aggregation always lists child-a before child-b. That ordering IS
+    // deterministic: keep it pinned, anchored on the aggregation message.
+    let agg = &stderr[stderr
+        .find("all 2 child sitemaps failed")
+        .expect("aggregated failure message must be present in stderr")..];
+    let a_pos = agg
+        .find("child-a.xml")
+        .expect("child-a must appear in the aggregation");
+    let b_pos = agg
+        .find("child-b.xml")
+        .expect("child-b must appear in the aggregation");
+    assert!(
+        a_pos < b_pos,
+        "aggregation must list children in input order (child-a before child-b), stderr:\n{stderr}"
+    );
 }

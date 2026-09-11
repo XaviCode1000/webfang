@@ -354,13 +354,26 @@ impl ScrapeWithOptionsParams {
     }
 }
 
+/// Bounds enforced for `scrape_batch`'s `concurrency` (#1294 NS-04).
+///
+/// Single source for the validator and for the schema bridge: the derive publishes
+/// `"minimum": 0` for a `usize`, which is a value this validator must reject —
+/// `concurrency: 0` deadlocked `buffer_unordered(0)` (#597).
+pub const CONCURRENCY_MIN: usize = 1;
+
+/// Upper bound of [`CONCURRENCY_MIN`]'s pair; beyond it a batch adds no throughput
+/// and only competes for the category semaphore.
+pub const CONCURRENCY_MAX: usize = 64;
+
 /// Parameters for the `scrape_batch` tool.
 #[derive(Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ScrapeBatchParams {
     /// List of URLs to scrape — each parsed+hardened at the boundary (#1116)
     pub urls: Vec<McpUrl>,
-    /// Concurrency limit (default: 4)
+    /// Concurrency limit. When omitted the tool applies the advertised `default`
+    /// (#1294 NS-04: the number used to live only in this sentence, and it was
+    /// wrong — the machine-readable default in the bridge is the single source).
     pub concurrency: Option<usize>,
     /// Bypass the robots.txt check for every URL in the batch (default: false).
     ///
@@ -392,7 +405,7 @@ pub struct ScrapeBatchParams {
 impl ScrapeBatchParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `urls` is empty, any URL is not
-    /// http(s), `concurrency` exceeds 64, or `concurrency` is less than 1.
+    /// http(s), or `concurrency` is outside [`CONCURRENCY_MIN`]..=[`CONCURRENCY_MAX`].
     pub fn validate(&self) -> Result<(), McpError> {
         if self.urls.is_empty() {
             return Err(McpError::invalid_params(
@@ -403,7 +416,12 @@ impl ScrapeBatchParams {
         // Each element is already a parsed `McpUrl` (#1116) — the per-url
         // `require_http_url("urls[]", u)` loop is gone.
         if let Some(c) = self.concurrency {
-            require_range_u64("concurrency", c as u64, 1, 64)?;
+            require_range_u64(
+                "concurrency",
+                c as u64,
+                CONCURRENCY_MIN as u64,
+                CONCURRENCY_MAX as u64,
+            )?;
         }
         Ok(())
     }

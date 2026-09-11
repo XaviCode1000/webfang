@@ -58,7 +58,7 @@ Discovery:
           [default: 10]
 
       --concurrency <CONCURRENCY>
-          Concurrency level (auto or number)
+          Concurrency level (auto or number, minimum 1)
           
           [env: WEBFANG_CONCURRENCY=]
           [default: auto]
@@ -194,7 +194,7 @@ Download Settings:
           [default: 52428800]
 
       --download-timeout <DOWNLOAD_TIMEOUT>
-          Timeout for individual asset downloads in seconds
+          Timeout for individual asset downloads in seconds (minimum 1)
           
           [env: WEBFANG_DOWNLOAD_TIMEOUT=]
           [default: 30]
@@ -483,4 +483,4 @@ EXAMPLES:
   webfang -u https://example.com -f jsonl
   webfang -u https://example.com -v
   webfang -u https://example.com -vv  # DEBUG
-  webfang --url-list urls.txt --resume
+  webfang --batch-file urls.txt --resume

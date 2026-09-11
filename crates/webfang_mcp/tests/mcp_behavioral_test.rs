@@ -130,13 +130,14 @@ fn redact_path(text: &str, dir: &std::path::Path) -> String {
     text.replace(dir.to_string_lossy().as_ref(), "[OUT_DIR]")
 }
 
-/// Start a test MCP server whose crawl-result repository is pre-seeded with
-/// `n` `ScrapedContent` items.
+/// Start a test MCP server whose session-owned results buffer is pre-seeded
+/// with `n` `ScrapedContent` items — the same buffer a finished `crawl_site`
+/// run leaves behind (#1290 re-pointed the export tools from the legacy
+/// repository read to the session).
 ///
 /// Returns `(base_url, server_handle, container_tmp)`. The container temp dir
-/// is returned so the caller keeps it alive (the append-only repository log
-/// lives inside it) and so tests can locate exports that default to the
-/// container's configured `output_dir` (e.g. `process_export_pipeline`).
+/// is returned so tests can locate exports that default to the container's
+/// configured `output_dir` (e.g. `process_export_pipeline`).
 async fn start_seeded_server(n: usize) -> (String, tokio::task::JoinHandle<()>, tempfile::TempDir) {
     use webfang_core::domain::config::ScraperConfig;
     use webfang_core::domain::{CrawlerConfig, ScrapedContent, ValidUrl};
@@ -152,10 +153,7 @@ async fn start_seeded_server(n: usize) -> (String, tokio::task::JoinHandle<()>, 
         .await
         .expect("container creation failed");
 
-    // Seed the crawl-result repository with n items and wait for indexing.
-    let repo = container
-        .crawl_result_repository()
-        .expect("container must wire a crawl result repository");
+    let state = McpState::new(container);
     for i in 0..n {
         let url_str = format!("https://seed.example.com/page/{i}");
         let url = url::Url::parse(&url_str).expect("valid seeded URL");
@@ -171,20 +169,14 @@ async fn start_seeded_server(n: usize) -> (String, tokio::task::JoinHandle<()>, 
             correlation_id: None,
             quality_hint: None,
         };
-        repo.save(&content).expect("save seeded content");
+        // In-memory session seed: no background writer to wait for (the
+        // repository path's flush-poll is gone with its read source).
+        state
+            .session_results
+            .lock()
+            .expect("fresh session lock is never poisoned")
+            .push(content);
     }
-    // Poll until the background writer has indexed every seeded URL.
-    for i in 0..n {
-        let url_str = format!("https://seed.example.com/page/{i}");
-        for _ in 0..80 {
-            if repo.find_by_url(&url_str).expect("find_by_url").is_some() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-    }
-
-    let state = McpState::new(container);
     let app = build_mcp_router(state, &ServerOptions::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -579,23 +571,33 @@ async fn test_no_session_id_handled() {
     let status = response.status();
     let body = response.text().await.unwrap();
 
-    // Should either succeed (stateless mode) or return a clear error (400, 401, 422)
-    assert!(
-        status.is_success()
-            || status.as_u16() == 400
-            || status.as_u16() == 401
-            || status.as_u16() == 422,
-        "request without session should return 2xx or 4xx, got {}: {}",
+    // The stateful transport answers this with 422 and nothing else
+    // (`mcp_lifecycle_test.rs::test_no_session_id_returns_422` pins the exact
+    // status and message; `mcp_transport_contract_test.rs` pins the same gate for
+    // other shapes). Accepting "any 4xx" here is what let a contract change slide
+    // through unnoticed in #1294.
+    assert_eq!(
+        status.as_u16(),
+        422,
+        "request without a session id must be 422, got {}: {}",
         status,
         &body[..body.len().min(500)]
     );
 }
 
-/// Unknown JSON-RPC method returns error response.
+/// Unknown JSON-RPC method over an established session is a `-32601` protocol
+/// error (`#1294` P5-1).
+///
+/// This test used to assert nothing: the handshake was missing, so the request
+/// died on rmcp's stateful session gate with HTTP 422, and the trailing
+/// "HTTP error status is also acceptable" made that a pass. The 422 case belongs
+/// to `mcp_transport_contract_test.rs` now; here the session is established first,
+/// which is the only way to reach the method dispatch that answers `-32601`.
 #[tokio::test]
 async fn test_unknown_method_returns_error() {
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
 
     let request_body = mcp_request("unknown/method", json!({}));
 
@@ -603,6 +605,7 @@ async fn test_unknown_method_returns_error() {
         .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
+        .header("mcp-session-id", &session_id)
         .json(&request_body)
         .send()
         .await
@@ -611,21 +614,31 @@ async fn test_unknown_method_returns_error() {
     let status = response.status();
     let body = response.text().await.unwrap();
 
-    // Should return success (200) with JSON-RPC error in body,
-    // or an HTTP error status
-    if status.is_success() {
-        // Verify JSON-RPC error code -32601 (Method not found)
-        let error_code = parse_jsonrpc_error_code(&body);
-        assert_eq!(
-            error_code,
-            Some(JSONRPC_METHOD_NOT_FOUND),
-            "unknown method should return JSON-RPC error code {} (Method not found), got code {:?} in: {}",
-            JSONRPC_METHOD_NOT_FOUND,
-            error_code,
-            &body[..body.len().min(500)]
-        );
-    }
-    // HTTP error status is also acceptable
+    assert_eq!(
+        status,
+        200,
+        "a dispatched unknown method must be HTTP 200 carrying a JSON-RPC error, \
+             got {status} in: {}",
+        &body[..body.len().min(500)]
+    );
+    // Deliberately NOT `parse_jsonrpc_error_code`: it takes the first `data:` line,
+    // and a session stream opens with an SSE priming event whose data is empty
+    // (SEP-1699), so it reports "no error code" for a perfectly good answer. The
+    // local `extract_json` skips lines that are not JSON, which is the shape this
+    // transport actually emits.
+    let payload = extract_json(&body).expect("the session stream must carry a JSON-RPC object");
+    let error_code = payload
+        .get("error")
+        .and_then(|e| e.get("code"))
+        .and_then(Value::as_i64);
+    assert_eq!(
+        error_code,
+        Some(JSONRPC_METHOD_NOT_FOUND),
+        "unknown method should return JSON-RPC error code {} (Method not found), got code {:?} in: {}",
+        JSONRPC_METHOD_NOT_FOUND,
+        error_code,
+        &body[..body.len().min(500)]
+    );
 }
 
 // ============================================================================
