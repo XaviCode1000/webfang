@@ -14,7 +14,9 @@ use rmcp::service::ServiceExt;
 use tokio::io::AsyncWrite;
 use tokio::sync::Notify;
 use webfang_core::cli::error::{CliExit, EXIT_IO_ERROR};
-use webfang_mcp::mcp_server::{build_container, build_mcp_state, spawn_ai_wiring, McpHandler};
+use webfang_mcp::mcp_server::{
+    build_container, build_mcp_state, default_dom_inspector, spawn_ai_wiring, McpHandler, McpState,
+};
 
 /// Webfang MCP Server — Stdio transport.
 #[derive(Parser, Debug)]
@@ -155,6 +157,25 @@ where
     }
 }
 
+/// Compose the [`McpState`] this binary ships (#1294 NS-01).
+///
+/// Thin transport-local wrapper over the shared [`build_mcp_state`] root (#1300):
+/// the bounded shared downloader and the export roots come from there, and the
+/// DOM inspector is what #1294 adds on top — `McpState::inspector` defaults to
+/// `None`, so a server that never wires one answers every selector failure
+/// without diagnostics. Kept per-binary on purpose: a transport that stops
+/// composing through its wrapper trips `dead_code`, which the shared root alone
+/// would hide (#1305's own test rationale).
+///
+/// # Errors
+/// Propagates [`build_mcp_state`] failures (`ScraperError::Config`).
+fn build_state(
+    container: Arc<webfang_core::application::container::Container>,
+    export_roots: Vec<std::path::PathBuf>,
+) -> webfang_core::error::Result<McpState> {
+    Ok(build_mcp_state(container, export_roots)?.with_inspector(default_dom_inspector()))
+}
+
 #[tokio::main]
 async fn main() -> CliExit {
     // All logging to stderr — stdout is reserved for JSON-RPC.
@@ -195,10 +216,11 @@ async fn main() -> CliExit {
     // main drain the crawl-result writer at exit (#1143 review).
     let exit_container = Arc::clone(&container);
 
-    // Shared composition root (#1300): wires the bounded shared downloader
-    // so `download_assets` reuses one connection pool across tool calls —
-    // #1120's pool churn no longer persists on the stdio transport.
-    let state = match build_mcp_state(container, args.export_roots) {
+    // Shared composition root (#1300) + the DOM inspector this binary must ship
+    // (#1294 NS-01). `build_state` is deliberately transport-local: if one
+    // binary stops composing through it, `dead_code` catches the regression —
+    // something a single shared root cannot see from the other binary's test.
+    let state = match build_state(container, args.export_roots) {
         Ok(state) => state,
         Err(e) => {
             tracing::error!(error = %e, "MCP stdio boot failed: shared downloader construction");
@@ -284,4 +306,52 @@ async fn main() -> CliExit {
     }
 
     CliExit::Success
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #1294 NS-01: the stdio transport is the one most MCP clients actually
+    /// spawn, and it shipped the same unwired state as HTTP. Both composition
+    /// roots are pinned separately on purpose: sharing one helper would hide a
+    /// regression in whichever binary stops using it.
+    #[tokio::test]
+    async fn stdio_composition_root_wires_an_inspector() {
+        let config = webfang_core::config::Config::default();
+        let container = Arc::new(
+            webfang_core::di::Container::new(config.crawler, config.scraper)
+                .await
+                .expect("container creation failed"),
+        );
+
+        let state = build_state(container, Vec::new()).expect("stdio state composes");
+        assert!(
+            state.inspector.is_some(),
+            "the stdio server must wire a DOM inspector; a `None` here silences \
+                 every selector diagnostic an MCP client asks for"
+        );
+    }
+
+    /// The extraction that lost a parameter is the reason this exists: moving the
+    /// chain out of `main` silently dropped `with_export_roots`, which would have
+    /// turned #696's allowlist off for every stdio client. `main` cannot be tested,
+    /// so the composition root is asserted directly on both transports.
+    #[tokio::test]
+    async fn stdio_composition_root_keeps_the_export_roots_contract() {
+        let config = webfang_core::config::Config::default();
+        let container = Arc::new(
+            webfang_core::di::Container::new(config.crawler, config.scraper)
+                .await
+                .expect("container creation failed"),
+        );
+        let roots = vec![std::path::PathBuf::from("/srv/allowed")];
+
+        let state = build_state(container, roots.clone()).expect("stdio state composes");
+        assert_eq!(
+            state.allowed_export_roots.as_slice(),
+            roots.as_slice(),
+            "stdio must honor --export-roots / WEBFANG_MCP_EXPORT_ROOTS (#696)"
+        );
+    }
 }

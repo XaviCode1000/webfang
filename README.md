@@ -115,8 +115,8 @@ scripts/analyze-trace.sh debug.jsonl errors
 scripts/analyze-trace.sh debug.jsonl slow 20
 ```
 
-See [docs/debugging.md](docs/debugging.md) for the full query cookbook and
-[docs/troubleshooting.md](docs/troubleshooting.md) for common problems.
+See [docs/src/debugging.md](docs/src/debugging.md) for the full query cookbook and
+[docs/src/troubleshooting.md](docs/src/troubleshooting.md) for common problems.
 
 ### AI cleaning
 
@@ -320,7 +320,7 @@ codedb index .
 
 - **Dependency direction:** CLI → {MCP, AI} → Core (never reverse)
 - **Port/Adapter pattern:** Domain defines traits, Infrastructure implements them
-- **Error types:** DomainError, InfraError, AppError → ScraperError (dual wrapping)
+- **Error types:** DomainError, InfraError → ScraperError (dual wrapping)
 - **User-facing errors:** Spanish. Internal logs: English.
 
 **Stack:** Rust 1.88 · Tokio · wreq (TLS fingerprint) · scraper 0.27 · lol_html · tract-onnx
@@ -332,7 +332,7 @@ codedb index .
 | Resource | Covers |
 |----------|--------|
 | [AGENTS.md](AGENTS.md) | AI agent instructions, code intelligence integration |
-| [docs/debugging.md](docs/debugging.md) | Tracing, correlation IDs, `jq` query cookbook (`scripts/analyze-trace.sh`) |
+| [docs/src/debugging.md](docs/src/debugging.md) | Tracing, correlation IDs, `jq` query cookbook (`scripts/analyze-trace.sh`) |
 | [Wiki](https://github.com/XaviCode1000/webfang/wiki) | Architecture, API reference, guides |
 | `webfang --help` | Full CLI reference |
 
