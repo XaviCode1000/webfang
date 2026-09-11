@@ -70,7 +70,16 @@ impl Default for CategoryLimits {
 ///
 /// Embeds the Container for dependency injection and provides
 /// per-category semaphores for backpressure control.
-#[derive(Clone)]
+//
+// `Clone` is manual: every field stays process-shared across clones
+// (container, limits, semaphores, metrics, …) EXCEPT `session_results`,
+// which each clone forks: the clone gets its own buffer holding a copy of
+// the origin's current contents, and the two diverge afterwards. The MCP
+// transport builds one handler per client session via `state.clone()` from
+// the pristine template, so sessions start empty and one session's later
+// `crawl_site` run can never overwrite or leak into another session's
+// export (R4-session-results-global). A new session starts with nothing to
+// export — the honest empty-session error — until its own `crawl_site` runs.
 pub struct McpState {
     /// Application DI container (single source of truth)
     pub container: Arc<Container>,
@@ -89,6 +98,26 @@ pub struct McpState {
     /// Process-lifetime scrape metrics, shared across all per-session clones
     /// (REQ-06). Locked only in short synchronous sections (REQ-07).
     pub metrics: Arc<Mutex<ScrapeMetrics>>,
+    /// Session result slot for the last completed crawl run of THIS session
+    /// (#1290).
+    ///
+    /// `crawl_site` replaces the buffer after every completed run (the same
+    /// enriched DTO the CLI exports in memory: checksum, timestamp,
+    /// `word_count`, `metadata_version` are produced downstream by the
+    /// shared `process_results` path), and the export tools consume it
+    /// instead of the legacy server persistence. Each MCP client session
+    /// owns its slot: `Clone` forks the current contents into the clone's
+    /// own buffer (sessions forked from the pristine template start empty),
+    /// so one session's run can never overwrite or leak into another's
+    /// export (R4-session-results-global). The repository read was re-pointed
+    /// without carrying its restart durability into this slice.
+    ///
+    /// The export read copies the buffer inside `spawn_blocking` to preserve
+    /// the #1122 executor anti-starvation contract. The lock is still only
+    /// held for the synchronous copy inside that blocking task, never across
+    /// an `.await` (REQ-07). The cheaper Arc-swap snapshot is deferred to
+    /// slice 4.
+    pub session_results: Arc<Mutex<Vec<webfang_core::domain::ScrapedContent>>>,
     /// Allowed root directories for absolute `output_dir` paths (#696).
     ///
     /// Empty (default) = absolute `output_dir` values are REJECTED
@@ -102,6 +131,35 @@ pub struct McpState {
     pub obsidian_hermetic: Option<(PathBuf, PathBuf)>,
     /// Cancellation token for graceful shutdown propagation.
     pub cancel_token: CancellationToken,
+}
+
+impl Clone for McpState {
+    fn clone(&self) -> Self {
+        Self {
+            container: Arc::clone(&self.container),
+            limits: Arc::clone(&self.limits),
+            semaphores: Arc::clone(&self.semaphores),
+            downloader: self.downloader.clone(),
+            inspector: self.inspector.clone(),
+            robots_fetcher: self.robots_fetcher.clone(),
+            metrics: Arc::clone(&self.metrics),
+            // Per-session isolation (R4-session-results-global): a clone
+            // forks the current contents into its own buffer instead of
+            // sharing the origin's Arc. Sessions forked from the pristine
+            // template start empty; afterwards each session's runs diverge
+            // — one session's `crawl_site` can never overwrite or leak into
+            // another session's export. Everything else stays process-shared.
+            session_results: Arc::new(Mutex::new(
+                self.session_results
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+            )),
+            allowed_export_roots: Arc::clone(&self.allowed_export_roots),
+            obsidian_hermetic: self.obsidian_hermetic.clone(),
+            cancel_token: self.cancel_token.clone(),
+        }
+    }
 }
 
 /// Semaphore instances for each tool category.
@@ -164,6 +222,7 @@ impl McpState {
             inspector: None,
             robots_fetcher,
             metrics: Arc::new(Mutex::new(ScrapeMetrics::default())),
+            session_results: Arc::new(Mutex::new(Vec::new())),
             allowed_export_roots: Arc::new(Vec::new()),
             obsidian_hermetic: None,
             cancel_token: CancellationToken::new(),
@@ -574,6 +633,75 @@ mod tests {
         let snap = state2.metrics_snapshot();
         assert_eq!(snap.total_events, 1, "record-through-clone is visible");
         assert_eq!(snap.success_count, 1, "success bucket recorded");
+    }
+
+    /// R4-session-results-global: the result slot is per-session, not
+    /// process-shared. A clone forks the origin's current contents into its
+    /// own buffer (so a seeded template reaches the session handler), and
+    /// afterwards the two diverge: stores through one clone stay invisible
+    /// from the other — concurrent MCP sessions can neither clobber nor read
+    /// each other's crawl results.
+    #[tokio::test]
+    async fn session_results_isolated_across_clones() {
+        use webfang_core::domain::ValidUrl;
+
+        fn fixture(url: &str, title: &str) -> webfang_core::domain::ScrapedContent {
+            webfang_core::domain::ScrapedContent {
+                title: title.to_string(),
+                content: "body".to_string(),
+                url: ValidUrl::try_from_url(url::Url::parse(url).expect("valid"))
+                    .expect("fixture is a plain https URL"),
+                excerpt: None,
+                author: None,
+                date: None,
+                html: None,
+                assets: vec![],
+                correlation_id: None,
+                quality_hint: None,
+            }
+        }
+
+        let (_tmp, container) = test_container().await;
+        let state = McpState::new(container);
+        state
+            .session_results
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(fixture("https://example.com/origin", "Origin run"));
+
+        // Fork: the clone inherits the seeded contents (this is how a
+        // seeded test template reaches its session handler).
+        let cloned = state.clone();
+        assert!(
+            !Arc::ptr_eq(&state.session_results, &cloned.session_results),
+            "cloned McpState must not share the session-results Arc"
+        );
+        assert_eq!(
+            cloned
+                .session_results
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            1,
+            "a clone forks the origin's current results"
+        );
+
+        // Divergence: a later store through the clone stays invisible from
+        // the origin — one session's run never leaks into another's export.
+        cloned
+            .session_results
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(fixture("https://example.com/clone", "Clone run"));
+        assert_eq!(
+            state
+                .session_results
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            1,
+            "stores through the clone must not leak back into the origin"
+        );
     }
     // --- validate_export_dir (#696) ---
 

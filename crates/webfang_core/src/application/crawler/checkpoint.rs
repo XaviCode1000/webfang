@@ -424,8 +424,8 @@ impl BincodeCheckpoint {
 
 /// Delete the checkpoint file after a fully-completed crawl (F-01).
 ///
-/// Shared by [`CrawlSession::finish`](super::session::CrawlSession::finish)
-/// (close-time owner since P6-2 slice 2) and the engine's legacy close branch.
+/// Owned by [`CrawlSession::finish`](super::session::CrawlSession::finish)
+/// since P6-2 slice 2 (the engine's own close branch retired in slice 4).
 /// A missing file is a no-op; any other failure is logged, never fatal — the
 /// crawl result was already produced.
 pub(crate) fn delete_checkpoint_file(path: &Path) {
