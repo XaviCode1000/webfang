@@ -19,7 +19,7 @@ The CLI and MCP both consume it. They differ in how many layers consult it.
 | # | Layer | Lives in | Sees | CLI | MCP |
 | :-- | :--- | :--- | :--- | :--- | :--- |
 | 1 | Entry pre-check (resolves the host itself) | `webfang_mcp/src/mcp_server/ssrf.rs` → `validate_url_no_ssrf` | literals **and** hostnames | — (CLI has no equivalent: it validates literals only) | armed by default |
-| 2 | Literal entry guard | `webfang_core/src/domain/ssrf_guard.rs` → `reject_forbidden_literal_url`, called from `cli/scrape_flow.rs` and `infrastructure/downloader/fetch_router.rs` | IP literals only | armed by default | **not on the MCP scrape path** |
+| 2 | Literal entry guard | `webfang_core/src/domain/ssrf_guard.rs` → `reject_forbidden_literal_url`, called from `cli/scrape_flow.rs`, `infrastructure/downloader/fetch_router.rs`, and — since #1301 — the MCP scrape path (`application/scraper_service.rs` pre-check) | IP literals only | armed by default | **armed by default** |
 | 3 | Connect-time validating resolver | `webfang_core/src/infrastructure/ssrf.rs` → `ValidatingResolver`, installed by `SsrfGuard::secure_client` | hostnames only — wreq short-circuits literal hosts and never calls a resolver | armed by default | armed by default |
 | 4 | Redirect guard | `domain/ssrf_guard.rs::redirect_policy` | literal redirect targets (belt-and-suspenders; hostname hops go through layer 3) | armed by default | armed by default |
 

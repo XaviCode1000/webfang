@@ -15,17 +15,19 @@
 //! | Layer | Sees | CLI | MCP |
 //! | :--- | :--- | :--- | :--- |
 //! | MCP DNS pre-check (`mcp_server/ssrf.rs:41-105`) | literals **and** hostnames (own `lookup_host`) | — | `WEBFANG_MCP_DISABLE_SSRF` |
-//! | core literal entry guard (`reject_forbidden_literal_url`, `ssrf_guard.rs:373`) | literals only | `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` | not on the MCP scrape path |
+//! | core literal entry guard (`reject_forbidden_literal_url`, `ssrf_guard.rs:373`) | literals only | `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` | on the MCP scrape path since #1301 (scraper_service pre-check) |
 //! | connect-time resolver (`infrastructure/ssrf.rs`) | hostnames only — wreq short-circuits IP literals before any custom resolver (`ssrf.rs:105-108`) | same env family | same env family |
 //!
 //! Consequence, and the thing an operator must not have to guess (#1294 P6-3): the
-//! core literal entry guard is wired in `cli/scrape_flow.rs:464` and
-//! `infrastructure/downloader/fetch_router.rs:188`, while the MCP scrape path goes
-//! through `application::scraper_service::scrape_with_config`. Since wreq consults no
+//! core literal entry guard is wired in `cli/scrape_flow.rs:464`,
+//! `infrastructure/downloader/fetch_router.rs:188`, and — since #1301 — the MCP
+//! scrape path (scraper_service pre-check), which goes through
+//! `application::scraper_service::scrape_with_config`. Since wreq consults no
 //! resolver for an IP-literal host ("wreq short-circuits IP-literal hosts",
-//! `infrastructure/ssrf.rs:105-108`), setting `WEBFANG_MCP_DISABLE_SSRF` leaves such a
-//! target unchecked on this path. That is the switch's purpose — point the server at an
-//! internal target deliberately — and it has the same scope as the CLI's
+//! `infrastructure/ssrf.rs:105-108`), lifting only `WEBFANG_MCP_DISABLE_SSRF` no
+//! longer leaves such a target unchecked on this path: both knobs compose, and that
+//! is the scope this suite pins. Pointing the server at an internal target
+//! deliberately still takes both switches — and it has the same scope as the CLI's
 //! `WEBFANG_DISABLE_SSRF_ENTRY_GUARD`, which `cli_harness.rs:142-150` disarms and then
 //! drives `127.0.0.1` mocks through. What was wrong is that nothing said so: the binary
 //! logged "SSRF protection disabled (test mode)" and the pre-check logged at `debug`.
@@ -131,11 +133,12 @@ async fn policy_parity_forbidden_literals_rejected_by_both_predicates() {
 /// P6-3 parity claim, stated executably: MCP's entry switch has the SAME scope
 /// for IP literals as the CLI's.
 ///
-/// With only `WEBFANG_MCP_DISABLE_SSRF` set, nothing checks an IP literal on the
-/// MCP scrape path — the core literal guard lives in `cli/scrape_flow.rs` and
-/// `fetch_router.rs`, not here, and wreq consults no resolver for a literal host —
-/// so the request reaches the socket and fails as a connection error with no SSRF
-/// wording. The CLI-side twin of that exact fact is
+/// With both SSRF knobs set, nothing refuses an IP literal on the MCP scrape
+/// path: the MCP pre-check is lifted by `WEBFANG_MCP_DISABLE_SSRF` and the core
+/// literal guard — consulted on this path since #1301 via the scraper_service
+/// pre-check — by `WEBFANG_DISABLE_SSRF_ENTRY_GUARD`. The request then reaches
+/// the socket and fails as a connection error with no SSRF wording. The CLI-side
+/// twin of that exact fact is
 /// `domain::ssrf_guard`'s `entry_guard_hatch_requires_exact_value_one` (`"1"`
 /// disarms, which is how `tests/common/cli_harness.rs` drives `127.0.0.1` mocks).
 /// Characterization, not approval: hostname targets and redirect hops stay
@@ -147,9 +150,10 @@ async fn mcp_entry_env_has_the_same_literal_scope_as_the_cli_entry_env() {
     let client = wreq::Client::new();
     let session_id = init_session(&client, &base_url).await;
 
-    // Set only MCP's knob; explicitly lift the core one out of any inherited env.
-    let mut guard = EnvGuard::with(&[(MCP_SSRF_ENV, "1")]);
-    guard.remove(CORE_ENTRY_GUARD_ENV);
+    // Both knobs: since #1301 the MCP scrape path consults the core literal
+    // entry guard too (scraper_service pre-check), so the MCP knob alone no
+    // longer leaves an IP literal unchecked here.
+    let _guard = EnvGuard::with(&[(MCP_SSRF_ENV, "1"), (CORE_ENTRY_GUARD_ENV, "1")]);
 
     let url = "http://127.0.0.1:9/";
     let resp = call_tool(
@@ -162,7 +166,7 @@ async fn mcp_entry_env_has_the_same_literal_scope_as_the_cli_entry_env() {
     .await;
     assert!(
         !carries_ssrf_marker(&resp),
-        "with the MCP pre-check disabled no SSRF refusal may appear: {resp}"
+        "with both SSRF knobs lifted no SSRF refusal may appear: {resp}"
     );
     assert!(
         is_failure(&resp),
