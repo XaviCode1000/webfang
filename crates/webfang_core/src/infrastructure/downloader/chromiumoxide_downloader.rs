@@ -25,6 +25,8 @@ use futures::future::BoxFuture;
 use tokio::sync::RwLock;
 use url::Url;
 
+#[cfg(feature = "chromium")]
+use super::chrome_profile::ChromeProfileDir;
 use super::{DownloadError, Downloader, FetchedPage};
 #[cfg(feature = "chromium")]
 use crate::domain::cookie_bridge::domain_matches;
@@ -133,12 +135,18 @@ impl Downloader for ChromiumoxideDownloader {
                 )));
             }
 
-            // 2. Browser config with sandbox bypass for CI/Docker.
+            // 2. Unique user-data-dir per launch to avoid Chrome singleton lock.
+            let profile = ChromeProfileDir::new().map_err(|e| {
+                DownloadError::Internal(format!("failed to create Chrome profile dir: {e}"))
+            })?;
+
+            // 3. Browser config with sandbox bypass for CI/Docker.
             // F-52-c (#1278): when the preflight gate certified a binary,
             // launch exactly it instead of chromiumoxide auto-detection.
             let mut config_builder = BrowserConfig::builder()
                 .headless_mode(HeadlessMode::True)
-                .no_sandbox();
+                .no_sandbox()
+                .user_data_dir(profile.path());
             if let Some(path) = &self.chrome_binary {
                 tracing::debug!(chrome_binary = %path.display(), "using gate-certified chrome binary");
                 config_builder = config_builder.chrome_executable(path);
