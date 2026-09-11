@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, info, instrument, warn, Instrument};
 
 // ---------------------------------------------------------------------------
 // Sealed trait
@@ -415,6 +415,63 @@ impl BincodeCheckpoint {
     #[must_use]
     pub fn new() -> Self {
         Self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Close-time IO helpers (P6-2 slice 2) — one implementation, two owners
+// ---------------------------------------------------------------------------
+
+/// Delete the checkpoint file after a fully-completed crawl (F-01).
+///
+/// Shared by [`CrawlSession::finish`](super::session::CrawlSession::finish)
+/// (close-time owner since P6-2 slice 2) and the engine's legacy close branch.
+/// A missing file is a no-op; any other failure is logged, never fatal — the
+/// crawl result was already produced.
+pub(crate) fn delete_checkpoint_file(path: &Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {
+            debug!(path = %path.display(), "checkpoint removed after successful crawl");
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+        Err(e) => {
+            warn!(
+                path = %path.display(),
+                error = %e,
+                "checkpoint cleanup failed"
+            );
+        },
+    }
+}
+
+/// Persist a checkpoint on a blocking thread (never blocks the event loop).
+pub(crate) async fn persist_checkpoint_state(
+    store: BincodeCheckpoint,
+    state: CrawlCheckpoint,
+    path: PathBuf,
+) -> Result<Result<(), String>, tokio::task::JoinError> {
+    tokio::task::spawn_blocking(move || store.save(&state, &path))
+        .in_current_span()
+        .await
+}
+
+/// Log the outcome of a checkpoint save attempt.
+///
+/// The messages are load-bearing: snapshots and the benchmark aggregator key
+/// on them — change only with tripwire re-verification.
+pub(crate) fn log_checkpoint_save(outcome: Result<Result<(), String>, tokio::task::JoinError>) {
+    match outcome {
+        Ok(Ok(())) => {
+            tracing::debug!("checkpoint saved successfully");
+        },
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "checkpoint save failed");
+        },
+        // LCOV_EXCL_START defensive: checkpoint-join-error — a JoinError occurs only when the spawned task panicked, a bug
+        Err(join_err) => {
+            tracing::error!(error = %join_err, "checkpoint save task panicked");
+        },
+        // LCOV_EXCL_STOP
     }
 }
 

@@ -94,6 +94,9 @@ SemaphoreInanition (#13) indicates a backpressure configuration bug.
 | 28 | FeatureGated | PermanentFatal | 64 | No |
 | 29 | AI: ModelLoad / Inference / InvalidThreshold | InternalFatal | 3 | No |
 | 30 | AI: ChunkTooLarge / Tokenize / Download / CacheValidation / OfflineMode | DomainRecoverable | 78*/69* | No |
+| 31 | CrawlSession: InvalidConfiguration / CheckpointUnwritable (P6-2) | PermanentFatal | **78 override** | No |
+| 32 | CrawlSession: Internal (P6-2) | InternalFatal | 3 | No |
+| 33 | CrawlError: InvalidSession (P6-2 slice 2) | PermanentFatal | **78 override** | No |
 
 Rows 21-22 classify by `io::ErrorKind`, mirroring the existing
 `DownloadError::classify()` behavior. Rows 29-30 document the existing

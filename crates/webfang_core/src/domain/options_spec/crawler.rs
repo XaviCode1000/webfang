@@ -573,8 +573,10 @@ pub const MAX_FILE_SIZE: OptionSpec = OptionSpec {
     value_delimiter: None,
 };
 
-/// `--download-timeout <DOWNLOAD_TIMEOUT>` — metadata-only (no bound
-/// today).
+/// `--download-timeout <DOWNLOAD_TIMEOUT>` — FULLY migrated: bound enforced
+/// through [`OptionSpec::parse_uint`] with verbatim legacy messages (0 would
+/// make wreq apply a 0-second timeout, failing every asset download
+/// instantly — same boundary as `--timeout-secs`, P4-2 of #1296).
 pub const DOWNLOAD_TIMEOUT: OptionSpec = OptionSpec {
     id: "download_timeout",
     value_name: "DOWNLOAD_TIMEOUT",
@@ -585,9 +587,13 @@ pub const DOWNLOAD_TIMEOUT: OptionSpec = OptionSpec {
     default: Some(DefaultValue::Uint(30)),
     nullable: false,
     description_override: None,
-    help: "Timeout for individual asset downloads in seconds",
+    help: "Timeout for individual asset downloads in seconds (minimum 1)",
     heading: Some("Download Settings"),
-    kind: ValueKind::uint_unbounded(),
+    kind: ValueKind::uint(NumericPolicy::legacy_verbatim(
+        1,
+        "--download-timeout debe ser >= 1 (0 hace que cada descarga de assets falle al instante)",
+        "'{value}' no es un número válido para --download-timeout",
+    )),
     visible_aliases: &[],
     feature_gate: None,
     value_delimiter: None,
