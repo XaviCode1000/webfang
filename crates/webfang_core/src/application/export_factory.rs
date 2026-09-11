@@ -1477,6 +1477,133 @@ mod tests {
     }
 
     // =========================================================================
+    // P8-6 (ADR-0016 §4): failed records re-drive; the classified error
+    // survives crash + resume and is cleared on success.
+    // =========================================================================
+
+    /// A page that failed a previous run persists its classified error at a
+    /// NON-advanced status (SC6 / `fail_item`). Decision (a) of #1292: resume
+    /// RE-DRIVES the failed page — no permanent `Failed` status — and success
+    /// clears the error and commits. The record's truth (attempts, error class)
+    /// survives across runs.
+    #[test]
+    fn p86_failed_record_is_redriven_and_error_cleared_on_success() {
+        let dir = TempDir::new().unwrap();
+        let store = RecordStore::new("p86.test").with_state_dir(dir.path().to_path_buf());
+        let url = "https://p86.test/a";
+        let key = canonical_key(url);
+
+        // Seed: the previous run recorded a classified failure at a
+        // non-advanced status (the SC6 shape `fail_item` persists).
+        let mut seeded = DomainRecords::new();
+        seeded.insert(
+            key.clone(),
+            RawRecord {
+                url: url.to_string(),
+                canonical_url: key.clone(),
+                run_id: "previous-run".to_string(),
+                content_hash: None,
+                attempts: 2,
+                status: PageStatus::Fetched,
+                last_error: Some(LastError {
+                    class: crate::domain::error::ErrorClass::TransientBackoff,
+                    message: "429 rate-limited; retry with backoff".to_string(),
+                }),
+                output_location: None,
+                updated_at: 1_760_000_000_000,
+            },
+        );
+        store.save(&seeded).unwrap();
+
+        // Resume rerun: the failed record is not committed-proven, so the
+        // gate re-drives it and success commits it, clearing the error.
+        let ctx_store = store.clone();
+        let ctx = ResumeContext::new(&ctx_store).with_resume(true);
+        let processed = process_results(
+            &[make_scraped_content(url, "A", "alpha content")],
+            dir.path().to_path_buf(),
+            ExportFormat::Jsonl,
+            "export",
+            Some(&ctx),
+        )
+        .unwrap();
+        assert_eq!(processed.len(), 1, "the failed record must be re-driven");
+
+        let records = store.load().unwrap();
+        let record = &records[&key];
+        assert_eq!(record.status, PageStatus::Committed, "re-driven to commit");
+        assert!(
+            record.last_error.is_none(),
+            "success clears last_error (SC6)"
+        );
+        assert!(record.attempts >= 3, "attempts keep counting across runs");
+    }
+
+    /// The re-drive decision is honest in BOTH directions: a page that fails
+    /// AGAIN keeps its classified error at a non-advanced status (never a
+    /// silent skip, never a fake commit), and the next resume re-drives it
+    /// once more until it succeeds.
+    #[test]
+    fn p86_repeated_failure_stays_nonadvanced_and_redrives_again() {
+        let dir = TempDir::new().unwrap();
+        let store = RecordStore::new("p86b.test").with_state_dir(dir.path().to_path_buf());
+        let url = "https://p86b.test/bad";
+        let key = canonical_key(url);
+
+        // Run 1: invalid (empty) content fails validation — SC6 records the
+        // classified failure and the run continues.
+        let ctx_store_1 = store.clone();
+        let ctx_1 = ResumeContext::new(&ctx_store_1).with_resume(true);
+        process_results(
+            &[make_scraped_content(url, "Bad", "")],
+            dir.path().to_path_buf(),
+            ExportFormat::Jsonl,
+            "export",
+            Some(&ctx_1),
+        )
+        .unwrap();
+
+        let records = store.load().unwrap();
+        let failed = &records[&key];
+        assert_ne!(
+            failed.status,
+            PageStatus::Committed,
+            "failure never commits"
+        );
+        let first_error = failed
+            .last_error
+            .as_ref()
+            .expect("classified failure must be persisted (SC6)");
+        assert_eq!(
+            first_error.class,
+            crate::domain::error::ErrorClass::DomainRecoverable,
+            "item-data problems are DomainRecoverable"
+        );
+
+        // Run 2 (--resume): the failed page re-drives; good content commits
+        // and clears the stale error.
+        let ctx_store_2 = store.clone();
+        let ctx_2 = ResumeContext::new(&ctx_store_2).with_resume(true);
+        process_results(
+            &[make_scraped_content(
+                url,
+                "Bad",
+                "now with real content that passes",
+            )],
+            dir.path().to_path_buf(),
+            ExportFormat::Jsonl,
+            "export",
+            Some(&ctx_2),
+        )
+        .unwrap();
+
+        let records = store.load().unwrap();
+        let recovered = &records[&key];
+        assert_eq!(recovered.status, PageStatus::Committed);
+        assert!(recovered.last_error.is_none(), "success clears last_error");
+    }
+
+    // =========================================================================
     // AI chunk export: resume gate BEFORE batch export (BUG F3-A)
     // =========================================================================
     // The non-AI path (`process_single_item`) decides BEFORE each export;

@@ -22,6 +22,13 @@
 //!    resolver, closing the gap where a hostname redirect target could reach an
 //!    address that was never validated at entry (DNS rebinding / TOCTOU
 //!    included).
+//! 4. **Accepted residual (F-R3-7, ADR-0016 §6)** — hybrid escalation layers
+//!    L2 (Obscura subprocess) and L3 (headless Chromium/CDP) perform their own
+//!    networking, so the dial-level guard above does not run inside them. An
+//!    entry-time re-check does NOT close the resulting TOCTOU window (it
+//!    re-opens between the re-check and the subprocess's own dial). The residual
+//!    is LOW and is ACCEPTED BY DESIGN — see ADR-0016 §6; re-evaluate whenever
+//!    L2/L3 networking changes.
 //! 3. **Belt-and-suspenders literal guard** — [`redirect_policy`] still stops
 //!    redirects whose target is a *literal* forbidden IP synchronously,
 //!    before any resolution happens.

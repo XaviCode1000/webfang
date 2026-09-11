@@ -29,6 +29,15 @@ use super::{DownloadError, Downloader, FetchedPage};
 /// - `L1`: static HTTP (typically [`WreqDownloader`](super::wreq_downloader::WreqDownloader))
 /// - `L2`: subprocess fallback (typically [`ObscuraDownloader`](super::obscura_downloader::ObscuraDownloader))
 /// - `L3`: headless browser (typically [`ChromiumoxideDownloader`](super::chromiumoxide_downloader::ChromiumoxideDownloader))
+///
+/// # SSRF residual (F-R3-7 — accepted by design, ADR-0016 §6)
+///
+/// L2 and L3 perform their own networking; the L1 dial-level SSRF guard
+/// ([`crate::domain::ssrf_guard`]) does not run inside those processes. An
+/// entry-time re-check does not close the resulting DNS-rebinding TOCTOU
+/// window (it re-opens between the re-check and the subprocess's own dial),
+/// so the residual is LOW and ACCEPTED — see ADR-0016 §6. Re-evaluate this
+/// acceptance whenever L2/L3 networking changes.
 pub struct HybridRouter<L1: Downloader, L2: Downloader, L3: Downloader> {
     layer1: L1,
     layer2: L2,

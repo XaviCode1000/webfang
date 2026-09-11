@@ -216,7 +216,10 @@ fn spawn_writer(
 /// their record sets would be identical and a whole-file clobber would be
 /// unobservable. Disjointness is what turns "last writer wins" into data loss.
 ///
-/// Read the ignore reason before trusting this as evidence of the fix.
+/// Evidence status (ADR-0016 §5, issue #1292): this is a DOCUMENTED STRESS
+/// CHECK, not the F-07 evidence — the named evidence is the deterministic
+/// `f07_*` tests in `tests/record_store_transaction_test.rs`. Read the ignore
+/// reason before citing this as proof of anything.
 #[tokio::test]
 #[ignore = "asserts the no-loss invariant under real multi-process contention, but \
              measured 8/8 runs against the UNFIXED code with zero records lost: the \
