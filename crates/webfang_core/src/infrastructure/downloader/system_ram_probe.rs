@@ -9,7 +9,7 @@
 //! injects the probe defined here.
 //!
 //! ADR-0012-B cheap win: the `SystemRamProbe` **type** moved to
-//! [`crate::domain::ram_probe_port`], so `Engine::new` can supply its default
+//! [`crate::domain::ram_probe_port`], so the engine machinery can supply its default
 //! probe through [`system_default`](crate::domain::ram_probe_port::system_default)
 //! without naming an infrastructure concrete. This module keeps what actually
 //! needs infrastructure — the `sysinfo` I/O behind `impl RamProbePort` — and

@@ -167,6 +167,8 @@ MUTATION_TESTING_BASELINE.md
 
 # Test/review artifacts (ephemeral)
 TEST-RESULTS*.md
+# Local fast-gate telemetry (appended by scripts/ci_fast_gate.sh, never versioned)
+docs/ci-metrics/fast-gate.log
 TEST-MASTER-PLAN.md
 TEST-REFACTORING-PLAN.md
 TEST-COMPARISON-*.md

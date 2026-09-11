@@ -130,13 +130,14 @@ fn redact_path(text: &str, dir: &std::path::Path) -> String {
     text.replace(dir.to_string_lossy().as_ref(), "[OUT_DIR]")
 }
 
-/// Start a test MCP server whose crawl-result repository is pre-seeded with
-/// `n` `ScrapedContent` items.
+/// Start a test MCP server whose session-owned results buffer is pre-seeded
+/// with `n` `ScrapedContent` items — the same buffer a finished `crawl_site`
+/// run leaves behind (#1290 re-pointed the export tools from the legacy
+/// repository read to the session).
 ///
 /// Returns `(base_url, server_handle, container_tmp)`. The container temp dir
-/// is returned so the caller keeps it alive (the append-only repository log
-/// lives inside it) and so tests can locate exports that default to the
-/// container's configured `output_dir` (e.g. `process_export_pipeline`).
+/// is returned so tests can locate exports that default to the container's
+/// configured `output_dir` (e.g. `process_export_pipeline`).
 async fn start_seeded_server(n: usize) -> (String, tokio::task::JoinHandle<()>, tempfile::TempDir) {
     use webfang_core::domain::config::ScraperConfig;
     use webfang_core::domain::{CrawlerConfig, ScrapedContent, ValidUrl};
@@ -152,10 +153,7 @@ async fn start_seeded_server(n: usize) -> (String, tokio::task::JoinHandle<()>, 
         .await
         .expect("container creation failed");
 
-    // Seed the crawl-result repository with n items and wait for indexing.
-    let repo = container
-        .crawl_result_repository()
-        .expect("container must wire a crawl result repository");
+    let state = McpState::new(container);
     for i in 0..n {
         let url_str = format!("https://seed.example.com/page/{i}");
         let url = url::Url::parse(&url_str).expect("valid seeded URL");
@@ -171,20 +169,14 @@ async fn start_seeded_server(n: usize) -> (String, tokio::task::JoinHandle<()>, 
             correlation_id: None,
             quality_hint: None,
         };
-        repo.save(&content).expect("save seeded content");
+        // In-memory session seed: no background writer to wait for (the
+        // repository path's flush-poll is gone with its read source).
+        state
+            .session_results
+            .lock()
+            .expect("fresh session lock is never poisoned")
+            .push(content);
     }
-    // Poll until the background writer has indexed every seeded URL.
-    for i in 0..n {
-        let url_str = format!("https://seed.example.com/page/{i}");
-        for _ in 0..80 {
-            if repo.find_by_url(&url_str).expect("find_by_url").is_some() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-    }
-
-    let state = McpState::new(container);
     let app = build_mcp_router(state, &ServerOptions::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

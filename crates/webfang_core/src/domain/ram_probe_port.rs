@@ -7,8 +7,8 @@
 //! pattern.
 //!
 //! ADR-0012 sub-slice 3.B-1c. The [`system_default`](crate::domain::ram_probe_port::system_default)
-//! seam is ADR-0012-B (cheap wins): it lets `Engine::new` wire a production
-//! probe without naming an `infrastructure` concrete.
+//! seam is ADR-0012-B (cheap wins): it lets `Engine::build_machinery` wire a
+//! production probe without naming an `infrastructure` concrete.
 
 use std::fmt;
 use std::sync::Arc;
@@ -67,7 +67,7 @@ pub trait RamProbePort: std::fmt::Debug + Send + Sync + Sealed {
 
 /// The production probe type, owned by the domain layer.
 ///
-/// ADR-0012-B cheap win. `Engine::new` used to name
+/// ADR-0012-B cheap win. The former direct `Engine` constructor used to name
 /// `crate::infrastructure::downloader::system_ram_probe::SystemRamProbe` to
 /// supply its default `ram_probe`, which is an `application ->
 /// infrastructure` edge. The type now lives here and the sysinfo-backed
