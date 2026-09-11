@@ -17,7 +17,6 @@ pub mod metrics;
 pub mod panic_hook;
 pub mod params;
 pub mod schema_bridge;
-pub mod selector_service;
 pub mod server;
 pub mod ssrf;
 pub mod state;
