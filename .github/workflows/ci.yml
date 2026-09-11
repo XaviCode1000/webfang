@@ -622,6 +622,53 @@ jobs:
           fi
 
   # ============================================================================
+  # NOTIFY: scheduled-run failure tracking.
+  # Scheduled runs have no PR page watching them — a red Monday run went
+  # unnoticed for years (100+ consecutive failing scheduled runs before this
+  # job existed). A failed scheduled run opens ONE idempotent tracking issue:
+  # created on first failure, one comment per failing run, closed
+  # automatically when a scheduled run goes green again (McQuaid, "Make
+  # GitHub Actions Do More For You", 2026-06).
+  # `needs` covers the full scheduled matrix: `gate` aggregates the core
+  # producers, but the schedule-only Miri jobs sit OUTSIDE `gate` — a run
+  # with all 4 Miri jobs red still reports `CI Gate: success`. `release` and
+  # `coverage` are push/PR-only and never run on schedule, so they are not
+  # listed.
+  # ============================================================================
+  notify:
+    name: Notify (scheduled CI result)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [gate, code-quality, tokio-console-smoke, test-ai, feature-matrix, mcp, miri, miri-infra-fast, miri-infra-slow]
+    if: ${{ !cancelled() && github.event_name == 'schedule' }}
+    permissions:
+      issues: write
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TITLE: "Scheduled CI failed on main"
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Open or update tracking issue on failure
+        if: failure()
+        run: |
+          COUNT="$(gh issue list --state open --search "${TITLE} in:title" --json number --jq 'length')"
+          if [ "${COUNT}" -eq 0 ]; then
+            gh issue create --title "${TITLE}" --body "$(printf 'Scheduled ci.yml run failed.\n\nRun: %s\n\nThis issue is opened automatically by the notify job when a scheduled run fails. It closes itself as soon as a scheduled run is green again; each failing run appends a comment below.' "${RUN_URL}")"
+          else
+            NUMBER="$(gh issue list --state open --search "${TITLE} in:title" --json number --jq '.[0].number')"
+            gh issue comment "${NUMBER}" --body "Still failing: ${RUN_URL}"
+          fi
+      - name: Close tracking issue when green again
+        if: success()
+        run: |
+          gh issue list --state open --search "${TITLE} in:title" --json number --jq '.[].number' |
+            while read -r number; do
+              [ -n "${number}" ] && gh issue close "${number}" --comment "Scheduled CI is green again: ${RUN_URL}"
+            done
+
+  # ============================================================================
   # FEATURE MATRIX: cargo-hack checks each feature in isolation (Wave 4, #403).
   # Catches broken feature combinations — e.g. a feature that fails to compile
   # without another, or dead code behind an untested flag. Runs after clippy so
@@ -755,10 +802,13 @@ jobs:
     env:
       # rust-toolchain.toml pins 1.88.0 and would override the nightly toolchain
       # for `cargo miri` (miri is nightly-only). RUSTUP_TOOLCHAIN (env var) has
-      # higher precedence than rust-toolchain.toml, so every cargo invocation in
-      # this job uses nightly. `override: true` on dtolnay/rust-toolchain is NOT
-      # enough because rust-toolchain.toml beats rustup directory overrides.
-      RUSTUP_TOOLCHAIN: nightly
+      # the HIGHEST rustup precedence — above rust-toolchain.toml and above
+      # rustup directory overrides (`override: true` on dtolnay/rust-toolchain
+      # is NOT enough) — so it must name the SAME pinned toolchain installed
+      # below: `cargo-miri` is a per-toolchain component. Leaving this at
+      # generic `nightly` made every scheduled run fail with "'cargo-miri' is
+      # not installed" after #1041 pinned the toolchain (2026-08-31 onwards).
+      RUSTUP_TOOLCHAIN: nightly-2026-08-27
     strategy:
       fail-fast: false
       matrix:
@@ -819,7 +869,9 @@ jobs:
     timeout-minutes: 60
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     env:
-      RUSTUP_TOOLCHAIN: nightly
+      # Must name the SAME pinned toolchain installed below — RUSTUP_TOOLCHAIN
+      # has the highest rustup precedence (see the `miri` job rationale).
+      RUSTUP_TOOLCHAIN: nightly-2026-08-27
     steps:
       - uses: actions/checkout@v5
       # See the Miri nightly pin rationale in the `miri` job above (#991).
@@ -864,7 +916,9 @@ jobs:
     timeout-minutes: 60
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     env:
-      RUSTUP_TOOLCHAIN: nightly
+      # Must name the SAME pinned toolchain installed below — RUSTUP_TOOLCHAIN
+      # has the highest rustup precedence (see the `miri` job rationale).
+      RUSTUP_TOOLCHAIN: nightly-2026-08-27
     steps:
       - uses: actions/checkout@v5
       # See the Miri nightly pin rationale in the `miri` job above (#991).
