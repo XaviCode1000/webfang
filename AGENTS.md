@@ -556,6 +556,10 @@ Every PR is validated on open / edit / synchronize / label changes. **All four M
    with verified `MAINTAIN`/`ADMIN` on the target host) add it. Verify with
    `gh issue view N --json labels`. External contributions: the maintainer approves
    the issue first, then the PR can pass validation.
+   Operational trap (#1338): if the PR is opened before the label lands, validation
+   fails with `Toda issue vinculada debe tener el label 'status:approved'` and does
+   NOT re-evaluate on its own — after adding the label, force a re-run with
+   `gh run rerun <validation-run-id> --failed` (a push also retriggers it).
 3. **Exactly one `type:*` label** — count of labels starting with `type:` must be exactly 1.
 4. **Conventional branch name** — must match `^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)/[a-z0-9._-]+$`.
 

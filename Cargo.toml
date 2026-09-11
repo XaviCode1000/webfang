@@ -27,7 +27,7 @@ webfang_core = { path = "crates/webfang_core", version = "2.0.0" }
 webfang_ai = { path = "crates/webfang_ai", version = "2.0.0" }
 webfang_mcp = { path = "crates/webfang_mcp", version = "2.0.0" }
 webfang_cli = { path = "crates/webfang_cli", version = "2.0.0" }
-webfang_test_utils = { path = "crates/webfang_test_utils", version = "2.0.0" }
+webfang_test_utils = { path = "crates/webfang_test_utils" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
