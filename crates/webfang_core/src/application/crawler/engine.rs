@@ -1117,7 +1117,7 @@ impl Engine {
 /// session pooling, robots.txt enforcement).
 ///
 /// Transitional view (P6-2, #1291): after slice 4 the engine itself is built
-/// only from a validated [`CrawlSession`](super::session::CrawlSession); this
+/// only from a validated `CrawlSession`; this
 /// struct remains as the public options DTO for [`crawl_site_with_options`],
 /// consumed via `TransportPolicy::from(&options)`. Its deprecation is the
 /// declared destination but a separate act — the signed design requires its
