@@ -12,7 +12,9 @@ use clap::Parser;
 use webfang_mcp::mcp_server::server::{
     require_auth_for_external_bind, start_mcp_server, ServerOptions, DEFAULT_MCP_ADDR,
 };
-use webfang_mcp::mcp_server::{build_container, build_mcp_state, spawn_ai_wiring};
+use webfang_mcp::mcp_server::{
+    build_container, build_mcp_state, default_dom_inspector, spawn_ai_wiring, McpState,
+};
 
 /// Webfang MCP Server — Streamable HTTP transport.
 #[derive(Parser, Debug)]
@@ -58,6 +60,20 @@ struct Args {
     export_roots: Vec<std::path::PathBuf>,
 }
 
+/// Compose the [`McpState`] this binary ships (#1294 NS-01).
+///
+/// Thin transport-local wrapper over the shared [`build_mcp_state`] root (#1300);
+/// see the stdio binary's copy for why the wrapper stays per-binary.
+///
+/// # Errors
+/// Propagates [`build_mcp_state`] failures (`ScraperError::Config`).
+fn build_state(
+    container: Arc<webfang_core::application::container::Container>,
+    export_roots: Vec<std::path::PathBuf>,
+) -> webfang_core::error::Result<McpState> {
+    Ok(build_mcp_state(container, export_roots)?.with_inspector(default_dom_inspector()))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -93,12 +109,11 @@ async fn main() -> Result<()> {
         spawn_ai_wiring(Arc::clone(&container));
     }
 
-    // Shared composition root (#1300): injects the bounded shared Downloader
-    // so `download_assets` reuses one connection pool across tool calls
-    // (#1120) — the same budget-derived cache policy as the CLI, never the
-    // legacy unbounded `Downloader::new` path. Both transports share this
-    // single root, so stdio gets the identical composition (#1300).
-    let state = build_mcp_state(container, args.export_roots)?;
+    // Shared composition root (#1300) + the DOM inspector this binary ships
+    // (#1294 NS-01). The bounded shared Downloader comes from `build_mcp_state`
+    // — the same budget-derived cache policy as the CLI, never the legacy
+    // unbounded `Downloader::new` path (#1120).
+    let state = build_state(container, args.export_roots)?;
 
     let opts = ServerOptions {
         request_timeout_secs: args.timeout_secs,
@@ -114,4 +129,52 @@ async fn main() -> Result<()> {
     }
 
     start_mcp_server(state, args.bind, opts).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #1294 NS-01: this transport's composition root must ship an inspector.
+    ///
+    /// The claim is narrow on purpose — wiring, not behavior: what the helper
+    /// returns is pinned next to it in `mcp_server/mod.rs`. Nothing in the tree
+    /// asserted this before, which is why the field could stay `None` in every
+    /// production MCP process while its unit tests kept passing.
+    #[tokio::test]
+    async fn http_composition_root_wires_an_inspector() {
+        let config = webfang_core::config::Config::default();
+        let container = Arc::new(
+            webfang_core::di::Container::new(config.crawler, config.scraper)
+                .await
+                .expect("container creation failed"),
+        );
+        let state = build_state(container, Vec::new()).expect("HTTP state composes");
+        assert!(
+            state.inspector.is_some(),
+            "the HTTP server must wire a DOM inspector; a `None` here silences every \
+                 selector diagnostic an MCP client asks for"
+        );
+    }
+
+    /// Same contract as the stdio transport: `--export-roots` must survive the
+    /// composition root (#696 fail-closed allowlist). Pinned on both because both
+    /// now build their state through a helper that could drop an argument.
+    #[tokio::test]
+    async fn http_composition_root_keeps_the_export_roots_contract() {
+        let config = webfang_core::config::Config::default();
+        let container = Arc::new(
+            webfang_core::di::Container::new(config.crawler, config.scraper)
+                .await
+                .expect("container creation failed"),
+        );
+        let roots = vec![std::path::PathBuf::from("/srv/allowed")];
+
+        let state = build_state(container, roots.clone()).expect("HTTP state composes");
+        assert_eq!(
+            state.allowed_export_roots.as_slice(),
+            roots.as_slice(),
+            "HTTP must honor --export-roots / WEBFANG_MCP_EXPORT_ROOTS (#696)"
+        );
+    }
 }

@@ -84,6 +84,28 @@ pub fn require_auth_for_external_bind(bind: SocketAddr, token_present: bool) -> 
 }
 
 /// Build the Axum router with MCP endpoint and full middleware stack.
+///
+/// # Protocol-shape answers we do not own
+///
+/// The `/mcp` service is rmcp's [`StreamableHttpService`], which answers
+/// JSON-RPC envelope problems at the HTTP layer BEFORE any method dispatch, and
+/// its status codes are not configurable from here (#1294 P5-1/P5-2):
+///
+/// | Client mistake | Answer |
+/// | :--- | :--- |
+/// | `Accept` lacking both `application/json` and `text/event-stream` | `406` |
+/// | `Content-Type` not `application/json` | `415` |
+/// | body that is not a JSON-RPC 2.0 message (includes a 1.0 body) | `415` |
+/// | non-`initialize` request with no `mcp-session-id` | `422` |
+///
+/// Only after those gates does a request reach dispatch, where an unknown method
+/// becomes a JSON-RPC `-32601` over HTTP 200. Each row is pinned by
+/// `tests/mcp_transport_contract_test.rs`; changing one upstream breaks that
+/// suite instead of silently changing what agents see. Deliberately not handled
+/// here: a translating middleware layer, which would fight the framework on every
+/// rmcp bump (design decision, #1294 slice A).
+///
+/// [`StreamableHttpService`]: rmcp::transport::streamable_http_server::tower::StreamableHttpService
 pub fn build_mcp_router(state: McpState, options: &ServerOptions) -> Router {
     let service = StreamableHttpService::new(
         move || Ok(McpHandler::new(state.clone())),

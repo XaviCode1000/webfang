@@ -15,6 +15,13 @@ use webfang_core::domain::ssrf_guard::{is_forbidden_ip, parse_ip_literal};
 ///
 /// SSRF is enabled by default. Set `WEBFANG_MCP_DISABLE_SSRF=1` to disable
 /// for testing environments (e.g., when wiremock runs on 127.0.0.1).
+///
+/// Scope of that switch (#1294 P6-3): it disarms **this function only** — the
+/// MCP-level DNS pre-check. The three per-layer disarmers that live in core
+/// (`WEBFANG_DISABLE_SSRF_ENTRY_GUARD`, `..._REDIRECT_GUARD`, `..._RESOLVER`) are
+/// independent, which is why an MCP test harness needs two variables where the CLI
+/// harness needs one. The full matrix, and the reason the two stacks look different
+/// while sharing one deny list, is in `docs/ssrf-layers.md`.
 fn is_ssrf_enabled() -> bool {
     std::env::var("WEBFANG_MCP_DISABLE_SSRF").is_err()
 }
@@ -41,7 +48,20 @@ fn is_ssrf_enabled() -> bool {
 pub async fn validate_url_no_ssrf(url: &url::Url) -> Result<(), McpError> {
     // Skip validation if SSRF is disabled (e.g., in tests)
     if !is_ssrf_enabled() {
-        tracing::debug!(url = %url, "SSRF protection skipped (disabled via env var)");
+        // #1294 P6-3: this variable lifts exactly one layer, and the previous single
+        // debug line read as "protection off". State what is still armed instead —
+        // once per process, because this runs on every tool call.
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            tracing::warn!(
+                url = %url,
+                "SSRF entry pre-check disabled by WEBFANG_MCP_DISABLE_SSRF: hostname \
+                 targets and redirect hops are still validated at connect time, but IP \
+                 literals are not checked on this path anymore (the core literal guard \
+                 covers the CLI and the asset fetch router, and wreq never consults the \
+                 validating resolver for a literal host). See docs/ssrf-layers.md"
+            );
+        });
         return Ok(());
     }
 

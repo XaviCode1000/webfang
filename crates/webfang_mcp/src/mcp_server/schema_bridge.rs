@@ -28,7 +28,8 @@ use crate::mcp_server::{
     handlers,
     params::{
         CrawlSiteParams, ExportFileParams, GetAccessibilitySnapshotParams,
-        ProcessExportPipelineParams, ScrapeBatchParams, ScrapeWithOptionsParams,
+        ProcessExportPipelineParams, ScrapeBatchParams, ScrapeWithOptionsParams, CONCURRENCY_MAX,
+        CONCURRENCY_MIN,
     },
 };
 
@@ -127,6 +128,18 @@ pub enum DefaultOverride {
     /// Advertise NO default: the tool forwards the parameter's absence and the
     /// engine decides at runtime — absence is the honest advertisement.
     Unset,
+    /// Advertise explicit numeric bounds, overwriting whatever the schemars derive
+    /// emitted (#1294 NS-04: a `usize` derives `"minimum": 0`, and for
+    /// `concurrency` 0 is a value the validator must reject — #597).
+    ///
+    /// Applies to properties that are NOT spec-backed too: the override pass runs
+    /// on the merged map, so an MCP-only parameter can still be made truthful.
+    SetBounds {
+        /// Inclusive lower bound to advertise.
+        minimum: u64,
+        /// Inclusive upper bound to advertise.
+        maximum: u64,
+    },
 }
 
 /// Per-tool advertised-default overrides: `(property name, override)` pairs.
@@ -159,7 +172,24 @@ pub fn default_overrides_for_tool(tool: &str) -> Vec<(&'static str, DefaultOverr
         // is 1000 ms, but the tool's runtime default is UNSHROTTLED (an
         // absent `delay_ms` builds no bucket). Schema truth outranks spec
         // propagation: advertise 0 — what the tool actually does.
-        "scrape_batch" => vec![("delay_ms", DefaultOverride::Set(json!(0)))],
+        "scrape_batch" => vec![
+            ("delay_ms", DefaultOverride::Set(json!(0))),
+            // NS-04 (#1294): `concurrency` is MCP-only, so no OptionsSpec row ever
+            // checked it. Advertise the value the handler actually applies, and the
+            // bounds `ScrapeBatchParams::validate` enforces, from the same
+            // constants the runtime uses.
+            (
+                "concurrency",
+                DefaultOverride::Set(json!(handlers::scraping::SCRAPE_BATCH_DEFAULT_CONCURRENCY)),
+            ),
+            (
+                "concurrency",
+                DefaultOverride::SetBounds {
+                    minimum: CONCURRENCY_MIN as u64,
+                    maximum: CONCURRENCY_MAX as u64,
+                },
+            ),
+        ],
         _ => Vec::new(),
     }
 }
@@ -184,6 +214,10 @@ pub fn apply_default_overrides(props: &mut Map<String, Value>, overrides: &Defau
             },
             DefaultOverride::Unset => {
                 prop.remove("default");
+            },
+            DefaultOverride::SetBounds { minimum, maximum } => {
+                prop.insert("minimum".into(), json!(minimum));
+                prop.insert("maximum".into(), json!(maximum));
             },
         }
     }
