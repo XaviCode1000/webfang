@@ -229,6 +229,7 @@ impl CrawlContentSink for InMemoryContentSink {
 /// does today, so a single bad page never loses the run's good records.
 ///
 /// [`extract_content`]: crate::application::extraction::extract_content
+/// [`ScrapedContent`]: crate::domain::ScrapedContent
 pub async fn extract_page_content(
     page: &CapturedPage,
     config: &crate::domain::config::ScraperConfig,
