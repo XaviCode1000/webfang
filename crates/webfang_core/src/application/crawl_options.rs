@@ -10,6 +10,7 @@ use crate::domain::budget::BudgetOverrides;
 use crate::domain::config::{
     ConcurrencyConfig, ElasticOverrides, ExportFormat, OutputFormat, PipelineOutputFormat,
 };
+use crate::domain::post_load_wait::PostLoadWait;
 use crate::domain::JsStrategy;
 
 // ============================================================================
@@ -183,6 +184,8 @@ pub struct NetworkOptions {
     pub h2_profile: String,
     /// JavaScript rendering strategy (static, hybrid, full).
     pub js_strategy: JsStrategy,
+    /// Post-load settlement wait for the chromium render path (F-52-b).
+    pub post_load_wait: PostLoadWait,
     /// Path to the obscura binary (default: "obscura").
     pub obscura_binary: String,
     /// Preflight-resolved Chrome/Chromium binary for `--js-strategy full`
@@ -343,6 +346,7 @@ impl Default for NetworkOptions {
             download_timeout_secs: 30,
             h2_profile: "Chrome145".to_owned(),
             js_strategy: JsStrategy::default(),
+            post_load_wait: PostLoadWait::default(),
             obscura_binary: "obscura".to_owned(),
             // F-52-c: unresolved until the preflight gate certifies a binary.
             chrome_binary: None,

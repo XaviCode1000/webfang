@@ -181,6 +181,9 @@ fn hidden_placeholder_help(spec: &OptionSpec) -> &'static str {
 fn text_binding(id: &str) -> Option<ValueParser> {
     match id {
         "url" => Some(str_fn(super::args::crawler::parse_seed_url)),
+        // F-52-b: `idle` | `none` | `<ms>` via FromStr (numeric form rules
+        // out PossibleValues).
+        "js_wait" => Some(str_fn(super::args::crawler::parse_js_wait)),
         _ => None,
     }
 }
@@ -234,11 +237,11 @@ fn numeric_binding(id: &str) -> Option<ValueParser> {
         "selector" => Some(str_fn(super::args::crawler::parse_selector)),
         "max_depth" => Some(str_fn(super::args::crawler::parse_max_depth)),
         "max_tokens" => Some(ValueParser::from(clap::value_parser!(usize))),
+        "download_timeout" => Some(str_fn(super::args::crawler::parse_download_timeout)),
         "delay_ms"
         | "backoff_base_ms"
         | "backoff_max_ms"
         | "max_file_size"
-        | "download_timeout"
         | "checkpoint_interval" => Some(ValueParser::from(clap::value_parser!(u64))),
         "verbose" | "sitemap_depth" => Some(ValueParser::from(clap::value_parser!(u8))),
         "max_retries" => Some(ValueParser::from(clap::value_parser!(u32))),
@@ -395,6 +398,7 @@ const CRAWLER_LAYOUT: &[CrawlerSlot] = &[
     CrawlerSlot::Spec(&options_spec::crawler::NO_SESSION_HEALTH),
     CrawlerSlot::Spec(&options_spec::crawler::H2_PROFILE),
     CrawlerSlot::Spec(&options_spec::crawler::JS_STRATEGY),
+    CrawlerSlot::Spec(&options_spec::crawler::JS_WAIT),
     CrawlerSlot::Spec(&options_spec::crawler::OBSCURA_BINARY),
     CrawlerSlot::Spec(&options_spec::crawler::DOM_PREPRUNE),
 ];
@@ -421,7 +425,7 @@ fn manual_concurrency() -> clap::Arg {
         .value_parser(clap::value_parser!(
             crate::domain::config::ConcurrencyConfig
         ))
-        .help("Concurrency level (auto or number)")
+        .help("Concurrency level (auto or number, minimum 1)")
         .help_heading("Discovery")
 }
 

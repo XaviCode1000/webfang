@@ -127,7 +127,7 @@ pub struct CrawlerConfig {
     /// [`Profile::Chrome145`], preserving the historical crawl fingerprint.
     pub tls_emulation: Profile,
     /// Operator-level budget overrides (design D4) forwarded into the crawl
-    /// Engine. `Engine::new` feeds them to `BudgetModel::build`, so an explicit
+    /// Engine. Its machinery builder feeds them to `BudgetModel::build`, so an explicit
     /// `--concurrency` / `--rate-limit-burst` reaches the scheduler spawn bound
     /// and rate-limiter burst instead of being silently dropped (bug R2-1).
     /// The default reproduces the auto-derived numbers exactly.

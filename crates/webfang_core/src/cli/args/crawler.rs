@@ -1,5 +1,6 @@
 use crate::domain::config::ConcurrencyConfig;
 use crate::domain::options_spec::crawler as crawler_specs;
+use crate::domain::post_load_wait::PostLoadWait;
 use crate::domain::JsStrategy;
 use crate::domain::ValidUrl;
 use scraper::Selector;
@@ -109,8 +110,26 @@ pub(crate) fn parse_seed_url(s: &str) -> Result<ValidUrl, String> {
     ValidUrl::parse(s).map_err(|e| e.to_string())
 }
 
+/// Parse `--js-wait` (F-52-b, #1277): `idle` | `none` | `<ms 1..=30000>`
+/// via [`PostLoadWait::from_str`]. Invalid input surfaces as a Spanish
+/// clap usage error (exit 64) naming the value and the valid forms.
+pub(crate) fn parse_js_wait(s: &str) -> Result<PostLoadWait, String> {
+    s.parse::<PostLoadWait>()
+}
+
 pub(crate) fn parse_timeout_secs(s: &str) -> Result<u64, String> {
     crawler_specs::TIMEOUT_SECS
+        .parse_uint(s)
+        .map_err(|e| e.to_string())
+}
+
+/// Validate `--download-timeout`: must be >= 1. A value of 0 makes wreq
+/// apply `Duration::from_secs(0)` to every asset download, so each one
+/// fails instantly. Same "Zero Silent Loss" boundary as `--timeout-secs`
+/// (P4-2 of #1296). Bounds and messages come from the OptionsSpec
+/// (ADR-002).
+pub(crate) fn parse_download_timeout(s: &str) -> Result<u64, String> {
+    crawler_specs::DOWNLOAD_TIMEOUT
         .parse_uint(s)
         .map_err(|e| e.to_string())
 }
@@ -327,6 +346,10 @@ pub struct CrawlerArgs {
     /// JavaScript rendering strategy: static (wreq only), hybrid (3-layer), full (Chromiumoxide only)
     pub js_strategy: JsStrategy,
 
+    /// Post-load settlement wait for the chromium render path (F-52-b):
+    /// idle (default), fixed ms, or none.
+    pub post_load_wait: PostLoadWait,
+
     /// Path to the obscura binary (default: "obscura")
     pub obscura_binary: String,
 
@@ -384,6 +407,7 @@ impl clap::FromArgMatches for CrawlerArgs {
             no_session_health: m.get_flag("no_session_health"),
             h2_profile: extract::value(m, "h2_profile")?,
             js_strategy: extract::value(m, "js_strategy")?,
+            post_load_wait: extract::value(m, "js_wait")?,
             obscura_binary: extract::value(m, "obscura_binary")?,
             dom_preprune: m.get_flag("dom_preprune"),
         })
@@ -615,7 +639,7 @@ mod spec_parity_tests {
 
     #[test]
     fn deferred_list_is_honest_about_its_reasons() {
-        assert_eq!(spec::crawler::GROUP.len() + DEFERRED_FROM_SPEC.len(), 47);
+        assert_eq!(spec::crawler::GROUP.len() + DEFERRED_FROM_SPEC.len(), 48);
         let args = command_args();
         for (id, _) in DEFERRED_FROM_SPEC {
             assert!(
@@ -962,7 +986,7 @@ mod spec_parity_tests {
                 .collect::<Vec<_>>(),
             vec!["auto"]
         );
-        assert_eq!(help_of(c), "Concurrency level (auto or number)");
+        assert_eq!(help_of(c), "Concurrency level (auto or number, minimum 1)");
         assert!(c.get_long_help().is_none());
     }
 
@@ -1219,6 +1243,40 @@ mod spec_parity_tests {
             .expect_err("malformed concurrency rejected");
         assert!(
             err.contains("'muchas' no es un número válido para --download-concurrency"),
+            "got: {err}"
+        );
+    }
+
+    /// P4-2 of #1296: `--download-timeout` honors the Zero Silent Loss
+    /// policy — 0 is rejected with the same rationale shape as
+    /// `--timeout-secs` (0-second timeout fails every asset instantly).
+    #[test]
+    fn download_timeout_zero_and_malformed_error_like_timeout_secs() {
+        let err =
+            parse_args(&["--download-timeout", "0"]).expect_err("zero download timeout rejected");
+        assert!(
+            err.contains(
+                "--download-timeout debe ser >= 1 (0 hace que cada descarga de assets falle al instante)"
+            ),
+            "got: {err}"
+        );
+
+        let err = parse_args(&["--download-timeout", "fast"])
+            .expect_err("malformed download timeout rejected");
+        assert!(
+            err.contains("'fast' no es un número válido para --download-timeout"),
+            "got: {err}"
+        );
+    }
+
+    /// P4-2 of #1296: `--concurrency` honors the Zero Silent Loss policy —
+    /// the old silent clamp 0 -> 1 is now a Spanish usage error at the argv
+    /// boundary (flag and `WEBFANG_CONCURRENCY` share the parser).
+    #[test]
+    fn parse_concurrency_rejects_zero_with_spanish_error() {
+        let err = parse_args(&["--concurrency", "0"]).expect_err("zero concurrency rejected");
+        assert!(
+            err.contains("--concurrency debe ser >= 1 (usa 'auto' para autodetectar)"),
             "got: {err}"
         );
     }

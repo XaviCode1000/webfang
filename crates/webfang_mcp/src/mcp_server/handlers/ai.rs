@@ -434,10 +434,19 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn semantic_cleaner_robots_disallowed_errors_before_fetch_and_cleaner_check() {
-        // Lift the guard for this test only (wiremock binds 127.0.0.1);
-        // EnvGuard restores the original on drop, so the "1" cannot leak
-        // into sibling tests in a shared process (#1126).
-        let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_MCP_DISABLE_SSRF", "1")]);
+        // Lift both guards for this test only (wiremock binds 127.0.0.1): the MCP
+        // entry validator AND the shared core literal-IP entry guard (F-06 + F-32,
+        // #1217). Lifting only the MCP one lets the robots gate be satisfied by an
+        // unrelated SSRF short-circuit instead of real rules (#1301). EnvGuard
+        // restores the originals on drop, so the "1"s cannot leak into sibling
+        // tests in a shared process (#1126).
+        let _guard = webfang_test_utils::EnvGuard::with(&[
+            ("WEBFANG_MCP_DISABLE_SSRF", "1"),
+            (
+                webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+                "1",
+            ),
+        ]);
         let (handler, _tmp) = test_handler_with_robots().await;
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -466,13 +475,25 @@ mod tests {
             text.contains("robots.txt"),
             "error text must report the robots.txt denial, got: {text}"
         );
-        let page_hits = server
+        let requests = server
             .received_requests()
             .await
-            .expect("request recording is enabled")
+            .expect("request recording is enabled");
+        let robots_hits = requests
+            .iter()
+            .filter(|r| r.url.path() == "/robots.txt")
+            .count();
+        let page_hits = requests
             .iter()
             .filter(|r| r.url.path() != "/robots.txt")
             .count();
+        // The denial must come from real robots rules, not from a pre-fetch
+        // short-circuit that also happens to issue no page request. Exactly one
+        // robots.txt fetch per domain is the #794 single-flight invariant.
+        assert_eq!(
+            robots_hits, 1,
+            "robots rules must actually be consulted before the denial"
+        );
         assert_eq!(page_hits, 0, "the robots gate must block the page fetch");
     }
 

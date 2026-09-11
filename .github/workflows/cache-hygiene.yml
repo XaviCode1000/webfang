@@ -1,0 +1,43 @@
+# Actions-cache hygiene (#1171).
+#
+# The pool has a 10 GB hard limit. Main-only saves stopped per-PR growth, but
+# merge-ref caches of merged/closed PRs linger until LRU eviction takes them
+# (measured 2026-09-04: manual purge 13.09 GB → 7.26 GB, racing eviction).
+# This job deletes them on a schedule so the pool stays within the #1171
+# recut budget (<= 9.5 GB, zero merge-ref entries for closed PRs).
+#
+# Convention: repo pins actions by tag, so this file follows tags, not SHAs.
+
+name: Cache hygiene
+
+on:
+  schedule:
+    - cron: "0 5 * * 1" # Weekly, Monday 05:00 UTC (before stale at 06:00)
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  pull-requests: read
+
+jobs:
+  purge-merge-ref-caches:
+    name: Purge merge-ref caches of closed PRs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Delete orphaned merge-ref caches
+        run: |
+          set -euo pipefail
+          gh cache list --limit 100 --json id,ref > /tmp/caches.json
+          jq -r '.[] | select(.ref | test("^refs/pull/[0-9]+/merge$")) | "\(.id) \(.ref)"' /tmp/caches.json | while read -r id ref; do
+            n="${ref#refs/pull/}"
+            n="${n%/merge}"
+            state="$(gh pr view "$n" --json state --jq '.state' 2>/dev/null || echo OPEN)"
+            if [ "$state" != "OPEN" ]; then
+              echo "deleting $id ($ref, PR #$n $state)"
+              gh cache delete "$id"
+            fi
+          done
+          echo "cache hygiene done"
