@@ -13,6 +13,7 @@ mod dry_run_test;
 mod error_path_test;
 mod export_test;
 mod js_strategy_test;
+mod model_asset_test;
 mod obsidian_test;
 mod resume_test;
 mod robots_test;
