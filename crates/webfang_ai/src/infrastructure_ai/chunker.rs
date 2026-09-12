@@ -16,6 +16,91 @@ use webfang_core::error::SemanticError;
 
 use super::sentence::SentenceSplitter;
 
+/// Block-level HTML elements whose tag edges are real structural boundaries.
+///
+/// Every other tag (inline `a`, `em`, `code`, `sup`, ...) sits INSIDE prose:
+/// its edges must not emit any boundary, otherwise a wrapped source line plus
+/// an inline tag edge fabricates a fake paragraph break mid-sentence (#1313).
+const BLOCK_TAGS: &[&str] = &[
+    "address",
+    "area",
+    "article",
+    "aside",
+    "base",
+    "basefont",
+    "blockquote",
+    "body",
+    "br",
+    "caption",
+    "center",
+    "col",
+    "dd",
+    "details",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "dt",
+    "embed",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "frame",
+    "frameset",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "header",
+    "hgroup",
+    "hr",
+    "html",
+    "iframe",
+    "isindex",
+    "legend",
+    "li",
+    "link",
+    "main",
+    "marquee",
+    "menu",
+    "meta",
+    "nav",
+    "noframes",
+    "noscript",
+    "object",
+    "ol",
+    "optgroup",
+    "option",
+    "output",
+    "p",
+    "param",
+    "plaintext",
+    "pre",
+    "script",
+    "search",
+    "section",
+    "select",
+    "source",
+    "style",
+    "summary",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "title",
+    "tr",
+    "track",
+    "ul",
+    "wbr",
+];
+
 /// HTML chunker
 ///
 /// Chunks HTML content into semantic segments using a two-pass approach:
@@ -140,12 +225,12 @@ impl HtmlChunker {
     /// # }
     /// ```
     pub fn chunk(&self, html: &str) -> Result<Vec<DocumentChunk>, SemanticError> {
-        // Pass 1: Structural boundaries (strip HTML and split by paragraphs)
+        // Pass 1: Structural boundaries (strip HTML and split by block edges).
+        // `strip_html_tags` reserves '\n' exclusively for block boundaries, so
+        // every piece here is a real HTML block, never a mid-sentence fragment
+        // caused by an inline-link line wrap (#1313).
         let text = self.strip_html_tags(html);
-        let paragraphs: Vec<&str> = text
-            .split("\n\n")
-            .filter(|p| !p.trim().is_empty())
-            .collect();
+        let paragraphs: Vec<&str> = text.split('\n').filter(|p| !p.trim().is_empty()).collect();
 
         // Convert to DocumentChunks
         let mut chunks: SmallVec<[DocumentChunk; 8]> = SmallVec::new();
@@ -204,26 +289,51 @@ impl HtmlChunker {
 
     /// Strip HTML tags from content
     ///
+    /// Block-level tag edges emit a single `'\n'` — the only paragraph
+    /// boundary marker in the returned text. Inline tag edges emit nothing,
+    /// and source newlines become plain spaces, so a soft-wrapped source line
+    /// around an inline link can no longer fabricate a break inside a
+    /// sentence (#1313).
+    ///
     /// # Arguments
     ///
     /// * `html` - HTML content
     ///
     /// # Returns
     ///
-    /// Plain text with HTML tags removed
-    #[allow(clippy::manual_strip)]
+    /// Plain text with HTML tags removed; `'\n'` marks block boundaries
     fn strip_html_tags(&self, html: &str) -> String {
-        // Simple regex-free HTML tag stripping
         let mut result = String::with_capacity(html.len());
         let mut in_tag = false;
+        // Lowercase tag name collected until the first name delimiter
+        // (whitespace, '/', '>'); empty for comments/doctype/PI, which are
+        // never block boundaries.
+        let mut tag_name = String::new();
+        let mut name_complete = false;
 
         for ch in html.chars() {
-            if ch == '<' {
+            if in_tag {
+                if ch == '>' {
+                    in_tag = false;
+                    if BLOCK_TAGS.contains(&tag_name.as_str()) {
+                        result.push('\n');
+                    }
+                } else if !name_complete {
+                    if ch.is_ascii_alphanumeric() {
+                        tag_name.push(ch.to_ascii_lowercase());
+                    } else {
+                        name_complete = true;
+                    }
+                }
+            } else if ch == '<' {
                 in_tag = true;
-            } else if ch == '>' {
-                in_tag = false;
-                result.push('\n');
-            } else if !in_tag {
+                tag_name.clear();
+                name_complete = false;
+            } else if ch == '\n' {
+                // In HTML, a source newline is collapsible whitespace, never a
+                // paragraph boundary (#1313).
+                result.push(' ');
+            } else {
                 result.push(ch);
             }
         }
