@@ -2,10 +2,10 @@
 source: crates/webfang_core/tests/behavioral/main.rs
 expression: redacted
 ---
-  <TIMESTAMP>  WARN <MODULE>: Sitemap URL returned non-2xx status: 404 Not Found from http://127.0.0.1:<PORT>/sitemap.xml
+  <TIMESTAMP> ERROR <MODULE>: Sitemap URL returned non-2xx status, error: http request failed: 404: server returned 404 Not Found, url: http://127.0.0.1:<PORT>/sitemap.xml, stage: sitemap.fetch, trace_id: "<TRACE_ID>"
     at <FILE>.rs:<LINE>
 
-  <TIMESTAMP> ERROR <MODULE>: Failed to parse sitemap http://127.0.0.1:<PORT>/sitemap.xml: http request failed: 404: server returned 404 Not Found
+  <TIMESTAMP> ERROR <MODULE>: Failed to parse sitemap, error: http request failed: 404: server returned 404 Not Found, url: http://127.0.0.1:<PORT>/sitemap.xml, stage: sitemap.discovery
     at <FILE>.rs:<LINE>
 
 Error: URL discovery failed: http error 404 al acceder a server returned 404 Not Found

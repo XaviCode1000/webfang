@@ -2,7 +2,7 @@
 source: crates/webfang_core/tests/behavioral/main.rs
 expression: redacted
 ---
-  <TIMESTAMP> ERROR <MODULE>: Failed to parse sitemap http://127.0.0.1:<PORT>/sitemap.xml: no URLs found in sitemap
+  <TIMESTAMP> ERROR <MODULE>: Failed to parse sitemap, error: no URLs found in sitemap, url: http://127.0.0.1:<PORT>/sitemap.xml, stage: sitemap.discovery
     at <FILE>.rs:<LINE>
 
 Warning: No URLs discovered from sitemaps
