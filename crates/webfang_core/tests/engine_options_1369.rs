@@ -300,3 +300,54 @@ async fn discovery_plain_run_enforces_robots_by_default() {
         "robots.txt is fetched exactly once per domain, got {robots}"
     );
 }
+
+/// #1369 hardening pin: plain discovery now pays the same guard chain the
+/// capture path always had. The knobless else-branch is gone, so the plain
+/// branch rides the factory-wired options and every fetch runs through the
+/// SSRF entry guard plus the validating resolver (AGENTS.md fetch-guard
+/// order). No `EnvGuard` here: both bypass envs stay at their production
+/// default (unset → guards armed). With a loopback wiremock seed the run must
+/// still COMPLETE (the engine's robots gate receives `PolicyRefused` and skips
+/// the URL — Ok with zero URLs, not Err), and because the rejection is
+/// pre-socket the mock server must observe zero requests of any kind. Seeds
+/// that used to crawl on the knobless path are refused by design (#1355,
+/// #1251); the operator hatch stays the documented
+/// `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` / `WEBFANG_DISABLE_SSRF_RESOLVER` pair.
+#[tokio::test]
+async fn discovery_plain_run_rejects_loopback_seed_with_ssrf_guard_on() {
+    let server = MockServer::start().await;
+    mount_page_and_robots(&server).await;
+    let base = server.uri();
+    let seed_str = format!("{base}/");
+    let seed_url = url::Url::parse(&seed_str).expect("seed must parse");
+    let config = CrawlerConfig::builder(seed_url)
+        .max_depth(1)
+        .max_pages(10)
+        .ignore_robots(false)
+        .timeout_secs(5)
+        .build();
+
+    let output = discover_urls_unified(
+        config,
+        &plain_opts(&seed_str),
+        &PersistenceMode::Disabled,
+        None,
+    )
+    .await
+    .expect("the armed guard cuts the seed pre-socket, so the run completes Ok");
+
+    assert!(
+        output.urls.is_empty(),
+        "loopback seed with the guard chain on must discover zero URLs, got {:?}",
+        output.urls
+    );
+    assert!(
+        output.pages.is_empty(),
+        "a refused run must not carry captured pages"
+    );
+    let seen = server.received_requests().await.unwrap_or_default();
+    assert!(
+        seen.is_empty(),
+        "rejection is pre-socket: the mock must receive zero requests, got {seen:?}"
+    );
+}

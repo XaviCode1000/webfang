@@ -209,6 +209,16 @@ fn build_discovery_engine_options(
 /// `Disabled` and `Resume` keep `checkpoint_path: None` — the no-checkpoint
 /// option set (#1369: a single explicit entry, no knobless fallback).
 ///
+/// SSRF guard (#1369): with the knobless branch gone, plain discovery rides the
+/// factory-wired options and pays the full guard chain of the AGENTS.md
+/// fetch-guard order — seed entry validation plus the dial-time SSRF resolver
+/// on every request, the same policy the scrape path pins (#1355, #1251).
+/// Seeds resolving to loopback or private ranges are refused by design: the
+/// entry guard cuts literal IPs before any socket opens and the run completes
+/// Ok with zero discovered URLs. The operator hatch for trusted local targets
+/// remains the documented `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` /
+/// `WEBFANG_DISABLE_SSRF_RESOLVER` env pair (#1334 pattern), off by default.
+///
 /// Compatibility shim over [`discover_urls_unified`] (F-14, #1232): keeps the
 /// `Vec<Url>` call shape while the orchestrator migrates to the unified output.
 pub async fn discover_urls_recursive(
