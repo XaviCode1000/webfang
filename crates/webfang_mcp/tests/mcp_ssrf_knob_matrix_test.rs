@@ -45,12 +45,15 @@ use common::*;
 
 use serde_json::{json, Value};
 use std::net::IpAddr;
-use webfang_core::domain::ssrf_guard::is_forbidden_ip;
 use webfang_mcp::mcp_server::ssrf::validate_url_no_ssrf;
 use webfang_test_utils::EnvGuard;
 
-/// MCP's own entry-layer kill-switch (`mcp_server/ssrf.rs:19`).
-const MCP_SSRF_ENV: &str = "WEBFANG_MCP_DISABLE_SSRF";
+/// MCP's own entry-layer kill-switch (`mcp_server/ssrf.rs`), referenced
+/// through the canonical SSOT constant so a rename cannot silently
+/// desynchronize this suite.
+use webfang_core::domain::ssrf_guard::{
+    is_forbidden_ip, WEBFANG_MCP_DISABLE_SSRF_ENV as MCP_SSRF_ENV,
+};
 
 /// Core's literal-entry-guard kill-switch, referenced through the SSOT constant
 /// so a rename cannot silently desynchronize this suite.

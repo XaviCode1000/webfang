@@ -55,22 +55,25 @@ const SUFFICIENT_HTML: &str = r#"<!DOCTYPE html>
 ///
 /// **Ordering invariant (fixes the `Tests (all features)` hang, PR #1224):**
 /// the process-wide ONCE init in [`init_ssrf_disabled`] mutates the process
-/// environment under `webfang_test_utils::env_lock`, which is NOT reentrant
-/// and which the `EnvGuard` returned here holds for the test's whole
-/// lifetime. Running that init *after* acquiring the guard (the pre-fix
-/// path, via `start_test_server`) therefore self-deadlocked: the ONCE inside
-/// the test blocked on a lock this same test was holding. We prime it first,
-/// in a blocking thread, while this task holds no lock — under nextest every
-/// test is its own process so the ONCE has not fired yet, and under a
-/// shared-process `cargo test` run this merely serializes against a
-/// sibling's guard instead of deadlocking. The init inside
-/// `start_test_server` remains as a no-op belt-and-suspenders for the tests
-/// that run without this guard.
+/// environment under the workspace ENV_LOCK (`env_set` acquires it itself,
+/// #1126), which is NOT reentrant and which the `EnvGuard` returned here
+/// holds for the test's whole lifetime. Running that init *after* acquiring
+/// the guard (the pre-fix path, via `start_test_server`) therefore
+/// self-deadlocked: the ONCE inside the test blocked on a lock this same
+/// test was holding. We prime it first, in a blocking thread, while this
+/// task holds no lock — under nextest every test is its own process so the
+/// ONCE has not fired yet, and under a shared-process `cargo test` run this
+/// merely serializes against a sibling's guard instead of deadlocking. The
+/// init inside `start_test_server` remains as a no-op belt-and-suspenders
+/// for the tests that run without this guard.
 async fn ssrf_guards_off() -> webfang_test_utils::EnvGuard {
     // Prime the ONCE outside our own lock scope (see doc comment).
     let _ = tokio::task::spawn_blocking(init_ssrf_disabled).await;
     webfang_test_utils::EnvGuard::with(&[
-        ("WEBFANG_MCP_DISABLE_SSRF", "1"),
+        (
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+            "1",
+        ),
         (
             webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
             "1",
@@ -82,11 +85,14 @@ async fn ssrf_guards_off() -> webfang_test_utils::EnvGuard {
 fn init_ssrf_disabled() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        // Process-wide, permanent setup (no restore-on-drop), so this uses
-        // `env_lock` directly — but the mutation is still serialized under
-        // the workspace ENV_LOCK invariant (issue #1126).
-        let _lock = webfang_test_utils::env_lock();
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+        // Process-wide, permanent setup (no restore-on-drop): `env_set`
+        // acquires ENV_LOCK itself, so the mutation stays serialized under
+        // the workspace ENV_LOCK invariant (issue #1126) without a manual
+        // `env_lock` binding.
+        webfang_test_utils::env_set(
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+            "1",
+        );
     });
 }
 
