@@ -17,6 +17,14 @@ use webfang_core::domain::ValidUrl;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// Wiremock loopbacks are literal-IP URLs, which production rejects at the
+/// SSRF entry guard — bypass entry + resolver exactly as `discovery_capture_1229`
+/// does (#1369: the plain unified branch now rides the guard-checked router).
+const SSRF_BYPASS: [(&str, &str); 2] = [
+    ("WEBFANG_DISABLE_SSRF_ENTRY_GUARD", "1"),
+    ("WEBFANG_DISABLE_SSRF_RESOLVER", "1"),
+];
+
 /// Build quiet `CrawlOptions` pointing at `seed` for discovery tests.
 fn discovery_opts(seed: &str) -> CrawlOptions {
     let url = ValidUrl::parse(seed).expect("wiremock seed must parse");
@@ -59,6 +67,7 @@ fn sorted_urls(urls: &[url::Url]) -> Vec<url::Url> {
 /// child must be present.
 #[tokio::test]
 async fn dry_run_parity_with_real_discovery() {
+    let _env = webfang_test_utils::EnvGuard::with(&SSRF_BYPASS);
     let server = MockServer::start().await;
     let base = server.uri();
 
