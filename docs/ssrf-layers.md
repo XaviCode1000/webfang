@@ -41,9 +41,25 @@ Only the exact value `1` disarms anything; `0`, `true`, `yes` all leave the laye
 ## Test-isolation rule
 
 - Writers: use `EnvGuard::{set,remove,with,clean}` or `env_lock()` for permanent setup (#1126).
+  One-time/permanent seeding or cleanup where restore-on-drop does not fit goes through
+  `webfang_test_utils::{env_set,env_remove}`, which acquire ENV_LOCK themselves — never a manual
+  `env_lock` + raw-mutation pair.
 - Readers: hold `EnvGuard` for full read-or-assert window (even pure readers use `EnvGuard::clean`) or `#[serial]`; see #1308.
 - Never nest `EnvGuard` in `env_lock()` (mutex not reentrant).
 - Spawned children exempt: `Command::env`/`env_remove` fix child env at spawn (see `sanitize_env` in `cli_harness.rs`).
+- Canonical names live in `webfang_core::domain::ssrf_guard` (#1348): `WEBFANG_MCP_DISABLE_SSRF_ENV`
+  (MCP layer 1) joins `DISABLE_ENTRY_GUARD_ENV` — reference the constants, never restate the strings.
+  `EnvGuard::ssrf_hatches_off()` lifts MCP layer 1 + core layer 2 in one step (the double hatch above).
+- Mechanical enforcement (#1349): clippy `disallowed-methods` denies `std::env::set_var`/`remove_var`
+  in the webfang_core and webfang_mcp src trees, and `env_reader_without_guard_fails_fast`
+  (webfang_test_utils) source-scans every `crates/*/src` and `crates/*/tests` file except the owner.
+  Reintroducing a raw mutation fails the build by construction.
+- #1334 audit outcome: the one confirmed reader-without-guard case was fixed in #1308;
+  `index_children_all_fail_exits_69` reads no env (the old #1331 flake was the pre-#1317
+  snapshot-based version); the unlocked `env::vars()` reads in `sanitize_env` and the parity test's
+  child-env sanitization only REMOVE the same `WEBFANG_*`/`AI_MODEL_ID` names they read, into a
+  spawned child whose env is fixed at spawn (exempt by the rule above); `tokio_console_smoke_test`
+  reads operator-only `WEBFANG_CONSOLE_*` overrides that no other test writes.
 
 ## What MCP actually does with `WEBFANG_MCP_DISABLE_SSRF`
 

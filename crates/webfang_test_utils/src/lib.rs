@@ -1,6 +1,12 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_errors_doc)]
 #![deny(clippy::missing_panics_doc)]
+// Sanctioned owner of raw env mutations (#1126, #1349): every call here is
+// ENV_LOCK-serialized and audited. The workspace clippy.toml configures
+// `disallowed-methods` for std::env::set_var/remove_var, which fires in
+// every crate once configured — this allow is the owner's exemption, the
+// mirror image of the deny active in webfang_core and webfang_mcp.
+#![allow(clippy::disallowed_methods)]
 //! Shared test utilities for the webfang workspace.
 //!
 //! Provides RAII environment isolation, output redaction for deterministic

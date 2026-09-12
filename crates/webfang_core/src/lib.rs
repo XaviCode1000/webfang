@@ -1,6 +1,9 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 #![cfg_attr(not(test), deny(clippy::expect_used))]
 #![cfg_attr(not(test), deny(clippy::disallowed_types))]
+// Raw process-env mutations must go through webfang_test_utils (#1126,
+// #1349). Ungated on purpose: cfg(test) mods in this crate are covered too.
+#![deny(clippy::disallowed_methods)]
 //! WebFang Core — Core scraping library
 //!
 //! Contains domain, application, and infrastructure layers for web scraping.
