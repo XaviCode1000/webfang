@@ -20,7 +20,7 @@ use crate::application::resume::filter_committed;
 use crate::application::scrape_single_url;
 use crate::cli::error::CliExit;
 use crate::domain::config::ScraperConfig;
-use crate::domain::crawler_port::RobotsPort;
+use crate::domain::crawler_port::{RobotsDecision, RobotsPort};
 use crate::domain::entities::progress::{ScrapeError, ScrapeStatus};
 use crate::domain::persistence::PersistenceMode;
 use crate::domain::persistence::RecordStoreError;
@@ -471,13 +471,23 @@ async fn scrape_one_url(
 
     observer.on_page_started(url_str).await;
 
-    // Robots.txt enforcement — skip disallowed URLs unless --ignore-robots
+    // Robots.txt enforcement — skip disallowed URLs unless --ignore-robots.
+    // #1329: the typed verdict names the cause; the entry guard above already
+    // rejected literal-IP seeds with the CLI's `invalid_url` error, so a
+    // `PolicyRefused` here is defensive — surface the guard's real cause
+    // instead of a phantom robots skip.
     if !opts.crawl.ignore_robots {
         let domain = url.host_str().unwrap_or("unknown");
-        if !ctx.robots_fetcher.is_allowed(url_str, domain).await {
-            info!("Blocked by robots.txt: {}", url_str);
-            observer.on_robots_blocked(url_str).await;
-            return Ok(None);
+        match ctx.robots_fetcher.is_allowed(url_str, domain).await {
+            RobotsDecision::Allowed => {},
+            RobotsDecision::RulesDenied => {
+                info!("Blocked by robots.txt: {}", url_str);
+                observer.on_robots_blocked(url_str).await;
+                return Ok(None);
+            },
+            RobotsDecision::PolicyRefused(forbidden) => {
+                return Err(crate::error::ScraperError::Network(Box::new(forbidden)));
+            },
         }
     }
 
@@ -1184,11 +1194,10 @@ mod tests {
     async fn robots_cache_allows_public_urls() {
         let fetcher = RobotsFetcher::new(wreq_util::Profile::Chrome145, 30).unwrap();
         // No robots.txt for localhost → fail-open → allowed
-        assert!(
-            fetcher
-                .is_allowed("http://localhost:18080/page", "localhost")
-                .await
-        );
+        assert!(fetcher
+            .is_allowed("http://localhost:18080/page", "localhost")
+            .await
+            .allows());
     }
 
     #[test]

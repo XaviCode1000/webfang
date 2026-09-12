@@ -1,10 +1,35 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_errors_doc)]
 #![deny(clippy::missing_panics_doc)]
+// Sanctioned owner of raw env mutations (#1126, #1349): every call here is
+// ENV_LOCK-serialized and audited. The workspace clippy.toml configures
+// `disallowed-methods` for std::env::set_var/remove_var, which fires in
+// every crate once configured — this allow is the owner's exemption, the
+// mirror image of the deny active in webfang_core and webfang_mcp.
+#![allow(clippy::disallowed_methods)]
 //! Shared test utilities for the webfang workspace.
 //!
 //! Provides RAII environment isolation, output redaction for deterministic
 //! snapshots, and binary path resolution for integration tests.
+//!
+//! # SSRF test hatches — the ONE place they are documented (#1329)
+//!
+//! Test harnesses driving the production network path against wiremock
+//! (127.0.0.1) must disarm the SSRF layers the path consults. Each hatch is
+//! read with a distinct convention; all are test-only — production never
+//! sets them:
+//!
+//! | Hatch | Canonical const | Layer it disarms |
+//! |---|---|---|
+//! | `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` (exact `"1"`) | `webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV` | Literal-IP entry guard (SSRF choke point, #1217) |
+//! | `WEBFANG_DISABLE_SSRF_REDIRECT_GUARD` | `webfang_core::domain::ssrf_guard::DISABLE_REDIRECT_GUARD_ENV` | Client redirect policy's literal-IP stop |
+//! | `WEBFANG_DISABLE_SSRF_RESOLVER` | `webfang_core::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV` | Connect-time validating DNS resolver |
+//! | `WEBFANG_DISABLE_SSRF` (presence) | — (literal in `llm_extraction::ssrf_gate`, #703) | LLM base-URL SSRF gate |
+//! | `WEBFANG_MCP_DISABLE_SSRF` | named const lands with #1348 | MCP entry validator |
+//!
+//! Tests that exercise the robots chain must use
+//! [`EnvGuard::wiremock_robots`], which arms the entry-guard and MCP
+//! hatches together — never a single hatch by hand (#1308).
 
 use regex::Regex;
 use std::env;
@@ -33,6 +58,53 @@ pub fn env_lock() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Set `var` to `value` under `ENV_LOCK` with **permanent** semantics: the
+/// change is NOT restored on drop — it stays for the rest of the process.
+///
+/// Use for one-time/permanent seeding or cleanup where restore-on-drop does
+/// not fit (#1126) — e.g. harness initialization inside `Once::call_once`.
+/// For atomic multi-variable setup that must restore, use
+/// [`EnvGuard::with`] / [`EnvGuard::clean`]; to flip a variable mid-test
+/// while already holding a guard, use [`EnvGuard::set`] /
+/// [`EnvGuard::remove`].
+///
+/// NEVER call while an [`env_lock()`] guard or an [`EnvGuard`] scope is
+/// alive: this helper acquires `ENV_LOCK` itself, and the lock is not
+/// reentrant (deadlock). This is exactly why it replaces the old
+/// `let _lock = env_lock(); std::env::set_var(...)` pattern — the manual
+/// binding disappears, the serialization does not.
+#[allow(unsafe_code)]
+pub fn env_set(var: &str, value: &str) {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // SAFETY: ENV_LOCK exclusivity is guaranteed — no other thread can
+    // access the environment while this lock is held.
+    unsafe {
+        env::set_var(var, value);
+    }
+}
+
+/// Remove `var` under `ENV_LOCK` with **permanent** semantics: the variable
+/// is NOT restored on drop — it stays absent for the rest of the process.
+///
+/// Same contract as [`env_set`]: one-time/permanent cleanup where
+/// restore-on-drop does not fit (#1126); [`EnvGuard`] variants for scoped or
+/// mid-test changes; never call while an [`env_lock()`] guard or an
+/// [`EnvGuard`] scope is alive (the helper acquires `ENV_LOCK` itself, and
+/// the lock is not reentrant).
+#[allow(unsafe_code)]
+pub fn env_remove(var: &str) {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // SAFETY: ENV_LOCK exclusivity is guaranteed — no other thread can
+    // access the environment while this lock is held.
+    unsafe {
+        env::remove_var(var);
+    }
+}
+
 /// RAII guard that isolates environment variable mutations in tests.
 ///
 /// Acquires the global [`env_lock`] on construction and restores all
@@ -52,6 +124,32 @@ pub struct EnvGuard {
 // this guard, and the guard restores the original state on drop.
 #[allow(unsafe_code)]
 impl EnvGuard {
+    /// Arm BOTH SSRF hatches the robots chain can consult in tests (#1329):
+    ///
+    /// 1. `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` — core's literal-IP entry guard
+    ///    (canonical const:
+    ///    `webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV`), read
+    ///    once per chain inside `RobotsFetcher` and again at CLI/MCP entry
+    ///    points;
+    /// 2. `WEBFANG_MCP_DISABLE_SSRF` — the MCP validator's hatch (named
+    ///    const lands with #1348; until then the literal lives here and in
+    ///    the MCP handler tests).
+    ///
+    /// The #1308 lesson: a robots test that arms only ONE hatch leaves the
+    /// other chain layer armed, so the test can pass on a phantom denial
+    /// label instead of the robots rules it means to exercise. Always use
+    /// this constructor for tests that drive the robots path against a
+    /// wiremock loopback literal — never arm a single hatch by hand.
+    ///
+    /// The guard restores both variables on drop.
+    #[must_use]
+    pub fn wiremock_robots() -> Self {
+        Self::with(&[
+            ("WEBFANG_DISABLE_SSRF_ENTRY_GUARD", "1"),
+            ("WEBFANG_MCP_DISABLE_SSRF", "1"),
+        ])
+    }
+
     /// Remove the given variables from the environment, saving originals for
     /// restoration on drop.
     #[must_use]
@@ -96,6 +194,31 @@ impl EnvGuard {
             _lock: lock,
             original_vars,
         }
+    }
+
+    /// Lift BOTH SSRF entry hatches for an MCP wiremock-loopback harness,
+    /// restoring both on drop.
+    ///
+    /// The double-hatch helper (#1329 paso 4, #1348): an MCP harness that
+    /// scrapes a loopback wiremock literal needs BOTH
+    /// `WEBFANG_MCP_DISABLE_SSRF=1` (MCP layer 1, the DNS pre-check) AND
+    /// `WEBFANG_DISABLE_SSRF_ENTRY_GUARD=1` (core layer 2, the literal-IP
+    /// entry guard) — see docs/ssrf-layers.md. This constructor sets both in
+    /// one atomic step referencing the canonical constants in
+    /// `webfang_core::domain::ssrf_guard`. Layers 3 (validating resolver) and
+    /// 4 (redirect guard) stay armed.
+    #[must_use]
+    pub fn ssrf_hatches_off() -> Self {
+        Self::with(&[
+            (
+                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+                "1",
+            ),
+            (
+                webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+                "1",
+            ),
+        ])
     }
 
     /// Set a variable while this guard already holds the environment lock,
@@ -337,6 +460,49 @@ mod tests {
             let _lock = env_lock();
             env::remove_var(VAR);
         }
+    }
+
+    /// `env_set`/`env_remove` are permanent: no restore-on-drop, and each
+    /// call serializes itself under ENV_LOCK (no surrounding `env_lock`).
+    #[test]
+    fn env_set_and_env_remove_are_permanent() {
+        const VAR: &str = "WEBFANG_TEST_VAR_7";
+        {
+            let _lock = env_lock();
+            env::remove_var(VAR);
+        }
+
+        env_set(VAR, "permanent");
+        assert_eq!(env::var(VAR).unwrap(), "permanent");
+
+        env_set(VAR, "overwritten");
+        assert_eq!(env::var(VAR).unwrap(), "overwritten");
+
+        env_remove(VAR);
+        assert!(env::var(VAR).is_err());
+    }
+
+    /// The double-hatch constructor flips both SSRF entry variables in one
+    /// atomic step and restores the pre-existing (absent) state on drop.
+    #[test]
+    fn ssrf_hatches_off_sets_both_and_restores_both() {
+        use webfang_core::domain::ssrf_guard::{
+            DISABLE_ENTRY_GUARD_ENV, WEBFANG_MCP_DISABLE_SSRF_ENV,
+        };
+        {
+            let _lock = env_lock();
+            env::remove_var(WEBFANG_MCP_DISABLE_SSRF_ENV);
+            env::remove_var(DISABLE_ENTRY_GUARD_ENV);
+        }
+
+        {
+            let _guard = EnvGuard::ssrf_hatches_off();
+            assert_eq!(env::var(WEBFANG_MCP_DISABLE_SSRF_ENV).unwrap(), "1");
+            assert_eq!(env::var(DISABLE_ENTRY_GUARD_ENV).unwrap(), "1");
+        }
+
+        assert!(env::var(WEBFANG_MCP_DISABLE_SSRF_ENV).is_err());
+        assert!(env::var(DISABLE_ENTRY_GUARD_ENV).is_err());
     }
 
     #[test]

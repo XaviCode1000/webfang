@@ -11,7 +11,7 @@
 //! typed-error fixes (string-match removal, HEAD→GET fallback, max-depth guard).
 //! - scenarios 1–7 are regression guards (may already be green).
 
-use crate::{assert_snapshot_redacted, cmd};
+use crate::{assert_snapshot_redacted, cmd, redact_nondeterministic};
 use tempfile::TempDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -491,11 +491,19 @@ async fn index_children_all_fail_exits_69() {
     );
     let stderr = String::from_utf8_lossy(&result.stderr).to_string();
 
-    // The per-child fetch WARNs are emitted from concurrent child futures, so
-    // their relative order on stderr is NOT guaranteed: pin presence only (#1317).
+    // The per-child fetch rejections are emitted from concurrent child futures,
+    // so their relative order on stderr is NOT guaranteed: pin presence only
+    // (#1317). Since #1318 the rejection is a `log_scrape_error` event, so the
+    // pin is on the context message and its `stage` field rather than on the
+    // old inline `status: 500 from <url>` sentence — checked on the redacted
+    // stderr because the fmt layer paints field names with ANSI, which would
+    // break a raw `contains` across the `stage:` boundary.
+    let logged = redact_nondeterministic(output.path(), &stderr);
     assert!(
-        stderr.contains("non-2xx status: 500"),
-        "each failing child must WARN its non-2xx status, stderr:\n{stderr}"
+        logged.contains("Sitemap URL returned non-2xx status")
+            && logged.contains("stage: sitemap.fetch")
+            && logged.contains("http request failed: 500"),
+        "each failing child must log its non-2xx rejection with stage=sitemap.fetch, stderr:\n{stderr}"
     );
     assert!(
         stderr.contains("/child-a.xml") && stderr.contains("/child-b.xml"),

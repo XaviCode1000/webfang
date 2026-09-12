@@ -14,6 +14,7 @@ use crate::domain::waf::{waf_inspector, InspectionContext};
 use crate::domain::ValidUrl;
 use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl};
 use crate::error::ScraperError;
+use crate::infrastructure::observability::log_scrape_error;
 use std::sync::Arc;
 use tracing::{info, instrument};
 use url::Url;
@@ -287,12 +288,24 @@ fn build_sitemap_parser(
 }
 
 /// Parse a sitemap URL, mapping parse failures to a [`CrawlError`].
+///
+/// The terminal parse failure is reported through [`log_scrape_error`] with
+/// `stage = "sitemap.discovery"` (#1318). The correlation lives inside the
+/// parser (the port's boxed future owns the root it mints), so this
+/// application-level summary logs with an optional correlation, exactly as
+/// the observability contract permits.
 async fn parse_sitemap(
     parser: &dyn SitemapParserPort,
     sitemap_url: &str,
 ) -> Result<Vec<SitemapUrl>, CrawlError> {
     let urls = parser.parse_from_url(sitemap_url).await.map_err(|e| {
-        tracing::error!("Failed to parse sitemap {}: {}", sitemap_url, e);
+        log_scrape_error(
+            &e,
+            sitemap_url,
+            "sitemap.discovery",
+            None,
+            "Failed to parse sitemap",
+        );
         // Preserve the specific error type for proper exit code mapping
         match e {
             SitemapError::HttpError { status, message } => CrawlError::Http {

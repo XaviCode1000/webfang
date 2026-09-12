@@ -6030,6 +6030,7 @@ name = "webfang_test_utils"
 version = "2.1.0"
 dependencies = [
  "regex",
+ "webfang_core",
 ]
 
 [[package]]

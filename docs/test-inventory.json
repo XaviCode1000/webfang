@@ -317,6 +317,15 @@
       "tier": "integration_mock"
     },
     {
+      "path": "crates/webfang_core/tests/behavioral/cli/model_asset_test.rs",
+      "crate": "webfang_core",
+      "area": "cli",
+      "test_count": 3,
+      "ignored_count": 3,
+      "snapshot_usage": true,
+      "tier": "ai_model_semantic"
+    },
+    {
       "path": "crates/webfang_core/tests/behavioral/cli/obsidian_test.rs",
       "crate": "webfang_core",
       "area": "cli",

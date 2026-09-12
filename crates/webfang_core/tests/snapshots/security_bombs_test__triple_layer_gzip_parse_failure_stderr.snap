@@ -2,7 +2,7 @@
 source: crates/webfang_core/tests/security_bombs_test.rs
 expression: redacted
 ---
-  <TIMESTAMP> ERROR <MODULE>: Failed to parse sitemap http://127.0.0.1:<PORT>/sitemap.xml.gz: <PARSE_FAILURE>
+  <TIMESTAMP> ERROR <MODULE>: Failed to parse sitemap, error: <PARSE_FAILURE>
     at <FILE>.rs:<LINE>
 
 Error: URL discovery failed: error interno: parse: <PARSE_FAILURE>

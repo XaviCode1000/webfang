@@ -15,7 +15,7 @@ use crate::application::error_mapping::scraper_error_from_http;
 use crate::application::http_client::HttpClientPort;
 use crate::application::rate_limiter::SharedRateLimiter;
 use crate::domain::config::ScraperConfig;
-use crate::domain::crawler_port::RobotsPort;
+use crate::domain::crawler_port::{RobotsDecision, RobotsPort};
 use crate::domain::html_cleaner::clean_html;
 use crate::domain::http_port::HttpResponse;
 use crate::domain::scraper_port::{author_extractor, fallback, readability};
@@ -204,15 +204,16 @@ pub async fn scrape_with_config(
 /// A policy refusal is NOT a robots denial (#1301): when the SSRF literal-IP
 /// entry guard rejects the URL, no socket ever opens and robots.txt was never
 /// consulted — reporting that as `WafBlocked(url, "robots.txt")` invents a
-/// WAF that does not exist. The denial surfaces as [`ScraperError::Network`]
-/// carrying the guard's own cause (`SSRF detectado: ...`), so connect-family
-/// failures keep their real cause. The guard-chain itself is untouched: the
-/// same guard still denies, still emits its own WARN, and the fetcher's
-/// internal pre-check still stands for direct port callers.
+/// WAF that does not exist. Since #1329 the port reports the typed verdict
+/// [`RobotsDecision::PolicyRefused`] carrying the guard's own cause, so this
+/// gate does NOT re-validate the URL (single guard call site in the chain):
+/// the refusal surfaces as [`ScraperError::Network`] with the guard's cause
+/// ("SSRF detectado: ..."), so connect-family failures keep their real
+/// cause. Genuine rules denials below keep the WAF label.
 ///
 /// [`RobotsPort::is_allowed`] is FAIL-OPEN: if the robots.txt fetch itself
-/// fails (network error, non-2xx, timeout), the URL is treated as allowed —
-/// matching the production crawl behavior.
+/// fails (network error, non-2xx, timeout), the verdict is
+/// [`RobotsDecision::Allowed`] — matching the production crawl behavior.
 pub async fn enforce_robots_policy(
     url: &url::Url,
     robots: Option<&dyn RobotsPort>,
@@ -226,17 +227,21 @@ pub async fn enforce_robots_policy(
     };
 
     let domain = url.host_str().unwrap_or("unknown");
-    // #1301: a policy refusal is not a robots denial. The literal-IP entry
-    // guard denies before any socket opens, so routing its verdict through
-    // the bool port would mislabel it as "robots.txt says no" and surface
-    // a phantom "WAF/CAPTCHA detectado ... robots.txt". Name the real
-    // cause instead; genuine rules denials below keep the WAF label.
-    if let Err(forbidden) = crate::domain::ssrf_guard::reject_forbidden_literal_url(url) {
-        return Err(ScraperError::Network(Box::new(forbidden)));
-    }
-    if !fetcher.is_allowed(url.as_str(), domain).await {
-        tracing::warn!(url = %url, domain = %domain, "robots_txt_denied");
-        return Err(ScraperError::waf_blocked(url.to_string(), "robots.txt"));
+    // #1301 + #1329: the typed verdict distinguishes a genuine robots-rules
+    // denial from a policy refusal WITHOUT re-validating the URL — the
+    // literal-IP guard runs exactly once, inside the fetcher. Re-running
+    // `reject_forbidden_literal_url` here would duplicate the guard call
+    // site this port shape exists to eliminate.
+    match fetcher.is_allowed(url.as_str(), domain).await {
+        RobotsDecision::Allowed => {},
+        RobotsDecision::RulesDenied => {
+            tracing::warn!(url = %url, domain = %domain, "robots_txt_denied");
+            return Err(ScraperError::waf_blocked(url.to_string(), "robots.txt"));
+        },
+        RobotsDecision::PolicyRefused(forbidden) => {
+            // The guard's real cause, verbatim — never a phantom WAF label.
+            return Err(ScraperError::Network(Box::new(forbidden)));
+        },
     }
     Ok(())
 }

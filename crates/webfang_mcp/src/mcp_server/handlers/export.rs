@@ -951,7 +951,10 @@ mod handler_tests {
         // so the "1"s cannot leak into sibling tests in a shared process (#1126).
         // The SSRF guard itself is asserted by the dedicated regression test below.
         let _guard = webfang_test_utils::EnvGuard::with(&[
-            ("WEBFANG_MCP_DISABLE_SSRF", "1"),
+            (
+                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+                "1",
+            ),
             (
                 webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
                 "1",
@@ -1018,7 +1021,9 @@ mod handler_tests {
         // The escape hatch must be unset so the guard is active for this
         // test; EnvGuard restores the original on drop, so the removal can
         // no longer leak into sibling tests in a shared process (#1126).
-        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_MCP_DISABLE_SSRF"]);
+        let _guard = webfang_test_utils::EnvGuard::clean(&[
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+        ]);
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .process_export_pipeline(Parameters(ProcessExportPipelineParams {

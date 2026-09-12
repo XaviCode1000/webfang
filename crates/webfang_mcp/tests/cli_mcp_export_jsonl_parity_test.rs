@@ -193,20 +193,23 @@ impl Drop for RelTempDir {
 /// (`test_crawl_site_max_depth_one_follows_internal_links`,
 /// `ssrf_guards_off`) runs under: the MCP-layer gate AND the entry-layer
 /// gate, because wiremock binds 127.0.0.1. Setup is serialized under
-/// ENV_LOCK via `Once` + `env_lock` (#1126), so it stays safe even if
+/// ENV_LOCK via `Once` + `env_set` (#1126), so it stays safe even if
 /// this binary gains more tests.
 async fn start_server() -> (String, tokio::task::JoinHandle<()>, tempfile::TempDir) {
-    // Process-wide, permanent setup (no restore-on-drop), so this uses
-    // `env_lock` directly — but the mutation is still serialized under
-    // the workspace ENV_LOCK invariant (issue #1126).
+    // Process-wide, permanent setup (no restore-on-drop): `env_set`
+    // acquires ENV_LOCK itself, so each mutation stays serialized under
+    // the workspace ENV_LOCK invariant (issue #1126) without a manual
+    // `env_lock` binding.
     // Both SSRF layers are lifted: the MCP entry validator and the
     // shared core literal-IP entry guard (F-06 + F-32, #1217), since
     // every tool under test fetches wiremock loopback literals.
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let _lock = webfang_test_utils::env_lock();
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
-        std::env::set_var(
+        webfang_test_utils::env_set(
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+            "1",
+        );
+        webfang_test_utils::env_set(
             webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
             "1",
         );

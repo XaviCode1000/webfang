@@ -431,19 +431,23 @@ impl McpHandler {
             js_strategy,
             session_pool_enabled: params.session_pool.unwrap_or(false),
             checkpoint_path: params.checkpoint_dir.as_ref().map(std::path::PathBuf::from),
-            // The factory is what lets Hybrid/Full build a real downloader:
-            // without it the strategy is recorded but the crawl silently
-            // degrades to the static stack. Static keeps the historical
-            // fallback (no factory): it preserves the exact default-path
-            // behavior the existing suite pins, and only JS-rendering
-            // callers own this wiring (see `with_downloader_factory`).
+            // #1355: the factory is injected for EVERY strategy, Static
+            // included. Without it the strategy is recorded but no guarded
+            // FetchRouter is built, and the crawl silently degrades to the
+            // static `fetch_url()` fallback — a path that evades the SSRF
+            // entry-guard choke-point (F-06 + F-32, #1217) and the
+            // validating resolver, exactly the silent-bypass class the
+            // guard chain exists to make unreachable. One fetch path, one
+            // guard chain (AGENTS.md fetch-guard-chain order); the MCP
+            // boundary validator (`validate_url_no_ssrf`) keeps its layer.
+            // Behavior change is the fix: forbidden literal-IP targets are
+            // now rejected on static crawls too, so loopback test servers
+            // need the entry-guard hatch (`ssrf_guards_off`, #1334 pattern).
             // The factory is a stateless unit struct, safe to share from
             // the long-lived server.
-            downloader_factory: if matches!(js_strategy, webfang_core::domain::JsStrategy::Static) {
-                None
-            } else {
-                Some(webfang_core::application::container::Container::downloader_factory())
-            },
+            downloader_factory: Some(
+                webfang_core::application::container::Container::downloader_factory(),
+            ),
             content_sink: Some(std::sync::Arc::clone(&sink)
                 as std::sync::Arc<
                     dyn webfang_core::application::crawler::content_sink::CrawlContentSink,
@@ -1260,7 +1264,9 @@ mod tests {
         // The escape hatch must be unset so the guard is active for this
         // test; EnvGuard restores the original on drop, so the removal can
         // no longer leak into sibling tests in a shared process (#1126).
-        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_MCP_DISABLE_SSRF"]);
+        let _guard = webfang_test_utils::EnvGuard::clean(&[
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+        ]);
         // SSRF protection must block requests to internal/loopback addresses
         // before any fetch happens (Bug #673).
         let (handler, _tmp) = test_handler().await;
@@ -1294,7 +1300,9 @@ mod tests {
         // The escape hatch must be unset so the guard is active for this
         // test; EnvGuard restores the original on drop, so the removal can
         // no longer leak into sibling tests in a shared process (#1126).
-        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_MCP_DISABLE_SSRF"]);
+        let _guard = webfang_test_utils::EnvGuard::clean(&[
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+        ]);
         // SSRF protection must block internal/loopback addresses (Bug #673).
         let (handler, _tmp) = test_handler().await;
         let res = handler
@@ -1329,7 +1337,9 @@ mod tests {
         // The escape hatch must be unset so the guard is active for this
         // test; EnvGuard restores the original on drop, so the removal can
         // no longer leak into sibling tests in a shared process (#1126).
-        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_MCP_DISABLE_SSRF"]);
+        let _guard = webfang_test_utils::EnvGuard::clean(&[
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+        ]);
         // SSRF protection must block internal/loopback addresses in a batch (Bug #673).
         let (handler, _tmp) = test_handler().await;
         let res = handler
@@ -1390,7 +1400,9 @@ mod tests {
         // The escape hatch must be unset so the guard is active for this
         // test; EnvGuard restores the original on drop, so the removal can
         // no longer leak into sibling tests in a shared process (#1126).
-        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_MCP_DISABLE_SSRF"]);
+        let _guard = webfang_test_utils::EnvGuard::clean(&[
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+        ]);
         // SSRF protection must block internal/loopback addresses (Bug #673).
         let (handler, _tmp) = test_handler().await;
         let res = handler
@@ -1419,7 +1431,9 @@ mod tests {
         // The escape hatch must be unset so the guard is active for this
         // test; EnvGuard restores the original on drop, so the removal can
         // no longer leak into sibling tests in a shared process (#1126).
-        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_MCP_DISABLE_SSRF"]);
+        let _guard = webfang_test_utils::EnvGuard::clean(&[
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+        ]);
         // SSRF protection must block internal/loopback addresses (Bug #673).
         let (handler, _tmp) = test_handler().await;
         let res = handler
@@ -1455,7 +1469,10 @@ mod tests {
         // guard (F-06 + F-32, #1217). EnvGuard restores the originals on
         // drop, so the "1"s cannot leak into siblings (#1126).
         let _guard = webfang_test_utils::EnvGuard::with(&[
-            ("WEBFANG_MCP_DISABLE_SSRF", "1"),
+            (
+                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+                "1",
+            ),
             (
                 webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
                 "1",
@@ -1492,7 +1509,10 @@ mod tests {
         // guard (F-06 + F-32, #1217). EnvGuard restores the originals on
         // drop, so the "1"s cannot leak into siblings (#1126).
         let _guard = webfang_test_utils::EnvGuard::with(&[
-            ("WEBFANG_MCP_DISABLE_SSRF", "1"),
+            (
+                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+                "1",
+            ),
             (
                 webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
                 "1",
@@ -1535,7 +1555,10 @@ mod tests {
         // guard (F-06 + F-32, #1217). EnvGuard restores the originals on
         // drop, so the "1"s cannot leak into siblings (#1126).
         let _guard = webfang_test_utils::EnvGuard::with(&[
-            ("WEBFANG_MCP_DISABLE_SSRF", "1"),
+            (
+                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+                "1",
+            ),
             (
                 webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
                 "1",
@@ -1571,7 +1594,10 @@ mod tests {
         // guard (F-06 + F-32, #1217). EnvGuard restores the originals on
         // drop, so the "1"s cannot leak into siblings (#1126).
         let _guard = webfang_test_utils::EnvGuard::with(&[
-            ("WEBFANG_MCP_DISABLE_SSRF", "1"),
+            (
+                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+                "1",
+            ),
             (
                 webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
                 "1",
@@ -1674,7 +1700,9 @@ mod tests {
         // The escape hatch must be unset so the guard is active for this
         // test; EnvGuard restores the original on drop, so the removal can
         // no longer leak into sibling tests in a shared process (#1126).
-        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_MCP_DISABLE_SSRF"]);
+        let _guard = webfang_test_utils::EnvGuard::clean(&[
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+        ]);
 
         let (handler, _tmp) = test_handler().await;
         let res = handler
