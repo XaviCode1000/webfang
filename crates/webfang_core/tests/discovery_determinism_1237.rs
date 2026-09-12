@@ -23,7 +23,10 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// SSRF entry guard — bypass entry + resolver exactly as the scrape-flow
 /// robots test does.
 const SSRF_BYPASS: [(&str, &str); 2] = [
-    ("WEBFANG_DISABLE_SSRF_ENTRY_GUARD", "1"),
+    (
+        webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+        "1",
+    ),
     ("WEBFANG_DISABLE_SSRF_RESOLVER", "1"),
 ];
 
