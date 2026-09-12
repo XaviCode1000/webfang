@@ -68,7 +68,7 @@ use wreq::redirect::Policy;
 /// for full read-or-assert window (even pure readers use `EnvGuard::clean`)
 /// or `#[serial]`; see #1308. Never nest `EnvGuard` in `env_lock()`; spawned
 /// children exempt (see `sanitize_env` in `cli_harness.rs`).
-pub(crate) const DISABLE_REDIRECT_GUARD_ENV: &str = "WEBFANG_DISABLE_SSRF_REDIRECT_GUARD";
+pub const DISABLE_REDIRECT_GUARD_ENV: &str = "WEBFANG_DISABLE_SSRF_REDIRECT_GUARD";
 
 /// Test-only escape hatch for the connect-time validating DNS resolver.
 ///
