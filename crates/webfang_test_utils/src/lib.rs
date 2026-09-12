@@ -39,7 +39,7 @@ pub fn env_lock() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Set `var` to `value` under [`ENV_LOCK`] with **permanent** semantics: the
+/// Set `var` to `value` under `ENV_LOCK` with **permanent** semantics: the
 /// change is NOT restored on drop — it stays for the rest of the process.
 ///
 /// Use for one-time/permanent seeding or cleanup where restore-on-drop does
@@ -66,7 +66,7 @@ pub fn env_set(var: &str, value: &str) {
     }
 }
 
-/// Remove `var` under [`ENV_LOCK`] with **permanent** semantics: the variable
+/// Remove `var` under `ENV_LOCK` with **permanent** semantics: the variable
 /// is NOT restored on drop — it stays absent for the rest of the process.
 ///
 /// Same contract as [`env_set`]: one-time/permanent cleanup where
