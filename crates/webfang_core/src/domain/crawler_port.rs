@@ -267,7 +267,7 @@ pub enum RobotsDecision {
     RulesDenied,
     /// The SSRF literal-IP entry guard refused the URL before any socket
     /// opened and before robots.txt was consulted (#1301). Carries the
-    /// guard's own [`ForbiddenLiteral`] cause so the caller can surface the
+    /// guard's own [`ForbiddenLiteral`](crate::domain::ssrf_guard::ForbiddenLiteral) cause so the caller can surface the
     /// real reason ("SSRF detectado: …") instead of a phantom robots denial.
     PolicyRefused(crate::domain::ssrf_guard::ForbiddenLiteral),
 }
