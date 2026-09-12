@@ -204,11 +204,19 @@ jobs:
       # `scripts/check_intra_crate_direction.sh` and ADR-0010 allowlist).
       - name: Intra-crate direction gate (strict)
         run: INTRA_CRATE_MODE=strict bash scripts/check_intra_crate_direction.sh
-      # Regression guard for stabilization-sitemap-regression: the ignored-test
-      # budget is a frozen Gate 0 baseline (37 rows in docs/test-inventory.md).
+      # Regression guard for stabilization-sitemap-regression, re-based by #1328:
+      # the ignored-test budget is a frozen baseline (32 rows in
+      # docs/test-inventory.md — 26 test attributes + 6 doc/comment mentions),
+      # compared PER CATEGORY, so a composition swap with an equal total fails.
       # Any #[ignore] added or fixed without updating the inventory fails here.
       - name: Ignored-test inventory guard
         run: bash scripts/check_ignored_guard.sh
+      # Semantics harness for the guard above (#1328): proves on mktemp fixtures
+      # that the guard fails on a composition swap whose total matches, that an
+      # uncatalogued doc-comment mention fails explained, and that rows keyed by
+      # file+test-name survive line drift. Runs the guard against fixtures only.
+      - name: Ignored-test guard semantics harness
+        run: bash scripts/test_ignored_guard.sh
       # Exit-code taxonomy must be typed-error based, never message-string
       # coupled. This forbids re-introducing the removed string match on the
       # "no URLs found" parser message (stabilization-sitemap-regression,

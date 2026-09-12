@@ -304,6 +304,8 @@ lane_fmt_and_guards() {
     env INTRA_CRATE_MODE=strict bash scripts/check_intra_crate_direction.sh
   run_guard "ignored-test inventory guard" scripts/check_ignored_guard.sh \
     bash scripts/check_ignored_guard.sh
+  run_guard "ignored-test guard semantics harness (#1328)" scripts/test_ignored_guard.sh \
+    bash scripts/test_ignored_guard.sh
   # Phase 3: same guard as the docs lane — blocking here because every
   # surrounding repo-guard step is blocking (fail-closed on findings,
   # warn-skip only when the script itself is absent).
