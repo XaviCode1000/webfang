@@ -1,7 +1,9 @@
 //! Batch processor — concurrent execution of multiple crawl jobs
 //!
 //! Uses [`tokio::sync::Semaphore`] for job-level concurrency control.
-//! Each URL in the batch is a separate `crawl_site()` call.
+//! Each URL in the batch is a separate `crawl_site_with_options()` call, with
+//! the run-wide [`EngineOptions`] built once by `build_batch_engine_options`
+//! (#1369 — the knobless `crawl_site` entry is deprecated).
 //!
 //! # Usage
 //!
@@ -37,7 +39,8 @@ use tracing::{error, info, instrument, warn, Instrument};
 
 use super::BatchJob;
 use crate::application::crawler::content_sink::CrawlContentSink;
-use crate::domain::{CrawlError, CrawlErrorCategory, CrawlerConfig};
+use crate::application::crawler::engine::EngineOptions;
+use crate::domain::{CrawlError, CrawlErrorCategory, CrawlerConfig, JsStrategy};
 use crate::error::ScraperError;
 use crate::ValidUrl;
 
@@ -161,6 +164,10 @@ impl BatchProcessor {
         let progress = job.progress.clone();
         let job_id = job.id.clone();
         let base_config = job.config.clone();
+        // #1369: the options are run-wide — built once from the batch's real
+        // sources (base config + shared sink) and cloned per URL task.
+        // `EngineOptions: Clone` is cheap (owned scalars + Arc handles).
+        let base_options = build_batch_engine_options(&base_config, self.content_sink.clone());
 
         let mut join_set = JoinSet::new();
         let mut errors: Vec<(String, ScraperError)> = Vec::new();
@@ -177,7 +184,7 @@ impl BatchProcessor {
             }
             let url = url_str.clone();
             let config = base_config.clone();
-            let sink = self.content_sink.clone();
+            let options = base_options.clone();
             let permit = self
                 .semaphore
                 .clone()
@@ -191,7 +198,7 @@ impl BatchProcessor {
             join_set.spawn(
                 async move {
                     let _permit = permit; // Hold permit for duration of task
-                    let result = process_single_url(&url, config, sink).await;
+                    let result = process_single_url(&url, config, options).await;
                     (url, result)
                 }
                 .in_current_span(),
@@ -288,27 +295,62 @@ fn build_per_url_config(
         .build())
 }
 
-/// Process a single URL by creating a CrawlerConfig and calling crawl_site
+/// Build the run-wide [`EngineOptions`] shared by every URL of one batch run.
+///
+/// #1369: the batch entry used to route through the knobless `crawl_site` /
+/// `crawl_site_capturing` shims, which hard-wired the engine transport policy
+/// inside the engine. The explicit seam makes each knob's source visible:
+///
+/// - `ignore_robots`: the batch's only robots source is the base
+///   [`CrawlerConfig`] — `build_per_url_config` copies the same value into
+///   every per-URL config — so the run-wide option mirrors it. Identical to
+///   what `crawl_site_inner` derived per call before.
+/// - `content_sink`: the shared sink attached via
+///   [`BatchProcessor::with_content_sink`] (#631); `None` keeps the batch
+///   metadata-only (bodies discarded — the historical zero-files gotcha).
+/// - `checkpoint_path` / `session_pool_enabled` / `js_strategy` /
+///   `downloader_factory`: the batch has no operator source for these, so
+///   they are set **explicitly** to the values the old entry hardcoded
+///   (off / off / static / `None`) — never silently via a drifted default.
+///   The remaining transport scalars ride `EngineOptions::default()`, which
+///   is field-for-field the old `crawl_site_inner` policy (Chrome145, 3
+///   retries, 1s/10s backoff, 100-page checkpoint interval).
+///
+/// Built once per run and cloned per URL task.
+fn build_batch_engine_options(
+    base_config: &CrawlerConfig,
+    content_sink: Option<Arc<dyn CrawlContentSink>>,
+) -> EngineOptions {
+    EngineOptions {
+        checkpoint_path: None,
+        session_pool_enabled: false,
+        ignore_robots: base_config.ignore_robots,
+        js_strategy: JsStrategy::Static,
+        downloader_factory: None,
+        content_sink,
+        ..Default::default()
+    }
+}
+
+/// Process a single URL by creating a CrawlerConfig and running the explicit
+/// engine entry with the run-wide options
 ///
 /// Creates a new seed-only `CrawlerConfig` for the given URL (#1215: one
 /// page per URL, never a BFS expansion) and captures the fetched body into
-/// the shared sink when one is attached.
+/// the shared sink when one is attached (carried on `options.content_sink`,
+/// #1369).
 ///
 /// Returns `Err(CrawlError)` if the crawl result has any errors (e.g., timeouts),
 /// ensuring the batch processor correctly counts failed URLs.
 async fn process_single_url(
     url: &str,
     base_config: CrawlerConfig,
-    content_sink: Option<Arc<dyn CrawlContentSink>>,
+    options: EngineOptions,
 ) -> Result<crate::domain::CrawlResult, CrawlError> {
     let config = build_per_url_config(url, &base_config)?;
 
-    let result = match content_sink {
-        Some(sink) => {
-            crate::application::crawler::engine::crawl_site_capturing(config, sink).await?
-        },
-        None => crate::application::crawler::engine::crawl_site(config).await?,
-    };
+    let result =
+        crate::application::crawler::engine::crawl_site_with_options(config, options).await?;
 
     // Treat any crawl errors (timeouts, etc.) as failures for batch processing,
     // but preserve severity (#537): the engine already partitioned them into
@@ -782,6 +824,58 @@ mod tests {
         assert!(matches!(err, Err(CrawlError::InvalidUrl(_))));
     }
 
+    /// #1369 seam pin: every knob of the batch `EngineOptions` must come from
+    /// an explicit source — the robots value from the base config, the sink
+    /// from the processor, and the knobs the batch has no source for set to
+    /// the values the old `crawl_site` entry hardcoded (never a silent
+    /// default that could drift with `EngineOptions::default()`).
+    #[test]
+    fn batch_engine_options_make_every_knob_source_explicit() {
+        let base = CrawlerConfig::builder(Url::parse("https://example.com").unwrap())
+            .ignore_robots(true)
+            .build();
+        let options = build_batch_engine_options(&base, None);
+        assert!(
+            options.ignore_robots,
+            "the batch's robots source is the base config"
+        );
+        assert!(
+            options.checkpoint_path.is_none(),
+            "batch has no checkpoint source — must stay off explicitly"
+        );
+        assert!(
+            !options.session_pool_enabled,
+            "batch has no pool source — must stay off explicitly"
+        );
+        assert_eq!(
+            options.js_strategy,
+            JsStrategy::Static,
+            "batch has no js-strategy source — must stay static explicitly"
+        );
+        assert!(
+            options.downloader_factory.is_none(),
+            "no factory means the recorded strategy cannot render — the
+             static batch path must not grow one by accident"
+        );
+        assert!(
+            options.content_sink.is_none(),
+            "no sink attached leaves the batch metadata-only (the #631 gotcha)"
+        );
+
+        let sink = Arc::new(crate::application::crawler::content_sink::InMemoryContentSink::new());
+        let options = build_batch_engine_options(&base, Some(sink));
+        assert!(
+            options.content_sink.is_some(),
+            "the processor's shared sink must ride on the options"
+        );
+
+        let enforcing = CrawlerConfig::new(Url::parse("https://example.com").unwrap());
+        assert!(
+            !build_batch_engine_options(&enforcing, None).ignore_robots,
+            "the default config's respect-robots must flow through both ways"
+        );
+    }
+
     /// Shared in-flight gauge + six-node star topology (seed + 5 leaves) for
     /// the R2-1 diagnostics: counts every request and the high-water mark of
     /// concurrent responses so the scheduler bound derived from the operator
@@ -828,7 +922,8 @@ mod tests {
 
     /// Six-node diagnostic (bug R2-1, scope pinned by #1215): with `crawl = 1`
     /// staged as an operator override on the batch base config, the Engine
-    /// reached through `BatchProcessor.process_single_url -> crawl_site`
+    /// reached through `BatchProcessor.process_single_url ->
+    /// crawl_site_with_options`
     /// must still honor the explicit `--concurrency` override — and, since
     /// #1215, it scrapes the seed ONLY: the base config's `max_depth 1` /
     /// `max_pages 10` must NOT expand into the 5 discovered leaves, even

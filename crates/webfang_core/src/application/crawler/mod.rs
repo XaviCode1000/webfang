@@ -24,5 +24,10 @@ pub use content_sink::{CapturedPage, CrawlContentSink, InMemoryContentSink};
 pub use discovery::{
     crawl_with_sitemap, discover_urls_single_fetch, extract_content, scrape_single_url,
 };
-pub use engine::{crawl_site, crawl_site_capturing, crawl_site_with_options, EngineOptions};
+pub use engine::{crawl_site_with_options, EngineOptions};
+// #1369: the deprecated shims stay exported at their historical paths until
+// removal — the lint on the `pub use` itself is inherent to that contract
+// (callers must still see the warning at their own use sites).
+#[allow(deprecated)]
+pub use engine::{crawl_site, crawl_site_capturing};
 pub use progress::CrawlProgress;

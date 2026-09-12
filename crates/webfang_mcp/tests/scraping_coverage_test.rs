@@ -29,6 +29,12 @@ use webfang_mcp::mcp_server::server::build_mcp_router;
 use webfang_mcp::mcp_server::server::ServerOptions;
 use webfang_mcp::mcp_server::state::McpState;
 
+// Canonical HTML page fixture, shared with every other MCP test binary
+// (#1371). Imported by name, not `use common::*`: this file still owns its
+// own server/session prologue, and a glob would collide with it.
+mod common;
+use common::mount_page_200;
+
 /// Minimal article HTML that Readability extracts deterministically (mirrors
 /// mcp_behavioral_test.rs), so scraped pages produce real content.
 const ARTICLE_HTML: &str = r#"<!DOCTYPE html>
@@ -249,19 +255,6 @@ async fn call_single_url_tool_result(
         .clone()
 }
 
-/// Mount a static page served with a `200` response (shared page fixture).
-/// `text/html` is load-bearing for the chromium plane: wiremock's
-/// `set_body_string` answers with `text/plain`, and Chrome renders that as
-/// an inert source dump — scripts never execute, so network-driven settle
-/// tests silently test the delivery, not the render path (#1354).
-async fn mount_page_200(mock: &MockServer, route: &str, body: &str) {
-    Mock::given(method("GET"))
-        .and(path(route))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/html"))
-        .mount(mock)
-        .await;
-}
-
 /// Run ONE tool call against a fresh MCP server, assert it succeeded, and
 /// return the parsed JSON payload of its text result. This file's crawl tests
 /// share this prologue as their single canonical copy.
@@ -359,11 +352,7 @@ async fn test_scrape_url_js_shell_is_error_result() {
 <html><head><title>App</title>
 <script id="__NEXT_DATA__" type="application/json">{"page":"/"}</script>
 </head><body><div id="app"></div></body></html>"#;
-    Mock::given(method("GET"))
-        .and(path("/"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(html))
-        .mount(&mock)
-        .await;
+    mount_page_200(&mock, "/", html).await;
 
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
@@ -407,11 +396,7 @@ async fn test_discover_urls_extracts_internal_and_external_links() {
 <a href="/page2">Page 2</a>
 <a href="https://other.example.com/foo">External</a>
 </body></html>"#;
-    Mock::given(method("GET"))
-        .and(path("/"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(html))
-        .mount(&mock)
-        .await;
+    mount_page_200(&mock, "/", html).await;
 
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
@@ -460,11 +445,7 @@ async fn test_detect_spa_short_content_with_root_marker() {
     let _guard = ssrf_guards_off().await;
     let mock = MockServer::start().await;
     let html = r#"<html><body><div id="root"></div></body></html>"#;
-    Mock::given(method("GET"))
-        .and(path("/"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(html))
-        .mount(&mock)
-        .await;
+    mount_page_200(&mock, "/", html).await;
 
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
@@ -523,11 +504,7 @@ async fn test_detect_spa_short_content_with_root_marker() {
 async fn test_detect_spa_sufficient_content_not_spa() {
     let _guard = ssrf_guards_off().await;
     let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(SUFFICIENT_HTML))
-        .mount(&mock)
-        .await;
+    mount_page_200(&mock, "/", SUFFICIENT_HTML).await;
 
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
@@ -706,16 +683,8 @@ fn assert_failure_record_shape(
 async fn test_scrape_batch_partial_results_on_failure() {
     let _guard = ssrf_guards_off().await;
     let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/a"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(ARTICLE_HTML))
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/b"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(ARTICLE_HTML))
-        .mount(&mock)
-        .await;
+    mount_page_200(&mock, "/a", ARTICLE_HTML).await;
+    mount_page_200(&mock, "/b", ARTICLE_HTML).await;
     Mock::given(method("GET"))
         .and(path("/c"))
         .respond_with(ResponseTemplate::new(500))
@@ -823,11 +792,7 @@ async fn test_scrape_batch_delay_ms_spaces_fetches() {
     let _guard = ssrf_guards_off().await;
     let mock = MockServer::start().await;
     for i in 0..16 {
-        Mock::given(method("GET"))
-            .and(path(format!("/{i}")))
-            .respond_with(ResponseTemplate::new(200).set_body_string(ARTICLE_HTML))
-            .mount(&mock)
-            .await;
+        mount_page_200(&mock, &format!("/{i}"), ARTICLE_HTML).await;
     }
     Mock::given(method("GET"))
         .and(path("/robots.txt"))
@@ -905,11 +870,7 @@ async fn test_crawl_site_max_depth_zero_single_page() {
 <a href="/page_a">A</a>
 <a href="/page_b">B</a>
 </body></html>"#;
-    Mock::given(method("GET"))
-        .and(path("/"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(html))
-        .mount(&mock)
-        .await;
+    mount_page_200(&mock, "/", html).await;
 
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
@@ -1443,19 +1404,14 @@ async fn mcp_crawl_checkpoint_resume_roundtrip() {
              any minimum content guard at all.</p></article></body></html>"
         )
     };
-    Mock::given(method("GET"))
-        .and(path("/"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            "<html><body><a href=\"/a\">A</a><a href=\"/b\">B</a></body></html>".to_string(),
-        ))
-        .mount(&mock)
-        .await;
+    mount_page_200(
+        &mock,
+        "/",
+        "<html><body><a href=\"/a\">A</a><a href=\"/b\">B</a></body></html>",
+    )
+    .await;
     for route in ["/a", "/b"] {
-        Mock::given(method("GET"))
-            .and(path(route))
-            .respond_with(ResponseTemplate::new(200).set_body_string(leaf(route)))
-            .mount(&mock)
-            .await;
+        mount_page_200(&mock, route, &leaf(route)).await;
     }
     let dir = tempfile::TempDir::new().expect("checkpoint temp dir");
     let dir_str = dir.path().to_string_lossy().to_string();

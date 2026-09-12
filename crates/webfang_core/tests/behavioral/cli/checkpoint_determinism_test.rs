@@ -22,6 +22,15 @@ use webfang_core::CrawlerConfig;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
+/// #1369: the unified plain-discovery branch now rides the guard-checked
+/// fetch router (the options seam wires the downloader factory), so the
+/// wiremock loopback literal needs the entry+resolver bypass exactly as
+/// `discovery_capture_1229` does.
+const SSRF_BYPASS: [(&str, &str); 2] = [
+    ("WEBFANG_DISABLE_SSRF_ENTRY_GUARD", "1"),
+    ("WEBFANG_DISABLE_SSRF_RESOLVER", "1"),
+];
+
 const SEED_HTML: &str = r#"<html><body><article><h1>Seed</h1><p>Seed page carries enough substantive text to clear the minimum content guard.</p><a href="/page-a">Page A</a><a href="/page-b">Page B</a></article></body></html>"#;
 const PAGE_A_HTML: &str = r#"<html><body><article><h1>Page A</h1><p>Page A carries enough substantive text to clear the minimum content guard.</p></article></body></html>"#;
 const PAGE_B_HTML: &str = r#"<html><body><article><h1>Page B</h1><p>Page B carries enough substantive text to clear the minimum content guard.</p></article></body></html>"#;
@@ -98,6 +107,7 @@ fn checkpoint_residue(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 /// Two identical crawls sharing one state dir must discover identical URL sets.
 #[tokio::test]
 async fn identical_crawls_produce_identical_output_sets() {
+    let _env = webfang_test_utils::EnvGuard::with(&SSRF_BYPASS);
     let t = BehavioralTest::new().await;
     mount_determinism_site(&t).await;
 
