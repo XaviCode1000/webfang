@@ -23,6 +23,13 @@ use webfang_mcp::mcp_server::server::build_mcp_router;
 use webfang_mcp::mcp_server::server::ServerOptions;
 use webfang_mcp::mcp_server::state::McpState;
 
+// Canonical HTML page fixtures, shared across the MCP test binaries (#1371).
+// Imported by name, not `use common::*`: this file keeps its own local
+// server/session harness (a glob would collide with `start_test_server`,
+// `start_seeded_server`, `init_session`, `call_tool`, `tool_text`, …).
+mod common;
+use common::{mount_page_200, mount_page_200_expect};
+
 /// Initialize SSRF disable flag for tests (idempotent).
 fn init_ssrf_disabled() {
     static ONCE: std::sync::Once = std::sync::Once::new();
@@ -1074,11 +1081,7 @@ const METRICS_ARTICLE_HTML: &str = r#"<!DOCTYPE html>
 async fn test_scrape_then_metrics_reflects_it_cross_session() {
     // Arrange: wiremock answers GET / with article HTML Readability can extract.
     let mock = wiremock::MockServer::start().await;
-    wiremock::Mock::given(wiremock::matchers::method("GET"))
-        .and(wiremock::matchers::path("/"))
-        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(METRICS_ARTICLE_HTML))
-        .mount(&mock)
-        .await;
+    mount_page_200(&mock, "/", METRICS_ARTICLE_HTML).await;
 
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
@@ -1416,11 +1419,7 @@ async fn semantic_cleaner_with_cleaner_success() {
 
     // Mock HTTP server that serves article HTML.
     let mock = wiremock::MockServer::start().await;
-    wiremock::Mock::given(wiremock::matchers::method("GET"))
-        .and(wiremock::matchers::path("/"))
-        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(MCP_AI_ARTICLE_HTML))
-        .mount(&mock)
-        .await;
+    mount_page_200(&mock, "/", MCP_AI_ARTICLE_HTML).await;
 
     let resp = call_tool(
         &client,
@@ -1515,11 +1514,7 @@ async fn mcp_ai_observability() {
     let session_id = init_session(&client, &base_url).await;
 
     let mock = wiremock::MockServer::start().await;
-    wiremock::Mock::given(wiremock::matchers::method("GET"))
-        .and(wiremock::matchers::path("/"))
-        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(MCP_AI_ARTICLE_HTML))
-        .mount(&mock)
-        .await;
+    mount_page_200(&mock, "/", MCP_AI_ARTICLE_HTML).await;
 
     let url = mock.uri();
     let resp = call_tool(
@@ -1758,21 +1753,12 @@ async fn test_p6_4_scrape_batch_single_page_scrapes_one_page_per_url() {
 </html>"#;
 
     let mock = wiremock::MockServer::start().await;
-    for path in ["/", "/only"] {
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path(path))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(P6_4_ARTICLE_HTML))
-            .expect(1)
-            .mount(&mock)
-            .await;
+    for route in ["/", "/only"] {
+        // `expect(1)` is the wire-level half of the one-page-per-URL claim.
+        mount_page_200_expect(&mock, route, P6_4_ARTICLE_HTML, 1).await;
     }
     // single_page contract: the linked page is never discovered or fetched.
-    wiremock::Mock::given(wiremock::matchers::method("GET"))
-        .and(wiremock::matchers::path("/never-crawled"))
-        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(P6_4_ARTICLE_HTML))
-        .expect(0)
-        .mount(&mock)
-        .await;
+    mount_page_200_expect(&mock, "/never-crawled", P6_4_ARTICLE_HTML, 0).await;
     // robots.txt (fail-open): answer 404 so the batch proceeds naturally.
     wiremock::Mock::given(wiremock::matchers::method("GET"))
         .and(wiremock::matchers::path("/robots.txt"))
