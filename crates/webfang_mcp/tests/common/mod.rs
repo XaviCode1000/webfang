@@ -9,6 +9,9 @@
 //! are intentionally `pub` but only a subset is used by any given binary, so the
 //! module carries `#![allow(dead_code)]`.
 //!
+//! Page fixtures live here too: [`mount_page_200`] is the ONE canonical way an
+//! MCP test mounts an HTML page (#1371) — do not hand-roll a second one.
+//!
 //! **SSRF Note**: `start_test_server()` and related functions disable SSRF
 //! protection by setting `WEBFANG_MCP_DISABLE_SSRF=1` before building the router.
 //! This is required because wiremock uses 127.0.0.1 for its mock HTTP server,
@@ -21,6 +24,8 @@
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 use wreq::Client;
 
 use webfang_core::config::Config;
@@ -326,4 +331,56 @@ pub fn is_tool_error(result: &Value) -> bool {
         .get("isError")
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
+}
+
+// ========================================================================
+// Page fixtures — the ONE canonical HTML page mount (#1371, follows #1354)
+// ========================================================================
+
+/// The `200` response behind [`mount_page_200`]: the single place the page
+/// MIME is decided, for the rare mount that needs its own wiring (an
+/// expectation is covered by [`mount_page_200_expect`]; anything else goes
+/// through [`mount_page_200`]).
+///
+/// `text/html` is load-bearing, not cosmetic: wiremock's `set_body_string`
+/// answers `text/plain`, and Chrome renders that as an inert source dump —
+/// scripts never execute, so a render or settle test over such a fixture
+/// asserts on the delivery, never the render path (#1354). Serving HTML as
+/// HTML is what lets every plane below (static extraction *and* chromium)
+/// see the same document.
+pub fn html_page_response(body: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_raw(body, "text/html")
+}
+
+/// Mount a static HTML page at `route`, answered `200` as `text/html` —
+/// the canonical page fixture for every MCP test binary (#1371). See
+/// [`html_page_response`] for why the MIME is part of the contract.
+pub async fn mount_page_200(mock: &MockServer, route: &str, body: &str) {
+    Mock::given(method("GET"))
+        .and(path(route))
+        .respond_with(html_page_response(body))
+        .mount(mock)
+        .await;
+}
+
+/// [`mount_page_200`] plus a wiremock request-count expectation, for tests
+/// whose proof IS the number of hits (`expect(1)` on a fetched page,
+/// `expect(0)` on one that must never be reached). Keeping the MIME in the
+/// shared helper is the point: the count-only variants were exactly where
+/// a `text/plain` HTML fixture crept back in (#1354).
+///
+/// The count is a `u64` because that is what wiremock's `Times` accepts
+/// (`From<u64>`); call sites pass plain literals.
+pub async fn mount_page_200_expect(
+    mock: &MockServer,
+    route: &str,
+    body: &str,
+    expected_requests: u64,
+) {
+    Mock::given(method("GET"))
+        .and(path(route))
+        .respond_with(html_page_response(body))
+        .expect(expected_requests)
+        .mount(mock)
+        .await;
 }
