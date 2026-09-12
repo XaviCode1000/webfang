@@ -891,6 +891,11 @@ async fn test_scrape_batch_delay_ms_spaces_fetches() {
 /// contains exactly one URL and zero errors.
 #[tokio::test]
 async fn test_crawl_site_max_depth_zero_single_page() {
+    // #1355: static crawls now run through the guarded FetchRouter (the MCP
+    // handler injects the factory for every strategy), so the wiremock
+    // loopback literal is rejected at the SSRF entry guard unless the
+    // hatch is on — same contract the Full-arm tests already honor.
+    let _guard = ssrf_guards_off().await;
     let mock = MockServer::start().await;
     let html = r#"<html><body>
 <a href="/page_a">A</a>
@@ -946,6 +951,55 @@ async fn test_crawl_site_max_depth_zero_single_page() {
         parsed.get("errors").and_then(|v| v.as_u64()),
         Some(0),
         "no crawl errors expected, got: {parsed}"
+    );
+}
+
+/// #1355 coverage pin: with the MCP boundary validator off (the process-wide
+/// `WEBFANG_MCP_DISABLE_SSRF` test default), a STATIC crawl of a forbidden
+/// literal IP must still be rejected by the core SSRF entry guard — zero
+/// pages, one network error, and the wiremock server records ZERO requests,
+/// proving the rejection happened before any socket was opened. Pre-#1355
+/// the static path degraded to the unguarded `fetch_url()` fallback and this
+/// crawl fetched the page: this test is the RED pin against that hole
+/// re-opening (it fails on the old `Static => None` factory wiring).
+#[tokio::test]
+async fn mcp_crawl_static_literal_ip_rejected_by_entry_guard() {
+    // Prime the boundary-off init BEFORE taking the env lock (same ordering
+    // invariant as `ssrf_guards_off` — the ONCE inside would self-deadlock
+    // on the lock this guard holds, PR #1224).
+    let _ = tokio::task::spawn_blocking(init_ssrf_disabled).await;
+    // The entry guard is explicitly ON for the whole test: any ambient
+    // `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` is cleaned while the guard lives
+    // (workspace ENV_LOCK invariant, #1126/#1308).
+    let _guard = webfang_test_utils::EnvGuard::clean(&[
+        webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+    ]);
+    let mock = MockServer::start().await;
+    mount_page_200(
+        &mock,
+        "/",
+        "<html><body><article><h1>Metadata</h1><p>Enough ordinary sentences \
+         for the readability pipeline to accept this document without tripping \
+         any minimum content guard at all.</p></article></body></html>",
+    )
+    .await;
+
+    let parsed =
+        crawl_tool_parsed("crawl_site", json!({ "url": mock.uri(), "max_depth": 0 })).await;
+    assert_eq!(
+        parsed.get("total_pages").and_then(|v| v.as_u64()),
+        Some(0),
+        "literal-IP static crawl must fetch nothing, got: {parsed}"
+    );
+    assert_eq!(
+        parsed.get("errors").and_then(|v| v.as_u64()),
+        Some(1),
+        "the rejection must surface as exactly one crawl error, got: {parsed}"
+    );
+    assert_eq!(
+        mock.received_requests().await.unwrap().len(),
+        0,
+        "the entry guard must reject before any socket is opened"
     );
 }
 
@@ -1299,6 +1353,10 @@ async fn mcp_crawl_js_strategy_reaches_render() {
 /// than a fresh full crawl) and a fully-completed run deletes the file.
 #[tokio::test]
 async fn mcp_crawl_checkpoint_resume_roundtrip() {
+    // #1355: static crawls now run through the guarded FetchRouter, so the
+    // wiremock loopback seed needs the entry-guard hatch like every other
+    // crawl test in this binary.
+    let _guard = ssrf_guards_off().await;
     let mock = MockServer::start().await;
     let leaf = |title: &str| {
         format!(
