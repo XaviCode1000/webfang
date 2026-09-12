@@ -404,23 +404,55 @@ impl McpHandler {
             .max_pages(params.max_pages.unwrap_or(CRAWL_SITE_DEFAULT_MAX_PAGES) as usize)
             .build();
 
-        // P6-2/F-16 (#1290): the run is session-owned. Capture every fetched
-        // body through the shared in-memory sink — the same
-        // `crawl_site_capturing` path the CLI discovery uses — and convert
-        // the pages with the single shared page→content helper below, so the
-        // export tools serve the same enriched DTO the CLI exports in memory.
+        // P6-2 run parity (#1343): the run is session-owned through the
+        // public `crawl_site_with_options` entry — the same seam the CLI
+        // and benchmark drive — instead of the knobless `crawl_site_capturing`
+        // (hardcoded Disabled persistence + Static rendering). The run-level
+        // facts the tool now accepts (JS strategy, session pool, checkpoint
+        // dir) reach the engine; capture still flows through the shared
+        // in-memory sink so the export tools serve the same enriched DTO
+        // the CLI exports in memory (#1290).
         let sink = std::sync::Arc::new(
             webfang_core::application::crawler::content_sink::InMemoryContentSink::new(),
         );
-
-        match webfang_core::application::crawler::crawl_site_capturing(
-            crawler_config,
-            std::sync::Arc::clone(&sink)
+        let js_strategy = params
+            .js_strategy
+            .as_deref()
+            .map(str::parse::<webfang_core::domain::JsStrategy>)
+            .transpose()
+            .map_err(|e: String| {
+                McpError::invalid_params(
+                    format!("estrategia JS no soportada: {e}"),
+                    Some(serde_json::Value::String("js_strategy".to_string())),
+                )
+            })?
+            .unwrap_or_default();
+        let options = webfang_core::application::crawler::EngineOptions {
+            js_strategy,
+            session_pool_enabled: params.session_pool.unwrap_or(false),
+            checkpoint_path: params.checkpoint_dir.as_ref().map(std::path::PathBuf::from),
+            // The factory is what lets Hybrid/Full build a real downloader:
+            // without it the strategy is recorded but the crawl silently
+            // degrades to the static stack. Static keeps the historical
+            // fallback (no factory): it preserves the exact default-path
+            // behavior the existing suite pins, and only JS-rendering
+            // callers own this wiring (see `with_downloader_factory`).
+            // The factory is a stateless unit struct, safe to share from
+            // the long-lived server.
+            downloader_factory: if matches!(js_strategy, webfang_core::domain::JsStrategy::Static) {
+                None
+            } else {
+                Some(webfang_core::application::container::Container::downloader_factory())
+            },
+            content_sink: Some(std::sync::Arc::clone(&sink)
                 as std::sync::Arc<
                     dyn webfang_core::application::crawler::content_sink::CrawlContentSink,
-                >,
-        )
-        .await
+                >),
+            ..Default::default()
+        };
+
+        match webfang_core::application::crawler::crawl_site_with_options(crawler_config, options)
+            .await
         {
             Ok(result) => {
                 let count = result.total_pages;
@@ -1344,6 +1376,9 @@ mod tests {
             url: vu("https://example.com"),
             max_depth: None,
             max_pages: Some(0),
+            js_strategy: None,
+            session_pool: None,
+            checkpoint_dir: None,
         }
         .validate();
         assert!(crawl.is_err(), "max_pages 0 must be rejected: {crawl:?}");

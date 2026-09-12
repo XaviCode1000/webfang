@@ -1114,3 +1114,248 @@ async fn test_crawl_with_sitemap_response_excludes_external_and_forbidden_urls()
         "forbidden-literal-IP sitemap URLs must be excluded, got: {urls:?}"
     );
 }
+
+// ============================================================================
+// P6-2 run parity (#1343): run knobs requested over MCP reach the engine
+// ============================================================================
+
+/// Best-effort Chrome probe so the render E2E skips (rather than fails) where
+/// no browser exists. Mirrors the downloader-layer probe; the production gate
+/// owns real resolution (preflight + #1278).
+#[cfg(feature = "chromium")]
+fn chrome_present_for_e2e() -> bool {
+    [
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+    ]
+    .iter()
+    .any(|binary| {
+        std::process::Command::new(binary)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    })
+}
+
+/// Relative hermetic dir for `export_jsonl` output: absolute paths require
+/// server-configured export roots, so exports in tests use a relative dir
+/// (same pattern as the CLI↔MCP parity test). Removed on drop.
+struct RelTempDir {
+    path: std::path::PathBuf,
+}
+
+impl RelTempDir {
+    fn new(prefix: &str) -> Self {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let name = format!("{prefix}-{}-{n}", std::process::id());
+        let path = std::path::PathBuf::from(name);
+        std::fs::create_dir_all(&path).expect("create relative temp dir");
+        RelTempDir { path }
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for RelTempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Crawl one page through the tool, then export the session buffer, returning
+/// the concatenated exported text. Fresh server per call so captures never
+/// leak across runs.
+async fn crawl_then_export_text(tool_args: Value, out_name: &str) -> String {
+    // Surface engine error logs (fetch failures, guard rejections) in the
+    // captured test output; the harness otherwise drops tracing events.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("webfang_core=debug,webfang_mcp=debug")
+        .with_test_writer()
+        .try_init();
+    let (base_url, _server) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let crawl = call_tool(&client, &base_url, &session_id, "crawl_site", tool_args).await;
+    let crawl_result = crawl
+        .get("result")
+        .unwrap_or_else(|| panic!("expected result, got: {crawl}"))
+        .clone();
+    assert!(
+        !is_tool_error(&crawl_result),
+        "crawl_site must succeed: {}",
+        tool_text(&crawl_result)
+    );
+
+    let out = RelTempDir::new("mcp-render-export");
+    let export = call_tool(
+        &client,
+        &base_url,
+        &session_id,
+        "export_jsonl",
+        json!({
+            "output_dir": out.path().to_string_lossy(),
+            "filename": out_name,
+        }),
+    )
+    .await;
+    let export_result = export
+        .get("result")
+        .unwrap_or_else(|| panic!("expected result, got: {export}"))
+        .clone();
+    assert!(
+        !is_tool_error(&export_result),
+        "export_jsonl must succeed: {}",
+        tool_text(&export_result)
+    );
+    let path = out.path().join(format!("{out_name}.jsonl"));
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+/// #1343: a JS strategy requested over MCP must reach the render path (the
+/// F-52-a class, on the MCP plane). The inline page injects
+/// `SYNC RENDERED MARKER` via a synchronous parse-time script: a `full` crawl must export it, while the default
+/// static crawl must not (readability strips the `<script>` source, so the
+/// marker can only come from the rendered DOM).
+#[tokio::test]
+#[cfg(feature = "chromium")]
+async fn mcp_crawl_js_strategy_reaches_render() {
+    if !chrome_present_for_e2e() {
+        eprintln!("skipping MCP render E2E: no Chrome binary on PATH");
+        return;
+    }
+    // The Full arm renders through the guarded FetchRouter (unlike the static
+    // fallback), so the core entry guard must be disarmed for loopback
+    // wiremock — held for the whole test via EnvGuard (#1126/#1334).
+    let _env = ssrf_guards_off().await;
+    let mock = MockServer::start().await;
+    // Inline page (not the f52 fixture): the marker is injected by a
+    // SYNCHRONOUS parse-time script, so no post-load settlement timing is
+    // involved — the test proves the render path is REACHED (the F-52-a
+    // class), not that idle-settlement works (already covered by the
+    // downloader settle E2E). The marker body is long so readability
+    // cannot prune it as a lone short <p>.
+    const MARKER_PARA: &str = "SYNC RENDERED MARKER content injected by synchronous JavaScript during \
+        parse, repeated with enough ordinary prose that the readability extractor keeps this node as \
+        primary content under every downloader layer and never discards it as boilerplate noise.";
+    let marker_body = format!("<p>{MARKER_PARA}</p><p>{MARKER_PARA}</p>");
+    let page = format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Hydration</title></head>\
+        <body><main><article><h1>Hydration</h1>\
+        <p>This paragraph is present in the raw HTML response and carries prose signal \
+        for the readability extractor to select this article as primary content.</p>\
+        <p>A second static paragraph reinforces the extraction signal further so the \
+        article node remains unambiguous for every downloader layer under test.</p>\
+        <div id=\"slot\"><p>PLACEHOLDER_INNER_HTML_STATIC_TEXT</p></div>\
+        <script>document.getElementById('slot').innerHTML = '{marker_body}';</script>\
+        </article></main></body></html>"
+    );
+    Mock::given(method("GET"))
+        .and(path("/js"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(page))
+        .mount(&mock)
+        .await;
+    // The API round-trip responds after a server-side delay, keeping the
+    // request in flight long past any CDP round-trip latency (mirrors the
+    // downloader settle E2E).
+    // (no /api/data mount: the sync script needs no network round-trip).
+    let full = crawl_then_export_text(
+        json!({ "url": format!("{}/js", mock.uri()), "max_depth": 0, "js_strategy": "full" }),
+        "render-full",
+    )
+    .await;
+    assert!(
+        full.contains("SYNC RENDERED MARKER"),
+        "js_strategy=full over MCP must render the sync marker into the export"
+    );
+
+    let static_text = crawl_then_export_text(
+        json!({ "url": format!("{}/js", mock.uri()), "max_depth": 0 }),
+        "render-static",
+    )
+    .await;
+    assert!(
+        !static_text.contains("SYNC RENDERED MARKER"),
+        "default (static) crawl must not contain the rendered marker"
+    );
+}
+
+/// #1343: an MCP crawl writes a checkpoint that a subsequent run resumes.
+/// Run 1 is truncated by `max_pages` (Write branch — the file must exist);
+/// run 2 with the same directory resumes past the processed page (fewer pages
+/// than a fresh full crawl) and a fully-completed run deletes the file.
+#[tokio::test]
+async fn mcp_crawl_checkpoint_resume_roundtrip() {
+    let mock = MockServer::start().await;
+    let leaf = |title: &str| {
+        format!(
+            "<html><head><title>{title}</title></head><body><article><h1>{title}</h1>\
+             <p>Leaf {title}: the quick brown fox jumps over the lazy dog while the \
+             checkpoint fixture holds its ground with enough ordinary sentences for \
+             the readability pipeline to accept this document without tripping \
+             any minimum content guard at all.</p></article></body></html>"
+        )
+    };
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "<html><body><a href=\"/a\">A</a><a href=\"/b\">B</a></body></html>".to_string(),
+        ))
+        .mount(&mock)
+        .await;
+    for route in ["/a", "/b"] {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(200).set_body_string(leaf(route)))
+            .mount(&mock)
+            .await;
+    }
+    let dir = tempfile::TempDir::new().expect("checkpoint temp dir");
+    let dir_str = dir.path().to_string_lossy().to_string();
+    let count_files = || {
+        std::fs::read_dir(dir.path())
+            .expect("list checkpoint dir")
+            .count()
+    };
+
+    // Run 1: truncated → checkpoint kept.
+    let first = crawl_tool_parsed(
+        "crawl_site",
+        json!({ "url": mock.uri(), "max_depth": 1, "max_pages": 1, "checkpoint_dir": dir_str }),
+    )
+    .await;
+    assert_eq!(
+        count_files(),
+        1,
+        "truncated MCP crawl must write exactly one checkpoint file"
+    );
+
+    // Run 2: same directory → resumes past the processed page, then completes
+    // (Delete branch — the directory is empty again).
+    let second = crawl_tool_parsed(
+        "crawl_site",
+        json!({ "url": mock.uri(), "max_depth": 1, "max_pages": 10, "checkpoint_dir": dir_str }),
+    )
+    .await;
+    let total = second
+        .get("total_pages")
+        .and_then(Value::as_u64)
+        .expect("total_pages present");
+    assert!(
+        total < 3,
+        "resumed MCP crawl must skip the already-processed page (fresh crawl visits 3), got: {second}"
+    );
+    assert_eq!(
+        count_files(),
+        0,
+        "fully-completed resumed crawl must delete its checkpoint, got: {second}"
+    );
+    let _ = first;
+}
