@@ -697,8 +697,8 @@ pub(crate) async fn resolve_model_assets(
         // the API, so the cold-download hint can fire before the pull starts.
         let cache = HfCache::from_env();
         let probe = cache.repo(Repo::new(config.repo.clone(), RepoType::Model));
-        let cached = probe.get(&config.model_file).is_some()
-            && probe.get("tokenizer.json").is_some();
+        let cached =
+            probe.get(&config.model_file).is_some() && probe.get("tokenizer.json").is_some();
 
         // #1316: when stderr is piped, hf_hub's indicatif progress bar renders
         // nothing and a multi-minute cold pull looks like a hang. A plain
@@ -949,11 +949,9 @@ mod tests {
         tokio::fs::write(&model_path, b"webfang deterministic test payload")
             .await
             .expect("write temp model file");
-        let wrong_expected =
-            "0000000000000000000000000000000000000000000000000000000000000000";
+        let wrong_expected = "0000000000000000000000000000000000000000000000000000000000000000";
 
-        let result =
-            stream_validate_model_hash(&model_path, wrong_expected, "test/repo").await;
+        let result = stream_validate_model_hash(&model_path, wrong_expected, "test/repo").await;
 
         match result {
             Err(SemanticError::CacheValidation {
@@ -1002,8 +1000,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp dir for hash test");
         let missing = dir.path().join("does-not-exist.onnx");
 
-        let result =
-            stream_validate_model_hash(&missing, "00", "test/repo").await;
+        let result = stream_validate_model_hash(&missing, "00", "test/repo").await;
 
         match result {
             Err(SemanticError::ModelLoad(_)) => {

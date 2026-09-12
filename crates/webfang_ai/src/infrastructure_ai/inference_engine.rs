@@ -692,8 +692,11 @@ mod tests {
     fn test_inference_pool_drop_returns_in_bounded_time() {
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let owner = thread::spawn(move || {
-            let pool = InferencePool::new(std::path::PathBuf::from(FAKE_MODEL_PATH), AiModel::Granite97M)
-                .expect("pool creation must succeed even with an unloadable model file");
+            let pool = InferencePool::new(
+                std::path::PathBuf::from(FAKE_MODEL_PATH),
+                AiModel::Granite97M,
+            )
+            .expect("pool creation must succeed even with an unloadable model file");
             drop(pool);
             let _ = done_tx.send(());
         });
@@ -713,8 +716,11 @@ mod tests {
     /// workers drain the channel and exit cleanly.
     #[test]
     fn test_inference_pool_creation() {
-        let pool = InferencePool::new(std::path::PathBuf::from(FAKE_MODEL_PATH), AiModel::Granite97M)
-            .expect("Pool should create even with an unloadable model file");
+        let pool = InferencePool::new(
+            std::path::PathBuf::from(FAKE_MODEL_PATH),
+            AiModel::Granite97M,
+        )
+        .expect("Pool should create even with an unloadable model file");
 
         assert_eq!(pool.model_variant(), AiModel::Granite97M);
         assert_eq!(pool.worker_count(), (num_cpus::get() - 1).max(1));
@@ -724,8 +730,11 @@ mod tests {
     /// Test that dropping the pool causes all workers to exit cleanly
     #[test]
     fn test_inference_pool_graceful_shutdown() {
-        let pool = InferencePool::new(std::path::PathBuf::from(FAKE_MODEL_PATH), AiModel::Granite97M)
-            .expect("Pool should create");
+        let pool = InferencePool::new(
+            std::path::PathBuf::from(FAKE_MODEL_PATH),
+            AiModel::Granite97M,
+        )
+        .expect("Pool should create");
 
         let worker_count = pool.worker_count();
         drop(pool);
@@ -742,8 +751,11 @@ mod tests {
     /// failure → shutdown.
     #[test]
     fn test_inference_pool_worker_failure_lifecycle() {
-        let pool = InferencePool::new(std::path::PathBuf::from(FAKE_MODEL_PATH), AiModel::Granite97M)
-            .expect("Pool should create");
+        let pool = InferencePool::new(
+            std::path::PathBuf::from(FAKE_MODEL_PATH),
+            AiModel::Granite97M,
+        )
+        .expect("Pool should create");
 
         // Workers fail to build sessions with the missing file, drain
         // channel, and exit. Give workers time to fail and exit.
