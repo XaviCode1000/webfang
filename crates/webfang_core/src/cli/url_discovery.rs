@@ -9,8 +9,8 @@ use crate::application::crawl_options::CrawlOptions;
 use crate::application::crawler::content_sink::{
     CapturedPage, CrawlContentSink, InMemoryContentSink,
 };
-use crate::application::crawler::crawl_site;
 use crate::application::crawler::engine::{crawl_site_with_options, EngineOptions};
+
 use crate::application::discover_urls_single_fetch;
 use crate::domain::persistence::PersistenceMode;
 use crate::error::Result as ScraperResult;
@@ -115,30 +115,29 @@ pub async fn discover_urls_unified(
 ) -> ScraperResult<DiscoveryOutput> {
     let discovery_pb = build_discovery_progress_bar(opts, "Discovering URLs (recursive)...");
 
-    // F-05 (#1229 slice 2): the sink travels as an `EngineOptions` field.
-    // Checkpoint-only, capture-only, and both all flow through the SAME
-    // `crawl_site_with_options` path; only the plain metadata-only crawl
-    // without checkpointing keeps `crawl_site`. The robots preference rides
-    // on the options too: `EngineOptions::ignore_robots` defaults to false,
-    // so without this propagation every capture-only crawl would issue an
-    // extra robots.txt fetch per run (and break the one-request-per-page
-    // contract the request-count test pins).
+    // F-05 (#1229 slice 2) + #1369: the sink, the checkpoint and every
+    // operator knob travel as `EngineOptions` fields through the SINGLE
+    // `crawl_site_with_options` entry. Plain metadata-only discovery (no
+    // sink, no checkpoint) no longer falls back to the knobless `crawl_site`
+    // shim — it rides the exact same `build_discovery_engine_options` output,
+    // so `--js-strategy`/`--js-wait`/chrome-binary can never silently
+    // degrade on that branch again. The robots preference also rides on the
+    // options (`EngineOptions::ignore_robots`): the engine enforces robots
+    // through the transport policy, so without this propagation every
+    // capture-only crawl would issue an extra robots.txt fetch per run (and
+    // break the one-request-per-page contract the request-count test pins).
     let checkpoint = persistence_mode.checkpoint_cfg();
-    let result = if sink.is_some() || checkpoint.is_some() {
-        let mut options = build_discovery_engine_options(
-            opts,
-            crawler_config.ignore_robots,
-            sink.clone()
-                .map(|concrete| concrete as Arc<dyn CrawlContentSink>),
-        );
-        if let Some(cfg) = checkpoint {
-            options.checkpoint_path = Some(cfg.dir.clone());
-            options.checkpoint_interval = cfg.interval;
-        }
-        crawl_site_with_options(crawler_config, options).await?
-    } else {
-        crawl_site(crawler_config).await?
-    };
+    let mut options = build_discovery_engine_options(
+        opts,
+        crawler_config.ignore_robots,
+        sink.clone()
+            .map(|concrete| concrete as Arc<dyn CrawlContentSink>),
+    );
+    if let Some(cfg) = checkpoint {
+        options.checkpoint_path = Some(cfg.dir.clone());
+        options.checkpoint_interval = cfg.interval;
+    }
+    let result = crawl_site_with_options(crawler_config, options).await?;
 
     let urls: Vec<Url> = result.urls.into_iter().map(|d| d.url).collect();
     let count = urls.len();
@@ -190,8 +189,9 @@ fn build_discovery_engine_options(
 /// The default (non-interactive, non-sitemap) DOM crawl path previously called
 /// `discover_urls_single_fetch`, which performs a SINGLE fetch and one round of link
 /// extraction — so `--max-depth` was silently ignored and every crawl behaved
-/// like depth 1 (bug #651). This routes discovery through [`crawl_site`], the
-/// same recursive engine the batch and MCP paths use, so `max_depth`,
+/// like depth 1 (bug #651). This routes discovery through
+/// [`crawl_site_with_options`], the same recursive engine the batch and MCP
+/// paths use, so `max_depth`,
 /// `max_pages`, robots, and include/exclude patterns are all honored.
 ///
 /// The Engine returns a metadata-only `CrawlResult` (the set of fetched URLs);
@@ -202,11 +202,12 @@ fn build_discovery_engine_options(
 ///
 /// `persistence_mode` is the unified control-plane from slice 5c:
 /// when the mode enables checkpointing (`Checkpoint` or `Full` — only via
-/// an explicit `--resume`/`--state-dir` opt-in, F-01), the
-/// engine is wired with `crawl_site_with_options` so the scoped
+/// an explicit `--resume`/`--state-dir` opt-in, F-01), the checkpoint pair
+/// rides on the options so the scoped
 /// `crawl_checkpoint_<seed-hash>.json`
 /// is created and the interval flows from the mode (not hardcoded).
-/// `Disabled` and `Resume` fall back to `crawl_site` — the no-checkpoint path.
+/// `Disabled` and `Resume` keep `checkpoint_path: None` — the no-checkpoint
+/// option set (#1369: a single explicit entry, no knobless fallback).
 ///
 /// Compatibility shim over [`discover_urls_unified`] (F-14, #1232): keeps the
 /// `Vec<Url>` call shape while the orchestrator migrates to the unified output.
@@ -349,16 +350,26 @@ mod tests {
     }
 
     /// Six-node diagnostic (bug R2-1): recursive URL discovery runs the
-    /// real crawl Engine via `crawl_site`, so an operator `crawl = 1`
+    /// real crawl Engine through the options seam, so an operator `crawl = 1`
     /// override carried on the discovery config must reach it — six nodes
     /// fetched strictly one at a time instead of the auto tier table.
+    ///
+    /// #1369 note: the plain branch now rides `build_discovery_engine_options`
+    /// (factory wired), so the fetch goes through the production router and
+    /// its resolver-level SSRF guard — the wiremock loopback needs the same
+    /// entry+resolver bypass the capture tests use.
     #[cfg(not(miri))] // wiremock + wreq use boring-sys2 FFI (unsupported by Miri)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn recursive_discovery_enforces_concurrency_override_six_node_diagnostic() {
         use crate::domain::budget::tiers::{BurstPermits, CrawlConcurrency};
         use crate::domain::budget::BudgetOverrides;
+        use crate::domain::ssrf_guard::{DISABLE_ENTRY_GUARD_ENV, DISABLE_VALIDATING_RESOLVER_ENV};
         use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
+        let _env = webfang_test_utils::EnvGuard::with(&[
+            (DISABLE_ENTRY_GUARD_ENV, "1"),
+            (DISABLE_VALIDATING_RESOLVER_ENV, "1"),
+        ]);
         let server = wiremock::MockServer::start().await;
         let gauge = SixNodeGauge {
             inflight: std::sync::Arc::new(AtomicUsize::new(0)),
