@@ -146,7 +146,10 @@ impl EnvGuard {
     #[must_use]
     pub fn wiremock_robots() -> Self {
         Self::with(&[
-            ("WEBFANG_DISABLE_SSRF_ENTRY_GUARD", "1"),
+            (
+                webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+                "1",
+            ),
             (
                 webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
                 "1",
