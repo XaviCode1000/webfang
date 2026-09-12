@@ -37,7 +37,10 @@ fn init_ssrf_disabled() {
         // `env_lock` directly — but the mutation is still serialized under
         // the workspace ENV_LOCK invariant (issue #1126).
         let _lock = webfang_test_utils::env_lock();
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+        std::env::set_var(
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+            "1",
+        );
     });
 }
 
@@ -98,7 +101,10 @@ pub async fn start_server(
     // of the permanent set (issue #1126).
     {
         let _lock = webfang_test_utils::env_lock();
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+        std::env::set_var(
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+            "1",
+        );
     }
 
     let config = Config::default();
@@ -177,7 +183,10 @@ pub async fn start_seeded_server(
     // Serialized under ENV_LOCK — see `init_ssrf_disabled` (issue #1126).
     {
         let _lock = webfang_test_utils::env_lock();
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+        std::env::set_var(
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+            "1",
+        );
     }
 
     let app = build_mcp_router(state, &ServerOptions::default());
@@ -201,7 +210,7 @@ pub async fn start_test_server_ssrf_enabled() -> (String, tokio::task::JoinHandl
     // it (issue #1126).
     {
         let _lock = webfang_test_utils::env_lock();
-        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
+        std::env::remove_var(webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV);
     }
 
     let config = Config::default();

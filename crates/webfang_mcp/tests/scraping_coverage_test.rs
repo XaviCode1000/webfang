@@ -70,7 +70,10 @@ async fn ssrf_guards_off() -> webfang_test_utils::EnvGuard {
     // Prime the ONCE outside our own lock scope (see doc comment).
     let _ = tokio::task::spawn_blocking(init_ssrf_disabled).await;
     webfang_test_utils::EnvGuard::with(&[
-        ("WEBFANG_MCP_DISABLE_SSRF", "1"),
+        (
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+            "1",
+        ),
         (
             webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
             "1",
@@ -86,7 +89,10 @@ fn init_ssrf_disabled() {
         // `env_lock` directly — but the mutation is still serialized under
         // the workspace ENV_LOCK invariant (issue #1126).
         let _lock = webfang_test_utils::env_lock();
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+        std::env::set_var(
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+            "1",
+        );
     });
 }
 

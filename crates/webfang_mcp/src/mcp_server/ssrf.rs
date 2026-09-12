@@ -9,7 +9,9 @@ use tokio::net::lookup_host;
 // Pure IP deny-list logic lives in `webfang_core::domain::ssrf_guard` so the
 // synchronous `wreq` redirect policy can reuse it; MCP depends on core, never
 // the other way around (#703).
-use webfang_core::domain::ssrf_guard::{is_forbidden_ip, parse_ip_literal};
+use webfang_core::domain::ssrf_guard::{
+    is_forbidden_ip, parse_ip_literal, WEBFANG_MCP_DISABLE_SSRF_ENV,
+};
 
 /// Check if SSRF protection is enabled (based on environment variable).
 ///
@@ -23,7 +25,7 @@ use webfang_core::domain::ssrf_guard::{is_forbidden_ip, parse_ip_literal};
 /// harness needs one. The full matrix, and the reason the two stacks look different
 /// while sharing one deny list, is in `docs/ssrf-layers.md`.
 fn is_ssrf_enabled() -> bool {
-    std::env::var("WEBFANG_MCP_DISABLE_SSRF").is_err()
+    std::env::var(WEBFANG_MCP_DISABLE_SSRF_ENV).is_err()
 }
 
 /// Validate that a URL doesn't point to internal/private/forbidden IPs.

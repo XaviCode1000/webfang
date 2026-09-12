@@ -205,7 +205,10 @@ async fn start_server() -> (String, tokio::task::JoinHandle<()>, tempfile::TempD
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let _lock = webfang_test_utils::env_lock();
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+        std::env::set_var(
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+            "1",
+        );
         std::env::set_var(
             webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
             "1",

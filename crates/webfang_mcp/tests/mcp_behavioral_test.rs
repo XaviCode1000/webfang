@@ -34,7 +34,10 @@ fn init_ssrf_disabled() {
         // shared core literal-IP entry guard (F-06 + F-32, #1217), since
         // every tool under test fetches wiremock loopback literals.
         let _lock = webfang_test_utils::env_lock();
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+        std::env::set_var(
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+            "1",
+        );
         std::env::set_var(
             webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
             "1",
