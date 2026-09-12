@@ -166,7 +166,9 @@ mod tests {
         // The escape hatch must be unset so the guard is active for this
         // test; EnvGuard restores the original on drop, so the removal can
         // no longer leak into sibling tests in a shared process (#1126).
-        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_MCP_DISABLE_SSRF"]);
+        let _guard = webfang_test_utils::EnvGuard::clean(&[
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+        ]);
 
         let (handler, _tmp) = test_handler().await;
         let res = handler
@@ -219,7 +221,10 @@ mod tests {
         // rejection path is covered separately by
         // `download_assets_rejects_loopback_base_url` above. EnvGuard
         // restores the original on drop (#1126).
-        let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_MCP_DISABLE_SSRF", "1")]);
+        let _guard = webfang_test_utils::EnvGuard::with(&[(
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+            "1",
+        )]);
 
         let (handler, _tmp) = test_handler().await;
         // `output_dir` must be a safe relative path (params validation, #512).

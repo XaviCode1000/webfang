@@ -16,3 +16,14 @@ too-many-lines-threshold = 100
 disallowed-types = [
     { path = "anyhow::Error", reason = "webfang_core uses typed errors (ScraperError / DomainError / AppError / InfraError) — see error stratification in AGENTS.md" },
 ]
+
+# `disallowed-methods` (issue #1349) denies raw env mutations. Unlike
+# disallowed-types above (allow-by-default until a crate denies it), this
+# lint fires once configured, and `-D warnings` escalates it in every
+# crate — so the sanctioned ENV_LOCK owner (webfang_test_utils) carries a
+# crate-level allow for its audited mutations, while webfang_core and
+# webfang_mcp additionally deny it at the crate root.
+disallowed-methods = [
+    { path = "std::env::set_var", reason = "raw env mutations bypass ENV_LOCK serialization — use webfang_test_utils (EnvGuard / env_set / env_remove / env_lock); see #1126, #1349" },
+    { path = "std::env::remove_var", reason = "raw env mutations bypass ENV_LOCK serialization — use webfang_test_utils (EnvGuard / env_set / env_remove / env_lock); see #1126, #1349" },
+]

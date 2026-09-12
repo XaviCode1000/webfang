@@ -11,7 +11,7 @@
 //! reading the process env directly. Production code passes the
 //! `std_env_var` accessor (a thin wrapper over [`std::env::var`]) so behavior
 //! is unchanged in production. Tests pass a snapshot closure backed by a
-//! `HashMap`, removing the racy `std::env::set_var`/`remove_var` calls that
+//! `HashMap`, removing the racy raw `set_var`/`remove_var` calls that
 //! used to flake under parallel `cargo nextest` runs (#992).
 
 /// Canonical env var for AI model selection.

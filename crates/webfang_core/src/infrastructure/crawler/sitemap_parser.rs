@@ -34,8 +34,9 @@ use crate::domain::crawler_port::sitemap::SitemapParserPort;
 use crate::domain::crawler_port::SitemapConfig;
 use crate::domain::url_validation::is_internal_link;
 use crate::domain::waf::InspectionContext;
-use crate::domain::{CrawlError, UrlValidatorTrait};
+use crate::domain::{CorrelationId, CrawlError, UrlValidatorTrait};
 use crate::infrastructure::http::waf_engine::WafInspector;
+use crate::infrastructure::observability::log_scrape_error;
 #[allow(unused_imports)]
 use async_compression::tokio::bufread::GzipDecoder;
 use futures::future::BoxFuture;
@@ -43,6 +44,7 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+use tracing::Instrument;
 use url::Url;
 
 // SitemapError, SitemapUrl and the sitemap `Result` alias moved to
@@ -237,13 +239,28 @@ impl SitemapParser {
     /// content-type so a 404/5xx yields "not found" rather than the misleading
     /// "unexpected content-type" (issue #590, bug #9). Returns the content-type
     /// string on success for the caller's XML streaming path.
-    fn validate_response(status: wreq::StatusCode, content_type: &str, url: &str) -> Result<()> {
+    ///
+    /// Rejections are reported through [`log_scrape_error`] with `url`,
+    /// `stage = "sitemap.fetch"` and the caller's correlation (#1318).
+    fn validate_response(
+        status: wreq::StatusCode,
+        content_type: &str,
+        url: &str,
+        correlation: &CorrelationId,
+    ) -> Result<()> {
         if !status.is_success() {
-            tracing::warn!("Sitemap URL returned non-2xx status: {status} from {url}");
-            return Err(SitemapError::HttpError {
+            let err = SitemapError::HttpError {
                 status: status.as_u16(),
                 message: format!("server returned {status}"),
-            });
+            };
+            log_scrape_error(
+                &err,
+                url,
+                "sitemap.fetch",
+                Some(correlation),
+                "Sitemap URL returned non-2xx status",
+            );
+            return Err(err);
         }
         let is_xml = content_type.is_empty()
             || content_type.contains("application/xml")
@@ -252,21 +269,49 @@ impl SitemapParser {
             || url.ends_with(".xml")
             || url.ends_with(".xml.gz");
         if !is_xml {
-            tracing::warn!(
-                "Sitemap URL returned non-XML content type: {} from {url}",
-                content_type
+            let err = SitemapError::InvalidContentType(content_type.to_string());
+            log_scrape_error(
+                &err,
+                url,
+                "sitemap.fetch",
+                Some(correlation),
+                "Sitemap URL returned non-XML content type",
             );
-            return Err(SitemapError::InvalidContentType(content_type.to_string()));
+            return Err(err);
         }
         Ok(())
     }
 
     /// Internal recursive parser with depth tracking and loop detection
+    ///
+    /// Carries the run's [`CorrelationId`] so every failure in the chain is
+    /// logged through [`log_scrape_error`] with `stage` and `trace_id`
+    /// (#1318).
+    // The #1318 migration replaced four inline `warn!` one-liners with
+    // `log_scrape_error` calls that carry the correlation at each failure
+    // stage; the span body is one cohesive fetch→validate→stream→parse
+    // sequence and splitting it would scatter the guard-chain order the
+    // fetch contract mandates (AGENTS.md), so keep it whole above the
+    // line ratchet — same treatment as `parse_xml_sitemap` and
+    // `scrape_single_url_inner`.
+    #[allow(clippy::too_many_lines)]
+    #[tracing::instrument(
+        level = "debug",
+        name = "sitemap.parse_url",
+        skip(self, visited, correlation),
+        fields(
+            url = %url,
+            depth = depth,
+            correlation_id = %correlation,
+            trace_id = %correlation.trace_id()
+        )
+    )]
     async fn parse_with_depth(
         &self,
         url: &str,
         depth: u8,
         visited: &Arc<Mutex<HashSet<Url>>>,
+        correlation: &CorrelationId,
     ) -> Result<Vec<SitemapUrl>> {
         // Base case: max depth reached
         if depth == 0 {
@@ -282,8 +327,15 @@ impl SitemapParser {
                 message: format!("failed to acquire visited lock: {e}"),
             })?;
             if visited_lock.contains(&base_url) {
-                tracing::warn!("Skipping already-visited sitemap (loop detected): {}", url);
-                return Err(SitemapError::InvalidStructure);
+                let err = SitemapError::InvalidStructure;
+                log_scrape_error(
+                    &err,
+                    url,
+                    "sitemap.fetch",
+                    Some(correlation),
+                    "Skipping already-visited sitemap (loop detected)",
+                );
+                return Err(err);
             }
         }
 
@@ -311,7 +363,7 @@ impl SitemapParser {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        Self::validate_response(status, content_type.as_str(), url)?;
+        Self::validate_response(status, content_type.as_str(), url, correlation)?;
 
         // Mark URL as visited after successful fetch
         {
@@ -334,14 +386,15 @@ impl SitemapParser {
             })?;
             total_bytes += chunk.len();
             if total_bytes > self.config.max_response_size {
-                tracing::warn!(
-                    "Sitemap response too large: {} bytes from {}",
-                    total_bytes,
-                    url
+                let err = SitemapError::ResponseTooLarge(self.config.max_response_size);
+                log_scrape_error(
+                    &err,
+                    url,
+                    "sitemap.fetch",
+                    Some(correlation),
+                    &format!("Sitemap response too large: {total_bytes} bytes streamed"),
                 );
-                return Err(SitemapError::ResponseTooLarge(
-                    self.config.max_response_size,
-                ));
+                return Err(err);
             }
             raw_bytes.extend_from_slice(&chunk);
         }
@@ -356,9 +409,13 @@ impl SitemapParser {
         // Issue #879 (Option A): inspect the body BEFORE XML parsing so a WAF
         // challenge served where sitemap content should be surfaces as the
         // typed error instead of generic XML-garbage failures.
-        if let Some(err) =
-            Self::waf_challenge_error(&decompressed, url, status.as_u16(), &content_type)
-        {
+        if let Some(err) = Self::waf_challenge_error(
+            &decompressed,
+            url,
+            status.as_u16(),
+            &content_type,
+            correlation,
+        ) {
             return Err(err);
         }
 
@@ -385,7 +442,8 @@ impl SitemapParser {
                 depth
             );
 
-            self.parse_sitemap_index(&urls, depth - 1, visited).await
+            self.parse_sitemap_index(&urls, depth - 1, visited, correlation)
+                .await
         } else {
             // [3.8] BatchProcessor: apply crawl budget optimization
             let optimized_urls = self.batch_processor.apply_crawl_budget(urls, &self.config);
@@ -451,11 +509,14 @@ impl SitemapParser {
     /// blocks only when correlated with a WAF status code (REQ-WAF-05/09).
     /// Control headers are not re-collected here because `validate_response`
     /// guarantees a 2xx status, under which Fingerprint evidence never blocks.
+    /// The block is reported through [`log_scrape_error`] with stage and the
+    /// caller's correlation (#1318).
     fn waf_challenge_error(
         body: &[u8],
         url: &str,
         status: u16,
         content_type: &str,
+        correlation: &CorrelationId,
     ) -> Option<SitemapError> {
         let ctx = InspectionContext {
             status: Some(status),
@@ -468,24 +529,32 @@ impl SitemapParser {
         if !verdict.is_blocked {
             return None;
         }
-        tracing::warn!(
-            url = %url,
-            status = %status,
-            evidences = verdict.evidences.len(),
-            "WAF/CAPTCHA challenge detected in sitemap body; aborting"
-        );
-        Some(SitemapError::WafChallenge {
+        let err = SitemapError::WafChallenge {
             url: url.to_string(),
             provider: verdict.evidence_chain(),
-        })
+        };
+        log_scrape_error(
+            &err,
+            url,
+            "sitemap.fetch",
+            Some(correlation),
+            "WAF/CAPTCHA challenge detected in sitemap body; aborting",
+        );
+        Some(err)
     }
 
     /// Parse sitemap index recursively with error propagation
+    ///
+    /// Each index child fetch/parse gets its own [`CorrelationId`] child so a
+    /// failing child is reconstructable from the trace JSONL by `trace_id`
+    /// while still sharing the run root's — and failures are surfaced through
+    /// [`log_scrape_error`] with `stage = "sitemap.index_child"` (#1318).
     async fn parse_sitemap_index(
         &self,
         sitemap_urls: &[SitemapUrl],
         depth: u8,
         visited: &Arc<Mutex<HashSet<Url>>>,
+        correlation: &CorrelationId,
     ) -> Result<Vec<SitemapUrl>> {
         use futures::stream::{self, StreamExt};
 
@@ -495,21 +564,30 @@ impl SitemapParser {
         let results = stream::iter(sitemap_urls.iter().cloned())
             .map(|sitemap_url| {
                 let visited = visited.clone();
+                let child_correlation = correlation.child();
                 async move {
                     let url = sitemap_url.url.clone();
-                    let result = self.parse_with_depth(url.as_str(), depth, &visited).await;
-                    (url, result)
+                    let result = self
+                        .parse_with_depth(url.as_str(), depth, &visited, &child_correlation)
+                        .await;
+                    (url, result, child_correlation)
                 }
             })
             .buffered(self.config.concurrency)
             .collect::<Vec<_>>()
             .await;
 
-        for (url, result) in results {
+        for (url, result, child_correlation) in results {
             match result {
                 Ok(urls) => all_urls.extend(urls),
                 Err(e) => {
-                    tracing::warn!("Failed to parse sitemap {}: {}", url, e);
+                    log_scrape_error(
+                        &e,
+                        url.as_str(),
+                        "sitemap.index_child",
+                        Some(&child_correlation),
+                        "Failed to parse sitemap index child",
+                    );
                     failures.push((url, e));
                 },
             }
@@ -591,16 +669,33 @@ impl SitemapParser {
 /// logic moved here from the inherent method; the inherent `parse_from_url`
 /// is now a thin wrapper so infrastructure internals and integration-test
 /// call sites keep compiling unchanged.
+///
+/// This is the correlation root of a sitemap parse: it mints the run's
+/// [`CorrelationId`], attaches it to a manual span (the port's boxed future
+/// cannot take `#[instrument]`), and every failure below carries it
+/// downstream (#1318).
 impl SitemapParserPort for SitemapParser {
     fn parse_from_url<'a>(
         &'a self,
         sitemap_url: &'a str,
     ) -> BoxFuture<'a, Result<Vec<SitemapUrl>>> {
-        Box::pin(async move {
-            let visited = Arc::new(Mutex::new(HashSet::new()));
-            self.parse_with_depth(sitemap_url, self.config.max_depth, &visited)
-                .await
-        })
+        let correlation = CorrelationId::new();
+        // The span must own its recorded values, and the future must own the
+        // correlation it propagates: clone before the `async move` captures.
+        let span = tracing::info_span!(
+            "sitemap.parse",
+            url = %sitemap_url,
+            correlation_id = %correlation,
+            trace_id = %correlation.trace_id()
+        );
+        Box::pin(
+            async move {
+                let visited = Arc::new(Mutex::new(HashSet::new()));
+                self.parse_with_depth(sitemap_url, self.config.max_depth, &visited, &correlation)
+                    .await
+            }
+            .instrument(span),
+        )
     }
 }
 
