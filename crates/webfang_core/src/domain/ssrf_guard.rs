@@ -77,12 +77,17 @@ pub(crate) const DISABLE_REDIRECT_GUARD_ENV: &str = "WEBFANG_DISABLE_SSRF_REDIRE
 /// through the production clients must set `WEBFANG_DISABLE_SSRF_RESOLVER=1`
 /// before clients are built. Production never sets it.
 ///
+/// `pub` (not `pub(crate)`) so the discovery integration tests — external
+/// test targets — can reference the single source of truth instead of
+/// duplicating the variable name as a string (same as
+/// [`DISABLE_ENTRY_GUARD_ENV`]).
+///
 /// TEST-ISOLATION: Writers use `EnvGuard::{set,remove,with,clean}` or
 /// `env_lock()` for permanent setup (#1126). Readers must hold `EnvGuard`
 /// for full read-or-assert window (even pure readers use `EnvGuard::clean`)
 /// or `#[serial]`; see #1308. Never nest `EnvGuard` in `env_lock()`; spawned
 /// children exempt (see `sanitize_env` in `cli_harness.rs`).
-pub(crate) const DISABLE_VALIDATING_RESOLVER_ENV: &str = "WEBFANG_DISABLE_SSRF_RESOLVER";
+pub const DISABLE_VALIDATING_RESOLVER_ENV: &str = "WEBFANG_DISABLE_SSRF_RESOLVER";
 
 /// Test-only escape hatch for the entry literal-IP guard
 /// ([`reject_forbidden_literal_url`], F-06 + F-32, #1217).
