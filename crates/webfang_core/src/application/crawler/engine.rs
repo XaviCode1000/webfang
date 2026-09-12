@@ -1245,8 +1245,12 @@ impl Default for EngineOptions {
 ///
 /// # Examples
 ///
+/// The example targets the replacement entry ([`crawl_site_with_options`]):
+/// unlike this shim, it keeps every engine knob visible at the call site.
+///
 /// ```no_run
-/// use webfang_core::{domain::CrawlerConfig, application::crawl_site};
+/// use webfang_core::{domain::CrawlerConfig, application::crawl_site_with_options};
+/// use webfang_core::application::crawler::engine::EngineOptions;
 /// use url::Url;
 ///
 /// # #[tokio::main]
@@ -1257,11 +1261,22 @@ impl Default for EngineOptions {
 ///     .max_pages(50)
 ///     .build();
 ///
-/// let result = crawl_site(config).await?;
+/// let result = crawl_site_with_options(config, EngineOptions::default()).await?;
 /// println!("Crawled {} pages", result.total_pages);
 /// # Ok(())
 /// # }
 /// ```
+///
+/// # Deprecation (since 2.2.0, #1369)
+///
+/// This entry silently uses default engine options — checkpointing, the
+/// session pool, the JS strategy, robots handling and content capture all
+/// stay invisible at the call site. Use [`crawl_site_with_options`] instead.
+/// The shim keeps working exactly as before until removal.
+#[deprecated(
+    since = "2.2.0",
+    note = "Use crawl_site_with_options instead: EngineOptions lets callers set checkpoint, session pool, js_strategy, robots and content sink explicitly instead of inheriting silent defaults (#1369)."
+)]
 pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError> {
     crawl_site_inner(config, CorrelationId::new(), None).await
 }
@@ -1278,6 +1293,20 @@ pub async fn crawl_site(config: CrawlerConfig) -> Result<CrawlResult, CrawlError
 ///
 /// Returns [`CrawlError`] when the engine cannot be constructed or the crawl
 /// loop fails, exactly as [`crawl_site`] does.
+///
+/// # Deprecation (since 2.2.0, #1369)
+///
+/// The sink is expressible as [`EngineOptions::content_sink`], and every
+/// other knob the sibling [`crawl_site`] inherits silently rides on the same
+/// struct — the `content_sink` doc commits to a single capture entry
+/// ("checkpoint-only, capture-only, and both all converge in
+/// [`crawl_site_with_options`]; no second entry function"). Use that entry
+/// with `options.content_sink = Some(sink)` instead. The shim keeps working
+/// exactly as before until removal.
+#[deprecated(
+    since = "2.2.0",
+    note = "Use crawl_site_with_options with EngineOptions::content_sink instead: one explicit entry for capture, checkpoint, session pool, js_strategy and robots (#1369)."
+)]
 pub async fn crawl_site_capturing(
     config: CrawlerConfig,
     sink: Arc<dyn CrawlContentSink>,
@@ -2054,6 +2083,123 @@ mod tests {
         assert_eq!(
             result.total_pages, 1,
             "seed must be crawled through the port-wired pool"
+        );
+    }
+
+    // ——— #1369 deprecated-entry drift guards ———
+
+    /// Drift guard for the deprecated `crawl_site` shim: it must keep
+    /// producing the same result as the explicit seam with the same option
+    /// set (robots from config, capture off, checkpoint off) until removal.
+    #[allow(deprecated)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deprecated_crawl_site_shim_matches_explicit_options_entry() {
+        let server = MockServer::start().await;
+        // Two runs, one per entry; each fetches exactly the seed (max_depth 0,
+        // robots ignored via the option the shim derives from config).
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("<html><body>seed</body></html>"),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let seed = Url::parse(&format!("http://127.0.0.1:{}/", server.address().port()))
+            .expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed)
+            .max_depth(0)
+            .max_pages(1)
+            .ignore_robots(true)
+            .build();
+
+        let shim = crawl_site(config.clone())
+            .await
+            .expect("deprecated shim must still work");
+        let explicit = crawl_site_with_options(
+            config,
+            EngineOptions {
+                ignore_robots: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("explicit entry must work");
+
+        assert_eq!(shim.total_pages, 1, "shim must crawl the seed");
+        assert_eq!(
+            shim.total_pages, explicit.total_pages,
+            "shim and explicit entry must agree on page count"
+        );
+        assert_eq!(
+            shim.urls.len(),
+            explicit.urls.len(),
+            "shim and explicit entry must agree on discovered URLs"
+        );
+        assert_eq!(shim.errors, 0);
+        assert_eq!(explicit.errors, 0);
+    }
+
+    /// Drift guard for the deprecated `crawl_site_capturing` shim: its sink
+    /// must behave exactly like `EngineOptions::content_sink` on the explicit
+    /// seam — same pages captured, same content.
+    #[allow(deprecated)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deprecated_crawl_site_capturing_shim_matches_content_sink_option() {
+        use crate::application::crawler::content_sink::{CrawlContentSink, InMemoryContentSink};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("<html><body>captured</body></html>"),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let seed = Url::parse(&format!("http://127.0.0.1:{}/", server.address().port()))
+            .expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed)
+            .max_depth(0)
+            .max_pages(1)
+            .ignore_robots(true)
+            .build();
+
+        let shim_sink = std::sync::Arc::new(InMemoryContentSink::new());
+        let shim = crawl_site_capturing(
+            config.clone(),
+            shim_sink.clone() as std::sync::Arc<dyn CrawlContentSink>,
+        )
+        .await
+        .expect("deprecated capturing shim must still work");
+
+        let explicit_sink = std::sync::Arc::new(InMemoryContentSink::new());
+        let explicit = crawl_site_with_options(
+            config,
+            EngineOptions {
+                ignore_robots: true,
+                content_sink: Some(explicit_sink.clone() as std::sync::Arc<dyn CrawlContentSink>),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("explicit entry with content_sink must work");
+
+        assert_eq!(shim.total_pages, 1);
+        assert_eq!(explicit.total_pages, 1);
+        let shim_pages = shim_sink.take_pages();
+        let explicit_pages = explicit_sink.take_pages();
+        assert_eq!(shim_pages.len(), 1, "shim sink must capture the body");
+        assert_eq!(
+            shim_pages.len(),
+            explicit_pages.len(),
+            "both entries must capture the same page count"
+        );
+        assert_eq!(
+            shim_pages[0].html, explicit_pages[0].html,
+            "shim sink and content_sink option must capture identical content"
         );
     }
 
