@@ -251,6 +251,38 @@ impl SitemapConfigBuilder {
 // RobotsPort — domain seam over robots.txt enforcement (ADR-0012-B post-narrow)
 // ============================================================================
 
+/// Typed verdict of a robots.txt policy check (#1329).
+///
+/// A `bool` cannot distinguish "robots.txt rules deny the path" from "the SSRF
+/// literal-IP entry guard refused the URL before robots.txt was ever
+/// consulted" (#1301). The verdict names the real cause once, at the only
+/// guard call site in the `enforce_robots_policy → RobotsPort` chain, so
+/// callers never re-validate the URL to label the denial.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RobotsDecision {
+    /// The URL is permitted: robots.txt rules allow the path, or robots.txt
+    /// could not be fetched and the fail-open contract applies (#697, #794).
+    Allowed,
+    /// The robots.txt rules deny the path — a genuine robots denial.
+    RulesDenied,
+    /// The SSRF literal-IP entry guard refused the URL before any socket
+    /// opened and before robots.txt was consulted (#1301). Carries the
+    /// guard's own [`ForbiddenLiteral`] cause so the caller can surface the
+    /// real reason ("SSRF detectado: …") instead of a phantom robots denial.
+    PolicyRefused(crate::domain::ssrf_guard::ForbiddenLiteral),
+}
+
+impl RobotsDecision {
+    /// Boolean view of the verdict for callers whose contract is a plain
+    /// allow/deny (crawl skip logic): `true` only for [`RobotsDecision::Allowed`].
+    /// A [`RobotsDecision::PolicyRefused`] also denies — but callers that can
+    /// distinguish causes should match on the verdict instead.
+    #[must_use]
+    pub fn allows(&self) -> bool {
+        matches!(self, Self::Allowed)
+    }
+}
+
 /// Domain-owned seam for robots.txt enforcement.
 ///
 /// `application` (`scraper_service`, `crawler::engine`, `llm_extraction`)
@@ -264,12 +296,15 @@ impl SitemapConfigBuilder {
 /// and the negative decision is cached for the fetcher's lifetime (#794),
 /// matching the production crawl behavior documented on the concrete.
 pub trait RobotsPort: Send + Sync {
-    /// Check whether `url` is allowed by `domain`'s robots.txt.
+    /// Check `url` against `domain`'s robots.txt and return the typed verdict.
     ///
     /// Fetches robots.txt on first encounter (cached per domain, including
     /// failed outcomes — exactly one fetch per domain per fetcher lifetime).
-    /// Fail-open: an unavailable robots.txt allows the URL (#697).
-    fn is_allowed<'a>(&'a self, url: &'a str, domain: &'a str) -> BoxFuture<'a, bool>;
+    /// Fail-open: an unavailable robots.txt yields [`RobotsDecision::Allowed`]
+    /// (#697). When the SSRF literal-IP entry guard rejects the URL before any
+    /// socket opens, the verdict is [`RobotsDecision::PolicyRefused`] carrying
+    /// the guard's cause (#1301, #1329) — the ONLY guard call in this chain.
+    fn is_allowed<'a>(&'a self, url: &'a str, domain: &'a str) -> BoxFuture<'a, RobotsDecision>;
 }
 
 #[cfg(test)]

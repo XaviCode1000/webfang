@@ -8,6 +8,7 @@
 //! (459 robots fetches for a 5-page crawl → 1).
 
 use webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher;
+use webfang_test_utils::EnvGuard;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -16,14 +17,12 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// Construction is offline — only the checks perform network I/O, entirely
 /// against the mock server.
 ///
-/// Also arms the SSRF entry-guard allowance (F-06 + F-32, #1217): every check
-/// below addresses a wiremock loopback literal, which production now rejects
-/// at entry. The returned guard must stay alive for the whole test.
-fn fetcher_for_server() -> (webfang_test_utils::EnvGuard, RobotsFetcher) {
-    let guard = webfang_test_utils::EnvGuard::with(&[(
-        webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-        "1",
-    )]);
+/// Arms BOTH SSRF hatches via [`EnvGuard::wiremock_robots`] (#1329, #1308
+/// lesson): every check below addresses a wiremock loopback literal, which
+/// the entry guard rejects at entry, and no robots test may arm a single
+/// hatch by hand. The returned guard must stay alive for the whole test.
+fn fetcher_for_server() -> (EnvGuard, RobotsFetcher) {
+    let guard = EnvGuard::wiremock_robots();
     let fetcher =
         RobotsFetcher::with_default_profile(5).expect("robot fetcher construction is offline");
     (guard, fetcher)
@@ -66,7 +65,8 @@ async fn negative_result_cached_after_first_missing_robots() {
         assert!(
             fetcher
                 .is_allowed(&format!("{base}/page/{page}"), &domain)
-                .await,
+                .await
+                .allows(),
             "missing robots.txt must fail open as allowed"
         );
     }
@@ -95,7 +95,8 @@ async fn non_success_status_is_cached_as_allow_all() {
         assert!(
             fetcher
                 .is_allowed(&format!("{base}/page/{page}"), &domain)
-                .await,
+                .await
+                .allows(),
             "a 503 robots.txt must fail open as allowed"
         );
     }
@@ -123,13 +124,15 @@ async fn successful_rules_cached_and_enforced_once() {
         assert!(
             fetcher
                 .is_allowed(&format!("{base}/public/{page}"), &domain)
-                .await,
+                .await
+                .allows(),
             "public URLs must stay allowed"
         );
         assert!(
             !fetcher
                 .is_allowed(&format!("{base}/private/{page}"), &domain)
-                .await,
+                .await
+                .allows(),
             "disallowed URLs must stay denied across repeated checks"
         );
     }
@@ -172,7 +175,7 @@ async fn concurrent_first_fetches_are_bounded() {
         let url = format!("{base}/page/{task}");
         let domain = domain.clone();
         handles.push(tokio::spawn(async move {
-            fetcher.is_allowed(&url, &domain).await
+            fetcher.is_allowed(&url, &domain).await.allows()
         }));
     }
 
@@ -210,13 +213,15 @@ async fn cached_rules_are_not_downgraded_by_later_failures() {
     assert!(
         fetcher
             .is_allowed(&format!("{base}/public/a"), &domain)
-            .await,
+            .await
+            .allows(),
         "public URL must be allowed by the fetched rules"
     );
     assert!(
         !fetcher
             .is_allowed(&format!("{base}/private/a"), &domain)
-            .await,
+            .await
+            .allows(),
         "private URL must be denied by the fetched rules"
     );
     assert_eq!(count_robots_requests(&server).await, 1);
@@ -229,13 +234,15 @@ async fn cached_rules_are_not_downgraded_by_later_failures() {
     assert!(
         fetcher
             .is_allowed(&format!("{base}/public/b"), &domain)
-            .await,
+            .await
+            .allows(),
         "cached rules must keep allowing public URLs after the site starts failing"
     );
     assert!(
         !fetcher
             .is_allowed(&format!("{base}/private/b"), &domain)
-            .await,
+            .await
+            .allows(),
         "cached rules must keep denying private URLs after the site starts failing"
     );
     assert_eq!(
@@ -262,7 +269,10 @@ async fn oversized_robots_body_fails_open_without_reading_unbounded() {
 
     // Fail-open: an unreadable robots.txt must not block the site.
     assert!(
-        fetcher.is_allowed(&format!("{base}/page"), &domain).await,
+        fetcher
+            .is_allowed(&format!("{base}/page"), &domain)
+            .await
+            .allows(),
         "oversized robots.txt must fail open as allowed"
     );
     // The failure is cached: exactly one fetch for the domain (#794).
